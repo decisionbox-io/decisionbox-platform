@@ -3,9 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Button, Card, Group, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { api, Domain, Category } from '@/lib/api';
 
@@ -14,6 +15,8 @@ export default function NewProjectPage() {
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
   const [domains, setDomains] = useState<Domain[]>([]);
+  const [domainsLoading, setDomainsLoading] = useState(true);
+  const [domainsError, setDomainsError] = useState<string | null>(null);
 
   // Form state
   const [name, setName] = useState('');
@@ -33,7 +36,19 @@ export default function NewProjectPage() {
   const [maxSteps, setMaxSteps] = useState(100);
 
   useEffect(() => {
-    api.listDomains().then(setDomains).catch(() => {});
+    api.listDomains()
+      .then((data) => {
+        setDomains(data);
+        // Auto-select first domain + category if only one
+        if (data.length === 1) {
+          setDomain(data[0].id);
+          if (data[0].categories.length === 1) {
+            setCategory(data[0].categories[0].id);
+          }
+        }
+      })
+      .catch((e) => setDomainsError(e.message))
+      .finally(() => setDomainsLoading(false));
   }, []);
 
   const categories: Category[] = domains.find((d) => d.id === domain)?.categories || [];
@@ -78,21 +93,35 @@ export default function NewProjectPage() {
       <Stack gap="lg" maw={700}>
         <Title order={2}>New Project</Title>
 
+        {domainsError && (
+          <Alert icon={<IconAlertCircle size={16} />} title="Cannot load domains" color="red">
+            {domainsError}
+          </Alert>
+        )}
+
         <Stepper active={active} onStepClick={setActive}>
           <Stepper.Step label="Basics" description="Name and domain">
             <Card withBorder p="lg" mt="md">
               <Stack>
-                <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} />
-                <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-                <Select
-                  label="Domain" required
-                  data={domains.map((d) => ({ value: d.id, label: d.id.charAt(0).toUpperCase() + d.id.slice(1) }))}
-                  value={domain}
-                  onChange={(v) => { setDomain(v || ''); setCategory(''); }}
-                />
-                {domain && (
+                <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Analytics" />
+                <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" />
+
+                {domainsLoading ? (
+                  <Group><Loader size="sm" /><Text size="sm" c="dimmed">Loading domains...</Text></Group>
+                ) : (
+                  <Select
+                    label="Domain" required
+                    placeholder="Select a domain"
+                    data={domains.map((d) => ({ value: d.id, label: d.id.charAt(0).toUpperCase() + d.id.slice(1) }))}
+                    value={domain}
+                    onChange={(v) => { setDomain(v || ''); setCategory(''); }}
+                  />
+                )}
+
+                {domain && categories.length > 0 && (
                   <Select
                     label="Category" required
+                    placeholder="Select a category"
                     data={categories.map((c) => ({ value: c.id, label: c.name }))}
                     value={category}
                     onChange={(v) => setCategory(v || '')}
@@ -116,14 +145,14 @@ export default function NewProjectPage() {
                 />
                 {warehouseProvider === 'bigquery' && (
                   <TextInput label="GCP Project ID" value={warehouseProjectId}
-                    onChange={(e) => setWarehouseProjectId(e.target.value)} />
+                    onChange={(e) => setWarehouseProjectId(e.target.value)} placeholder="my-gcp-project" />
                 )}
                 <TextInput label="Dataset" required value={warehouseDataset}
-                  onChange={(e) => setWarehouseDataset(e.target.value)} />
+                  onChange={(e) => setWarehouseDataset(e.target.value)} placeholder="my_analytics_dataset" />
                 <TextInput label="Location" value={warehouseLocation}
                   onChange={(e) => setWarehouseLocation(e.target.value)} />
                 <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
-                <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
+                <Text size="xs" c="dimmed">For shared datasets with multiple apps. Leave empty if the entire dataset is yours.</Text>
                 <Group grow>
                   <TextInput label="Filter Field" placeholder="e.g. app_id" value={filterField}
                     onChange={(e) => setFilterField(e.target.value)} />

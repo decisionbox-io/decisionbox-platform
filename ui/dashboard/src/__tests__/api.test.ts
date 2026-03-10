@@ -34,7 +34,7 @@ describe('api.listDomains', () => {
     expect(result).toEqual(domains);
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('/api/v1/domains'),
-      expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'application/json' }) })
+      expect.any(Object)
     );
   });
 
@@ -222,8 +222,8 @@ describe('error handling', () => {
     await expect(api.listProjects()).rejects.toThrow('API error: 503');
   });
 
-  it('handles network failure', async () => {
+  it('handles network failure with helpful message', async () => {
     mockFetch.mockRejectedValueOnce(new Error('fetch failed'));
-    await expect(api.listProjects()).rejects.toThrow('fetch failed');
+    await expect(api.listProjects()).rejects.toThrow('Cannot connect to DecisionBox API');
   });
 });

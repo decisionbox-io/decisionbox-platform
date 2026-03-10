@@ -1,10 +1,27 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    ...options,
-  });
+  const url = `${API_BASE}${path}`;
+
+  const headers: Record<string, string> = {};
+  // Only set Content-Type for requests with a body
+  if (options?.body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: { ...headers, ...options?.headers as Record<string, string> },
+    });
+  } catch (err) {
+    throw new Error(
+      `Cannot connect to DecisionBox API at ${API_BASE}. ` +
+      `Make sure the API is running (make dev-api or docker compose up). ` +
+      `Original error: ${(err as Error).message}`
+    );
+  }
 
   const json = await res.json();
 

@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Badge, Button, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
-import { IconPlus, IconBrain } from '@tabler/icons-react';
+import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { IconAlertCircle, IconPlus, IconBrain } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { api, Project } from '@/lib/api';
@@ -30,14 +30,14 @@ export default function ProjectsPage() {
         </Group>
 
         {error && (
-          <Card withBorder p="md" bg="red.0">
-            <Text c="red">{error}</Text>
-          </Card>
+          <Alert icon={<IconAlertCircle size={16} />} title="Connection Error" color="red" variant="light">
+            {error}
+          </Alert>
         )}
 
         {loading && <Text c="dimmed">Loading projects...</Text>}
 
-        {!loading && projects.length === 0 && (
+        {!loading && !error && projects.length === 0 && (
           <Card withBorder p="xl" ta="center">
             <Stack align="center" gap="md">
               <IconBrain size={48} color="var(--mantine-color-gray-5)" />
