@@ -6,8 +6,11 @@ require (
 	cloud.google.com/go/bigquery v1.74.0
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/claude v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
@@ -116,7 +119,10 @@ require (
 replace (
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go => ../../domain-packs/gaming/go
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
+	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock
 	github.com/decisionbox-io/decisionbox/providers/llm/claude => ../../providers/llm/claude
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
+	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
+	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 )

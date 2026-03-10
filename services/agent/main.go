@@ -18,8 +18,14 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 
-	// Provider registrations — blank imports trigger init() which registers providers.
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"         // registers "claude"
+	// LLM provider registrations
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"     // registers "claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"     // registers "openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"     // registers "ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"  // registers "vertex-ai" (stub)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"    // registers "bedrock" (stub)
+
+	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery" // registers "bigquery"
 
 	// Domain pack registrations
