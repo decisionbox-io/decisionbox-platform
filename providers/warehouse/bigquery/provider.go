@@ -20,7 +20,7 @@ import (
 var sqlFixPrompt string
 
 func init() {
-	gowarehouse.Register("bigquery", func(cfg gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
+	gowarehouse.RegisterWithMeta("bigquery", func(cfg gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
 		timeoutMin, _ := strconv.Atoi(cfg["timeout_minutes"])
 		if timeoutMin == 0 {
 			timeoutMin = 5
@@ -32,6 +32,14 @@ func init() {
 			Location:  cfg["location"],
 			Timeout:   time.Duration(timeoutMin) * time.Minute,
 		})
+	}, gowarehouse.ProviderMeta{
+		Name:        "Google BigQuery",
+		Description: "Google Cloud data warehouse for analytics",
+		ConfigFields: []gowarehouse.ConfigField{
+			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
+			{Key: "dataset", Label: "Dataset", Required: true, Type: "string", Placeholder: "my_analytics_dataset"},
+			{Key: "location", Label: "Location", Type: "string", Default: "US", Placeholder: "US"},
+		},
 	})
 }
 

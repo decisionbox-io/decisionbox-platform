@@ -25,7 +25,7 @@ import (
 )
 
 func init() {
-	gollm.Register("ollama", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	gollm.RegisterWithMeta("ollama", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		host := cfg["host"]
 		if host == "" {
 			host = "http://localhost:11434"
@@ -37,6 +37,13 @@ func init() {
 		}
 
 		return NewOllamaProvider(host, model)
+	}, gollm.ProviderMeta{
+		Name:        "Ollama (Local)",
+		Description: "Run open-source models locally via Ollama",
+		ConfigFields: []gollm.ConfigField{
+			{Key: "host", Label: "Ollama Host", Type: "string", Default: "http://localhost:11434", Placeholder: "http://localhost:11434"},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "qwen2.5:7b", Placeholder: "qwen2.5:7b"},
+		},
 	})
 }
 

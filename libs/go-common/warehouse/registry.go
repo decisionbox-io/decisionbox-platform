@@ -13,9 +13,31 @@ type ProviderConfig map[string]string
 // Provider packages implement this and register it via Register().
 type ProviderFactory func(cfg ProviderConfig) (Provider, error)
 
+// ProviderMeta describes a provider for UI rendering and documentation.
+// Providers register this alongside their factory via RegisterWithMeta().
+type ProviderMeta struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`        // display name: "Google BigQuery"
+	Description string        `json:"description"`  // short description
+	ConfigFields []ConfigField `json:"config_fields"` // fields the UI should render
+}
+
+// ConfigField describes a single configuration field for a provider.
+// The UI renders a form dynamically from these fields.
+type ConfigField struct {
+	Key         string `json:"key"`          // config key: "project_id", "dataset"
+	Label       string `json:"label"`        // display label: "GCP Project ID"
+	Description string `json:"description"`  // help text
+	Required    bool   `json:"required"`
+	Type        string `json:"type"`         // "string", "number", "boolean"
+	Default     string `json:"default"`      // default value
+	Placeholder string `json:"placeholder"`  // placeholder text
+}
+
 var (
 	providersMu sync.RWMutex
 	providers   = make(map[string]ProviderFactory)
+	providerMeta = make(map[string]ProviderMeta)
 )
 
 // Register makes a provider available by name.
@@ -67,6 +89,15 @@ func NewProvider(name string, cfg ProviderConfig) (Provider, error) {
 	return factory(cfg)
 }
 
+// RegisterWithMeta registers a provider with metadata for UI rendering.
+func RegisterWithMeta(name string, factory ProviderFactory, meta ProviderMeta) {
+	Register(name, factory)
+	providersMu.Lock()
+	meta.ID = name
+	providerMeta[name] = meta
+	providersMu.Unlock()
+}
+
 // RegisteredProviders returns the names of all registered providers.
 func RegisteredProviders() []string {
 	providersMu.RLock()
@@ -76,4 +107,23 @@ func RegisteredProviders() []string {
 		names = append(names, k)
 	}
 	return names
+}
+
+// RegisteredProvidersMeta returns metadata for all registered providers.
+func RegisteredProvidersMeta() []ProviderMeta {
+	providersMu.RLock()
+	defer providersMu.RUnlock()
+	metas := make([]ProviderMeta, 0, len(providerMeta))
+	for _, m := range providerMeta {
+		metas = append(metas, m)
+	}
+	return metas
+}
+
+// GetProviderMeta returns metadata for a specific provider.
+func GetProviderMeta(name string) (ProviderMeta, bool) {
+	providersMu.RLock()
+	defer providersMu.RUnlock()
+	m, ok := providerMeta[name]
+	return m, ok
 }

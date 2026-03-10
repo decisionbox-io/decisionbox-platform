@@ -16,12 +16,17 @@ func New(db *database.DB) http.Handler {
 	discoveryRepo := database.NewDiscoveryRepository(db)
 
 	// Handlers
+	providers := handler.NewProvidersHandler()
 	domains := handler.NewDomainsHandler()
 	projects := handler.NewProjectsHandler(projectRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo)
 
 	// Health
 	mux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
+
+	// Providers
+	mux.HandleFunc("GET /api/v1/providers/llm", providers.ListLLMProviders)
+	mux.HandleFunc("GET /api/v1/providers/warehouse", providers.ListWarehouseProviders)
 
 	// Domains
 	mux.HandleFunc("GET /api/v1/domains", domains.ListDomains)

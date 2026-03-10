@@ -20,7 +20,7 @@ import (
 )
 
 func init() {
-	gollm.Register("vertex-ai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	gollm.RegisterWithMeta("vertex-ai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		projectID := cfg["project_id"]
 		if projectID == "" {
 			return nil, fmt.Errorf("vertex-ai: project_id is required (set VERTEX_PROJECT_ID)")
@@ -39,6 +39,14 @@ func init() {
 			location:  location,
 			model:     model,
 		}, nil
+	}, gollm.ProviderMeta{
+		Name:        "Google Vertex AI",
+		Description: "GCP-managed AI platform (Claude, Gemini) — coming soon",
+		ConfigFields: []gollm.ConfigField{
+			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
+			{Key: "location", Label: "Location", Type: "string", Default: "us-central1"},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-20250514"},
+		},
 	})
 }
 

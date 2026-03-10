@@ -22,7 +22,7 @@ const (
 )
 
 func init() {
-	gollm.Register("claude", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	gollm.RegisterWithMeta("claude", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		maxRetries, _ := strconv.Atoi(cfg["max_retries"])
 		if maxRetries == 0 {
 			maxRetries = 3
@@ -40,6 +40,13 @@ func init() {
 			Timeout:        time.Duration(timeoutSec) * time.Second,
 			RequestDelayMs: delayMs,
 		})
+	}, gollm.ProviderMeta{
+		Name:        "Claude (Anthropic)",
+		Description: "Anthropic Claude API - direct access",
+		ConfigFields: []gollm.ConfigField{
+			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-ant-..."},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-20250514"},
+		},
 	})
 }
 

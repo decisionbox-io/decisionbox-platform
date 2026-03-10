@@ -8,55 +8,73 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Domain, Category } from '@/lib/api';
+import { api, Domain, Category, ProviderMeta, ConfigField } from '@/lib/api';
 
 export default function NewProjectPage() {
   const router = useRouter();
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
+
+  // Data from API (dynamic)
   const [domains, setDomains] = useState<Domain[]>([]);
-  const [domainsLoading, setDomainsLoading] = useState(true);
-  const [domainsError, setDomainsError] = useState<string | null>(null);
+  const [warehouseProviders, setWarehouseProviders] = useState<ProviderMeta[]>([]);
+  const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
 
   // Form state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [domain, setDomain] = useState('');
   const [category, setCategory] = useState('');
-  const [warehouseProvider, setWarehouseProvider] = useState('bigquery');
-  const [warehouseProjectId, setWarehouseProjectId] = useState('');
-  const [warehouseDataset, setWarehouseDataset] = useState('');
-  const [warehouseLocation, setWarehouseLocation] = useState('US');
+  const [warehouseProvider, setWarehouseProvider] = useState('');
+  const [warehouseConfig, setWarehouseConfig] = useState<Record<string, string>>({});
   const [filterField, setFilterField] = useState('');
   const [filterValue, setFilterValue] = useState('');
-  const [llmProvider, setLlmProvider] = useState('claude');
-  const [llmModel, setLlmModel] = useState('claude-sonnet-4-20250514');
+  const [llmProvider, setLlmProvider] = useState('');
+  const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
   const [maxSteps, setMaxSteps] = useState(100);
 
   useEffect(() => {
-    api.listDomains()
-      .then((data) => {
-        setDomains(data);
-        // Auto-select first domain + category if only one
-        if (data.length === 1) {
-          setDomain(data[0].id);
-          if (data[0].categories.length === 1) {
-            setCategory(data[0].categories[0].id);
-          }
+    Promise.all([
+      api.listDomains(),
+      api.listWarehouseProviders(),
+      api.listLLMProviders(),
+    ])
+      .then(([domainsData, whProviders, llmProvs]) => {
+        setDomains(domainsData);
+        setWarehouseProviders(whProviders);
+        setLlmProviders(llmProvs);
+
+        if (domainsData.length === 1) {
+          setDomain(domainsData[0].id);
+          if (domainsData[0].categories.length === 1) setCategory(domainsData[0].categories[0].id);
+        }
+        if (whProviders.length > 0) {
+          setWarehouseProvider(whProviders[0].id);
+          setWarehouseConfig(buildDefaults(whProviders[0].config_fields));
+        }
+        if (llmProvs.length > 0) {
+          const claude = llmProvs.find((p) => p.id === 'claude');
+          const first = claude || llmProvs[0];
+          setLlmProvider(first.id);
+          setLlmConfig(buildDefaults(first.config_fields));
         }
       })
-      .catch((e) => setDomainsError(e.message))
-      .finally(() => setDomainsLoading(false));
+      .catch((e) => setDataError(e.message))
+      .finally(() => setDataLoading(false));
   }, []);
 
   const categories: Category[] = domains.find((d) => d.id === domain)?.categories || [];
+  const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouseProvider);
+  const selectedLLM = llmProviders.find((p) => p.id === llmProvider);
 
   const canProceed = [
     () => name && domain && category,
-    () => warehouseDataset,
-    () => llmProvider && llmModel,
+    () => warehouseProvider && warehouseConfig['dataset'],
+    () => llmProvider && llmConfig['model'],
     () => true,
   ];
 
@@ -64,19 +82,16 @@ export default function NewProjectPage() {
     setLoading(true);
     try {
       const project = await api.createProject({
-        name,
-        description,
-        domain,
-        category,
+        name, description, domain, category,
         warehouse: {
           provider: warehouseProvider,
-          project_id: warehouseProjectId,
-          dataset: warehouseDataset,
-          location: warehouseLocation,
+          project_id: warehouseConfig['project_id'] || '',
+          dataset: warehouseConfig['dataset'] || '',
+          location: warehouseConfig['location'] || '',
           filter_field: filterField,
           filter_value: filterValue,
         },
-        llm: { provider: llmProvider, model: llmModel },
+        llm: { provider: llmProvider, model: llmConfig['model'] || '' },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });
@@ -93,146 +108,154 @@ export default function NewProjectPage() {
       <Stack gap="lg" maw={700}>
         <Title order={2}>New Project</Title>
 
-        {domainsError && (
-          <Alert icon={<IconAlertCircle size={16} />} title="Cannot load domains" color="red">
-            {domainsError}
-          </Alert>
+        {dataError && (
+          <Alert icon={<IconAlertCircle size={16} />} title="Cannot load configuration" color="red">{dataError}</Alert>
         )}
 
-        <Stepper active={active} onStepClick={setActive}>
-          <Stepper.Step label="Basics" description="Name and domain">
-            <Card withBorder p="lg" mt="md">
-              <Stack>
-                <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Analytics" />
-                <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" />
+        {dataLoading && (
+          <Group><Loader size="sm" /><Text size="sm" c="dimmed">Loading configuration...</Text></Group>
+        )}
 
-                {domainsLoading ? (
-                  <Group><Loader size="sm" /><Text size="sm" c="dimmed">Loading domains...</Text></Group>
-                ) : (
-                  <Select
-                    label="Domain" required
-                    placeholder="Select a domain"
-                    data={domains.map((d) => ({ value: d.id, label: d.id.charAt(0).toUpperCase() + d.id.slice(1) }))}
-                    value={domain}
-                    onChange={(v) => { setDomain(v || ''); setCategory(''); }}
-                  />
-                )}
+        {!dataLoading && !dataError && (
+          <>
+            <Stepper active={active} onStepClick={setActive}>
+              <Stepper.Step label="Basics" description="Name and domain">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Analytics" />
+                    <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" />
+                    <Select label="Domain" required placeholder="Select a domain"
+                      data={domains.map((d) => ({ value: d.id, label: d.id.charAt(0).toUpperCase() + d.id.slice(1) }))}
+                      value={domain} onChange={(v) => { setDomain(v || ''); setCategory(''); }} />
+                    {domain && categories.length > 0 && (
+                      <Select label="Category" required placeholder="Select a category"
+                        data={categories.map((c) => ({ value: c.id, label: c.name }))}
+                        value={category} onChange={(v) => setCategory(v || '')} />
+                    )}
+                  </Stack>
+                </Card>
+              </Stepper.Step>
 
-                {domain && categories.length > 0 && (
-                  <Select
-                    label="Category" required
-                    placeholder="Select a category"
-                    data={categories.map((c) => ({ value: c.id, label: c.name }))}
-                    value={category}
-                    onChange={(v) => setCategory(v || '')}
-                  />
-                )}
-              </Stack>
-            </Card>
-          </Stepper.Step>
+              <Stepper.Step label="Warehouse" description="Data source">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Select label="Warehouse Provider" required placeholder="Select warehouse"
+                      data={warehouseProviders.map((p) => ({ value: p.id, label: p.name }))}
+                      value={warehouseProvider}
+                      onChange={(v) => {
+                        setWarehouseProvider(v || '');
+                        const prov = warehouseProviders.find((p) => p.id === v);
+                        if (prov) setWarehouseConfig(buildDefaults(prov.config_fields));
+                      }} />
+                    {selectedWarehouse && (
+                      <Text size="xs" c="dimmed">{selectedWarehouse.description}</Text>
+                    )}
 
-          <Stepper.Step label="Warehouse" description="Data source">
-            <Card withBorder p="lg" mt="md">
-              <Stack>
-                <Select
-                  label="Warehouse Provider" required
-                  data={[
-                    { value: 'bigquery', label: 'Google BigQuery' },
-                    { value: 'postgres', label: 'PostgreSQL (coming soon)', disabled: true },
-                  ]}
-                  value={warehouseProvider}
-                  onChange={(v) => setWarehouseProvider(v || 'bigquery')}
-                />
-                {warehouseProvider === 'bigquery' && (
-                  <TextInput label="GCP Project ID" value={warehouseProjectId}
-                    onChange={(e) => setWarehouseProjectId(e.target.value)} placeholder="my-gcp-project" />
-                )}
-                <TextInput label="Dataset" required value={warehouseDataset}
-                  onChange={(e) => setWarehouseDataset(e.target.value)} placeholder="my_analytics_dataset" />
-                <TextInput label="Location" value={warehouseLocation}
-                  onChange={(e) => setWarehouseLocation(e.target.value)} />
-                <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
-                <Text size="xs" c="dimmed">For shared datasets with multiple apps. Leave empty if the entire dataset is yours.</Text>
-                <Group grow>
-                  <TextInput label="Filter Field" placeholder="e.g. app_id" value={filterField}
-                    onChange={(e) => setFilterField(e.target.value)} />
-                  <TextInput label="Filter Value" placeholder="e.g. my-app-123" value={filterValue}
-                    onChange={(e) => setFilterValue(e.target.value)} />
-                </Group>
-              </Stack>
-            </Card>
-          </Stepper.Step>
+                    {selectedWarehouse?.config_fields.map((field) => (
+                      <DynamicField key={field.key} field={field}
+                        value={warehouseConfig[field.key] || ''}
+                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                    ))}
 
-          <Stepper.Step label="AI" description="LLM provider">
-            <Card withBorder p="lg" mt="md">
-              <Stack>
-                <Select
-                  label="LLM Provider" required
-                  data={[
-                    { value: 'claude', label: 'Claude (Anthropic)' },
-                    { value: 'openai', label: 'OpenAI' },
-                    { value: 'ollama', label: 'Ollama (Local)' },
-                    { value: 'vertex-ai', label: 'Vertex AI (coming soon)', disabled: true },
-                    { value: 'bedrock', label: 'AWS Bedrock (coming soon)', disabled: true },
-                  ]}
-                  value={llmProvider}
-                  onChange={(v) => setLlmProvider(v || 'claude')}
-                />
-                <TextInput label="Model" required value={llmModel}
-                  onChange={(e) => setLlmModel(e.target.value)} />
-                <Text size="xs" c="dimmed">
-                  API keys are configured via environment variables (LLM_API_KEY), not stored in the database.
-                </Text>
-              </Stack>
-            </Card>
-          </Stepper.Step>
+                    <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
+                    <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
+                    <Group grow>
+                      <TextInput label="Filter Field" placeholder="e.g. app_id" value={filterField}
+                        onChange={(e) => setFilterField(e.target.value)} />
+                      <TextInput label="Filter Value" placeholder="e.g. my-app-123" value={filterValue}
+                        onChange={(e) => setFilterValue(e.target.value)} />
+                    </Group>
+                  </Stack>
+                </Card>
+              </Stepper.Step>
 
-          <Stepper.Step label="Schedule" description="Discovery schedule">
-            <Card withBorder p="lg" mt="md">
-              <Stack>
-                <Switch
-                  label="Enable automatic discovery"
-                  checked={scheduleEnabled}
-                  onChange={(e) => setScheduleEnabled(e.currentTarget.checked)}
-                />
-                {scheduleEnabled && (
-                  <TextInput label="Cron Expression" value={scheduleCron}
-                    onChange={(e) => setScheduleCron(e.target.value)}
-                    description="Default: daily at 2 AM UTC" />
-                )}
-                <NumberInput label="Max Exploration Steps" value={maxSteps}
-                  onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
-              </Stack>
-            </Card>
-          </Stepper.Step>
+              <Stepper.Step label="AI" description="LLM provider">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Select label="LLM Provider" required placeholder="Select LLM provider"
+                      data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
+                      value={llmProvider}
+                      onChange={(v) => {
+                        setLlmProvider(v || '');
+                        const prov = llmProviders.find((p) => p.id === v);
+                        if (prov) setLlmConfig(buildDefaults(prov.config_fields));
+                      }} />
+                    {selectedLLM && (
+                      <Text size="xs" c="dimmed">{selectedLLM.description}</Text>
+                    )}
 
-          <Stepper.Completed>
-            <Card withBorder p="lg" mt="md">
-              <Stack>
-                <Title order={4}>Ready to create</Title>
-                <Text><strong>Name:</strong> {name}</Text>
-                <Text><strong>Domain:</strong> {domain} / {category}</Text>
-                <Text><strong>Warehouse:</strong> {warehouseProvider} / {warehouseDataset}</Text>
-                <Text><strong>LLM:</strong> {llmProvider} / {llmModel}</Text>
-                <Button onClick={handleCreate} loading={loading} fullWidth mt="md">
-                  Create Project
-                </Button>
-              </Stack>
-            </Card>
-          </Stepper.Completed>
-        </Stepper>
+                    {selectedLLM?.config_fields
+                      .filter((f) => f.key !== 'api_key')
+                      .map((field) => (
+                        <DynamicField key={field.key} field={field}
+                          value={llmConfig[field.key] || ''}
+                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                      ))}
 
-        <Group justify="flex-end">
-          {active > 0 && (
-            <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>
-          )}
-          {active < 4 && (
-            <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>
-              Next
-            </Button>
-          )}
-        </Group>
+                    <Text size="xs" c="dimmed">
+                      API keys are configured via environment variables (LLM_API_KEY), not stored in the database.
+                    </Text>
+                  </Stack>
+                </Card>
+              </Stepper.Step>
+
+              <Stepper.Step label="Schedule" description="Discovery schedule">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Switch label="Enable automatic discovery" checked={scheduleEnabled}
+                      onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
+                    {scheduleEnabled && (
+                      <TextInput label="Cron Expression" value={scheduleCron}
+                        onChange={(e) => setScheduleCron(e.target.value)} description="Default: daily at 2 AM UTC" />
+                    )}
+                    <NumberInput label="Max Exploration Steps" value={maxSteps}
+                      onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
+                  </Stack>
+                </Card>
+              </Stepper.Step>
+
+              <Stepper.Completed>
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Title order={4}>Ready to create</Title>
+                    <Text><strong>Name:</strong> {name}</Text>
+                    <Text><strong>Domain:</strong> {domain} / {category}</Text>
+                    <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouseConfig['dataset']}</Text>
+                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llmConfig['model']}</Text>
+                    <Button onClick={handleCreate} loading={loading} fullWidth mt="md">Create Project</Button>
+                  </Stack>
+                </Card>
+              </Stepper.Completed>
+            </Stepper>
+
+            <Group justify="flex-end">
+              {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>}
+              {active < 4 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
+            </Group>
+          </>
+        )}
       </Stack>
     </Shell>
   );
+}
+
+function DynamicField({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
+  return (
+    <TextInput
+      label={field.label}
+      required={field.required}
+      placeholder={field.placeholder || field.default}
+      description={field.description}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+function buildDefaults(fields: ConfigField[]): Record<string, string> {
+  const defaults: Record<string, string> = {};
+  for (const f of fields) {
+    if (f.default) defaults[f.key] = f.default;
+  }
+  return defaults;
 }

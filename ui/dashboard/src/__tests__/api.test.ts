@@ -23,6 +23,39 @@ function mockError(status: number, error: string) {
   });
 }
 
+// --- Providers ---
+
+describe('api.listLLMProviders', () => {
+  it('returns provider metadata', async () => {
+    const providers = [
+      { id: 'claude', name: 'Claude', description: 'test', config_fields: [{ key: 'api_key', label: 'API Key', required: true, type: 'string' }] },
+    ];
+    mockSuccess(providers);
+
+    const result = await api.listLLMProviders();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('claude');
+    expect(result[0].config_fields).toHaveLength(1);
+    expect(result[0].config_fields[0].key).toBe('api_key');
+  });
+});
+
+describe('api.listWarehouseProviders', () => {
+  it('returns provider metadata with config fields', async () => {
+    const providers = [
+      { id: 'bigquery', name: 'BigQuery', description: 'test', config_fields: [
+        { key: 'project_id', label: 'GCP Project', required: true, type: 'string' },
+        { key: 'dataset', label: 'Dataset', required: true, type: 'string' },
+      ]},
+    ];
+    mockSuccess(providers);
+
+    const result = await api.listWarehouseProviders();
+    expect(result[0].config_fields).toHaveLength(2);
+    expect(result[0].config_fields[0].key).toBe('project_id');
+  });
+});
+
 // --- Domains ---
 
 describe('api.listDomains', () => {

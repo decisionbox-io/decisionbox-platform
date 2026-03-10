@@ -13,9 +13,29 @@ type ProviderConfig map[string]string
 // Provider packages implement this and register it via Register().
 type ProviderFactory func(cfg ProviderConfig) (Provider, error)
 
+// ProviderMeta describes a provider for UI rendering.
+type ProviderMeta struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	ConfigFields []ConfigField `json:"config_fields"`
+}
+
+// ConfigField describes a single configuration field.
+type ConfigField struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Type        string `json:"type"`
+	Default     string `json:"default"`
+	Placeholder string `json:"placeholder"`
+}
+
 var (
 	providersMu sync.RWMutex
 	providers   = make(map[string]ProviderFactory)
+	providerMeta = make(map[string]ProviderMeta)
 )
 
 // Register makes a provider available by name.
@@ -67,6 +87,15 @@ func NewProvider(name string, cfg ProviderConfig) (Provider, error) {
 	return factory(cfg)
 }
 
+// RegisterWithMeta registers a provider with metadata for UI rendering.
+func RegisterWithMeta(name string, factory ProviderFactory, meta ProviderMeta) {
+	Register(name, factory)
+	providersMu.Lock()
+	meta.ID = name
+	providerMeta[name] = meta
+	providersMu.Unlock()
+}
+
 // RegisteredProviders returns the names of all registered providers.
 func RegisteredProviders() []string {
 	providersMu.RLock()
@@ -76,4 +105,15 @@ func RegisteredProviders() []string {
 		names = append(names, k)
 	}
 	return names
+}
+
+// RegisteredProvidersMeta returns metadata for all registered providers.
+func RegisteredProvidersMeta() []ProviderMeta {
+	providersMu.RLock()
+	defer providersMu.RUnlock()
+	metas := make([]ProviderMeta, 0, len(providerMeta))
+	for _, m := range providerMeta {
+		metas = append(metas, m)
+	}
+	return metas
 }

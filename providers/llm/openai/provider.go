@@ -27,7 +27,7 @@ import (
 const defaultBaseURL = "https://api.openai.com/v1"
 
 func init() {
-	gollm.Register("openai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	gollm.RegisterWithMeta("openai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		apiKey := cfg["api_key"]
 		if apiKey == "" {
 			return nil, fmt.Errorf("openai: api_key is required")
@@ -44,6 +44,14 @@ func init() {
 		}
 
 		return NewOpenAIProvider(apiKey, model, baseURL), nil
+	}, gollm.ProviderMeta{
+		Name:        "OpenAI",
+		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
+		ConfigFields: []gollm.ConfigField{
+			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-..."},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "gpt-4o"},
+			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
+		},
 	})
 }
 

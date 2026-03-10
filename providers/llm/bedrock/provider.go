@@ -21,7 +21,7 @@ import (
 )
 
 func init() {
-	gollm.Register("bedrock", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	gollm.RegisterWithMeta("bedrock", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		region := cfg["region"]
 		if region == "" {
 			region = "us-east-1"
@@ -35,6 +35,13 @@ func init() {
 			region: region,
 			model:  model,
 		}, nil
+	}, gollm.ProviderMeta{
+		Name:        "AWS Bedrock",
+		Description: "AWS-managed AI platform (Claude, Llama) — coming soon",
+		ConfigFields: []gollm.ConfigField{
+			{Key: "region", Label: "AWS Region", Type: "string", Default: "us-east-1"},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "anthropic.claude-sonnet-4-20250514-v1:0"},
+		},
 	})
 }
 

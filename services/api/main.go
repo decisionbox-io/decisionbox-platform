@@ -16,6 +16,16 @@ import (
 
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
+
+	// LLM provider registrations (for /api/v1/providers/llm listing)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+
+	// Warehouse provider registrations (for /api/v1/providers/warehouse listing)
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 )
 
 func main() {

@@ -159,9 +159,30 @@ export interface ProjectStatus {
   last_insights_count?: number;
 }
 
+export interface ProviderMeta {
+  id: string;
+  name: string;
+  description: string;
+  config_fields: ConfigField[];
+}
+
+export interface ConfigField {
+  key: string;
+  label: string;
+  description: string;
+  required: boolean;
+  type: string;
+  default: string;
+  placeholder: string;
+}
+
 // --- API Functions ---
 
 export const api = {
+  // Providers (dynamic — registered in Go via init())
+  listLLMProviders: () => request<ProviderMeta[]>('/api/v1/providers/llm'),
+  listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
+
   // Domains
   listDomains: () => request<Domain[]>('/api/v1/domains'),
   listCategories: (domain: string) => request<Category[]>(`/api/v1/domains/${domain}/categories`),

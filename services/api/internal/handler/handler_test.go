@@ -8,6 +8,12 @@ import (
 	"testing"
 
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 )
 
 func TestHealthCheck(t *testing.T) {
@@ -169,5 +175,109 @@ func TestDomainsHandler_GetAnalysisAreas(t *testing.T) {
 	areas := resp.Data.([]interface{})
 	if len(areas) != 5 {
 		t.Errorf("areas = %d, want 5 (3 base + 2 match3)", len(areas))
+	}
+}
+
+// --- Provider Endpoints ---
+
+func TestProvidersHandler_ListLLM(t *testing.T) {
+	h := NewProvidersHandler()
+	req := httptest.NewRequest("GET", "/api/v1/providers/llm", nil)
+	w := httptest.NewRecorder()
+
+	h.ListLLMProviders(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d", w.Code)
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	providers := resp.Data.([]interface{})
+	if len(providers) < 3 {
+		t.Errorf("LLM providers = %d, want >= 3 (claude, openai, ollama)", len(providers))
+	}
+
+	// Verify each provider has metadata
+	for _, p := range providers {
+		pm := p.(map[string]interface{})
+		if pm["id"] == nil || pm["id"] == "" {
+			t.Error("provider should have id")
+		}
+		if pm["name"] == nil || pm["name"] == "" {
+			t.Errorf("provider %v should have name", pm["id"])
+		}
+		if pm["config_fields"] == nil {
+			t.Errorf("provider %v should have config_fields", pm["id"])
+		}
+	}
+}
+
+func TestProvidersHandler_ListWarehouse(t *testing.T) {
+	h := NewProvidersHandler()
+	req := httptest.NewRequest("GET", "/api/v1/providers/warehouse", nil)
+	w := httptest.NewRecorder()
+
+	h.ListWarehouseProviders(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d", w.Code)
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	providers := resp.Data.([]interface{})
+	if len(providers) < 1 {
+		t.Errorf("warehouse providers = %d, want >= 1 (bigquery)", len(providers))
+	}
+
+	// Verify BigQuery has expected config fields
+	for _, p := range providers {
+		pm := p.(map[string]interface{})
+		if pm["id"] == "bigquery" {
+			fields := pm["config_fields"].([]interface{})
+			if len(fields) < 2 {
+				t.Errorf("bigquery should have >= 2 config fields, got %d", len(fields))
+			}
+			// Check field structure
+			field := fields[0].(map[string]interface{})
+			if field["key"] == nil {
+				t.Error("config field should have key")
+			}
+			if field["label"] == nil {
+				t.Error("config field should have label")
+			}
+		}
+	}
+}
+
+func TestProvidersHandler_LLMProviderHasConfigFields(t *testing.T) {
+	h := NewProvidersHandler()
+	req := httptest.NewRequest("GET", "/api/v1/providers/llm", nil)
+	w := httptest.NewRecorder()
+
+	h.ListLLMProviders(w, req)
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	providers := resp.Data.([]interface{})
+
+	// Find Claude and verify it has api_key + model fields
+	for _, p := range providers {
+		pm := p.(map[string]interface{})
+		if pm["id"] == "claude" {
+			fields := pm["config_fields"].([]interface{})
+			keys := make(map[string]bool)
+			for _, f := range fields {
+				fm := f.(map[string]interface{})
+				keys[fm["key"].(string)] = true
+			}
+			if !keys["api_key"] {
+				t.Error("claude should have api_key config field")
+			}
+			if !keys["model"] {
+				t.Error("claude should have model config field")
+			}
+		}
 	}
 }
