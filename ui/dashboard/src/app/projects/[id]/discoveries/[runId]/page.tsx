@@ -57,7 +57,7 @@ export default function DiscoveryDetailPage() {
   const sorted = [...filtered].sort((a, b) => {
     switch (sortBy) {
       case 'severity':
-        const sevDiff = (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9);
+        const sevDiff = (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
         if (sevDiff !== 0) return sevDiff;
         return b.risk_score - a.risk_score;
       case 'risk':
@@ -67,7 +67,7 @@ export default function DiscoveryDetailPage() {
       case 'affected':
         return (b.affected_count || 0) - (a.affected_count || 0);
       default:
-        return (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9);
+        return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
   });
   filtered = sorted;
