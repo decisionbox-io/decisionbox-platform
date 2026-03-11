@@ -298,6 +298,12 @@ export default function DiscoveryDetailPage() {
                               )}
                               {step.fixed && <Badge size="xs" color="yellow">auto-fixed</Badge>}
                               {step.error && <Badge size="xs" color="red">error</Badge>}
+                              {step.query && !step.error && (
+                                <FeedbackButtons projectId={id} discoveryId={runId} targetType="exploration_step"
+                                  targetId={String(step.step)}
+                                  feedback={feedbackMap[`exploration_step:${step.step}`]}
+                                  onUpdate={(fb) => handleFeedbackUpdate('exploration_step', String(step.step), fb)} />
+                              )}
                             </Group>
                           </Group>
                           {step.thinking && (

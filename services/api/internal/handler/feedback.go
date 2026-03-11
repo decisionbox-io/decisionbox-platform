@@ -45,8 +45,8 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.TargetType != "insight" && body.TargetType != "recommendation" {
-		writeError(w, http.StatusBadRequest, "target_type must be 'insight' or 'recommendation'")
+	if body.TargetType != "insight" && body.TargetType != "recommendation" && body.TargetType != "exploration_step" {
+		writeError(w, http.StatusBadRequest, "target_type must be 'insight', 'recommendation', or 'exploration_step'")
 		return
 	}
 

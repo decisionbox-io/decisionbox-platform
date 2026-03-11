@@ -8,7 +8,7 @@ import { api, Feedback } from '@/lib/api';
 interface FeedbackButtonsProps {
   projectId?: string;
   discoveryId: string;
-  targetType: 'insight' | 'recommendation';
+  targetType: 'insight' | 'recommendation' | 'exploration_step';
   targetId: string;
   feedback?: Feedback | null;
   onUpdate?: (feedback: Feedback | null) => void;

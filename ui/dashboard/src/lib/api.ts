@@ -275,7 +275,7 @@ export interface Feedback {
   id: string;
   project_id: string;
   discovery_id: string;
-  target_type: 'insight' | 'recommendation';
+  target_type: 'insight' | 'recommendation' | 'exploration_step';
   target_id: string;
   rating: 'like' | 'dislike';
   comment?: string;
