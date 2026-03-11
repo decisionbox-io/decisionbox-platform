@@ -122,8 +122,10 @@ func (c *Config) Validate() error {
 	if c.MongoDB.URI == "" {
 		return fmt.Errorf("MONGODB_URI is required")
 	}
-	if c.LLM.APIKey == "" {
-		return fmt.Errorf("LLM_API_KEY is required")
+	// API key required only for direct API providers (claude, openai)
+	// Vertex AI uses GCP credentials, Bedrock uses AWS credentials, Ollama needs no key
+	if c.LLM.APIKey == "" && (c.LLM.Provider == "claude" || c.LLM.Provider == "openai") {
+		return fmt.Errorf("LLM_API_KEY is required for %s provider", c.LLM.Provider)
 	}
 	if c.Warehouse.Provider == "bigquery" && c.Warehouse.ProjectID == "" {
 		return fmt.Errorf("WAREHOUSE_PROJECT_ID is required for BigQuery provider")

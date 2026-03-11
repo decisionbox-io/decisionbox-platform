@@ -76,6 +76,28 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
+// Fail marks a run as failed.
+func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	update := bson.M{
+		"$set": bson.M{
+			"status":       "failed",
+			"error":        errMsg,
+			"phase_detail": "Failed: " + errMsg,
+			"completed_at": now,
+			"updated_at":   now,
+		},
+	}
+
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
 // GetRunningByProject checks if there's an active run for a project.
 func (r *RunRepository) GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error) {
 	filter := bson.M{

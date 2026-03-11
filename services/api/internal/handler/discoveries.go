@@ -1,14 +1,23 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 )
+
+func getEnvOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
@@ -120,13 +129,25 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		"--run-id", runID,
 	)
 
+	// Inherit environment (warehouse/LLM config from docker-compose)
+	cmd.Env = append(cmd.Environ(),
+		"MONGODB_URI="+getEnvOrDefault("MONGODB_URI", "mongodb://localhost:27017"),
+		"MONGODB_DB="+getEnvOrDefault("MONGODB_DB", "decisionbox"),
+	)
+
 	if err := cmd.Start(); err != nil {
+		// Mark run as failed
+		h.runRepo.Fail(r.Context(), runID, "failed to start: "+err.Error())
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", err.Error()))
 		return
 	}
 
-	// Don't wait — let it run in the background
-	go cmd.Wait()
+	// Wait in background and mark failed if agent exits with error
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			h.runRepo.Fail(context.Background(), runID, "agent exited with error: "+err.Error())
+		}
+	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "started",
