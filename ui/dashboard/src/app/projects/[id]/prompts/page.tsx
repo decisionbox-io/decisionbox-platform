@@ -22,7 +22,7 @@ export default function PromptsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('exploration');
+  const [activeTab, setActiveTab] = useState<string>('base_context');
   const [addModalOpen, setAddModalOpen] = useState(false);
 
   // New area form
@@ -126,6 +126,7 @@ export default function PromptsPage() {
 
         <Tabs value={activeTab} onChange={(v) => setActiveTab(v || 'exploration')}>
           <Tabs.List>
+            <Tabs.Tab value="base_context">Base Context</Tabs.Tab>
             <Tabs.Tab value="exploration">Exploration</Tabs.Tab>
             <Tabs.Tab value="recommendations">Recommendations</Tabs.Tab>
             {areas.map(([areaId, area]) => (
@@ -139,6 +140,24 @@ export default function PromptsPage() {
             ))}
           </Tabs.List>
 
+          {/* Base Context */}
+          <Tabs.Panel value="base_context" pt="md">
+            <Card withBorder p="lg">
+              <Title order={4} mb="sm">Base Context (Shared)</Title>
+              <Text size="xs" c="dimmed" mb="md">
+                This context is prepended to ALL prompts — exploration, analysis, and recommendations.
+                Use it for shared instructions like project profile and previous discovery context.
+                Placeholders: {'{{PROFILE}}'}, {'{{PREVIOUS_CONTEXT}}'}
+              </Text>
+              <MDEditor
+                value={prompts.base_context}
+                onChange={(val) => setPrompts({ ...prompts, base_context: val || '' })}
+                height={400}
+                preview="edit"
+              />
+            </Card>
+          </Tabs.Panel>
+
           {/* Exploration Prompt */}
           <Tabs.Panel value="exploration" pt="md">
             <Card withBorder p="lg">
@@ -146,6 +165,7 @@ export default function PromptsPage() {
               <Text size="xs" c="dimmed" mb="md">
                 This prompt guides the AI agent during autonomous data exploration.
                 It tells the agent what to look for, how to write queries, and what rules to follow.
+                Base context is automatically prepended.
               </Text>
               <MDEditor
                 value={prompts.exploration}
@@ -209,7 +229,7 @@ export default function PromptsPage() {
 
                 <Text size="sm" fw={600} mb="xs">Analysis Prompt</Text>
                 <Text size="xs" c="dimmed" mb="sm">
-                  Placeholders: {'{{DATASET}}'}, {'{{PROFILE}}'}, {'{{QUERY_RESULTS}}'}, {'{{TOTAL_QUERIES}}'}
+                  Placeholders: {'{{DATASET}}'}, {'{{QUERY_RESULTS}}'}, {'{{TOTAL_QUERIES}}'}. Base context (profile + previous context) is prepended automatically.
                 </Text>
                 <MDEditor
                   value={area.prompt}

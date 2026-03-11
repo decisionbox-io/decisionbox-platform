@@ -205,6 +205,7 @@ export interface ProjectStatus {
 export interface ProjectPrompts {
   exploration: string;
   recommendations: string;
+  base_context: string;
   analysis_areas: Record<string, AnalysisAreaConfig>;
 }
 

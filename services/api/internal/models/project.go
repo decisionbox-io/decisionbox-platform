@@ -27,6 +27,7 @@ type Project struct {
 type ProjectPrompts struct {
 	Exploration     string                        `bson:"exploration" json:"exploration"`
 	Recommendations string                        `bson:"recommendations" json:"recommendations"`
+	BaseContext     string                        `bson:"base_context" json:"base_context"`
 	AnalysisAreas   map[string]AnalysisAreaConfig `bson:"analysis_areas" json:"analysis_areas"`
 }
 

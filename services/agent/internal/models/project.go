@@ -38,6 +38,9 @@ type ProjectPrompts struct {
 	// Recommendations is the prompt for generating actionable recommendations.
 	Recommendations string `bson:"recommendations" json:"recommendations"`
 
+	// BaseContext is shared context prepended to exploration, analysis, and recommendation prompts.
+	BaseContext string `bson:"base_context" json:"base_context"`
+
 	// AnalysisAreas maps area ID to its config + prompt.
 	// Includes both domain pack defaults and user-added custom areas.
 	AnalysisAreas map[string]AnalysisAreaConfig `bson:"analysis_areas" json:"analysis_areas"`

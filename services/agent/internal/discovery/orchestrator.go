@@ -240,21 +240,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	areasDesc := o.buildAnalysisAreasDescription(analysisAreas)
 
-	// Prepare exploration prompt with substitutions
-	explorationPrompt := prompts.Exploration
+	// Prepare base context (shared across all prompts — substituted once)
+	baseContext := prompts.BaseContext
+	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
+	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
+
+	// Prepare exploration prompt: base context + exploration-specific content
+	explorationPrompt := baseContext + "\n\n" + prompts.Exploration
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{DATASET}}", datasetsStr)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", string(schemaJSON))
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER}}", filterClause)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{PROFILE}}", profileStr)
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
-
-	// Prepare base context for analysis + recommendation prompts (substituted once, prepended to each)
-	baseContext := prompts.BaseContext
-	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
-	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
@@ -590,6 +588,11 @@ func (o *Orchestrator) resolvePrompts(dpPrompts domainpack.PromptTemplates, dpAr
 	// Override recommendations prompt
 	if o.projectPrompts.Recommendations != "" {
 		resolved.Recommendations = o.projectPrompts.Recommendations
+	}
+
+	// Override base context
+	if o.projectPrompts.BaseContext != "" {
+		resolved.BaseContext = o.projectPrompts.BaseContext
 	}
 
 	// Merge analysis areas: project overrides domain pack, custom areas added

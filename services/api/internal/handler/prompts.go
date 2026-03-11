@@ -26,6 +26,7 @@ func SeedProjectPrompts(project *models.Project) {
 	prompts := &models.ProjectPrompts{
 		Exploration:     templates.Exploration,
 		Recommendations: templates.Recommendations,
+		BaseContext:     templates.BaseContext,
 		AnalysisAreas:   make(map[string]models.AnalysisAreaConfig),
 	}
 
