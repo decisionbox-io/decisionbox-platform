@@ -144,6 +144,12 @@ func (m *MockWarehouseProvider) SQLFixPrompt() string {
 	return "Fix this {{ORIGINAL_SQL}} query. Error: {{ERROR_MESSAGE}}"
 }
 
+func (m *MockWarehouseProvider) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
+	return m.ListTables(ctx)
+}
+func (m *MockWarehouseProvider) GetTableSchemaInDataset(ctx context.Context, dataset, table string) (*gowarehouse.TableSchema, error) {
+	return m.GetTableSchema(ctx, table)
+}
 func (m *MockWarehouseProvider) ValidateReadOnly(ctx context.Context) error { return nil }
 func (m *MockWarehouseProvider) HealthCheck(ctx context.Context) error { return nil }
 func (m *MockWarehouseProvider) Close() error                         { return nil }

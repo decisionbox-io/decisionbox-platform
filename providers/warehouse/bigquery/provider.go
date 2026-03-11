@@ -174,6 +174,49 @@ func (p *BigQueryProvider) GetTableSchema(ctx context.Context, table string) (*g
 	return schema, nil
 }
 
+func (p *BigQueryProvider) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
+	ds := p.client.Dataset(dataset)
+	it := ds.Tables(ctx)
+
+	var tables []string
+	for {
+		table, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("bigquery: failed to list tables in %s: %w", dataset, err)
+		}
+		tables = append(tables, table.TableID)
+	}
+	return tables, nil
+}
+
+func (p *BigQueryProvider) GetTableSchemaInDataset(ctx context.Context, dataset, table string) (*gowarehouse.TableSchema, error) {
+	t := p.client.Dataset(dataset).Table(table)
+	metadata, err := t.Metadata(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("bigquery: failed to get metadata for %s.%s: %w", dataset, table, err)
+	}
+
+	schema := &gowarehouse.TableSchema{
+		Name:     table,
+		RowCount: int64(metadata.NumRows),
+	}
+
+	if metadata.Schema != nil {
+		for _, field := range metadata.Schema {
+			schema.Columns = append(schema.Columns, gowarehouse.ColumnSchema{
+				Name:     field.Name,
+				Type:     string(field.Type),
+				Nullable: !field.Required,
+			})
+		}
+	}
+
+	return schema, nil
+}
+
 func (p *BigQueryProvider) GetDataset() string {
 	return p.dataset
 }

@@ -51,45 +51,20 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	for _, dataset := range s.datasets {
 		logger.WithField("dataset", dataset).Info("Discovering schemas for dataset")
 
-		// Query tables in this dataset using INFORMATION_SCHEMA
-		tablesQuery := fmt.Sprintf(
-			"SELECT table_name FROM `%s.INFORMATION_SCHEMA.TABLES` WHERE table_type = 'BASE TABLE'",
-			dataset,
-		)
-
-		result, err := s.warehouse.Query(ctx, tablesQuery, nil)
+		// Use provider's multi-dataset method
+		tables, err := s.warehouse.ListTablesInDataset(ctx, dataset)
 		if err != nil {
-			// Fallback: try using the provider's ListTables for the default dataset
-			logger.WithFields(logger.Fields{"dataset": dataset, "error": err.Error()}).Warn("INFORMATION_SCHEMA query failed, trying ListTables fallback")
-			tables, listErr := s.warehouse.ListTables(ctx)
-			if listErr != nil {
-				logger.WithFields(logger.Fields{"dataset": dataset, "error": listErr.Error()}).Warn("Failed to list tables, skipping dataset")
-				continue
-			}
-			for _, tableName := range tables {
-				schema, schemaErr := s.discoverTable(ctx, dataset, tableName)
-				if schemaErr != nil {
-					continue
-				}
-				key := fmt.Sprintf("%s.%s", dataset, tableName)
-				allSchemas[key] = *schema
-			}
+			logger.WithFields(logger.Fields{"dataset": dataset, "error": err.Error()}).Warn("Failed to list tables, skipping dataset")
 			continue
 		}
 
-		for _, row := range result.Rows {
-			tableName, ok := row["table_name"].(string)
-			if !ok {
-				continue
-			}
-
+		for _, tableName := range tables {
 			schema, err := s.discoverTable(ctx, dataset, tableName)
 			if err != nil {
 				logger.WithFields(logger.Fields{"table": tableName, "dataset": dataset, "error": err.Error()}).Warn("Failed to discover table, skipping")
 				continue
 			}
 
-			// Key includes dataset: "dataset.table"
 			key := fmt.Sprintf("%s.%s", dataset, tableName)
 			allSchemas[key] = *schema
 		}
@@ -105,23 +80,24 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	return allSchemas, nil
 }
 
-// discoverTable discovers the schema for a specific table in a dataset.
+// discoverTable discovers the schema for a specific table using the provider.
 func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName string) (*models.TableSchema, error) {
 	qualifiedName := fmt.Sprintf("%s.%s", dataset, tableName)
 
+	// Use provider's multi-dataset schema method
+	whSchema, err := s.warehouse.GetTableSchemaInDataset(ctx, dataset, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("get schema: %w", err)
+	}
+
 	schema := &models.TableSchema{
 		TableName:    qualifiedName,
-		Columns:      make([]models.ColumnInfo, 0),
+		RowCount:     whSchema.RowCount,
+		Columns:      make([]models.ColumnInfo, 0, len(whSchema.Columns)),
 		KeyColumns:   make([]string, 0),
 		Metrics:      make([]string, 0),
 		Dimensions:   make([]string, 0),
 		DiscoveredAt: time.Now(),
-	}
-
-	// Get table schema via provider (use just tableName, provider knows the dataset)
-	whSchema, err := s.warehouse.GetTableSchema(ctx, tableName)
-	if err != nil {
-		return nil, fmt.Errorf("get schema: %w", err)
 	}
 
 	for _, col := range whSchema.Columns {
@@ -134,8 +110,6 @@ func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName 
 		schema.Columns = append(schema.Columns, colInfo)
 		categorizeColumn(&colInfo, schema)
 	}
-
-	schema.RowCount = whSchema.RowCount
 
 	// Get sample data
 	sampleData, err := s.getSampleData(ctx, dataset, tableName)

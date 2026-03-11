@@ -13,13 +13,20 @@ type Provider interface {
 	// Query executes a SQL query and returns results.
 	Query(ctx context.Context, query string, params map[string]interface{}) (*QueryResult, error)
 
-	// ListTables returns all table names in the configured dataset/schema.
+	// ListTables returns all table names in the configured default dataset/schema.
 	ListTables(ctx context.Context) ([]string, error)
 
-	// GetTableSchema returns schema metadata for a specific table.
+	// ListTablesInDataset returns all table names in a specific dataset/schema.
+	// For providers that don't support multiple datasets, this can delegate to ListTables.
+	ListTablesInDataset(ctx context.Context, dataset string) ([]string, error)
+
+	// GetTableSchema returns schema metadata for a table in the default dataset.
 	GetTableSchema(ctx context.Context, table string) (*TableSchema, error)
 
-	// GetDataset returns the dataset/schema name being queried.
+	// GetTableSchemaInDataset returns schema metadata for a table in a specific dataset.
+	GetTableSchemaInDataset(ctx context.Context, dataset, table string) (*TableSchema, error)
+
+	// GetDataset returns the default dataset/schema name.
 	GetDataset() string
 
 	// SQLDialect returns the SQL dialect name for this warehouse.
