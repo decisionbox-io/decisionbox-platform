@@ -10,6 +10,7 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
 // EstimateOptions configures a cost estimation.
@@ -33,8 +34,15 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 		if o.filterField != "" && o.filterValue != "" {
 			filterClause = fmt.Sprintf("WHERE %s = '%s'", o.filterField, o.filterValue)
 		}
+		executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
+			Warehouse:   o.warehouse,
+			MaxRetries:  2,
+			FilterField: o.filterField,
+			FilterValue: o.filterValue,
+		})
 		o.schemaDiscovery = NewSchemaDiscovery(SchemaDiscoveryOptions{
 			Warehouse: o.warehouse,
+			Executor:  executor,
 			ProjectID: o.projectID,
 			Datasets:  o.datasets,
 			Filter:    filterClause,
