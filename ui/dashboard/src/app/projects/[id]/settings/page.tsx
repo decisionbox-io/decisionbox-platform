@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Group, Loader, NumberInput, Select, Stack, Switch, Text, TextInput, Textarea, Title,
+  Alert, Button, Card, Checkbox, Group, Loader, MultiSelect, NumberInput, Select,
+  Stack, Switch, Text, TextInput, Textarea, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconArrowLeft, IconCheck } from '@tabler/icons-react';
@@ -33,6 +34,8 @@ export default function ProjectSettingsPage() {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
+  const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
+  const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -61,6 +64,12 @@ export default function ProjectSettingsPage() {
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
+        setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
+
+        // Load profile schema for this domain/category
+        api.getProfileSchema(proj.domain, proj.category)
+          .then(setProfileSchema)
+          .catch(() => {});
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -86,6 +95,7 @@ export default function ProjectSettingsPage() {
         },
         llm: { provider: llmProvider, model: llmModel },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
+        profile,
       });
 
       notifications.show({ title: 'Saved', message: 'Project settings updated', color: 'green' });
@@ -179,6 +189,17 @@ export default function ProjectSettingsPage() {
           </Stack>
         </Card>
 
+        {/* Game Profile */}
+        {profileSchema && (
+          <Card withBorder p="lg">
+            <Title order={4} mb="xs">Game Profile</Title>
+            <Text size="xs" c="dimmed" mb="md">
+              Help the AI understand your game. This context improves insight quality.
+            </Text>
+            <ProfileEditor schema={profileSchema} profile={profile} onChange={setProfile} />
+          </Card>
+        )}
+
         <Button onClick={handleSave} loading={saving} leftSection={<IconCheck size={16} />} fullWidth>
           Save Settings
         </Button>
@@ -192,5 +213,109 @@ function DynamicField({ field, value, onChange }: { field: ConfigField; value: s
     <TextInput label={field.label} required={field.required}
       placeholder={field.placeholder || field.default} description={field.description}
       value={value} onChange={(e) => onChange(e.target.value)} />
+  );
+}
+
+// Renders profile fields from JSON Schema sections (basic_info, gameplay, monetization, kpis)
+function ProfileEditor({ schema, profile, onChange }: {
+  schema: Record<string, unknown>;
+  profile: Record<string, Record<string, unknown>>;
+  onChange: (profile: Record<string, Record<string, unknown>>) => void;
+}) {
+  const properties = (schema as { properties?: Record<string, unknown> }).properties || {};
+
+  const updateField = (section: string, field: string, value: unknown) => {
+    onChange({
+      ...profile,
+      [section]: { ...(profile[section] || {}), [field]: value },
+    });
+  };
+
+  const updateSection = (section: string, value: unknown) => {
+    onChange({ ...profile, [section]: value as Record<string, unknown> });
+  };
+
+  return (
+    <Stack gap="md">
+      {Object.entries(properties).map(([sectionKey, sectionSchema]) => {
+        const sec = sectionSchema as {
+          title?: string; type?: string;
+          properties?: Record<string, unknown>;
+          items?: Record<string, unknown>;
+        };
+
+        // Array sections (boosters, iap_packages, etc.) — render as JSON editor
+        if (sec.type === 'array') {
+          const currentVal = profile[sectionKey];
+          const jsonStr = currentVal ? JSON.stringify(currentVal, null, 2) : '[]';
+          return (
+            <div key={sectionKey}>
+              <Text size="sm" fw={600} mb="xs">{sec.title || sectionKey}</Text>
+              <Textarea minRows={4} maxRows={12} autosize size="xs"
+                description="JSON array — each item is an object with the fields shown in the schema"
+                value={jsonStr}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value);
+                    updateSection(sectionKey, parsed);
+                  } catch { /* ignore parse errors while typing */ }
+                }}
+                styles={{ input: { fontFamily: 'monospace', fontSize: 11 } }} />
+            </div>
+          );
+        }
+
+        // Object sections — render individual fields
+        if (!sec.properties) return null;
+        return (
+          <div key={sectionKey}>
+            <Text size="sm" fw={600} mb="xs">{sec.title || sectionKey}</Text>
+            <Stack gap="xs">
+              {Object.entries(sec.properties).map(([fieldKey, fieldSchema]) => {
+                const fs = fieldSchema as {
+                  type?: string; title?: string; description?: string;
+                  enum?: string[]; items?: { enum?: string[] };
+                };
+                const value = (profile[sectionKey] || {})[fieldKey];
+
+                if (fs.type === 'string' && fs.enum) {
+                  return (
+                    <Select key={fieldKey} label={fs.title || fieldKey} description={fs.description}
+                      data={fs.enum} value={(value as string) || null} clearable size="xs"
+                      onChange={(v) => updateField(sectionKey, fieldKey, v || '')} />
+                  );
+                }
+                if (fs.type === 'array' && fs.items?.enum) {
+                  return (
+                    <MultiSelect key={fieldKey} label={fs.title || fieldKey} description={fs.description}
+                      data={fs.items.enum} value={(value as string[]) || []} size="xs"
+                      onChange={(v) => updateField(sectionKey, fieldKey, v)} />
+                  );
+                }
+                if (fs.type === 'boolean') {
+                  return (
+                    <Checkbox key={fieldKey} label={fs.title || fieldKey} description={fs.description}
+                      checked={!!value} size="xs"
+                      onChange={(e) => updateField(sectionKey, fieldKey, e.currentTarget.checked)} />
+                  );
+                }
+                if (fs.type === 'number' || fs.type === 'integer') {
+                  return (
+                    <NumberInput key={fieldKey} label={fs.title || fieldKey} description={fs.description}
+                      value={(value as number) ?? ''} size="xs"
+                      onChange={(v) => updateField(sectionKey, fieldKey, v)} />
+                  );
+                }
+                return (
+                  <TextInput key={fieldKey} label={fs.title || fieldKey} description={fs.description}
+                    value={(value as string) || ''} size="xs"
+                    onChange={(e) => updateField(sectionKey, fieldKey, e.target.value)} />
+                );
+              })}
+            </Stack>
+          </div>
+        );
+      })}
+    </Stack>
   );
 }

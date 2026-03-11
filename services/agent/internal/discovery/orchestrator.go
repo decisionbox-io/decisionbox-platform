@@ -220,7 +220,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// Build context for prompts
 	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
-	profileJSON, _ := json.MarshalIndent(o.profile, "", "  ")
+	profileStr := "No project profile configured. Analyze the data without game-specific context."
+	if o.profile != nil && len(o.profile) > 0 {
+		pj, _ := json.MarshalIndent(o.profile, "", "  ")
+		profileStr = string(pj)
+	}
 	areasDesc := o.buildAnalysisAreasDescription(analysisAreas)
 
 	// Prepare exploration prompt with substitutions
@@ -230,7 +234,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER}}", filterClause)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{PROFILE}}", string(profileJSON))
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{PROFILE}}", profileStr)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{PREVIOUS_CONTEXT}}", o.buildPreviousContext(projectCtx))
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 
@@ -309,7 +313,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		prompt := areaPrompt
 		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantQueries)))
-		prompt = strings.ReplaceAll(prompt, "{{PROFILE}}", string(profileJSON))
+		prompt = strings.ReplaceAll(prompt, "{{PROFILE}}", profileStr)
 		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", string(queryResultsJSON))
 
 		// Create analysis step to capture full dialog
@@ -388,7 +392,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Phase 5: Generate recommendations
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
-	recommendations, recStep := o.generateRecommendations(ctx, prompts.Recommendations, allInsights, profileJSON, datasetsStr)
+	recommendations, recStep := o.generateRecommendations(ctx, prompts.Recommendations, allInsights, profileStr, datasetsStr)
 
 	// Validate recommendation segment sizes
 	var recValidationResults []models.ValidationResult
@@ -484,7 +488,7 @@ func (o *Orchestrator) generateRecommendations(
 	ctx context.Context,
 	promptTemplate string,
 	insights []models.Insight,
-	profileJSON []byte,
+	profileStr string,
 	datasetsStr string,
 ) ([]models.Recommendation, *models.RecommendationStep) {
 	step := &models.RecommendationStep{
@@ -512,7 +516,7 @@ func (o *Orchestrator) generateRecommendations(
 	prompt := promptTemplate
 	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", summary)
-	prompt = strings.ReplaceAll(prompt, "{{PROFILE}}", string(profileJSON))
+	prompt = strings.ReplaceAll(prompt, "{{PROFILE}}", profileStr)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", string(insightsJSON))
 
 	step.Prompt = prompt

@@ -438,45 +438,15 @@ func (e *ExplorationEngine) formatResults(data []map[string]interface{}) string 
 	return string(jsonBytes)
 }
 
-// buildInitialMessage builds the first message to Claude
+// buildInitialMessage builds the first message to Claude.
+// The system prompt already contains schema, filter rules, analysis areas, and profile.
+// This message just kicks off the exploration loop.
 func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContext) string {
 	var msg strings.Builder
 
-	msg.WriteString("# Data Discovery Task\n\n")
-
-	msg.WriteString("## App Information\n")
-	msg.WriteString(fmt.Sprintf("- **App ID**: %s\n", explorationCtx.ProjectID))
-	msg.WriteString(fmt.Sprintf("- **Dataset**: %s\n\n", explorationCtx.Dataset))
-
-	if explorationCtx.InitialPrompt != "" {
-		msg.WriteString("## Available Tables and Schema\n")
-		msg.WriteString(explorationCtx.InitialPrompt)
-		msg.WriteString("\n\n")
-	}
-
-
-	msg.WriteString("## Your Task\n")
-	msg.WriteString("Explore this app's data to discover:\n")
-	msg.WriteString("1. Insights based on the analysis areas described in the system prompt\n")
-	msg.WriteString("4. **Difficulty issues** - Problem levels or features\n\n")
-
-	msg.WriteString("## Response Format\n")
-	msg.WriteString("For each step, respond with JSON in this format:\n")
-	msg.WriteString("```json\n")
-	msg.WriteString("{\n")
-	msg.WriteString("  \"action\": \"query_data\",  // or \"analyze_pattern\", \"complete\"\n")
-	msg.WriteString("  \"thinking\": \"I need to check retention rates\",\n")
-	msg.WriteString("  \"query_purpose\": \"Analyze 7-day retention\",\n")
-	msg.WriteString("  \"query\": \"SELECT ...\"\n")
-	msg.WriteString("}\n")
-	msg.WriteString("```\n\n")
-
-	msg.WriteString("**Important**:\n")
-	msg.WriteString("- Follow the query rules in the system prompt above\n")
-	msg.WriteString("- You have up to 100 steps - use them wisely\n")
-	msg.WriteString("- When you've found valuable insights, use action \"complete\"\n\n")
-
-	msg.WriteString("Begin your exploration!\n")
+	msg.WriteString("Begin your data exploration.\n\n")
+	msg.WriteString(fmt.Sprintf("You have up to %d exploration steps. ", e.maxSteps))
+	msg.WriteString("Follow the rules and format described in the system prompt.\n")
 
 	return msg.String()
 }
