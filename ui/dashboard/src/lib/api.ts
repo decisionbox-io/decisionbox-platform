@@ -74,7 +74,7 @@ export interface Project {
 export interface WarehouseConfig {
   provider: string;
   project_id: string;
-  dataset: string;
+  datasets: string[];
   location: string;
   filter_field: string;
   filter_value: string;
@@ -160,6 +160,23 @@ export interface ProjectStatus {
   };
 }
 
+export interface ProjectPrompts {
+  exploration: string;
+  recommendations: string;
+  analysis_areas: Record<string, AnalysisAreaConfig>;
+}
+
+export interface AnalysisAreaConfig {
+  name: string;
+  description: string;
+  keywords: string[];
+  prompt: string;
+  is_base: boolean;
+  is_custom: boolean;
+  priority: number;
+  enabled: boolean;
+}
+
 export interface ProviderMeta {
   id: string;
   name: string;
@@ -237,9 +254,18 @@ export const api = {
   deleteProject: (id: string) =>
     request<{ deleted: string }>(`/api/v1/projects/${id}`, { method: 'DELETE' }),
 
+  // Prompts
+  getPrompts: (projectId: string) =>
+    request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`),
+  updatePrompts: (projectId: string, prompts: ProjectPrompts) =>
+    request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`, { method: 'PUT', body: JSON.stringify(prompts) }),
+
   // Discovery
-  triggerDiscovery: (projectId: string) =>
-    request<{ status: string; message: string; run_id?: string }>(`/api/v1/projects/${projectId}/discover`, { method: 'POST' }),
+  triggerDiscovery: (projectId: string, areas?: string[]) =>
+    request<{ status: string; message: string; run_id?: string }>(`/api/v1/projects/${projectId}/discover`, {
+      method: 'POST',
+      body: areas && areas.length > 0 ? JSON.stringify({ areas }) : undefined,
+    }),
   getRun: (runId: string) =>
     request<DiscoveryRunStatus>(`/api/v1/runs/${runId}`),
   cancelRun: (runId: string) =>

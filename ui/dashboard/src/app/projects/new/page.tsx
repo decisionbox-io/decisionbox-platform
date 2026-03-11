@@ -86,7 +86,7 @@ export default function NewProjectPage() {
         warehouse: {
           provider: warehouseProvider,
           project_id: warehouseConfig['project_id'] || '',
-          dataset: warehouseConfig['dataset'] || '',
+          datasets: (warehouseConfig['dataset'] || '').split(',').map((d) => d.trim()).filter(Boolean),
           location: warehouseConfig['location'] || '',
           filter_field: filterField,
           filter_value: filterValue,

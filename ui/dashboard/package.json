@@ -21,6 +21,7 @@
     "@mantine/notifications": "^8.3.16",
     "@mantine/nprogress": "^8.3.16",
     "@tabler/icons-react": "^3.40.0",
+    "@uiw/react-md-editor": "^4.0.11",
     "dayjs": "^1.11.19",
     "next": "16.1.6",
     "react": "19.2.3",

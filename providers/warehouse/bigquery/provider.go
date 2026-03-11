@@ -37,7 +37,7 @@ func init() {
 		Description: "Google Cloud data warehouse for analytics",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
-			{Key: "dataset", Label: "Dataset", Required: true, Type: "string", Placeholder: "my_analytics_dataset"},
+			{Key: "dataset", Label: "Datasets", Description: "Comma-separated dataset names", Required: true, Type: "string", Placeholder: "events_prod, features_prod"},
 			{Key: "location", Label: "Location", Type: "string", Default: "US", Placeholder: "US"},
 		},
 	})

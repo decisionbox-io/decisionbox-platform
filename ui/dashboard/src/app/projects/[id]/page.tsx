@@ -3,13 +3,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Badge, Button, Card, Code, Grid, Group, Loader, Progress, ScrollArea, Stack, Tabs, Text, Timeline, Title,
+  Badge, Button, Card, Checkbox, Code, Grid, Group, Loader, Menu, Progress, ScrollArea, Stack, Tabs, Text, Timeline, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
-  IconAlertTriangle, IconBulb, IconChartBar, IconCheck, IconDatabase,
-  IconPlayerPlay, IconSearch, IconTrendingUp, IconX,
+  IconAlertTriangle, IconBulb, IconChartBar, IconCheck, IconChevronDown, IconDatabase,
+  IconEdit, IconPlayerPlay, IconSearch, IconSettings, IconTrendingUp, IconX,
 } from '@tabler/icons-react';
+import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { api, DiscoveryResult, DiscoveryRunStatus, Insight, Project, Recommendation, RunStep } from '@/lib/api';
 
@@ -24,12 +25,18 @@ export default function ProjectPage() {
   const [run, setRun] = useState<DiscoveryRunStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
+  const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
+  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
 
-  // Load project and latest discovery
+  // Load project, latest discovery, and analysis areas
   useEffect(() => {
     Promise.all([
       api.getProject(id).then(setProject),
       api.getLatestDiscovery(id).then(setDiscovery).catch(() => null),
+      api.getProject(id).then((p) =>
+        api.getAnalysisAreas(p.domain, p.category)
+          .then((areas) => setAnalysisAreas(areas.map((a) => ({ id: a.id, name: a.name }))))
+      ).catch(() => []),
     ])
       .catch((e) => notifications.show({ title: 'Error', message: e.message, color: 'red' }))
       .finally(() => setLoading(false));
@@ -54,20 +61,23 @@ export default function ProjectPage() {
   // Also poll once on mount to pick up any running discovery
   useEffect(() => { pollStatus(); }, [pollStatus]);
 
-  const handleTrigger = async () => {
+  const handleTrigger = async (areas?: string[]) => {
     setTriggering(true);
     try {
-      const result = await api.triggerDiscovery(id);
+      const result = await api.triggerDiscovery(id, areas);
       if (result.run_id) {
-        // Start polling
         const newRun = await api.getRun(result.run_id);
         setRun(newRun);
       }
-      notifications.show({ title: 'Discovery started', message: result.message, color: 'blue' });
+      const msg = areas && areas.length > 0
+        ? `Running: ${areas.join(', ')}`
+        : 'Full discovery started';
+      notifications.show({ title: 'Discovery started', message: msg, color: 'blue' });
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setTriggering(false);
+      setSelectedAreas([]);
     }
   };
 
@@ -96,14 +106,53 @@ export default function ProjectPage() {
               <Badge variant="light" color="blue">{project.category}</Badge>
             </Group>
           </div>
-          <Button
-            leftSection={<IconPlayerPlay size={16} />}
-            onClick={handleTrigger}
-            loading={triggering}
-            disabled={!!isRunning}
-          >
-            {isRunning ? 'Running...' : 'Run Discovery'}
-          </Button>
+          <Group>
+            <Button variant="light" component={Link} href={`/projects/${id}/prompts`}
+              leftSection={<IconEdit size={16} />}>Prompts</Button>
+            <Button variant="light" component={Link} href={`/projects/${id}/settings`}
+              leftSection={<IconSettings size={16} />}>Settings</Button>
+
+            {/* Run Discovery — full or selective */}
+            <Menu shadow="md" width={250} disabled={!!isRunning}>
+              <Menu.Target>
+                <Button leftSection={<IconPlayerPlay size={16} />}
+                  rightSection={<IconChevronDown size={14} />}
+                  loading={triggering} disabled={!!isRunning}>
+                  {isRunning ? 'Running...' : 'Run Discovery'}
+                </Button>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item onClick={() => handleTrigger()}>
+                  Run All Areas
+                </Menu.Item>
+                <Menu.Divider />
+                <Menu.Label>Run specific areas</Menu.Label>
+                {analysisAreas.map((area) => (
+                  <Menu.Item key={area.id}>
+                    <Checkbox
+                      label={area.name}
+                      checked={selectedAreas.includes(area.id)}
+                      onChange={(e) => {
+                        if (e.currentTarget.checked) {
+                          setSelectedAreas([...selectedAreas, area.id]);
+                        } else {
+                          setSelectedAreas(selectedAreas.filter((a) => a !== area.id));
+                        }
+                      }}
+                    />
+                  </Menu.Item>
+                ))}
+                {selectedAreas.length > 0 && (
+                  <>
+                    <Menu.Divider />
+                    <Menu.Item color="blue" onClick={() => handleTrigger(selectedAreas)}>
+                      Run Selected ({selectedAreas.length})
+                    </Menu.Item>
+                  </>
+                )}
+              </Menu.Dropdown>
+            </Menu>
+          </Group>
         </Group>
 
         {/* Live Run Status */}
