@@ -3,10 +3,11 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Accordion, Badge, Button, Card, Chip, Code, Grid, Group, Loader, Stack, Text, Title,
+  Accordion, Badge, Button, Card, Chip, Code, Grid, Group, Loader, Select, Stack, Text, Title,
 } from '@mantine/core';
 import {
-  IconAlertTriangle, IconArrowLeft, IconBulb, IconDatabase, IconSearch, IconTrendingUp,
+  IconAlertTriangle, IconArrowLeft, IconBulb, IconDatabase, IconSearch,
+  IconSortDescending, IconTrendingUp,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
@@ -24,9 +25,10 @@ export default function DiscoveryDetailPage() {
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Filters & sorting
   const [areaFilter, setAreaFilter] = useState<string[]>([]);
   const [severityFilter, setSeverityFilter] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState<string>('severity');
 
   useEffect(() => {
     api.getDiscoveryById(runId)
@@ -51,12 +53,24 @@ export default function DiscoveryDetailPage() {
     filtered = filtered.filter((i) => severityFilter.includes(i.severity));
   }
 
-  // Sort by severity then risk score
-  filtered.sort((a, b) => {
-    const sevDiff = (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9);
-    if (sevDiff !== 0) return sevDiff;
-    return b.risk_score - a.risk_score;
+  // Sort insights
+  const sorted = [...filtered].sort((a, b) => {
+    switch (sortBy) {
+      case 'severity':
+        const sevDiff = (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9);
+        if (sevDiff !== 0) return sevDiff;
+        return b.risk_score - a.risk_score;
+      case 'risk':
+        return b.risk_score - a.risk_score;
+      case 'confidence':
+        return b.confidence - a.confidence;
+      case 'affected':
+        return (b.affected_count || 0) - (a.affected_count || 0);
+      default:
+        return (severityOrder[a.severity] || 9) - (severityOrder[b.severity] || 9);
+    }
   });
+  filtered = sorted;
 
   const durationSec = discovery.duration ? Math.round(discovery.duration / 1000000000) : 0;
 
@@ -148,6 +162,17 @@ export default function DiscoveryDetailPage() {
                   </Group>
                 </Chip.Group>
               </div>
+              <div>
+                <Text size="xs" fw={600} mb={4}>Sort by</Text>
+                <Select size="xs" w={140} value={sortBy} onChange={(v) => setSortBy(v || 'severity')}
+                  leftSection={<IconSortDescending size={14} />}
+                  data={[
+                    { value: 'severity', label: 'Severity' },
+                    { value: 'risk', label: 'Risk Score' },
+                    { value: 'confidence', label: 'Confidence' },
+                    { value: 'affected', label: 'Affected Count' },
+                  ]} />
+              </div>
               {(areaFilter.length > 0 || severityFilter.length > 0) && (
                 <Button variant="subtle" size="xs" onClick={() => { setAreaFilter([]); setSeverityFilter([]); }}>
                   Clear filters
@@ -206,7 +231,7 @@ export default function DiscoveryDetailPage() {
               Recommendations ({discovery.recommendations.length})
             </Title>
             <Stack gap="sm">
-              {discovery.recommendations
+              {[...discovery.recommendations]
                 .sort((a, b) => b.priority - a.priority)
                 .map((rec, idx) => (
                   <RecommendationCard key={idx} rec={rec} />

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
   Badge, Button, Card, Checkbox, Code, Collapse, Grid, Group, Loader, Menu, NumberInput,
@@ -27,6 +27,7 @@ export default function ProjectPage() {
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [maxSteps, setMaxSteps] = useState(100);
+  const dismissedRunId = useRef<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -46,6 +47,8 @@ export default function ProjectPage() {
       const status = await api.getProjectStatus(id);
       if (status?.run) {
         const newRun = status.run as unknown as DiscoveryRunStatus;
+        // Don't bring back a dismissed run
+        if (dismissedRunId.current === newRun.id) return;
         const wasRunning = run && (run.status === 'running' || run.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         setRun(newRun);
@@ -59,13 +62,13 @@ export default function ProjectPage() {
 
   useEffect(() => {
     if (!run) return;
-    // Keep polling while running, and briefly after completion to catch final state
     if (run.status !== 'running' && run.status !== 'pending') return;
     const interval = setInterval(pollStatus, 2000);
     return () => clearInterval(interval);
   }, [run, pollStatus]);
 
-  useEffect(() => { pollStatus(); }, [pollStatus]);
+  // Initial poll on mount
+  useEffect(() => { pollStatus(); }, []);
 
   const handleTrigger = async (areas?: string[]) => {
     setTriggering(true);
@@ -159,7 +162,7 @@ export default function ProjectPage() {
         {showRunCard && run && (
           <LiveRunStatus run={run} onCancel={async () => {
             if (justFinished) {
-              // Dismiss completed card
+              dismissedRunId.current = run.id;
               setRun(null);
               return;
             }
@@ -262,6 +265,17 @@ export default function ProjectPage() {
 
 function LiveRunStatus({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
   const steps = run.steps || [];
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledUp = useRef(false);
+  const prevStepCount = useRef(0);
+
+  // Auto-scroll only when new steps arrive and user hasn't scrolled up
+  useEffect(() => {
+    if (steps.length > prevStepCount.current && !userScrolledUp.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+    prevStepCount.current = steps.length;
+  }, [steps.length]);
   const phaseLabel: Record<string, string> = {
     init: 'Initializing', schema_discovery: 'Discovering Schema',
     exploration: 'Exploring Data', analysis: 'Analyzing Patterns',
@@ -335,7 +349,12 @@ function LiveRunStatus({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: (
       {/* Live step feed */}
       {steps.length > 0 && (
         <ScrollArea h={400} type="auto" viewportRef={(el) => {
-          if (el) el.scrollTop = el.scrollHeight;
+          scrollRef.current = el;
+        }} onScrollPositionChange={({ y }) => {
+          const el = scrollRef.current;
+          if (!el) return;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          userScrolledUp.current = !atBottom;
         }}>
           <Stack gap={6}>
             {steps.map((step, idx) => (
