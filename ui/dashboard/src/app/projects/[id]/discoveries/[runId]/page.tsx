@@ -256,7 +256,7 @@ export default function DiscoveryDetailPage() {
               {[...discovery.recommendations]
                 .sort((a, b) => a.priority - b.priority)
                 .map((rec, idx) => (
-                  <RecommendationCard key={idx} rec={rec} discoveryId={runId} idx={idx}
+                  <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
                     feedback={feedbackMap[`recommendation:${idx}`]}
                     onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(idx), fb)} />
                 ))}
@@ -389,8 +389,8 @@ export default function DiscoveryDetailPage() {
   );
 }
 
-function RecommendationCard({ rec, discoveryId, idx, feedback, onFeedbackUpdate }: {
-  rec: Recommendation; discoveryId: string; idx: number;
+function RecommendationCard({ rec, projectId, discoveryId, idx, feedback, onFeedbackUpdate }: {
+  rec: Recommendation; projectId: string; discoveryId: string; idx: number;
   feedback?: Feedback | null; onFeedbackUpdate?: (fb: Feedback | null) => void;
 }) {
   const priorityColor = rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue';
@@ -401,7 +401,7 @@ function RecommendationCard({ rec, discoveryId, idx, feedback, onFeedbackUpdate 
         <Text size="sm" fw={600}>{rec.title}</Text>
         <Group gap="xs">
           <Badge color={priorityColor} variant="light" size="xs">P{rec.priority}</Badge>
-          <FeedbackButtons projectId={id} discoveryId={discoveryId} targetType="recommendation"
+          <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
             targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
         </Group>
       </Group>
