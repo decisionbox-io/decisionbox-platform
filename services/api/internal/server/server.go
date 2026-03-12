@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -12,7 +13,7 @@ import (
 
 // New creates an HTTP server with all routes registered.
 // Cleans up stale discovery runs from previous container lifecycle.
-func New(db *database.DB) http.Handler {
+func New(db *database.DB, healthHandler *health.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	// Repos
@@ -51,8 +52,16 @@ func New(db *database.DB) http.Handler {
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
 
-	// Health
-	mux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
+	// Health endpoints
+	// /health and /health/ready — for K8s liveness/readiness probes (from go-common)
+	// /api/v1/health — for dashboard and API consumers
+	if healthHandler != nil {
+		mux.HandleFunc("GET /health", healthHandler.LivenessHandler())
+		mux.HandleFunc("GET /health/ready", healthHandler.ReadinessHandler())
+		mux.HandleFunc("GET /api/v1/health", healthHandler.ReadinessHandler())
+	} else {
+		mux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
+	}
 
 	// Providers
 	mux.HandleFunc("GET /api/v1/providers/llm", providers.ListLLMProviders)

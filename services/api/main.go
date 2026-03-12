@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
@@ -66,8 +67,11 @@ func main() {
 	}
 	apilog.Info("Database initialized")
 
+	// Health checker with MongoDB dependency
+	healthHandler := health.NewHandler(database.NewMongoHealthChecker(db))
+
 	// HTTP server
-	handler := server.New(db)
+	handler := server.New(db, healthHandler)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      handler,
