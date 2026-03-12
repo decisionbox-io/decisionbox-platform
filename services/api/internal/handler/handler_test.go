@@ -13,6 +13,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
@@ -399,11 +400,11 @@ func TestProcessTracker_MultipleRuns(t *testing.T) {
 	}
 }
 
-func TestDiscoveriesHandler_HasTracker(t *testing.T) {
-	tracker := NewProcessTracker()
-	h := &DiscoveriesHandler{tracker: tracker}
-	if h.tracker == nil {
-		t.Error("handler should have tracker")
+func TestDiscoveriesHandler_HasRunner(t *testing.T) {
+	r := runner.NewSubprocessRunner()
+	h := &DiscoveriesHandler{agentRunner: r}
+	if h.agentRunner == nil {
+		t.Error("handler should have agent runner")
 	}
 }
 

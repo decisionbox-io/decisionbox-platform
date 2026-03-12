@@ -1,17 +1,15 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
 
 func getEnvOrDefault(key, def string) string {
@@ -26,11 +24,11 @@ type DiscoveriesHandler struct {
 	repo        *database.DiscoveryRepository
 	projectRepo *database.ProjectRepository
 	runRepo     *database.RunRepository
-	tracker     *ProcessTracker
+	agentRunner runner.Runner
 }
 
-func NewDiscoveriesHandler(repo *database.DiscoveryRepository, projectRepo *database.ProjectRepository, runRepo *database.RunRepository, tracker *ProcessTracker) *DiscoveriesHandler {
-	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, tracker: tracker}
+func NewDiscoveriesHandler(repo *database.DiscoveryRepository, projectRepo *database.ProjectRepository, runRepo *database.RunRepository, r runner.Runner) *DiscoveriesHandler {
+	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, agentRunner: r}
 }
 
 // List returns discovery results for a project.
@@ -151,58 +149,18 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Spawn the agent as a background subprocess
-	args := []string{
-		"--project-id", projectID,
-		"--run-id", runID,
-	}
-	if len(body.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(body.Areas, ","))
-	}
-	if body.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(body.MaxSteps))
-	}
-	cmd := exec.Command("decisionbox-agent", args...)
-
-	// Inherit parent environment so agent gets LLM_API_KEY, DOMAIN_PACK_PATH, etc.
-	cmd.Env = append(os.Environ(),
-		"MONGODB_URI="+getEnvOrDefault("MONGODB_URI", "mongodb://localhost:27017"),
-		"MONGODB_DB="+getEnvOrDefault("MONGODB_DB", "decisionbox"),
-	)
-
-	if err := cmd.Start(); err != nil {
-		apilog.WithFields(apilog.Fields{
-			"project_id": projectID, "run_id": runID, "error": err.Error(),
-		}).Error("Failed to start agent subprocess")
-		h.runRepo.Fail(r.Context(), runID, "failed to start: "+err.Error())
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", err.Error()))
+	// Spawn the agent via the configured runner (subprocess or K8s Job)
+	runErr := h.agentRunner.Run(r.Context(), runner.RunOptions{
+		ProjectID: projectID,
+		RunID:     runID,
+		Areas:     body.Areas,
+		MaxSteps:  body.MaxSteps,
+	})
+	if runErr != nil {
+		h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error())
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", runErr.Error()))
 		return
 	}
-
-	apilog.WithFields(apilog.Fields{
-		"project_id": projectID,
-		"run_id":     runID,
-		"pid":        cmd.Process.Pid,
-		"areas":      body.Areas,
-		"max_steps":  body.MaxSteps,
-	}).Info("Discovery agent spawned")
-
-	// Track the process so we can cancel it
-	h.tracker.Track(runID, cmd.Process)
-
-	// Wait in background, clean up when done
-	go func() {
-		err := cmd.Wait()
-		h.tracker.Remove(runID)
-		if err != nil {
-			apilog.WithFields(apilog.Fields{
-				"run_id": runID, "error": err.Error(),
-			}).Warn("Agent process exited with error")
-			h.runRepo.Fail(context.Background(), runID, "agent exited with error: "+err.Error())
-		} else {
-			apilog.WithField("run_id", runID).Info("Agent process completed")
-		}
-	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "started",
@@ -284,19 +242,18 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Kill the subprocess if it's tracked
-	killed := h.tracker.Kill(runID)
+	// Cancel via runner (kills subprocess or deletes K8s Job)
+	if err := h.agentRunner.Cancel(r.Context(), runID); err != nil {
+		apilog.WithFields(apilog.Fields{"run_id": runID, "error": err.Error()}).Warn("Runner cancel returned error")
+	}
 
 	// Mark as cancelled in MongoDB
 	h.runRepo.Cancel(r.Context(), runID)
 
-	msg := "Run cancelled"
-	if killed {
-		msg = "Run cancelled and agent process killed"
-	}
+	apilog.WithField("run_id", runID).Info("Discovery run cancelled")
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "cancelled",
-		"message": msg,
+		"message": "Run cancelled",
 	})
 }

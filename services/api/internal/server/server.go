@@ -7,6 +7,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
 
 // New creates an HTTP server with all routes registered.
@@ -29,8 +30,14 @@ func New(db *database.DB) http.Handler {
 		apilog.WithField("count", cleaned).Info("Cleaned up stale discovery runs")
 	}
 
-	// Process tracker for agent subprocesses
-	tracker := handler.NewProcessTracker()
+	// Create agent runner (subprocess or K8s based on RUNNER_MODE env)
+	runnerCfg := runner.LoadConfig()
+	agentRunner, err := runner.New(runnerCfg)
+	if err != nil {
+		apilog.WithError(err).Error("Failed to create agent runner")
+		// Fall back to subprocess mode
+		agentRunner = runner.NewSubprocessRunner()
+	}
 
 	// Seed pricing from registered providers (if not yet in MongoDB)
 	handler.SeedPricingFromProviders(context.Background(), pricingRepo)
@@ -39,7 +46,7 @@ func New(db *database.DB) http.Handler {
 	providers := handler.NewProvidersHandler()
 	domains := handler.NewDomainsHandler()
 	projects := handler.NewProjectsHandler(projectRepo)
-	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, tracker)
+	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)

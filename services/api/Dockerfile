@@ -14,12 +14,8 @@ COPY providers/llm/bedrock/go.mod providers/llm/bedrock/
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
 COPY services/api/go.mod services/api/go.sum services/api/
-COPY services/agent/go.mod services/agent/go.sum services/agent/
-
-# Download deps for both services
+# Download deps
 WORKDIR /workspace/services/api
-RUN go mod download
-WORKDIR /workspace/services/agent
 RUN go mod download
 
 # Copy all source
@@ -28,14 +24,10 @@ COPY libs/ libs/
 COPY providers/ providers/
 COPY domain-packs/ domain-packs/
 COPY services/api/ services/api/
-COPY services/agent/ services/agent/
 
-# Build both binaries
+# Build API binary
 WORKDIR /workspace/services/api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-api .
-
-WORKDIR /workspace/services/agent
-RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-agent .
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata && \
@@ -43,9 +35,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /app
 
-# Include both binaries
 COPY --from=builder /decisionbox-api /usr/local/bin/decisionbox-api
-COPY --from=builder /decisionbox-agent /usr/local/bin/decisionbox-agent
 
 # Include domain pack prompts and profiles (read at runtime, not embedded)
 COPY --from=builder /workspace/domain-packs/ /app/domain-packs/
