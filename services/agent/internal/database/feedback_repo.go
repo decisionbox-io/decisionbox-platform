@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -34,9 +35,12 @@ func (r *FeedbackRepository) ListByDiscoveryIDs(ctx context.Context, discoveryID
 		return nil, nil
 	}
 
+	applog.WithField("discovery_count", len(discoveryIDs)).Debug("Fetching feedback for recent discoveries")
+
 	filter := bson.M{"discovery_id": bson.M{"$in": discoveryIDs}}
 	cursor, err := r.collection.Find(ctx, filter)
 	if err != nil {
+		applog.WithError(err).Warn("Failed to fetch feedback")
 		return nil, fmt.Errorf("list feedback: %w", err)
 	}
 	defer cursor.Close(ctx)
@@ -45,5 +49,11 @@ func (r *FeedbackRepository) ListByDiscoveryIDs(ctx context.Context, discoveryID
 	if err := cursor.All(ctx, &results); err != nil {
 		return nil, fmt.Errorf("decode feedback: %w", err)
 	}
+
+	applog.WithFields(applog.Fields{
+		"feedback_count":  len(results),
+		"discovery_count": len(discoveryIDs),
+	}).Debug("Feedback loaded for context awareness")
+
 	return results, nil
 }

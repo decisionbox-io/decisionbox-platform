@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -28,10 +29,19 @@ func (r *DiscoveryRepository) Save(ctx context.Context, result *models.Discovery
 	result.CreatedAt = time.Now()
 	result.UpdatedAt = time.Now()
 
+	applog.WithFields(applog.Fields{
+		"project_id": result.ProjectID,
+		"insights":   len(result.Insights),
+		"steps":      result.TotalSteps,
+	}).Debug("Saving discovery result to MongoDB")
+
 	_, err := r.collection.InsertOne(ctx, result)
 	if err != nil {
+		applog.WithError(err).Error("Failed to save discovery result")
 		return fmt.Errorf("failed to save discovery result: %w", err)
 	}
+
+	applog.WithField("project_id", result.ProjectID).Info("Discovery result saved")
 	return nil
 }
 
@@ -56,6 +66,10 @@ func (r *DiscoveryRepository) ListRecent(ctx context.Context, projectID string, 
 	if limit <= 0 {
 		limit = 5
 	}
+	applog.WithFields(applog.Fields{
+		"project_id": projectID,
+		"limit":      limit,
+	}).Debug("Fetching recent discoveries for context")
 	filter := bson.M{"project_id": projectID}
 	opts := options.Find().
 		SetSort(bson.D{{Key: "discovery_date", Value: -1}}).

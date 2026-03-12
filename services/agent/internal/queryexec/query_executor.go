@@ -89,8 +89,12 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 
 	for attempt := 0; attempt <= e.maxRetries; attempt++ {
 		applog.WithFields(applog.Fields{
-			"attempt": attempt,
-			"purpose": purpose,
+			"attempt":  attempt,
+			"max":      e.maxRetries,
+			"purpose":  purpose,
+			"phase":    e.currentPhase,
+			"step":     e.currentStep,
+			"query_len": len(currentQuery),
 		}).Debug("Executing warehouse query")
 
 		qr, err := e.warehouse.Query(ctx, currentQuery, nil)
@@ -102,6 +106,14 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 			result.ExecutionTimeMs = executionTime
 			result.FinalQuery = currentQuery
 			result.Fixed = attempt > 0
+
+			applog.WithFields(applog.Fields{
+				"rows":      result.RowCount,
+				"time_ms":   executionTime,
+				"fixed":     result.Fixed,
+				"attempts":  attempt + 1,
+				"purpose":   purpose,
+			}).Debug("Query executed successfully")
 
 			if e.debugLogger != nil {
 				fixedQuery := ""
@@ -118,7 +130,20 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 
 		result.Errors = append(result.Errors, err.Error())
 
+		applog.WithFields(applog.Fields{
+			"attempt": attempt,
+			"max":     e.maxRetries,
+			"error":   err.Error(),
+			"purpose": purpose,
+		}).Warn("Query failed")
+
 		if attempt >= e.maxRetries {
+			applog.WithFields(applog.Fields{
+				"attempts": attempt + 1,
+				"purpose":  purpose,
+				"error":    err.Error(),
+			}).Error("Query exhausted all retry attempts")
+
 			if e.debugLogger != nil {
 				e.debugLogger.LogBigQuery(ctx, e.currentStep, e.currentPhase,
 					query, purpose, nil, 0, time.Since(startTime).Milliseconds(),
@@ -128,18 +153,27 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 		}
 
 		if e.sqlFixer == nil {
+			applog.Error("Query failed and no SQL fixer available — cannot retry")
 			return nil, fmt.Errorf("query failed and no SQL fixer available: %w", err)
 		}
 
+		applog.WithFields(applog.Fields{
+			"attempt": attempt + 1,
+			"error":   err.Error(),
+		}).Info("Attempting SQL fix via LLM")
+
 		fixedQuery, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt)
 		if fixErr != nil {
+			applog.WithError(fixErr).Error("SQL fixer failed")
 			return nil, fmt.Errorf("failed to fix SQL query: %w", fixErr)
 		}
 
 		if verifyErr := e.verifyFilter(fixedQuery); verifyErr != nil {
+			applog.WithError(verifyErr).Error("Fixed query failed security filter check")
 			return nil, fmt.Errorf("fixed query security violation: %w", verifyErr)
 		}
 
+		applog.Debug("SQL fix applied, retrying with corrected query")
 		result.FixAttempts++
 		currentQuery = fixedQuery
 		startTime = time.Now()
@@ -182,7 +216,12 @@ func (e *QueryExecutor) verifyFilter(query string) error {
 		return nil // no filter required
 	}
 	if !strings.Contains(strings.ToLower(query), strings.ToLower(e.filterField)) {
+		applog.WithFields(applog.Fields{
+			"filter_field": e.filterField,
+			"query_preview": query[:min(len(query), 80)],
+		}).Warn("Query missing required filter field")
 		return fmt.Errorf("query must filter by %s for security", e.filterField)
 	}
 	return nil
 }
+

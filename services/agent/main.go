@@ -161,11 +161,23 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		"request_delay_ms": strconv.Itoa(cfg.LLM.RequestDelayMs),
 	}
 	// Merge provider-specific config from project (e.g., project_id, location for Vertex AI)
+	mergedKeys := make([]string, 0)
 	for k, v := range project.LLM.Config {
 		llmCfg[k] = v
+		mergedKeys = append(mergedKeys, k)
+	}
+	if len(mergedKeys) > 0 {
+		applog.WithFields(applog.Fields{
+			"provider":    project.LLM.Provider,
+			"config_keys": mergedKeys,
+		}).Debug("Merged provider-specific config from project")
 	}
 	llm, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
 	if err != nil {
+		applog.WithFields(applog.Fields{
+			"provider": project.LLM.Provider,
+			"error":    err.Error(),
+		}).Error("Failed to create LLM provider")
 		return fmt.Errorf("failed to create LLM provider (%s): %w", project.LLM.Provider, err)
 	}
 	applog.WithFields(applog.Fields{

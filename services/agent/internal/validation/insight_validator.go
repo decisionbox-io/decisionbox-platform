@@ -116,13 +116,23 @@ func (v *InsightValidator) validateSingleInsight(
 	}
 
 	// Ask LLM to generate a verification query
+	applog.WithField("insight", insight.Name).Debug("Generating verification query via LLM")
 	verificationQuery, err := v.generateVerificationQuery(ctx, insight)
 	if err != nil {
+		applog.WithFields(applog.Fields{
+			"insight": insight.Name,
+			"error":   err.Error(),
+		}).Warn("Failed to generate verification query")
 		vr.Status = "error"
 		vr.QueryError = fmt.Sprintf("failed to generate verification query: %s", err.Error())
 		vr.Reasoning = "Could not generate a verification query for this insight"
 		return vr
 	}
+
+	applog.WithFields(applog.Fields{
+		"insight":   insight.Name,
+		"query_len": len(verificationQuery),
+	}).Debug("Verification query generated")
 
 	vr.Query = verificationQuery
 
@@ -131,6 +141,10 @@ func (v *InsightValidator) validateSingleInsight(
 	if v.executor != nil {
 		rows, err := v.executor.Execute(ctx, verificationQuery, "validate insight: "+insight.Name)
 		if err != nil {
+			applog.WithFields(applog.Fields{
+				"insight": insight.Name,
+				"error":   err.Error(),
+			}).Warn("Verification query failed after retries")
 			vr.Status = "error"
 			vr.QueryError = err.Error()
 			vr.Reasoning = fmt.Sprintf("Verification query failed after retries: %s", err.Error())
@@ -140,6 +154,10 @@ func (v *InsightValidator) validateSingleInsight(
 	} else {
 		queryResult, err := v.warehouse.Query(ctx, verificationQuery, nil)
 		if err != nil {
+			applog.WithFields(applog.Fields{
+				"insight": insight.Name,
+				"error":   err.Error(),
+			}).Warn("Verification query failed (no executor)")
 			vr.Status = "error"
 			vr.QueryError = err.Error()
 			vr.Reasoning = fmt.Sprintf("Verification query failed: %s", err.Error())
@@ -151,6 +169,7 @@ func (v *InsightValidator) validateSingleInsight(
 
 	// Compare claimed vs verified
 	if insight.AffectedCount == 0 {
+		applog.WithField("insight", insight.Name).Debug("No count to verify (affected_count=0), confirming")
 		vr.Status = "confirmed"
 		vr.Reasoning = "No count to verify"
 		return vr
@@ -160,17 +179,14 @@ func (v *InsightValidator) validateSingleInsight(
 
 	switch {
 	case ratio >= 0.8 && ratio <= 1.2:
-		// Within 20% — confirmed
 		vr.Status = "confirmed"
 		vr.Reasoning = fmt.Sprintf("Verified count (%d) is within 20%% of claimed count (%d). Ratio: %.2f",
 			verifiedCount, insight.AffectedCount, ratio)
 	case ratio > 0 && (ratio < 0.8 || ratio > 1.2):
-		// Significant difference — adjusted
 		vr.Status = "adjusted"
 		vr.Reasoning = fmt.Sprintf("Verified count (%d) differs significantly from claimed count (%d). Ratio: %.2f. Adjusting to verified value.",
 			verifiedCount, insight.AffectedCount, ratio)
 	case verifiedCount == 0:
-		// No results — rejected
 		vr.Status = "rejected"
 		vr.Reasoning = fmt.Sprintf("Verification query returned 0 results. Claimed count was %d. The insight may be based on incorrect data.",
 			insight.AffectedCount)
@@ -178,6 +194,14 @@ func (v *InsightValidator) validateSingleInsight(
 		vr.Status = "error"
 		vr.Reasoning = "Unexpected verification result"
 	}
+
+	applog.WithFields(applog.Fields{
+		"insight":  insight.Name,
+		"status":   vr.Status,
+		"claimed":  insight.AffectedCount,
+		"verified": verifiedCount,
+		"ratio":    fmt.Sprintf("%.2f", ratio),
+	}).Info("Insight validation result")
 
 	return vr
 }

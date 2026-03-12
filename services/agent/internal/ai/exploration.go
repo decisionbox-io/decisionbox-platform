@@ -95,9 +95,14 @@ func (e *ExplorationEngine) Explore(
 
 	// Exploration loop
 	for step := 1; step <= e.maxSteps; step++ {
-		logger.WithField("step", step).Info("Exploration step starting")
+		logger.WithFields(logger.Fields{
+			"step":     step,
+			"max":      e.maxSteps,
+			"messages": len(conversation.GetMessages()),
+		}).Info("Exploration step starting")
 
-		// Call Claude to decide next action
+		// Call LLM to decide next action
+		llmStart := time.Now()
 		response, err := e.client.CreateMessage(
 			ctx,
 			conversation.GetMessages(),
@@ -105,10 +110,21 @@ func (e *ExplorationEngine) Explore(
 			4096,
 		)
 		if err != nil {
-			result.Error = fmt.Errorf("step %d: failed to get Claude response: %w", step, err)
+			logger.WithFields(logger.Fields{
+				"step":  step,
+				"error": err.Error(),
+			}).Error("LLM call failed during exploration")
+			result.Error = fmt.Errorf("step %d: failed to get LLM response: %w", step, err)
 			result.Duration = time.Since(startTime)
 			return result, result.Error
 		}
+
+		logger.WithFields(logger.Fields{
+			"step":       step,
+			"tokens_in":  response.Usage.InputTokens,
+			"tokens_out": response.Usage.OutputTokens,
+			"llm_ms":     time.Since(llmStart).Milliseconds(),
+		}).Debug("LLM response received")
 
 		// Extract response text
 		responseText := ""
@@ -119,13 +135,17 @@ func (e *ExplorationEngine) Explore(
 		// Add to conversation
 		conversation.AddAssistantMessage(responseText)
 
-		// Parse Claude's decision
+		// Parse LLM's decision
 		action, err := e.parseAction(responseText)
 		if err != nil {
-			logger.WithField("error", err.Error()).Warn("Failed to parse action, treating as complete")
+			logger.WithFields(logger.Fields{
+				"step":     step,
+				"error":    err.Error(),
+				"response": responseText[:min(len(responseText), 200)],
+			}).Warn("Failed to parse action from LLM response, treating as complete")
 			action = &ExplorationAction{
-				Action:  "complete",
-				Reason:  "Could not parse action",
+				Action: "complete",
+				Reason: "Could not parse action",
 			}
 		}
 
@@ -139,9 +159,10 @@ func (e *ExplorationEngine) Explore(
 
 		// Execute the action
 		logger.WithFields(logger.Fields{
-			"step":   step,
-			"action": action.Action,
-		}).Info("Executing action")
+			"step":     step,
+			"action":   action.Action,
+			"thinking": action.Thinking[:min(len(action.Thinking), 100)],
+		}).Info("Executing exploration action")
 
 		actionResult := e.executeAction(ctx, action, &explorationStep)
 

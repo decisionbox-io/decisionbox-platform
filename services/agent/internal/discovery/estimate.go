@@ -56,10 +56,12 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	}
 
 	// Phase 2: Discover schemas (use cache if available)
+	applog.Info("Estimation: discovering schemas")
 	schemas, err := o.discoverSchemas(ctx, projectCtx, false)
 	if err != nil {
 		return nil, fmt.Errorf("schema discovery failed: %w", err)
 	}
+	applog.WithField("tables", len(schemas)).Info("Estimation: schemas discovered")
 
 	// Resolve prompts and areas
 	dpPrompts := o.discoveryPack.Prompts(o.category)
@@ -67,42 +69,25 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	prompts, analysisAreas := o.resolvePrompts(dpPrompts, analysisAreas)
 
 	// Filter areas if selective
+	numAreas := len(analysisAreas)
 	if len(opts.SelectedAreas) > 0 {
 		selected := make(map[string]bool)
 		for _, a := range opts.SelectedAreas {
 			selected[a] = true
 		}
-		filtered := make([]interface{}, 0)
-		_ = filtered // just for counting
-		areaCount := 0
-		for _, a := range analysisAreas {
-			if selected[a.ID] {
-				areaCount++
-			}
-		}
-		if areaCount > 0 {
-			// use areaCount below
-			_ = areaCount
-		}
-	}
-
-	numAreas := len(analysisAreas)
-	if len(opts.SelectedAreas) > 0 {
 		count := 0
 		for _, a := range analysisAreas {
-			selected := false
-			for _, s := range opts.SelectedAreas {
-				if a.ID == s {
-					selected = true
-					break
-				}
-			}
-			if selected {
+			if selected[a.ID] {
 				count++
 			}
 		}
 		numAreas = count
 	}
+	applog.WithFields(applog.Fields{
+		"total_areas":    len(analysisAreas),
+		"selected_areas": numAreas,
+		"max_steps":      opts.MaxSteps,
+	}).Info("Estimation: calculating token costs")
 
 	// --- Calculate LLM token estimates ---
 
