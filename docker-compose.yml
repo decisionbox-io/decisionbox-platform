@@ -1,3 +1,17 @@
+# DecisionBox Platform — Docker Compose
+# Local development and deployment reference.
+#
+# Usage:
+#   docker compose up -d              # start all services
+#   docker compose up -d mongodb      # start MongoDB only (for make dev-api)
+#   docker compose down -v            # stop all + remove volumes
+#
+# For local dev without Docker:
+#   make dev-api                      # runs API directly (needs MongoDB on localhost:27017)
+#   make dev-dashboard                # runs dashboard directly
+#
+# All environment variables documented below. Copy .env.example to .env for overrides.
+
 services:
   mongodb:
     image: mongo:7.0
@@ -22,15 +36,154 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # ============================================================
+      # CORE — Required
+      # ============================================================
+
+      # MongoDB connection string
+      # Values: any valid MongoDB URI
+      # Examples: mongodb://localhost:27017, mongodb+srv://user:pass@cluster.mongodb.net
       - MONGODB_URI=mongodb://mongodb:27017
+
+      # MongoDB database name
+      # Values: any valid database name
       - MONGODB_DB=decisionbox
+
+      # API listen port
+      # Values: any available port number
       - PORT=8080
-      # Agent only needs LLM_API_KEY as secret (everything else from project config in MongoDB)
+
+      # ============================================================
+      # LLM — Required for discovery (secret)
+      # ============================================================
+
+      # API key for LLM provider. Required for: claude, openai. NOT needed for: vertex-ai, bedrock (use GCP/AWS IAM), ollama (local).
+      # Values: sk-ant-... (Claude), sk-... (OpenAI), empty for Vertex AI/Bedrock/Ollama
       - LLM_API_KEY=${LLM_API_KEY:-}
+
+      # ============================================================
+      # DOMAIN PACKS — Prompt & schema files
+      # ============================================================
+
+      # Root directory containing domain packs (gaming/, ecommerce/, etc.)
+      # Values: absolute path to domain-packs directory
+      # Default in Docker: /app/domain-packs (baked into image)
+      # Default in dev: domain-packs/gaming/prompts (relative to working dir)
+      - DOMAIN_PACK_PATH=/app/domain-packs
+
+      # ============================================================
+      # AGENT RUNNER — How the API spawns discovery agents
+      # ============================================================
+
+      # Runner mode
+      # Values: subprocess | kubernetes
+      # subprocess: exec.Command (local dev, agent binary must be in PATH)
+      # kubernetes: creates K8s Job per discovery run (production)
+      - RUNNER_MODE=subprocess
+
+      # Agent container image (only used when RUNNER_MODE=kubernetes)
+      # Values: any valid container image reference
+      - AGENT_IMAGE=ghcr.io/decisionbox-io/decisionbox-agent:latest
+
+      # K8s namespace for agent Jobs (only used when RUNNER_MODE=kubernetes)
+      # Values: any valid K8s namespace
+      - AGENT_NAMESPACE=default
+
+      # Agent resource requests/limits (only used when RUNNER_MODE=kubernetes)
+      # Values: K8s resource quantities (e.g., 250m, 1, 2, 100Mi, 1Gi)
+      - AGENT_CPU_REQUEST=250m
+      - AGENT_CPU_LIMIT=2
+      - AGENT_MEMORY_REQUEST=256Mi
+      - AGENT_MEMORY_LIMIT=1Gi
+
+      # ============================================================
+      # SERVICE — Operational
+      # ============================================================
+
+      # Service name (appears in logs)
+      # Values: any string
+      - SERVICE_NAME=decisionbox-api
+
+      # Environment (affects log format: dev=console, prod=JSON)
+      # Values: dev | prod | production
+      - ENV=dev
+
+      # Log level
+      # Values: debug | info | warn | error
+      - LOG_LEVEL=info
+
     depends_on:
       mongodb:
         condition: service_healthy
     restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+    container_name: decisionbox-agent
+    profiles:
+      - agent  # only starts with: docker compose --profile agent run agent
+    environment:
+      # ============================================================
+      # CORE — Required
+      # ============================================================
+
+      # MongoDB connection (same as API — agent reads project config and writes results)
+      # Values: any valid MongoDB URI
+      - MONGODB_URI=mongodb://mongodb:27017
+
+      # MongoDB database name (must match API)
+      # Values: any valid database name
+      - MONGODB_DB=decisionbox
+
+      # ============================================================
+      # LLM — Required for discovery (secret)
+      # ============================================================
+
+      # API key for LLM provider. Same as API.
+      # Values: sk-ant-... (Claude), sk-... (OpenAI), empty for Vertex AI/Bedrock/Ollama
+      - LLM_API_KEY=${LLM_API_KEY:-}
+
+      # Max retries on LLM API errors (rate limits, timeouts)
+      # Values: any integer, 0 = no retries
+      - LLM_MAX_RETRIES=3
+
+      # Timeout per LLM API call
+      # Values: Go duration string (e.g., 30s, 2m, 120s)
+      - LLM_TIMEOUT=120s
+
+      # Delay between consecutive LLM calls (rate limiting / cost control)
+      # Values: milliseconds (0 = no delay)
+      - LLM_REQUEST_DELAY_MS=1000
+
+      # ============================================================
+      # DOMAIN PACKS — Prompt & schema files
+      # ============================================================
+
+      # Root directory containing domain packs
+      # Values: absolute path
+      - DOMAIN_PACK_PATH=/app/domain-packs
+
+      # ============================================================
+      # SERVICE — Operational
+      # ============================================================
+
+      # Service name (appears in logs)
+      # Values: any string
+      - SERVICE_NAME=decisionbox-agent
+
+      # Environment (affects log format: dev=console, prod=JSON)
+      # Values: dev | prod | production
+      - ENV=dev
+
+      # Log level
+      # Values: debug | info | warn | error
+      - LOG_LEVEL=info
+
+    depends_on:
+      mongodb:
+        condition: service_healthy
 
   dashboard:
     build:
@@ -40,7 +193,24 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # ============================================================
+      # DASHBOARD — Frontend configuration
+      # ============================================================
+
+      # API URL (from the browser's perspective for client-side fetches)
+      # Values: full URL including protocol and port
+      # For local: http://localhost:8080
+      # For production: https://api.yourdomain.com
       - NEXT_PUBLIC_API_URL=http://localhost:8080
+
+      # Dashboard listen port
+      # Values: any available port number
+      - PORT=3000
+
+      # Dashboard bind address
+      # Values: 0.0.0.0 (all interfaces), 127.0.0.1 (localhost only)
+      - HOSTNAME=0.0.0.0
+
     depends_on:
       - api
     restart: unless-stopped
