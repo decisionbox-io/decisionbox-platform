@@ -9,7 +9,7 @@ COPY libs/go-common/go.mod libs/go-common/go.sum libs/go-common/
 COPY providers/llm/claude/go.mod providers/llm/claude/
 COPY providers/llm/openai/go.mod providers/llm/openai/
 COPY providers/llm/ollama/go.mod providers/llm/ollama/go.sum providers/llm/ollama/
-COPY providers/llm/vertex-ai/go.mod providers/llm/vertex-ai/
+COPY providers/llm/vertex-ai/go.mod providers/llm/vertex-ai/go.sum providers/llm/vertex-ai/
 COPY providers/llm/bedrock/go.mod providers/llm/bedrock/
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
@@ -32,7 +32,14 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1000 -S app && adduser -u 1000 -S app -G app
 
+WORKDIR /app
+
 COPY --from=builder /decisionbox-agent /usr/local/bin/decisionbox-agent
+
+# Include domain pack prompts and profiles (read at runtime)
+COPY --from=builder /workspace/domain-packs/ /app/domain-packs/
+
+ENV DOMAIN_PACK_PATH=/app/domain-packs
 
 USER app
 ENTRYPOINT ["decisionbox-agent"]

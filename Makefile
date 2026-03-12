@@ -67,6 +67,27 @@ dev-dashboard: ## Run Dashboard locally
 agent-run: ## Run discovery agent for a project (usage: make agent-run PROJECT_ID=xxx)
 	cd services/agent && go run . --project-id=$(PROJECT_ID)
 
+# --- Docker ---
+
+REGISTRY ?= ghcr.io/decisionbox-io
+TAG ?= latest
+
+docker-build: docker-build-api docker-build-agent docker-build-dashboard ## Build all Docker images
+
+docker-build-api: ## Build API Docker image
+	docker build -t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
+
+docker-build-agent: ## Build Agent Docker image
+	docker build -t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
+
+docker-build-dashboard: ## Build Dashboard Docker image
+	docker build -t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
+
+docker-push: ## Push all Docker images to registry
+	docker push $(REGISTRY)/decisionbox-api:$(TAG)
+	docker push $(REGISTRY)/decisionbox-agent:$(TAG)
+	docker push $(REGISTRY)/decisionbox-dashboard:$(TAG)
+
 # --- Clean ---
 
 clean: ## Remove build artifacts
