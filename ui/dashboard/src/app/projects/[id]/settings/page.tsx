@@ -1,20 +1,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Card, Checkbox, CloseButton, Group, Loader, MultiSelect,
-  NumberInput, Select, Stack, Switch, Text, TextInput, Textarea, Title,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Group, Loader, MultiSelect,
+  NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconArrowLeft, IconCheck, IconPlus } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconDatabase, IconKey, IconPlus, IconSettings, IconShieldCheck } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { IconEye, IconEyeOff, IconKey, IconShieldCheck } from '@tabler/icons-react';
 import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
   const [warehouseProviders, setWarehouseProviders] = useState<ProviderMeta[]>([]);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
@@ -54,7 +52,6 @@ export default function ProjectSettingsPage() {
         setWarehouseProviders(whProvs);
         setLlmProviders(llmProvs);
 
-        // Populate form
         setName(proj.name);
         setDescription(proj.description || '');
         setWhProvider(proj.warehouse.provider);
@@ -74,12 +71,10 @@ export default function ProjectSettingsPage() {
         setMaxSteps(proj.schedule?.max_steps || 100);
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
 
-        // Load profile schema for this domain/category
         api.getProfileSchema(proj.domain, proj.category)
           .then(setProfileSchema)
           .catch(() => {});
 
-        // Load secrets list
         api.listSecrets(proj.id || id)
           .then((s) => setSecretsList(s || []))
           .catch(() => {});
@@ -122,6 +117,10 @@ export default function ProjectSettingsPage() {
     }
   };
 
+  const breadcrumb = project
+    ? [{ label: 'Projects', href: '/' }, { label: project.name, href: `/projects/${id}` }, { label: 'Settings' }]
+    : [{ label: 'Settings' }];
+
   if (loading) return <Shell><Loader /></Shell>;
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
   if (!project) return <Shell><Text>Project not found</Text></Shell>;
@@ -129,32 +128,53 @@ export default function ProjectSettingsPage() {
   const selectedWh = warehouseProviders.find((p) => p.id === whProvider);
   const selectedLlm = llmProviders.find((p) => p.id === llmProvider);
 
-  return (
-    <Shell>
-      <Stack gap="lg" maw={700}>
-        <Group>
-          <Button variant="subtle" leftSection={<IconArrowLeft size={16} />}
-            onClick={() => router.push(`/projects/${id}`)}>Back</Button>
-          <Title order={2}>Project Settings</Title>
-        </Group>
+  const saveButton = (
+    <button onClick={handleSave} disabled={saving} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      background: 'var(--db-text-primary)', color: '#fff',
+      border: 'none', borderRadius: 6, padding: '6px 14px',
+      fontSize: 13, fontWeight: 500, cursor: saving ? 'default' : 'pointer',
+      fontFamily: 'inherit', opacity: saving ? 0.5 : 1,
+      transition: 'background 120ms ease',
+    }}
+    onMouseEnter={e => { if (!saving) e.currentTarget.style.background = '#333'; }}
+    onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
+    >
+      <IconCheck size={14} />
+      {saving ? 'Saving...' : 'Save settings'}
+    </button>
+  );
 
-        {/* Basic Info */}
-        <Card withBorder p="lg">
-          <Title order={4} mb="md">Basic Information</Title>
-          <Stack>
+  return (
+    <Shell breadcrumb={breadcrumb} actions={saveButton}>
+      <Tabs defaultValue="general" styles={{
+        tab: { fontSize: 13, fontWeight: 500, padding: '8px 16px' },
+        panel: { paddingTop: 20 },
+      }}>
+        <Tabs.List>
+          <Tabs.Tab value="general">General</Tabs.Tab>
+          <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
+          <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
+          <Tabs.Tab value="secrets">Secrets</Tabs.Tab>
+          <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
+          {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
+        </Tabs.List>
+
+        {/* General */}
+        <Tabs.Panel value="general">
+          <SettingsSection>
             <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} />
             <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
             <Group>
-              <TextInput label="Domain" value={project.domain} disabled />
-              <TextInput label="Category" value={project.category} disabled />
+              <TextInput label="Domain" value={project.domain} disabled style={{ flex: 1 }} />
+              <TextInput label="Category" value={project.category} disabled style={{ flex: 1 }} />
             </Group>
-          </Stack>
-        </Card>
+          </SettingsSection>
+        </Tabs.Panel>
 
-        {/* Warehouse */}
-        <Card withBorder p="lg">
-          <Title order={4} mb="md">Data Warehouse</Title>
-          <Stack>
+        {/* Data Warehouse */}
+        <Tabs.Panel value="warehouse">
+          <SettingsSection>
             <Select label="Provider" data={warehouseProviders.map((p) => ({ value: p.id, label: p.name }))}
               value={whProvider} onChange={(v) => setWhProvider(v || '')} />
             {selectedWh?.description && <Text size="xs" c="dimmed">{selectedWh.description}</Text>}
@@ -171,19 +191,20 @@ export default function ProjectSettingsPage() {
               placeholder="events_prod, features_prod"
               value={datasets} onChange={(e) => setDatasets(e.target.value)} />
 
+            <div style={{ fontSize: 13, fontWeight: 500, marginTop: 8 }}>Filter (optional)</div>
+            <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
             <Group grow>
               <TextInput label="Filter Field" placeholder="app_id" value={filterField}
                 onChange={(e) => setFilterField(e.target.value)} />
               <TextInput label="Filter Value" placeholder="my-app-123" value={filterValue}
                 onChange={(e) => setFilterValue(e.target.value)} />
             </Group>
-          </Stack>
-        </Card>
+          </SettingsSection>
+        </Tabs.Panel>
 
-        {/* LLM */}
-        <Card withBorder p="lg">
-          <Title order={4} mb="md">AI Provider</Title>
-          <Stack>
+        {/* AI Provider */}
+        <Tabs.Panel value="ai">
+          <SettingsSection>
             <Select label="LLM Provider" data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
               value={llmProvider} onChange={(v) => {
                 setLlmProvider(v || '');
@@ -195,7 +216,6 @@ export default function ProjectSettingsPage() {
             <TextInput label="Model" value={llmModel} onChange={(e) => setLlmModel(e.target.value)}
               placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro" />
 
-            {/* Provider-specific config fields (e.g., project_id, location for Vertex AI) */}
             {selectedLlm?.config_fields
               .filter((f) => f.key !== 'model' && f.key !== 'api_key')
               .map((field) => (
@@ -203,77 +223,71 @@ export default function ProjectSettingsPage() {
                   value={llmConfig[field.key] || ''}
                   onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
               ))}
-          </Stack>
-        </Card>
+          </SettingsSection>
+        </Tabs.Panel>
 
         {/* Secrets */}
-        <Card withBorder p="lg">
-          <Title order={4} mb="xs">
-            <IconKey size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-            Secrets
-          </Title>
-          <Text size="xs" c="dimmed" mb="md">
-            API keys are stored encrypted and never exposed in full. Per-project — each project has its own keys.
-          </Text>
+        <Tabs.Panel value="secrets">
+          <SettingsSection>
+            <Text size="xs" c="dimmed" mb="md">
+              API keys are stored encrypted and never exposed in full. Per-project — each project has its own keys.
+            </Text>
 
-          {/* Existing secrets */}
-          {secretsList.length > 0 && (
-            <Stack gap="xs" mb="md">
-              {secretsList.map((s) => (
-                <div key={s.key} style={{ borderRadius: 4, background: 'var(--mantine-color-gray-0)', padding: '8px' }}>
-                  <Group justify="space-between">
-                    <Group gap="xs">
-                      <IconShieldCheck size={14} color={s.warning ? 'var(--mantine-color-orange-6)' : 'var(--mantine-color-green-6)'} />
-                      <Text size="sm" fw={500}>{s.key}</Text>
+            {secretsList.length > 0 && (
+              <Stack gap="xs" mb="md">
+                {secretsList.map((s) => (
+                  <div key={s.key} style={{
+                    borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8,
+                  }}>
+                    <Group justify="space-between">
+                      <Group gap="xs">
+                        <IconShieldCheck size={14} color={s.warning ? 'var(--db-amber-text)' : 'var(--db-green-text)'} />
+                        <Text size="sm" fw={500}>{s.key}</Text>
+                      </Group>
+                      <Text size="xs" c="dimmed" style={{ fontFamily: 'SF Mono, Fira Code, monospace' }}>{s.masked}</Text>
                     </Group>
-                    <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>{s.masked}</Text>
-                  </Group>
-                  {s.warning && (
-                    <Text size="xs" c="orange" mt={4}>{s.warning}</Text>
-                  )}
-                </div>
-              ))}
-            </Stack>
-          )}
+                    {s.warning && <Text size="xs" c="orange" mt={4}>{s.warning}</Text>}
+                  </div>
+                ))}
+              </Stack>
+            )}
 
-          {/* Add/update secret */}
-          <Group gap="xs" align="end">
-            <Select label="Key" size="xs" w={180} value={newSecretKey}
-              onChange={(v) => setNewSecretKey(v || 'llm-api-key')}
-              data={[
-                { value: 'llm-api-key', label: 'LLM API Key' },
-                { value: 'warehouse-credentials', label: 'Warehouse Credentials (SA Key JSON)' },
-              ]}
-              allowDeselect={false} />
-            <TextInput label="Value" size="xs" style={{ flex: 1 }}
-              placeholder="Enter secret value" value={newSecretValue}
-              onChange={(e) => setNewSecretValue(e.target.value)}
-              type="password" />
-            <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
-              onClick={async () => {
-                setSavingSecret(true);
-                try {
-                  await api.setSecret(id, newSecretKey, newSecretValue);
-                  setNewSecretValue('');
-                  notifications.show({ title: 'Saved', message: `Secret "${newSecretKey}" saved`, color: 'green' });
-                  // Refresh list
-                  const updated = await api.listSecrets(id);
-                  setSecretsList(updated || []);
-                } catch (e: unknown) {
-                  notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                } finally {
-                  setSavingSecret(false);
-                }
-              }}>
-              Save Secret
-            </Button>
-          </Group>
-        </Card>
+            <Group gap="xs" align="end">
+              <Select label="Key" size="xs" w={180} value={newSecretKey}
+                onChange={(v) => setNewSecretKey(v || 'llm-api-key')}
+                data={[
+                  { value: 'llm-api-key', label: 'LLM API Key' },
+                  { value: 'warehouse-credentials', label: 'Warehouse Credentials (SA Key JSON)' },
+                ]}
+                allowDeselect={false} />
+              <TextInput label="Value" size="xs" style={{ flex: 1 }}
+                placeholder="Enter secret value" value={newSecretValue}
+                onChange={(e) => setNewSecretValue(e.target.value)}
+                type="password" />
+              <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
+                onClick={async () => {
+                  setSavingSecret(true);
+                  try {
+                    await api.setSecret(id, newSecretKey, newSecretValue);
+                    setNewSecretValue('');
+                    notifications.show({ title: 'Saved', message: `Secret "${newSecretKey}" saved`, color: 'green' });
+                    const updated = await api.listSecrets(id);
+                    setSecretsList(updated || []);
+                  } catch (e: unknown) {
+                    notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                  } finally {
+                    setSavingSecret(false);
+                  }
+                }}>
+                Save Secret
+              </Button>
+            </Group>
+          </SettingsSection>
+        </Tabs.Panel>
 
         {/* Schedule */}
-        <Card withBorder p="lg">
-          <Title order={4} mb="md">Discovery Schedule</Title>
-          <Stack>
+        <Tabs.Panel value="schedule">
+          <SettingsSection>
             <Switch label="Enable automatic discovery" checked={scheduleEnabled}
               onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
             {scheduleEnabled && (
@@ -282,25 +296,36 @@ export default function ProjectSettingsPage() {
             )}
             <NumberInput label="Max Exploration Steps" value={maxSteps}
               onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
-          </Stack>
-        </Card>
+          </SettingsSection>
+        </Tabs.Panel>
 
-        {/* Game Profile */}
+        {/* Profile */}
         {profileSchema && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="xs">Game Profile</Title>
-            <Text size="xs" c="dimmed" mb="md">
-              Help the AI understand your game. This context improves insight quality.
-            </Text>
-            <ProfileEditor schema={profileSchema} profile={profile} onChange={setProfile} />
-          </Card>
+          <Tabs.Panel value="profile">
+            <SettingsSection>
+              <Text size="xs" c="dimmed" mb="md">
+                Help the AI understand your game. This context improves insight quality.
+              </Text>
+              <ProfileEditor schema={profileSchema} profile={profile} onChange={setProfile} />
+            </SettingsSection>
+          </Tabs.Panel>
         )}
-
-        <Button onClick={handleSave} loading={saving} leftSection={<IconCheck size={16} />} fullWidth>
-          Save Settings
-        </Button>
-      </Stack>
+      </Tabs>
     </Shell>
+  );
+}
+
+function SettingsSection({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '1px solid var(--db-border-default)',
+      borderRadius: 'var(--db-radius-lg)',
+      padding: '20px',
+      maxWidth: 640,
+    }}>
+      <Stack gap="md">{children}</Stack>
+    </div>
   );
 }
 
@@ -312,7 +337,6 @@ function DynamicField({ field, value, onChange }: { field: ConfigField; value: s
   );
 }
 
-// Renders profile fields from JSON Schema sections (basic_info, gameplay, monetization, kpis)
 function ProfileEditor({ schema, profile, onChange }: {
   schema: Record<string, unknown>;
   profile: Record<string, Record<string, unknown>>;
@@ -340,7 +364,6 @@ function ProfileEditor({ schema, profile, onChange }: {
           items?: Record<string, unknown>;
         };
 
-        // Array of objects (boosters, iap_packages, lootboxes)
         if (sec.type === 'array' && sec.items && (sec.items as Record<string, unknown>).type === 'object') {
           const items = (Array.isArray(profile[sectionKey]) ? profile[sectionKey] : []) as Record<string, unknown>[];
           const itemSchema = sec.items as { properties?: Record<string, unknown> };
@@ -351,7 +374,6 @@ function ProfileEditor({ schema, profile, onChange }: {
           );
         }
 
-        // Simple array (e.g., array of strings)
         if (sec.type === 'array') {
           const items = (Array.isArray(profile[sectionKey]) ? profile[sectionKey] : []) as string[];
           return (
@@ -364,7 +386,6 @@ function ProfileEditor({ schema, profile, onChange }: {
           );
         }
 
-        // Object sections — render individual fields
         if (!sec.properties) return null;
         return (
           <div key={sectionKey}>
@@ -383,7 +404,6 @@ function ProfileEditor({ schema, profile, onChange }: {
   );
 }
 
-// Renders a single field from a JSON Schema property
 function SchemaField({ fieldKey, fieldSchema, value, onChange }: {
   fieldKey: string; fieldSchema: unknown; value: unknown;
   onChange: (v: unknown) => void;
@@ -416,7 +436,6 @@ function SchemaField({ fieldKey, fieldSchema, value, onChange }: {
     );
   }
   if (fs.type === 'array' && fs.items?.type === 'object') {
-    // Nested array of objects (e.g., IAP contents: [{item: "coins", count: 100}])
     const itemSchema = fs.items as { properties?: Record<string, unknown> };
     const items = (Array.isArray(value) ? value : []) as Record<string, unknown>[];
     return (
@@ -445,7 +464,6 @@ function SchemaField({ fieldKey, fieldSchema, value, onChange }: {
   );
 }
 
-// Renders repeatable items for array-of-objects (boosters, IAP packages, lootboxes)
 function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
   title: string;
   itemSchema: { properties?: Record<string, unknown> };
@@ -470,33 +488,51 @@ function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
           <IconPlus size={14} />
         </ActionIcon>
       </Group>
-      <Stack gap="xs">
+      <Stack gap="sm">
         {items.map((item, idx) => (
-          <Card key={idx} withBorder p="xs" radius="sm" bg="var(--mantine-color-gray-0)">
-            <Group justify="space-between" mb={4}>
-              <Text size="xs" c="dimmed">#{idx + 1}</Text>
+          <div key={idx} style={{
+            border: '1px solid var(--db-border-default)',
+            borderRadius: 'var(--db-radius-lg)',
+            padding: 16, background: 'var(--db-bg-muted)',
+          }}>
+            <Group justify="space-between" mb={8}>
+              <Text size="xs" fw={500} c="dimmed">#{idx + 1}</Text>
               <CloseButton size="xs" onClick={() => removeItem(idx)} />
             </Group>
-            <Group grow gap="xs" wrap="wrap">
-              {Object.entries(fields).map(([fieldKey, fieldSchema]) => (
-                <SchemaField key={fieldKey} fieldKey={fieldKey} fieldSchema={fieldSchema}
-                  value={item[fieldKey]}
-                  onChange={(v) => updateItem(idx, fieldKey, v)} />
-              ))}
-            </Group>
-          </Card>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, 1fr)',
+              gap: 12,
+            }}>
+              {Object.entries(fields).map(([fieldKey, fieldSchema]) => {
+                const fs = fieldSchema as { type?: string; title?: string };
+                // Full-width for text fields (description, name) and nested arrays
+                const isWide = fs.type === 'array' || fieldKey === 'description' || fieldKey === 'name';
+                return (
+                  <div key={fieldKey} style={{ gridColumn: isWide ? '1 / -1' : undefined }}>
+                    <SchemaField fieldKey={fieldKey} fieldSchema={fieldSchema}
+                      value={item[fieldKey]}
+                      onChange={(v) => updateItem(idx, fieldKey, v)} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         ))}
         {items.length === 0 && (
-          <Text size="xs" c="dimmed" ta="center" py="xs">
-            No items. Click + to add.
-          </Text>
+          <div style={{
+            border: '2px dashed var(--db-border-strong)',
+            borderRadius: 'var(--db-radius)',
+            padding: '20px', textAlign: 'center',
+          }}>
+            <Text size="xs" c="dimmed">No items yet. Click + to add.</Text>
+          </div>
         )}
       </Stack>
     </div>
   );
 }
 
-// Compact inline rows for nested array-of-objects (e.g., IAP contents: [{item, count}])
 function InlineArrayEditor({ title, itemSchema, items, onChange }: {
   title: string;
   itemSchema: { properties?: Record<string, unknown> };
@@ -504,6 +540,7 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
   onChange: (items: unknown) => void;
 }) {
   const fields = itemSchema.properties || {};
+  const fieldEntries = Object.entries(fields);
   const addItem = () => onChange([...items, {}]);
   const removeItem = (idx: number) => onChange(items.filter((_, i) => i !== idx));
   const updateItem = (idx: number, field: string, value: unknown) => {
@@ -514,16 +551,33 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
 
   return (
     <div>
-      <Group gap={4} mb={4}>
+      <Group justify="space-between" mb={6}>
         <Text size="xs" fw={600}>{title}</Text>
         <ActionIcon variant="subtle" size="xs" onClick={addItem}>
           <IconPlus size={12} />
         </ActionIcon>
       </Group>
-      <Stack gap={4}>
+
+      {/* Column headers */}
+      {items.length > 0 && (
+        <Group gap={8} mb={4} wrap="nowrap" style={{ paddingRight: 28 }}>
+          {fieldEntries.map(([fk, fs]) => {
+            const f = fs as { title?: string; type?: string };
+            const isNumber = f.type === 'integer' || f.type === 'number';
+            return (
+              <Text key={fk} size="xs" c="dimmed" fw={500}
+                style={{ flex: isNumber ? 1 : 2, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                {f.title || fk}
+              </Text>
+            );
+          })}
+        </Group>
+      )}
+
+      <Stack gap={6}>
         {items.map((item, idx) => (
-          <Group key={idx} gap={4} wrap="nowrap">
-            {Object.entries(fields).map(([fk, fs]) => {
+          <Group key={idx} gap={8} wrap="nowrap" align="center">
+            {fieldEntries.map(([fk, fs]) => {
               const f = fs as { type?: string; title?: string };
               if (f.type === 'integer' || f.type === 'number') {
                 return (
@@ -542,6 +596,10 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
           </Group>
         ))}
       </Stack>
+
+      {items.length === 0 && (
+        <Text size="xs" c="dimmed" ta="center" py="xs">No items. Click + to add.</Text>
+      )}
     </div>
   );
 }

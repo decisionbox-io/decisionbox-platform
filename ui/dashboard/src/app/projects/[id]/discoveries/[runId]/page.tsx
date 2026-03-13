@@ -3,20 +3,18 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Accordion, Badge, Button, Card, Chip, Code, Grid, Group, Loader, Select, Stack, Text, Title,
+  Accordion, Badge, Code, Collapse, Loader, Progress, Text,
 } from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
 import {
-  IconAlertTriangle, IconArrowLeft, IconBulb, IconDatabase, IconSearch,
-  IconSortDescending, IconTrendingUp,
+  IconAlertCircle, IconBulb, IconChevronDown, IconClipboardX, IconDatabase, IconSearch,
+  IconThumbDown, IconThumbUp,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Recommendation } from '@/lib/api';
 
-const severityColor: Record<string, string> = {
-  critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
-};
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
 };
@@ -24,17 +22,17 @@ const severityOrder: Record<string, number> = {
 export default function DiscoveryDetailPage() {
   const { id, runId } = useParams<{ id: string; runId: string }>();
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
+  const [project, setProject] = useState<{ name: string; domain: string; category: string } | null>(null);
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
   const [loading, setLoading] = useState(true);
-
-  // Filters & sorting
-  const [areaFilter, setAreaFilter] = useState<string[]>([]);
-  const [severityFilter, setSeverityFilter] = useState<string[]>([]);
-  const [sortBy, setSortBy] = useState<string>('severity');
+  const [severityFilter, setSeverityFilter] = useState<string>('All');
+  const [sortBy, setSortBy] = useState<string>('Severity');
+  const [showAllRecs, setShowAllRecs] = useState(false);
 
   useEffect(() => {
     Promise.all([
       api.getDiscoveryById(runId).then(setDiscovery),
+      api.getProject(id).then(p => setProject({ name: p.name, domain: p.domain, category: p.category })),
       api.listFeedback(runId).then((fb) => {
         const map: Record<string, Feedback> = {};
         (fb || []).forEach((f) => { map[`${f.target_type}:${f.target_id}`] = f; });
@@ -43,7 +41,7 @@ export default function DiscoveryDetailPage() {
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
-  }, [runId]);
+  }, [id, runId]);
 
   const handleFeedbackUpdate = (targetType: string, targetId: string, fb: Feedback | null) => {
     const key = `${targetType}:${targetId}`;
@@ -58,375 +56,592 @@ export default function DiscoveryDetailPage() {
   if (loading) return <Shell><Loader /></Shell>;
   if (!discovery) return <Shell><Text>Discovery not found</Text></Shell>;
 
-  // Get unique areas and severities
-  const allAreas = [...new Set((discovery.insights || []).map((i) => i.analysis_area))];
-  const allSeverities = [...new Set((discovery.insights || []).map((i) => i.severity))];
+  const insights = discovery.insights || [];
+  const recommendations = [...(discovery.recommendations || [])].sort((a, b) => a.priority - b.priority);
 
-  // Apply filters
-  let filtered = discovery.insights || [];
-  if (areaFilter.length > 0) {
-    filtered = filtered.filter((i) => areaFilter.includes(i.analysis_area));
+  // Filter + sort insights
+  let filtered = insights;
+  if (severityFilter !== 'All') {
+    filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
   }
-  if (severityFilter.length > 0) {
-    filtered = filtered.filter((i) => severityFilter.includes(i.severity));
-  }
-
-  // Sort insights
-  const sorted = [...filtered].sort((a, b) => {
+  filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case 'severity':
-        const sevDiff = (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
-        if (sevDiff !== 0) return sevDiff;
-        return b.risk_score - a.risk_score;
-      case 'risk':
-        return b.risk_score - a.risk_score;
-      case 'confidence':
-        return b.confidence - a.confidence;
-      case 'affected':
-        return (b.affected_count || 0) - (a.affected_count || 0);
-      default:
-        return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      case 'Confidence': return b.confidence - a.confidence;
+      case 'Players affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Area': return a.analysis_area.localeCompare(b.analysis_area);
+      default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
   });
-  filtered = sorted;
 
-  const durationSec = discovery.duration ? Math.round(discovery.duration / 1000000000) : 0;
+  // Aggregate stats
+  const totalInsights = insights.length;
+  const criticalCount = insights.filter(i => i.severity === 'critical').length;
+  const avgConfidence = totalInsights > 0
+    ? Math.round(insights.reduce((sum, i) => sum + (i.confidence || 0), 0) / totalInsights)
+    : 0;
+
+  const durationSec = discovery.duration ? (discovery.duration / 1000000000).toFixed(2) : '—';
+
+  const breadcrumb = [
+    { label: 'Projects', href: '/' },
+    { label: project?.name || '...', href: `/projects/${id}` },
+    { label: new Date(discovery.discovery_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) },
+  ];
+
+  const visibleRecs = showAllRecs ? recommendations : recommendations.slice(0, 3);
+  const hiddenRecCount = recommendations.length - 3;
 
   return (
-    <Shell>
-      <Stack gap="lg">
-        {/* Header */}
-        <Group>
-          <Button variant="subtle" component={Link} href={`/projects/${id}`}
-            leftSection={<IconArrowLeft size={16} />} size="sm">Back</Button>
-        </Group>
-
-        <Group justify="space-between">
-          <div>
-            <Title order={2}>
-              {new Date(discovery.discovery_date).toLocaleDateString('en-US', {
-                month: 'long', day: 'numeric', year: 'numeric',
-              })}
-            </Title>
-            <Group gap="xs" mt={4}>
-              <Badge variant="light" color={discovery.run_type === 'partial' ? 'violet' : 'blue'}>
-                {discovery.run_type || 'full'}
-              </Badge>
-              {discovery.areas_requested && discovery.areas_requested.length > 0 && (
-                <Text size="sm" c="dimmed">{discovery.areas_requested.join(', ')}</Text>
-              )}
-              <Text size="sm" c="dimmed">{discovery.total_steps} steps</Text>
-              {durationSec > 0 && <Text size="sm" c="dimmed">{durationSec}s</Text>}
-            </Group>
+    <Shell breadcrumb={breadcrumb}>
+      {/* Run Header */}
+      <div style={{ marginBottom: 20 }}>
+        {project && (
+          <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', marginBottom: 4 }}>
+            {project.name} · {project.category || project.domain}
           </div>
-        </Group>
-
-        {/* KPI Row */}
-        <Grid>
-          <Grid.Col span={{ base: 6, md: 3 }}>
-            <Card withBorder p="md" ta="center">
-              <Text size="xl" fw={700} c="blue">{discovery.summary?.total_insights || 0}</Text>
-              <Text size="sm" c="dimmed">Insights</Text>
-            </Card>
-          </Grid.Col>
-          <Grid.Col span={{ base: 6, md: 3 }}>
-            <Card withBorder p="md" ta="center">
-              <Text size="xl" fw={700} c="red">
-                {(discovery.insights || []).filter((i) => i.severity === 'critical').length}
-              </Text>
-              <Text size="sm" c="dimmed">Critical</Text>
-            </Card>
-          </Grid.Col>
-          <Grid.Col span={{ base: 6, md: 3 }}>
-            <Card withBorder p="md" ta="center">
-              <Text size="xl" fw={700} c="violet">{discovery.summary?.total_recommendations || 0}</Text>
-              <Text size="sm" c="dimmed">Recommendations</Text>
-            </Card>
-          </Grid.Col>
-          <Grid.Col span={{ base: 6, md: 3 }}>
-            <Card withBorder p="md" ta="center">
-              <Text size="xl" fw={700} c="green">{discovery.summary?.queries_executed || 0}</Text>
-              <Text size="sm" c="dimmed">Queries</Text>
-            </Card>
-          </Grid.Col>
-        </Grid>
-
-        {/* Filters */}
-        {(discovery.insights || []).length > 0 && (
-          <Card withBorder p="md">
-            <Group gap="lg">
-              <div>
-                <Text size="xs" fw={600} mb={4}>Area</Text>
-                <Chip.Group multiple value={areaFilter} onChange={setAreaFilter}>
-                  <Group gap={4}>
-                    {allAreas.map((area) => (
-                      <Chip key={area} value={area} size="xs" variant="outline">
-                        {area}
-                      </Chip>
-                    ))}
-                  </Group>
-                </Chip.Group>
-              </div>
-              <div>
-                <Text size="xs" fw={600} mb={4}>Severity</Text>
-                <Chip.Group multiple value={severityFilter} onChange={setSeverityFilter}>
-                  <Group gap={4}>
-                    {allSeverities.sort((a, b) => (severityOrder[a] || 9) - (severityOrder[b] || 9)).map((sev) => (
-                      <Chip key={sev} value={sev} size="xs" variant="outline"
-                        color={severityColor[sev] || 'gray'}>
-                        {sev}
-                      </Chip>
-                    ))}
-                  </Group>
-                </Chip.Group>
-              </div>
-              <div>
-                <Text size="xs" fw={600} mb={4}>Sort by</Text>
-                <Select size="xs" w={140} value={sortBy} onChange={(v) => setSortBy(v || 'severity')}
-                  leftSection={<IconSortDescending size={14} />}
-                  data={[
-                    { value: 'severity', label: 'Severity' },
-                    { value: 'risk', label: 'Risk Score' },
-                    { value: 'confidence', label: 'Confidence' },
-                    { value: 'affected', label: 'Affected Count' },
-                  ]} />
-              </div>
-              {(areaFilter.length > 0 || severityFilter.length > 0) && (
-                <Button variant="subtle" size="xs" onClick={() => { setAreaFilter([]); setSeverityFilter([]); }}>
-                  Clear filters
-                </Button>
-              )}
-            </Group>
-          </Card>
         )}
+        <div style={{ fontSize: 18, fontWeight: 500, marginBottom: 6 }}>
+          Discovery run · {new Date(discovery.discovery_date).toLocaleDateString('en-US', {
+            month: 'long', day: 'numeric', year: 'numeric',
+          })}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <SeverityBadge severity={discovery.run_type === 'partial' ? 'Partial' : 'Complete'}
+            type="status" />
+          {discovery.areas_requested?.map(a => (
+            <span key={a} style={{
+              fontSize: 11, padding: '1px 7px', borderRadius: 'var(--db-radius)',
+              background: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)',
+            }}>{a}</span>
+          ))}
+          <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+            {discovery.total_steps} queries · completed in {durationSec}s
+          </span>
+        </div>
+      </div>
 
-        {/* Insights Report */}
-        {filtered.length > 0 && (
-          <>
-            <Group justify="space-between">
-              <Title order={3}>Insights ({filtered.length})</Title>
-            </Group>
-            <Stack gap="sm">
-              {filtered.map((insight, idx) => (
-                <Card key={idx} withBorder p="md" radius="md" component={Link}
-                  href={`/projects/${id}/discoveries/${runId}/insights/${insight.id || idx}`}
-                  style={{ textDecoration: 'none', cursor: 'pointer',
-                    borderLeft: `3px solid var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)` }}>
-                  <Group justify="space-between" mb={4}>
-                    <Group gap="xs">
-                      <IconAlertTriangle size={14}
-                        color={`var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)`} />
-                      <Text size="sm" fw={600}>{insight.name}</Text>
-                    </Group>
-                    <Group gap="xs">
-                      <Badge size="xs" color={severityColor[insight.severity] || 'gray'} variant="light">
-                        {insight.severity}
-                      </Badge>
-                      <Badge size="xs" variant="outline">{insight.analysis_area}</Badge>
-                      {insight.affected_count > 0 && (
-                        <Text size="xs" c="dimmed">{insight.affected_count.toLocaleString()} affected</Text>
-                      )}
-                      <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight"
-                        targetId={String(insight.id || idx)}
-                        feedback={feedbackMap[`insight:${insight.id || idx}`]}
-                        onUpdate={(fb) => handleFeedbackUpdate('insight', String(insight.id || idx), fb)} />
-                    </Group>
-                  </Group>
-                  <Text size="xs" c="dimmed" lineClamp={2}>{insight.description}</Text>
-                </Card>
-              ))}
-            </Stack>
-          </>
-        )}
+      {/* Hero KPI Cards */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24,
+      }}>
+        <StatCard label="Total Insights" value={totalInsights} />
+        <StatCard label="Critical Findings" value={criticalCount}
+          subtitle={`Of ${totalInsights} total insights`}
+          valueColor={criticalCount > 0 ? 'var(--db-red-text)' : undefined} />
+        <StatCard label="Recommendations" value={recommendations.length} />
+        <StatCard label="Avg. Confidence" value={`${avgConfidence}%`}
+          subtitle={`${discovery.summary?.queries_executed || 0} queries executed`} />
+      </div>
 
-        {(discovery.insights || []).length === 0 && (
-          <Card withBorder p="xl" ta="center">
-            <Text c="dimmed">No insights found in this discovery run.</Text>
-          </Card>
-        )}
+      {/* Insights Section */}
+      <SectionHeader title="Insights" count={filtered.length} />
 
-        {/* Recommendations */}
-        {(discovery.recommendations || []).length > 0 && (
-          <>
-            <Title order={3}>
-              <IconBulb size={20} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-              Recommendations ({discovery.recommendations.length})
-            </Title>
-            <Stack gap="sm">
-              {[...discovery.recommendations]
-                .sort((a, b) => a.priority - b.priority)
-                .map((rec, idx) => (
-                  <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
-                    feedback={feedbackMap[`recommendation:${idx}`]}
-                    onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(idx), fb)} />
+      {insights.length > 0 ? (
+        <>
+          {/* Filter bar */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            {['All', 'Critical', 'High', 'Medium', 'Low'].map(sev => (
+              <button key={sev} onClick={() => setSeverityFilter(sev)} style={{
+                fontSize: 12, padding: '4px 12px',
+                border: `0.5px solid var(--db-border-strong)`,
+                borderRadius: 'var(--db-radius)',
+                background: severityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+                color: severityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+                cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+              }}>{sev}</button>
+            ))}
+            <span style={{ flex: 1 }} />
+            <SortDropdown value={sortBy} onChange={setSortBy} />
+          </div>
+
+          {/* Insights Table */}
+          <div style={{
+            background: 'var(--db-bg-white)',
+            border: '1px solid var(--db-border-default)',
+            borderRadius: 'var(--db-radius-lg)',
+            overflow: 'hidden',
+            marginBottom: 24,
+          }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <Th width="35%">Insight</Th>
+                  <Th>Severity</Th>
+                  <Th>Area</Th>
+                  <Th align="right">Players affected</Th>
+                  <Th>Confidence</Th>
+                  <Th width="70px">Feedback</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((insight, idx) => (
+                  <InsightRow key={idx} insight={insight} projectId={id} runId={runId} idx={idx}
+                    feedback={feedbackMap[`insight:${insight.id || idx}`]}
+                    onFeedbackUpdate={(fb) => handleFeedbackUpdate('insight', String(insight.id || idx), fb)} />
                 ))}
-            </Stack>
-          </>
-        )}
-        {/* Transparency: How the AI Found This */}
-        {((discovery.exploration_log && discovery.exploration_log.length > 0) ||
-          (discovery.analysis_log && discovery.analysis_log.length > 0)) && (
-          <>
-            <Title order={3}>
-              <IconSearch size={20} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-              How the AI Found This
-            </Title>
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : (
+        <EmptyState icon={<IconBulb size={32} />} title="No insights found"
+          description="No issues were detected in this discovery run." />
+      )}
 
-            <Accordion variant="separated">
-              {/* Exploration Trail */}
-              {discovery.exploration_log && discovery.exploration_log.length > 0 && (
-                <Accordion.Item value="exploration">
-                  <Accordion.Control>
-                    <Group gap="xs">
-                      <IconDatabase size={16} />
-                      <Text size="sm" fw={600}>Exploration Steps ({discovery.exploration_log.length})</Text>
-                      <Text size="xs" c="dimmed">SQL queries the agent ran to discover data</Text>
-                    </Group>
-                  </Accordion.Control>
-                  <Accordion.Panel>
-                    <Stack gap="sm">
-                      {discovery.exploration_log.map((step, idx) => (
-                        <Card key={idx} withBorder p="sm" radius="sm">
-                          <Group justify="space-between" mb={4}>
-                            <Text size="xs" fw={600}>Step {step.step}</Text>
-                            <Group gap="xs">
-                              {step.row_count > 0 && (
-                                <Badge size="xs" variant="outline">{step.row_count} rows</Badge>
-                              )}
-                              {step.execution_time_ms > 0 && (
-                                <Badge size="xs" variant="outline">{step.execution_time_ms}ms</Badge>
-                              )}
-                              {step.fixed && <Badge size="xs" color="yellow">auto-fixed</Badge>}
-                              {step.error && <Badge size="xs" color="red">error</Badge>}
-                              {step.query && !step.error && (
-                                <FeedbackButtons projectId={id} discoveryId={runId} targetType="exploration_step"
-                                  targetId={String(step.step)}
-                                  feedback={feedbackMap[`exploration_step:${step.step}`]}
-                                  onUpdate={(fb) => handleFeedbackUpdate('exploration_step', String(step.step), fb)} />
-                              )}
-                            </Group>
-                          </Group>
-                          {step.thinking && (
-                            <Text size="xs" c="dimmed" mb={4}>{step.thinking}</Text>
-                          )}
-                          {step.query && (
-                            <Code block style={{ fontSize: '10px', maxHeight: 80, overflow: 'auto' }}>
-                              {step.query}
-                            </Code>
-                          )}
-                          {step.error && <Text size="xs" c="red" mt={4}>{step.error}</Text>}
-                        </Card>
-                      ))}
-                    </Stack>
-                  </Accordion.Panel>
-                </Accordion.Item>
-              )}
+      {/* Recommendations Section */}
+      <div style={{ marginTop: '2.5rem' }}>
+        <SectionHeader title="Recommendations" count={recommendations.length} />
+      </div>
 
-              {/* Analysis Reasoning */}
-              {discovery.analysis_log && discovery.analysis_log.length > 0 && (
-                <Accordion.Item value="analysis">
-                  <Accordion.Control>
-                    <Group gap="xs">
-                      <IconBulb size={16} />
-                      <Text size="sm" fw={600}>Analysis by Area ({discovery.analysis_log.length})</Text>
-                      <Text size="xs" c="dimmed">How insights were extracted from exploration data</Text>
-                    </Group>
-                  </Accordion.Control>
-                  <Accordion.Panel>
-                    <Stack gap="sm">
-                      {discovery.analysis_log.map((step, idx) => (
-                        <Card key={idx} withBorder p="sm" radius="sm">
-                          <Group justify="space-between" mb={4}>
-                            <Text size="sm" fw={600}>{step.area_name || step.area_id}</Text>
-                            <Group gap="xs">
-                              <Badge size="xs" variant="outline">{step.relevant_queries} queries fed</Badge>
-                              <Badge size="xs" variant="outline">{step.tokens_in + step.tokens_out} tokens</Badge>
-                              {step.duration_ms > 0 && (
-                                <Badge size="xs" variant="outline">{(step.duration_ms / 1000).toFixed(1)}s</Badge>
-                              )}
-                              {step.error && <Badge size="xs" color="red">error</Badge>}
-                            </Group>
-                          </Group>
-                          {step.error && <Text size="xs" c="red">{step.error}</Text>}
-                        </Card>
-                      ))}
-                    </Stack>
-                  </Accordion.Panel>
-                </Accordion.Item>
-              )}
+      {recommendations.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {visibleRecs.map((rec, idx) => (
+            <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
+              feedback={feedbackMap[`recommendation:${idx}`]}
+              onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(idx), fb)} />
+          ))}
+          {!showAllRecs && hiddenRecCount > 0 && (
+            <div onClick={() => setShowAllRecs(true)} style={{
+              background: 'var(--db-bg-white)',
+              border: '1px dashed var(--db-border-strong)',
+              borderRadius: 'var(--db-radius-lg)',
+              padding: '16px 20px',
+              cursor: 'pointer',
+              opacity: 0.7,
+              textAlign: 'center',
+              transition: 'opacity 120ms ease',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '0.7'; }}
+            >
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-secondary)' }}>
+                + {hiddenRecCount} more recommendations
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <EmptyState icon={<IconClipboardX size={32} />} title="No recommendations available"
+          description="No actionable recommendations for the insights found." />
+      )}
 
-              {/* Validation Trail */}
-              {discovery.validation_log && discovery.validation_log.length > 0 && (
-                <Accordion.Item value="validation">
-                  <Accordion.Control>
-                    <Group gap="xs">
-                      <Text size="sm" fw={600}>Validation ({discovery.validation_log.length})</Text>
-                      <Text size="xs" c="dimmed">How insights were verified against the warehouse</Text>
-                    </Group>
-                  </Accordion.Control>
-                  <Accordion.Panel>
-                    <Stack gap="sm">
-                      {discovery.validation_log.map((v, idx) => (
-                        <Card key={idx} withBorder p="sm" radius="sm">
-                          <Group justify="space-between" mb={4}>
-                            <Text size="xs">{v.analysis_area}</Text>
-                            <Badge size="xs" variant="light"
-                              color={v.status === 'confirmed' ? 'green' : v.status === 'adjusted' ? 'yellow' : v.status === 'error' ? 'red' : 'gray'}>
-                              {v.status}
-                            </Badge>
-                          </Group>
-                          {v.claimed_count > 0 && (
-                            <Text size="xs" c="dimmed">
-                              Claimed: {v.claimed_count.toLocaleString()} → Verified: {v.verified_count.toLocaleString()}
-                            </Text>
-                          )}
-                          <Text size="xs" c="dimmed">{v.reasoning}</Text>
-                        </Card>
-                      ))}
-                    </Stack>
-                  </Accordion.Panel>
-                </Accordion.Item>
-              )}
-            </Accordion>
-          </>
-        )}
-      </Stack>
+      {/* Transparency: How the AI Found This */}
+      {((discovery.exploration_log && discovery.exploration_log.length > 0) ||
+        (discovery.analysis_log && discovery.analysis_log.length > 0)) && (
+        <div style={{ marginTop: '2.5rem' }}>
+          <SectionHeader title="How the AI Found This" />
+          <Accordion variant="separated" styles={{
+            item: { borderColor: 'var(--db-border-default)' },
+            control: { fontSize: 13 },
+          }}>
+            {discovery.exploration_log && discovery.exploration_log.length > 0 && (
+              <Accordion.Item value="exploration">
+                <Accordion.Control>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <IconDatabase size={16} />
+                    <span style={{ fontWeight: 500 }}>Exploration Steps ({discovery.exploration_log.length})</span>
+                  </span>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {discovery.exploration_log.map((step, idx) => (
+                      <div key={idx} style={{
+                        border: '1px solid var(--db-border-default)',
+                        borderRadius: 'var(--db-radius)',
+                        padding: '10px 12px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600 }}>Step {step.step}</span>
+                          <span style={{ display: 'flex', gap: 4 }}>
+                            {step.row_count > 0 && <MicroBadge>{step.row_count} rows</MicroBadge>}
+                            {step.execution_time_ms > 0 && <MicroBadge>{step.execution_time_ms}ms</MicroBadge>}
+                            {step.fixed && <MicroBadge color="amber">auto-fixed</MicroBadge>}
+                            {step.error && <MicroBadge color="red">error</MicroBadge>}
+                            {step.query && !step.error && (
+                              <FeedbackButtons projectId={id} discoveryId={runId} targetType="exploration_step"
+                                targetId={String(step.step)}
+                                feedback={feedbackMap[`exploration_step:${step.step}`]}
+                                onUpdate={(fb) => handleFeedbackUpdate('exploration_step', String(step.step), fb)} />
+                            )}
+                          </span>
+                        </div>
+                        {step.thinking && (
+                          <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginBottom: 4 }}>{step.thinking}</div>
+                        )}
+                        {step.query && (
+                          <Code block style={{ fontSize: 11, maxHeight: 80, overflow: 'auto' }}>{step.query}</Code>
+                        )}
+                        {step.error && <div style={{ fontSize: 12, color: 'var(--db-red-text)', marginTop: 4 }}>{step.error}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </Accordion.Panel>
+              </Accordion.Item>
+            )}
+
+            {discovery.analysis_log && discovery.analysis_log.length > 0 && (
+              <Accordion.Item value="analysis">
+                <Accordion.Control>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <IconBulb size={16} />
+                    <span style={{ fontWeight: 500 }}>Analysis by Area ({discovery.analysis_log.length})</span>
+                  </span>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {discovery.analysis_log.map((step, idx) => (
+                      <div key={idx} style={{
+                        border: '1px solid var(--db-border-default)',
+                        borderRadius: 'var(--db-radius)',
+                        padding: '10px 12px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: 13, fontWeight: 500 }}>{step.area_name || step.area_id}</span>
+                          <span style={{ display: 'flex', gap: 4 }}>
+                            <MicroBadge>{step.relevant_queries} queries</MicroBadge>
+                            <MicroBadge>{step.tokens_in + step.tokens_out} tokens</MicroBadge>
+                            {step.duration_ms > 0 && <MicroBadge>{(step.duration_ms / 1000).toFixed(1)}s</MicroBadge>}
+                            {step.error && <MicroBadge color="red">error</MicroBadge>}
+                          </span>
+                        </div>
+                        {step.error && <div style={{ fontSize: 12, color: 'var(--db-red-text)', marginTop: 4 }}>{step.error}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </Accordion.Panel>
+              </Accordion.Item>
+            )}
+
+            {discovery.validation_log && discovery.validation_log.length > 0 && (
+              <Accordion.Item value="validation">
+                <Accordion.Control>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <IconSearch size={16} />
+                    <span style={{ fontWeight: 500 }}>Validation ({discovery.validation_log.length})</span>
+                  </span>
+                </Accordion.Control>
+                <Accordion.Panel>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {discovery.validation_log.map((v, idx) => (
+                      <div key={idx} style={{
+                        border: '1px solid var(--db-border-default)',
+                        borderRadius: 'var(--db-radius)',
+                        padding: '10px 12px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <span style={{ fontSize: 12 }}>{v.analysis_area}</span>
+                          <SeverityBadge severity={v.status} type="validation" />
+                        </div>
+                        {v.claimed_count > 0 && (
+                          <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+                            Claimed: {v.claimed_count.toLocaleString()} → Verified: {v.verified_count.toLocaleString()}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{v.reasoning}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Accordion.Panel>
+              </Accordion.Item>
+            )}
+          </Accordion>
+        </div>
+      )}
     </Shell>
   );
 }
+
+/* ========== Insight Table Row ========== */
+
+function InsightRow({ insight, projectId, runId, idx, feedback, onFeedbackUpdate }: {
+  insight: Insight; projectId: string; runId: string; idx: number;
+  feedback?: Feedback; onFeedbackUpdate: (fb: Feedback | null) => void;
+}) {
+  const confidenceColor = insight.confidence >= 80 ? 'var(--db-green-text)'
+    : insight.confidence >= 60 ? 'var(--db-amber-text)' : 'var(--db-red-text)';
+
+  return (
+    <tr style={{ borderBottom: '1px solid var(--db-border-default)' }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <Link href={`/projects/${projectId}/discoveries/${runId}/insights/${insight.id || idx}`}
+          style={{
+            fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)',
+            textDecoration: 'none', cursor: 'pointer', maxWidth: 320, display: 'block',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.textDecoration = 'underline'; }}
+          onMouseLeave={e => { e.currentTarget.style.textDecoration = 'none'; }}
+        >
+          {insight.name}
+        </Link>
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <SeverityBadge severity={insight.severity} type="severity" />
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <span style={{
+          fontSize: 11, padding: '1px 6px', borderRadius: 'var(--db-radius)',
+          background: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)',
+        }}>{insight.analysis_area}</span>
+      </td>
+      <td style={{ padding: '10px 12px', textAlign: 'right', verticalAlign: 'top', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+        {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{
+            width: 48, height: 4, background: 'var(--db-border-default)', borderRadius: 2,
+            display: 'inline-block', position: 'relative', overflow: 'hidden',
+          }}>
+            <span style={{
+              position: 'absolute', left: 0, top: 0, height: '100%', borderRadius: 2,
+              width: `${insight.confidence}%`, background: confidenceColor,
+            }} />
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--db-text-secondary)' }}>{insight.confidence}%</span>
+        </span>
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <FeedbackButtons projectId={projectId} discoveryId={runId} targetType="insight"
+          targetId={String(insight.id || idx)}
+          feedback={feedback} onUpdate={onFeedbackUpdate} />
+      </td>
+    </tr>
+  );
+}
+
+/* ========== Recommendation Card ========== */
 
 function RecommendationCard({ rec, projectId, discoveryId, idx, feedback, onFeedbackUpdate }: {
   rec: Recommendation; projectId: string; discoveryId: string; idx: number;
   feedback?: Feedback | null; onFeedbackUpdate?: (fb: Feedback | null) => void;
 }) {
-  const priorityColor = rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue';
+  const effortColors: Record<string, { bg: string; color: string }> = {
+    low: { bg: '#EAF3DE', color: '#3B6D11' },
+    medium: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
+    high: { bg: '#FAECE7', color: '#993C1D' },
+  };
+
+  // Derive effort from priority
+  const effort = rec.priority <= 1 ? 'low' : rec.priority <= 3 ? 'medium' : 'high';
+  const effortStyle = effortColors[effort] || effortColors.medium;
+
   return (
-    <Card withBorder p="md" radius="md"
-      style={{ borderLeft: `3px solid var(--mantine-color-${priorityColor}-6)` }}>
-      <Group justify="space-between" mb={4}>
-        <Text size="sm" fw={600}>{rec.title}</Text>
-        <Group gap="xs">
-          <Badge color={priorityColor} variant="light" size="xs">P{rec.priority}</Badge>
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '1px solid var(--db-border-default)',
+      borderRadius: 'var(--db-radius-lg)',
+      padding: '16px 20px',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, flex: 1 }}>{rec.title}</div>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+          {rec.expected_impact && (
+            <Pill bg="var(--db-green-bg)" color="var(--db-green-text)">
+              {rec.expected_impact.estimated_improvement}
+            </Pill>
+          )}
+          <Pill bg={effortStyle.bg} color={effortStyle.color}>
+            {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+          </Pill>
           <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
             targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
-        </Group>
-      </Group>
-      <Text size="xs" c="dimmed" mb="sm">{rec.description}</Text>
-      {rec.expected_impact && (
-        <Group gap="xs" mb="xs">
-          <IconTrendingUp size={12} />
-          <Text size="xs" c="dimmed">
-            {rec.expected_impact.metric}: {rec.expected_impact.estimated_improvement}
-          </Text>
-        </Group>
+        </div>
+      </div>
+
+      {/* Metadata */}
+      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--db-text-tertiary)', marginBottom: 8, flexWrap: 'wrap' }}>
+        {rec.target_segment && (
+          <span>{rec.segment_size?.toLocaleString() || ''} {rec.target_segment}</span>
+        )}
+        {rec.expected_impact?.metric && (
+          <span>{rec.expected_impact.metric}</span>
+        )}
+        {rec.confidence > 0 && <span>Confidence: {rec.confidence}%</span>}
+      </div>
+
+      {/* Description */}
+      {rec.description && (
+        <div style={{ fontSize: 13, color: 'var(--db-text-secondary)', lineHeight: 1.6, marginBottom: rec.actions?.length ? 0 : undefined }}>
+          {rec.description}
+        </div>
       )}
+
+      {/* Action Steps */}
       {rec.actions && rec.actions.length > 0 && (
-        <Stack gap={2}>
-          {rec.actions.slice(0, 3).map((action, i) => (
-            <Text key={i} size="xs" c="dimmed">- {action}</Text>
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--db-border-default)' }}>
+          <div style={{
+            fontSize: 11, fontWeight: 500, color: 'var(--db-text-tertiary)',
+            textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6,
+          }}>Action steps</div>
+          {rec.actions.map((action, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 6, fontSize: 13, color: 'var(--db-text-secondary)',
+              lineHeight: 1.6, marginBottom: 4,
+            }}>
+              <span style={{ color: 'var(--db-text-tertiary)', fontWeight: 500, flexShrink: 0 }}>{i + 1}</span>
+              <span>{action}</span>
+            </div>
           ))}
-        </Stack>
+        </div>
       )}
-    </Card>
+    </div>
+  );
+}
+
+/* ========== Small UI Components ========== */
+
+function StatCard({ label, value, subtitle, valueColor }: {
+  label: string; value: number | string; subtitle?: string; valueColor?: string;
+}) {
+  return (
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '1px solid var(--db-border-default)',
+      borderRadius: 'var(--db-radius-lg)',
+      padding: 16,
+    }}>
+      <div style={{
+        fontSize: 11, fontWeight: 500, textTransform: 'uppercase',
+        letterSpacing: '0.5px', color: 'var(--db-text-tertiary)', marginBottom: 4,
+      }}>{label}</div>
+      <div style={{
+        fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+        color: valueColor || 'var(--db-text-primary)', lineHeight: 1.3,
+      }}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
+      {subtitle && (
+        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 2 }}>{subtitle}</div>
+      )}
+    </div>
+  );
+}
+
+function SectionHeader({ title, count }: { title: string; count?: number }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, marginTop: 8 }}>
+      <span style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)' }}>{title}</span>
+      {count !== undefined && (
+        <span style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginLeft: 6 }}>{count}</span>
+      )}
+    </div>
+  );
+}
+
+function Th({ children, width, align }: { children: React.ReactNode; width?: string; align?: string }) {
+  return (
+    <th style={{
+      fontSize: 11, fontWeight: 500, color: 'var(--db-text-tertiary)',
+      textTransform: 'uppercase', letterSpacing: '0.5px',
+      padding: '8px 12px', borderBottom: '1px solid var(--db-border-default)',
+      textAlign: (align as 'left' | 'right') || 'left', width,
+    }}>{children}</th>
+  );
+}
+
+function SeverityBadge({ severity, type }: { severity: string; type: 'severity' | 'status' | 'validation' }) {
+  const severityColors: Record<string, { bg: string; color: string }> = {
+    critical: { bg: 'var(--db-severity-critical-bg)', color: 'var(--db-severity-critical-text)' },
+    high: { bg: 'var(--db-severity-high-bg)', color: 'var(--db-severity-high-text)' },
+    medium: { bg: 'var(--db-severity-medium-bg)', color: 'var(--db-severity-medium-text)' },
+    low: { bg: 'var(--db-severity-low-bg)', color: 'var(--db-severity-low-text)' },
+  };
+  const statusColors: Record<string, { bg: string; color: string }> = {
+    Complete: { bg: 'var(--db-green-bg)', color: 'var(--db-green-text)' },
+    Partial: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
+    Failed: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+    confirmed: { bg: 'var(--db-green-bg)', color: 'var(--db-green-text)' },
+    adjusted: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
+    rejected: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+    error: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+  };
+
+  const colors = type === 'severity'
+    ? severityColors[severity.toLowerCase()] || { bg: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)' }
+    : statusColors[severity] || { bg: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)' };
+
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 500, padding: '1px 6px',
+      borderRadius: 'var(--db-radius)',
+      background: colors.bg, color: colors.color,
+      display: 'inline-block',
+    }}>{severity}</span>
+  );
+}
+
+function Pill({ bg, color, children }: { bg: string; color: string; children: React.ReactNode }) {
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 500, padding: '2px 8px',
+      borderRadius: 'var(--db-radius)', whiteSpace: 'nowrap',
+      background: bg, color: color,
+    }}>{children}</span>
+  );
+}
+
+function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'red' | 'amber' }) {
+  const bg = color === 'red' ? 'var(--db-red-bg)' : color === 'amber' ? 'var(--db-amber-bg)' : 'var(--db-bg-muted)';
+  const textColor = color === 'red' ? 'var(--db-red-text)' : color === 'amber' ? 'var(--db-amber-text)' : 'var(--db-text-tertiary)';
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 4,
+      background: bg, color: textColor,
+    }}>{children}</span>
+  );
+}
+
+function SortDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, { toggle, close }] = useDisclosure(false);
+  const options = ['Severity', 'Confidence', 'Players affected', 'Area'];
+  return (
+    <div style={{ position: 'relative' }}>
+      <button onClick={toggle} style={{
+        fontSize: 12, color: 'var(--db-text-tertiary)',
+        background: 'none', border: 'none', cursor: 'pointer',
+        fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        Sort: {value} <IconChevronDown size={12} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: '100%', marginTop: 4,
+          background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
+          borderRadius: 'var(--db-radius)', boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+          zIndex: 10, minWidth: 140,
+        }}>
+          {options.map(opt => (
+            <div key={opt} onClick={() => { onChange(opt); close(); }}
+              style={{
+                padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+                background: opt === value ? 'var(--db-bg-muted)' : 'transparent',
+                fontWeight: opt === value ? 500 : 400,
+                transition: 'background 120ms ease',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+              onMouseLeave={e => { if (opt !== value) e.currentTarget.style.background = 'transparent'; }}
+            >{opt}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmptyState({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '2px dashed var(--db-border-strong)',
+      borderRadius: 'var(--db-radius-lg)',
+      padding: 48, textAlign: 'center',
+    }}>
+      <div style={{ opacity: 0.3, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-secondary)', marginBottom: 4 }}>{title}</div>
+      <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)' }}>{description}</div>
+    </div>
   );
 }

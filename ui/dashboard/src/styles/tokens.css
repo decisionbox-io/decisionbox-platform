@@ -1,0 +1,71 @@
+:root {
+  /* Surfaces */
+  --db-bg-page: #fafaf8;
+  --db-bg-white: #ffffff;
+  --db-bg-muted: #f2f1ee;
+  --db-bg-hover: #eeeee9;
+
+  /* Text hierarchy */
+  --db-text-primary: #1a1a1a;
+  --db-text-secondary: #6b6b6b;
+  --db-text-tertiary: #999999;
+  --db-text-link: #185FA5;
+
+  /* Borders */
+  --db-border-default: rgba(0, 0, 0, 0.08);
+  --db-border-strong: rgba(0, 0, 0, 0.15);
+
+  /* Semantic pairs (background / text) */
+  --db-green-bg: #E1F5EE;
+  --db-green-text: #0F6E56;
+  --db-red-bg: #FCEBEB;
+  --db-red-text: #A32D2D;
+  --db-amber-bg: #FAEEDA;
+  --db-amber-text: #854F0B;
+  --db-blue-bg: #E6F1FB;
+  --db-blue-text: #185FA5;
+  --db-purple-bg: #EEEDFE;
+  --db-purple-text: #534AB7;
+
+  /* Radii */
+  --db-radius: 8px;
+  --db-radius-lg: 12px;
+
+  /* Layout */
+  --db-sidebar-width: 220px;
+  --db-topbar-height: 52px;
+  --db-content-max-width: 960px;
+  --db-content-padding: 24px;
+
+  /* Severity badge colors */
+  --db-severity-critical-bg: #FCEBEB;
+  --db-severity-critical-text: #A32D2D;
+  --db-severity-high-bg: #FAECE7;
+  --db-severity-high-text: #993C1D;
+  --db-severity-medium-bg: #FAEEDA;
+  --db-severity-medium-text: #854F0B;
+  --db-severity-low-bg: #EAF3DE;
+  --db-severity-low-text: #3B6D11;
+}
+
+/* Page background */
+body {
+  background: var(--db-bg-page);
+  color: var(--db-text-primary);
+}
+
+/* Animations */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes step-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50% { transform: scale(1.15); opacity: 0.1; }
+}
+
+@keyframes typing {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 1; }
+}

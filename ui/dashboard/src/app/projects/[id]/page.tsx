@@ -3,15 +3,14 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Badge, Button, Card, Checkbox, Code, Collapse, Grid, Group, Loader, Menu, NumberInput,
-  Progress, ScrollArea, Stack, Text, Title,
+  Badge, Button, Checkbox, Code, Collapse, Loader, Menu, NumberInput,
+  Progress, ScrollArea, Text,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import {
-  IconAlertTriangle, IconBrain, IconBulb, IconCheck, IconChevronDown, IconChevronRight,
-  IconDatabase, IconEdit, IconPlayerPlay, IconSearch, IconSettings,
-  IconShieldCheck, IconX,
+  IconAlertTriangle, IconBulb, IconChartBar, IconCheck, IconChevronDown,
+  IconDatabase, IconPlayerPlay, IconShieldCheck, IconStack2, IconX,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
@@ -51,12 +50,10 @@ export default function ProjectPage() {
       const status = await api.getProjectStatus(id);
       if (status?.run) {
         const newRun = status.run as unknown as DiscoveryRunStatus;
-        // Don't bring back a dismissed run
         if (dismissedRunId.current === newRun.id) return;
         const wasRunning = run && (run.status === 'running' || run.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         setRun(newRun);
-        // Refresh discoveries list when run finishes
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
         }
@@ -71,15 +68,11 @@ export default function ProjectPage() {
     return () => clearInterval(interval);
   }, [run, pollStatus]);
 
-  // Initial poll on mount
   useEffect(() => { pollStatus(); }, []);
 
   const handleRun = (areas?: string[]) => {
-    if (estimateFirst) {
-      handleEstimate(areas);
-    } else {
-      handleTrigger(areas);
-    }
+    if (estimateFirst) handleEstimate(areas);
+    else handleTrigger(areas);
   };
 
   const handleEstimate = async (areas?: string[]) => {
@@ -105,7 +98,6 @@ export default function ProjectPage() {
       const opts: { areas?: string[]; max_steps?: number } = {};
       if (areas && areas.length > 0) opts.areas = areas;
       if (maxSteps !== 100) opts.max_steps = maxSteps;
-
       const result = await api.triggerDiscovery(id, Object.keys(opts).length > 0 ? opts : undefined);
       if (result.run_id) {
         const newRun = await api.getRun(result.run_id);
@@ -125,433 +117,685 @@ export default function ProjectPage() {
 
   const isRunning = run && (run.status === 'running' || run.status === 'pending');
   const justFinished = run && (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled');
-  const showRunCard = isRunning || justFinished;
-  const latestDiscovery = discoveries.length > 0 ? discoveries[0] : null;
+  const showRunPanel = isRunning || justFinished;
 
-  return (
-    <Shell>
-      <Stack gap="lg">
-        {/* Header */}
-        <Group justify="space-between">
-          <div>
-            <Title order={2}>{project.name}</Title>
-            <Group gap="xs" mt={4}>
-              <Badge variant="light">{project.domain}</Badge>
-              <Badge variant="light" color="blue">{project.category}</Badge>
-              {project.description && <Text size="xs" c="dimmed">{project.description}</Text>}
-            </Group>
-          </div>
-          <Group>
-            <Button variant="subtle" component={Link} href={`/projects/${id}/prompts`}
-              leftSection={<IconEdit size={16} />} size="sm">Prompts</Button>
-            <Button variant="subtle" component={Link} href={`/projects/${id}/settings`}
-              leftSection={<IconSettings size={16} />} size="sm">Settings</Button>
+  // Aggregate stats
+  const totalRuns = discoveries.length;
+  const totalInsights = discoveries.reduce((sum, d) => sum + (d.summary?.total_insights || 0), 0);
+  const totalRecs = discoveries.reduce((sum, d) => sum + (d.summary?.total_recommendations || 0), 0);
+  const criticalCount = discoveries.reduce((sum, d) =>
+    sum + (d.insights?.filter(i => i.severity === 'critical' || i.severity === 'high').length || 0), 0);
+  const latestAgo = discoveries.length > 0
+    ? formatTimeAgo(new Date(discoveries[0].discovery_date))
+    : null;
 
-            <Menu shadow="md" width={280} disabled={!!isRunning}>
-              <Menu.Target>
-                <Button leftSection={<IconPlayerPlay size={16} />}
-                  rightSection={<IconChevronDown size={14} />}
-                  loading={triggering || estimating} disabled={!!isRunning}>
-                  {isRunning ? 'Running...' : 'Run Discovery'}
-                </Button>
-              </Menu.Target>
-              <Menu.Dropdown>
-                <Menu.Label>Exploration steps</Menu.Label>
-                <div style={{ padding: '4px 12px 8px' }}>
-                  <NumberInput size="xs" value={maxSteps} onChange={(v) => setMaxSteps(Number(v) || 100)}
-                    min={5} max={500} step={5} description="More steps = more comprehensive" />
-                </div>
-                <Menu.Item closeMenuOnClick={false}>
-                  <Checkbox label="Estimate cost before running" size="xs"
-                    checked={estimateFirst}
-                    onChange={(e) => setEstimateFirst(e.currentTarget.checked)} />
-                </Menu.Item>
-                <Menu.Divider />
-                <Menu.Item onClick={() => handleRun()}>Run All Areas</Menu.Item>
-                <Menu.Divider />
-                <Menu.Label>Select areas</Menu.Label>
-                {analysisAreas.map((area) => (
-                  <Menu.Item key={area.id} closeMenuOnClick={false}>
-                    <Checkbox label={area.name} checked={selectedAreas.includes(area.id)}
-                      onChange={(e) => {
-                        if (e.currentTarget.checked) setSelectedAreas([...selectedAreas, area.id]);
-                        else setSelectedAreas(selectedAreas.filter((a) => a !== area.id));
-                      }} />
-                  </Menu.Item>
-                ))}
-                {selectedAreas.length > 0 && (
-                  <>
-                    <Menu.Divider />
-                    <Menu.Item color="blue" onClick={() => handleRun(selectedAreas)}>
-                      Run Selected ({selectedAreas.length})
-                    </Menu.Item>
-                  </>
-                )}
-              </Menu.Dropdown>
-            </Menu>
-          </Group>
-        </Group>
+  const breadcrumb = [
+    { label: 'Projects', href: '/' },
+    { label: project.name },
+  ];
 
-        {/* Cost Estimation Confirmation */}
-        {(estimating || estimate) && (
-          <Card withBorder p="lg" shadow="sm" radius="md">
-            {estimating ? (
-              <Group gap="sm">
-                <Loader size="sm" />
-                <Text size="sm">Estimating cost...</Text>
-              </Group>
-            ) : estimate && (
-              <Stack gap="sm">
-                <Title order={4}>Cost Estimate</Title>
-                <Grid>
-                  <Grid.Col span={4}>
-                    <Text size="xs" c="dimmed">LLM ({estimate.llm.provider}/{estimate.llm.model})</Text>
-                    <Text size="lg" fw={700}>${estimate.llm.cost_usd.toFixed(4)}</Text>
-                    <Text size="xs" c="dimmed">
-                      ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out tokens
-                    </Text>
-                  </Grid.Col>
-                  <Grid.Col span={4}>
-                    <Text size="xs" c="dimmed">Warehouse ({estimate.warehouse.provider})</Text>
-                    <Text size="lg" fw={700}>${estimate.warehouse.cost_usd.toFixed(4)}</Text>
-                    <Text size="xs" c="dimmed">
-                      ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
-                    </Text>
-                  </Grid.Col>
-                  <Grid.Col span={4}>
-                    <Text size="xs" c="dimmed">Total Estimated Cost</Text>
-                    <Text size="xl" fw={700} c="blue">${estimate.total_cost_usd.toFixed(4)}</Text>
-                  </Grid.Col>
-                </Grid>
-                <Group justify="flex-end" gap="sm">
-                  <Button variant="subtle" color="gray" onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>
-                    Cancel
-                  </Button>
-                  <Button onClick={() => handleTrigger(pendingAreas)} loading={triggering}>
-                    Confirm & Run
-                  </Button>
-                </Group>
-              </Stack>
-            )}
-          </Card>
-        )}
-
-        {/* Live Run Status */}
-        {showRunCard && run && (
-          <LiveRunStatus run={run} onCancel={async () => {
-            if (justFinished) {
-              dismissedRunId.current = run.id;
-              setRun(null);
-              return;
-            }
-            try {
-              await api.cancelRun(run.id);
-              setRun({ ...run, status: 'cancelled' });
-              notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
-            } catch (e: unknown) {
-              notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-            }
-          }} />
-        )}
-
-        {/* Quick Stats */}
-        {latestDiscovery && (
-          <Grid>
-            <Grid.Col span={{ base: 6, md: 3 }}>
-              <Card withBorder p="md" ta="center">
-                <Text size="xl" fw={700} c="blue">{discoveries.length}</Text>
-                <Text size="sm" c="dimmed">Total Runs</Text>
-              </Card>
-            </Grid.Col>
-            <Grid.Col span={{ base: 6, md: 3 }}>
-              <Card withBorder p="md" ta="center">
-                <Text size="xl" fw={700} c="violet">
-                  {discoveries.reduce((sum, d) => sum + (d.summary?.total_insights || 0), 0)}
-                </Text>
-                <Text size="sm" c="dimmed">Total Insights</Text>
-              </Card>
-            </Grid.Col>
-            <Grid.Col span={{ base: 6, md: 3 }}>
-              <Card withBorder p="md" ta="center">
-                <Text size="xl" fw={700} c="green">{latestDiscovery.summary?.total_insights || 0}</Text>
-                <Text size="sm" c="dimmed">Latest Insights</Text>
-              </Card>
-            </Grid.Col>
-            <Grid.Col span={{ base: 6, md: 3 }}>
-              <Card withBorder p="md" ta="center">
-                <Text size="xl" fw={700}>{latestDiscovery.total_steps}</Text>
-                <Text size="sm" c="dimmed">Latest Steps</Text>
-              </Card>
-            </Grid.Col>
-          </Grid>
-        )}
-
-        {/* Empty State */}
-        {!latestDiscovery && !isRunning && (
-          <Card withBorder p="xl" ta="center">
-            <Stack align="center" gap="md">
-              <IconSearch size={48} color="var(--mantine-color-gray-4)" />
-              <Title order={3} c="dimmed">No discoveries yet</Title>
-              <Text c="dimmed">Run your first discovery to start finding insights.</Text>
-            </Stack>
-          </Card>
-        )}
-
-        {/* Discovery History */}
-        {discoveries.length > 0 && (
+  const topBarActions = (
+    <Menu shadow="md" width={280} disabled={!!isRunning}>
+      <Menu.Target>
+        <button style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: 'var(--db-text-primary)', color: '#fff',
+          border: 'none', borderRadius: 6, padding: '6px 14px',
+          fontSize: 13, fontWeight: 500, cursor: 'pointer',
+          fontFamily: 'inherit', opacity: isRunning ? 0.5 : 1,
+          transition: 'background 120ms ease',
+        }}
+        onMouseEnter={e => { if (!isRunning) e.currentTarget.style.background = '#333'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
+        >
+          <IconPlayerPlay size={14} />
+          {isRunning ? 'Running...' : 'Run discovery'}
+        </button>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Exploration steps</Menu.Label>
+        <div style={{ padding: '4px 12px 8px' }}>
+          <NumberInput size="xs" value={maxSteps} onChange={(v) => setMaxSteps(Number(v) || 100)}
+            min={5} max={500} step={5} description="More steps = more comprehensive" />
+        </div>
+        <Menu.Item closeMenuOnClick={false}>
+          <Checkbox label="Estimate cost before running" size="xs"
+            checked={estimateFirst} onChange={(e) => setEstimateFirst(e.currentTarget.checked)} />
+        </Menu.Item>
+        <Menu.Divider />
+        <Menu.Item onClick={() => handleRun()}>Run All Areas</Menu.Item>
+        <Menu.Divider />
+        <Menu.Label>Select areas</Menu.Label>
+        {analysisAreas.map((area) => (
+          <Menu.Item key={area.id} closeMenuOnClick={false}>
+            <Checkbox label={area.name} checked={selectedAreas.includes(area.id)}
+              onChange={(e) => {
+                if (e.currentTarget.checked) setSelectedAreas([...selectedAreas, area.id]);
+                else setSelectedAreas(selectedAreas.filter((a) => a !== area.id));
+              }} />
+          </Menu.Item>
+        ))}
+        {selectedAreas.length > 0 && (
           <>
-            <Title order={3}>Discoveries</Title>
-            <Stack gap="sm">
-              {discoveries.map((d) => (
-                <Card key={d.id} withBorder p="md" radius="md" component={Link}
-                  href={`/projects/${id}/discoveries/${d.id}`}
-                  style={{ textDecoration: 'none', cursor: 'pointer' }}>
-                  <Group justify="space-between">
-                    <Group gap="sm">
-                      <Text size="sm" fw={600}>
-                        {new Date(d.discovery_date).toLocaleDateString('en-US', {
-                          month: 'short', day: 'numeric', year: 'numeric',
-                          hour: '2-digit', minute: '2-digit',
-                        })}
-                      </Text>
-                      <Badge size="sm" variant="light"
-                        color={d.run_type === 'partial' ? 'violet' : 'blue'}>
-                        {d.run_type || 'full'}
-                      </Badge>
-                      {d.areas_requested && d.areas_requested.length > 0 && (
-                        <Text size="xs" c="dimmed">{d.areas_requested.join(', ')}</Text>
-                      )}
-                    </Group>
-                    <Group gap="sm">
-                      <Badge size="sm" variant="outline" color="teal">
-                        {d.summary?.total_insights || 0} insights
-                      </Badge>
-                      <Badge size="sm" variant="outline" color="gray">
-                        {d.total_steps} steps
-                      </Badge>
-                    </Group>
-                  </Group>
-                </Card>
-              ))}
-            </Stack>
+            <Menu.Divider />
+            <Menu.Item color="blue" onClick={() => handleRun(selectedAreas)}>
+              Run Selected ({selectedAreas.length})
+            </Menu.Item>
           </>
         )}
-      </Stack>
+      </Menu.Dropdown>
+    </Menu>
+  );
+
+  return (
+    <Shell breadcrumb={breadcrumb} actions={topBarActions}>
+      {/* Aggregate Stats Row */}
+      {totalRuns > 0 && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: 12,
+          marginBottom: 24,
+        }}>
+          <StatCard label="Total Runs" value={totalRuns} subtitle={latestAgo ? `Latest: ${latestAgo}` : undefined} />
+          <StatCard label="Total Insights" value={totalInsights} subtitle={criticalCount > 0 ? `${criticalCount} critical or high` : undefined} />
+          <StatCard label="Recommendations" value={totalRecs} valueColor="var(--db-green-text)" />
+          <StatCard label="Queries Executed" value={discoveries.reduce((sum, d) => sum + (d.summary?.queries_executed || 0), 0)} />
+        </div>
+      )}
+
+      {/* Cost Estimation */}
+      {(estimating || estimate) && (
+        <div style={{
+          background: 'var(--db-bg-white)',
+          border: '1px solid var(--db-border-default)',
+          borderRadius: 'var(--db-radius-lg)',
+          padding: '16px 20px',
+          marginBottom: 20,
+        }}>
+          {estimating ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Loader size="sm" />
+              <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>Estimating cost...</span>
+            </div>
+          ) : estimate && (
+            <>
+              <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Cost Estimate</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                    LLM ({estimate.llm.provider})
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+                    ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                    Warehouse ({estimate.warehouse.provider})
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.warehouse.cost_usd.toFixed(4)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+                    ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total</div>
+                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--db-blue-text)' }}>${estimate.total_cost_usd.toFixed(4)}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <GhostButton onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>Cancel</GhostButton>
+                <PrimaryButton onClick={() => handleTrigger(pendingAreas)} disabled={triggering}>
+                  {triggering ? 'Starting...' : 'Confirm & Run'}
+                </PrimaryButton>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Live Run Panel */}
+      {showRunPanel && run && (
+        <LiveRunPanel run={run} onCancel={async () => {
+          if (justFinished) {
+            dismissedRunId.current = run.id;
+            setRun(null);
+            return;
+          }
+          try {
+            await api.cancelRun(run.id);
+            setRun({ ...run, status: 'cancelled' });
+            notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
+          } catch (e: unknown) {
+            notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+          }
+        }} />
+      )}
+
+      {/* Discovery Runs Section */}
+      {discoveries.length > 0 && (
+        <>
+          <SectionHeader title="Discovery runs" count={discoveries.length} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {discoveries.map((d) => (
+              <DiscoveryRunCard key={d.id} discovery={d} projectId={id} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Empty State */}
+      {!discoveries.length && !isRunning && !estimating && !estimate && (
+        <div style={{
+          background: 'var(--db-bg-white)',
+          border: '2px dashed var(--db-border-strong)',
+          borderRadius: 'var(--db-radius-lg)',
+          padding: 48,
+          textAlign: 'center',
+        }}>
+          <IconChartBar size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
+          <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-secondary)', marginBottom: 4 }}>
+            No discoveries yet
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginBottom: 16 }}>
+            Run your first discovery to see insights.
+          </div>
+          <PrimaryButton onClick={() => handleRun()}>Run your first discovery</PrimaryButton>
+        </div>
+      )}
     </Shell>
   );
 }
 
-function LiveRunStatus({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
+/* ========== Stat Card ========== */
+
+function StatCard({ label, value, subtitle, valueColor }: {
+  label: string; value: number | string; subtitle?: string; valueColor?: string;
+}) {
+  return (
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '1px solid var(--db-border-default)',
+      borderRadius: 'var(--db-radius-lg)',
+      padding: 16,
+    }}>
+      <div style={{
+        fontSize: 11, fontWeight: 500, textTransform: 'uppercase',
+        letterSpacing: '0.5px', color: 'var(--db-text-tertiary)', marginBottom: 4,
+      }}>{label}</div>
+      <div style={{
+        fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+        color: valueColor || 'var(--db-text-primary)', lineHeight: 1.3,
+      }}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
+      {subtitle && (
+        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 2 }}>{subtitle}</div>
+      )}
+    </div>
+  );
+}
+
+/* ========== Section Header ========== */
+
+function SectionHeader({ title, count }: { title: string; count?: number }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      marginBottom: 12, marginTop: 8,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)' }}>{title}</span>
+        {count !== undefined && (
+          <span style={{ fontSize: 13, color: 'var(--db-text-tertiary)' }}>{count}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ========== Discovery Run Card ========== */
+
+function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryResult; projectId: string }) {
+  const insights = d.insights || [];
+  const criticalCount = insights.filter(i => i.severity === 'critical').length;
+  const highCount = insights.filter(i => i.severity === 'high').length;
+  const topInsights = insights.slice(0, 3);
+
+  return (
+    <Link href={`/projects/${projectId}/discoveries/${d.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+      <div style={{
+        background: 'var(--db-bg-white)',
+        border: '1px solid var(--db-border-default)',
+        borderRadius: 'var(--db-radius-lg)',
+        padding: '16px 20px',
+        cursor: 'pointer',
+        transition: 'border-color 120ms ease, box-shadow 120ms ease',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.borderColor = 'var(--db-border-strong)';
+        e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = 'var(--db-border-default)';
+        e.currentTarget.style.boxShadow = 'none';
+      }}
+      >
+        {/* Row 1: Date + badges */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>
+              {new Date(d.discovery_date).toLocaleDateString('en-US', {
+                month: 'long', day: 'numeric', year: 'numeric',
+              })} · {new Date(d.discovery_date).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit',
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+              <StatusBadge status={d.run_type === 'partial' ? 'Partial' : 'Complete'} />
+              {d.areas_requested?.map(a => <AreaBadge key={a} area={a} />)}
+              <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>
+                {d.total_steps} queries · {d.duration || '—'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: Stats */}
+        <div style={{ display: 'flex', gap: 24, fontSize: 12, color: 'var(--db-text-secondary)' }}>
+          <StatDot color="var(--db-blue-text)" text={`${d.summary?.total_insights || 0} insights`} />
+          {criticalCount > 0 && <StatDot color="var(--db-red-text)" text={`${criticalCount} critical`} />}
+          {highCount > 0 && <StatDot color="var(--db-severity-high-text)" text={`${highCount} high`} />}
+          <StatDot color="var(--db-purple-text)" text={`${d.summary?.total_recommendations || 0} recommendations`} />
+        </div>
+
+        {/* Row 3: Preview */}
+        {topInsights.length > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--db-border-default)' }}>
+            {topInsights.map((insight, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0', fontSize: 12, color: 'var(--db-text-secondary)' }}>
+                <SeverityDot severity={insight.severity} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{insight.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+/* ========== Live Run Panel ========== */
+
+function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
   const steps = run.steps || [];
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
-  // Auto-scroll only when new steps arrive and user hasn't scrolled up
   useEffect(() => {
     if (steps.length > prevStepCount.current && !userScrolledUp.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
     prevStepCount.current = steps.length;
   }, [steps.length]);
-  const phaseLabel: Record<string, string> = {
-    init: 'Initializing', schema_discovery: 'Discovering Schema',
-    exploration: 'Exploring Data', analysis: 'Analyzing Patterns',
-    validation: 'Validating Insights', recommendations: 'Generating Recommendations',
-    saving: 'Saving Results', complete: 'Complete',
-  };
 
   const isDone = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
-  const statusColor = run.status === 'completed' ? 'green' : run.status === 'failed' ? 'red' : run.status === 'cancelled' ? 'orange' : 'blue';
+  const phaseLabel: Record<string, string> = {
+    init: 'Initializing', schema_discovery: 'schema_discovery',
+    exploration: 'exploration', analysis: 'analysis',
+    validation: 'validation', recommendations: 'recommendations',
+    saving: 'saving', complete: 'complete',
+  };
+
+  const elapsed = run.started_at
+    ? Math.round((new Date(run.updated_at || Date.now()).getTime() - new Date(run.started_at).getTime()) / 1000)
+    : 0;
 
   return (
-    <Card withBorder p="lg" shadow="sm" radius="md">
+    <div style={{
+      background: 'var(--db-bg-white)',
+      border: '1px solid var(--db-border-default)',
+      borderRadius: 'var(--db-radius-lg)',
+      overflow: 'hidden',
+      marginBottom: 20,
+    }}>
       {/* Header */}
-      <Group justify="space-between" mb="md">
-        <Group gap="sm">
-          {isDone
-            ? (run.status === 'completed'
-              ? <IconCheck size={20} color="var(--mantine-color-green-6)" />
-              : <IconAlertTriangle size={20} color={`var(--mantine-color-${statusColor}-6)`} />)
-            : <Loader size="sm" color="blue" />}
-          <Title order={4}>
-            {isDone
-              ? (run.status === 'completed' ? 'Discovery Complete' : run.status === 'failed' ? 'Discovery Failed' : 'Discovery Cancelled')
-              : 'Discovery in Progress'}
-          </Title>
-        </Group>
-        <Group gap="xs">
-          <Badge color={statusColor} variant="light" size="lg">{phaseLabel[run.phase] || run.phase}</Badge>
-          {!isDone && <Button size="xs" variant="light" color="red" onClick={onCancel}>Cancel</Button>}
-          {isDone && <Button size="xs" variant="subtle" color="gray" onClick={onCancel}>Dismiss</Button>}
-        </Group>
-      </Group>
+      <div style={{ padding: '16px 20px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {!isDone && (
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: 'var(--db-green-text)',
+                animation: 'pulse-dot 1.5s ease-in-out infinite',
+              }} />
+            )}
+            {isDone && run.status === 'completed' && <IconCheck size={16} color="var(--db-green-text)" />}
+            {isDone && run.status === 'failed' && <IconX size={16} color="var(--db-red-text)" />}
+            {isDone && run.status === 'cancelled' && <IconAlertTriangle size={16} color="var(--db-amber-text)" />}
+            <span style={{ fontSize: 14, fontWeight: 500 }}>
+              {isDone
+                ? (run.status === 'completed' ? 'Discovery complete' : run.status === 'failed' ? 'Discovery failed' : 'Discovery cancelled')
+                : 'Discovery running'}
+            </span>
+            <span style={{
+              fontSize: 11, fontWeight: 500, padding: '2px 8px',
+              borderRadius: 'var(--db-radius)',
+              background: isDone
+                ? (run.status === 'completed' ? 'var(--db-green-bg)' : 'var(--db-red-bg)')
+                : 'var(--db-green-bg)',
+              color: isDone
+                ? (run.status === 'completed' ? 'var(--db-green-text)' : 'var(--db-red-text)')
+                : 'var(--db-green-text)',
+            }}>
+              {phaseLabel[run.phase] || run.phase}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
+            {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
+            {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
+          </div>
+        </div>
 
-      {/* Progress bar */}
-      <Progress value={run.progress} mb={4} animated={!isDone} size="md" radius="xl" color={statusColor} />
-      <Group justify="space-between" mb="md">
-        {run.error && <Text size="xs" c="red">{run.error}</Text>}
-        <Text size="xs" c="dimmed" ml="auto">{run.progress}%</Text>
-      </Group>
-
-      {/* Stats row */}
-      <Group gap="lg" mb="md">
-        <Group gap={4}>
-          <IconDatabase size={14} color="var(--mantine-color-blue-5)" />
-          <Text size="sm" fw={600}>{run.total_queries}</Text>
-          <Text size="xs" c="dimmed">queries</Text>
-        </Group>
-        {run.successful_queries > 0 && (
-          <Group gap={4}>
-            <IconCheck size={14} color="var(--mantine-color-green-5)" />
-            <Text size="sm" fw={600}>{run.successful_queries}</Text>
-            <Text size="xs" c="dimmed">successful</Text>
-          </Group>
-        )}
-        {run.failed_queries > 0 && (
-          <Group gap={4}>
-            <IconX size={14} color="var(--mantine-color-red-5)" />
-            <Text size="sm" fw={600}>{run.failed_queries}</Text>
-            <Text size="xs" c="dimmed">failed</Text>
-          </Group>
-        )}
-        {run.insights_found > 0 && (
-          <Group gap={4}>
-            <IconBulb size={14} color="var(--mantine-color-yellow-5)" />
-            <Text size="sm" fw={600}>{run.insights_found}</Text>
-            <Text size="xs" c="dimmed">insights</Text>
-          </Group>
-        )}
-      </Group>
-
-      {/* Live step feed */}
-      {steps.length > 0 && (
-        <ScrollArea h={400} type="auto" viewportRef={(el) => {
-          scrollRef.current = el;
-        }} onScrollPositionChange={({ y }) => {
-          const el = scrollRef.current;
-          if (!el) return;
-          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          userScrolledUp.current = !atBottom;
+        {/* Progress bar */}
+        <div style={{
+          height: 3, background: 'var(--db-bg-muted)', borderRadius: 2,
+          marginTop: 10, overflow: 'hidden',
         }}>
-          <Stack gap={6}>
-            {steps.map((step, idx) => (
-              <StepCard key={idx} step={step} />
-            ))}
-          </Stack>
-        </ScrollArea>
-      )}
+          <div style={{
+            height: '100%', borderRadius: 2,
+            width: `${run.progress}%`,
+            background: isDone
+              ? (run.status === 'completed' ? 'var(--db-green-text)' : 'var(--db-red-text)')
+              : 'var(--db-green-text)',
+            transition: 'width 0.5s ease',
+          }} />
+        </div>
 
-      {steps.length === 0 && (
-        <Text size="sm" c="dimmed" ta="center" py="xl">{run.phase_detail || 'Starting...'}</Text>
+        {/* Stats row */}
+        <div style={{
+          display: 'flex', gap: 20, fontSize: 12, color: 'var(--db-text-secondary)',
+          padding: '10px 0 14px',
+        }}>
+          <span>{run.total_queries} queries</span>
+          <span>{run.insights_found} insights</span>
+          <span>{elapsed}s elapsed</span>
+        </div>
+
+        {run.error && (
+          <div style={{ fontSize: 12, color: 'var(--db-red-text)', paddingBottom: 10 }}>{run.error}</div>
+        )}
+      </div>
+
+      {/* Step list */}
+      {steps.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--db-border-default)' }}>
+          <ScrollArea h={400} type="auto" viewportRef={(el) => { scrollRef.current = el; }}
+            onScrollPositionChange={({ y }) => {
+              const el = scrollRef.current;
+              if (!el) return;
+              userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 40;
+            }}>
+            {steps.map((step, idx) => (
+              <StepRow key={idx} step={step} index={idx + 1} isLast={idx === steps.length - 1}
+                isActive={!isDone && idx === steps.length - 1} />
+            ))}
+          </ScrollArea>
+        </div>
       )}
-    </Card>
+    </div>
   );
 }
 
-function StepCard({ step }: { step: RunStep }) {
+/* ========== Step Row ========== */
+
+function StepRow({ step, index, isLast, isActive }: {
+  step: RunStep; index: number; isLast: boolean; isActive: boolean;
+}) {
   const [opened, { toggle }] = useDisclosure(false);
-  const hasDetails = step.query || (step.llm_thinking && step.llm_thinking.length > 80);
+  const isDone = !isActive;
+  const hasDetails = isDone && (step.query || (step.llm_thinking && step.llm_thinking.length > 40));
 
-  if (step.type === 'insight') {
-    return (
-      <Card withBorder p="xs" radius="sm" bg="var(--mantine-color-green-0)">
-        <Group gap="xs">
-          <IconBulb size={16} color="var(--mantine-color-yellow-6)" />
-          <Text size="sm" fw={600}>{step.insight_name || step.message}</Text>
-          {step.insight_severity && (
-            <Badge size="xs" color={
-              step.insight_severity === 'critical' ? 'red' :
-              step.insight_severity === 'high' ? 'orange' :
-              step.insight_severity === 'medium' ? 'yellow' : 'gray'
-            }>{step.insight_severity}</Badge>
-          )}
-        </Group>
-      </Card>
-    );
-  }
+  const stepTypeIcon = () => {
+    if (step.type === 'insight') return <IconStack2 size={16} color="var(--db-green-text)" />;
+    if (step.type === 'analysis') return <IconChartBar size={16} color="var(--db-blue-text)" />;
+    if (step.type === 'recommendation') return <IconBulb size={16} color="var(--db-amber-text)" />;
+    if (step.type === 'validation') return <IconShieldCheck size={16} color="var(--db-blue-text)" />;
+    return <IconDatabase size={16} color="var(--db-blue-text)" />;
+  };
 
-  if (step.type === 'analysis') {
-    return (
-      <Card withBorder p="xs" radius="sm" bg="var(--mantine-color-violet-0)">
-        <Group gap="xs">
-          <IconBrain size={16} color="var(--mantine-color-violet-6)" />
-          <Text size="sm" fw={600}>{step.message}</Text>
-        </Group>
-      </Card>
-    );
-  }
+  // Number circle colors
+  const circleStyle = isActive
+    ? { background: 'var(--db-blue-bg)', color: 'var(--db-blue-text)' }
+    : isDone
+      ? { background: 'var(--db-green-bg)', color: 'var(--db-green-text)' }
+      : { background: 'var(--db-bg-muted)', color: 'var(--db-text-tertiary)' };
 
-  if (step.type === 'validation') {
-    return (
-      <Card withBorder p="xs" radius="sm" bg="var(--mantine-color-teal-0)">
-        <Group gap="xs">
-          <IconShieldCheck size={16} color="var(--mantine-color-teal-6)" />
-          <Text size="sm">{step.message}</Text>
-        </Group>
-      </Card>
-    );
-  }
-
-  if (step.type === 'error') {
-    return (
-      <Card withBorder p="xs" radius="sm" bg="var(--mantine-color-red-0)">
-        <Group gap="xs">
-          <IconAlertTriangle size={16} color="var(--mantine-color-red-6)" />
-          <Text size="sm" c="red">{step.error || step.message}</Text>
-        </Group>
-      </Card>
-    );
-  }
-
-  // Query step (exploration)
   const thinking = step.llm_thinking || '';
-  const thinkingPreview = thinking.length > 120 ? thinking.slice(0, 120) + '...' : thinking;
+  const stepText = step.type === 'insight'
+    ? (step.insight_name || step.message)
+    : (thinking.length > 120 ? thinking.slice(0, 120) + '...' : thinking || step.message);
 
   return (
-    <Card withBorder p="xs" radius="sm"
-      style={{ cursor: hasDetails ? 'pointer' : 'default' }}
-      onClick={hasDetails ? toggle : undefined}>
-      <Group justify="space-between" gap="xs" wrap="nowrap">
-        <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-          {hasDetails && (
-            <IconChevronRight size={14} style={{
-              transform: opened ? 'rotate(90deg)' : 'none',
-              transition: 'transform 150ms',
-              flexShrink: 0,
-            }} />
-          )}
-          <IconDatabase size={14} color="var(--mantine-color-blue-5)" style={{ flexShrink: 0 }} />
-          <Text size="xs" c="dimmed" lineClamp={1} style={{ flex: 1 }}>
-            {step.step_num > 0 && <Text span fw={600} c="dark" size="xs">Step {step.step_num}: </Text>}
-            {thinkingPreview || step.message}
-          </Text>
-        </Group>
-        <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
-          {step.row_count > 0 && <Badge size="xs" variant="outline" color="blue">{step.row_count} rows</Badge>}
-          {step.query_time_ms > 0 && <Badge size="xs" variant="outline" color="gray">{step.query_time_ms}ms</Badge>}
-          {step.query_fixed && <Badge size="xs" variant="light" color="orange">fixed</Badge>}
-          {step.error && <Badge size="xs" variant="light" color="red">error</Badge>}
-        </Group>
-      </Group>
+    <div style={{ borderBottom: isLast ? 'none' : '1px solid var(--db-border-default)' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '10px 20px', minHeight: 42,
+        cursor: hasDetails ? 'pointer' : 'default',
+        transition: 'background 120ms ease',
+      }}
+      onClick={hasDetails ? toggle : undefined}
+      onMouseEnter={e => { if (hasDetails) e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        {/* Expand arrow */}
+        {hasDetails ? (
+          <span style={{
+            fontSize: 10, color: 'var(--db-text-tertiary)', width: 16, textAlign: 'center',
+            transform: opened ? 'rotate(90deg)' : 'none', transition: 'transform 150ms',
+            display: 'inline-block',
+          }}>▶</span>
+        ) : (
+          <span style={{ width: 16 }} />
+        )}
 
+        {/* Number circle */}
+        <span style={{
+          width: 20, height: 20, borderRadius: '50%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, fontWeight: 600, flexShrink: 0,
+          ...circleStyle,
+        }}>{index}</span>
+
+        {/* Type icon */}
+        <span style={{ flexShrink: 0, display: 'flex' }}>{stepTypeIcon()}</span>
+
+        {/* Step text */}
+        <span style={{
+          flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          color: isActive ? 'var(--db-text-primary)' : 'var(--db-text-secondary)',
+          fontWeight: isActive ? 500 : 400,
+        }}>
+          {stepText}
+        </span>
+
+        {/* Right badges */}
+        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', flexShrink: 0 }}>
+          {isActive && <ResultBadge type="running">Running…</ResultBadge>}
+          {isDone && step.row_count > 0 && <ResultBadge type="rows">{step.row_count} rows</ResultBadge>}
+          {isDone && step.query_time_ms > 0 && <ResultBadge type="duration">{(step.query_time_ms / 1000).toFixed(2)}s</ResultBadge>}
+          {isDone && step.type === 'insight' && step.insight_severity && (
+            <ResultBadge type="insight">{step.insight_severity}</ResultBadge>
+          )}
+          {step.error && <ResultBadge type="error">Error</ResultBadge>}
+        </div>
+      </div>
+
+      {/* Active step indicator */}
+      {isActive && (
+        <div style={{ padding: '0 20px 14px 66px', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ display: 'flex', gap: 2 }}>
+            {[0, 1, 2].map(i => (
+              <span key={i} style={{
+                width: 4, height: 4, borderRadius: '50%',
+                background: 'var(--db-text-tertiary)',
+                animation: `typing 1.2s infinite ${i * 0.2}s`,
+              }} />
+            ))}
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+            {step.type === 'recommendation' ? 'Generating recommendations…' : 'Querying data warehouse…'}
+          </span>
+        </div>
+      )}
+
+      {/* Expanded detail */}
       {hasDetails && (
         <Collapse in={opened}>
-          <Stack gap={4} mt="xs">
-            {thinking.length > 120 && (
-              <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>{thinking}</Text>
+          <div style={{ padding: '0 20px 14px 66px', fontSize: 13, lineHeight: 1.6, color: 'var(--db-text-secondary)' }}>
+            {thinking.length > 40 && (
+              <div style={{ fontStyle: 'italic', color: 'var(--db-text-tertiary)', marginBottom: 6 }}>{thinking}</div>
             )}
             {step.query && (
-              <Code block style={{ fontSize: 11, maxHeight: 150, overflow: 'auto' }}>
+              <div style={{
+                background: 'var(--db-bg-muted)', borderRadius: 6, padding: '10px 12px',
+                fontFamily: 'SF Mono, Fira Code, monospace', fontSize: 12,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-all', marginTop: 6,
+                maxHeight: 200, overflow: 'auto',
+              }}>
                 {step.query}
-              </Code>
+              </div>
             )}
             {step.query_result && (
-              <Text size="xs" c="dimmed">{step.query_result}</Text>
+              <div style={{ marginTop: 8, fontSize: 12 }}>{step.query_result}</div>
             )}
-          </Stack>
+          </div>
         </Collapse>
       )}
-    </Card>
+    </div>
   );
+}
+
+/* ========== Small UI Components ========== */
+
+function ResultBadge({ type, children }: { type: 'rows' | 'duration' | 'insight' | 'running' | 'error'; children: React.ReactNode }) {
+  const styles: Record<string, { bg: string; color: string }> = {
+    rows: { bg: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)' },
+    duration: { bg: 'var(--db-bg-muted)', color: 'var(--db-text-tertiary)' },
+    insight: { bg: 'var(--db-green-bg)', color: 'var(--db-green-text)' },
+    running: { bg: 'var(--db-blue-bg)', color: 'var(--db-blue-text)' },
+    error: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+  };
+  const s = styles[type];
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 500, padding: '2px 7px', borderRadius: 4,
+      background: s.bg, color: s.color, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+    }}>{children}</span>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { bg: string; color: string }> = {
+    Complete: { bg: 'var(--db-green-bg)', color: 'var(--db-green-text)' },
+    Partial: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
+    Failed: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+  };
+  const s = map[status] || map.Complete;
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 500, padding: '1px 7px',
+      borderRadius: 'var(--db-radius)', background: s.bg, color: s.color,
+    }}>{status}</span>
+  );
+}
+
+function AreaBadge({ area }: { area: string }) {
+  return (
+    <span style={{
+      fontSize: 11, padding: '1px 7px', borderRadius: 'var(--db-radius)',
+      background: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)',
+    }}>{area}</span>
+  );
+}
+
+function StatDot({ color, text }: { color: string; text: string }) {
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+      {text}
+    </span>
+  );
+}
+
+function SeverityDot({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    critical: 'var(--db-severity-critical-text)',
+    high: 'var(--db-severity-high-text)',
+    medium: 'var(--db-severity-medium-text)',
+    low: 'var(--db-severity-low-text)',
+  };
+  return (
+    <span style={{
+      width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+      background: colors[severity] || 'var(--db-text-tertiary)',
+    }} />
+  );
+}
+
+function PrimaryButton({ onClick, children, disabled }: { onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      background: 'var(--db-text-primary)', color: '#fff',
+      border: 'none', borderRadius: 6, padding: '6px 14px',
+      fontSize: 13, fontWeight: 500, cursor: disabled ? 'default' : 'pointer',
+      fontFamily: 'inherit', opacity: disabled ? 0.5 : 1,
+      transition: 'background 120ms ease',
+    }}
+    onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = '#333'; }}
+    onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GhostButton({ onClick, children, small }: { onClick: () => void; children: React.ReactNode; small?: boolean }) {
+  return (
+    <button onClick={onClick} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      background: 'transparent', color: 'var(--db-text-secondary)',
+      border: '1px solid var(--db-border-strong)', borderRadius: 6,
+      padding: small ? '4px 10px' : '6px 14px',
+      fontSize: small ? 12 : 13, fontWeight: 500, cursor: 'pointer',
+      fontFamily: 'inherit', transition: 'all 120ms ease',
+    }}
+    onMouseEnter={e => {
+      e.currentTarget.style.background = 'var(--db-bg-muted)';
+      e.currentTarget.style.color = 'var(--db-text-primary)';
+    }}
+    onMouseLeave={e => {
+      e.currentTarget.style.background = 'transparent';
+      e.currentTarget.style.color = 'var(--db-text-secondary)';
+    }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ========== Helpers ========== */
+
+function formatTimeAgo(date: Date): string {
+  const diff = Date.now() - date.getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
