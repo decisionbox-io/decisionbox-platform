@@ -456,21 +456,27 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, feedba
       borderRadius: 'var(--db-radius-lg)',
       padding: '16px 20px',
     }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
+      {/* Title row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
         <div style={{ fontSize: 14, fontWeight: 500, flex: 1 }}>{rec.title}</div>
-        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
-          {rec.expected_impact && (
-            <Pill bg="var(--db-green-bg)" color="var(--db-green-text)">
-              {rec.expected_impact.estimated_improvement}
-            </Pill>
-          )}
-          <Pill bg={effortStyle.bg} color={effortStyle.color}>
-            {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
-          </Pill>
-          <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
-            targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
-        </div>
+        <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
+          targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
+      </div>
+
+      {/* Pills + impact row */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Pill bg={effortStyle.bg} color={effortStyle.color}>
+          {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+        </Pill>
+        {rec.expected_impact?.estimated_improvement && (
+          rec.expected_impact.estimated_improvement.length > 30
+            ? <span style={{ fontSize: 12, color: 'var(--db-green-text)' }}>
+                {rec.expected_impact.estimated_improvement}
+              </span>
+            : <Pill bg="var(--db-green-bg)" color="var(--db-green-text)">
+                {rec.expected_impact.estimated_improvement}
+              </Pill>
+        )}
       </div>
 
       {/* Metadata */}
