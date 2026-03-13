@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	testServer = httptest.NewServer(server.New(testDB, nil))
+	testServer = httptest.NewServer(server.New(testDB, nil, nil))
 	defer testServer.Close()
 
 	os.Exit(m.Run())

@@ -13,7 +13,9 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -152,9 +154,48 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		"datasets": datasets,
 	}).Info("Warehouse provider initialized")
 
-	// LLM config comes from project + env vars
+	// Initialize secret provider to read per-project API keys
+	secretsCfg := gosecrets.LoadConfig()
+	var secretProvider gosecrets.Provider
+	if secretsCfg.Provider == "mongodb" || secretsCfg.Provider == "" {
+		sp, spErr := mongoSecrets.NewMongoProvider(
+			mongoClient.Collection("secrets"),
+			secretsCfg.Namespace,
+			secretsCfg.EncryptionKey,
+		)
+		if spErr != nil {
+			applog.WithError(spErr).Warn("Failed to create secret provider, falling back to env var")
+		} else {
+			secretProvider = sp
+		}
+	} else {
+		sp, spErr := gosecrets.NewProvider(secretsCfg)
+		if spErr != nil {
+			applog.WithError(spErr).Warn("Failed to create secret provider, falling back to env var")
+		} else {
+			secretProvider = sp
+		}
+	}
+
+	// Read LLM API key: secret provider first, then env var fallback
+	apiKey := ""
+	if secretProvider != nil {
+		key, err := secretProvider.Get(ctx, projectID, "llm-api-key")
+		if err == nil && key != "" {
+			apiKey = key
+			applog.Info("LLM API key loaded from secret provider")
+		} else if err != nil && err != gosecrets.ErrNotFound {
+			applog.WithError(err).Warn("Failed to read secret, falling back to env var")
+		}
+	}
+	if apiKey == "" && cfg.LLM.APIKey != "" {
+		apiKey = cfg.LLM.APIKey
+		applog.Debug("LLM API key loaded from LLM_API_KEY env var (fallback)")
+	}
+
+	// LLM config comes from project + secrets
 	llmCfg := gollm.ProviderConfig{
-		"api_key":          cfg.LLM.APIKey,
+		"api_key":          apiKey,
 		"model":            project.LLM.Model,
 		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
 		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),

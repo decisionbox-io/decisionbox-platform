@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -13,7 +14,7 @@ import (
 
 // New creates an HTTP server with all routes registered.
 // Cleans up stale discovery runs from previous container lifecycle.
-func New(db *database.DB, healthHandler *health.Handler) http.Handler {
+func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider) http.Handler {
 	mux := http.NewServeMux()
 
 	// Repos
@@ -51,6 +52,7 @@ func New(db *database.DB, healthHandler *health.Handler) http.Handler {
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
+	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)
 
 	// Health endpoints
 	// /health and /health/ready — for K8s liveness/readiness probes (from go-common)
@@ -109,6 +111,12 @@ func New(db *database.DB, healthHandler *health.Handler) http.Handler {
 
 	// Cost estimation
 	mux.HandleFunc("POST /api/v1/projects/{id}/discover/estimate", estimate.Estimate)
+
+	// Secrets (per-project, no delete via API)
+	if secretProvider != nil {
+		mux.HandleFunc("PUT /api/v1/projects/{id}/secrets/{key}", secretsHandler.Set)
+		mux.HandleFunc("GET /api/v1/projects/{id}/secrets", secretsHandler.List)
+	}
 
 	// Middleware chain: CORS → Logging → Router
 	return corsMiddleware(handler.LoggingMiddleware(mux))

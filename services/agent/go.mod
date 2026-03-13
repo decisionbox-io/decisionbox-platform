@@ -11,6 +11,7 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
@@ -124,5 +125,6 @@ replace (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
+	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 )

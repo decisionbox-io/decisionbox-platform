@@ -9,7 +9,8 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconArrowLeft, IconCheck, IconPlus } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Project, ProviderMeta, ConfigField } from '@/lib/api';
+import { IconEye, IconEyeOff, IconKey, IconShieldCheck } from '@tabler/icons-react';
+import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -37,6 +38,10 @@ export default function ProjectSettingsPage() {
   const [maxSteps, setMaxSteps] = useState(100);
   const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
+  const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
+  const [newSecretKey, setNewSecretKey] = useState('llm-api-key');
+  const [newSecretValue, setNewSecretValue] = useState('');
+  const [savingSecret, setSavingSecret] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -71,6 +76,11 @@ export default function ProjectSettingsPage() {
         // Load profile schema for this domain/category
         api.getProfileSchema(proj.domain, proj.category)
           .then(setProfileSchema)
+          .catch(() => {});
+
+        // Load secrets list
+        api.listSecrets(proj.id || id)
+          .then((s) => setSecretsList(s || []))
           .catch(() => {});
       })
       .catch((e) => setError(e.message))
@@ -190,6 +200,65 @@ export default function ProjectSettingsPage() {
                   onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
               ))}
           </Stack>
+        </Card>
+
+        {/* Secrets */}
+        <Card withBorder p="lg">
+          <Title order={4} mb="xs">
+            <IconKey size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
+            Secrets
+          </Title>
+          <Text size="xs" c="dimmed" mb="md">
+            API keys are stored encrypted and never exposed in full. Per-project — each project has its own keys.
+          </Text>
+
+          {/* Existing secrets */}
+          {secretsList.length > 0 && (
+            <Stack gap="xs" mb="md">
+              {secretsList.map((s) => (
+                <Group key={s.key} justify="space-between" p="xs" style={{ borderRadius: 4, background: 'var(--mantine-color-gray-0)' }}>
+                  <Group gap="xs">
+                    <IconShieldCheck size={14} color="var(--mantine-color-green-6)" />
+                    <Text size="sm" fw={500}>{s.key}</Text>
+                  </Group>
+                  <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>{s.masked}</Text>
+                </Group>
+              ))}
+            </Stack>
+          )}
+
+          {/* Add/update secret */}
+          <Group gap="xs" align="end">
+            <Select label="Key" size="xs" w={180} value={newSecretKey}
+              onChange={(v) => setNewSecretKey(v || 'llm-api-key')}
+              data={[
+                { value: 'llm-api-key', label: 'LLM API Key' },
+                { value: 'warehouse-creds', label: 'Warehouse Credentials' },
+              ]}
+              allowDeselect={false} />
+            <TextInput label="Value" size="xs" style={{ flex: 1 }}
+              placeholder="Enter secret value" value={newSecretValue}
+              onChange={(e) => setNewSecretValue(e.target.value)}
+              type="password" />
+            <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
+              onClick={async () => {
+                setSavingSecret(true);
+                try {
+                  await api.setSecret(id, newSecretKey, newSecretValue);
+                  setNewSecretValue('');
+                  notifications.show({ title: 'Saved', message: `Secret "${newSecretKey}" saved`, color: 'green' });
+                  // Refresh list
+                  const updated = await api.listSecrets(id);
+                  setSecretsList(updated || []);
+                } catch (e: unknown) {
+                  notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                } finally {
+                  setSavingSecret(false);
+                }
+              }}>
+              Save Secret
+            </Button>
+          </Group>
         </Card>
 
         {/* Schedule */}

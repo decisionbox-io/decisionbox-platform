@@ -299,6 +299,12 @@ export interface Pricing {
   warehouse: Record<string, { cost_model: string; cost_per_tb_scanned_usd: number }>;
 }
 
+export interface SecretEntryResponse {
+  key: string;
+  masked: string;
+  updated_at: string;
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -369,4 +375,12 @@ export const api = {
   getPricing: () => request<Pricing>('/api/v1/pricing'),
   updatePricing: (pricing: Pricing) =>
     request<Pricing>('/api/v1/pricing', { method: 'PUT', body: JSON.stringify(pricing) }),
+
+  // Secrets (per-project)
+  setSecret: (projectId: string, key: string, value: string) =>
+    request<{ key: string; masked: string; status: string }>(`/api/v1/projects/${projectId}/secrets/${key}`, {
+      method: 'PUT', body: JSON.stringify({ value }),
+    }),
+  listSecrets: (projectId: string) =>
+    request<SecretEntryResponse[]>(`/api/v1/projects/${projectId}/secrets`),
 };

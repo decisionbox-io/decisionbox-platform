@@ -10,10 +10,17 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
+
+	// Secret provider registrations
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
@@ -70,8 +77,37 @@ func main() {
 	// Health checker with MongoDB dependency
 	healthHandler := health.NewHandler(database.NewMongoHealthChecker(db))
 
+	// Secret provider
+	secretsCfg := gosecrets.LoadConfig()
+	var secretProvider gosecrets.Provider
+	if secretsCfg.Provider == "mongodb" || secretsCfg.Provider == "" {
+		// MongoDB provider needs the collection directly
+		sp, err := mongoSecrets.NewMongoProvider(
+			mongoClient.Collection("secrets"),
+			secretsCfg.Namespace,
+			secretsCfg.EncryptionKey,
+		)
+		if err != nil {
+			apilog.WithError(err).Error("Failed to create MongoDB secret provider")
+			os.Exit(1)
+		}
+		secretProvider = sp
+		apilog.WithField("namespace", secretsCfg.Namespace).Info("Secret provider: MongoDB encrypted")
+	} else {
+		sp, err := gosecrets.NewProvider(secretsCfg)
+		if err != nil {
+			apilog.WithError(err).Error("Failed to create secret provider")
+			os.Exit(1)
+		}
+		secretProvider = sp
+		apilog.WithFields(apilog.Fields{
+			"provider":  secretsCfg.Provider,
+			"namespace": secretsCfg.Namespace,
+		}).Info("Secret provider initialized")
+	}
+
 	// HTTP server
-	handler := server.New(db, healthHandler)
+	handler := server.New(db, healthHandler, secretProvider)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      handler,

@@ -10,6 +10,10 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/azure v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
 	github.com/testcontainers/testcontainers-go/modules/k3s v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.40.0
@@ -27,6 +31,7 @@ require (
 	cloud.google.com/go/bigquery v1.67.0 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.2 // indirect
+	cloud.google.com/go/secretmanager v1.14.7 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -150,5 +155,9 @@ replace (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws => ../../providers/secrets/aws
+	github.com/decisionbox-io/decisionbox/providers/secrets/azure => ../../providers/secrets/azure
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp => ../../providers/secrets/gcp
+	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 )
