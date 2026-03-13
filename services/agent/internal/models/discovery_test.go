@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -85,7 +86,7 @@ func TestDiscoveryResultStructure(t *testing.T) {
 			{ID: "2", AnalysisArea: "levels", Name: "Test 2"},
 		},
 		Recommendations: []Recommendation{
-			{ID: "r1", Title: "Fix Level 42", Priority: 5},
+			{ID: "r1", Title: "Fix Level 42", Priority: 5, RelatedInsightIDs: []string{"1", "2"}},
 		},
 		AnalysisLog: []AnalysisStep{
 			{AreaID: "churn", Prompt: "analyze churn", Response: "{}"},
@@ -164,6 +165,134 @@ func TestExplorationStepLLMDialog(t *testing.T) {
 	}
 	if step.TokensIn == 0 {
 		t.Error("TokensIn should be captured")
+	}
+}
+
+func TestRecommendationRelatedInsights(t *testing.T) {
+	rec := Recommendation{
+		ID:                "r1",
+		Title:             "Fix Level 42",
+		Priority:          1,
+		RelatedInsightIDs: []string{"insight-1", "insight-2"},
+	}
+
+	if len(rec.RelatedInsightIDs) != 2 {
+		t.Errorf("RelatedInsightIDs = %d, want 2", len(rec.RelatedInsightIDs))
+	}
+	if rec.RelatedInsightIDs[0] != "insight-1" {
+		t.Errorf("RelatedInsightIDs[0] = %q, want insight-1", rec.RelatedInsightIDs[0])
+	}
+}
+
+func TestRecommendationRelatedInsightsEmpty(t *testing.T) {
+	rec := Recommendation{
+		ID:    "r1",
+		Title: "Fix Level 42",
+	}
+
+	if rec.RelatedInsightIDs != nil {
+		t.Error("RelatedInsightIDs should be nil when not set")
+	}
+}
+
+func TestRecommendationJSON_WithRelatedInsights(t *testing.T) {
+	input := `{
+		"recommendations": [{
+			"id": "r1",
+			"title": "Fix Level 42",
+			"category": "churn",
+			"priority": 1,
+			"related_insight_ids": ["insight-1", "insight-2", "insight-3"],
+			"confidence": 0.85
+		}]
+	}`
+
+	var result struct {
+		Recommendations []Recommendation `json:"recommendations"`
+	}
+	if err := json.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if len(result.Recommendations) != 1 {
+		t.Fatalf("Recommendations = %d, want 1", len(result.Recommendations))
+	}
+	rec := result.Recommendations[0]
+	if len(rec.RelatedInsightIDs) != 3 {
+		t.Errorf("RelatedInsightIDs = %d, want 3", len(rec.RelatedInsightIDs))
+	}
+	if rec.RelatedInsightIDs[0] != "insight-1" {
+		t.Errorf("RelatedInsightIDs[0] = %q", rec.RelatedInsightIDs[0])
+	}
+}
+
+func TestRecommendationJSON_WithoutRelatedInsights(t *testing.T) {
+	input := `{
+		"recommendations": [{
+			"id": "r1",
+			"title": "Fix Level 42",
+			"priority": 1,
+			"confidence": 0.85
+		}]
+	}`
+
+	var result struct {
+		Recommendations []Recommendation `json:"recommendations"`
+	}
+	if err := json.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	rec := result.Recommendations[0]
+	if rec.RelatedInsightIDs != nil {
+		t.Errorf("RelatedInsightIDs should be nil when not in JSON, got %v", rec.RelatedInsightIDs)
+	}
+}
+
+func TestRecommendationJSON_EmptyRelatedInsights(t *testing.T) {
+	input := `{
+		"recommendations": [{
+			"id": "r1",
+			"title": "Fix",
+			"related_insight_ids": [],
+			"confidence": 0.85
+		}]
+	}`
+
+	var result struct {
+		Recommendations []Recommendation `json:"recommendations"`
+	}
+	if err := json.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	rec := result.Recommendations[0]
+	if len(rec.RelatedInsightIDs) != 0 {
+		t.Errorf("RelatedInsightIDs = %d, want 0", len(rec.RelatedInsightIDs))
+	}
+}
+
+func TestRecommendationJSON_RoundTrip(t *testing.T) {
+	rec := Recommendation{
+		ID:                "r1",
+		Title:             "Fix Level 42",
+		Priority:          1,
+		RelatedInsightIDs: []string{"i-1", "i-2"},
+		Confidence:        0.85,
+	}
+
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var parsed Recommendation
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if len(parsed.RelatedInsightIDs) != 2 {
+		t.Errorf("RelatedInsightIDs = %d, want 2", len(parsed.RelatedInsightIDs))
+	}
+	if parsed.RelatedInsightIDs[0] != "i-1" || parsed.RelatedInsightIDs[1] != "i-2" {
+		t.Errorf("RelatedInsightIDs = %v", parsed.RelatedInsightIDs)
 	}
 }
 
