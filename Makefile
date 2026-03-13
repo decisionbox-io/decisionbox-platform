@@ -54,6 +54,9 @@ test-integration: ## Run integration tests (requires Docker)
 test-k8s: ## Run K8s runner integration tests (requires Docker, uses K3s testcontainer)
 	cd services/api && go test -tags=integration -count=1 -timeout=5m ./internal/runner/
 
+test-secrets: ## Run secrets provider integration tests (requires Docker)
+	cd providers/secrets/mongodb && go test -tags=integration -count=1 ./...
+
 test-ollama: ## Run Ollama LLM integration tests (requires Docker, slow)
 	cd services/agent && go test -tags='integration ollama' -count=1 -timeout=10m -run TestOllama .
 
