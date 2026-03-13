@@ -526,6 +526,10 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		if result.Insights[i].DiscoveredAt.IsZero() {
 			result.Insights[i].DiscoveredAt = time.Now()
 		}
+		// Generate deterministic ID if LLM didn't provide one
+		if result.Insights[i].ID == "" {
+			result.Insights[i].ID = fmt.Sprintf("%s-%d", areaID, i+1)
+		}
 	}
 
 	return result.Insights, nil
