@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 
 func TestLoadConfig_Defaults(t *testing.T) {
 	// Clear env vars to test defaults
-	for _, key := range []string{"RUNNER_MODE", "AGENT_IMAGE", "AGENT_NAMESPACE", "AGENT_CPU_REQUEST", "AGENT_CPU_LIMIT", "AGENT_MEMORY_REQUEST", "AGENT_MEMORY_LIMIT"} {
+	for _, key := range []string{"RUNNER_MODE", "AGENT_IMAGE", "AGENT_NAMESPACE", "AGENT_CPU_REQUEST", "AGENT_CPU_LIMIT", "AGENT_MEMORY_REQUEST", "AGENT_MEMORY_LIMIT", "AGENT_JOB_TIMEOUT_HOURS"} {
 		os.Unsetenv(key)
 	}
 
@@ -34,6 +35,9 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.MemoryLimit != "1Gi" {
 		t.Errorf("MemoryLimit = %q", cfg.MemoryLimit)
 	}
+	if cfg.JobTimeoutHours != 6 {
+		t.Errorf("JobTimeoutHours = %d, want 6", cfg.JobTimeoutHours)
+	}
 }
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {
@@ -41,11 +45,13 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	os.Setenv("AGENT_IMAGE", "my-registry/agent:v1")
 	os.Setenv("AGENT_NAMESPACE", "discovery")
 	os.Setenv("AGENT_CPU_LIMIT", "4")
+	os.Setenv("AGENT_JOB_TIMEOUT_HOURS", "12")
 	defer func() {
 		os.Unsetenv("RUNNER_MODE")
 		os.Unsetenv("AGENT_IMAGE")
 		os.Unsetenv("AGENT_NAMESPACE")
 		os.Unsetenv("AGENT_CPU_LIMIT")
+		os.Unsetenv("AGENT_JOB_TIMEOUT_HOURS")
 	}()
 
 	cfg := LoadConfig()
@@ -61,6 +67,9 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	}
 	if cfg.CPULimit != "4" {
 		t.Errorf("CPULimit = %q", cfg.CPULimit)
+	}
+	if cfg.JobTimeoutHours != 12 {
+		t.Errorf("JobTimeoutHours = %d, want 12", cfg.JobTimeoutHours)
 	}
 }
 
@@ -308,6 +317,71 @@ func TestSubprocessRunner_Cancel_NotRunning(t *testing.T) {
 	err := r.Cancel(context.Background(), "nonexistent")
 	if err != nil {
 		t.Errorf("cancel non-existent should not error: %v", err)
+	}
+}
+
+// --- Error extraction tests ---
+
+func TestExtractErrorMessage_FatalLine(t *testing.T) {
+	stderr := `2026-03-13T20:23:21.485Z	INFO	LLM provider initialized
+2026-03-13T20:23:47.479Z	FATAL	Discovery failed	{"error": "authentication_error - invalid x-api-key"}`
+
+	msg := extractErrorMessage(stderr, fmt.Errorf("exit status 1"))
+	if msg != "authentication_error - invalid x-api-key" {
+		t.Errorf("got %q", msg)
+	}
+}
+
+func TestExtractErrorMessage_ErrorLine(t *testing.T) {
+	stderr := `2026-03-13T20:23:41.071Z	INFO	Starting exploration
+2026-03-13T20:23:47.469Z	ERROR	LLM call failed	{"error": "claude: API error: rate_limited"}`
+
+	msg := extractErrorMessage(stderr, fmt.Errorf("exit status 1"))
+	if msg != "claude: API error: rate_limited" {
+		t.Errorf("got %q", msg)
+	}
+}
+
+func TestExtractErrorMessage_NoStructuredLogs(t *testing.T) {
+	stderr := "panic: runtime error: index out of range"
+	msg := extractErrorMessage(stderr, fmt.Errorf("exit status 2"))
+	if msg != "panic: runtime error: index out of range" {
+		t.Errorf("got %q", msg)
+	}
+}
+
+func TestExtractErrorMessage_Empty(t *testing.T) {
+	msg := extractErrorMessage("", fmt.Errorf("signal: killed"))
+	if msg != "signal: killed" {
+		t.Errorf("got %q", msg)
+	}
+}
+
+func TestExtractErrorMessage_JSONFormat(t *testing.T) {
+	stderr := `{"level":"fatal","msg":"Discovery failed","error":"bigquery: dataset not found","service":"decisionbox-agent"}`
+	msg := extractErrorMessage(stderr, fmt.Errorf("exit status 1"))
+	if msg != "bigquery: dataset not found" {
+		t.Errorf("got %q", msg)
+	}
+}
+
+func TestExtractJSONField(t *testing.T) {
+	tests := []struct {
+		line  string
+		field string
+		want  string
+	}{
+		{`{"error": "test error", "status": "failed"}`, "error", "test error"},
+		{`{"msg":"hello world"}`, "msg", "hello world"},
+		{`no json here`, "error", ""},
+		{`{"other": "value"}`, "error", ""},
+		{`{"error": "escaped \"quotes\""}`, "error", `escaped "quotes"`},
+	}
+	for _, tt := range tests {
+		got := extractJSONField(tt.line, tt.field)
+		if got != tt.want {
+			t.Errorf("extractJSONField(%q, %q) = %q, want %q", tt.line, tt.field, got, tt.want)
+		}
 	}
 }
 

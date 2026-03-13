@@ -124,6 +124,10 @@ services:
       - AGENT_MEMORY_REQUEST=256Mi
       - AGENT_MEMORY_LIMIT=1Gi
 
+      # Max time (hours) to watch a discovery job before timing out
+      # Values: any positive integer (default: 6)
+      - AGENT_JOB_TIMEOUT_HOURS=6
+
       # ============================================================
       # SERVICE — Operational
       # ============================================================

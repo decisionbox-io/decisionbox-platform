@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -155,6 +156,12 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		RunID:     runID,
 		Areas:     body.Areas,
 		MaxSteps:  body.MaxSteps,
+		OnFailure: func(failedRunID string, errMsg string) {
+			apilog.WithFields(apilog.Fields{
+				"run_id": failedRunID, "error": errMsg,
+			}).Error("Agent failed — updating run status")
+			h.runRepo.Fail(context.Background(), failedRunID, errMsg)
+		},
 	})
 	if runErr != nil {
 		h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error())

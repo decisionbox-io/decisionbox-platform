@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	batchv1 "k8s.io/api/batch/v1"
@@ -145,7 +146,102 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		"max_steps":  opts.MaxSteps,
 	}).Info("K8s Job created for discovery run")
 
+	// Watch Job completion in background to detect failures
+	if opts.OnFailure != nil {
+		go r.watchJob(created.Name, opts.RunID, opts.OnFailure)
+	}
+
 	return nil
+}
+
+// watchJob polls the Job status until it completes or fails.
+func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string, string)) {
+	ctx := context.Background()
+	// Poll every 30s. Total ticks = timeout_hours * 120 (3600s / 30s per tick)
+	maxTicks := r.config.JobTimeoutHours * 120
+	ticker := newTicker(30, maxTicks)
+
+	for range ticker {
+		job, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+		if err != nil {
+			apilog.WithFields(apilog.Fields{
+				"job": jobName, "error": err.Error(),
+			}).Warn("Failed to get Job status")
+			continue
+		}
+
+		// Check for failure conditions
+		for _, cond := range job.Status.Conditions {
+			if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+				errMsg := fmt.Sprintf("K8s Job failed: %s", cond.Message)
+				if cond.Reason != "" {
+					errMsg = fmt.Sprintf("K8s Job failed (%s): %s", cond.Reason, cond.Message)
+				}
+
+				// Try to get pod logs for more detail
+				if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+					errMsg = podErr
+				}
+
+				apilog.WithFields(apilog.Fields{
+					"job": jobName, "run_id": runID, "error": errMsg,
+				}).Error("Agent K8s Job failed — updating run status")
+				onFailure(runID, errMsg)
+				return
+			}
+			if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
+				return // completed successfully
+			}
+		}
+
+		// Also check if the Job has been running too long (safety net)
+		if job.Status.Failed > 0 {
+			errMsg := "K8s Job failed (container exited with error)"
+			if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+				errMsg = podErr
+			}
+			onFailure(runID, errMsg)
+			return
+		}
+		if job.Status.Succeeded > 0 {
+			return
+		}
+	}
+}
+
+// getPodErrorMessage tries to extract error message from the failed pod's termination message.
+func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, runID string) string {
+	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("run-id=%s", runID),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return ""
+	}
+
+	pod := pods.Items[0]
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			if cs.State.Terminated.Message != "" {
+				return cs.State.Terminated.Message
+			}
+			return fmt.Sprintf("Container exited with code %d: %s",
+				cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+		}
+	}
+	return ""
+}
+
+// newTicker creates a channel that ticks every n seconds, up to maxTicks times.
+func newTicker(intervalSec, maxTicks int) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		for i := 0; i < maxTicks; i++ {
+			time.Sleep(time.Duration(intervalSec) * time.Second)
+			ch <- struct{}{}
+		}
+	}()
+	return ch
 }
 
 func (r *KubernetesRunner) Cancel(ctx context.Context, runID string) error {

@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Runner spawns and manages agent processes for discovery runs.
@@ -24,6 +25,10 @@ type RunOptions struct {
 	RunID     string
 	Areas     []string // optional: selective discovery
 	MaxSteps  int      // optional: override default
+
+	// OnFailure is called when the agent process exits with an error.
+	// The runner passes the error message so the caller can update the run status.
+	OnFailure func(runID string, errMsg string)
 }
 
 // Config holds runner configuration from environment variables.
@@ -37,18 +42,29 @@ type Config struct {
 	CPULimit       string
 	MemoryRequest  string
 	MemoryLimit    string
+
+	// Job timeout in hours — how long to watch a Job before giving up.
+	// Applies to both K8s Job watching and subprocess waiting.
+	// Default: 6 hours.
+	JobTimeoutHours int
 }
 
 // LoadConfig loads runner configuration from environment variables.
 func LoadConfig() Config {
+	timeoutHours, _ := strconv.Atoi(getEnv("AGENT_JOB_TIMEOUT_HOURS", "6"))
+	if timeoutHours <= 0 {
+		timeoutHours = 6
+	}
+
 	return Config{
-		Mode:          getEnv("RUNNER_MODE", "subprocess"),
-		AgentImage:    getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
-		Namespace:     getEnv("AGENT_NAMESPACE", "default"),
-		CPURequest:    getEnv("AGENT_CPU_REQUEST", "250m"),
-		CPULimit:      getEnv("AGENT_CPU_LIMIT", "2"),
-		MemoryRequest: getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
-		MemoryLimit:   getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
+		Mode:            getEnv("RUNNER_MODE", "subprocess"),
+		AgentImage:      getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
+		Namespace:       getEnv("AGENT_NAMESPACE", "default"),
+		CPURequest:      getEnv("AGENT_CPU_REQUEST", "250m"),
+		CPULimit:        getEnv("AGENT_CPU_LIMIT", "2"),
+		MemoryRequest:   getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
+		MemoryLimit:     getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
+		JobTimeoutHours: timeoutHours,
 	}
 }
 

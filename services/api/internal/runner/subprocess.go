@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -43,6 +44,10 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
 	)
 
+	// Capture stderr to get error messages from the agent
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
 	if err := cmd.Start(); err != nil {
 		apilog.WithFields(apilog.Fields{
 			"run_id": opts.RunID, "error": err.Error(),
@@ -62,7 +67,7 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	r.processes[opts.RunID] = cmd.Process
 	r.mu.Unlock()
 
-	// Wait in background, clean up when done
+	// Wait in background, handle failure
 	go func() {
 		err := cmd.Wait()
 		r.mu.Lock()
@@ -70,9 +75,14 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 		r.mu.Unlock()
 
 		if err != nil {
+			errMsg := extractErrorMessage(stderr.String(), err)
 			apilog.WithFields(apilog.Fields{
-				"run_id": opts.RunID, "error": err.Error(),
+				"run_id": opts.RunID, "error": errMsg,
 			}).Warn("Agent subprocess exited with error")
+
+			if opts.OnFailure != nil {
+				opts.OnFailure(opts.RunID, errMsg)
+			}
 		} else {
 			apilog.WithField("run_id", opts.RunID).Info("Agent subprocess completed")
 		}
@@ -92,4 +102,78 @@ func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
 
 	apilog.WithField("run_id", runID).Info("Killing agent subprocess")
 	return proc.Kill()
+}
+
+// extractErrorMessage gets a user-friendly error message from agent stderr output.
+// The agent logs structured JSON to stderr — we look for the last FATAL or ERROR line.
+func extractErrorMessage(stderr string, exitErr error) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+
+	// Walk backwards to find the most relevant error
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		// Look for FATAL log lines (agent uses zap which outputs "FATAL" in the level field)
+		if strings.Contains(line, "FATAL") || strings.Contains(line, "\"level\":\"fatal\"") {
+			// Try to extract the message field
+			if msg := extractJSONField(line, "error"); msg != "" {
+				return msg
+			}
+			if msg := extractJSONField(line, "msg"); msg != "" {
+				return msg
+			}
+		}
+		// Also check ERROR lines
+		if strings.Contains(line, "ERROR") || strings.Contains(line, "\"level\":\"error\"") {
+			if msg := extractJSONField(line, "error"); msg != "" {
+				return msg
+			}
+		}
+	}
+
+	// Fallback: last non-empty line of stderr
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			line := lines[i]
+			// Truncate if too long
+			if len(line) > 200 {
+				line = line[:200] + "..."
+			}
+			return line
+		}
+	}
+
+	return exitErr.Error()
+}
+
+// extractJSONField tries to extract a field value from a JSON-ish log line.
+func extractJSONField(line, field string) string {
+	// Look for "field":"value" or "field": "value"
+	key := `"` + field + `"`
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return ""
+	}
+
+	rest := line[idx+len(key):]
+	// Skip ": or ":"
+	rest = strings.TrimLeft(rest, ": ")
+	if len(rest) == 0 || rest[0] != '"' {
+		return ""
+	}
+	rest = rest[1:] // skip opening quote
+
+	// Find closing quote (handle escaped quotes)
+	var result strings.Builder
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '\\' && i+1 < len(rest) {
+			result.WriteByte(rest[i+1])
+			i++
+			continue
+		}
+		if rest[i] == '"' {
+			break
+		}
+		result.WriteByte(rest[i])
+	}
+	return result.String()
 }
