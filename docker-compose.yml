@@ -166,12 +166,11 @@ services:
       - MONGODB_DB=decisionbox
 
       # ============================================================
-      # LLM — Required for discovery (secret)
+      # LLM — Agent behavior tuning
       # ============================================================
 
-      # API key for LLM provider. Same as API.
-      # Values: sk-ant-... (Claude), sk-... (OpenAI), empty for Vertex AI/Bedrock/Ollama
-      - LLM_API_KEY=${LLM_API_KEY:-}
+      # LLM API keys are stored per-project in the secret provider (not env vars).
+      # Set them via the dashboard: Project Settings → Secrets → LLM API Key
 
       # Max retries on LLM API errors (rate limits, timeouts)
       # Values: any integer, 0 = no retries

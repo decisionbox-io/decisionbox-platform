@@ -202,7 +202,7 @@ export default function NewProjectPage() {
                       ))}
 
                     <Text size="xs" c="dimmed">
-                      API keys are configured via environment variables (LLM_API_KEY), not stored in the database.
+                      API keys are managed per-project via Settings → Secrets after project creation.
                     </Text>
                   </Stack>
                 </Card>
