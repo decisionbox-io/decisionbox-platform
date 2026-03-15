@@ -32,6 +32,14 @@ env:
 
 extraEnv: {}
 
+# Inject env vars from existing Secrets or ConfigMaps.
+# Use this for SECRET_ENCRYPTION_KEY and other sensitive values.
+# Example:
+#   extraEnvFrom:
+#     - secretRef:
+#         name: decisionbox-api-secrets   # must contain SECRET_ENCRYPTION_KEY
+extraEnvFrom: []
+
 securityContext:
   runAsNonRoot: true
   runAsUser: 1000
