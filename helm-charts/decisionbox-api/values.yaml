@@ -23,7 +23,6 @@ containerPort: 8080
 
 env:
   MONGODB_DB: "decisionbox"
-  LLM_API_KEY: ""
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "decisionbox"
 
