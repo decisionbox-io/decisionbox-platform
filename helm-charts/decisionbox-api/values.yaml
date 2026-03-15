@@ -85,17 +85,17 @@ service:
 ingress:
   enabled: false
 
-# rbac:
-#   enabled: true
-#   roleName: deployment-manager
-#   serviceAccountName: decisionbox-api
-#   rules:
-#     - apiGroups: ["apps"]
-#       resources: ["deployments"]
-#       verbs: ["get", "list", "watch"]
-#     - apiGroups: [""]
-#       resources: ["services"]
-#       verbs: ["get", "list", "watch"]
+rbac:
+  enabled: true
+  roleName: agent-job-manager
+  serviceAccountName: decisionbox-api
+  rules:
+    - apiGroups: ["batch"]
+      resources: ["jobs"]
+      verbs: ["create", "get", "list", "delete"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list"]
 
 # ---------------------------------------------------------------------------
 # Infrastructure dependencies (disabled by default — enable per environment)
