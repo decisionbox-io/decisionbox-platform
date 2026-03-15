@@ -156,7 +156,7 @@ variable "health_check_source_ranges" {
 variable "deletion_protection" {
   description = "Enable deletion protection on the GKE cluster. Set to false for dev/sandbox environments."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "create_cluster" {
