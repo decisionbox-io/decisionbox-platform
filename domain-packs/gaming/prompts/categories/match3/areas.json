@@ -2,16 +2,16 @@
   {
     "id": "levels",
     "name": "Level Difficulty",
-    "description": "Difficulty spikes and frustration points in level progression",
-    "keywords": ["level", "quit", "success", "difficulty", "fail", "attempt", "stage", "star"],
+    "description": "Difficulty spikes, frustration points, progression blockers, and chapter transition drop-offs in level progression",
+    "keywords": ["level", "quit", "success", "difficulty", "fail", "attempt", "stage", "star", "chapter", "episode", "progression", "completion"],
     "priority": 4,
     "prompt_file": "analysis_levels.md"
   },
   {
     "id": "boosters",
     "name": "Booster Usage",
-    "description": "Power-up usage patterns, depletion risks, and purchase opportunities",
-    "keywords": ["booster", "hint", "magnet", "power", "extra_life", "hammer", "consumable"],
+    "description": "Power-up usage patterns, depletion risks, economy balance, purchase opportunities, and ad-booster conversion",
+    "keywords": ["booster", "hint", "magnet", "power", "extra_life", "hammer", "consumable", "inventory", "earn", "deplete"],
     "priority": 5,
     "prompt_file": "analysis_boosters.md"
   }

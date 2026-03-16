@@ -22,6 +22,7 @@ import (
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
 )
 
 var testServer *httptest.Server

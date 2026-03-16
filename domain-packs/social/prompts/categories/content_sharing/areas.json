@@ -1,0 +1,18 @@
+[
+  {
+    "id": "content_creation",
+    "name": "Content Creation Health",
+    "description": "Creator activity trends, content supply and diversity, posting patterns, creator retention, and the creator-consumer balance that sustains the platform",
+    "keywords": ["post", "create", "publish", "upload", "content", "creator", "author", "photo", "video", "story", "reel", "caption", "hashtag", "draft"],
+    "priority": 4,
+    "prompt_file": "analysis_content_creation.md"
+  },
+  {
+    "id": "monetization",
+    "name": "Monetization & Premium Features",
+    "description": "Premium subscriptions (VIP), paid features (messaging, content access, profile boosts), in-app purchases, tipping/gifting, and ad revenue optimization",
+    "keywords": ["premium", "vip", "subscription", "purchase", "iap", "revenue", "paid", "boost", "promote", "tip", "gift", "coin", "token", "super_like", "ad_revenue", "creator_fund"],
+    "priority": 5,
+    "prompt_file": "analysis_monetization.md"
+  }
+]

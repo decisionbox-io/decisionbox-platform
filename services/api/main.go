@@ -23,6 +23,7 @@ import (
 
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
 
 	// LLM provider registrations (for /api/v1/providers/llm listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"

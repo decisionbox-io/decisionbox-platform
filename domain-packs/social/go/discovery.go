@@ -1,4 +1,4 @@
-package gaming
+package social
 
 import (
 	"encoding/json"
@@ -13,21 +13,21 @@ import (
 // getPromptsPath returns the path to prompts, checking env var on each call.
 func getPromptsPath() string {
 	if p := os.Getenv("DOMAIN_PACK_PATH"); p != "" {
-		return filepath.Join(p, "gaming", "prompts")
+		return filepath.Join(p, "social", "prompts")
 	}
-	return "domain-packs/gaming/prompts"
+	return "domain-packs/social/prompts"
 }
 
 // getProfilesPath returns the path to profiles, checking env var on each call.
 func getProfilesPath() string {
 	if p := os.Getenv("DOMAIN_PACK_PATH"); p != "" {
-		return filepath.Join(p, "gaming", "profiles")
+		return filepath.Join(p, "social", "profiles")
 	}
-	return "domain-packs/gaming/profiles"
+	return "domain-packs/social/profiles"
 }
 
-// Compile-time check: GamingPack implements DiscoveryPack.
-var _ domainpack.DiscoveryPack = (*GamingPack)(nil)
+// Compile-time check: SocialPack implements DiscoveryPack.
+var _ domainpack.DiscoveryPack = (*SocialPack)(nil)
 
 // areaFile represents an analysis area definition from areas.json.
 type areaFile struct {
@@ -39,30 +39,20 @@ type areaFile struct {
 	PromptFile  string   `json:"prompt_file"`
 }
 
-// DomainCategories returns the game genre categories.
-func (p *GamingPack) DomainCategories() []domainpack.DomainCategory {
+// DomainCategories returns the social network platform categories.
+func (p *SocialPack) DomainCategories() []domainpack.DomainCategory {
 	return []domainpack.DomainCategory{
 		{
-			ID:          "match3",
-			Name:        "Match-3",
-			Description: "Puzzle games with match-3 mechanics (e.g., Candy Crush, Homescapes)",
-		},
-		{
-			ID:          "idle",
-			Name:        "Idle / Incremental",
-			Description: "Games focused on resource accumulation, prestige cycles, and offline progression (e.g., Cookie Clicker, Idle Heroes)",
-		},
-		{
-			ID:          "casual",
-			Name:        "Casual / Hyper-Casual",
-			Description: "Simple, accessible games with short sessions and broad appeal, often ad-monetized (e.g., Flappy Bird, Helix Jump)",
+			ID:          "content_sharing",
+			Name:        "Content Sharing",
+			Description: "Platforms focused on creating and sharing content — photos, videos, stories (e.g., Instagram, TikTok, YouTube)",
 		},
 	}
 }
 
 // AnalysisAreas returns base + category-specific analysis areas.
 // Reads from areas.json files — no hardcoded area definitions.
-func (p *GamingPack) AnalysisAreas(categoryID string) []domainpack.AnalysisArea {
+func (p *SocialPack) AnalysisAreas(categoryID string) []domainpack.AnalysisArea {
 	var areas []domainpack.AnalysisArea
 
 	// Load base areas
@@ -90,7 +80,7 @@ func (p *GamingPack) AnalysisAreas(categoryID string) []domainpack.AnalysisArea 
 
 // Prompts returns merged prompt templates for a given category.
 // Reads area definitions from areas.json and loads corresponding prompt files.
-func (p *GamingPack) Prompts(categoryID string) domainpack.PromptTemplates {
+func (p *SocialPack) Prompts(categoryID string) domainpack.PromptTemplates {
 	templates := domainpack.PromptTemplates{
 		AnalysisAreas: make(map[string]string),
 	}
@@ -136,7 +126,7 @@ func (p *GamingPack) Prompts(categoryID string) domainpack.PromptTemplates {
 }
 
 // ProfileSchema returns the merged JSON Schema for a given category.
-func (p *GamingPack) ProfileSchema(categoryID string) map[string]interface{} {
+func (p *SocialPack) ProfileSchema(categoryID string) map[string]interface{} {
 	baseData, err := os.ReadFile(filepath.Join(getProfilesPath(), "schema.json"))
 	if err != nil {
 		return map[string]interface{}{"error": "base schema not found: " + err.Error()}

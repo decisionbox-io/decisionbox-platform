@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Idle / Incremental Game Profile Extensions",
+  "description": "Additional profile fields specific to idle and incremental games.",
+  "type": "object",
+  "properties": {
+    "progression": {
+      "type": "object",
+      "title": "Progression System",
+      "properties": {
+        "prestige_system": {
+          "type": "boolean",
+          "title": "Has Prestige/Rebirth System"
+        },
+        "prestige_name": {
+          "type": "string",
+          "title": "Prestige Mechanic Name",
+          "description": "E.g., Prestige, Rebirth, Ascend, Transcend"
+        },
+        "total_stages": {
+          "type": "integer",
+          "title": "Total Stages/Worlds"
+        },
+        "automation_unlocks": {
+          "type": "boolean",
+          "title": "Has Automation Unlocks",
+          "description": "Whether players can unlock auto-play features"
+        },
+        "offline_earnings": {
+          "type": "boolean",
+          "title": "Has Offline Earnings"
+        },
+        "offline_earnings_cap_hours": {
+          "type": "integer",
+          "title": "Offline Earnings Cap (hours)",
+          "description": "Maximum hours of offline earnings collected"
+        }
+      }
+    },
+    "currencies": {
+      "type": "array",
+      "title": "In-Game Currencies",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Currency Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Currency Type",
+            "enum": ["soft", "hard", "prestige", "event"]
+          },
+          "can_purchase": {
+            "type": "boolean",
+            "title": "Can Be Purchased with Real Money"
+          },
+          "can_earn_from_ads": {
+            "type": "boolean",
+            "title": "Can Be Earned from Rewarded Ads"
+          }
+        }
+      }
+    },
+    "generators": {
+      "type": "array",
+      "title": "Resource Generators",
+      "description": "The main idle generators/buildings/units that produce resources",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Generator Name"
+          },
+          "max_tier": {
+            "type": "integer",
+            "title": "Max Upgrade Tier"
+          },
+          "unlock_stage": {
+            "type": "integer",
+            "title": "Stage Unlocked At"
+          }
+        }
+      }
+    },
+    "ad_boosts": {
+      "type": "object",
+      "title": "Ad-Based Boosts",
+      "properties": {
+        "offline_multiplier_ad": {
+          "type": "boolean",
+          "title": "Ad to Multiply Offline Earnings"
+        },
+        "speed_boost_ad": {
+          "type": "boolean",
+          "title": "Ad for Temporary Speed Boost"
+        },
+        "max_ads_per_day": {
+          "type": "integer",
+          "title": "Maximum Ad Watches Per Day"
+        }
+      }
+    }
+  }
+}

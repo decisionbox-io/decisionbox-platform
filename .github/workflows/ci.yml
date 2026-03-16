@@ -78,7 +78,9 @@ jobs:
         run: cd libs/go-common && go test ./...
 
       - name: Test domain packs
-        run: cd domain-packs/gaming/go && go test ./...
+        run: |
+          cd domain-packs/gaming/go && go test ./... && cd ../../..
+          cd domain-packs/social/go && go test ./...
 
       - name: Test LLM providers
         run: |
@@ -126,11 +128,17 @@ jobs:
           version: v2.11.3
           working-directory: libs/go-common
 
-      - name: Lint domain packs
+      - name: Lint gaming domain pack
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           working-directory: domain-packs/gaming/go
+
+      - name: Lint social domain pack
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: domain-packs/social/go
 
       - name: Lint Agent
         uses: golangci/golangci-lint-action@v7

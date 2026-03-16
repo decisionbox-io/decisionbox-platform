@@ -17,6 +17,7 @@ COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
 COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
+COPY domain-packs/social/go/go.mod domain-packs/social/go/
 COPY services/api/go.mod services/api/go.sum services/api/
 # Download deps
 WORKDIR /workspace/services/api

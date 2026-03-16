@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Casual / Hyper-Casual Game Profile Extensions",
+  "description": "Additional profile fields specific to casual and hyper-casual games.",
+  "type": "object",
+  "properties": {
+    "core_loop": {
+      "type": "object",
+      "title": "Core Loop",
+      "properties": {
+        "description": {
+          "type": "string",
+          "title": "Core Loop Description",
+          "description": "Brief description of the core gameplay loop (e.g., 'Swipe to merge tiles, score points, restart')"
+        },
+        "avg_loop_duration_seconds": {
+          "type": "integer",
+          "title": "Average Core Loop Duration (seconds)",
+          "description": "How long one play-result-reward cycle takes"
+        },
+        "loops_per_session_target": {
+          "type": "integer",
+          "title": "Target Loops Per Session",
+          "description": "Desired number of core loops per session"
+        }
+      }
+    },
+    "onboarding": {
+      "type": "object",
+      "title": "Onboarding",
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "title": "Number of Onboarding Steps"
+        },
+        "has_tutorial": {
+          "type": "boolean",
+          "title": "Has Interactive Tutorial"
+        },
+        "requires_account": {
+          "type": "boolean",
+          "title": "Requires Account Creation",
+          "description": "Whether players must create an account before playing"
+        },
+        "time_to_first_play_seconds": {
+          "type": "integer",
+          "title": "Time to First Play (seconds)",
+          "description": "Seconds from app open to first core gameplay"
+        }
+      }
+    },
+    "ad_setup": {
+      "type": "object",
+      "title": "Ad Configuration",
+      "properties": {
+        "has_interstitials": {
+          "type": "boolean",
+          "title": "Shows Interstitial Ads"
+        },
+        "has_rewarded": {
+          "type": "boolean",
+          "title": "Shows Rewarded Ads"
+        },
+        "has_banners": {
+          "type": "boolean",
+          "title": "Shows Banner Ads"
+        },
+        "interstitial_frequency": {
+          "type": "string",
+          "title": "Interstitial Frequency",
+          "description": "E.g., 'every 3 games', 'every 2 minutes', 'after every loss'"
+        },
+        "rewarded_ad_rewards": {
+          "type": "array",
+          "title": "Rewarded Ad Rewards",
+          "items": {
+            "type": "string"
+          },
+          "description": "What players get for watching rewarded ads (e.g., 'Extra life', '2x coins', 'Continue')"
+        },
+        "has_no_ads_iap": {
+          "type": "boolean",
+          "title": "Has Remove Ads IAP"
+        },
+        "no_ads_price_usd": {
+          "type": "number",
+          "title": "Remove Ads Price (USD)"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "title": "Content",
+      "properties": {
+        "has_levels": {
+          "type": "boolean",
+          "title": "Has Discrete Levels"
+        },
+        "total_content_items": {
+          "type": "integer",
+          "title": "Total Content Items",
+          "description": "Total levels, stages, or distinct content pieces"
+        },
+        "content_update_frequency": {
+          "type": "string",
+          "title": "Content Update Frequency",
+          "enum": ["daily", "weekly", "biweekly", "monthly", "rarely"]
+        }
+      }
+    },
+    "secondary_features": {
+      "type": "array",
+      "title": "Secondary Features",
+      "description": "Features beyond the core loop (daily challenges, leaderboards, etc.)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Feature Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          }
+        }
+      }
+    }
+  }
+}

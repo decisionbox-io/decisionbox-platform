@@ -28,24 +28,26 @@ func TestDomainCategories(t *testing.T) {
 	pack := NewPack()
 	cats := pack.DomainCategories()
 
-	if len(cats) == 0 {
-		t.Fatal("DomainCategories returned empty list")
+	if len(cats) != 3 {
+		t.Fatalf("DomainCategories returned %d categories, want 3", len(cats))
 	}
 
-	found := false
+	expectedCats := map[string]bool{"match3": false, "idle": false, "casual": false}
 	for _, c := range cats {
-		if c.ID == "match3" {
-			found = true
+		if _, ok := expectedCats[c.ID]; ok {
+			expectedCats[c.ID] = true
 			if c.Name == "" {
-				t.Error("match3 category has empty Name")
+				t.Errorf("%s category has empty Name", c.ID)
 			}
 			if c.Description == "" {
-				t.Error("match3 category has empty Description")
+				t.Errorf("%s category has empty Description", c.ID)
 			}
 		}
 	}
-	if !found {
-		t.Error("match3 category not found")
+	for id, found := range expectedCats {
+		if !found {
+			t.Errorf("category %q not found", id)
+		}
 	}
 }
 
@@ -206,7 +208,7 @@ func TestProfileSchemaBase(t *testing.T) {
 		t.Fatal("schema has no properties")
 	}
 
-	for _, expected := range []string{"basic_info", "gameplay", "monetization", "kpis"} {
+	for _, expected := range []string{"basic_info", "gameplay", "monetization", "social_features", "live_ops", "kpis"} {
 		if _, ok := props[expected]; !ok {
 			t.Errorf("base schema missing property: %s", expected)
 		}
@@ -233,6 +235,140 @@ func TestProfileSchemaMatch3Merge(t *testing.T) {
 	for _, expected := range []string{"progression", "boosters", "iap_packages", "lootboxes"} {
 		if _, ok := props[expected]; !ok {
 			t.Errorf("merged schema missing match3 property: %s", expected)
+		}
+	}
+}
+
+func TestAnalysisAreasIdle(t *testing.T) {
+	pack := NewPack()
+	areas := pack.AnalysisAreas("idle")
+
+	if len(areas) != 5 {
+		t.Errorf("idle areas = %d, want 5 (3 base + 2 category)", len(areas))
+	}
+
+	ids := make(map[string]bool)
+	for _, a := range areas {
+		ids[a.ID] = true
+	}
+
+	for _, expected := range []string{"churn", "engagement", "monetization", "progression", "economy"} {
+		if !ids[expected] {
+			t.Errorf("missing area: %s", expected)
+		}
+	}
+}
+
+func TestAnalysisAreasCasual(t *testing.T) {
+	pack := NewPack()
+	areas := pack.AnalysisAreas("casual")
+
+	if len(areas) != 5 {
+		t.Errorf("casual areas = %d, want 5 (3 base + 2 category)", len(areas))
+	}
+
+	ids := make(map[string]bool)
+	for _, a := range areas {
+		ids[a.ID] = true
+	}
+
+	for _, expected := range []string{"churn", "engagement", "monetization", "ad_performance", "session_flow"} {
+		if !ids[expected] {
+			t.Errorf("missing area: %s", expected)
+		}
+	}
+}
+
+func TestPromptsIdleMerge(t *testing.T) {
+	pack := NewPack()
+	prompts := pack.Prompts("idle")
+
+	if !strings.Contains(prompts.Exploration, "Gaming Analytics Discovery") {
+		t.Error("merged exploration missing base content")
+	}
+	if !strings.Contains(prompts.Exploration, "Idle / Incremental Game Context") {
+		t.Error("merged exploration missing idle context")
+	}
+
+	for _, id := range []string{"churn", "engagement", "monetization", "progression", "economy"} {
+		content, ok := prompts.AnalysisAreas[id]
+		if !ok {
+			t.Errorf("missing analysis prompt: %s", id)
+			continue
+		}
+		if content == "" {
+			t.Errorf("empty analysis prompt: %s", id)
+		}
+	}
+}
+
+func TestPromptsCasualMerge(t *testing.T) {
+	pack := NewPack()
+	prompts := pack.Prompts("casual")
+
+	if !strings.Contains(prompts.Exploration, "Gaming Analytics Discovery") {
+		t.Error("merged exploration missing base content")
+	}
+	if !strings.Contains(prompts.Exploration, "Casual / Hyper-Casual Game Context") {
+		t.Error("merged exploration missing casual context")
+	}
+
+	for _, id := range []string{"churn", "engagement", "monetization", "ad_performance", "session_flow"} {
+		content, ok := prompts.AnalysisAreas[id]
+		if !ok {
+			t.Errorf("missing analysis prompt: %s", id)
+			continue
+		}
+		if content == "" {
+			t.Errorf("empty analysis prompt: %s", id)
+		}
+	}
+}
+
+func TestProfileSchemaIdleMerge(t *testing.T) {
+	pack := NewPack()
+	schema := pack.ProfileSchema("idle")
+
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema has no properties")
+	}
+
+	// Base properties
+	for _, expected := range []string{"basic_info", "gameplay", "monetization", "kpis"} {
+		if _, ok := props[expected]; !ok {
+			t.Errorf("merged schema missing base property: %s", expected)
+		}
+	}
+
+	// Idle-specific properties
+	for _, expected := range []string{"progression", "currencies", "generators"} {
+		if _, ok := props[expected]; !ok {
+			t.Errorf("merged schema missing idle property: %s", expected)
+		}
+	}
+}
+
+func TestProfileSchemaCasualMerge(t *testing.T) {
+	pack := NewPack()
+	schema := pack.ProfileSchema("casual")
+
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema has no properties")
+	}
+
+	// Base properties
+	for _, expected := range []string{"basic_info", "gameplay", "monetization", "kpis"} {
+		if _, ok := props[expected]; !ok {
+			t.Errorf("merged schema missing base property: %s", expected)
+		}
+	}
+
+	// Casual-specific properties
+	for _, expected := range []string{"core_loop", "onboarding", "ad_setup"} {
+		if _, ok := props[expected]; !ok {
+			t.Errorf("merged schema missing casual property: %s", expected)
 		}
 	}
 }
