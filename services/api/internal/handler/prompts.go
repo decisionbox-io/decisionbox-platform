@@ -5,6 +5,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 )
 
@@ -66,7 +67,9 @@ func GetPrompts(projectRepo *database.ProjectRepository) http.HandlerFunc {
 		if p.Prompts == nil {
 			// Seed prompts if not yet present (migration for old projects)
 			SeedProjectPrompts(p)
-			projectRepo.Update(r.Context(), id, p)
+			if err := projectRepo.Update(r.Context(), id, p); err != nil {
+				apilog.WithError(err).Warn("failed to seed project prompts")
+			}
 		}
 
 		writeJSON(w, http.StatusOK, p.Prompts)

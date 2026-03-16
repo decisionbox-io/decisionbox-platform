@@ -148,7 +148,7 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 
 	// Watch Job completion in background to detect failures
 	if opts.OnFailure != nil {
-		go r.watchJob(created.Name, opts.RunID, opts.OnFailure)
+		go r.watchJob(created.Name, opts.RunID, opts.OnFailure) //nolint:gosec // intentional: long-running watcher outlives request context
 	}
 
 	return nil

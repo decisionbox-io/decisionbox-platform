@@ -41,7 +41,9 @@ func (r *PricingRepository) Save(ctx context.Context, pricing *models.Pricing) e
 	pricing.ID = "" // let MongoDB handle _id
 
 	// Delete existing and insert new (single document collection)
-	r.col.DeleteMany(ctx, bson.M{})
+	if _, err := r.col.DeleteMany(ctx, bson.M{}); err != nil {
+		return fmt.Errorf("delete existing pricing: %w", err)
+	}
 	_, err := r.col.InsertOne(ctx, pricing)
 	if err != nil {
 		return fmt.Errorf("save pricing: %w", err)
@@ -57,7 +59,7 @@ func (r *PricingRepository) SeedFromFile(ctx context.Context, configDir string) 
 	}
 
 	filePath := filepath.Join(configDir, "pricing.json")
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) //nolint:gosec // trusted internal path
 	if err != nil {
 		return fmt.Errorf("read pricing file: %w", err)
 	}

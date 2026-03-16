@@ -14,13 +14,13 @@ type APIResponse struct {
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Data: data})
+	_ = json.NewEncoder(w).Encode(APIResponse{Data: data})
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Error: msg})
+	_ = json.NewEncoder(w).Encode(APIResponse{Error: msg})
 }
 
 func decodeJSON(r *http.Request, v interface{}) error {

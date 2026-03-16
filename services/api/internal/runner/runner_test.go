@@ -104,7 +104,7 @@ func TestNew_InvalidMode(t *testing.T) {
 
 func newFakeK8sRunner() *KubernetesRunner {
 	return &KubernetesRunner{
-		client: fake.NewSimpleClientset(),
+		client: fake.NewClientset(),
 		config: Config{
 			AgentImage:    "ghcr.io/decisionbox-io/decisionbox-agent:test",
 			Namespace:     "test-ns",

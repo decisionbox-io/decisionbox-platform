@@ -61,7 +61,7 @@ func main() {
 		apilog.WithError(err).Error("MongoDB connection failed")
 		os.Exit(1)
 	}
-	defer mongoClient.Disconnect(ctx)
+	defer func() { _ = mongoClient.Disconnect(ctx) }()
 	apilog.Info("Connected to MongoDB")
 
 	db := database.New(mongoClient)
@@ -70,7 +70,8 @@ func main() {
 	apilog.Info("Initializing database collections and indexes")
 	if err := database.InitDatabase(ctx, db); err != nil {
 		apilog.WithError(err).Error("Database initialization failed")
-		os.Exit(1)
+		_ = mongoClient.Disconnect(ctx)
+		os.Exit(1) //nolint:gocritic // startup failure, explicit disconnect above
 	}
 	apilog.Info("Database initialized")
 

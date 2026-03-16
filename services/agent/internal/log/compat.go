@@ -25,7 +25,7 @@ func Init(service, level string) {
 }
 
 // Sync flushes the logger.
-func Sync() { log.Sync() }
+func Sync() { _ = log.Sync() }
 
 // entry wraps pending fields for chained logging.
 type entry struct {

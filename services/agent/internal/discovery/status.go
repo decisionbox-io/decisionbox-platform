@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
+	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -33,7 +34,9 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 	if !s.enabled() {
 		return
 	}
-	s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress)
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress); err != nil {
+		logger.WithError(err).Warn("failed to update run status")
+	}
 }
 
 // AddStep appends a step to the live log.
@@ -41,11 +44,13 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 	if !s.enabled() {
 		return
 	}
-	s.repo.AddStep(ctx, s.runID, step)
+	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to add run step")
+	}
 }
 
 // AddExplorationStep logs an exploration step with LLM thinking and query.
-func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, err string) {
+func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string) {
 	if !s.enabled() {
 		return
 	}
@@ -76,10 +81,12 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, th
 		RowCount:    rowCount,
 		QueryTimeMs: queryTimeMs,
 		QueryFixed:  queryFixed,
-		Error:       err,
+		Error:       errStr,
 	}
 
-	s.repo.AddStep(ctx, s.runID, step)
+	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to add exploration step")
+	}
 
 	// Update progress: exploration is 10-60% of total
 	progress := 10 + (stepNum * 50 / s.maxSteps)
@@ -87,22 +94,26 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, th
 		progress = 60
 	}
 	detail := fmt.Sprintf("Step %d/%d: exploring data...", stepNum, s.maxSteps)
-	s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress)
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress); err != nil {
+		logger.WithError(err).Warn("failed to update exploration status")
+	}
 
 	// Update query count
-	s.repo.IncrementQueryCount(ctx, s.runID, err == "")
+	if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
+		logger.WithError(err).Warn("failed to increment query count")
+	}
 }
 
 // AddAnalysisStep logs an analysis area completion.
-func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName string, insightCount int, err string) {
+func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName string, insightCount int, errStr string) {
 	if !s.enabled() {
 		return
 	}
 
 	msg := fmt.Sprintf("Analyzed %s: %d insights found", areaName, insightCount)
 	stepType := "analysis"
-	if err != "" {
-		msg = fmt.Sprintf("Analysis of %s failed: %s", areaName, err)
+	if errStr != "" {
+		msg = fmt.Sprintf("Analysis of %s failed: %s", areaName, errStr)
 		stepType = "error"
 	}
 
@@ -110,10 +121,12 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 		Phase:   models.PhaseAnalysis,
 		Type:    stepType,
 		Message: msg,
-		Error:   err,
+		Error:   errStr,
 	}
 
-	s.repo.AddStep(ctx, s.runID, step)
+	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to add analysis step")
+	}
 }
 
 // AddInsightStep logs a discovered insight.
@@ -130,7 +143,9 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 		InsightSeverity: severity,
 	}
 
-	s.repo.AddStep(ctx, s.runID, step)
+	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to add insight step")
+	}
 }
 
 // AddValidationStep logs a validation check result.
@@ -150,7 +165,9 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 		Message: msg,
 	}
 
-	s.repo.AddStep(ctx, s.runID, step)
+	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to add validation step")
+	}
 }
 
 // Complete marks the run as completed.
@@ -158,7 +175,9 @@ func (s *StatusReporter) Complete(ctx context.Context, insightsFound int) {
 	if !s.enabled() {
 		return
 	}
-	s.repo.Complete(ctx, s.runID, insightsFound)
+	if err := s.repo.Complete(ctx, s.runID, insightsFound); err != nil {
+		logger.WithError(err).Warn("failed to complete run")
+	}
 }
 
 // Fail marks the run as failed.
@@ -166,5 +185,7 @@ func (s *StatusReporter) Fail(ctx context.Context, errMsg string) {
 	if !s.enabled() {
 		return
 	}
-	s.repo.Fail(ctx, s.runID, errMsg)
+	if err := s.repo.Fail(ctx, s.runID, errMsg); err != nil {
+		logger.WithError(err).Warn("failed to mark run as failed")
+	}
 }

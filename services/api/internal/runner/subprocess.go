@@ -38,7 +38,7 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
 	}
 
-	cmd := exec.Command("decisionbox-agent", args...)
+	cmd := exec.Command("decisionbox-agent", args...) //nolint:gosec // controlled binary name
 	cmd.Env = append(os.Environ(),
 		"MONGODB_URI="+getEnv("MONGODB_URI", "mongodb://localhost:27017"),
 		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),

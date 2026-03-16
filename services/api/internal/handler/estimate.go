@@ -39,7 +39,7 @@ func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 		Areas    []string `json:"areas"`
 		MaxSteps int      `json:"max_steps"`
 	}
-	decodeJSON(r, &body)
+	_ = decodeJSON(r, &body) // body is optional
 
 	if body.MaxSteps <= 0 {
 		body.MaxSteps = 100
@@ -58,7 +58,7 @@ func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 	// Estimation always runs as subprocess (synchronous, captures stdout).
 	// Unlike discovery which uses the Runner interface (subprocess or K8s Job),
 	// estimation is fast (~10s) and needs the JSON result immediately.
-	cmd := exec.Command("decisionbox-agent", args...)
+	cmd := exec.Command("decisionbox-agent", args...) //nolint:gosec // controlled binary name
 	cmd.Env = append(os.Environ(),
 		"MONGODB_URI="+getEnvOrDefault("MONGODB_URI", "mongodb://localhost:27017"),
 		"MONGODB_DB="+getEnvOrDefault("MONGODB_DB", "decisionbox"),
@@ -115,9 +115,10 @@ func extractJSONObject(data []byte) []byte {
 	// Find matching closing brace
 	depth := 0
 	for i := start; i < len(s); i++ {
-		if s[i] == '{' {
+		switch s[i] {
+		case '{':
 			depth++
-		} else if s[i] == '}' {
+		case '}':
 			depth--
 			if depth == 0 {
 				return []byte(s[start : i+1])

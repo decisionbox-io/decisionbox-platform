@@ -243,14 +243,15 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 	}
 
 	// Normalize action field for backward compatibility
-	if action.Done {
+	switch {
+	case action.Done:
 		action.Action = "complete"
 		if action.Reason == "" {
 			action.Reason = action.Summary
 		}
-	} else if action.Query != "" {
+	case action.Query != "":
 		action.Action = "query_data"
-	} else if action.Action == "" {
+	case action.Action == "":
 		// No action specified, assume complete
 		action.Action = "complete"
 		action.Done = true
@@ -303,9 +304,10 @@ func (e *ExplorationEngine) extractJSON(text string) string {
 		// Find matching closing brace
 		braceCount := 0
 		for i := start; i < len(text); i++ {
-			if text[i] == '{' {
+			switch text[i] {
+			case '{':
 				braceCount++
-			} else if text[i] == '}' {
+			case '}':
 				braceCount--
 				if braceCount == 0 {
 					return text[start : i+1]
@@ -403,7 +405,7 @@ func (e *ExplorationEngine) executeQuery(
 	step.Fixed = result.Fixed
 
 	// Format result for Claude
-	resultMsg := fmt.Sprintf("Query executed successfully.\n\n")
+	resultMsg := "Query executed successfully.\n\n"
 	resultMsg += fmt.Sprintf("Rows returned: %d\n", result.RowCount)
 	resultMsg += fmt.Sprintf("Execution time: %dms\n", result.ExecutionTimeMs)
 
@@ -466,7 +468,7 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	var msg strings.Builder
 
 	msg.WriteString("Begin your data exploration.\n\n")
-	msg.WriteString(fmt.Sprintf("You have up to %d exploration steps. ", e.maxSteps))
+	fmt.Fprintf(&msg, "You have up to %d exploration steps. ", e.maxSteps)
 	msg.WriteString("Follow the rules and format described in the system prompt.\n")
 
 	return msg.String()

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"testing"
 )
 
@@ -43,41 +44,17 @@ func TestStatusReporter_DisabledWithEmptyRunID(t *testing.T) {
 func TestStatusReporter_SetPhase_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, "", 10)
 	// Should not panic when disabled
-	sr.SetPhase(nil, "exploration", "testing", 50)
+	sr.SetPhase(context.TODO(), "exploration", "testing", 50)
 }
 
 func TestStatusReporter_AddExplorationStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, "", 10)
 	// Should not panic when disabled
-	sr.AddExplorationStep(nil, 1, "thinking", "SELECT 1", 10, 100, false, "")
+	sr.AddExplorationStep(context.TODO(), 1, "thinking", "SELECT 1", 10, 100, false, "")
 }
 
 func TestStatusReporter_AddAnalysisStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, "", 10)
 	// Should not panic when disabled
-	sr.AddAnalysisStep(nil, "churn", "Churn Risks", 3, "")
-}
-
-func TestStatusReporter_AddInsightStep_NoOp_WhenDisabled(t *testing.T) {
-	sr := NewStatusReporter(nil, "", 10)
-	// Should not panic when disabled
-	sr.AddInsightStep(nil, "High Churn", "critical", "churn")
-}
-
-func TestStatusReporter_AddValidationStep_NoOp_WhenDisabled(t *testing.T) {
-	sr := NewStatusReporter(nil, "", 10)
-	// Should not panic when disabled
-	sr.AddValidationStep(nil, "Some insight", "confirmed", 100, 95)
-}
-
-func TestStatusReporter_Complete_NoOp_WhenDisabled(t *testing.T) {
-	sr := NewStatusReporter(nil, "", 10)
-	// Should not panic when disabled
-	sr.Complete(nil, 5)
-}
-
-func TestStatusReporter_Fail_NoOp_WhenDisabled(t *testing.T) {
-	sr := NewStatusReporter(nil, "", 10)
-	// Should not panic when disabled
-	sr.Fail(nil, "some error")
+	sr.AddAnalysisStep(context.TODO(), "churn", "Churn Risks", 3, "")
 }

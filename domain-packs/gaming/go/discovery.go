@@ -142,7 +142,7 @@ func (p *GamingPack) ProfileSchema(categoryID string) map[string]interface{} {
 	}
 
 	catPath := filepath.Join(getProfilesPath(), "categories", categoryID+".json")
-	catData, err := os.ReadFile(catPath)
+	catData, err := os.ReadFile(catPath) //nolint:gosec // trusted internal path
 	if err != nil {
 		return base
 	}
@@ -165,7 +165,7 @@ func (p *GamingPack) ProfileSchema(categoryID string) map[string]interface{} {
 
 // loadAreas reads analysis area definitions from an areas.json file.
 func loadAreas(path string) []areaFile {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // trusted internal path
 	if err != nil {
 		return nil
 	}
@@ -180,7 +180,7 @@ func loadAreas(path string) []areaFile {
 }
 
 func readPromptFile(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // trusted internal path
 	if err != nil {
 		return ""
 	}

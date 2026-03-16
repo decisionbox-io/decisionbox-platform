@@ -3,7 +3,6 @@ package testutil
 
 import (
 	"context"
-	"fmt"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -169,5 +168,5 @@ func (m *MockSQLFixer) FixSQL(ctx context.Context, query string, errMsg string, 
 	if m.FixedQuery != "" {
 		return m.FixedQuery, nil
 	}
-	return fmt.Sprintf("SELECT fixed FROM `dataset.table` WHERE app_id = 'test'"), nil
+	return "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'", nil
 }

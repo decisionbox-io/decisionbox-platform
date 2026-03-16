@@ -20,7 +20,7 @@ func Init(level string) {
 	logger = gocommonlogger.New("decisionbox-api", level)
 }
 
-func Sync() { logger.Sync() }
+func Sync() { _ = logger.Sync() }
 
 type entry struct {
 	fields []zap.Field

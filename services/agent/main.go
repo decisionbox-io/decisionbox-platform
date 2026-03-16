@@ -107,7 +107,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err != nil {
 		return fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
-	defer mongoClient.Disconnect(ctx)
+	defer func() { _ = mongoClient.Disconnect(ctx) }()
 	applog.Info("Connected to MongoDB")
 
 	db := database.New(mongoClient)

@@ -160,7 +160,7 @@ func (v *UserCountValidator) ValidateInsights(
 		}
 
 		// Store validation on insight
-		insights[i].Validation = &models.InsightValidation{
+		insights[i].Validation = &models.InsightValidation{ //nolint:gosec // index bounded by insights slice length
 			Status:        vr.Status,
 			VerifiedCount: vr.VerifiedCount,
 			OriginalCount: vr.ClaimedCount,

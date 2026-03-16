@@ -24,11 +24,12 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			"duration": duration.String(),
 		}
 
-		if sw.status >= 500 {
+		switch {
+		case sw.status >= 500:
 			apilog.WithFields(fields).Error("Request failed")
-		} else if sw.status >= 400 {
+		case sw.status >= 400:
 			apilog.WithFields(fields).Warn("Request error")
-		} else {
+		default:
 			apilog.WithFields(fields).Debug("Request completed")
 		}
 	})

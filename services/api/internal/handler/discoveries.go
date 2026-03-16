@@ -141,7 +141,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		Areas    []string `json:"areas"`     // optional: run only these areas
 		MaxSteps int      `json:"max_steps"` // optional: override exploration steps (default 100)
 	}
-	decodeJSON(r, &body) // ignore error — body is optional
+	_ = decodeJSON(r, &body) // body is optional
 
 	// Create a run record
 	runID, err := h.runRepo.Create(r.Context(), projectID)
@@ -160,11 +160,15 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 			apilog.WithFields(apilog.Fields{
 				"run_id": failedRunID, "error": errMsg,
 			}).Error("Agent failed — updating run status")
-			h.runRepo.Fail(context.Background(), failedRunID, errMsg)
+			if err := h.runRepo.Fail(context.Background(), failedRunID, errMsg); err != nil {
+				apilog.WithError(err).Error("failed to mark run as failed")
+			}
 		},
 	})
 	if runErr != nil {
-		h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error())
+		if err := h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error()); err != nil {
+			apilog.WithError(err).Error("failed to mark run as failed")
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", runErr.Error()))
 		return
 	}
@@ -255,7 +259,9 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mark as cancelled in MongoDB
-	h.runRepo.Cancel(r.Context(), runID)
+	if err := h.runRepo.Cancel(r.Context(), runID); err != nil {
+		apilog.WithError(err).Warn("failed to cancel run in database")
+	}
 
 	apilog.WithField("run_id", runID).Info("Discovery run cancelled")
 

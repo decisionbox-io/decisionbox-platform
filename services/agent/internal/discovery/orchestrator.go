@@ -240,7 +240,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Build context for prompts
 	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
-	if o.profile != nil && len(o.profile) > 0 {
+	if len(o.profile) > 0 {
 		pj, _ := json.MarshalIndent(o.profile, "", "  ")
 		profileStr = string(pj)
 	}
@@ -703,7 +703,7 @@ func (o *Orchestrator) buildFilterRule() string {
 func (o *Orchestrator) buildAnalysisAreasDescription(areas []domainpack.AnalysisArea) string {
 	var sb strings.Builder
 	for i, area := range areas {
-		sb.WriteString(fmt.Sprintf("%d. **%s** - %s\n", i+1, area.Name, area.Description))
+		fmt.Fprintf(&sb, "%d. **%s** - %s\n", i+1, area.Name, area.Description)
 	}
 	return sb.String()
 }
@@ -722,16 +722,16 @@ func (o *Orchestrator) buildPreviousContext(
 
 	var sb strings.Builder
 	sb.WriteString("## Previous Discovery Context\n\n")
-	sb.WriteString(fmt.Sprintf("This is discovery run #%d. ", pctx.TotalDiscoveries+1))
-	sb.WriteString(fmt.Sprintf("Last discovery: %s.\n\n", pctx.LastDiscoveryDate.Format("2006-01-02")))
+	fmt.Fprintf(&sb, "This is discovery run #%d. ", pctx.TotalDiscoveries+1)
+	fmt.Fprintf(&sb, "Last discovery: %s.\n\n", pctx.LastDiscoveryDate.Format("2006-01-02"))
 
 	// Previous insights
 	if len(prevInsights) > 0 {
 		sb.WriteString("### Previously Found Insights\n")
 		sb.WriteString("These insights were already discovered. Do NOT repeat them unless the data has significantly changed. Focus on new patterns.\n\n")
 		for _, ins := range prevInsights {
-			sb.WriteString(fmt.Sprintf("- **%s** [%s, %s] — %d affected (%s)\n",
-				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date))
+			fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
+				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
 		}
 		sb.WriteString("\n")
 	}
@@ -752,9 +752,9 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("The user marked these insights as NOT useful. Avoid similar conclusions or address the feedback.\n\n")
 		for _, f := range disliked {
 			if f.Comment != "" {
-				sb.WriteString(fmt.Sprintf("- **%s** — user comment: \"%s\"\n", f.InsightName, f.Comment))
+				fmt.Fprintf(&sb, "- **%s** — user comment: \"%s\"\n", f.InsightName, f.Comment)
 			} else {
-				sb.WriteString(fmt.Sprintf("- **%s** — marked not useful\n", f.InsightName))
+				fmt.Fprintf(&sb, "- **%s** — marked not useful\n", f.InsightName)
 			}
 		}
 		sb.WriteString("\n")
@@ -764,7 +764,7 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("### User Feedback — Liked Insights (MONITOR)\n")
 		sb.WriteString("The user found these valuable. Check if they have changed or evolved.\n\n")
 		for _, f := range liked {
-			sb.WriteString(fmt.Sprintf("- **%s**\n", f.InsightName))
+			fmt.Fprintf(&sb, "- **%s**\n", f.InsightName)
 		}
 		sb.WriteString("\n")
 	}
@@ -774,7 +774,7 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("### Previously Given Recommendations\n")
 		sb.WriteString("Don't repeat these unless the situation has changed.\n\n")
 		for _, rec := range prevRecs {
-			sb.WriteString(fmt.Sprintf("- P%d: %s (%s)\n", rec.Priority, rec.Title, rec.Category))
+			fmt.Fprintf(&sb, "- P%d: %s (%s)\n", rec.Priority, rec.Title, rec.Category)
 		}
 		sb.WriteString("\n")
 	}
@@ -786,7 +786,7 @@ func (o *Orchestrator) buildPreviousContext(
 		for i := len(pctx.Notes) - 1; i >= 0 && shown < 10; i-- {
 			note := pctx.Notes[i]
 			if note.Relevance >= 0.5 {
-				sb.WriteString(fmt.Sprintf("- %s\n", note.Note))
+				fmt.Fprintf(&sb, "- %s\n", note.Note)
 				shown++
 			}
 		}

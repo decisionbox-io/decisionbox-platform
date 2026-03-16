@@ -24,7 +24,7 @@ func GetEnv(key string) string {
 	val := os.Getenv(key)
 	if strings.HasPrefix(val, "file://") {
 		path := strings.TrimPrefix(val, "file://")
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path comes from trusted env var
 		if err != nil {
 			return ""
 		}

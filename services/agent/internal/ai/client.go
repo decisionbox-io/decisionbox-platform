@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -132,7 +131,10 @@ func (c *Client) SetPhase(phase string)        { c.currentPhase = phase }
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	c.promptCount++
 	promptDir := "test-prompts"
-	os.MkdirAll(promptDir, 0755)
+	if err := os.MkdirAll(promptDir, 0750); err != nil {
+		logger.WithField("error", err).Debug("failed to create prompt dir")
+		return
+	}
 
 	timestamp := time.Now().Format("20060102-150405")
 	filename := fmt.Sprintf("%03d-%s-prompt.txt", c.promptCount, timestamp)
@@ -146,9 +148,7 @@ func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 		content += fmt.Sprintf("[Message %d - %s]\n%s\n", i+1, msg.Role, msg.Content)
 	}
 
-	os.WriteFile(filepath.Join(promptDir, filename), []byte(content), 0644)
-}
-
-func contains(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+	if err := os.WriteFile(filepath.Join(promptDir, filename), []byte(content), 0600); err != nil {
+		logger.WithField("error", err).Debug("failed to write prompt file")
+	}
 }
