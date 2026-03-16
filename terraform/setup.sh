@@ -294,8 +294,10 @@ if [[ "$HELM_DEPLOY" == "yes" ]]; then
   if kubectl get secret "$API_SECRET_NAME" -n "$K8S_NS" > /dev/null 2>&1; then
     ok "Secret ${API_SECRET_NAME} already exists"
   else
-    info "Generating SECRET_ENCRYPTION_KEY (AES-256)..."
-    ENCRYPTION_KEY=$(openssl rand -base64 32)
+    AUTO_KEY=$(openssl rand -base64 32)
+    info "SECRET_ENCRYPTION_KEY is used for AES-256 encryption of project secrets."
+    info "Press Enter to auto-generate, or paste your own key."
+    prompt ENCRYPTION_KEY "SECRET_ENCRYPTION_KEY" "$AUTO_KEY"
     kubectl create namespace "$K8S_NS" --dry-run=client -o yaml | kubectl apply -f -
     kubectl create secret generic "$API_SECRET_NAME" \
       --from-literal=SECRET_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
