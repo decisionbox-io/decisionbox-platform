@@ -121,25 +121,25 @@ jobs:
             services/agent/go.sum
 
       - name: Lint go-common
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           working-directory: libs/go-common
 
       - name: Lint domain packs
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           working-directory: domain-packs/gaming/go
 
       - name: Lint Agent
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           working-directory: services/agent
 
       - name: Lint API
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           working-directory: services/api
