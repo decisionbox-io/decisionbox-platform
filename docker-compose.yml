@@ -10,7 +10,7 @@
 #   make dev-api                      # runs API directly (needs MongoDB on localhost:27017)
 #   make dev-dashboard                # runs dashboard directly
 #
-# All environment variables documented below. Copy .env.example to .env for overrides.
+# All environment variables documented below. Override values directly or set env vars before running.
 
 services:
   mongodb:

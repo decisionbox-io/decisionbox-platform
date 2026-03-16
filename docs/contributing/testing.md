@@ -39,6 +39,7 @@ The CI workflow runs automatically on every PR and push to main:
 | Go Lint | golangci-lint on all modules | Go files changed |
 | Dashboard Build | Next.js build | Dashboard files changed |
 | Dashboard Test & Lint | Jest + ESLint | Dashboard files changed |
+| License Check | SBOM generation (Syft) + license policy validation (Grant) | Go or Dashboard files changed |
 | Integration Tests | MongoDB integration tests | Push to main, or PR with `run-integration-tests` label |
 
 To trigger integration tests on a PR, add the `run-integration-tests` label.
