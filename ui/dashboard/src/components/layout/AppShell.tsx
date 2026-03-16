@@ -65,11 +65,7 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
           gap: 8,
           borderBottom: '1px solid var(--db-border-default)',
         }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2a8 8 0 0 0-8 8c0 3.4 2.1 6.3 5 7.5V20h6v-2.5c2.9-1.2 5-4.1 5-7.5a8 8 0 0 0-8-8z" />
-            <line x1="12" y1="20" x2="12" y2="22" />
-            <line x1="9" y1="22" x2="15" y2="22" />
-          </svg>
+          <img src="/logo-icon.png" alt="DecisionBox" width={22} height={22} style={{ flexShrink: 0 }} />
           <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.3px' }}>
             DecisionBox
           </span>

@@ -1,12 +1,16 @@
-# DecisionBox
+<p align="center">
+  <img src="assets/logos/logo@2x.png" alt="DecisionBox" width="400" />
+</p>
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://golang.org)
-[![CI](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml)
-[![Docker Build](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml)
-[![GitHub Issues](https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform)](https://github.com/decisionbox-io/decisionbox-platform/issues)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Docs](https://img.shields.io/badge/docs-docs.decisionbox.io-blue)](https://docs.decisionbox.io)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3" /></a>
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
+  <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build" /></a>
+  <a href="https://github.com/decisionbox-io/decisionbox-platform/issues"><img src="https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform" alt="Issues" /></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
+  <a href="https://docs.decisionbox.io"><img src="https://img.shields.io/badge/docs-docs.decisionbox.io-blue" alt="Docs" /></a>
+</p>
 
 **AI-powered data discovery platform.** Connect your data warehouse, run AI agents that explore your data autonomously, and get actionable insights — no pipelines, no SDKs, no setup complexity.
 
