@@ -11,6 +11,7 @@ DecisionBox has 350+ tests across unit and integration suites. This guide covers
 ```bash
 make test          # All Go + UI tests
 make test-go       # All Go unit tests only
+make lint          # All linters (golangci-lint + ESLint)
 ```
 
 ### By Category
@@ -19,11 +20,28 @@ make test-go       # All Go unit tests only
 |---------|--------------|-------|
 | `make test-go` | All Go unit tests across all modules | Nothing |
 | `make test-ui` | Dashboard unit tests (Jest) | Node.js |
+| `make lint-go` | Go linting via golangci-lint | [golangci-lint](https://golangci-lint.run/welcome/install/) |
+| `make lint-ui` | Dashboard linting via ESLint | Node.js |
 | `make test-integration` | MongoDB + API integration tests | Docker |
 | `make test-k8s` | K8s runner tests (K3s testcontainer) | Docker |
 | `make test-secrets` | Secret provider integration tests | Docker |
 | `make test-ollama` | Ollama LLM integration tests (slow) | Docker |
 | `make test-llm` | LLM provider integration tests | API keys |
+
+### CI Pipeline
+
+The CI workflow runs automatically on every PR and push to main:
+
+| Job | What It Does | Trigger |
+|-----|-------------|---------|
+| Go Build | Compiles API + Agent binaries | Go files changed |
+| Go Test | All Go unit tests | Go files changed |
+| Go Lint | golangci-lint on all modules | Go files changed |
+| Dashboard Build | Next.js build | Dashboard files changed |
+| Dashboard Test & Lint | Jest + ESLint | Dashboard files changed |
+| Integration Tests | MongoDB integration tests | Push to main, or PR with `run-integration-tests` label |
+
+To trigger integration tests on a PR, add the `run-integration-tests` label.
 
 ### LLM Integration Tests
 

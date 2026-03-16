@@ -71,6 +71,7 @@ test(llm): add Claude integration tests with error paths
 
 - [ ] **Tests** — Unit tests for new logic. Integration tests for external services.
 - [ ] **Builds** — `make build` succeeds. `make test-go` passes.
+- [ ] **Lint** — `make lint` passes (golangci-lint + ESLint).
 - [ ] **No hardcoded values** — Use config, env vars, or domain pack files.
 - [ ] **Documentation** — Update docs if the change affects user-facing behavior.
 
@@ -143,7 +144,7 @@ How this was tested:
 
 ## Review Process
 
-1. CI must pass (build + tests)
+1. CI must pass (build, tests, and lint)
 2. At least one maintainer review
 3. No merge conflicts with main
 4. Squash merge (clean history)

@@ -2,6 +2,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://golang.org)
+[![CI](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml)
 [![Docker Build](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml)
 [![GitHub Issues](https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform)](https://github.com/decisionbox-io/decisionbox-platform/issues)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)

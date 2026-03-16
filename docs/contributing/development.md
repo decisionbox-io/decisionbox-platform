@@ -10,6 +10,7 @@ This guide covers setting up a local development environment for contributing to
 - **Node.js 20+** — [nodejs.org](https://nodejs.org/)
 - **Docker** — For MongoDB (and integration tests)
 - **Make** — Build tool
+- **golangci-lint** — [golangci-lint.run/welcome/install](https://golangci-lint.run/welcome/install/) (for `make lint`)
 
 ## Clone and Build
 

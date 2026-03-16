@@ -36,6 +36,14 @@ All common commands are available via `make`. Run `make help` to see the full li
 | `make test-llm` | Run LLM provider integration tests (skips without creds) | API keys (see below) |
 | `make test-ui` | Run dashboard unit tests | Node.js |
 
+## Lint
+
+| Target | Description | Requirements |
+|--------|-------------|--------------|
+| `make lint` | Run all linters (Go + UI) | golangci-lint, Node.js |
+| `make lint-go` | Run golangci-lint on all Go modules | [golangci-lint](https://golangci-lint.run/welcome/install/) |
+| `make lint-ui` | Run ESLint on dashboard | Node.js |
+
 ### LLM Integration Test Environment Variables
 
 ```bash

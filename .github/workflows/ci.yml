@@ -1,0 +1,235 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'services/**'
+              - 'libs/**'
+              - 'providers/**'
+              - 'domain-packs/**/go/**'
+              - 'domain-packs/**/go.mod'
+              - 'domain-packs/**/go.sum'
+              - '.golangci.yml'
+            dashboard:
+              - 'ui/dashboard/**'
+
+  go-build:
+    name: Go Build
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            services/api/go.sum
+            services/agent/go.sum
+
+      - name: Build API
+        run: cd services/api && go build -o ../../bin/decisionbox-api .
+
+      - name: Build Agent
+        run: cd services/agent && go build -o ../../bin/decisionbox-agent .
+
+  go-test:
+    name: Go Test
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            services/api/go.sum
+            services/agent/go.sum
+
+      - name: Test go-common
+        run: cd libs/go-common && go test ./...
+
+      - name: Test domain packs
+        run: cd domain-packs/gaming/go && go test ./...
+
+      - name: Test LLM providers
+        run: |
+          cd providers/llm/claude && go test ./... && cd ../../..
+          cd providers/llm/openai && go test ./... && cd ../../..
+          cd providers/llm/ollama && go test ./... && cd ../../..
+          cd providers/llm/vertex-ai && go test ./... && cd ../../..
+          cd providers/llm/bedrock && go test ./...
+
+      - name: Test secret providers
+        run: |
+          cd providers/secrets/mongodb && go test ./... && cd ../../..
+          cd providers/secrets/gcp && go test ./... && cd ../../..
+          cd providers/secrets/aws && go test ./...
+
+      - name: Test warehouse providers
+        run: |
+          cd providers/warehouse/bigquery && go test ./... && cd ../../..
+          cd providers/warehouse/redshift && go test ./...
+
+      - name: Test Agent
+        run: cd services/agent && go test ./...
+
+      - name: Test API
+        run: cd services/api && go test ./...
+
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            services/api/go.sum
+            services/agent/go.sum
+
+      - name: Lint go-common
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: libs/go-common
+
+      - name: Lint domain packs
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: domain-packs/gaming/go
+
+      - name: Lint Agent
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: services/agent
+
+      - name: Lint API
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: services/api
+
+  dashboard-build:
+    name: Dashboard Build
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dashboard == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: cd ui/dashboard && npm ci
+
+      - name: Build
+        run: cd ui/dashboard && npm run build
+
+  dashboard-test:
+    name: Dashboard Test & Lint
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dashboard == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: cd ui/dashboard && npm ci
+
+      - name: Test
+        run: cd ui/dashboard && npm test
+
+      - name: Lint
+        run: cd ui/dashboard && npm run lint
+
+  # Optional: triggered by PR label or manual dispatch
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.go == 'true' &&
+      (contains(github.event.pull_request.labels.*.name, 'run-integration-tests') || github.event_name == 'push')
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            services/api/go.sum
+            services/agent/go.sum
+
+      - name: Agent integration tests
+        env:
+          MONGODB_URI: mongodb://localhost:27017
+          MONGODB_DB: decisionbox_test
+        run: |
+          cd services/agent && go test -tags=integration -count=1 -timeout=5m .
+          cd services/agent && go test -tags=integration -count=1 -timeout=5m ./internal/database/
+
+      - name: API integration tests
+        env:
+          MONGODB_URI: mongodb://localhost:27017
+          MONGODB_DB: decisionbox_test
+        run: cd services/api && go test -tags=integration -count=1 -timeout=5m .
+
+      - name: Secrets provider integration tests
+        env:
+          MONGODB_URI: mongodb://localhost:27017
+          MONGODB_DB: decisionbox_test
+        run: cd providers/secrets/mongodb && go test -tags=integration -count=1 -timeout=5m ./...

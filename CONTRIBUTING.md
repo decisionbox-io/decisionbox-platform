@@ -123,10 +123,10 @@ git checkout -b feat/my-feature
 
 # 3. Make changes...
 
-# 4. Run tests
+# 4. Run tests and lint
 make test-go          # Go unit tests
 make test-ui          # Dashboard tests
-make test-integration # Integration tests (needs Docker)
+make lint             # golangci-lint + ESLint
 
 # 5. Commit using conventional commits
 git add -A
@@ -273,6 +273,7 @@ Every code PR must include tests. We have 350+ tests and don't accept regression
 ```bash
 make test-go          # All Go unit tests (no Docker needed)
 make test-ui          # Dashboard Jest tests
+make lint             # golangci-lint + ESLint
 make test-integration # API + MongoDB integration (needs Docker)
 make test-k8s         # K8s runner tests with K3s (needs Docker)
 make test-secrets     # Secret provider integration (needs Docker)
@@ -280,6 +281,8 @@ make test-llm         # LLM integration tests (needs API keys)
 ```
 
 Integration tests use [testcontainers-go](https://golang.testcontainers.org/) -- Docker is the only dependency. No external services needed.
+
+Install golangci-lint: https://golangci-lint.run/welcome/install/
 
 For the full testing guide including how to write tests and test patterns, see [docs/contributing/testing.md](docs/contributing/testing.md).
 
@@ -289,6 +292,7 @@ For the full testing guide including how to write tests and test patterns, see [
 
 - [ ] Code builds: `make build`
 - [ ] Go tests pass: `make test-go`
+- [ ] Lint passes: `make lint`
 - [ ] Dashboard tests pass: `make test-ui` (if UI changes)
 - [ ] No hardcoded values (use config, env vars, or domain pack files)
 - [ ] No secrets or credentials in the code
