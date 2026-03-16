@@ -45,7 +45,7 @@ func (p *GamingPack) DomainCategories() []domainpack.DomainCategory {
 		{
 			ID:          "match3",
 			Name:        "Match-3",
-			Description: "Puzzle games with match-3 mechanics (e.g., Candy Crush, Manor Cafe)",
+			Description: "Puzzle games with match-3 mechanics (e.g., Candy Crush, Homescapes)",
 		},
 	}
 }
