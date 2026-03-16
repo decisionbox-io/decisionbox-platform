@@ -1,5 +1,12 @@
 # DecisionBox
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://golang.org)
+[![Docker Build](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml)
+[![GitHub Issues](https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform)](https://github.com/decisionbox-io/decisionbox-platform/issues)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Docs](https://img.shields.io/badge/docs-docs.decisionbox.io-blue)](https://docs.decisionbox.io)
+
 **AI-powered data discovery platform.** Connect your data warehouse, run AI agents that explore your data autonomously, and get actionable insights — no pipelines, no SDKs, no setup complexity.
 
 DecisionBox is designed for product managers, analysts, and developers who want to understand their data without writing SQL or building dashboards. Point it at your warehouse, tell it about your product, and let the AI find what matters.
