@@ -179,7 +179,7 @@ All providers follow the same pattern: implement an interface, register via `ini
 
 #### New Domain Packs
 
-Domain packs teach the AI agent how to analyze specific types of data. The gaming/match-3 domain pack ships as a complete reference. A domain pack includes:
+Domain packs teach the AI agent how to analyze specific types of data. The gaming and social network domain packs ship as complete references. A domain pack includes:
 
 - Analysis area definitions (`areas.json`)
 - LLM prompts for exploration, analysis, and recommendations (Markdown files)

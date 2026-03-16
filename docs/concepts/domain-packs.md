@@ -4,6 +4,13 @@
 
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 
+## Available Domain Packs
+
+| Domain | Categories | Base Areas | Description |
+|--------|-----------|------------|-------------|
+| **Gaming** | Match-3, Idle/Incremental, Casual/Hyper-Casual | Churn, Engagement, Monetization | Player behavior, retention, and revenue analytics for games |
+| **Social Network** | Content Sharing | Growth, Engagement, Retention | User growth, engagement, content creation, and monetization analytics for social platforms |
+
 ## What's in a Domain Pack
 
 A domain pack provides four things:
@@ -19,31 +26,41 @@ A domain pack provides four things:
 
 ```
 Domain: Gaming
-├── Category: Match-3 (shipped)
+├── Category: Match-3
 │   ├── Area: Churn Risks          (base — shared)
 │   ├── Area: Engagement Patterns  (base — shared)
 │   ├── Area: Monetization         (base — shared)
 │   ├── Area: Level Difficulty     (match-3 specific)
 │   └── Area: Booster Usage        (match-3 specific)
 │
-├── Category: FPS (future)
+├── Category: Idle / Incremental
 │   ├── Area: Churn Risks          (base — shared)
 │   ├── Area: Engagement Patterns  (base — shared)
 │   ├── Area: Monetization         (base — shared)
-│   ├── Area: Weapon Balance       (FPS specific)
-│   └── Area: Map Performance      (FPS specific)
+│   ├── Area: Progression & Prestige  (idle specific)
+│   └── Area: Economy Balance         (idle specific)
 │
-└── Category: Strategy (future)
+└── Category: Casual / Hyper-Casual
     ├── Area: Churn Risks          (base — shared)
     ├── Area: Engagement Patterns  (base — shared)
     ├── Area: Monetization         (base — shared)
-    ├── Area: Resource Economy     (strategy specific)
-    └── Area: Unit Balance         (strategy specific)
+    ├── Area: Ad Performance       (casual specific)
+    └── Area: Session Flow         (casual specific)
+
+Domain: Social Network
+└── Category: Content Sharing
+    ├── Area: Growth & Activation     (base — shared)
+    ├── Area: Engagement Patterns     (base — shared)
+    ├── Area: Retention & Churn       (base — shared)
+    ├── Area: Content Creation Health  (content sharing specific)
+    └── Area: Monetization & Premium   (content sharing specific)
 ```
 
 **Base areas** are shared across all categories in a domain. **Category-specific areas** add specialized analysis. When you select "Gaming / Match-3", you get all base gaming areas PLUS match-3 specific areas.
 
 ## File Structure
+
+Each domain pack follows the same structure:
 
 ```
 domain-packs/gaming/
@@ -63,70 +80,60 @@ domain-packs/gaming/
 │   │   └── recommendations.md     # Recommendation generation prompt
 │   │
 │   └── categories/
-│       └── match3/                # Match-3 specific
-│           ├── areas.json         # Additional areas (levels, boosters)
-│           ├── exploration_context.md  # Appended to base exploration prompt
-│           ├── analysis_levels.md     # Level difficulty analysis
-│           └── analysis_boosters.md   # Booster usage analysis
+│       ├── match3/                # Match-3 specific
+│       │   ├── areas.json         # Additional areas (levels, boosters)
+│       │   ├── exploration_context.md  # Appended to base exploration
+│       │   ├── analysis_levels.md     # Level difficulty analysis
+│       │   └── analysis_boosters.md   # Booster usage analysis
+│       ├── idle/                  # Idle/Incremental specific
+│       │   ├── areas.json         # Additional areas (progression, economy)
+│       │   ├── exploration_context.md
+│       │   ├── analysis_progression.md
+│       │   └── analysis_economy.md
+│       └── casual/                # Casual/Hyper-Casual specific
+│           ├── areas.json         # Additional areas (ads, session flow)
+│           ├── exploration_context.md
+│           ├── analysis_ad_performance.md
+│           └── analysis_session_flow.md
 │
 └── profiles/
     ├── schema.json                # Base gaming profile (JSON Schema)
     └── categories/
-        └── match3.json            # Match-3 extensions (boosters, IAP packages, etc.)
+        ├── match3.json            # Match-3 extensions
+        ├── idle.json              # Idle extensions
+        └── casual.json            # Casual extensions
 ```
+
+The social network domain pack follows the same structure under `domain-packs/social/`.
 
 ## Areas Definition (areas.json)
 
 Each `areas.json` defines which analysis areas are available and maps them to prompt files.
 
-**Base areas** (`prompts/base/areas.json`):
+**Example** — Gaming base areas (`prompts/base/areas.json`):
 ```json
 [
   {
     "id": "churn",
     "name": "Churn Risks",
-    "description": "Players at risk of leaving the game",
+    "description": "Players at risk of leaving the game — identify churn patterns across the player lifecycle",
     "keywords": ["churn", "retention", "cohort", "day_", "d1_", "d7_", "d30_", "inactive", "lapsed"],
     "priority": 1,
     "prompt_file": "analysis_churn.md"
-  },
-  {
-    "id": "engagement",
-    "name": "Engagement Patterns",
-    "description": "Player behavior and session trends",
-    "keywords": ["session", "engagement", "duration", "frequency", "active", "dau", "mau", "playtime"],
-    "priority": 2,
-    "prompt_file": "analysis_engagement.md"
-  },
-  {
-    "id": "monetization",
-    "name": "Monetization Opportunities",
-    "description": "Revenue optimization and conversion opportunities",
-    "keywords": ["purchase", "iap", "revenue", "payer", "currency", "spend", "arpu", "ltv", "conversion"],
-    "priority": 3,
-    "prompt_file": "analysis_monetization.md"
   }
 ]
 ```
 
-**Category-specific areas** (`prompts/categories/match3/areas.json`):
+**Example** — Social base areas (`prompts/base/areas.json`):
 ```json
 [
   {
-    "id": "levels",
-    "name": "Level Difficulty",
-    "description": "Difficulty spikes and frustration points in level progression",
-    "keywords": ["level", "quit", "success", "difficulty", "fail", "attempt", "stage", "star"],
-    "priority": 4,
-    "prompt_file": "analysis_levels.md"
-  },
-  {
-    "id": "boosters",
-    "name": "Booster Usage",
-    "description": "Power-up usage patterns, depletion risks, and purchase opportunities",
-    "keywords": ["booster", "hint", "magnet", "power", "extra_life", "hammer", "consumable"],
-    "priority": 5,
-    "prompt_file": "analysis_boosters.md"
+    "id": "growth",
+    "name": "Growth & Activation",
+    "description": "User acquisition funnel, signup conversion, onboarding completion, and viral growth loops",
+    "keywords": ["signup", "registration", "onboarding", "activation", "invite", "referral", "viral"],
+    "priority": 1,
+    "prompt_file": "analysis_growth.md"
   }
 ]
 ```
@@ -169,24 +176,40 @@ When the agent loads prompts for a project with domain=gaming, category=match3:
    prompts/base/recommendations.md
 ```
 
+The same merging logic applies to all domain packs and categories.
+
 **Project-level overrides:** Users can edit any prompt per-project via the dashboard's Prompts page. Overrides are stored in MongoDB and take priority over domain pack files.
 
 ## Profile Schema
 
 The profile schema defines what context users provide about their product. It's a [JSON Schema](https://json-schema.org/) that the dashboard renders as a dynamic form.
 
+### Gaming Profile
+
 **Base schema** (`profiles/schema.json`) — Fields shared across all gaming categories:
 - Basic info (genre, platforms, target audience)
 - Gameplay (core mechanic, session type, difficulty curve)
-- Monetization (model, has ads, has IAP)
+- Monetization (model, has ads, has IAP, primary revenue source)
+- Social features (guilds, leaderboards, PvP, chat)
+- Live ops (daily rewards, seasonal events, battle pass)
 - KPIs (retention targets, ARPU target, DAU target)
 
-**Category extensions** (`profiles/categories/match3.json`) — Additional fields for match-3 games:
-- Progression (total levels, star system)
-- Boosters (name, type, starting amount, purchasable)
-- IAP packages (name, SKU, price, contents)
-- Lootboxes (name, rarity, possible rewards)
-- Retention features (daily rewards, streak bonus)
+**Category extensions** add domain-specific fields:
+- **Match-3** — Progression (levels, star system), boosters, IAP packages, lootboxes
+- **Idle** — Prestige system, currencies, generators, ad boosts
+- **Casual** — Core loop, onboarding, ad configuration, secondary features
+
+### Social Network Profile
+
+**Base schema** — Fields shared across all social categories:
+- Platform info (type, content format, target audience, growth stage)
+- Engagement model (feed type, stories, messaging, groups, connection model)
+- Monetization (premium subscriptions, IAP features, virtual currency, creator monetization, paid messaging, paid content, ads)
+- Growth features (referral, contact sync, push notifications)
+- KPIs (DAU/MAU ratio, retention targets, creator ratio, premium conversion, ARPU)
+
+**Category extensions:**
+- **Content Sharing** — Content types, discovery features, interaction types (with paid flags), creator tools, moderation
 
 The schemas are merged at runtime (base + category). The resulting form lets users describe their specific product, which the AI uses as context for better analysis.
 
@@ -198,6 +221,10 @@ DOMAIN_PACK_PATH environment variable (default: /app/domain-packs)
 domain-packs/
   gaming/                    ← domain pack directory
     go/pack.go               ← registers via domainpack.Register("gaming", ...)
+    prompts/                 ← read at runtime via DOMAIN_PACK_PATH
+    profiles/                ← read at runtime via DOMAIN_PACK_PATH
+  social/                    ← domain pack directory
+    go/pack.go               ← registers via domainpack.Register("social", ...)
     prompts/                 ← read at runtime via DOMAIN_PACK_PATH
     profiles/                ← read at runtime via DOMAIN_PACK_PATH
 ```

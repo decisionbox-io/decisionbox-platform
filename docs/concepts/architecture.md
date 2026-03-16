@@ -154,7 +154,7 @@ Services import provider packages with blank imports (`_`). The `init()` functio
 | **LLM** | `llm.Provider` | AI model access | claude, openai, ollama, vertex-ai, bedrock |
 | **Warehouse** | `warehouse.Provider` | Data warehouse access | bigquery, redshift |
 | **Secrets** | `secrets.Provider` | Encrypted key storage | mongodb, gcp, aws |
-| **Domain Pack** | `domainpack.DiscoveryPack` | Domain-specific analysis | gaming (match-3) |
+| **Domain Pack** | `domainpack.DiscoveryPack` | Domain-specific analysis | gaming (match-3, idle, casual), social (content sharing) |
 
 For details on implementing each, see:
 - [Adding LLM Providers](../guides/adding-llm-providers.md)

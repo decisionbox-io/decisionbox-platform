@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LLM providers: Claude, OpenAI, Ollama, Vertex AI (Claude + Gemini), Bedrock
 - Warehouse providers: BigQuery (with dry-run cost estimation), Amazon Redshift (serverless + provisioned)
 - Secret providers: MongoDB (AES-256), GCP Secret Manager, AWS Secrets Manager
-- Gaming/Match-3 domain pack with 5 analysis areas (churn, engagement, monetization, levels, boosters)
+- Gaming domain pack with 3 categories (match-3, idle/incremental, casual/hyper-casual) and 5 analysis areas per category
+- Social network domain pack with content sharing category and 5 analysis areas (growth, engagement, retention, content creation, monetization)
 - Pluggable domain pack architecture with areas.json, prompt templates, and JSON Schema profiles
 - Per-project editable prompts and custom analysis areas
 - Discovery cost estimation (LLM tokens + warehouse query costs)

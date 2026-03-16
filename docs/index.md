@@ -9,7 +9,8 @@ DecisionBox is an open-source AI-powered data discovery platform. It connects to
 - **Product managers** who want data-driven insights without writing SQL
 - **Data analysts** who want AI to augment their exploration
 - **Developers** building data products who need automated pattern detection
-- **Game studios** (our first domain pack) analyzing player behavior, churn, monetization
+- **Game studios** analyzing player behavior, churn, monetization (gaming domain pack)
+- **Social platforms** analyzing user growth, engagement, content creation, and premium features (social network domain pack)
 
 ## What Can It Do?
 

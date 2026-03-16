@@ -35,7 +35,7 @@ Your Data Warehouse          DecisionBox Agent          Dashboard
 ## Features
 
 - **Autonomous data exploration** — AI writes and executes SQL queries, iterates based on results
-- **Domain-aware analysis** — Pluggable domain packs (gaming/match-3 shipped, bring your own)
+- **Domain-aware analysis** — Pluggable domain packs (gaming, social network shipped — bring your own)
 - **Multiple LLM providers** — Claude, OpenAI, Ollama, Vertex AI, Bedrock
 - **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned)
 - **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager)
@@ -124,7 +124,8 @@ decisionbox-platform/
 │   ├── warehouse/      # Warehouse providers (bigquery, redshift)
 │   └── secrets/        # Secret providers (mongodb, gcp, aws)
 ├── domain-packs/
-│   └── gaming/         # Gaming domain pack (match-3 MVP)
+│   ├── gaming/         # Gaming domain pack (match-3, idle, casual)
+│   └── social/         # Social network domain pack (content sharing)
 ├── docs/               # Documentation
 ├── docker-compose.yml  # Local development stack
 ├── Makefile            # Build, test, dev commands
@@ -243,7 +244,7 @@ We welcome contributions. See [Contributing Guide](docs/contributing/development
 - Kubernetes Helm charts
 - Terraform modules (GCP, AWS)
 - More warehouse providers (PostgreSQL, Snowflake, Databricks)
-- More domain packs (e-commerce, SaaS, fintech)
+- More domain packs (e-commerce, SaaS, fintech, education)
 - Natural language queries ("Ask your data")
 - Scheduled discovery runs (cron)
 - Multi-user authentication

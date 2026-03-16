@@ -4,6 +4,10 @@
 
 A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one from scratch.
 
+Two complete reference implementations are available:
+- **Gaming** (`domain-packs/gaming/`) — 3 categories (match-3, idle, casual), 3 base + 2 category areas each
+- **Social Network** (`domain-packs/social/`) — 1 category (content sharing), 3 base + 2 category areas
+
 ## What You'll Build
 
 A domain pack provides:
