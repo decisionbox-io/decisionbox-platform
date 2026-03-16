@@ -41,7 +41,7 @@ func (h *Handler) Checkers() []Checker {
 func (h *Handler) LivenessHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response{Status: "ok"})
+		_ = json.NewEncoder(w).Encode(response{Status: "ok"})
 	}
 }
 
@@ -82,6 +82,6 @@ func (h *Handler) ReadinessHandler() http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
