@@ -1,0 +1,27 @@
+{{- if and .Values.rbac .Values.rbac.enabled }}
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: {{ .Values.namespace }}
+  name: {{ .Values.rbac.roleName }}
+  labels:
+    {{- include "decisionbox-api.labels" . | nindent 4 }}
+rules:
+  {{- toYaml .Values.rbac.rules | nindent 2 }}
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ .Values.rbac.roleName }}-binding
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "decisionbox-api.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.rbac.serviceAccountName }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Values.rbac.roleName }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,80 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/decisionbox-io/decisionbox-dashboard
+  tag: "main"
+  pullPolicy: Always
+
+namespace: decisionbox
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+nodeSelector: {}
+
+containerPort: 3000
+
+env:
+  API_URL: "http://decisionbox-api-service:8080"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+livenessProbe:
+  enabled: true
+  path: /health
+  port: 3000
+  initialDelaySeconds: 15
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  path: /health
+  port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+automountServiceAccountToken: false
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: true
+  # Set host for domain-based routing (e.g., dashboard.example.com).
+  # Leave empty for path-based catch-all (suitable for dev/testing).
+  host: ""
+  tlsSecretName: ""
+  pathType: Prefix
+  path: /

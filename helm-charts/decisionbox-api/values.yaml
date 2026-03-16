@@ -1,0 +1,125 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/decisionbox-io/decisionbox-api
+  tag: "main"
+  pullPolicy: Always
+
+namespace: decisionbox
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+serviceAccountName: "decisionbox-api"
+serviceAccountAnnotations: {}
+  # iam.gke.io/gcp-service-account: "<cluster-name>-api@<project-id>.iam.gserviceaccount.com"
+
+nodeSelector: {}
+
+containerPort: 8080
+
+env:
+  MONGODB_DB: "decisionbox"
+  SECRET_PROVIDER: "mongodb"
+  SECRET_NAMESPACE: "decisionbox"
+  RUNNER_MODE: "kubernetes"
+  AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
+  AGENT_NAMESPACE: "decisionbox"
+  AGENT_JOB_TIMEOUT_HOURS: "6"
+
+extraEnv: {}
+
+# Inject env vars from existing Secrets or ConfigMaps.
+# Use this for SECRET_ENCRYPTION_KEY and other sensitive values.
+# Example:
+#   extraEnvFrom:
+#     - secretRef:
+#         name: decisionbox-api-secrets   # must contain SECRET_ENCRYPTION_KEY
+extraEnvFrom: []
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+automountServiceAccountToken: true
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+
+livenessProbe:
+  enabled: true
+  path: /health
+  port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  path: /health
+  port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+
+rbac:
+  enabled: true
+  roleName: agent-job-manager
+  serviceAccountName: decisionbox-api
+  rules:
+    - apiGroups: ["batch"]
+      resources: ["jobs"]
+      verbs: ["create", "get", "list", "delete"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list"]
+
+# ---------------------------------------------------------------------------
+# Infrastructure dependencies (disabled by default — enable per environment)
+# ---------------------------------------------------------------------------
+# When mongodb.enabled is true, MONGODB_URI is auto-computed from the subchart.
+# When mongodb.enabled is false, you MUST provide MONGODB_URI yourself via:
+#   env.MONGODB_URI, extraEnv.MONGODB_URI, or extraEnvFrom (secretRef).
+# Omitting it will cause a helm install failure.
+mongodb:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+    rootPassword: ""
+    usernames: []
+    passwords: []
+    databases: []
+  persistence:
+    size: 1Gi

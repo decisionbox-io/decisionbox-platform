@@ -1,0 +1,12 @@
+# Environment-specific values containing secrets
+values-dev.yaml
+values-prod.yaml
+values-staging.yaml
+values-local.yaml
+values-secrets.yaml
+
+# Helm dependency charts (downloaded via helm dependency update)
+**/charts/
+
+# Helm lock files
+Chart.lock

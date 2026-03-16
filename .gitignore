@@ -44,6 +44,19 @@ docker-compose.override.yml
 credentials.json
 service-account.json
 
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+tfplan
+.terraform/
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # Claude
 .claude/
 test-prompts/

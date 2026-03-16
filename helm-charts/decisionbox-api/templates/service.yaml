@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "decisionbox-api.fullname" . }}-service
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "decisionbox-api.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - targetPort: {{ .Values.containerPort }}
+      name: http
+      port: {{ .Values.service.port }}
+      protocol: TCP
+  selector:
+    {{- include "decisionbox-api.selectorLabels" . | nindent 4 }}

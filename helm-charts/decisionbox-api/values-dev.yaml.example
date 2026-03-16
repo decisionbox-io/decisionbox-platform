@@ -1,0 +1,32 @@
+# Example development environment overrides
+# Copy to values-dev.yaml and fill in your values
+# NEVER commit values-dev.yaml with real credentials
+
+replicaCount: 2
+
+serviceAccountName: decisionbox-api-ksa-dev
+
+env:
+  ENV: "dev"
+  MONGODB_URI: "mongodb+srv://<user>:<password>@<host>/?retryWrites=true&w=majority"
+  MONGODB_DB: "decisionbox_dev"
+  SECRET_PROVIDER: "gcp"
+  SECRET_NAMESPACE: "decisionbox"
+  SECRET_GCP_PROJECT_ID: "<gcp-project-id>"
+
+# Pre-create: kubectl create secret generic decisionbox-api-secrets \
+#   --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" -n decisionbox
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+
+ingress:
+  host: "api.dev.example.com"

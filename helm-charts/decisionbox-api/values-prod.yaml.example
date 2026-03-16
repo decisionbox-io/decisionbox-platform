@@ -1,0 +1,32 @@
+# Example production environment overrides
+# Copy to values-prod.yaml and fill in your values
+# NEVER commit values-prod.yaml with real credentials
+
+replicaCount: 2
+
+serviceAccountName: decisionbox-api-ksa
+
+env:
+  ENV: "prod"
+  MONGODB_URI: "mongodb+srv://<user>:<password>@<host>/?retryWrites=true&w=majority"
+  MONGODB_DB: "decisionbox_prod"
+  SECRET_PROVIDER: "gcp"
+  SECRET_NAMESPACE: "decisionbox"
+  SECRET_GCP_PROJECT_ID: "<gcp-project-id>"
+
+# Pre-create: kubectl create secret generic decisionbox-api-secrets \
+#   --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" -n decisionbox
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "2000m"
+    memory: "4Gi"
+
+ingress:
+  host: "api.example.com"

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: decisionbox-api
+description: DecisionBox API
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: mongodb
+    version: "~18.6.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: mongodb.enabled

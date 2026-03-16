@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "decisionbox-api.fullname" . }}-test-health"
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "decisionbox-api.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: wget
+      image: docker.io/busybox:1.36
+      imagePullPolicy: Always
+      command: ['wget']
+      args: ['--spider', '--timeout=10', 'http://{{ include "decisionbox-api.fullname" . }}-service:{{ .Values.service.port }}{{ .Values.livenessProbe.path }}']
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: "10m"
+          memory: "16Mi"
+        limits:
+          cpu: "50m"
+          memory: "32Mi"
+  restartPolicy: Never

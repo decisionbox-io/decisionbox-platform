@@ -1,0 +1,29 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-{{ include "decisionbox-api.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "decisionbox-api.labels" . | nindent 4 }}
+spec:
+  {{- if and .Values.ingress.host .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host }}
+      {{- end }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "decisionbox-api.fullname" . }}-service
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}
