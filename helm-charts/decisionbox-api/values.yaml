@@ -22,6 +22,8 @@ nodeSelector: {}
 containerPort: 8080
 
 env:
+  ENV: "prod"
+  LOG_LEVEL: "warn"
   MONGODB_DB: "decisionbox"
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "decisionbox"
