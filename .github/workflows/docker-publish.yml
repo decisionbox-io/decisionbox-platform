@@ -61,21 +61,21 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: services/api/Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
       - name: Lint Agent Dockerfile
         if: needs.detect-changes.outputs.agent == 'true' || github.ref_type == 'tag'
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: services/agent/Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
       - name: Lint Dashboard Dockerfile
         if: needs.detect-changes.outputs.dashboard == 'true' || github.ref_type == 'tag'
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: ui/dashboard/Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
   build:
     name: Build ${{ matrix.service }}
