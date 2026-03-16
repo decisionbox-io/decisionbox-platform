@@ -1,0 +1,41 @@
+# Grant license compliance policy for DecisionBox (AGPL-3.0)
+# https://github.com/anchore/grant
+
+rules:
+  # Allow permissive licenses compatible with AGPL-3.0
+  - pattern: "*"
+    mode: "allow"
+    licenses:
+      - MIT
+      - Apache-2.0
+      - BSD-2-Clause
+      - BSD-3-Clause
+      - ISC
+      - 0BSD
+      - Unlicense
+      - CC0-1.0
+      - CC-BY-3.0
+      - CC-BY-4.0
+      - MPL-2.0
+      - LGPL-2.1-only
+      - LGPL-2.1-or-later
+      - LGPL-3.0-only
+      - LGPL-3.0-or-later
+      - AGPL-3.0-only
+      - AGPL-3.0-or-later
+      - GPL-3.0-only
+      - GPL-3.0-or-later
+      - PostgreSQL
+      - Zlib
+      - BlueOak-1.0.0
+
+  # Deny licenses incompatible with AGPL-3.0 or non-OSI
+  - pattern: "*"
+    mode: "deny"
+    licenses:
+      - GPL-2.0-only
+      - SSPL-1.0
+      - BSL-1.1
+      - EUPL-1.1
+      - CPAL-1.0
+      - Artistic-1.0

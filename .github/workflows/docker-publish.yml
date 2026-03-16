@@ -227,7 +227,7 @@ jobs:
         if: matrix.changed == 'true' || github.ref_type == 'tag'
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grant/main/install.sh | sh -s -- -b /usr/local/bin
-          grant check sbom:sbom-${{ matrix.service }}.spdx.json --dry-run
+          grant check sbom:sbom-${{ matrix.service }}.spdx.json -c .grant.yaml
 
   push:
     name: Push ${{ matrix.service }}
