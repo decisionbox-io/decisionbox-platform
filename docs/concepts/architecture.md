@@ -264,6 +264,11 @@ Dashboard (Deployment)  →  API (Deployment)  →  Agent (K8s Job per discovery
 
 In Kubernetes mode (`RUNNER_MODE=kubernetes`), the API creates a K8s Job for each discovery run instead of spawning a subprocess. The agent runs as an isolated container with configurable CPU/memory limits.
 
+For deployment guides, see:
+- [Docker Compose](../deployment/docker.md) — single-server deployment
+- [Kubernetes (Helm)](../deployment/kubernetes.md) — production deployment on any K8s cluster
+- [Terraform GCP](../deployment/terraform-gcp.md) — automated GKE cluster provisioning
+
 ## Security Model
 
 ### v0.1.0 (Current)

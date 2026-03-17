@@ -227,7 +227,7 @@ Full reference: [Configuration](docs/reference/configuration.md).
 | LLM | Claude, OpenAI, Ollama, Vertex AI, Bedrock |
 | Warehouse | BigQuery, Amazon Redshift |
 | CI/CD | GitHub Actions, GHCR |
-| Deployment | Docker Compose, Kubernetes (Helm charts coming) |
+| Deployment | Docker Compose, Kubernetes (Helm), Terraform (GCP) |
 
 ## Contributing
 
@@ -238,12 +238,19 @@ We welcome contributions. See [Contributing Guide](docs/contributing/development
 - [GitHub Issues](https://github.com/decisionbox-io/decisionbox-platform/issues) — Bug reports, feature requests
 - [GitHub Discussions](https://github.com/decisionbox-io/decisionbox-platform/discussions) — Questions, ideas
 
+## Deployment
+
+| Method | Use case | Guide |
+|--------|----------|-------|
+| **Docker Compose** | Local dev, single server | [docs/deployment/docker.md](docs/deployment/docker.md) |
+| **Kubernetes (Helm)** | Production on any K8s cluster | [docs/deployment/kubernetes.md](docs/deployment/kubernetes.md) |
+| **Terraform (GCP)** | Automated GKE provisioning | [docs/deployment/terraform-gcp.md](docs/deployment/terraform-gcp.md) |
+
 ## Roadmap
 
-- Kubernetes Helm charts
-- Terraform modules (GCP, AWS)
+- Terraform module for AWS (EKS)
 - More warehouse providers (PostgreSQL, Snowflake, Databricks)
-- More domain packs (e-commerce, SaaS, fintech)
+- More domain packs (e-commerce, SaaS, fintech, education)
 - Natural language queries ("Ask your data")
 - Scheduled discovery runs (cron)
 - Multi-user authentication

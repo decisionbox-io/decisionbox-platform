@@ -1,0 +1,228 @@
+# Helm Values Reference
+
+> **Version**: 0.1.0
+
+Complete reference for all Helm chart values. Both charts are in `helm-charts/`.
+
+## decisionbox-api
+
+### Image
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `replicaCount` | int | `2` | Number of API replicas |
+| `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-api` | Container image |
+| `image.tag` | string | `main` | Image tag (defaults to `appVersion` if not set) |
+| `image.pullPolicy` | string | `Always` | Pull policy |
+| `imagePullSecrets` | list | `[{name: ghcr-secret}]` | Image pull secrets (not needed for public repo) |
+
+### Deployment
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `namespace` | string | `decisionbox` | Kubernetes namespace |
+| `containerPort` | int | `8080` | Container port |
+| `serviceAccountName` | string | `decisionbox-api` | Service account name |
+| `serviceAccountAnnotations` | map | `{}` | SA annotations (e.g., Workload Identity) |
+
+### Environment Variables
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `env.ENV` | string | `prod` | Environment name |
+| `env.LOG_LEVEL` | string | `warn` | Log level (debug, info, warn, error) |
+| `env.MONGODB_URI` | string | — | MongoDB connection string (required if `mongodb.enabled=false`) |
+| `env.MONGODB_DB` | string | `decisionbox` | MongoDB database name |
+| `env.SECRET_PROVIDER` | string | `mongodb` | Secret provider: `mongodb`, `gcp`, or `aws` |
+| `env.SECRET_NAMESPACE` | string | `decisionbox` | Secret name prefix |
+| `env.SECRET_GCP_PROJECT_ID` | string | — | GCP project (when `SECRET_PROVIDER=gcp`) |
+| `env.SECRET_AWS_REGION` | string | — | AWS region (when `SECRET_PROVIDER=aws`) |
+| `env.RUNNER_MODE` | string | `kubernetes` | Agent runner: `kubernetes` or `subprocess` |
+| `env.AGENT_IMAGE` | string | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Agent container image |
+| `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |
+| `env.AGENT_JOB_TIMEOUT_HOURS` | string | `6` | Max time to watch agent Jobs |
+| `extraEnv` | list | `[]` | Additional env vars as `{name, value}` pairs |
+| `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`) |
+
+### Resources
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `resources.requests.cpu` | string | `100m` | CPU request |
+| `resources.requests.memory` | string | `512Mi` | Memory request |
+| `resources.limits.cpu` | string | `1000m` | CPU limit |
+| `resources.limits.memory` | string | `2Gi` | Memory limit |
+
+### Service
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service.type` | string | `ClusterIP` | Service type |
+| `service.port` | int | `8080` | Service port |
+
+### Ingress
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ingress.enabled` | bool | `false` | Enable ingress (keep disabled — API is internal) |
+| `ingress.host` | string | `""` | Hostname for host-based routing |
+| `ingress.tlsSecretName` | string | `""` | TLS secret name |
+| `ingress.pathType` | string | `Prefix` | Ingress path type |
+| `ingress.path` | string | `/` | Ingress path |
+
+### RBAC
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rbac.enabled` | bool | `true` | Create Role + RoleBinding for agent Jobs |
+| `rbac.roleName` | string | `agent-job-manager` | Role name |
+
+### Probes
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `livenessProbe.path` | string | `/health` | Liveness endpoint |
+| `livenessProbe.initialDelaySeconds` | int | `15` | Initial delay |
+| `livenessProbe.periodSeconds` | int | `30` | Check interval |
+| `readinessProbe.path` | string | `/health` | Readiness endpoint |
+| `readinessProbe.initialDelaySeconds` | int | `5` | Initial delay |
+| `readinessProbe.periodSeconds` | int | `10` | Check interval |
+
+### Security Context
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `securityContext.runAsNonRoot` | bool | `true` | Require non-root |
+| `securityContext.runAsUser` | int | `1000` | User ID |
+| `securityContext.fsGroup` | int | `1000` | Filesystem group |
+| `containerSecurityContext.readOnlyRootFilesystem` | bool | `true` | Read-only root FS |
+| `containerSecurityContext.allowPrivilegeEscalation` | bool | `false` | No privilege escalation |
+| `containerSecurityContext.capabilities.drop` | list | `[ALL]` | Drop all capabilities |
+
+### MongoDB Subchart
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mongodb.enabled` | bool | `true` | Deploy bundled MongoDB |
+| `mongodb.architecture` | string | `standalone` | MongoDB architecture |
+| `mongodb.auth.enabled` | bool | `false` | Enable MongoDB authentication |
+| `mongodb.persistence.size` | string | `1Gi` | Persistent volume size |
+
+When `mongodb.enabled=true`, the deployment includes an init container that waits for MongoDB to be ready. The MongoDB URI is auto-computed from the chart values.
+
+For production, set `mongodb.enabled=false` and provide `env.MONGODB_URI` pointing to your MongoDB instance (Atlas or self-hosted).
+
+---
+
+## decisionbox-dashboard
+
+### Image
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `replicaCount` | int | `2` | Number of dashboard replicas |
+| `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-dashboard` | Container image |
+| `image.tag` | string | `main` | Image tag |
+| `image.pullPolicy` | string | `Always` | Pull policy |
+| `imagePullSecrets` | list | `[{name: ghcr-secret}]` | Image pull secrets (not needed for public repo) |
+
+### Deployment
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `namespace` | string | `decisionbox` | Kubernetes namespace |
+| `containerPort` | int | `3000` | Container port |
+| `automountServiceAccountToken` | bool | `false` | Dashboard does not need K8s API access |
+
+### Environment Variables
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `env.API_URL` | string | `http://decisionbox-api-service:8080` | API service URL (internal) |
+
+The dashboard proxies `/api/*` requests to the API URL. This must point to the API's ClusterIP service.
+
+### Resources
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `resources.requests.cpu` | string | `100m` | CPU request |
+| `resources.requests.memory` | string | `128Mi` | Memory request |
+| `resources.limits.cpu` | string | `500m` | CPU limit |
+| `resources.limits.memory` | string | `512Mi` | Memory limit |
+
+### Service
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service.type` | string | `ClusterIP` | Service type |
+| `service.port` | int | `3000` | Service port |
+
+### Ingress
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ingress.enabled` | bool | `true` | Enable ingress (dashboard is user-facing) |
+| `ingress.host` | string | `""` | Hostname |
+| `ingress.tlsSecretName` | string | `""` | TLS secret |
+| `ingress.pathType` | string | `Prefix` | Path type |
+| `ingress.path` | string | `/` | Path |
+
+### Probes
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `livenessProbe.path` | string | `/health` | Liveness endpoint |
+| `livenessProbe.initialDelaySeconds` | int | `15` | Initial delay |
+| `livenessProbe.periodSeconds` | int | `15` | Check interval |
+| `readinessProbe.path` | string | `/health` | Readiness endpoint |
+| `readinessProbe.initialDelaySeconds` | int | `5` | Initial delay |
+| `readinessProbe.periodSeconds` | int | `10` | Check interval |
+
+### Security Context
+
+Same as the API chart — non-root (UID 1000), read-only filesystem, no capabilities, seccomp RuntimeDefault. The dashboard mounts `/tmp` and `/app/.next/cache` as emptyDir volumes.
+
+---
+
+## Example: Production Values File
+
+```yaml
+# values-prod.yaml (API)
+replicaCount: 2
+
+mongodb:
+  enabled: false
+
+env:
+  ENV: "prod"
+  LOG_LEVEL: "warn"
+  MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/decisionbox_prod"
+  MONGODB_DB: "decisionbox_prod"
+  SECRET_PROVIDER: "gcp"
+  SECRET_GCP_PROJECT_ID: "my-project"
+  SECRET_NAMESPACE: "decisionbox"
+  RUNNER_MODE: "kubernetes"
+  AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+serviceAccountAnnotations:
+  iam.gke.io/gcp-service-account: "decisionbox-prod-api@my-project.iam.gserviceaccount.com"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "2000m"
+    memory: "4Gi"
+```
+
+## Next Steps
+
+- [Kubernetes Deployment](../deployment/kubernetes.md) — Step-by-step deployment guide
+- [Terraform GCP](../deployment/terraform-gcp.md) — Automated infrastructure provisioning
+- [Configuration Reference](configuration.md) — All environment variables

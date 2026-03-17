@@ -65,12 +65,15 @@ Detailed specifications.
 - [Prompt Variables](reference/prompt-variables.md) — Template variable reference
 - [Data Models](reference/data-models.md) — Insight, Recommendation, Discovery models
 - [Makefile Targets](reference/makefile.md) — Build, test, dev commands
+- [Helm Values](reference/helm-values.md) — Complete Helm chart configuration
 
 ### Deployment
 
 Run DecisionBox in production.
 
-- [Docker Compose](deployment/docker.md) — Full deployment guide
+- [Docker Compose](deployment/docker.md) — Single-server deployment
+- [Kubernetes (Helm)](deployment/kubernetes.md) — Production deployment on any K8s cluster
+- [Terraform GCP](deployment/terraform-gcp.md) — Automated GKE cluster provisioning
 - [Production Considerations](deployment/production.md) — Security, scaling, monitoring
 
 ### Contributing
