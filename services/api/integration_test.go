@@ -154,7 +154,7 @@ func TestInteg_ProjectCRUD(t *testing.T) {
 		Name:     "Test Game",
 		Domain:   "gaming",
 		Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "bigquery", Dataset: "test"},
+		Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"test"}},
 		LLM:       models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-20250514"},
 	}
 
@@ -238,7 +238,7 @@ func TestInteg_DiscoveryEndpoints(t *testing.T) {
 	// Create a project first
 	project := models.Project{
 		Name: "Disc Test", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "bigquery", Dataset: "test"},
+		Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"test"}},
 		LLM: models.LLMConfig{Provider: "claude", Model: "test"},
 	}
 	resp := doRequest(t, "POST", "/api/v1/projects", project)

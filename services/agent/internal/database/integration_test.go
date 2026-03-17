@@ -58,7 +58,7 @@ func TestProjectRepository_CRUD(t *testing.T) {
 		Category: "match3",
 		Warehouse: models.WarehouseConfig{
 			Provider: "bigquery",
-			Dataset:  "test_dataset",
+			Datasets: []string{"test_dataset"},
 		},
 		LLM: models.LLMConfig{
 			Provider: "claude",

@@ -11,7 +11,6 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	ollamaprovider "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/testcontainers/testcontainers-go/modules/ollama"
 
@@ -27,7 +26,7 @@ func setupOllama(t *testing.T) (gollm.Provider, func()) {
 	applog.Init("ollama-test", "warn")
 
 	// Start Ollama container
-	container, err := ollama.Run(ctx, "ollama/ollama:0.5.7")
+	container, err := ollama.Run(ctx, "ollama/ollama:0.18.1")
 	if err != nil {
 		t.Fatalf("Failed to start Ollama: %v", err)
 	}

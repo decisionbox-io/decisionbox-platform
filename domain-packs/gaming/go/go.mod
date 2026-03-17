@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/domain-packs/gaming/go
 
-go 1.24.1
+go 1.25.0
 
 require github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 
