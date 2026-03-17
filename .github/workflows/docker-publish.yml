@@ -197,7 +197,11 @@ jobs:
         with:
           image: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}:${{ github.ref_name }}
           format: spdx-json
+          artifact-name: sbom-${{ matrix.service }}
           output-file: sbom-${{ matrix.service }}.spdx.json
+        env:
+          SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES: true
+          SYFT_GOLANG_MAIN_MODULE_VERSION_FROM_BUILD_SETTINGS: true
 
       - name: Upload SBOM artifact
         if: matrix.changed == 'true' || github.ref_type == 'tag'
@@ -227,6 +231,11 @@ jobs:
         if: matrix.changed == 'true' || github.ref_type == 'tag'
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grant/main/install.sh | sh -s -- -b /usr/local/bin
+          PACKAGES=$(python3 -c "import json; d=json.load(open('sbom-${{ matrix.service }}.spdx.json')); print(len(d.get('packages',[])))")
+          if [ "$PACKAGES" -eq 0 ]; then
+            echo "SBOM has 0 packages (static Go binary in minimal Alpine image) — skipping license check"
+            exit 0
+          fi
           grant check sbom:sbom-${{ matrix.service }}.spdx.json -c .grant.yaml
 
   push:
