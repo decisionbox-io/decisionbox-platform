@@ -203,13 +203,6 @@ jobs:
           SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES: true
           SYFT_GOLANG_MAIN_MODULE_VERSION_FROM_BUILD_SETTINGS: true
 
-      - name: Upload SBOM artifact
-        if: matrix.changed == 'true' || github.ref_type == 'tag'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ matrix.service }}
-          path: sbom-${{ matrix.service }}.spdx.json
-
       - name: Scan vulnerabilities with Grype
         if: matrix.changed == 'true' || github.ref_type == 'tag'
         uses: anchore/scan-action@v6
