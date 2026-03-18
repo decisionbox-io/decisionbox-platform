@@ -8,11 +8,14 @@ set -euo pipefail
 # Usage: ./setup.sh [--help] [--dry-run]
 # ══════════════════════════════════════════════════════════════════════════════
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_START=$(date +%s)
 DRY_RUN=false
+RESUME=false
 SPINNER_PID=""
+GO_BACK=false
+TOTAL_STEPS=9
 
 # ─── Parse arguments ─────────────────────────────────────────────────────────
 
@@ -26,6 +29,7 @@ for arg in "$@"; do
       echo "Options:"
       echo "  --help, -h     Show this help message"
       echo "  --dry-run      Generate config files only (no terraform apply, no helm deploy)"
+      echo "  --resume       Resume from Helm deploy (skips Terraform, reloads config from tfvars)"
       echo ""
       echo "This wizard will:"
       echo "  1. Check prerequisites (terraform, gcloud, kubectl, helm)"
@@ -38,11 +42,16 @@ for arg in "$@"; do
       echo "  8. Generate Terraform variables and Helm values"
       echo "  9. Run terraform init, plan, apply + deploy via Helm"
       echo ""
+      echo "Type 'back' at any prompt to return to the previous step."
+      echo ""
       echo "Supported providers: GCP (available), AWS (coming soon)"
       exit 0
       ;;
     --dry-run)
       DRY_RUN=true
+      ;;
+    --resume)
+      RESUME=true
       ;;
     *)
       echo "Unknown argument: $arg"
@@ -114,18 +123,24 @@ spinner_stop() {
   fi
 }
 
-# ─── Prompt helpers ──────────────────────────────────────────────────────────
+# ─── Prompt helpers (with "back" support) ────────────────────────────────────
 
+# Returns 0 on success, sets GO_BACK=true and returns 1 if user types "back"
 prompt() {
   local var_name="$1" prompt_text="$2" default="${3:-}"
+  GO_BACK=false
+  local back_hint="${DIM}(back)${NC}"
   if [[ -n "$default" ]]; then
-    read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text} ${DIM}[${default}]${NC}: ")" value
+    read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text} ${DIM}[${default}]${NC} ${back_hint}: ")" value
+    if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
     printf -v "$var_name" '%s' "${value:-$default}"
   else
-    read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text}: ")" value
+    read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text} ${back_hint}: ")" value
+    if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
     while [[ -z "$value" ]]; do
       err "This field is required."
-      read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text}: ")" value
+      read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text} ${back_hint}: ")" value
+      if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
     done
     printf -v "$var_name" '%s' "$value"
   fi
@@ -134,10 +149,10 @@ prompt() {
 prompt_choice() {
   local var_name="$1" prompt_text="$2" default="${3:-}" options="$4"
   while true; do
-    prompt "$var_name" "$prompt_text" "$default"
+    prompt "$var_name" "$prompt_text" "$default" || return 1
     local val="${!var_name}"
     if echo "$options" | grep -qw "$val"; then
-      return
+      return 0
     fi
     err "Invalid choice: ${val}. Options: ${options}"
   done
@@ -146,10 +161,10 @@ prompt_choice() {
 prompt_number() {
   local var_name="$1" prompt_text="$2" default="${3:-}"
   while true; do
-    prompt "$var_name" "$prompt_text" "$default"
+    prompt "$var_name" "$prompt_text" "$default" || return 1
     local val="${!var_name}"
     if [[ "$val" =~ ^[0-9]+$ ]]; then
-      return
+      return 0
     fi
     err "Must be a number. Got: ${val}"
   done
@@ -158,10 +173,10 @@ prompt_number() {
 prompt_boolean() {
   local var_name="$1" prompt_text="$2" default="${3:-false}"
   while true; do
-    prompt "$var_name" "$prompt_text (true/false)" "$default"
+    prompt "$var_name" "$prompt_text (true/false)" "$default" || return 1
     local val="${!var_name}"
     if [[ "$val" == "true" || "$val" == "false" ]]; then
-      return
+      return 0
     fi
     err "Must be 'true' or 'false'. Got: ${val}"
   done
@@ -209,132 +224,120 @@ check_tool() {
   fi
 }
 
-# ─── Banner ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Step Functions
+# ══════════════════════════════════════════════════════════════════════════════
 
-echo ""
-echo -e "${BOLD}  ╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}  ║         DecisionBox Platform Setup              ║${NC}"
-echo -e "${BOLD}  ║         v${VERSION}                                  ║${NC}"
-echo -e "${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
-echo ""
+do_step_1_prerequisites() {
+  step_header 1 "$TOTAL_STEPS" "Prerequisites"
 
-if [[ "$DRY_RUN" == "true" ]]; then
-  warn "Dry-run mode: config files will be generated but nothing will be applied."
+  MISSING=0
+  check_tool "terraform" "Install: https://developer.hashicorp.com/terraform/install" || MISSING=$((MISSING + 1))
+  check_tool "kubectl"   "Install: https://kubernetes.io/docs/tasks/tools/" || MISSING=$((MISSING + 1))
+  check_tool "helm"      "Install: https://helm.sh/docs/intro/install/" || MISSING=$((MISSING + 1))
+  check_tool "openssl"   "Usually pre-installed on macOS/Linux" || MISSING=$((MISSING + 1))
+
+  if [[ "$MISSING" -gt 0 ]]; then
+    echo ""
+    err "Missing ${MISSING} required tool(s). Install them and re-run."
+    exit 1
+  fi
+
   echo ""
-fi
+  ok "All prerequisites met"
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 1: Prerequisites
-# ══════════════════════════════════════════════════════════════════════════════
+do_step_2_cloud_provider() {
+  step_header 2 "$TOTAL_STEPS" "Cloud Provider"
 
-step_header 1 9 "Prerequisites"
-
-MISSING=0
-check_tool "terraform" "Install: https://developer.hashicorp.com/terraform/install" || MISSING=$((MISSING + 1))
-check_tool "kubectl"   "Install: https://kubernetes.io/docs/tasks/tools/" || MISSING=$((MISSING + 1))
-check_tool "helm"      "Install: https://helm.sh/docs/intro/install/" || MISSING=$((MISSING + 1))
-check_tool "openssl"   "Usually pre-installed on macOS/Linux" || MISSING=$((MISSING + 1))
-
-if [[ "$MISSING" -gt 0 ]]; then
+  echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
+  echo -e "  ${DIM}2)${NC} ${DIM}AWS  — Amazon Web Services (coming soon)${NC}"
   echo ""
-  err "Missing ${MISSING} required tool(s). Install them and re-run."
-  exit 1
-fi
+  prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 gcp GCP" || return 1
 
-echo ""
-ok "All prerequisites met"
+  case "$CLOUD_CHOICE" in
+    1|gcp|GCP) CLOUD="gcp" ;;
+  esac
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 2: Cloud Provider
-# ══════════════════════════════════════════════════════════════════════════════
+  ok "Cloud provider: ${BOLD}${CLOUD^^}${NC}"
 
-step_header 2 9 "Cloud Provider"
-
-echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
-echo -e "  ${DIM}2)${NC} ${DIM}AWS  — Amazon Web Services (coming soon)${NC}"
-echo ""
-prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 gcp GCP"
-
-case "$CLOUD_CHOICE" in
-  1|gcp|GCP) CLOUD="gcp" ;;
-esac
-
-ok "Cloud provider: ${BOLD}${CLOUD^^}${NC}"
-
-# Check cloud CLI
-echo ""
-if [[ "$CLOUD" == "gcp" ]]; then
+  echo ""
   check_tool "gcloud" "Install: https://cloud.google.com/sdk/docs/install" || {
     err "gcloud CLI is required for GCP. Install and re-run."
     exit 1
   }
-fi
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 3: Secrets Configuration
-# ══════════════════════════════════════════════════════════════════════════════
+do_step_3_secrets() {
+  step_header 3 "$TOTAL_STEPS" "Secrets Configuration"
 
-step_header 3 9 "Secrets Configuration"
-
-info "The secret namespace prefixes all secrets to avoid conflicts."
-dim "Format: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)"
-echo ""
-prompt SECRET_NS "Secret namespace" "decisionbox"
-ok "Secret namespace: ${BOLD}${SECRET_NS}${NC}"
-
-echo ""
-CLOUD_UPPER="${CLOUD^^}"
-echo -e "  ${BOLD}1)${NC} Enable  — Use ${CLOUD_UPPER} Secret Manager ${DIM}(recommended for production)${NC}"
-echo -e "  ${BOLD}2)${NC} Disable — Use MongoDB encrypted secrets or K8s native secrets"
-echo ""
-prompt_choice SECRETS_CHOICE "Enable cloud secret manager?" "1" "1 2 yes y no n"
-
-case "$SECRETS_CHOICE" in
-  1|yes|y) ENABLE_SECRETS="true" ;;
-  2|no|n)  ENABLE_SECRETS="false" ;;
-esac
-
-ok "Cloud secret manager: ${BOLD}${ENABLE_SECRETS}${NC}"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 4: Provider-Specific Configuration
-# ══════════════════════════════════════════════════════════════════════════════
-
-if [[ "$CLOUD" == "gcp" ]]; then
-  step_header 4 9 "GCP Configuration"
-
-  TF_DIR="${SCRIPT_DIR}/gcp/prod"
-
-  prompt PROJECT_ID "GCP project ID"
-
-  # Validate project ID format
-  if [[ ! "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
-    warn "Project ID '${PROJECT_ID}' may not match GCP naming rules (lowercase letters, digits, hyphens, 6-30 chars)."
-    dim "Continuing anyway — Terraform will validate against the API."
-  fi
-
-  prompt REGION "GCP region" "us-central1"
-  prompt CLUSTER_NAME "GKE cluster name" "decisionbox-prod"
-  prompt K8S_NS "Kubernetes namespace" "decisionbox"
+  info "The secret namespace prefixes all secrets to avoid conflicts."
+  dim "Format: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)"
+  echo ""
+  prompt SECRET_NS "Secret namespace" "decisionbox" || return 1
+  ok "Secret namespace: ${BOLD}${SECRET_NS}${NC}"
 
   echo ""
-  info "Node pool configuration:"
-  prompt MACHINE_TYPE "Machine type" "e2-standard-2"
-  prompt_number MIN_NODES "Min nodes per zone" "1"
-  prompt_number MAX_NODES "Max nodes per zone" "2"
-
-  # Validate min <= max
-  if [[ "$MIN_NODES" -gt "$MAX_NODES" ]]; then
-    err "Min nodes (${MIN_NODES}) cannot be greater than max nodes (${MAX_NODES})."
-    exit 1
-  fi
-
+  CLOUD_UPPER="${CLOUD^^}"
+  echo -e "  ${BOLD}1)${NC} Enable  — Use ${CLOUD_UPPER} Secret Manager ${DIM}(recommended for production)${NC}"
+  echo -e "  ${BOLD}2)${NC} Disable — Use MongoDB encrypted secrets or K8s native secrets"
   echo ""
-  prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "false"
+  prompt_choice SECRETS_CHOICE "Enable cloud secret manager?" "1" "1 2 yes y no n" || return 1
 
-  # ─── GCP Authentication ──────────────────────────────────────────────
+  case "$SECRETS_CHOICE" in
+    1|yes|y) ENABLE_SECRETS="true" ;;
+    2|no|n)  ENABLE_SECRETS="false" ;;
+  esac
 
-  step_header 5 9 "GCP Authentication"
+  ok "Cloud secret manager: ${BOLD}${ENABLE_SECRETS}${NC}"
+}
+
+do_step_4_provider_config() {
+  if [[ "$CLOUD" == "gcp" ]]; then
+    step_header 4 "$TOTAL_STEPS" "GCP Configuration"
+
+    TF_DIR="${SCRIPT_DIR}/gcp/prod"
+
+    prompt PROJECT_ID "GCP project ID" "${PROJECT_ID:-}" || return 1
+
+    if [[ ! "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+      warn "Project ID '${PROJECT_ID}' may not match GCP naming rules (lowercase, digits, hyphens, 6-30 chars)."
+      dim "Continuing anyway — Terraform will validate against the API."
+    fi
+
+    prompt REGION "GCP region" "${REGION:-us-central1}" || return 1
+    prompt CLUSTER_NAME "GKE cluster name" "${CLUSTER_NAME:-decisionbox-prod}" || return 1
+    prompt K8S_NS "Kubernetes namespace" "${K8S_NS:-decisionbox}" || return 1
+
+    echo ""
+    info "Node pool configuration:"
+    prompt MACHINE_TYPE "Machine type" "${MACHINE_TYPE:-e2-standard-2}" || return 1
+    prompt_number MIN_NODES "Min nodes per zone" "${MIN_NODES:-1}" || return 1
+    prompt_number MAX_NODES "Max nodes per zone" "${MAX_NODES:-2}" || return 1
+
+    if [[ "$MIN_NODES" -gt "$MAX_NODES" ]]; then
+      err "Min nodes (${MIN_NODES}) cannot be greater than max nodes (${MAX_NODES})."
+      return 1
+    fi
+
+    echo ""
+    prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "${BQ_IAM:-false}" || return 1
+
+  elif [[ "$CLOUD" == "aws" ]]; then
+    step_header 4 "$TOTAL_STEPS" "AWS Configuration"
+    TF_DIR="${SCRIPT_DIR}/aws/prod"
+    if [[ ! -d "$TF_DIR" ]]; then
+      warn "AWS Terraform module is not yet available."
+      info "Track progress: https://github.com/decisionbox-io/decisionbox-platform/issues/39"
+      exit 0
+    fi
+  fi
+}
+
+do_step_5_authentication() {
+  if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
+
+  step_header 5 "$TOTAL_STEPS" "GCP Authentication"
 
   info "Terraform needs GCP credentials. Choose how to authenticate:"
   echo ""
@@ -343,28 +346,40 @@ if [[ "$CLOUD" == "gcp" ]]; then
   echo -e "  ${BOLD}2)${NC} Service account   — Use an existing service account key file"
   dim "     Best for: CI/CD, shared environments, automated pipelines"
   echo ""
-  prompt_choice GCP_AUTH_CHOICE "Authentication method" "1" "1 2"
+  prompt_choice GCP_AUTH_CHOICE "Authentication method" "1" "1 2" || return 1
 
   if [[ "$GCP_AUTH_CHOICE" == "1" ]]; then
-    # Check if ADC already exists and is valid
+    # Check if ADC exists AND is a user credential (not a service account)
+    local adc_needs_refresh=true
     if gcloud auth application-default print-access-token > /dev/null 2>&1; then
-      ok "Application Default Credentials already configured"
-      prompt USE_EXISTING_ADC "Use existing credentials? (yes/no)" "yes"
-      if [[ "$USE_EXISTING_ADC" != "yes" ]]; then
-        info "Opening browser for authentication..."
-        gcloud auth application-default login --project="$PROJECT_ID"
-        ok "Authenticated with user credentials"
+      local adc_file="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/application_default_credentials.json"
+      if [[ -f "$adc_file" ]]; then
+        local adc_type
+        adc_type=$(grep -o '"type"[[:space:]]*:[[:space:]]*"[^"]*"' "$adc_file" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+        if [[ "$adc_type" == "authorized_user" ]]; then
+          ok "Application Default Credentials configured (user credentials)"
+          prompt USE_EXISTING_ADC "Use existing credentials? (yes/no)" "yes" || return 1
+          [[ "$USE_EXISTING_ADC" == "yes" ]] && adc_needs_refresh=false
+        else
+          warn "Application Default Credentials exist but use a service account, not user credentials."
+          dim "Terraform will authenticate as the service account, which may lack permissions."
+          info "Re-authenticating with your user account..."
+        fi
       fi
-    else
-      info "No Application Default Credentials found. Opening browser for authentication..."
-      gcloud auth application-default login --project="$PROJECT_ID"
+    fi
+
+    if [[ "$adc_needs_refresh" == "true" ]]; then
+      info "Authenticate below — copy the URL, log in, and paste the code back here."
+      echo ""
+      gcloud auth application-default login --project="$PROJECT_ID" --no-browser 2>&1 || \
+        gcloud auth application-default login --project="$PROJECT_ID"
       ok "Authenticated with user credentials"
     fi
   else
-    prompt GCP_SA_KEY_FILE "Path to service account key file (JSON)"
+    prompt GCP_SA_KEY_FILE "Path to service account key file (JSON)" "${GCP_SA_KEY_FILE:-}" || return 1
     if [[ ! -f "$GCP_SA_KEY_FILE" ]]; then
       err "File not found: ${GCP_SA_KEY_FILE}"
-      exit 1
+      return 1
     fi
     export GOOGLE_APPLICATION_CREDENTIALS="$GCP_SA_KEY_FILE"
     ok "Using service account: ${GCP_SA_KEY_FILE}"
@@ -375,60 +390,44 @@ if [[ "$CLOUD" == "gcp" ]]; then
   echo ""
   spinner_start "Verifying GCP permissions..."
   PERM_ERRORS=0
+  PERM_MISSING_GKE="" PERM_MISSING_STORAGE="" PERM_MISSING_IAM="" PERM_MISSING_COMPUTE=""
 
-  # Test: can list GKE clusters (container.clusters.list)
-  if ! gcloud container clusters list --project="$PROJECT_ID" --region="$REGION" > /dev/null 2>&1; then
-    PERM_ERRORS=$((PERM_ERRORS + 1))
-    PERM_MISSING_GKE=true
-  fi
-
-  # Test: can list storage buckets (storage.buckets.list)
-  if ! gcloud storage buckets list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
-    PERM_ERRORS=$((PERM_ERRORS + 1))
-    PERM_MISSING_STORAGE=true
-  fi
-
-  # Test: can list IAM service accounts (iam.serviceAccounts.list)
-  if ! gcloud iam service-accounts list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
-    PERM_ERRORS=$((PERM_ERRORS + 1))
-    PERM_MISSING_IAM=true
-  fi
-
-  # Test: can list compute networks (compute.networks.list)
-  if ! gcloud compute networks list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
-    PERM_ERRORS=$((PERM_ERRORS + 1))
-    PERM_MISSING_COMPUTE=true
-  fi
+  gcloud container clusters list --project="$PROJECT_ID" --region="$REGION" > /dev/null 2>&1 || { PERM_ERRORS=$((PERM_ERRORS + 1)); PERM_MISSING_GKE=true; }
+  gcloud storage buckets list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1 || { PERM_ERRORS=$((PERM_ERRORS + 1)); PERM_MISSING_STORAGE=true; }
+  gcloud iam service-accounts list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1 || { PERM_ERRORS=$((PERM_ERRORS + 1)); PERM_MISSING_IAM=true; }
+  gcloud compute networks list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1 || { PERM_ERRORS=$((PERM_ERRORS + 1)); PERM_MISSING_COMPUTE=true; }
 
   spinner_stop
 
   if [[ "$PERM_ERRORS" -gt 0 ]]; then
     warn "Permission issues detected (${PERM_ERRORS}):"
-    [[ "${PERM_MISSING_GKE:-}" == "true" ]] && err "  Missing: container.clusters.list (GKE access)"
-    [[ "${PERM_MISSING_STORAGE:-}" == "true" ]] && err "  Missing: storage.buckets.list (Terraform state)"
-    [[ "${PERM_MISSING_IAM:-}" == "true" ]] && err "  Missing: iam.serviceAccounts.list (Workload Identity)"
-    [[ "${PERM_MISSING_COMPUTE:-}" == "true" ]] && err "  Missing: compute.networks.list (VPC creation)"
+    [[ "$PERM_MISSING_GKE" == "true" ]] && err "  Missing: container.clusters.list (GKE access)"
+    [[ "$PERM_MISSING_STORAGE" == "true" ]] && err "  Missing: storage.buckets.list (Terraform state)"
+    [[ "$PERM_MISSING_IAM" == "true" ]] && err "  Missing: iam.serviceAccounts.list (Workload Identity)"
+    [[ "$PERM_MISSING_COMPUTE" == "true" ]] && err "  Missing: compute.networks.list (VPC creation)"
     echo ""
     dim "The authenticated account needs Project Editor or Owner role."
     dim "Grant via: gcloud projects add-iam-policy-binding ${PROJECT_ID} \\"
     dim "  --member='user:YOUR_EMAIL' --role='roles/editor'"
     echo ""
-    prompt CONTINUE_ANYWAY "Continue anyway? (yes/no)" "no"
+    prompt CONTINUE_ANYWAY "Continue anyway? (yes/no)" "no" || return 1
     if [[ "$CONTINUE_ANYWAY" != "yes" ]]; then
-      exit 1
+      return 1
     fi
   else
     ok "All required permissions verified"
   fi
+}
 
-  # ─── Terraform State ─────────────────────────────────────────────────
+do_step_6_terraform_state() {
+  if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
 
-  step_header 6 9 "Terraform State"
+  step_header 6 "$TOTAL_STEPS" "Terraform State"
 
   info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
   echo ""
-  prompt TF_STATE_BUCKET "GCS bucket name" "${PROJECT_ID}-terraform-state"
-  prompt TF_STATE_PREFIX "State prefix (environment)" "prod"
+  prompt TF_STATE_BUCKET "GCS bucket name" "${TF_STATE_BUCKET:-${PROJECT_ID}-terraform-state}" || return 1
+  prompt TF_STATE_PREFIX "State prefix (environment)" "${TF_STATE_PREFIX:-prod}" || return 1
 
   if [[ "$DRY_RUN" == "false" ]]; then
     if gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="$PROJECT_ID" > /dev/null 2>&1; then
@@ -447,75 +446,48 @@ if [[ "$CLOUD" == "gcp" ]]; then
   else
     dim "Dry-run: skipping bucket creation"
   fi
+}
 
-elif [[ "$CLOUD" == "aws" ]]; then
-  step_header 4 9 "AWS Configuration"
+do_step_7_review() {
+  step_header 7 "$TOTAL_STEPS" "Review Configuration"
 
-  TF_DIR="${SCRIPT_DIR}/aws/prod"
+  echo -e "  ${BOLD}Cloud:${NC}              ${CLOUD^^}"
+  echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
+  echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
+  echo ""
 
-  if [[ ! -d "$TF_DIR" ]]; then
-    echo ""
-    warn "AWS Terraform module is not yet available."
-    echo ""
-    info "The AWS secrets provider is implemented and ready:"
-    dim "providers/secrets/aws/"
-    echo ""
-    info "To use AWS Secrets Manager, set these environment variables in your deployment:"
-    echo ""
-    echo -e "  ${CYAN}SECRET_PROVIDER${NC}=aws"
-    echo -e "  ${CYAN}SECRET_NAMESPACE${NC}=${SECRET_NS}"
-    echo -e "  ${CYAN}SECRET_AWS_REGION${NC}=us-east-1"
-    echo ""
-    info "Ensure the pod's IAM role has SecretsManager permissions scoped to:"
-    echo -e "  ${DIM}arn:aws:secretsmanager:<region>:<account>:secret:${SECRET_NS}-*${NC}"
-    echo ""
-    info "Track progress: https://github.com/decisionbox-io/decisionbox-platform/issues/39"
-    echo ""
+  if [[ "$CLOUD" == "gcp" ]]; then
+    echo -e "  ${BOLD}GCP project:${NC}        ${PROJECT_ID}"
+    echo -e "  ${BOLD}Region:${NC}             ${REGION}"
+    echo -e "  ${BOLD}Cluster:${NC}            ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}K8s namespace:${NC}      ${K8S_NS}"
+    echo -e "  ${BOLD}Machine type:${NC}       ${MACHINE_TYPE}"
+    echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} per zone"
+    echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
+    echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
+  fi
+
+  echo ""
+  prompt CONFIRM "Proceed with this configuration? (yes/no/back)" "yes" || return 1
+
+  if [[ "$CONFIRM" == "back" ]]; then
+    GO_BACK=true
+    return 1
+  fi
+
+  if [[ "$CONFIRM" != "yes" ]]; then
+    warn "Setup cancelled. Re-run to start over."
     exit 0
   fi
-fi
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 6: Review Configuration
-# ══════════════════════════════════════════════════════════════════════════════
+do_step_8_generate() {
+  step_header 8 "$TOTAL_STEPS" "Generate Config Files"
 
-step_header 7 9 "Review Configuration"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    TFVARS_FILE="${TF_DIR}/terraform.tfvars"
 
-echo -e "  ${BOLD}Cloud:${NC}              ${CLOUD^^}"
-echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
-echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
-echo ""
-
-if [[ "$CLOUD" == "gcp" ]]; then
-  echo -e "  ${BOLD}GCP project:${NC}        ${PROJECT_ID}"
-  echo -e "  ${BOLD}Region:${NC}             ${REGION}"
-  echo -e "  ${BOLD}Cluster:${NC}            ${CLUSTER_NAME}"
-  echo -e "  ${BOLD}K8s namespace:${NC}      ${K8S_NS}"
-  echo -e "  ${BOLD}Machine type:${NC}       ${MACHINE_TYPE}"
-  echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} per zone"
-  echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
-  echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
-fi
-
-echo ""
-prompt CONFIRM "Proceed with this configuration? (yes/no)" "yes"
-
-if [[ "$CONFIRM" != "yes" ]]; then
-  warn "Setup cancelled. Re-run to start over."
-  exit 0
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 7: Generate Config Files
-# ══════════════════════════════════════════════════════════════════════════════
-
-step_header 8 9 "Generate Config Files"
-
-if [[ "$CLOUD" == "gcp" ]]; then
-  # ─── terraform.tfvars ──────────────────────────────────────────────
-  TFVARS_FILE="${TF_DIR}/terraform.tfvars"
-
-  cat > "$TFVARS_FILE" <<EOF
+    cat > "$TFVARS_FILE" <<EOF
 # Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 project_id   = "${PROJECT_ID}"
@@ -536,16 +508,14 @@ secret_namespace    = "${SECRET_NS}"
 enable_bigquery_iam = ${BQ_IAM}
 EOF
 
-  ok "Generated ${TFVARS_FILE}"
+    ok "Generated ${TFVARS_FILE}"
 
-  # ─── Helm values override ──────────────────────────────────────────
-  HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-  HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
+    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    K8S_SA="decisionbox-api"
+    GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
 
-  K8S_SA="decisionbox-api"
-  GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
-
-  cat > "$HELM_VALUES" <<EOF
+    cat > "$HELM_VALUES" <<EOF
 # Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Usage: helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api -f values.yaml -f values-secrets.yaml
 
@@ -567,217 +537,68 @@ env:
   SECRET_GCP_PROJECT_ID: "${PROJECT_ID}"
 EOF
 
-  ok "Generated ${HELM_VALUES}"
-fi
-
-if [[ "$DRY_RUN" == "true" ]]; then
-  echo ""
-  ok "Dry-run complete. Config files generated. No infrastructure changes made."
-  echo ""
-  dim "To apply manually:"
-  dim "  cd ${TF_DIR}"
-  dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"prefix=${TF_STATE_PREFIX}\""
-  dim "  terraform plan -out=tfplan"
-  dim "  terraform apply tfplan"
-  echo ""
-  echo -e "  ${DIM}Total time: $(elapsed)${NC}"
-  exit 0
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Step 8: Terraform & Deploy
-# ══════════════════════════════════════════════════════════════════════════════
-
-step_header 9 9 "Terraform & Deploy"
-
-cd "$TF_DIR"
-dim "Working directory: ${TF_DIR}"
-echo ""
-
-# ─── Terraform Init ──────────────────────────────────────────────────────
-
-spinner_start "Running terraform init..."
-TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}")
-TF_INIT_OUTPUT=$(terraform init "${TF_INIT_ARGS[@]}" 2>&1) && TF_INIT_RC=0 || TF_INIT_RC=$?
-spinner_stop
-
-if [[ "$TF_INIT_RC" -ne 0 ]]; then
-  err "Terraform init failed:"
-  echo "$TF_INIT_OUTPUT"
-  exit 1
-fi
-ok "Terraform initialized ${DIM}(state: gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/)${NC}"
-
-# ─── Terraform Plan ──────────────────────────────────────────────────────
-
-echo ""
-info "Running terraform plan..."
-echo ""
-terraform plan -out=tfplan -detailed-exitcode 2>&1 && TF_EXIT=0 || TF_EXIT=$?
-echo ""
-
-if [[ "$TF_EXIT" -eq 1 ]]; then
-  err "Terraform plan failed. Review the errors above."
-  rm -f tfplan
-  exit 1
-elif [[ "$TF_EXIT" -eq 0 ]]; then
-  ok "No infrastructure changes needed."
-  rm -f tfplan
-  TF_APPLIED="skip"
-else
-  ok "Plan saved to tfplan"
-  echo ""
-  prompt APPLY "Apply these changes? (yes/no)" "no"
-
-  if [[ "$APPLY" == "yes" ]]; then
-    echo ""
-    TF_APPLY_START=$(date +%s)
-    info "Applying (this may take 5-10 minutes for new clusters)..."
-    echo ""
-    terraform apply tfplan
-    TF_APPLY_SECS=$(( $(date +%s) - TF_APPLY_START ))
-    echo ""
-    ok "Applied successfully! ${DIM}(${TF_APPLY_SECS}s)${NC}"
-    TF_APPLIED="yes"
-  else
-    TF_APPLIED="no"
-    info "Skipped apply. Run manually: cd ${TF_DIR} && terraform apply tfplan"
+    ok "Generated ${HELM_VALUES}"
   fi
-  rm -f tfplan
-fi
 
-# ─── Configure kubectl ───────────────────────────────────────────────────
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo ""
+    ok "Dry-run complete. Config files generated. No infrastructure changes made."
+    echo ""
+    dim "To apply manually:"
+    dim "  cd ${TF_DIR}"
+    dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"prefix=${TF_STATE_PREFIX}\""
+    dim "  terraform plan -out=tfplan"
+    dim "  terraform apply tfplan"
+    echo ""
+    echo -e "  ${DIM}Total time: $(elapsed)${NC}"
+    exit 0
+  fi
+}
 
-if [[ "$CLOUD" == "gcp" ]]; then
-  echo ""
-  spinner_start "Fetching cluster credentials..."
-  gcloud container clusters get-credentials "$CLUSTER_NAME" \
-    --region "$REGION" \
-    --project "$PROJECT_ID" 2>/dev/null
+build_helm_deps() {
+  local chart_dir="$1"
+  # Add Bitnami repo if not present
+  if ! helm repo list 2>/dev/null | grep -q bitnami; then
+    spinner_start "Adding Bitnami Helm repo..."
+    helm repo add bitnami https://charts.bitnami.com/bitnami > /dev/null 2>&1
+    spinner_stop
+    ok "Added Bitnami Helm repo"
+  fi
+
+  spinner_start "Building Helm chart dependencies..."
+  HELM_DEP_OUTPUT=$(helm dependency build "$chart_dir" 2>&1) && HELM_DEP_RC=0 || HELM_DEP_RC=$?
   spinner_stop
-  ok "kubectl configured for ${CLUSTER_NAME}"
-
-  spinner_start "Waiting for Kubernetes API..."
-  RETRIES=0
-  MAX_RETRIES=30
-  until kubectl get nodes > /dev/null 2>&1; do
-    RETRIES=$((RETRIES + 1))
-    if [[ "$RETRIES" -ge "$MAX_RETRIES" ]]; then
-      spinner_stop
-      err "Kubernetes API not reachable after ${MAX_RETRIES} attempts (${MAX_RETRIES}0s)."
-      err "Check: gcloud container clusters list --project=${PROJECT_ID}"
-      exit 1
-    fi
-    sleep 10
-  done
-  spinner_stop
-  ok "Kubernetes API is ready"
-fi
-
-# ─── Helm Deploy ─────────────────────────────────────────────────────────
-
-HELM_CHARTS_DIR="${SCRIPT_DIR}/../helm-charts"
-
-echo ""
-prompt HELM_DEPLOY "Deploy services via Helm? (yes/no)" "no"
-
-if [[ "$HELM_DEPLOY" == "yes" ]]; then
-
-  # ─── Create API Secrets ────────────────────────────────────────────
-  API_SECRET_NAME="decisionbox-api-secrets"
-  if kubectl get secret "$API_SECRET_NAME" -n "$K8S_NS" > /dev/null 2>&1; then
-    ok "Secret ${API_SECRET_NAME} already exists"
-  else
-    AUTO_KEY=$(openssl rand -base64 32)
-    echo ""
-    info "SECRET_ENCRYPTION_KEY is used for AES-256 encryption of project secrets."
-    dim "Press Enter to use the auto-generated key, or paste your own."
-    prompt ENCRYPTION_KEY "SECRET_ENCRYPTION_KEY" "$AUTO_KEY"
-    kubectl create namespace "$K8S_NS" --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-    kubectl create secret generic "$API_SECRET_NAME" \
-      --from-literal=SECRET_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
-      -n "$K8S_NS" > /dev/null 2>&1
-    ok "Created secret ${API_SECRET_NAME}"
-  fi
-
-  echo ""
-  prompt HELM_VALUES_ENV "Additional API values file (leave empty to skip)" "none"
-
-  # ─── Deploy API ────────────────────────────────────────────────────
-  echo ""
-  spinner_start "Deploying API..."
-  HELM_ARGS=(helm upgrade --install decisionbox-api "$HELM_DIR" -n "$K8S_NS" --create-namespace -f "${HELM_DIR}/values.yaml")
-  if [[ "$CLOUD" == "gcp" ]]; then
-    HELM_ARGS+=(-f "$HELM_VALUES")
-  fi
-  if [[ "$HELM_VALUES_ENV" != "none" && -n "$HELM_VALUES_ENV" ]]; then
-    if [[ ! "$HELM_VALUES_ENV" = /* ]]; then
-      HELM_VALUES_ENV="${SCRIPT_DIR}/../${HELM_VALUES_ENV}"
-    fi
-    if [[ ! -f "$HELM_VALUES_ENV" ]]; then
-      spinner_stop
-      err "Values file not found: ${HELM_VALUES_ENV}"
-      exit 1
-    fi
-    HELM_ARGS+=(-f "$HELM_VALUES_ENV")
-  fi
-  HELM_OUTPUT=$("${HELM_ARGS[@]}" 2>&1) && HELM_RC=0 || HELM_RC=$?
-  spinner_stop
-
-  if [[ "$HELM_RC" -ne 0 ]]; then
-    err "API deployment failed:"
-    echo "$HELM_OUTPUT"
+  if [[ "$HELM_DEP_RC" -ne 0 ]]; then
+    err "Helm dependency build failed:"
+    echo "$HELM_DEP_OUTPUT"
     exit 1
   fi
-  ok "API deployed"
+  ok "Chart dependencies ready"
+}
 
-  # ─── Deploy Dashboard ──────────────────────────────────────────────
-  DASH_DIR="${HELM_CHARTS_DIR}/decisionbox-dashboard"
-  spinner_start "Deploying Dashboard..."
-  DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
-  DASH_OUTPUT=$("${DASH_ARGS[@]}" 2>&1) && DASH_RC=0 || DASH_RC=$?
-  spinner_stop
-
-  if [[ "$DASH_RC" -ne 0 ]]; then
-    err "Dashboard deployment failed:"
-    echo "$DASH_OUTPUT"
-    exit 1
-  fi
-  ok "Dashboard deployed"
-
-  # ─── Wait for Ingress ──────────────────────────────────────────────
-
+wait_for_ingress_and_show_result() {
+  # Wait for ingress
   echo ""
   info "Waiting for dashboard to become available..."
   echo ""
 
-  # Wait for ingress resource (handles GCE cleanup race)
   spinner_start "Waiting for ingress resource..."
   INGRESS_ATTEMPTS=0
-  MAX_INGRESS_ATTEMPTS=3
   while true; do
-    RETRIES=0
-    INGRESS_FOUND=false
+    RETRIES=0; INGRESS_FOUND=false
     while [[ "$RETRIES" -lt 12 ]]; do
       if kubectl get ingress -n "$K8S_NS" -o name 2>/dev/null | grep -q .; then
-        INGRESS_FOUND=true
-        break
+        INGRESS_FOUND=true; break
       fi
-      RETRIES=$((RETRIES + 1))
-      sleep 5
+      RETRIES=$((RETRIES + 1)); sleep 5
     done
-
     if [[ "$INGRESS_FOUND" == "true" ]]; then
       sleep 10
-      if kubectl get ingress -n "$K8S_NS" -o name 2>/dev/null | grep -q .; then
-        break
-      fi
+      kubectl get ingress -n "$K8S_NS" -o name 2>/dev/null | grep -q . && break
     fi
-
     INGRESS_ATTEMPTS=$((INGRESS_ATTEMPTS + 1))
-    if [[ "$INGRESS_ATTEMPTS" -ge "$MAX_INGRESS_ATTEMPTS" ]]; then
-      spinner_stop
-      warn "Ingress not created after ${MAX_INGRESS_ATTEMPTS} attempts."
+    if [[ "$INGRESS_ATTEMPTS" -ge 3 ]]; then
+      spinner_stop; warn "Ingress not created after 3 attempts."
       dim "Check: kubectl get ingress -n ${K8S_NS}"
       break
     fi
@@ -786,76 +607,49 @@ if [[ "$HELM_DEPLOY" == "yes" ]]; then
   spinner_stop
   ok "Ingress resource exists"
 
-  # Wait for external IP
+  # Wait for IP
   spinner_start "Waiting for external IP (1-2 min)..."
-  RETRIES=0
-  INGRESS_IP=""
+  RETRIES=0; INGRESS_IP=""
   while [[ -z "$INGRESS_IP" || "$INGRESS_IP" == "null" ]]; do
     RETRIES=$((RETRIES + 1))
-    if [[ "$RETRIES" -ge 30 ]]; then
-      spinner_stop
-      warn "IP not assigned after 5 minutes."
-      dim "Check: kubectl get ingress -n ${K8S_NS}"
-      break
-    fi
+    [[ "$RETRIES" -ge 30 ]] && { spinner_stop; warn "IP not assigned after 5 minutes."; break; }
     if ! kubectl get ingress -n "$K8S_NS" -o name 2>/dev/null | grep -q .; then
-      "${DASH_ARGS[@]}" > /dev/null 2>&1 || true
-      sleep 15
-      continue
+      "${DASH_ARGS[@]}" > /dev/null 2>&1 || true; sleep 15; continue
     fi
     INGRESS_IP=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-    if [[ -z "$INGRESS_IP" || "$INGRESS_IP" == "null" ]]; then
-      sleep 10
-    fi
+    [[ -z "$INGRESS_IP" || "$INGRESS_IP" == "null" ]] && sleep 10
   done
   spinner_stop
 
   if [[ -n "$INGRESS_IP" && "$INGRESS_IP" != "null" ]]; then
     ok "Ingress IP: ${BOLD}${INGRESS_IP}${NC}"
 
-    # Wait for healthy backends
+    # Health checks
     spinner_start "Waiting for health checks (3-5 min)..."
     RETRIES=0
     while true; do
       RETRIES=$((RETRIES + 1))
-      if [[ "$RETRIES" -ge 40 ]]; then
-        spinner_stop
-        warn "Health checks not passing after 7 minutes."
-        dim "Check: kubectl describe ingress -n ${K8S_NS}"
-        break
-      fi
+      [[ "$RETRIES" -ge 40 ]] && { spinner_stop; warn "Health checks not passing."; break; }
       BACKENDS=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].metadata.annotations.ingress\.kubernetes\.io/backends}' 2>/dev/null || echo "")
       if [[ -n "$BACKENDS" ]] && ! echo "$BACKENDS" | grep -q "Unknown\|UNHEALTHY"; then
-        spinner_stop
-        ok "All backends healthy"
-        break
+        spinner_stop; ok "All backends healthy"; break
       fi
       sleep 10
     done
 
     # Verify HTTP 200
     spinner_start "Verifying dashboard is reachable..."
-    RETRIES=0
-    DASHBOARD_LIVE=false
+    RETRIES=0; DASHBOARD_LIVE=false
     while [[ "$RETRIES" -lt 18 ]]; do
       RETRIES=$((RETRIES + 1))
       HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://${INGRESS_IP}/" 2>/dev/null || echo "000")
-      if [[ "$HTTP_CODE" == "200" ]]; then
-        DASHBOARD_LIVE=true
-        break
-      fi
+      [[ "$HTTP_CODE" == "200" ]] && { DASHBOARD_LIVE=true; break; }
       sleep 10
     done
     spinner_stop
 
-    if [[ "$DASHBOARD_LIVE" == "true" ]]; then
-      ok "Dashboard is live!"
-    else
-      warn "Dashboard not responding yet. The load balancer may still be propagating."
-      dim "Try: curl http://${INGRESS_IP}"
-    fi
+    [[ "$DASHBOARD_LIVE" == "true" ]] && ok "Dashboard is live!" || warn "Dashboard not responding yet. Try: curl http://${INGRESS_IP}"
 
-    # ─── Final Summary ──────────────────────────────────────────────
     echo ""
     echo -e "  ${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
     echo -e "  ${GREEN}${BOLD}║              Setup Complete!                     ║${NC}"
@@ -867,21 +661,422 @@ if [[ "$HELM_DEPLOY" == "yes" ]]; then
     echo ""
     echo -e "  ${DIM}Total time: $(elapsed)${NC}"
     echo ""
+  else
+    echo ""
+    warn "Could not determine ingress IP."
+    dim "Check manually: kubectl get ingress -n ${K8S_NS}"
+    echo ""
+    echo -e "  ${DIM}Total time: $(elapsed)${NC}"
+    echo ""
   fi
-else
+}
+
+do_step_9_deploy() {
+  step_header 9 "$TOTAL_STEPS" "Terraform & Deploy"
+
+  cd "$TF_DIR"
+  dim "Working directory: ${TF_DIR}"
   echo ""
-  info "Skipped Helm deploy. To deploy manually:"
+
+  # ─── Terraform Init ────────────────────────────────────────────────
+  spinner_start "Running terraform init..."
+  TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}")
+  TF_INIT_OUTPUT=$(terraform init "${TF_INIT_ARGS[@]}" 2>&1) && TF_INIT_RC=0 || TF_INIT_RC=$?
+  spinner_stop
+
+  if [[ "$TF_INIT_RC" -ne 0 ]]; then
+    err "Terraform init failed:"
+    echo "$TF_INIT_OUTPUT"
+    exit 1
+  fi
+  ok "Terraform initialized ${DIM}(state: gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/)${NC}"
+
+  # ─── Terraform Plan ────────────────────────────────────────────────
   echo ""
+  info "Running terraform plan..."
+  echo ""
+  terraform plan -out=tfplan -detailed-exitcode 2>&1 && TF_EXIT=0 || TF_EXIT=$?
+  echo ""
+
+  if [[ "$TF_EXIT" -eq 1 ]]; then
+    err "Terraform plan failed. Review the errors above."
+    rm -f tfplan
+    exit 1
+  elif [[ "$TF_EXIT" -eq 0 ]]; then
+    ok "No infrastructure changes needed."
+    rm -f tfplan
+  else
+    ok "Plan saved to tfplan"
+    echo ""
+    prompt APPLY "Apply these changes? (yes/no)" "no"
+
+    if [[ "$APPLY" == "yes" ]]; then
+      echo ""
+      TF_APPLY_START=$(date +%s)
+      info "Applying (this may take 5-10 minutes for new clusters)..."
+      echo ""
+      terraform apply tfplan
+      TF_APPLY_SECS=$(( $(date +%s) - TF_APPLY_START ))
+      echo ""
+      ok "Applied successfully! ${DIM}(${TF_APPLY_SECS}s)${NC}"
+    else
+      info "Skipped apply. Run manually: cd ${TF_DIR} && terraform apply tfplan"
+    fi
+    rm -f tfplan
+  fi
+
+  # ─── Configure kubectl ─────────────────────────────────────────────
   if [[ "$CLOUD" == "gcp" ]]; then
-    echo -e "  ${BOLD}# API${NC}"
-    echo -e "  ${DIM}helm upgrade --install decisionbox-api ${HELM_DIR} \\${NC}"
-    echo -e "  ${DIM}  -f ${HELM_DIR}/values.yaml \\${NC}"
-    echo -e "  ${DIM}  -f ${HELM_VALUES} -n ${K8S_NS}${NC}"
+    echo ""
+    spinner_start "Fetching cluster credentials..."
+    gcloud container clusters get-credentials "$CLUSTER_NAME" \
+      --region "$REGION" \
+      --project "$PROJECT_ID" 2>/dev/null
+    spinner_stop
+    ok "kubectl configured for ${CLUSTER_NAME}"
+
+    spinner_start "Waiting for Kubernetes API..."
+    RETRIES=0
+    until kubectl get nodes > /dev/null 2>&1; do
+      RETRIES=$((RETRIES + 1))
+      if [[ "$RETRIES" -ge 30 ]]; then
+        spinner_stop
+        err "Kubernetes API not reachable after 5 minutes."
+        exit 1
+      fi
+      sleep 10
+    done
+    spinner_stop
+    ok "Kubernetes API is ready"
   fi
+
+  # ─── Helm Deploy ───────────────────────────────────────────────────
+  HELM_CHARTS_DIR="${SCRIPT_DIR}/../helm-charts"
+
   echo ""
-  echo -e "  ${BOLD}# Dashboard${NC}"
-  echo -e "  ${DIM}helm upgrade --install decisionbox-dashboard ${HELM_CHARTS_DIR}/decisionbox-dashboard \\${NC}"
-  echo -e "  ${DIM}  -f ${HELM_CHARTS_DIR}/decisionbox-dashboard/values.yaml -n ${K8S_NS}${NC}"
+  prompt HELM_DEPLOY "Deploy services via Helm? (yes/no)" "no"
+
+  if [[ "$HELM_DEPLOY" == "yes" ]]; then
+    # Create namespace
+    kubectl create namespace "$K8S_NS" --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+
+    # Create API secrets (only encryption key needed for MongoDB secret provider)
+    API_SECRET_NAME="decisionbox-api-secrets"
+    if kubectl get secret "$API_SECRET_NAME" -n "$K8S_NS" > /dev/null 2>&1; then
+      ok "Secret ${API_SECRET_NAME} already exists"
+    elif [[ "$ENABLE_SECRETS" == "true" ]]; then
+      # Using cloud secret manager — no encryption key needed, create empty secret for extraEnvFrom
+      kubectl create secret generic "$API_SECRET_NAME" \
+        -n "$K8S_NS" > /dev/null 2>&1
+      ok "Created secret ${API_SECRET_NAME} ${DIM}(cloud secret manager — no encryption key needed)${NC}"
+    else
+      # Using MongoDB secret provider — encryption key required for AES-256
+      AUTO_KEY=$(openssl rand -base64 32)
+      echo ""
+      info "SECRET_ENCRYPTION_KEY is used for AES-256 encryption of secrets stored in MongoDB."
+      dim "Press Enter to use the auto-generated key, or paste your own."
+      prompt ENCRYPTION_KEY "SECRET_ENCRYPTION_KEY" "$AUTO_KEY"
+      kubectl create secret generic "$API_SECRET_NAME" \
+        --from-literal=SECRET_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+        -n "$K8S_NS" > /dev/null 2>&1
+      ok "Created secret ${API_SECRET_NAME} with SECRET_ENCRYPTION_KEY"
+    fi
+
+    echo ""
+    prompt HELM_VALUES_ENV "Additional API values file (leave empty to skip)" "none"
+
+    # Build chart dependencies (MongoDB subchart)
+    echo ""
+    build_helm_deps "$HELM_DIR"
+
+    # Deploy API
+    spinner_start "Deploying API..."
+    HELM_ARGS=(helm upgrade --install decisionbox-api "$HELM_DIR" -n "$K8S_NS" --create-namespace -f "${HELM_DIR}/values.yaml")
+    [[ "$CLOUD" == "gcp" ]] && HELM_ARGS+=(-f "$HELM_VALUES")
+    if [[ "$HELM_VALUES_ENV" != "none" && -n "$HELM_VALUES_ENV" ]]; then
+      [[ ! "$HELM_VALUES_ENV" = /* ]] && HELM_VALUES_ENV="${SCRIPT_DIR}/../${HELM_VALUES_ENV}"
+      if [[ ! -f "$HELM_VALUES_ENV" ]]; then
+        spinner_stop
+        err "Values file not found: ${HELM_VALUES_ENV}"
+        exit 1
+      fi
+      HELM_ARGS+=(-f "$HELM_VALUES_ENV")
+    fi
+    HELM_OUTPUT=$("${HELM_ARGS[@]}" 2>&1) && HELM_RC=0 || HELM_RC=$?
+    spinner_stop
+    if [[ "$HELM_RC" -ne 0 ]]; then
+      err "API deployment failed:"
+      echo "$HELM_OUTPUT"
+      exit 1
+    fi
+    ok "API deployed"
+
+    # Deploy Dashboard
+    DASH_DIR="${HELM_CHARTS_DIR}/decisionbox-dashboard"
+    spinner_start "Deploying Dashboard..."
+    DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+    DASH_OUTPUT=$("${DASH_ARGS[@]}" 2>&1) && DASH_RC=0 || DASH_RC=$?
+    spinner_stop
+    if [[ "$DASH_RC" -ne 0 ]]; then
+      err "Dashboard deployment failed:"
+      echo "$DASH_OUTPUT"
+      exit 1
+    fi
+    ok "Dashboard deployed"
+
+    wait_for_ingress_and_show_result
+  else
+    echo ""
+    info "Skipped Helm deploy. To deploy manually:"
+    echo ""
+    if [[ "$CLOUD" == "gcp" ]]; then
+      echo -e "  ${BOLD}# API${NC}"
+      echo -e "  ${DIM}helm upgrade --install decisionbox-api ${HELM_DIR} \\${NC}"
+      echo -e "  ${DIM}  -f ${HELM_DIR}/values.yaml \\${NC}"
+      echo -e "  ${DIM}  -f ${HELM_VALUES} -n ${K8S_NS}${NC}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}# Dashboard${NC}"
+    echo -e "  ${DIM}helm upgrade --install decisionbox-dashboard ${HELM_CHARTS_DIR}/decisionbox-dashboard \\${NC}"
+    echo -e "  ${DIM}  -f ${HELM_CHARTS_DIR}/decisionbox-dashboard/values.yaml -n ${K8S_NS}${NC}"
+    echo ""
+    echo -e "  ${DIM}Total time: $(elapsed)${NC}"
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main — Step Navigation with Back Support
+# ══════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo -e "${BOLD}  ╔══════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}  ║         DecisionBox Platform Setup              ║${NC}"
+echo -e "${BOLD}  ║         v${VERSION}                                  ║${NC}"
+echo -e "${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
+echo ""
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  warn "Dry-run mode: config files will be generated but nothing will be applied."
   echo ""
-  echo -e "  ${DIM}Total time: $(elapsed)${NC}"
 fi
+
+# ─── Resume Mode ──────────────────────────────────────────────────────────
+
+if [[ "$RESUME" == "true" ]]; then
+  info "Resume mode: loading config from previous run..."
+  echo ""
+
+  # Find tfvars
+  TFVARS_FILE="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
+  if [[ ! -f "$TFVARS_FILE" ]]; then
+    err "No terraform.tfvars found at ${TFVARS_FILE}"
+    err "Run setup.sh without --resume first."
+    exit 1
+  fi
+
+  # Parse tfvars (HCL key = "value" format)
+  parse_tfvar() { grep "^${1}" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
+
+  CLOUD="gcp"
+  TF_DIR="${SCRIPT_DIR}/gcp/prod"
+  PROJECT_ID=$(parse_tfvar project_id)
+  REGION=$(parse_tfvar region)
+  CLUSTER_NAME=$(parse_tfvar cluster_name)
+  K8S_NS=$(parse_tfvar k8s_namespace)
+  MACHINE_TYPE=$(parse_tfvar machine_type)
+  MIN_NODES=$(parse_tfvar min_node_count)
+  MAX_NODES=$(parse_tfvar max_node_count)
+  ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
+  SECRET_NS=$(parse_tfvar secret_namespace)
+  BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+  HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
+  HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+
+  # Validate required values loaded
+  if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
+    err "Failed to parse required values from ${TFVARS_FILE}"
+    exit 1
+  fi
+
+  ok "Loaded config from ${TFVARS_FILE}"
+  echo ""
+  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
+  echo -e "  ${BOLD}Region:${NC}      ${REGION}"
+  echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+  echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+  echo ""
+
+  # Check prerequisites
+  do_step_1_prerequisites
+
+  # Validate cluster is reachable
+  echo ""
+  spinner_start "Verifying cluster connectivity..."
+
+  # Ensure kubectl is configured
+  gcloud container clusters get-credentials "$CLUSTER_NAME" \
+    --region "$REGION" \
+    --project "$PROJECT_ID" 2>/dev/null || true
+
+  if kubectl get nodes > /dev/null 2>&1; then
+    spinner_stop
+    ok "Cluster ${CLUSTER_NAME} is reachable"
+  else
+    spinner_stop
+    err "Cannot reach cluster ${CLUSTER_NAME}."
+    err "Ensure Terraform has been applied and the cluster is running."
+    dim "Check: gcloud container clusters list --project=${PROJECT_ID}"
+    exit 1
+  fi
+
+  # Validate Helm values file exists
+  if [[ ! -f "$HELM_VALUES" ]]; then
+    err "Helm values file not found: ${HELM_VALUES}"
+    err "Run setup.sh without --resume to generate it."
+    exit 1
+  fi
+  ok "Helm values file found: ${HELM_VALUES}"
+
+  echo ""
+  prompt CONFIRM_RESUME "Resume Helm deployment with this config? (yes/no)" "yes"
+  if [[ "$CONFIRM_RESUME" != "yes" ]]; then
+    warn "Cancelled. Run setup.sh without --resume to start fresh."
+    exit 0
+  fi
+
+  # Jump to Helm deploy section
+  HELM_CHARTS_DIR="${SCRIPT_DIR}/../helm-charts"
+  DASH_DIR="${HELM_CHARTS_DIR}/decisionbox-dashboard"
+
+  # Check if releases already exist
+  API_DEPLOYED=false
+  DASH_DEPLOYED=false
+  helm status decisionbox-api -n "$K8S_NS" > /dev/null 2>&1 && API_DEPLOYED=true
+  helm status decisionbox-dashboard -n "$K8S_NS" > /dev/null 2>&1 && DASH_DEPLOYED=true
+
+  if [[ "$API_DEPLOYED" == "true" && "$DASH_DEPLOYED" == "true" ]]; then
+    ok "API release already deployed"
+    ok "Dashboard release already deployed"
+    echo ""
+    prompt REDEPLOY "Both releases exist. Re-deploy anyway? (yes/no)" "no"
+    if [[ "$REDEPLOY" != "yes" ]]; then
+      info "Skipping deploy. Checking ingress..."
+      DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+      wait_for_ingress_and_show_result
+      exit 0
+    fi
+  elif [[ "$API_DEPLOYED" == "true" ]]; then
+    ok "API release already deployed"
+  elif [[ "$DASH_DEPLOYED" == "true" ]]; then
+    ok "Dashboard release already deployed"
+  fi
+
+  # Create namespace + secrets
+  kubectl create namespace "$K8S_NS" --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+
+  API_SECRET_NAME="decisionbox-api-secrets"
+  if kubectl get secret "$API_SECRET_NAME" -n "$K8S_NS" > /dev/null 2>&1; then
+    ok "Secret ${API_SECRET_NAME} already exists"
+  elif [[ "$ENABLE_SECRETS" == "true" ]]; then
+    kubectl create secret generic "$API_SECRET_NAME" \
+      -n "$K8S_NS" > /dev/null 2>&1
+    ok "Created secret ${API_SECRET_NAME} ${DIM}(cloud secret manager)${NC}"
+  else
+    AUTO_KEY=$(openssl rand -base64 32)
+    echo ""
+    info "SECRET_ENCRYPTION_KEY is used for AES-256 encryption of secrets stored in MongoDB."
+    dim "Press Enter to use the auto-generated key, or paste your own."
+    prompt ENCRYPTION_KEY "SECRET_ENCRYPTION_KEY" "$AUTO_KEY"
+    kubectl create secret generic "$API_SECRET_NAME" \
+      --from-literal=SECRET_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+      -n "$K8S_NS" > /dev/null 2>&1
+    ok "Created secret ${API_SECRET_NAME} with SECRET_ENCRYPTION_KEY"
+  fi
+
+  echo ""
+  prompt HELM_VALUES_ENV "Additional API values file (leave empty to skip)" "none"
+
+  # Build chart dependencies (MongoDB subchart)
+  echo ""
+  build_helm_deps "$HELM_DIR"
+
+  # Deploy API
+  spinner_start "Deploying API..."
+  HELM_ARGS=(helm upgrade --install decisionbox-api "$HELM_DIR" -n "$K8S_NS" --create-namespace -f "${HELM_DIR}/values.yaml" -f "$HELM_VALUES")
+  if [[ "$HELM_VALUES_ENV" != "none" && -n "$HELM_VALUES_ENV" ]]; then
+    [[ ! "$HELM_VALUES_ENV" = /* ]] && HELM_VALUES_ENV="${SCRIPT_DIR}/../${HELM_VALUES_ENV}"
+    if [[ ! -f "$HELM_VALUES_ENV" ]]; then
+      spinner_stop
+      err "Values file not found: ${HELM_VALUES_ENV}"
+      exit 1
+    fi
+    HELM_ARGS+=(-f "$HELM_VALUES_ENV")
+  fi
+  HELM_OUTPUT=$("${HELM_ARGS[@]}" 2>&1) && HELM_RC=0 || HELM_RC=$?
+  spinner_stop
+  if [[ "$HELM_RC" -ne 0 ]]; then
+    err "API deployment failed:"
+    echo "$HELM_OUTPUT"
+    echo ""
+    warn "Fix the issue and re-run: ./setup.sh --resume"
+    exit 1
+  fi
+  ok "API deployed"
+
+  # Deploy Dashboard
+  DASH_DIR="${HELM_CHARTS_DIR}/decisionbox-dashboard"
+  spinner_start "Deploying Dashboard..."
+  DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+  DASH_OUTPUT=$("${DASH_ARGS[@]}" 2>&1) && DASH_RC=0 || DASH_RC=$?
+  spinner_stop
+  if [[ "$DASH_RC" -ne 0 ]]; then
+    err "Dashboard deployment failed:"
+    echo "$DASH_OUTPUT"
+    echo ""
+    warn "Fix the issue and re-run: ./setup.sh --resume"
+    exit 1
+  fi
+  ok "Dashboard deployed"
+
+  wait_for_ingress_and_show_result
+  exit 0
+fi
+
+# ─── Normal Flow ──────────────────────────────────────────────────────────
+
+dim "Type 'back' at any prompt to return to the previous step."
+
+# Steps 1 is not navigable (prerequisites must pass).
+# Steps 2-7 support "back" navigation.
+# Steps 8-9 are sequential (no going back after generation/deploy).
+
+do_step_1_prerequisites
+
+CURRENT_STEP=2
+
+while [[ "$CURRENT_STEP" -le 7 ]]; do
+  STEP_RC=0
+  case "$CURRENT_STEP" in
+    2) do_step_2_cloud_provider || STEP_RC=$? ;;
+    3) do_step_3_secrets || STEP_RC=$? ;;
+    4) do_step_4_provider_config || STEP_RC=$? ;;
+    5) do_step_5_authentication || STEP_RC=$? ;;
+    6) do_step_6_terraform_state || STEP_RC=$? ;;
+    7) do_step_7_review || STEP_RC=$? ;;
+  esac
+
+  if [[ "$GO_BACK" == "true" ]]; then
+    GO_BACK=false
+    if [[ "$CURRENT_STEP" -gt 2 ]]; then
+      CURRENT_STEP=$((CURRENT_STEP - 1))
+    else
+      info "Already at the first configurable step."
+    fi
+  else
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+  fi
+done
+
+do_step_8_generate
+do_step_9_deploy
