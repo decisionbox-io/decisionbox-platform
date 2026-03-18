@@ -109,7 +109,15 @@ curl http://localhost:8080/api/v1/domains
     {
       "id": "gaming",
       "categories": [
-        {"id": "match3", "name": "Match-3", "description": "Puzzle games with match-3 mechanics (e.g., Candy Crush, Puzzle Quest)"}
+        {"id": "match3", "name": "Match-3", "description": "Puzzle games with match-3 mechanics (e.g., Candy Crush, Homescapes)"},
+        {"id": "idle", "name": "Idle / Incremental", "description": "Games focused on resource accumulation, prestige cycles, and offline progression"},
+        {"id": "casual", "name": "Casual / Hyper-Casual", "description": "Simple, accessible games with short sessions and broad appeal, often ad-monetized"}
+      ]
+    },
+    {
+      "id": "social",
+      "categories": [
+        {"id": "content_sharing", "name": "Content Sharing", "description": "Platforms focused on creating and sharing content — photos, videos, stories"}
       ]
     }
   ]

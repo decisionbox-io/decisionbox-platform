@@ -1,0 +1,18 @@
+[
+  {
+    "id": "ad_performance",
+    "name": "Ad Performance",
+    "description": "Ad frequency impact, eCPM trends, user tolerance thresholds, rewarded vs interstitial effectiveness, and opt-in rates",
+    "keywords": ["ad", "interstitial", "rewarded", "banner", "ecpm", "impression", "ad_revenue", "frequency", "opt_in", "ad_watch", "mediation"],
+    "priority": 4,
+    "prompt_file": "analysis_ad_performance.md"
+  },
+  {
+    "id": "session_flow",
+    "name": "Session Flow",
+    "description": "Session depth, core loop completion, onboarding effectiveness, feature discovery, and drop-off points within sessions",
+    "keywords": ["onboarding", "tutorial", "core_loop", "feature", "screen", "flow", "funnel", "first_session", "discovery", "navigation"],
+    "priority": 5,
+    "prompt_file": "analysis_session_flow.md"
+  }
+]

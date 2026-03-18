@@ -47,6 +47,16 @@ func (p *GamingPack) DomainCategories() []domainpack.DomainCategory {
 			Name:        "Match-3",
 			Description: "Puzzle games with match-3 mechanics (e.g., Candy Crush, Homescapes)",
 		},
+		{
+			ID:          "idle",
+			Name:        "Idle / Incremental",
+			Description: "Games focused on resource accumulation, prestige cycles, and offline progression (e.g., Cookie Clicker, Idle Heroes)",
+		},
+		{
+			ID:          "casual",
+			Name:        "Casual / Hyper-Casual",
+			Description: "Simple, accessible games with short sessions and broad appeal, often ad-monetized (e.g., Flappy Bird, Helix Jump)",
+		},
 	}
 }
 

@@ -2,24 +2,24 @@
   {
     "id": "churn",
     "name": "Churn Risks",
-    "description": "Players at risk of leaving the game",
-    "keywords": ["churn", "retention", "cohort", "day_", "d1_", "d7_", "d30_", "inactive", "lapsed"],
+    "description": "Players at risk of leaving the game — identify churn patterns across the player lifecycle (tutorial, early, mid, late-game)",
+    "keywords": ["churn", "retention", "cohort", "day_", "d1_", "d7_", "d30_", "inactive", "lapsed", "last_active", "days_since", "dropout", "abandon"],
     "priority": 1,
     "prompt_file": "analysis_churn.md"
   },
   {
     "id": "engagement",
     "name": "Engagement Patterns",
-    "description": "Player behavior and session trends",
-    "keywords": ["session", "engagement", "duration", "frequency", "active", "dau", "mau", "playtime"],
+    "description": "Player behavior and session trends — frequency, depth, quality, and evolution of engagement over time and across segments",
+    "keywords": ["session", "engagement", "duration", "frequency", "active", "dau", "mau", "wau", "playtime", "login", "daily_active", "weekly_active", "session_count"],
     "priority": 2,
     "prompt_file": "analysis_engagement.md"
   },
   {
     "id": "monetization",
     "name": "Monetization Opportunities",
-    "description": "Revenue optimization and conversion opportunities",
-    "keywords": ["purchase", "iap", "revenue", "payer", "currency", "spend", "arpu", "ltv", "conversion"],
+    "description": "Revenue optimization and conversion opportunities — payer conversion, IAP analysis, ad monetization, LTV, and revenue-at-risk detection",
+    "keywords": ["purchase", "iap", "revenue", "payer", "currency", "spend", "arpu", "ltv", "conversion", "transaction", "price", "offer", "ad_revenue", "rewarded", "whale"],
     "priority": 3,
     "prompt_file": "analysis_monetization.md"
   }

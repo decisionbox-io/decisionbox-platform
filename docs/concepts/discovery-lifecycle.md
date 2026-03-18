@@ -34,7 +34,7 @@ Initializes warehouse provider (BigQuery/Redshift with credentials)
   ↓
 Initializes LLM provider (Claude/OpenAI/etc. with API key from secrets)
   ↓
-Loads domain pack (gaming/match3 → analysis areas, prompts, profile schema)
+Loads domain pack (e.g., gaming/match3 or social/content_sharing → analysis areas, prompts, profile schema)
   ↓
 Loads project-level prompt overrides from MongoDB (if any)
 ```
@@ -120,7 +120,7 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 
 ## Phase 5: Analysis
 
-For each analysis area (churn, engagement, monetization, levels, boosters), the agent:
+For each analysis area defined by the domain pack (e.g., churn, engagement, monetization for gaming; growth, engagement, retention for social), the agent:
 
 ```
 Load area-specific prompt (e.g., analysis_churn.md)

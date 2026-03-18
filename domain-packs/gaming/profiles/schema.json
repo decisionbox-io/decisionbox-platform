@@ -11,12 +11,12 @@
         "genre": {
           "type": "string",
           "title": "Genre",
-          "enum": ["puzzle", "fps", "strategy", "rpg", "casual", "simulation", "sports", "racing", "adventure", "other"]
+          "enum": ["puzzle", "fps", "strategy", "rpg", "casual", "idle", "simulation", "sports", "racing", "adventure", "other"]
         },
         "sub_genre": {
           "type": "string",
           "title": "Sub-Genre",
-          "description": "E.g., Match-3, Hidden Object, Battle Royale"
+          "description": "E.g., Match-3, Hidden Object, Battle Royale, Incremental"
         },
         "platforms": {
           "type": "array",
@@ -42,12 +42,12 @@
         "core_mechanic": {
           "type": "string",
           "title": "Core Mechanic",
-          "description": "E.g., match3, hidden_object, shooter, tower_defense"
+          "description": "E.g., match3, hidden_object, shooter, tower_defense, idle_clicker"
         },
         "game_type": {
           "type": "string",
           "title": "Game Type",
-          "enum": ["level_based", "open_world", "session_based", "endless", "story_driven"]
+          "enum": ["level_based", "open_world", "session_based", "endless", "story_driven", "idle"]
         },
         "session_type": {
           "type": "string",
@@ -78,11 +78,42 @@
         "model": {
           "type": "string",
           "title": "Model",
-          "enum": ["freemium", "premium", "ad_supported", "subscription"]
+          "enum": ["freemium", "premium", "ad_supported", "subscription", "hybrid"]
         },
         "has_ads": { "type": "boolean", "title": "Has Ads" },
         "has_iap": { "type": "boolean", "title": "Has In-App Purchases" },
-        "has_subscription": { "type": "boolean", "title": "Has Subscription" }
+        "has_subscription": { "type": "boolean", "title": "Has Subscription" },
+        "primary_revenue_source": {
+          "type": "string",
+          "title": "Primary Revenue Source",
+          "enum": ["iap", "ads", "subscription", "premium_purchase"],
+          "description": "Which revenue stream generates the most income"
+        }
+      }
+    },
+    "social_features": {
+      "type": "object",
+      "title": "Social Features",
+      "properties": {
+        "has_guilds_or_teams": { "type": "boolean", "title": "Has Guilds/Teams/Clans" },
+        "has_leaderboards": { "type": "boolean", "title": "Has Leaderboards" },
+        "has_pvp": { "type": "boolean", "title": "Has PvP" },
+        "has_chat": { "type": "boolean", "title": "Has In-Game Chat" },
+        "has_gifting": { "type": "boolean", "title": "Has Gifting/Sharing" }
+      }
+    },
+    "live_ops": {
+      "type": "object",
+      "title": "Live Operations",
+      "properties": {
+        "has_daily_rewards": { "type": "boolean", "title": "Has Daily Login Rewards" },
+        "has_seasonal_events": { "type": "boolean", "title": "Has Seasonal Events" },
+        "has_battle_pass": { "type": "boolean", "title": "Has Battle Pass / Season Pass" },
+        "content_update_frequency": {
+          "type": "string",
+          "title": "Content Update Frequency",
+          "enum": ["daily", "weekly", "biweekly", "monthly", "quarterly"]
+        }
       }
     },
     "kpis": {

@@ -12,10 +12,10 @@ Open **http://localhost:3000** and click **New Project**.
 ### Basics
 
 - **Name**: A descriptive name (e.g., "Puzzle Quest Analytics")
-- **Domain**: Select your industry. Currently available: **Gaming**
-- **Category**: Select your sub-type. For gaming: **Match-3**
+- **Domain**: Select your industry. Available: **Gaming**, **Social Network**
+- **Category**: Select your sub-type. For gaming: **Match-3**, **Idle/Incremental**, **Casual/Hyper-Casual**. For social: **Content Sharing**.
 
-The domain and category determine which analysis areas and prompts are used. A Match-3 game gets churn, engagement, monetization analysis (shared across all games) plus level difficulty and booster usage analysis (specific to match-3).
+The domain and category determine which analysis areas and prompts are used. For example, a Match-3 game gets churn, engagement, monetization analysis (shared across all games) plus level difficulty and booster usage analysis (specific to match-3). A social network gets growth, engagement, retention analysis (shared) plus content creation and monetization analysis (specific to content sharing).
 
 ### Data Warehouse
 

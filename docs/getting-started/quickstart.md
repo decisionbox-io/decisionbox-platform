@@ -29,7 +29,7 @@ Wait about 10 seconds for all services to start, then open **http://localhost:30
 
 Click **New Project** and fill in:
 
-1. **Basics** — Project name, domain (e.g., Gaming), category (e.g., Match-3)
+1. **Basics** — Project name, domain (e.g., Gaming or Social Network), category (e.g., Match-3, Idle, Casual, Content Sharing)
 2. **Data Warehouse** — Select your warehouse provider and enter connection details
 3. **AI Provider** — Select your LLM provider and enter model name
 4. **Schedule** — Leave disabled for now (you'll trigger runs manually)

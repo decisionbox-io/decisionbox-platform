@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Content Sharing Platform Profile Extensions",
+  "description": "Additional profile fields specific to content sharing social networks.",
+  "type": "object",
+  "properties": {
+    "content_types": {
+      "type": "array",
+      "title": "Supported Content Types",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Content Type Name",
+            "description": "E.g., 'Photo Post', 'Short Video', 'Story', 'Reel', 'Text Post', 'Poll'"
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "title": "Max Duration (seconds)",
+            "description": "For video content types"
+          },
+          "is_ephemeral": {
+            "type": "boolean",
+            "title": "Ephemeral (auto-deletes)",
+            "description": "E.g., Stories that disappear after 24 hours"
+          }
+        }
+      }
+    },
+    "discovery_features": {
+      "type": "object",
+      "title": "Content Discovery",
+      "properties": {
+        "has_hashtags": { "type": "boolean", "title": "Has Hashtags" },
+        "has_explore_page": { "type": "boolean", "title": "Has Explore/For You Page" },
+        "has_trending": { "type": "boolean", "title": "Has Trending Section" },
+        "has_recommendations": { "type": "boolean", "title": "Has Content Recommendations" },
+        "recommendation_type": {
+          "type": "string",
+          "title": "Recommendation Type",
+          "enum": ["collaborative_filtering", "content_based", "social_graph", "hybrid"]
+        }
+      }
+    },
+    "interaction_types": {
+      "type": "array",
+      "title": "Available Interactions",
+      "description": "Types of interactions users can have with content",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Interaction Name",
+            "description": "E.g., 'Like', 'Comment', 'Share', 'Save', 'Repost', 'Duet', 'Super Like'"
+          },
+          "is_paid": {
+            "type": "boolean",
+            "title": "Is Paid Feature",
+            "description": "Whether this interaction costs money or virtual currency"
+          },
+          "cost_description": {
+            "type": "string",
+            "title": "Cost",
+            "description": "E.g., '1 coin', '$0.99', 'Free for VIP'"
+          }
+        }
+      }
+    },
+    "creator_tools": {
+      "type": "object",
+      "title": "Creator Tools",
+      "properties": {
+        "has_analytics_dashboard": { "type": "boolean", "title": "Creator Analytics Dashboard" },
+        "has_scheduling": { "type": "boolean", "title": "Content Scheduling" },
+        "has_editing_tools": { "type": "boolean", "title": "Built-in Editing Tools" },
+        "has_collab_features": { "type": "boolean", "title": "Collaboration Features" },
+        "verification_program": { "type": "boolean", "title": "Has Verification / Badge Program" }
+      }
+    },
+    "moderation": {
+      "type": "object",
+      "title": "Content Moderation",
+      "properties": {
+        "has_ai_moderation": { "type": "boolean", "title": "Has AI Content Moderation" },
+        "has_user_reporting": { "type": "boolean", "title": "Has User Reporting" },
+        "has_content_guidelines": { "type": "boolean", "title": "Has Community Guidelines" }
+      }
+    }
+  }
+}

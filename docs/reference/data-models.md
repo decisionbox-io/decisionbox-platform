@@ -12,8 +12,8 @@ A complete discovery run output. Stored in the `discoveries` MongoDB collection.
 |-------|------|-------------|
 | `id` | string | MongoDB ObjectID |
 | `project_id` | string | Project that owns this discovery |
-| `domain` | string | Domain (e.g., `gaming`) |
-| `category` | string | Category (e.g., `match3`) |
+| `domain` | string | Domain (e.g., `gaming`, `social`) |
+| `category` | string | Category (e.g., `match3`, `idle`, `casual`, `content_sharing`) |
 | `run_type` | string | `full` (all areas), `partial` (some areas or some failed), `failed` (all areas failed) |
 | `areas_requested` | string[] | Area IDs requested (empty for full run) |
 | `discovery_date` | timestamp | When the discovery ran |
@@ -215,8 +215,8 @@ Project configuration. Stored in `projects` collection.
 | `id` | string | MongoDB ObjectID |
 | `name` | string | Project name |
 | `description` | string | Project description |
-| `domain` | string | Domain (e.g., `gaming`) |
-| `category` | string | Category (e.g., `match3`) |
+| `domain` | string | Domain (e.g., `gaming`, `social`) |
+| `category` | string | Category (e.g., `match3`, `idle`, `casual`, `content_sharing`) |
 | `warehouse` | WarehouseConfig | Data warehouse configuration |
 | `llm` | LLMConfig | LLM provider configuration |
 | `schedule` | ScheduleConfig | Discovery schedule |

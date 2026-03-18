@@ -14,6 +14,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"

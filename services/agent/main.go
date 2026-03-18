@@ -35,6 +35,7 @@ import (
 
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go" // registers "gaming"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go" // registers "social"
 )
 
 func main() {

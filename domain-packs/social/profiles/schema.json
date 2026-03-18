@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Social Network Project Profile",
+  "description": "Profile schema for social network domain projects. Provides context to the AI agent about the platform's purpose, audience, monetization, and growth stage.",
+  "type": "object",
+  "properties": {
+    "platform_info": {
+      "type": "object",
+      "title": "Platform Information",
+      "properties": {
+        "platform_type": {
+          "type": "string",
+          "title": "Platform Type",
+          "enum": ["content_sharing", "messaging", "community", "professional", "dating", "interest_based", "other"]
+        },
+        "primary_content_format": {
+          "type": "string",
+          "title": "Primary Content Format",
+          "enum": ["photo", "video", "short_video", "text", "audio", "mixed"]
+        },
+        "platforms": {
+          "type": "array",
+          "title": "Available On",
+          "items": { "type": "string", "enum": ["iOS", "Android", "Web", "Desktop"] }
+        },
+        "target_audience": {
+          "type": "string",
+          "title": "Target Audience",
+          "description": "E.g., 'Gen Z 16-24', 'Professionals 25-45', 'Parents 30-50'"
+        },
+        "description": {
+          "type": "string",
+          "title": "Platform Description",
+          "description": "Brief description of the platform and its unique value proposition"
+        },
+        "growth_stage": {
+          "type": "string",
+          "title": "Growth Stage",
+          "enum": ["pre_launch", "early_growth", "growth", "mature", "declining"],
+          "description": "Current stage of the platform lifecycle"
+        }
+      }
+    },
+    "engagement_model": {
+      "type": "object",
+      "title": "Engagement Model",
+      "properties": {
+        "feed_type": {
+          "type": "string",
+          "title": "Feed Type",
+          "enum": ["algorithmic", "chronological", "hybrid"],
+          "description": "How content is surfaced to users"
+        },
+        "has_stories": { "type": "boolean", "title": "Has Stories/Ephemeral Content" },
+        "has_direct_messaging": { "type": "boolean", "title": "Has Direct Messaging" },
+        "has_groups": { "type": "boolean", "title": "Has Groups/Communities" },
+        "has_live_streaming": { "type": "boolean", "title": "Has Live Streaming" },
+        "has_search_discovery": { "type": "boolean", "title": "Has Explore/Discover Section" },
+        "connection_model": {
+          "type": "string",
+          "title": "Connection Model",
+          "enum": ["follow", "friend", "both"],
+          "description": "follow = one-directional (Twitter/Instagram), friend = bidirectional (Facebook)"
+        }
+      }
+    },
+    "monetization": {
+      "type": "object",
+      "title": "Monetization",
+      "properties": {
+        "has_premium_subscription": {
+          "type": "boolean",
+          "title": "Has Premium Subscription (VIP/Plus/Pro)"
+        },
+        "premium_price_monthly_usd": {
+          "type": "number",
+          "title": "Premium Monthly Price (USD)"
+        },
+        "has_iap": {
+          "type": "boolean",
+          "title": "Has In-App Purchases"
+        },
+        "iap_features": {
+          "type": "array",
+          "title": "IAP Features",
+          "items": { "type": "string" },
+          "description": "List of purchasable features (e.g., 'Profile Boost', 'Super Like', 'Read Receipts', 'Priority Inbox')"
+        },
+        "has_virtual_currency": {
+          "type": "boolean",
+          "title": "Has Virtual Currency (Coins/Tokens)"
+        },
+        "virtual_currency_uses": {
+          "type": "array",
+          "title": "Virtual Currency Uses",
+          "items": { "type": "string" },
+          "description": "What virtual currency is spent on (e.g., 'Tip creators', 'Send gifts', 'Unlock content')"
+        },
+        "has_ads": {
+          "type": "boolean",
+          "title": "Has Advertising"
+        },
+        "has_creator_monetization": {
+          "type": "boolean",
+          "title": "Has Creator Monetization"
+        },
+        "creator_monetization_types": {
+          "type": "array",
+          "title": "Creator Monetization Types",
+          "items": { "type": "string" },
+          "description": "How creators earn (e.g., 'Ad revenue share', 'Tips', 'Paid subscriptions', 'Creator fund')"
+        },
+        "has_paid_messaging": {
+          "type": "boolean",
+          "title": "Has Paid Messaging",
+          "description": "Whether users must pay to message certain users (common in dating/professional networks)"
+        },
+        "has_paid_content": {
+          "type": "boolean",
+          "title": "Has Paid/Gated Content",
+          "description": "Whether creators can gate content behind a paywall"
+        }
+      }
+    },
+    "growth_features": {
+      "type": "object",
+      "title": "Growth Features",
+      "properties": {
+        "has_referral_program": { "type": "boolean", "title": "Has Referral Program" },
+        "has_contact_sync": { "type": "boolean", "title": "Has Contact Sync / Find Friends" },
+        "has_cross_platform_sharing": { "type": "boolean", "title": "Has Cross-Platform Sharing" },
+        "has_push_notifications": { "type": "boolean", "title": "Has Push Notifications" },
+        "has_email_digests": { "type": "boolean", "title": "Has Email Digest / Re-engagement" }
+      }
+    },
+    "kpis": {
+      "type": "object",
+      "title": "Target KPIs",
+      "properties": {
+        "dau_mau_ratio_target": {
+          "type": "number",
+          "title": "DAU/MAU Ratio Target (%)",
+          "description": "Target stickiness ratio (healthy social networks: 40-60%+)"
+        },
+        "retention_d1_target": { "type": "number", "title": "D1 Retention Target (%)" },
+        "retention_d7_target": { "type": "number", "title": "D7 Retention Target (%)" },
+        "retention_d30_target": { "type": "number", "title": "D30 Retention Target (%)" },
+        "creator_ratio_target": {
+          "type": "number",
+          "title": "Creator Ratio Target (%)",
+          "description": "Target % of MAU who create content"
+        },
+        "mau_target": { "type": "integer", "title": "MAU Target" },
+        "premium_conversion_target": {
+          "type": "number",
+          "title": "Premium Conversion Target (%)",
+          "description": "Target % of MAU who subscribe to premium"
+        },
+        "arpu_target": { "type": "number", "title": "ARPU Target ($)" }
+      }
+    }
+  }
+}
