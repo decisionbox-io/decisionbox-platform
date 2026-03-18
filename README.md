@@ -9,24 +9,28 @@
   <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build" /></a>
   <a href="https://github.com/decisionbox-io/decisionbox-platform/issues"><img src="https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform" alt="Issues" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
-  <a href="https://docs.decisionbox.io"><img src="https://img.shields.io/badge/docs-docs.decisionbox.io-blue" alt="Docs" /></a>
+  <a href="https://decisionbox.io/docs"><img src="https://img.shields.io/badge/docs-decisionbox.io-blue" alt="Docs" /></a>
 </p>
 
 **AI-powered data discovery platform.** Connect your data warehouse, run AI agents that explore your data autonomously, and get actionable insights — no pipelines, no SDKs, no setup complexity.
 
 DecisionBox is designed for product managers, analysts, and developers who want to understand their data without writing SQL or building dashboards. Point it at your warehouse, tell it about your product, and let the AI find what matters.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="DecisionBox Dashboard" width="900" />
+</p>
+
 ## How It Works
 
 ```
-Your Data Warehouse          DecisionBox Agent          Dashboard
-(BigQuery, Redshift)    →    (AI explores your data)  →  (Insights & Recommendations)
-                              writes SQL, validates
-                              findings, generates
-                              actionable advice
+Your Data Warehouse             DecisionBox Agent            Dashboard
+(BigQuery, Redshift, ...)  →    (AI explores your data)  →   (Insights & Recommendations)
+                                 writes SQL, validates
+                                 findings, generates
+                                 actionable advice
 ```
 
-1. **Connect** your data warehouse (BigQuery, Redshift)
+1. **Connect** your data warehouse (BigQuery, Redshift, and more)
 2. **Configure** your project (domain, game profile, LLM provider)
 3. **Run discovery** — the AI agent autonomously explores your data
 4. **Review insights** — severity-ranked findings with confidence scores
