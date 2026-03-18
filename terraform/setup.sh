@@ -28,11 +28,15 @@ for arg in "$@"; do
       echo "  --dry-run      Generate config files only (no terraform apply, no helm deploy)"
       echo ""
       echo "This wizard will:"
-      echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
-      echo "  2. Configure cloud provider settings"
-      echo "  3. Generate Terraform variables and Helm values"
-      echo "  4. Run terraform init, plan, and apply"
-      echo "  5. Configure kubectl and deploy services via Helm"
+      echo "  1. Check prerequisites (terraform, gcloud, kubectl, helm)"
+      echo "  2. Select cloud provider"
+      echo "  3. Configure secrets"
+      echo "  4. Configure cloud provider settings"
+      echo "  5. Authenticate with cloud provider (user or service account)"
+      echo "  6. Set up Terraform state backend"
+      echo "  7. Review configuration"
+      echo "  8. Generate Terraform variables and Helm values"
+      echo "  9. Run terraform init, plan, apply + deploy via Helm"
       echo ""
       echo "Supported providers: GCP (available), AWS (coming soon)"
       exit 0
@@ -223,7 +227,7 @@ fi
 # Step 1: Prerequisites
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 1 8 "Prerequisites"
+step_header 1 9 "Prerequisites"
 
 MISSING=0
 check_tool "terraform" "Install: https://developer.hashicorp.com/terraform/install" || MISSING=$((MISSING + 1))
@@ -244,7 +248,7 @@ ok "All prerequisites met"
 # Step 2: Cloud Provider
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 2 8 "Cloud Provider"
+step_header 2 9 "Cloud Provider"
 
 echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
 echo -e "  ${DIM}2)${NC} ${DIM}AWS  — Amazon Web Services (coming soon)${NC}"
@@ -270,7 +274,7 @@ fi
 # Step 3: Secrets Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 3 8 "Secrets Configuration"
+step_header 3 9 "Secrets Configuration"
 
 info "The secret namespace prefixes all secrets to avoid conflicts."
 dim "Format: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)"
@@ -297,7 +301,7 @@ ok "Cloud secret manager: ${BOLD}${ENABLE_SECRETS}${NC}"
 # ══════════════════════════════════════════════════════════════════════════════
 
 if [[ "$CLOUD" == "gcp" ]]; then
-  step_header 4 8 "GCP Configuration"
+  step_header 4 9 "GCP Configuration"
 
   TF_DIR="${SCRIPT_DIR}/gcp/prod"
 
@@ -328,9 +332,98 @@ if [[ "$CLOUD" == "gcp" ]]; then
   echo ""
   prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "false"
 
+  # ─── GCP Authentication ──────────────────────────────────────────────
+
+  step_header 5 9 "GCP Authentication"
+
+  info "Terraform needs GCP credentials. Choose how to authenticate:"
+  echo ""
+  echo -e "  ${BOLD}1)${NC} User credentials  — Use your own Google account via ${BOLD}gcloud auth application-default login${NC}"
+  dim "     Best for: interactive setup, personal projects, first-time setup"
+  echo -e "  ${BOLD}2)${NC} Service account   — Use an existing service account key file"
+  dim "     Best for: CI/CD, shared environments, automated pipelines"
+  echo ""
+  prompt_choice GCP_AUTH_CHOICE "Authentication method" "1" "1 2"
+
+  if [[ "$GCP_AUTH_CHOICE" == "1" ]]; then
+    # Check if ADC already exists and is valid
+    if gcloud auth application-default print-access-token > /dev/null 2>&1; then
+      ok "Application Default Credentials already configured"
+      prompt USE_EXISTING_ADC "Use existing credentials? (yes/no)" "yes"
+      if [[ "$USE_EXISTING_ADC" != "yes" ]]; then
+        info "Opening browser for authentication..."
+        gcloud auth application-default login --project="$PROJECT_ID"
+        ok "Authenticated with user credentials"
+      fi
+    else
+      info "No Application Default Credentials found. Opening browser for authentication..."
+      gcloud auth application-default login --project="$PROJECT_ID"
+      ok "Authenticated with user credentials"
+    fi
+  else
+    prompt GCP_SA_KEY_FILE "Path to service account key file (JSON)"
+    if [[ ! -f "$GCP_SA_KEY_FILE" ]]; then
+      err "File not found: ${GCP_SA_KEY_FILE}"
+      exit 1
+    fi
+    export GOOGLE_APPLICATION_CREDENTIALS="$GCP_SA_KEY_FILE"
+    ok "Using service account: ${GCP_SA_KEY_FILE}"
+    dim "GOOGLE_APPLICATION_CREDENTIALS set for this session"
+  fi
+
+  # ─── Verify permissions ────────────────────────────────────────────
+  echo ""
+  spinner_start "Verifying GCP permissions..."
+  PERM_ERRORS=0
+
+  # Test: can list GKE clusters (container.clusters.list)
+  if ! gcloud container clusters list --project="$PROJECT_ID" --region="$REGION" > /dev/null 2>&1; then
+    PERM_ERRORS=$((PERM_ERRORS + 1))
+    PERM_MISSING_GKE=true
+  fi
+
+  # Test: can list storage buckets (storage.buckets.list)
+  if ! gcloud storage buckets list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
+    PERM_ERRORS=$((PERM_ERRORS + 1))
+    PERM_MISSING_STORAGE=true
+  fi
+
+  # Test: can list IAM service accounts (iam.serviceAccounts.list)
+  if ! gcloud iam service-accounts list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
+    PERM_ERRORS=$((PERM_ERRORS + 1))
+    PERM_MISSING_IAM=true
+  fi
+
+  # Test: can list compute networks (compute.networks.list)
+  if ! gcloud compute networks list --project="$PROJECT_ID" --limit=1 > /dev/null 2>&1; then
+    PERM_ERRORS=$((PERM_ERRORS + 1))
+    PERM_MISSING_COMPUTE=true
+  fi
+
+  spinner_stop
+
+  if [[ "$PERM_ERRORS" -gt 0 ]]; then
+    warn "Permission issues detected (${PERM_ERRORS}):"
+    [[ "${PERM_MISSING_GKE:-}" == "true" ]] && err "  Missing: container.clusters.list (GKE access)"
+    [[ "${PERM_MISSING_STORAGE:-}" == "true" ]] && err "  Missing: storage.buckets.list (Terraform state)"
+    [[ "${PERM_MISSING_IAM:-}" == "true" ]] && err "  Missing: iam.serviceAccounts.list (Workload Identity)"
+    [[ "${PERM_MISSING_COMPUTE:-}" == "true" ]] && err "  Missing: compute.networks.list (VPC creation)"
+    echo ""
+    dim "The authenticated account needs Project Editor or Owner role."
+    dim "Grant via: gcloud projects add-iam-policy-binding ${PROJECT_ID} \\"
+    dim "  --member='user:YOUR_EMAIL' --role='roles/editor'"
+    echo ""
+    prompt CONTINUE_ANYWAY "Continue anyway? (yes/no)" "no"
+    if [[ "$CONTINUE_ANYWAY" != "yes" ]]; then
+      exit 1
+    fi
+  else
+    ok "All required permissions verified"
+  fi
+
   # ─── Terraform State ─────────────────────────────────────────────────
 
-  step_header 5 8 "Terraform State"
+  step_header 6 9 "Terraform State"
 
   info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
   echo ""
@@ -356,7 +449,7 @@ if [[ "$CLOUD" == "gcp" ]]; then
   fi
 
 elif [[ "$CLOUD" == "aws" ]]; then
-  step_header 4 8 "AWS Configuration"
+  step_header 4 9 "AWS Configuration"
 
   TF_DIR="${SCRIPT_DIR}/aws/prod"
 
@@ -386,7 +479,7 @@ fi
 # Step 6: Review Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 6 8 "Review Configuration"
+step_header 7 9 "Review Configuration"
 
 echo -e "  ${BOLD}Cloud:${NC}              ${CLOUD^^}"
 echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
@@ -416,7 +509,7 @@ fi
 # Step 7: Generate Config Files
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 7 8 "Generate Config Files"
+step_header 8 9 "Generate Config Files"
 
 if [[ "$CLOUD" == "gcp" ]]; then
   # ─── terraform.tfvars ──────────────────────────────────────────────
@@ -495,7 +588,7 @@ fi
 # Step 8: Terraform & Deploy
 # ══════════════════════════════════════════════════════════════════════════════
 
-step_header 8 8 "Terraform & Deploy"
+step_header 9 9 "Terraform & Deploy"
 
 cd "$TF_DIR"
 dim "Working directory: ${TF_DIR}"
