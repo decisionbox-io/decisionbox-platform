@@ -188,7 +188,7 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | `enable_private_endpoint` | bool | `false` | Restrict master to private network |
 | `master_authorized_networks` | list(object) | `[{cidr_block="0.0.0.0/0", display_name="all"}]` | CIDRs allowed to reach the master API |
 | `enable_flow_logs` | bool | `true` | VPC flow logs |
-| `flow_log_interval` | string | `INTERVAL_5_SEC` | Flow log aggregation interval |
+| `flow_log_interval` | string | `INTERVAL_10_MIN` | Flow log aggregation interval |
 | `flow_log_sampling` | number | `0.5` | Flow log sampling rate (0.0-1.0) |
 | `flow_log_metadata` | string | `INCLUDE_ALL_METADATA` | Flow log metadata inclusion |
 
