@@ -10,8 +10,8 @@ namespace: decisionbox
 nameOverride: ""
 fullnameOverride: ""
 
-imagePullSecrets:
-  - name: ghcr-secret
+# Set for private registries (e.g., [{name: ghcr-secret}]). Not needed for public GHCR images.
+imagePullSecrets: []
 
 nodeSelector: {}
 
