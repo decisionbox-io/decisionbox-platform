@@ -247,13 +247,12 @@ ok "All prerequisites met"
 step_header 2 8 "Cloud Provider"
 
 echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
-echo -e "  ${BOLD}2)${NC} AWS  — Amazon Web Services ${DIM}(coming soon)${NC}"
+echo -e "  ${DIM}2)${NC} ${DIM}AWS  — Amazon Web Services (coming soon)${NC}"
 echo ""
-prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 2 gcp GCP aws AWS"
+prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 gcp GCP"
 
 case "$CLOUD_CHOICE" in
   1|gcp|GCP) CLOUD="gcp" ;;
-  2|aws|AWS) CLOUD="aws" ;;
 esac
 
 ok "Cloud provider: ${BOLD}${CLOUD^^}${NC}"
@@ -263,11 +262,6 @@ echo ""
 if [[ "$CLOUD" == "gcp" ]]; then
   check_tool "gcloud" "Install: https://cloud.google.com/sdk/docs/install" || {
     err "gcloud CLI is required for GCP. Install and re-run."
-    exit 1
-  }
-elif [[ "$CLOUD" == "aws" ]]; then
-  check_tool "aws" "Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html" || {
-    err "AWS CLI is required for AWS. Install and re-run."
     exit 1
   }
 fi
