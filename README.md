@@ -250,6 +250,7 @@ We welcome contributions. See [Contributing Guide](docs/contributing/development
 | **Docker Compose** | Local dev, single server | [docs/deployment/docker.md](docs/deployment/docker.md) |
 | **Kubernetes (Helm)** | Production on any K8s cluster | [docs/deployment/kubernetes.md](docs/deployment/kubernetes.md) |
 | **Terraform (GCP)** | Automated GKE provisioning | [docs/deployment/terraform-gcp.md](docs/deployment/terraform-gcp.md) |
+| **Setup Wizard** | One-command GKE + Helm deploy | [docs/deployment/setup-wizard.md](docs/deployment/setup-wizard.md) |
 
 ## Roadmap
 

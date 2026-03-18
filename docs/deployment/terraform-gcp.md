@@ -25,11 +25,13 @@ Provision a production-ready GKE cluster for DecisionBox using the included Terr
 
 ## Quick Start with Setup Wizard
 
-The included setup wizard handles Terraform state, cluster provisioning, and Helm deployment in one flow:
+The included [setup wizard](setup-wizard.md) handles Terraform state, cluster provisioning, and Helm deployment in one flow:
 
 ```bash
 cd terraform
-./setup.sh
+./setup.sh          # Full interactive setup
+./setup.sh --dry-run  # Generate config files only
+./setup.sh --resume   # Resume from Helm deploy
 ```
 
 The wizard prompts for:
