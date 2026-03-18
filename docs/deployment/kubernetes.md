@@ -6,7 +6,7 @@ Deploy DecisionBox on any Kubernetes cluster using Helm charts.
 
 ## Prerequisites
 
-- Kubernetes cluster (GKE, EKS, self-managed, or any CNCF-conformant cluster)
+- Kubernetes cluster (GKE, EKS, AKS, self-managed, or any CNCF-conformant cluster)
 - [Helm 3.7+](https://helm.sh/docs/intro/install/)
 - `kubectl` configured for your cluster
 - MongoDB instance (Atlas, self-hosted, or the bundled Bitnami subchart)
@@ -21,6 +21,7 @@ Ingress
 API Service (Go, port 8080, ClusterIP)
   ├── spawns Agent as K8s Jobs
   ├── connects to MongoDB
+  ├── manages secrets (AES-256 or cloud provider)
   └── reads domain pack prompts from /app/domain-packs/
 
 Agent Jobs (Go, spawned per discovery run)
@@ -43,13 +44,14 @@ cd decisionbox-platform
 # Create namespace
 kubectl create namespace decisionbox
 
-# Generate encryption key for secrets
+# Create API secrets (encryption key + MongoDB URI if using external MongoDB)
 kubectl create secret generic decisionbox-api-secrets \
   --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   -n decisionbox
 
-# Deploy API (with bundled MongoDB)
+# Deploy API (with bundled MongoDB for quick start)
 helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 
 # Deploy Dashboard
@@ -76,17 +78,45 @@ DecisionBox ships two Helm charts:
 | `decisionbox-api` | API service + optional MongoDB subchart | 8080 | Disabled (internal) |
 | `decisionbox-dashboard` | Web dashboard | 3000 | Enabled |
 
+## Injecting Secrets with extraEnvFrom
+
+Sensitive values (MongoDB URI, encryption keys, API keys) should **never** be set via `--set env.KEY=VALUE` — that exposes them in shell history, `helm get values` output, and the Deployment spec.
+
+Instead, store secrets in a K8s Secret and reference it with `extraEnvFrom`:
+
+```bash
+# Create a K8s Secret with all sensitive values
+kubectl create secret generic decisionbox-api-secrets \
+  --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  --from-literal=MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/decisionbox" \
+  -n decisionbox
+
+# Reference it in Helm
+helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
+  -n decisionbox
+```
+
+The `extraEnvFrom` mechanism injects all keys from the K8s Secret as environment variables into the API pod. Use it for any value you don't want in version control or Helm output.
+
 ## Configuration
 
 ### External MongoDB (recommended for production)
 
-Disable the bundled MongoDB subchart and provide your own connection string:
+Disable the bundled MongoDB subchart and provide your connection string via a K8s Secret:
 
 ```bash
+# Create secret with MongoDB URI
+kubectl create secret generic decisionbox-api-secrets \
+  --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  --from-literal=MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/decisionbox?retryWrites=true" \
+  -n decisionbox
+
+# Deploy with external MongoDB
 helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
   --set mongodb.enabled=false \
-  --set env.MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/decisionbox?retryWrites=true" \
   --set env.MONGODB_DB=decisionbox \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
 
@@ -94,27 +124,31 @@ helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
 
 By default, secrets are encrypted with AES-256 and stored in MongoDB. For production, use a cloud secret provider:
 
-**GCP Secret Manager:**
+**GCP Secret Manager (with Workload Identity):**
 ```bash
 helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
   --set env.SECRET_PROVIDER=gcp \
   --set env.SECRET_GCP_PROJECT_ID=my-gcp-project \
   --set env.SECRET_NAMESPACE=decisionbox \
+  --set "serviceAccountAnnotations.iam\.gke\.io/gcp-service-account=decisionbox-prod-api@my-gcp-project.iam.gserviceaccount.com" \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
 
-Requires Workload Identity configured (see [Terraform GCP](terraform-gcp.md) for automated setup).
+The `serviceAccountAnnotations` binds the K8s service account to a GCP service account via [Workload Identity](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity). See [Terraform GCP](terraform-gcp.md) for automated Workload Identity setup.
 
-**AWS Secrets Manager:**
+**AWS Secrets Manager (with IRSA or EKS Pod Identity):**
 ```bash
 helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
   --set env.SECRET_PROVIDER=aws \
   --set env.SECRET_AWS_REGION=us-east-1 \
   --set env.SECRET_NAMESPACE=decisionbox \
+  --set "serviceAccountAnnotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/decisionbox-api" \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
 
-Requires IAM roles for service accounts (IRSA) on EKS.
+The `serviceAccountAnnotations` binds the K8s service account to an IAM role via [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) or [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html).
 
 ### Agent Configuration
 
@@ -145,9 +179,19 @@ ingress:
 
 **API** (disabled by default — keep it internal):
 ```yaml
-# Only enable if you need direct API access (not recommended)
+# The API should remain ClusterIP. Do not enable API ingress.
 ingress:
   enabled: false
+```
+
+### Dashboard API URL
+
+The dashboard proxies `/api/*` requests to the API service. The default `API_URL` is `http://decisionbox-api-service:8080`, which assumes the API release name is `decisionbox-api`. If you use a different release name, update the dashboard's `env.API_URL`:
+
+```bash
+helm upgrade --install my-dashboard ./helm-charts/decisionbox-dashboard \
+  --set env.API_URL="http://my-custom-api-service:8080" \
+  -n decisionbox
 ```
 
 ### Using a Values File
@@ -155,19 +199,23 @@ ingress:
 For repeatable deployments, create a values override file:
 
 ```yaml
-# values-prod.yaml
-replicaCount: 2
+# values-prod.yaml (for decisionbox-api)
+
+mongodb:
+  enabled: false
 
 env:
-  ENV: "prod"
-  MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/decisionbox_prod"
   MONGODB_DB: "decisionbox_prod"
   SECRET_PROVIDER: "gcp"
   SECRET_GCP_PROJECT_ID: "my-project"
   SECRET_NAMESPACE: "decisionbox"
 
-mongodb:
-  enabled: false
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+serviceAccountAnnotations:
+  iam.gke.io/gcp-service-account: "decisionbox-prod-api@my-project.iam.gserviceaccount.com"
 
 resources:
   requests:
@@ -176,10 +224,6 @@ resources:
   limits:
     cpu: "2000m"
     memory: "4Gi"
-
-ingress:
-  host: "dashboard.example.com"
-  tlsSecretName: "dashboard-tls"
 ```
 
 Deploy with:
@@ -187,6 +231,8 @@ Deploy with:
 helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
   -f values-prod.yaml -n decisionbox
 ```
+
+Note: `MONGODB_URI` and `SECRET_ENCRYPTION_KEY` come from the `decisionbox-api-secrets` K8s Secret via `extraEnvFrom` — not from the values file.
 
 ## Security
 
@@ -211,10 +257,12 @@ These permissions are namespace-scoped (Role, not ClusterRole).
 
 Both charts configure liveness and readiness probes:
 
-| Service | Endpoint | Liveness | Readiness |
-|---------|----------|----------|-----------|
-| API | `/health` | 15s initial, 30s period | 5s initial, 10s period |
-| Dashboard | `/health` | 15s initial, 15s period | 5s initial, 10s period |
+| Service | Liveness | Readiness |
+|---------|----------|-----------|
+| API | `GET /health` — 15s initial, 30s period | `GET /health` — 5s initial, 10s period |
+| Dashboard | `GET /health` — 15s initial, 15s period | `GET /health` — 5s initial, 10s period |
+
+The API also exposes `GET /health/ready` which checks MongoDB connectivity. You can use this as the readiness probe path if you want readiness to depend on the database connection.
 
 Run Helm tests to verify connectivity:
 
@@ -226,7 +274,6 @@ helm test decisionbox-dashboard -n decisionbox
 ## Updating
 
 ```bash
-# Pull latest images and upgrade
 helm upgrade decisionbox-api ./helm-charts/decisionbox-api \
   -f values-prod.yaml -n decisionbox
 

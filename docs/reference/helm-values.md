@@ -187,23 +187,20 @@ Same as the API chart — non-root (UID 1000), read-only filesystem, no capabili
 
 ## Example: Production Values File
 
+Sensitive values (`MONGODB_URI`, `SECRET_ENCRYPTION_KEY`) are stored in a K8s Secret and injected via `extraEnvFrom` — never in the values file.
+
 ```yaml
 # values-prod.yaml (API)
-replicaCount: 2
 
 mongodb:
   enabled: false
 
 env:
-  ENV: "prod"
   LOG_LEVEL: "warn"
-  MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/decisionbox_prod"
   MONGODB_DB: "decisionbox_prod"
   SECRET_PROVIDER: "gcp"
   SECRET_GCP_PROJECT_ID: "my-project"
   SECRET_NAMESPACE: "decisionbox"
-  RUNNER_MODE: "kubernetes"
-  AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
 
 extraEnvFrom:
   - secretRef:
@@ -219,6 +216,15 @@ resources:
   limits:
     cpu: "2000m"
     memory: "4Gi"
+```
+
+Create the K8s Secret separately:
+
+```bash
+kubectl create secret generic decisionbox-api-secrets \
+  --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  --from-literal=MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/decisionbox_prod" \
+  -n decisionbox
 ```
 
 ## Next Steps

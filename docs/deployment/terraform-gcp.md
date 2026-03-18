@@ -40,6 +40,7 @@ The wizard prompts for:
 5. Terraform state bucket (auto-creates if needed)
 6. Machine type and node scaling
 7. BigQuery IAM (optional)
+8. `SECRET_ENCRYPTION_KEY` (auto-generates or user-provided)
 
 After provisioning, it automatically:
 - Configures `kubectl` credentials
@@ -76,7 +77,7 @@ services_cidr = "10.8.0.0/20"
 # Node pool
 machine_type   = "e2-standard-2"
 min_node_count = 1
-max_node_count = 3
+max_node_count = 2
 disk_size_gb   = 50
 
 # Workload Identity
@@ -146,6 +147,8 @@ terraform/gcp/
 
 ## Variables Reference
 
+All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
+
 ### Required
 
 | Variable | Type | Description |
@@ -162,6 +165,11 @@ terraform/gcp/
 | `deletion_protection` | bool | `true` | Prevent accidental cluster deletion |
 | `release_channel` | string | `REGULAR` | GKE release channel |
 | `datapath_provider` | string | `ADVANCED_DATAPATH` | Dataplane V2 for network policy |
+| `enable_network_policy` | bool | `true` | Enable network policy enforcement |
+| `network_policy_provider` | string | `CALICO` | Network policy provider (used when not ADVANCED_DATAPATH) |
+| `enable_binary_authorization` | bool | `false` | Binary Authorization for container images |
+| `logging_components` | list(string) | `["SYSTEM_COMPONENTS", "WORKLOADS"]` | GKE logging components |
+| `monitoring_components` | list(string) | `["SYSTEM_COMPONENTS"]` | GKE monitoring components |
 
 ### Networking
 
@@ -172,12 +180,35 @@ terraform/gcp/
 | `existing_subnet_id` | string | `""` | Existing subnet self-link |
 | `subnet_cidr` | string | `10.0.0.0/20` | Node subnet CIDR |
 | `pods_cidr` | string | `10.4.0.0/14` | Pod IP range |
+| `pods_range_name` | string | `pods` | Secondary range name for pods |
 | `services_cidr` | string | `10.8.0.0/20` | Service IP range |
+| `services_range_name` | string | `services` | Secondary range name for services |
 | `master_cidr` | string | `172.16.0.0/28` | Control plane CIDR |
 | `enable_private_nodes` | bool | `true` | Nodes have no public IPs |
 | `enable_private_endpoint` | bool | `false` | Restrict master to private network |
-| `master_authorized_networks` | list | `["0.0.0.0/0"]` | CIDRs allowed to reach the master API |
+| `master_authorized_networks` | list(object) | `[{cidr_block="0.0.0.0/0", display_name="all"}]` | CIDRs allowed to reach the master API |
 | `enable_flow_logs` | bool | `true` | VPC flow logs |
+| `flow_log_interval` | string | `INTERVAL_5_SEC` | Flow log aggregation interval |
+| `flow_log_sampling` | number | `0.5` | Flow log sampling rate (0.0-1.0) |
+| `flow_log_metadata` | string | `INCLUDE_ALL_METADATA` | Flow log metadata inclusion |
+
+### NAT
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `nat_ip_allocate_option` | string | `AUTO_ONLY` | NAT IP allocation |
+| `nat_source_subnetwork_ip_ranges` | string | `ALL_SUBNETWORKS_ALL_IP_RANGES` | NAT source ranges |
+| `enable_nat_logging` | bool | `true` | Cloud NAT logging |
+| `nat_log_filter` | string | `ERRORS_ONLY` | NAT log filter |
+
+### Firewall
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `internal_tcp_ports` | list(string) | `["0-65535"]` | Internal TCP ports allowed |
+| `internal_udp_ports` | list(string) | `["0-65535"]` | Internal UDP ports allowed |
+| `health_check_ports` | list(string) | `["80","443","3000","8080","10256"]` | Health check ports |
+| `health_check_source_ranges` | list(string) | `["35.191.0.0/16","130.211.0.0/22"]` | GCP health check IP ranges |
 
 ### Node Pool
 
@@ -191,6 +222,9 @@ terraform/gcp/
 | `max_node_count` | number | `2` | Maximum nodes per zone |
 | `enable_secure_boot` | bool | `true` | Shielded VM secure boot |
 | `enable_integrity_monitoring` | bool | `true` | Shielded VM integrity monitoring |
+| `enable_auto_repair` | bool | `true` | Auto-repair unhealthy nodes |
+| `enable_auto_upgrade` | bool | `true` | Auto-upgrade node versions |
+| `disable_legacy_metadata_endpoints` | string | `"true"` | Disable legacy metadata API |
 
 ### IAM & Secrets
 
@@ -206,7 +240,7 @@ terraform/gcp/
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `labels` | map(string) | `{project="decisionbox", environment="prod", managed_by="terraform"}` | Resource labels |
+| `labels` | map(string) | `{}` | Resource labels applied to all resources |
 
 ## Outputs
 
