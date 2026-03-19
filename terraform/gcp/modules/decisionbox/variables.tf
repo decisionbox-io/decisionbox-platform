@@ -314,9 +314,15 @@ variable "k8s_namespace" {
 }
 
 variable "k8s_service_account" {
-  description = "Kubernetes service account name for Workload Identity binding"
+  description = "Kubernetes service account name for API Workload Identity binding"
   type        = string
   default     = "decisionbox-api"
+}
+
+variable "k8s_agent_service_account" {
+  description = "Kubernetes service account name for Agent Workload Identity binding (read-only access)"
+  type        = string
+  default     = "decisionbox-agent"
 }
 
 # Optional: GCP Secret Manager

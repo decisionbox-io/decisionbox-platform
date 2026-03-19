@@ -46,3 +46,21 @@ resource "google_service_account_iam_member" "workload_identity_binding" {
     data.google_container_cluster.existing,
   ]
 }
+
+# Agent Workload Identity SA — separate from API, read-only secret access
+resource "google_service_account" "agent_workload_identity" {
+  account_id   = "${var.cluster_name}-agent"
+  display_name = "Workload Identity SA for DecisionBox Agent (read-only)"
+  project      = var.project_id
+}
+
+resource "google_service_account_iam_member" "agent_workload_identity_binding" {
+  service_account_id = google_service_account.agent_workload_identity.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[${var.k8s_namespace}/${var.k8s_agent_service_account}]"
+
+  depends_on = [
+    google_container_cluster.primary,
+    data.google_container_cluster.existing,
+  ]
+}

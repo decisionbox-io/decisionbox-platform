@@ -60,3 +60,37 @@ resource "google_project_iam_member" "secret_manager" {
     expression  = "resource.name.startsWith(\"projects/${data.google_project.current.number}/secrets/${var.secret_namespace}-\")"
   }
 }
+
+# Agent: read-only secret access (get + access versions, no create/update)
+resource "google_project_iam_custom_role" "agent_secret_reader" {
+  count       = var.enable_gcp_secrets ? 1 : 0
+  project     = var.project_id
+  role_id     = replace("${var.cluster_name}_agent_secret_reader", "-", "_")
+  title       = "DecisionBox Agent Secret Reader (${var.cluster_name})"
+  description = "Read-only access to secrets — no create, update, or delete"
+  permissions = [
+    "secretmanager.secrets.get",
+    "secretmanager.versions.access",
+    "secretmanager.versions.list",
+  ]
+}
+
+resource "google_project_iam_member" "agent_secret_list" {
+  count   = var.enable_gcp_secrets ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.secret_list[0].id
+  member  = "serviceAccount:${google_service_account.agent_workload_identity.email}"
+}
+
+resource "google_project_iam_member" "agent_secret_reader" {
+  count   = var.enable_gcp_secrets ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.agent_secret_reader[0].id
+  member  = "serviceAccount:${google_service_account.agent_workload_identity.email}"
+
+  condition {
+    title       = "Restrict agent to ${var.secret_namespace} namespace"
+    description = "Only allow read access to secrets prefixed with ${var.secret_namespace}-"
+    expression  = "resource.name.startsWith(\"projects/${data.google_project.current.number}/secrets/${var.secret_namespace}-\")"
+  }
+}

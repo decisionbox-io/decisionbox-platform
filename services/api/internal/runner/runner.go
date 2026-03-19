@@ -36,12 +36,13 @@ type Config struct {
 	Mode string // "subprocess" or "kubernetes"
 
 	// Kubernetes mode settings
-	AgentImage     string
-	Namespace      string
-	CPURequest     string
-	CPULimit       string
-	MemoryRequest  string
-	MemoryLimit    string
+	AgentImage         string
+	Namespace          string
+	ServiceAccountName string
+	CPURequest         string
+	CPULimit           string
+	MemoryRequest      string
+	MemoryLimit        string
 
 	// Job timeout in hours — how long to watch a Job before giving up.
 	// Applies to both K8s Job watching and subprocess waiting.
@@ -58,8 +59,9 @@ func LoadConfig() Config {
 
 	return Config{
 		Mode:            getEnv("RUNNER_MODE", "subprocess"),
-		AgentImage:      getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
-		Namespace:       getEnv("AGENT_NAMESPACE", "default"),
+		AgentImage:         getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
+		Namespace:          getEnv("AGENT_NAMESPACE", "default"),
+		ServiceAccountName: getEnv("AGENT_SERVICE_ACCOUNT", ""),
 		CPURequest:      getEnv("AGENT_CPU_REQUEST", "250m"),
 		CPULimit:        getEnv("AGENT_CPU_LIMIT", "2"),
 		MemoryRequest:   getEnv("AGENT_MEMORY_REQUEST", "256Mi"),

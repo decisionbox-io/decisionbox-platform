@@ -26,8 +26,13 @@ output "gke_node_sa_email" {
 }
 
 output "workload_identity_sa_email" {
-  description = "Workload Identity service account email"
+  description = "Workload Identity service account email (API)"
   value       = google_service_account.workload_identity.email
+}
+
+output "agent_workload_identity_sa_email" {
+  description = "Workload Identity service account email (Agent, read-only)"
+  value       = google_service_account.agent_workload_identity.email
 }
 
 output "gcp_secrets_iam_enabled" {

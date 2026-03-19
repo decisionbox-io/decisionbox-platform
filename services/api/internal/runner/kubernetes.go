@@ -104,7 +104,8 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					ServiceAccountName: r.config.ServiceAccountName,
+					RestartPolicy:      corev1.RestartPolicyNever,
 					Containers: []corev1.Container{
 						{
 							Name:  "agent",

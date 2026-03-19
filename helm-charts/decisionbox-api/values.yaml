@@ -30,6 +30,7 @@ env:
   RUNNER_MODE: "kubernetes"
   AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
   AGENT_NAMESPACE: "decisionbox"
+  AGENT_SERVICE_ACCOUNT: "decisionbox-agent"
   AGENT_JOB_TIMEOUT_HOURS: "6"
 
 extraEnv: {}
