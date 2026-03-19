@@ -301,6 +301,17 @@ The subnet must have secondary IP ranges named `pods` and `services`.
 
 ## Destroying Resources
 
+Use the setup wizard's `--destroy` flag for a clean teardown:
+
+```bash
+cd terraform
+./setup.sh --destroy
+```
+
+This uninstalls Helm releases, deletes the namespace, disables deletion protection, and runs `terraform destroy`.
+
+Or manually:
+
 ```bash
 # Remove Helm releases first
 helm uninstall decisionbox-dashboard -n decisionbox

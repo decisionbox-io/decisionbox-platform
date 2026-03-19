@@ -18,6 +18,7 @@ cd terraform
 | `--help` | Show usage guide and exit |
 | `--dry-run` | Generate config files (tfvars + Helm values) without applying |
 | `--resume` | Resume from Helm deploy — skips Terraform, reloads config from existing `terraform.tfvars` |
+| `--destroy` | Tear down everything — Helm releases, K8s namespace, Terraform resources |
 
 ## 9-Step Flow
 
@@ -163,6 +164,23 @@ Generate config files without applying any changes:
 ```
 
 Shows the manual commands to apply afterwards.
+
+## Destroy
+
+Tear down all infrastructure:
+
+```bash
+./setup.sh --destroy
+```
+
+Destroy mode:
+1. Reads config from existing `terraform/gcp/prod/terraform.tfvars`
+2. Requires typing `destroy` to confirm (safety check)
+3. Uninstalls Helm releases (dashboard, API)
+4. Deletes the Kubernetes namespace
+5. Disables deletion protection on the GKE cluster
+6. Runs `terraform destroy` to remove all cloud resources
+7. Leaves the Terraform state bucket intact (contains state history)
 
 ## Terminal Features
 
