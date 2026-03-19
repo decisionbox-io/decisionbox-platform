@@ -932,6 +932,9 @@ if [[ "$DESTROY" == "true" ]]; then
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
+  ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
+  BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+  VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
 
   if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
     err "Failed to parse config from ${TFVARS_FILE}"
@@ -942,6 +945,9 @@ if [[ "$DESTROY" == "true" ]]; then
   echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+  echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+  echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
+  echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
   echo ""
 
   prompt CONFIRM_DESTROY "Type 'destroy' to confirm teardown"
