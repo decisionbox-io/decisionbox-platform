@@ -2,7 +2,15 @@
 
 > **Version**: 0.1.0
 
-Complete reference for all Helm chart values. Both charts are in `helm-charts/`.
+Complete reference for all Helm chart values.
+Charts are published to the DecisionBox Helm repository:
+
+```bash
+helm repo add decisionbox https://decisionbox-io.github.io/decisionbox-platform
+helm repo update
+```
+
+Source code for the charts is in `helm-charts/`.
 
 ## decisionbox-api
 
@@ -14,7 +22,7 @@ Complete reference for all Helm chart values. Both charts are in `helm-charts/`.
 | `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-api` | Container image |
 | `image.tag` | string | `main` | Image tag (defaults to `appVersion` if not set) |
 | `image.pullPolicy` | string | `Always` | Pull policy |
-| `imagePullSecrets` | list | `[{name: ghcr-secret}]` | Image pull secrets (not needed for public repo) |
+| `imagePullSecrets` | list | `[]` | Image pull secrets (set for private registries) |
 
 ### Deployment
 
@@ -125,7 +133,7 @@ For production, set `mongodb.enabled=false` and provide `env.MONGODB_URI` pointi
 | `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-dashboard` | Container image |
 | `image.tag` | string | `main` | Image tag |
 | `image.pullPolicy` | string | `Always` | Pull policy |
-| `imagePullSecrets` | list | `[{name: ghcr-secret}]` | Image pull secrets (not needed for public repo) |
+| `imagePullSecrets` | list | `[]` | Image pull secrets (set for private registries) |
 
 ### Deployment
 
