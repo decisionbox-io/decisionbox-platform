@@ -233,10 +233,11 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `k8s_namespace` | string | `decisionbox` | Kubernetes namespace for Workload Identity |
-| `k8s_service_account` | string | `decisionbox-api` | K8s service account name |
+| `k8s_service_account` | string | `decisionbox-api` | K8s service account name (API) |
+| `k8s_agent_service_account` | string | `decisionbox-agent` | K8s service account name (Agent, read-only) |
 | `enable_gcp_secrets` | bool | `false` | Create Secret Manager IAM bindings |
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM conditions |
-| `enable_bigquery_iam` | bool | `false` | Grant BigQuery read access |
+| `enable_bigquery_iam` | bool | `false` | Grant BigQuery read access to the agent SA |
 
 ### Labels
 
@@ -252,7 +253,8 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | `cluster_endpoint` | Yes | Kubernetes API endpoint |
 | `cluster_ca_certificate` | Yes | CA certificate for kubectl |
 | `vpc_name` | No | VPC network name |
-| `workload_identity_sa_email` | No | GCP service account for Workload Identity |
+| `workload_identity_sa_email` | No | GCP service account for API Workload Identity |
+| `agent_workload_identity_sa_email` | No | GCP service account for Agent Workload Identity (read-only) |
 | `gcp_secrets_iam_enabled` | No | Whether Secret Manager IAM was configured |
 | `bigquery_iam_enabled` | No | Whether BigQuery IAM was configured |
 

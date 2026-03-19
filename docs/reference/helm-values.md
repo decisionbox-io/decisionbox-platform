@@ -40,6 +40,7 @@ Complete reference for all Helm chart values. Both charts are in `helm-charts/`.
 | `env.RUNNER_MODE` | string | `kubernetes` | Agent runner: `kubernetes` or `subprocess` |
 | `env.AGENT_IMAGE` | string | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Agent container image |
 | `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |
+| `env.AGENT_SERVICE_ACCOUNT` | string | `decisionbox-agent` | K8s service account for agent Jobs (Workload Identity) |
 | `env.AGENT_JOB_TIMEOUT_HOURS` | string | `6` | Max time to watch agent Jobs |
 | `extraEnv` | list | `[]` | Additional env vars as `{name, value}` pairs |
 | `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`) |

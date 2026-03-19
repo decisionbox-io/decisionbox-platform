@@ -513,6 +513,7 @@ EOF
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
     HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
     K8S_SA="decisionbox-api"
+    K8S_AGENT_SA="decisionbox-agent"
     GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
 
     if [[ "$ENABLE_SECRETS" == "true" ]]; then
@@ -535,6 +536,7 @@ env:
   SECRET_PROVIDER: "gcp"
   SECRET_NAMESPACE: "${SECRET_NS}"
   SECRET_GCP_PROJECT_ID: "${PROJECT_ID}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
 EOF
     else
       cat > "$HELM_VALUES" <<EOF
@@ -551,6 +553,7 @@ extraEnvFrom:
 env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
 EOF
     fi
 

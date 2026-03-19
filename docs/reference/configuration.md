@@ -112,6 +112,7 @@ The API spawns the agent for each discovery run. Two modes:
 |----------|---------|-------------|
 | `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Docker image for the agent container. |
 | `AGENT_NAMESPACE` | `default` | Kubernetes namespace for agent Jobs. |
+| `AGENT_SERVICE_ACCOUNT` | `""` | Kubernetes service account for agent Jobs. Set to the agent SA with Workload Identity for GCP Secret Manager / BigQuery access. |
 | `AGENT_CPU_REQUEST` | `250m` | CPU request for agent containers (K8s resource quantity). |
 | `AGENT_CPU_LIMIT` | `2` | CPU limit for agent containers. |
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
