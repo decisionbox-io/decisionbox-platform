@@ -17,6 +17,13 @@ serviceAccountName: "decisionbox-api"
 serviceAccountAnnotations: {}
   # iam.gke.io/gcp-service-account: "<cluster-name>-api@<project-id>.iam.gserviceaccount.com"
 
+# Agent service account — created by this chart for agent K8s Jobs.
+# Needs Workload Identity annotation for GCP Secret Manager + BigQuery access.
+agentServiceAccount:
+  name: "decisionbox-agent"
+  annotations: {}
+    # iam.gke.io/gcp-service-account: "<cluster-name>-agent@<project-id>.iam.gserviceaccount.com"
+
 nodeSelector: {}
 
 containerPort: 8080

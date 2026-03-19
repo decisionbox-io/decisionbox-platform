@@ -30,8 +30,10 @@ Source code for the charts is in `helm-charts/`.
 |-----|------|---------|-------------|
 | `namespace` | string | `decisionbox` | Kubernetes namespace |
 | `containerPort` | int | `8080` | Container port |
-| `serviceAccountName` | string | `decisionbox-api` | Service account name |
-| `serviceAccountAnnotations` | map | `{}` | SA annotations (e.g., Workload Identity) |
+| `serviceAccountName` | string | `decisionbox-api` | API service account name |
+| `serviceAccountAnnotations` | map | `{}` | API SA annotations (e.g., Workload Identity) |
+| `agentServiceAccount.name` | string | `decisionbox-agent` | Agent service account name (for K8s Jobs) |
+| `agentServiceAccount.annotations` | map | `{}` | Agent SA annotations (e.g., Workload Identity for read-only access) |
 
 ### Environment Variables
 
