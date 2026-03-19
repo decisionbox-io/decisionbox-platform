@@ -120,13 +120,21 @@ func TestDomainsHandler_ListDomains(t *testing.T) {
 	var resp APIResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 	domains := resp.Data.([]interface{})
-	if len(domains) == 0 {
-		t.Error("should have at least one domain (gaming)")
+	if len(domains) < 2 {
+		t.Errorf("should have at least 2 domains (gaming, social), got %d", len(domains))
 	}
 
-	gaming := domains[0].(map[string]interface{})
-	if gaming["id"] != "gaming" {
-		t.Errorf("id = %v", gaming["id"])
+	// Find gaming domain (order is not guaranteed)
+	var gaming map[string]interface{}
+	for _, d := range domains {
+		dm := d.(map[string]interface{})
+		if dm["id"] == "gaming" {
+			gaming = dm
+			break
+		}
+	}
+	if gaming == nil {
+		t.Fatal("gaming domain not found in response")
 	}
 	cats := gaming["categories"].([]interface{})
 	if len(cats) == 0 {
