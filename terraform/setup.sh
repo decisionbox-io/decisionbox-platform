@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_START=$(date +%s)
 DRY_RUN=false
 RESUME=false
+DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
 TOTAL_STEPS=9
@@ -30,6 +31,7 @@ for arg in "$@"; do
       echo "  --help, -h     Show this help message"
       echo "  --dry-run      Generate config files only (no terraform apply, no helm deploy)"
       echo "  --resume       Resume from Helm deploy (skips Terraform, reloads config from tfvars)"
+      echo "  --destroy      Tear down everything (Helm releases, K8s namespace, Terraform resources)"
       echo ""
       echo "This wizard will:"
       echo "  1. Check prerequisites (terraform, gcloud, kubectl, helm)"
@@ -52,6 +54,9 @@ for arg in "$@"; do
       ;;
     --resume)
       RESUME=true
+      ;;
+    --destroy)
+      DESTROY=true
       ;;
     *)
       echo "Unknown argument: $arg"
@@ -886,6 +891,141 @@ echo ""
 if [[ "$DRY_RUN" == "true" ]]; then
   warn "Dry-run mode: config files will be generated but nothing will be applied."
   echo ""
+fi
+
+# ─── Destroy Mode ─────────────────────────────────────────────────────────
+
+if [[ "$DESTROY" == "true" ]]; then
+  if [[ "$DRY_RUN" == "true" ]]; then
+    err "Cannot combine --destroy with --dry-run."
+    exit 1
+  fi
+
+  warn "Destroy mode: this will tear down ALL DecisionBox infrastructure."
+  echo ""
+
+  # Load config from tfvars
+  TFVARS_FILE="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
+  if [[ ! -f "$TFVARS_FILE" ]]; then
+    err "No terraform.tfvars found at ${TFVARS_FILE}"
+    err "Nothing to destroy — no previous setup found."
+    exit 1
+  fi
+
+  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
+
+  CLOUD="gcp"
+  TF_DIR="${SCRIPT_DIR}/gcp/prod"
+  PROJECT_ID=$(parse_tfvar project_id)
+  REGION=$(parse_tfvar region)
+  CLUSTER_NAME=$(parse_tfvar cluster_name)
+  K8S_NS=$(parse_tfvar k8s_namespace)
+
+  if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
+    err "Failed to parse config from ${TFVARS_FILE}"
+    exit 1
+  fi
+
+  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
+  echo -e "  ${BOLD}Region:${NC}      ${REGION}"
+  echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+  echo ""
+
+  prompt CONFIRM_DESTROY "Type 'destroy' to confirm teardown"
+  if [[ "$CONFIRM_DESTROY" != "destroy" ]]; then
+    info "Cancelled."
+    exit 0
+  fi
+
+  # Check prerequisites
+  do_step_1_prerequisites
+
+  # Step 1: Uninstall Helm releases
+  echo ""
+  info "Uninstalling Helm releases..."
+
+  if gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" 2>/dev/null; then
+    if kubectl get ns "$K8S_NS" > /dev/null 2>&1; then
+      spinner_start "Uninstalling decisionbox-dashboard..."
+      helm uninstall decisionbox-dashboard -n "$K8S_NS" > /dev/null 2>&1 || true
+      spinner_stop
+      ok "Dashboard uninstalled"
+
+      spinner_start "Uninstalling decisionbox-api..."
+      helm uninstall decisionbox-api -n "$K8S_NS" > /dev/null 2>&1 || true
+      spinner_stop
+      ok "API uninstalled"
+
+      spinner_start "Deleting namespace ${K8S_NS}..."
+      kubectl delete namespace "$K8S_NS" --timeout=120s > /dev/null 2>&1 || true
+      spinner_stop
+      ok "Namespace deleted"
+    else
+      dim "Namespace ${K8S_NS} not found — skipping Helm cleanup"
+    fi
+  else
+    dim "Cluster not reachable — skipping Helm cleanup"
+  fi
+
+  # Step 2: Terraform destroy
+  echo ""
+  info "Running terraform destroy..."
+  cd "$TF_DIR"
+
+  # Find state bucket from backend config or use convention
+  TF_STATE_BUCKET=$(grep 'bucket' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"bucket":\s*"//; s/".*//' || echo "${PROJECT_ID}-terraform-state")
+  TF_STATE_PREFIX=$(grep 'prefix' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"prefix":\s*"//; s/".*//' || echo "prod")
+
+  spinner_start "Initializing Terraform..."
+  terraform init -input=false \
+    -backend-config="bucket=${TF_STATE_BUCKET}" \
+    -backend-config="prefix=${TF_STATE_PREFIX}" > /dev/null 2>&1 || {
+    spinner_stop
+    err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
+    exit 1
+  }
+  spinner_stop
+  ok "Terraform initialized"
+
+  echo ""
+  info "Disabling deletion protection on GKE cluster (required before destroy)..."
+  terraform apply -var="deletion_protection=false" -auto-approve > /dev/null 2>&1 || true
+  ok "Deletion protection disabled"
+
+  # Show destroy plan before applying
+  echo ""
+  info "Planning destruction..."
+  echo ""
+  terraform plan -destroy 2>&1
+  echo ""
+
+  prompt CONFIRM_APPLY_DESTROY "Proceed with destroying these resources? (yes/no)" "no"
+  if [[ "$CONFIRM_APPLY_DESTROY" != "yes" ]]; then
+    warn "Destroy cancelled. Resources are still running."
+    info "Deletion protection has been disabled — re-enable with: terraform apply -var=\"deletion_protection=true\""
+    exit 0
+  fi
+
+  echo ""
+  TF_DESTROY_START=$(date +%s)
+  info "Destroying infrastructure (this may take 5-10 minutes)..."
+  echo ""
+  terraform destroy -auto-approve 2>&1
+  TF_DESTROY_SECS=$(( $(date +%s) - TF_DESTROY_START ))
+  echo ""
+
+  echo -e "  ${RED}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
+  echo -e "  ${RED}${BOLD}║           Infrastructure Destroyed               ║${NC}"
+  echo -e "  ${RED}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME} ${DIM}(deleted)${NC}"
+  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  echo ""
+  echo -e "  ${DIM}Destroy time: ${TF_DESTROY_SECS}s${NC}"
+  echo -e "  ${DIM}State bucket gs://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
+  echo ""
+  exit 0
 fi
 
 # ─── Resume Mode ──────────────────────────────────────────────────────────

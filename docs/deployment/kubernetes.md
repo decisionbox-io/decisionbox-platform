@@ -37,9 +37,9 @@ The API is internal only (`ClusterIP`) — never exposed to the internet. The da
 ## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/decisionbox-io/decisionbox-platform.git
-cd decisionbox-platform
+# Add the DecisionBox Helm repository
+helm repo add decisionbox https://decisionbox-io.github.io/decisionbox-platform
+helm repo update
 
 # Create namespace
 kubectl create namespace decisionbox
@@ -50,12 +50,12 @@ kubectl create secret generic decisionbox-api-secrets \
   -n decisionbox
 
 # Deploy API (with bundled MongoDB for quick start)
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 
 # Deploy Dashboard
-helm upgrade --install decisionbox-dashboard ./helm-charts/decisionbox-dashboard \
+helm upgrade --install decisionbox-dashboard decisionbox/decisionbox-dashboard \
   -n decisionbox
 
 # Verify
@@ -71,7 +71,13 @@ kubectl get ingress -n decisionbox
 
 ## Charts
 
-DecisionBox ships two Helm charts:
+DecisionBox charts are published to a public Helm repository.
+Source code is in `helm-charts/`.
+
+```bash
+helm repo add decisionbox https://decisionbox-io.github.io/decisionbox-platform
+helm repo update
+```
 
 | Chart | Description | Default Port | Ingress |
 |-------|-------------|-------------|---------|
@@ -92,7 +98,7 @@ kubectl create secret generic decisionbox-api-secrets \
   -n decisionbox
 
 # Reference it in Helm
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
@@ -113,7 +119,7 @@ kubectl create secret generic decisionbox-api-secrets \
   -n decisionbox
 
 # Deploy with external MongoDB
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set mongodb.enabled=false \
   --set env.MONGODB_DB=decisionbox \
   --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
@@ -126,7 +132,7 @@ By default, secrets are encrypted with AES-256 and stored in MongoDB. For produc
 
 **GCP Secret Manager (with Workload Identity):**
 ```bash
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set env.SECRET_PROVIDER=gcp \
   --set env.SECRET_GCP_PROJECT_ID=my-gcp-project \
   --set env.SECRET_NAMESPACE=decisionbox \
@@ -139,7 +145,7 @@ The `serviceAccountAnnotations` binds the K8s service account to a GCP service a
 
 **AWS Secrets Manager (with IRSA or EKS Pod Identity):**
 ```bash
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set env.SECRET_PROVIDER=aws \
   --set env.SECRET_AWS_REGION=us-east-1 \
   --set env.SECRET_NAMESPACE=decisionbox \
@@ -189,7 +195,7 @@ ingress:
 The dashboard proxies `/api/*` requests to the API service. The default `API_URL` is `http://decisionbox-api-service:8080`, which assumes the API release name is `decisionbox-api`. If you use a different release name, update the dashboard's `env.API_URL`:
 
 ```bash
-helm upgrade --install my-dashboard ./helm-charts/decisionbox-dashboard \
+helm upgrade --install my-dashboard decisionbox/decisionbox-dashboard \
   --set env.API_URL="http://my-custom-api-service:8080" \
   -n decisionbox
 ```
@@ -228,7 +234,7 @@ resources:
 
 Deploy with:
 ```bash
-helm upgrade --install decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   -f values-prod.yaml -n decisionbox
 ```
 
@@ -274,10 +280,10 @@ helm test decisionbox-dashboard -n decisionbox
 ## Updating
 
 ```bash
-helm upgrade decisionbox-api ./helm-charts/decisionbox-api \
+helm upgrade decisionbox-api decisionbox/decisionbox-api \
   -f values-prod.yaml -n decisionbox
 
-helm upgrade decisionbox-dashboard ./helm-charts/decisionbox-dashboard \
+helm upgrade decisionbox-dashboard decisionbox/decisionbox-dashboard \
   -n decisionbox
 ```
 

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - AI-powered data discovery agent with autonomous SQL exploration
 - REST API for project, discovery, and configuration management
 - Web dashboard with live discovery progress, insights table, and recommendation cards
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subprocess runner for local development
 - Docker Compose setup for local development
 - Helm charts for Kubernetes deployment (API, Dashboard, MongoDB subchart)
+- Public Helm chart repository at `https://decisionbox-io.github.io/decisionbox-platform`
 - GCP Terraform module (GKE, VPC, IAM, BigQuery)
 - Multi-arch Docker images (linux/amd64 + linux/arm64)
 - GitHub Actions CI for Docker image builds
