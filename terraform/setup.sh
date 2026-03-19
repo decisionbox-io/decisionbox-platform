@@ -896,6 +896,11 @@ fi
 # ─── Destroy Mode ─────────────────────────────────────────────────────────
 
 if [[ "$DESTROY" == "true" ]]; then
+  if [[ "$DRY_RUN" == "true" ]]; then
+    err "Cannot combine --destroy with --dry-run."
+    exit 1
+  fi
+
   warn "Destroy mode: this will tear down ALL DecisionBox infrastructure."
   echo ""
 
@@ -984,8 +989,23 @@ if [[ "$DESTROY" == "true" ]]; then
   ok "Terraform initialized"
 
   echo ""
-  info "Disabling deletion protection..."
+  info "Disabling deletion protection on GKE cluster (required before destroy)..."
   terraform apply -var="deletion_protection=false" -auto-approve > /dev/null 2>&1 || true
+  ok "Deletion protection disabled"
+
+  # Show destroy plan before applying
+  echo ""
+  info "Planning destruction..."
+  echo ""
+  terraform plan -destroy 2>&1
+  echo ""
+
+  prompt CONFIRM_APPLY_DESTROY "Proceed with destroying these resources? (yes/no)" "no"
+  if [[ "$CONFIRM_APPLY_DESTROY" != "yes" ]]; then
+    warn "Destroy cancelled. Resources are still running."
+    info "Deletion protection has been disabled — re-enable with: terraform apply -var=\"deletion_protection=true\""
+    exit 0
+  fi
 
   echo ""
   TF_DESTROY_START=$(date +%s)
