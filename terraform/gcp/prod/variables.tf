@@ -113,7 +113,13 @@ variable "secret_namespace" {
 }
 
 variable "enable_bigquery_iam" {
-  description = "Grant BigQuery read access to the Workload Identity SA"
+  description = "Grant BigQuery read access to the agent SA"
+  type        = bool
+  default     = false
+}
+
+variable "enable_vertex_ai_iam" {
+  description = "Grant Vertex AI access to the agent SA for LLM calls"
   type        = bool
   default     = false
 }
