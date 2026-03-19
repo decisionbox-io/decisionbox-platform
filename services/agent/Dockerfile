@@ -14,6 +14,8 @@ COPY providers/llm/bedrock/go.mod providers/llm/bedrock/go.sum providers/llm/bed
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY providers/warehouse/redshift/go.mod providers/warehouse/redshift/go.sum providers/warehouse/redshift/
 COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers/secrets/mongodb/
+COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
+COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
 COPY domain-packs/social/go/go.mod domain-packs/social/go/
 COPY services/agent/go.mod services/agent/go.sum services/agent/

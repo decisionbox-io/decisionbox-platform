@@ -12,6 +12,8 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
@@ -31,6 +33,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
+	cloud.google.com/go/secretmanager v1.16.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -47,6 +50,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.19 // indirect
 	github.com/aws/aws-sdk-go-v2/service/redshiftdata v1.38.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.16 // indirect
@@ -148,6 +152,8 @@ replace (
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws => ../../providers/secrets/aws
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp => ../../providers/secrets/gcp
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift => ../../providers/warehouse/redshift
