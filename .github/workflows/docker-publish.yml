@@ -15,6 +15,13 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   ORG: decisionbox-io
+  IMAGE_TAGS: |
+    type=ref,event=branch
+    type=ref,event=tag
+    type=semver,pattern={{version}}
+    type=semver,pattern={{major}}.{{minor}}
+    type=sha,prefix=
+    type=raw,value=latest,enable={{is_default_branch}}
 
 jobs:
   detect-changes:
@@ -120,13 +127,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+          tags: ${{ env.IMAGE_TAGS }}
 
       - name: Build amd64 image
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -292,13 +293,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+          tags: ${{ env.IMAGE_TAGS }}
 
       - name: Build multi-arch and push
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
