@@ -26,9 +26,10 @@ module "decisionbox" {
   k8s_service_account = var.k8s_service_account
 
   # Optional
-  enable_gcp_secrets  = var.enable_gcp_secrets
-  secret_namespace    = var.secret_namespace
-  enable_bigquery_iam = var.enable_bigquery_iam
+  enable_gcp_secrets   = var.enable_gcp_secrets
+  secret_namespace     = var.secret_namespace
+  enable_bigquery_iam  = var.enable_bigquery_iam
+  enable_vertex_ai_iam = var.enable_vertex_ai_iam
 
   labels = var.labels
 }

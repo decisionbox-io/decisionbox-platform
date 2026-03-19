@@ -39,3 +39,8 @@ output "bigquery_iam_enabled" {
   description = "Whether BigQuery IAM was enabled"
   value       = module.decisionbox.bigquery_iam_enabled
 }
+
+output "vertex_ai_iam_enabled" {
+  description = "Whether Vertex AI IAM was enabled"
+  value       = module.decisionbox.vertex_ai_iam_enabled
+}
