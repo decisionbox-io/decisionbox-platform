@@ -16,6 +16,8 @@ import (
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp" // registers "gcp"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws" // registers "aws"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
