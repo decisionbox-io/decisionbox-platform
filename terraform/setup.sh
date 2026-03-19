@@ -520,6 +520,7 @@ EOF
     K8S_SA="decisionbox-api"
     K8S_AGENT_SA="decisionbox-agent"
     GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
+    GCP_AGENT_SA="${CLUSTER_NAME}-agent@${PROJECT_ID}.iam.gserviceaccount.com"
 
     if [[ "$ENABLE_SECRETS" == "true" ]]; then
       cat > "$HELM_VALUES" <<EOF
@@ -530,6 +531,11 @@ namespace: ${K8S_NS}
 serviceAccountName: ${K8S_SA}
 serviceAccountAnnotations:
   iam.gke.io/gcp-service-account: "${GCP_SA}"
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
+  annotations:
+    iam.gke.io/gcp-service-account: "${GCP_AGENT_SA}"
 
 automountServiceAccountToken: true
 
@@ -550,6 +556,9 @@ EOF
 namespace: ${K8S_NS}
 
 serviceAccountName: ${K8S_SA}
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
 
 extraEnvFrom:
   - secretRef:
