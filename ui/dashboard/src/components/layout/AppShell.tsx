@@ -27,19 +27,19 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
   }, []);
 
   useEffect(() => {
-    if (projectId) {
-      api.getProject(projectId).then(setProject).catch(() => {});
-    } else {
-      setProject(null);
-    }
+    if (!projectId) return;
+    api.getProject(projectId).then(setProject).catch(() => {});
   }, [projectId]);
+
+  // Derive null project from absent projectId (avoids setState in effect)
+  const activeProject = projectId ? project : null;
 
   const isActive = (path: string) => pathname === path;
   const isActivePrefix = (prefix: string) => pathname.startsWith(prefix);
 
   // Build initials from project name
-  const initials = project
-    ? project.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
+  const initials = activeProject
+    ? activeProject.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
     : 'DB';
 
   return (
@@ -72,7 +72,7 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
         </div>
 
         {/* Project selector */}
-        {project && (
+        {activeProject && (
           <div style={{ padding: '12px 12px 8px' }}>
             <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
               <div style={{
@@ -105,10 +105,10 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {project.name}
+                    {activeProject.name}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>
-                    {project.domain}{project.category ? ` · ${project.category}` : ''}
+                    {activeProject.domain}{activeProject.category ? ` · ${activeProject.category}` : ''}
                   </div>
                 </div>
                 <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>▾</span>
