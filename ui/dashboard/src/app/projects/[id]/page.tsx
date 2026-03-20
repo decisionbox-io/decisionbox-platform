@@ -449,7 +449,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
   };
 
   const elapsed = run.started_at
-    ? Math.round((new Date(run.updated_at || Date.now()).getTime() - new Date(run.started_at).getTime()) / 1000)
+    ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
     : 0;
 
   return (
