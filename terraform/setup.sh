@@ -327,6 +327,7 @@ do_step_4_provider_config() {
 
     echo ""
     prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "${BQ_IAM:-false}" || return 1
+    prompt_boolean VERTEX_AI_IAM "Enable Vertex AI IAM for LLM access (Claude via Vertex, Gemini)?" "${VERTEX_AI_IAM:-false}" || return 1
 
   elif [[ "$CLOUD" == "aws" ]]; then
     step_header 4 "$TOTAL_STEPS" "AWS Configuration"
@@ -469,6 +470,7 @@ do_step_7_review() {
     echo -e "  ${BOLD}Machine type:${NC}       ${MACHINE_TYPE}"
     echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} per zone"
     echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
+    echo -e "  ${BOLD}Vertex AI IAM:${NC}      ${VERTEX_AI_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
   fi
 
@@ -510,7 +512,8 @@ k8s_namespace = "${K8S_NS}"
 # Optional features
 enable_gcp_secrets  = ${ENABLE_SECRETS}
 secret_namespace    = "${SECRET_NS}"
-enable_bigquery_iam = ${BQ_IAM}
+enable_bigquery_iam  = ${BQ_IAM}
+enable_vertex_ai_iam = ${VERTEX_AI_IAM}
 EOF
 
     ok "Generated ${TFVARS_FILE}"
@@ -929,6 +932,9 @@ if [[ "$DESTROY" == "true" ]]; then
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
+  ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
+  BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+  VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
 
   if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
     err "Failed to parse config from ${TFVARS_FILE}"
@@ -939,6 +945,9 @@ if [[ "$DESTROY" == "true" ]]; then
   echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+  echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+  echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
+  echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
   echo ""
 
   prompt CONFIRM_DESTROY "Type 'destroy' to confirm teardown"
@@ -1066,6 +1075,7 @@ if [[ "$RESUME" == "true" ]]; then
   ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
   SECRET_NS=$(parse_tfvar secret_namespace)
   BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+  VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
   HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
   HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
 

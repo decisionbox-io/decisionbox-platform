@@ -340,7 +340,14 @@ variable "secret_namespace" {
 
 # Optional: BigQuery IAM
 variable "enable_bigquery_iam" {
-  description = "Grant BigQuery read access to the Workload Identity SA"
+  description = "Grant BigQuery read access to the agent SA for warehouse queries"
+  type        = bool
+  default     = false
+}
+
+# Optional: Vertex AI IAM
+variable "enable_vertex_ai_iam" {
+  description = "Grant Vertex AI access to the agent SA for LLM calls (Claude via Vertex, Gemini)"
   type        = bool
   default     = false
 }

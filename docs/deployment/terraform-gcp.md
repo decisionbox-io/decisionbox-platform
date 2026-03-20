@@ -92,6 +92,9 @@ secret_namespace   = "decisionbox"
 
 # Optional: BigQuery read access
 enable_bigquery_iam = true
+
+# Optional: Vertex AI access (for Claude via Vertex or Gemini)
+enable_vertex_ai_iam = true
 ```
 
 ### Step 3: Initialize and Apply
@@ -238,6 +241,7 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | `enable_gcp_secrets` | bool | `false` | Create Secret Manager IAM bindings |
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM conditions |
 | `enable_bigquery_iam` | bool | `false` | Grant BigQuery read access to the agent SA |
+| `enable_vertex_ai_iam` | bool | `false` | Grant Vertex AI access to the agent SA (Claude via Vertex, Gemini) |
 
 ### Labels
 
@@ -257,6 +261,7 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | `agent_workload_identity_sa_email` | No | GCP service account for Agent Workload Identity (read-only) |
 | `gcp_secrets_iam_enabled` | No | Whether Secret Manager IAM was configured |
 | `bigquery_iam_enabled` | No | Whether BigQuery IAM was configured |
+| `vertex_ai_iam_enabled` | No | Whether Vertex AI IAM was configured |
 
 ## Workload Identity
 

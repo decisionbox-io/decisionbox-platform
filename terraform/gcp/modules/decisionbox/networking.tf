@@ -4,6 +4,14 @@ resource "google_compute_network" "vpc" {
   project                 = var.project_id
   auto_create_subnetworks = false
 
+  # GKE creates NEGs (network endpoint groups) for load balancers/ingress.
+  # These are cleaned up asynchronously after the cluster is deleted.
+  # The extended delete timeout gives GCP time to remove them before
+  # Terraform tries to delete the VPC.
+  timeouts {
+    delete = "10m"
+  }
+
   depends_on = [google_project_service.apis["compute.googleapis.com"]]
 }
 
@@ -33,6 +41,11 @@ resource "google_compute_subnetwork" "gke_subnet" {
       flow_sampling        = var.flow_log_sampling
       metadata             = var.flow_log_metadata
     }
+  }
+
+  # GKE NEGs reference subnets — allow time for async cleanup after cluster deletion
+  timeouts {
+    delete = "10m"
   }
 }
 
