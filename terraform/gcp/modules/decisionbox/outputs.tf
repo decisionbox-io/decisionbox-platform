@@ -44,3 +44,8 @@ output "bigquery_iam_enabled" {
   description = "Whether BigQuery IAM was enabled"
   value       = var.enable_bigquery_iam
 }
+
+output "vertex_ai_iam_enabled" {
+  description = "Whether Vertex AI IAM was enabled"
+  value       = var.enable_vertex_ai_iam
+}

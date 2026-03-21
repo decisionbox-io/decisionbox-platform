@@ -55,7 +55,8 @@ Choose between:
 - GKE cluster name (default: `decisionbox-prod`)
 - Kubernetes namespace (default: `decisionbox`)
 - Node pool: machine type, min/max nodes per zone (numeric validation, min <= max check)
-- BigQuery IAM (optional)
+- BigQuery IAM (optional — for data warehouse access)
+- Vertex AI IAM (optional — for Claude via Vertex or Gemini)
 
 **AWS:**
 - Region (default: `us-east-1`)
@@ -110,7 +111,8 @@ max_node_count = 2
 k8s_namespace = "decisionbox"
 enable_gcp_secrets  = true
 secret_namespace    = "decisionbox"
-enable_bigquery_iam = false
+enable_bigquery_iam  = false
+enable_vertex_ai_iam = false
 ```
 
 **`helm-charts/decisionbox-api/values-secrets.yaml`** — Helm values:
