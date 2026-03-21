@@ -327,5 +327,6 @@ terraform destroy
 ## Next Steps
 
 - [Kubernetes Deployment](kubernetes.md) — Deploy with Helm after Terraform
+- [Terraform AWS](terraform-aws.md) — EKS cluster provisioning on AWS
 - [Helm Values Reference](../reference/helm-values.md) — All chart configuration options
 - [Production Considerations](production.md) — Scaling, monitoring, backups

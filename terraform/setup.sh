@@ -46,7 +46,7 @@ for arg in "$@"; do
       echo ""
       echo "Type 'back' at any prompt to return to the previous step."
       echo ""
-      echo "Supported providers: GCP (available), AWS (coming soon)"
+      echo "Supported providers: GCP, AWS"
       exit 0
       ;;
     --dry-run)
@@ -256,21 +256,30 @@ do_step_2_cloud_provider() {
   step_header 2 "$TOTAL_STEPS" "Cloud Provider"
 
   echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
-  echo -e "  ${DIM}2)${NC} ${DIM}AWS  — Amazon Web Services (coming soon)${NC}"
+  echo -e "  ${BOLD}2)${NC} AWS  — Amazon Web Services"
   echo ""
-  prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 gcp GCP" || return 1
+  prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 2 gcp GCP aws AWS" || return 1
 
   case "$CLOUD_CHOICE" in
     1|gcp|GCP) CLOUD="gcp" ;;
+    2|aws|AWS) CLOUD="aws" ;;
   esac
 
-  ok "Cloud provider: ${BOLD}${CLOUD^^}${NC}"
+  CLOUD_UPPER="$(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
+  ok "Cloud provider: ${BOLD}${CLOUD_UPPER}${NC}"
 
   echo ""
-  check_tool "gcloud" "Install: https://cloud.google.com/sdk/docs/install" || {
-    err "gcloud CLI is required for GCP. Install and re-run."
-    exit 1
-  }
+  if [[ "$CLOUD" == "gcp" ]]; then
+    check_tool "gcloud" "Install: https://cloud.google.com/sdk/docs/install" || {
+      err "gcloud CLI is required for GCP. Install and re-run."
+      exit 1
+    }
+  elif [[ "$CLOUD" == "aws" ]]; then
+    check_tool "aws" "Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html" || {
+      err "AWS CLI is required for AWS. Install and re-run."
+      exit 1
+    }
+  fi
 }
 
 do_step_3_secrets() {
@@ -283,7 +292,7 @@ do_step_3_secrets() {
   ok "Secret namespace: ${BOLD}${SECRET_NS}${NC}"
 
   echo ""
-  CLOUD_UPPER="${CLOUD^^}"
+  CLOUD_UPPER="$(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
   echo -e "  ${BOLD}1)${NC} Enable  — Use ${CLOUD_UPPER} Secret Manager ${DIM}(recommended for production)${NC}"
   echo -e "  ${BOLD}2)${NC} Disable — Use MongoDB encrypted secrets or K8s native secrets"
   echo ""
@@ -330,16 +339,83 @@ do_step_4_provider_config() {
 
   elif [[ "$CLOUD" == "aws" ]]; then
     step_header 4 "$TOTAL_STEPS" "AWS Configuration"
+
     TF_DIR="${SCRIPT_DIR}/aws/prod"
-    if [[ ! -d "$TF_DIR" ]]; then
-      warn "AWS Terraform module is not yet available."
-      info "Track progress: https://github.com/decisionbox-io/decisionbox-platform/issues/39"
-      exit 0
+
+    prompt AWS_REGION "AWS region" "${AWS_REGION:-us-east-1}" || return 1
+    REGION="$AWS_REGION"
+    prompt CLUSTER_NAME "EKS cluster name" "${CLUSTER_NAME:-decisionbox-prod}" || return 1
+    prompt K8S_NS "Kubernetes namespace" "${K8S_NS:-decisionbox}" || return 1
+
+    echo ""
+    info "Node group configuration:"
+    prompt INSTANCE_TYPE "Instance type" "${INSTANCE_TYPE:-t3.large}" || return 1
+    prompt_number MIN_NODES "Min nodes" "${MIN_NODES:-1}" || return 1
+    prompt_number MAX_NODES "Max nodes" "${MAX_NODES:-3}" || return 1
+    prompt_number DESIRED_NODES "Desired nodes" "${DESIRED_NODES:-2}" || return 1
+
+    if [[ "$MIN_NODES" -gt "$MAX_NODES" ]]; then
+      err "Min nodes (${MIN_NODES}) cannot be greater than max nodes (${MAX_NODES})."
+      return 1
     fi
+    if [[ "$DESIRED_NODES" -lt "$MIN_NODES" || "$DESIRED_NODES" -gt "$MAX_NODES" ]]; then
+      err "Desired nodes (${DESIRED_NODES}) must be between min (${MIN_NODES}) and max (${MAX_NODES})."
+      return 1
+    fi
+
+    echo ""
+    prompt_boolean REDSHIFT_IAM "Enable Redshift IAM for data warehouse access?" "${REDSHIFT_IAM:-false}" || return 1
   fi
 }
 
 do_step_5_authentication() {
+  if [[ "$CLOUD" == "aws" ]]; then
+    step_header 5 "$TOTAL_STEPS" "AWS Authentication"
+
+    info "Terraform needs AWS credentials. Choose how to authenticate:"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} AWS CLI profile     — Use existing AWS CLI configuration"
+    dim "     Best for: interactive setup, personal accounts"
+    echo -e "  ${BOLD}2)${NC} Environment variables — Use AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+    dim "     Best for: CI/CD, automated pipelines"
+    echo ""
+    prompt_choice AWS_AUTH_CHOICE "Authentication method" "1" "1 2" || return 1
+
+    if [[ "$AWS_AUTH_CHOICE" == "1" ]]; then
+      prompt AWS_PROFILE "AWS CLI profile" "${AWS_PROFILE:-default}" || return 1
+      export AWS_PROFILE="$AWS_PROFILE"
+      ok "Using AWS profile: ${BOLD}${AWS_PROFILE}${NC}"
+    else
+      if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        ok "AWS_ACCESS_KEY_ID already set in environment"
+      else
+        prompt AWS_ACCESS_KEY_ID "AWS_ACCESS_KEY_ID" "" || return 1
+        prompt AWS_SECRET_ACCESS_KEY "AWS_SECRET_ACCESS_KEY" "" || return 1
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+        ok "AWS credentials set for this session"
+      fi
+    fi
+
+    # Verify identity
+    echo ""
+    spinner_start "Verifying AWS identity..."
+    AWS_IDENTITY=$(aws sts get-caller-identity --output json 2>&1) && AWS_AUTH_RC=0 || AWS_AUTH_RC=$?
+    spinner_stop
+
+    if [[ "$AWS_AUTH_RC" -ne 0 ]]; then
+      err "AWS authentication failed:"
+      echo "$AWS_IDENTITY"
+      return 1
+    fi
+
+    AWS_ACCOUNT_ID=$(echo "$AWS_IDENTITY" | grep -o '"Account"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+    AWS_CALLER_ARN=$(echo "$AWS_IDENTITY" | grep -o '"Arn"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+    ok "Authenticated as: ${DIM}${AWS_CALLER_ARN}${NC}"
+    ok "Account ID: ${BOLD}${AWS_ACCOUNT_ID}${NC}"
+
+    return 0
+  fi
+
   if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
 
   step_header 5 "$TOTAL_STEPS" "GCP Authentication"
@@ -425,38 +501,67 @@ do_step_5_authentication() {
 }
 
 do_step_6_terraform_state() {
-  if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
-
   step_header 6 "$TOTAL_STEPS" "Terraform State"
 
-  info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
-  echo ""
-  prompt TF_STATE_BUCKET "GCS bucket name" "${TF_STATE_BUCKET:-${PROJECT_ID}-terraform-state}" || return 1
-  prompt TF_STATE_PREFIX "State prefix (environment)" "${TF_STATE_PREFIX:-prod}" || return 1
+  if [[ "$CLOUD" == "gcp" ]]; then
+    info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
+    echo ""
+    prompt TF_STATE_BUCKET "GCS bucket name" "${TF_STATE_BUCKET:-${PROJECT_ID}-terraform-state}" || return 1
+    prompt TF_STATE_PREFIX "State prefix (environment)" "${TF_STATE_PREFIX:-prod}" || return 1
 
-  if [[ "$DRY_RUN" == "false" ]]; then
-    if gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="$PROJECT_ID" > /dev/null 2>&1; then
-      ok "Bucket gs://${TF_STATE_BUCKET} already exists"
+    if [[ "$DRY_RUN" == "false" ]]; then
+      if gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="$PROJECT_ID" > /dev/null 2>&1; then
+        ok "Bucket gs://${TF_STATE_BUCKET} already exists"
+      else
+        spinner_start "Creating bucket gs://${TF_STATE_BUCKET}..."
+        gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
+          --project="$PROJECT_ID" \
+          --location="$REGION" \
+          --uniform-bucket-level-access \
+          --public-access-prevention > /dev/null 2>&1
+        gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning > /dev/null 2>&1
+        spinner_stop
+        ok "Created bucket gs://${TF_STATE_BUCKET} with versioning"
+      fi
     else
-      spinner_start "Creating bucket gs://${TF_STATE_BUCKET}..."
-      gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
-        --project="$PROJECT_ID" \
-        --location="$REGION" \
-        --uniform-bucket-level-access \
-        --public-access-prevention > /dev/null 2>&1
-      gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning > /dev/null 2>&1
-      spinner_stop
-      ok "Created bucket gs://${TF_STATE_BUCKET} with versioning"
+      dim "Dry-run: skipping bucket creation"
     fi
-  else
-    dim "Dry-run: skipping bucket creation"
+
+  elif [[ "$CLOUD" == "aws" ]]; then
+    info "Terraform state must be stored in an S3 bucket (uses S3-native locking)."
+    echo ""
+    prompt TF_STATE_BUCKET "S3 bucket name" "${TF_STATE_BUCKET:-${AWS_ACCOUNT_ID}-terraform-state}" || return 1
+    prompt TF_STATE_KEY "State key" "${TF_STATE_KEY:-prod/terraform.tfstate}" || return 1
+
+    if [[ "$DRY_RUN" == "false" ]]; then
+      # S3 bucket
+      if AWS_PAGER="" aws s3api head-bucket --bucket "$TF_STATE_BUCKET" > /dev/null 2>&1; then
+        ok "Bucket s3://${TF_STATE_BUCKET} already exists"
+      else
+        spinner_start "Creating bucket s3://${TF_STATE_BUCKET}..."
+        if [[ "$REGION" == "us-east-1" ]]; then
+          aws s3api create-bucket --bucket "$TF_STATE_BUCKET" --region "$REGION" > /dev/null 2>&1
+        else
+          aws s3api create-bucket --bucket "$TF_STATE_BUCKET" --region "$REGION" \
+            --create-bucket-configuration LocationConstraint="$REGION" > /dev/null 2>&1
+        fi
+        aws s3api put-bucket-versioning --bucket "$TF_STATE_BUCKET" \
+          --versioning-configuration Status=Enabled > /dev/null 2>&1
+        aws s3api put-public-access-block --bucket "$TF_STATE_BUCKET" \
+          --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true > /dev/null 2>&1
+        spinner_stop
+        ok "Created bucket s3://${TF_STATE_BUCKET} with versioning"
+      fi
+    else
+      dim "Dry-run: skipping bucket/table creation"
+    fi
   fi
 }
 
 do_step_7_review() {
   step_header 7 "$TOTAL_STEPS" "Review Configuration"
 
-  echo -e "  ${BOLD}Cloud:${NC}              ${CLOUD^^}"
+  echo -e "  ${BOLD}Cloud:${NC}              $(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
   echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
   echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
   echo ""
@@ -470,6 +575,15 @@ do_step_7_review() {
     echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} per zone"
     echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
+  elif [[ "$CLOUD" == "aws" ]]; then
+    echo -e "  ${BOLD}AWS account:${NC}        ${AWS_ACCOUNT_ID}"
+    echo -e "  ${BOLD}Region:${NC}             ${REGION}"
+    echo -e "  ${BOLD}Cluster:${NC}            ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}K8s namespace:${NC}      ${K8S_NS}"
+    echo -e "  ${BOLD}Instance type:${NC}      ${INSTANCE_TYPE}"
+    echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} (desired: ${DESIRED_NODES})"
+    echo -e "  ${BOLD}Redshift IAM:${NC}       ${REDSHIFT_IAM}"
+    echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
   fi
 
   echo ""
@@ -572,6 +686,92 @@ EOF
     fi
 
     ok "Generated ${HELM_VALUES}"
+
+  elif [[ "$CLOUD" == "aws" ]]; then
+    TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+
+    cat > "$TFVARS_FILE" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+region       = "${REGION}"
+cluster_name = "${CLUSTER_NAME}"
+
+# EKS node group
+instance_type      = "${INSTANCE_TYPE}"
+min_node_count     = ${MIN_NODES}
+max_node_count     = ${MAX_NODES}
+desired_node_count = ${DESIRED_NODES}
+
+# IRSA
+k8s_namespace = "${K8S_NS}"
+
+# Optional features
+enable_aws_secrets  = ${ENABLE_SECRETS}
+secret_namespace    = "${SECRET_NS}"
+enable_redshift_iam = ${REDSHIFT_IAM}
+EOF
+
+    ok "Generated ${TFVARS_FILE}"
+
+    HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
+    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    K8S_SA="decisionbox-api"
+    K8S_AGENT_SA="decisionbox-agent"
+    IRSA_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-api"
+    IRSA_AGENT_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-agent"
+
+    if [[ "$ENABLE_SECRETS" == "true" ]]; then
+      cat > "$HELM_VALUES" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+namespace: ${K8S_NS}
+
+serviceAccountName: ${K8S_SA}
+serviceAccountAnnotations:
+  eks.amazonaws.com/role-arn: "${IRSA_ROLE_ARN}"
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
+  annotations:
+    eks.amazonaws.com/role-arn: "${IRSA_AGENT_ROLE_ARN}"
+
+automountServiceAccountToken: true
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+env:
+  SECRET_PROVIDER: "aws"
+  SECRET_NAMESPACE: "${SECRET_NS}"
+  SECRET_AWS_REGION: "${REGION}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+EOF
+    else
+      cat > "$HELM_VALUES" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+namespace: ${K8S_NS}
+
+serviceAccountName: ${K8S_SA}
+serviceAccountAnnotations:
+  eks.amazonaws.com/role-arn: "${IRSA_ROLE_ARN}"
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+env:
+  SECRET_PROVIDER: "mongodb"
+  SECRET_NAMESPACE: "${SECRET_NS}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+EOF
+    fi
+
+    ok "Generated ${HELM_VALUES}"
   fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -580,7 +780,11 @@ EOF
     echo ""
     dim "To apply manually:"
     dim "  cd ${TF_DIR}"
-    dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"prefix=${TF_STATE_PREFIX}\""
+    if [[ "$CLOUD" == "gcp" ]]; then
+      dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"prefix=${TF_STATE_PREFIX}\""
+    elif [[ "$CLOUD" == "aws" ]]; then
+      dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"key=${TF_STATE_KEY}\" -backend-config=\"region=${REGION}\" -backend-config=\"use_lockfile=true\""
+    fi
     dim "  terraform plan -out=tfplan"
     dim "  terraform apply tfplan"
     echo ""
@@ -671,6 +875,13 @@ do_helm_deploy() {
   # Deploy Dashboard
   spinner_start "Deploying Dashboard..."
   DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+  if [[ "$CLOUD" == "aws" ]]; then
+    DASH_ARGS+=(
+      --set "ingress.ingressClassName=alb"
+      --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
+      --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
+    )
+  fi
   DASH_OUTPUT=$("${DASH_ARGS[@]}" 2>&1) && DASH_RC=0 || DASH_RC=$?
   spinner_stop
   if [[ "$DASH_RC" -ne 0 ]]; then
@@ -716,55 +927,61 @@ wait_for_ingress_and_show_result() {
   spinner_stop
   ok "Ingress resource exists"
 
-  # Wait for IP
-  spinner_start "Waiting for external IP (1-2 min)..."
-  RETRIES=0; INGRESS_IP=""
-  while [[ -z "$INGRESS_IP" || "$INGRESS_IP" == "null" ]]; do
+  # Wait for IP/hostname
+  spinner_start "Waiting for external address (1-3 min)..."
+  RETRIES=0; INGRESS_ADDR=""
+  while [[ -z "$INGRESS_ADDR" || "$INGRESS_ADDR" == "null" ]]; do
     RETRIES=$((RETRIES + 1))
-    [[ "$RETRIES" -ge 30 ]] && { spinner_stop; warn "IP not assigned after 5 minutes."; break; }
+    [[ "$RETRIES" -ge 30 ]] && { spinner_stop; warn "Address not assigned after 5 minutes."; break; }
     if ! kubectl get ingress -n "$K8S_NS" -o name 2>/dev/null | grep -q .; then
       "${DASH_ARGS[@]}" > /dev/null 2>&1 || true; sleep 15; continue
     fi
-    INGRESS_IP=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-    [[ -z "$INGRESS_IP" || "$INGRESS_IP" == "null" ]] && sleep 10
+    # Try IP first (GCP), then hostname (AWS ALB)
+    INGRESS_ADDR=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+    if [[ -z "$INGRESS_ADDR" || "$INGRESS_ADDR" == "null" ]]; then
+      INGRESS_ADDR=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+    fi
+    [[ -z "$INGRESS_ADDR" || "$INGRESS_ADDR" == "null" ]] && sleep 10
   done
   spinner_stop
 
-  if [[ -n "$INGRESS_IP" && "$INGRESS_IP" != "null" ]]; then
-    ok "Ingress IP: ${BOLD}${INGRESS_IP}${NC}"
+  if [[ -n "$INGRESS_ADDR" && "$INGRESS_ADDR" != "null" ]]; then
+    ok "Ingress address: ${BOLD}${INGRESS_ADDR}${NC}"
 
-    # Health checks
-    spinner_start "Waiting for health checks (3-5 min)..."
-    RETRIES=0
-    while true; do
-      RETRIES=$((RETRIES + 1))
-      [[ "$RETRIES" -ge 40 ]] && { spinner_stop; warn "Health checks not passing."; break; }
-      BACKENDS=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].metadata.annotations.ingress\.kubernetes\.io/backends}' 2>/dev/null || echo "")
-      if [[ -n "$BACKENDS" ]] && ! echo "$BACKENDS" | grep -q "Unknown\|UNHEALTHY"; then
-        spinner_stop; ok "All backends healthy"; break
-      fi
-      sleep 10
-    done
+    # Health checks (GCP-specific annotation check — skip for AWS ALB)
+    if [[ "$CLOUD" != "aws" ]]; then
+      spinner_start "Waiting for health checks (3-5 min)..."
+      RETRIES=0
+      while true; do
+        RETRIES=$((RETRIES + 1))
+        [[ "$RETRIES" -ge 40 ]] && { spinner_stop; warn "Health checks not passing."; break; }
+        BACKENDS=$(kubectl get ingress -n "$K8S_NS" -o jsonpath='{.items[0].metadata.annotations.ingress\.kubernetes\.io/backends}' 2>/dev/null || echo "")
+        if [[ -n "$BACKENDS" ]] && ! echo "$BACKENDS" | grep -q "Unknown\|UNHEALTHY"; then
+          spinner_stop; ok "All backends healthy"; break
+        fi
+        sleep 10
+      done
+    fi
 
     # Verify HTTP 200
     spinner_start "Verifying dashboard is reachable..."
     RETRIES=0; DASHBOARD_LIVE=false
     while [[ "$RETRIES" -lt 18 ]]; do
       RETRIES=$((RETRIES + 1))
-      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://${INGRESS_IP}/" 2>/dev/null || echo "000")
+      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://${INGRESS_ADDR}/" 2>/dev/null || echo "000")
       [[ "$HTTP_CODE" == "200" ]] && { DASHBOARD_LIVE=true; break; }
       sleep 10
     done
     spinner_stop
 
-    [[ "$DASHBOARD_LIVE" == "true" ]] && ok "Dashboard is live!" || warn "Dashboard not responding yet. Try: curl http://${INGRESS_IP}"
+    [[ "$DASHBOARD_LIVE" == "true" ]] && ok "Dashboard is live!" || warn "Dashboard not responding yet. Try: curl http://${INGRESS_ADDR}"
 
     echo ""
     echo -e "  ${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
     echo -e "  ${GREEN}${BOLD}║              Setup Complete!                     ║${NC}"
     echo -e "  ${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${BOLD}Dashboard:${NC}  http://${INGRESS_IP}"
+    echo -e "  ${BOLD}Dashboard:${NC}  http://${INGRESS_ADDR}"
     echo -e "  ${BOLD}API:${NC}        http://decisionbox-api-service.${K8S_NS}:8080 ${DIM}(cluster-internal)${NC}"
     echo -e "  ${BOLD}Namespace:${NC}  ${K8S_NS}"
     echo ""
@@ -772,7 +989,7 @@ wait_for_ingress_and_show_result() {
     echo ""
   else
     echo ""
-    warn "Could not determine ingress IP."
+    warn "Could not determine ingress address."
     dim "Check manually: kubectl get ingress -n ${K8S_NS}"
     echo ""
     echo -e "  ${DIM}Total time: $(elapsed)${NC}"
@@ -789,7 +1006,11 @@ do_step_9_deploy() {
 
   # ─── Terraform Init ────────────────────────────────────────────────
   spinner_start "Running terraform init..."
-  TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}")
+  if [[ "$CLOUD" == "gcp" ]]; then
+    TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}")
+  elif [[ "$CLOUD" == "aws" ]]; then
+    TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${REGION}" -backend-config="use_lockfile=true")
+  fi
   TF_INIT_OUTPUT=$(terraform init "${TF_INIT_ARGS[@]}" 2>&1) && TF_INIT_RC=0 || TF_INIT_RC=$?
   spinner_stop
 
@@ -798,7 +1019,11 @@ do_step_9_deploy() {
     echo "$TF_INIT_OUTPUT"
     exit 1
   fi
-  ok "Terraform initialized ${DIM}(state: gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/)${NC}"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    ok "Terraform initialized ${DIM}(state: gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/)${NC}"
+  elif [[ "$CLOUD" == "aws" ]]; then
+    ok "Terraform initialized ${DIM}(state: s3://${TF_STATE_BUCKET}/${TF_STATE_KEY})${NC}"
+  fi
 
   # ─── Terraform Plan ────────────────────────────────────────────────
   echo ""
@@ -835,28 +1060,67 @@ do_step_9_deploy() {
   fi
 
   # ─── Configure kubectl ─────────────────────────────────────────────
+  echo ""
   if [[ "$CLOUD" == "gcp" ]]; then
-    echo ""
     spinner_start "Fetching cluster credentials..."
     gcloud container clusters get-credentials "$CLUSTER_NAME" \
       --region "$REGION" \
       --project "$PROJECT_ID" 2>/dev/null
     spinner_stop
     ok "kubectl configured for ${CLUSTER_NAME}"
-
-    spinner_start "Waiting for Kubernetes API..."
-    RETRIES=0
-    until kubectl get nodes > /dev/null 2>&1; do
-      RETRIES=$((RETRIES + 1))
-      if [[ "$RETRIES" -ge 30 ]]; then
-        spinner_stop
-        err "Kubernetes API not reachable after 5 minutes."
-        exit 1
-      fi
-      sleep 10
-    done
+  elif [[ "$CLOUD" == "aws" ]]; then
+    spinner_start "Fetching cluster credentials..."
+    aws eks update-kubeconfig \
+      --name "$CLUSTER_NAME" \
+      --region "$REGION" > /dev/null 2>&1
     spinner_stop
-    ok "Kubernetes API is ready"
+    ok "kubectl configured for ${CLUSTER_NAME}"
+  fi
+
+  spinner_start "Waiting for Kubernetes API..."
+  RETRIES=0
+  until kubectl get nodes > /dev/null 2>&1; do
+    RETRIES=$((RETRIES + 1))
+    if [[ "$RETRIES" -ge 30 ]]; then
+      spinner_stop
+      err "Kubernetes API not reachable after 5 minutes."
+      exit 1
+    fi
+    sleep 10
+  done
+  spinner_stop
+  ok "Kubernetes API is ready"
+
+  # ─── Set default StorageClass (AWS only) ────────────────────────────
+  if [[ "$CLOUD" == "aws" ]]; then
+    if kubectl get storageclass gp2 > /dev/null 2>&1; then
+      kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' > /dev/null 2>&1
+      ok "Set gp2 as default StorageClass"
+    fi
+  fi
+
+  # ─── AWS Load Balancer Controller (AWS only) ─────────────────────────
+  if [[ "$CLOUD" == "aws" ]]; then
+    LB_ROLE_ARN=$(terraform -chdir="$TF_DIR" output -raw lb_controller_role_arn 2>/dev/null || echo "")
+    if [[ -n "$LB_ROLE_ARN" ]]; then
+      if helm list -n kube-system 2>/dev/null | grep -q aws-load-balancer-controller; then
+        ok "AWS Load Balancer Controller already installed"
+      else
+        spinner_start "Installing AWS Load Balancer Controller..."
+        helm repo add eks https://aws.github.io/eks-charts > /dev/null 2>&1
+        helm repo update eks > /dev/null 2>&1
+        helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+          -n kube-system \
+          --set clusterName="$CLUSTER_NAME" \
+          --set serviceAccount.create=true \
+          --set serviceAccount.name=aws-load-balancer-controller \
+          --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$LB_ROLE_ARN" \
+          --set region="$REGION" \
+          --set vpcId="$(terraform -chdir="$TF_DIR" output -raw vpc_id 2>/dev/null)" > /dev/null 2>&1
+        spinner_stop
+        ok "Installed AWS Load Balancer Controller"
+      fi
+    fi
   fi
 
   # ─── Helm Deploy ───────────────────────────────────────────────────
@@ -871,12 +1135,10 @@ do_step_9_deploy() {
     echo ""
     info "Skipped Helm deploy. To deploy manually:"
     echo ""
-    if [[ "$CLOUD" == "gcp" ]]; then
-      echo -e "  ${BOLD}# API${NC}"
-      echo -e "  ${DIM}helm upgrade --install decisionbox-api ${HELM_DIR} \\${NC}"
-      echo -e "  ${DIM}  -f ${HELM_DIR}/values.yaml \\${NC}"
-      echo -e "  ${DIM}  -f ${HELM_VALUES} -n ${K8S_NS}${NC}"
-    fi
+    echo -e "  ${BOLD}# API${NC}"
+    echo -e "  ${DIM}helm upgrade --install decisionbox-api ${HELM_DIR} \\${NC}"
+    echo -e "  ${DIM}  -f ${HELM_DIR}/values.yaml \\${NC}"
+    echo -e "  ${DIM}  -f ${HELM_VALUES} -n ${K8S_NS}${NC}"
     echo ""
     echo -e "  ${BOLD}# Dashboard${NC}"
     echo -e "  ${DIM}helm upgrade --install decisionbox-dashboard ${HELM_CHARTS_DIR}/decisionbox-dashboard \\${NC}"
@@ -913,29 +1175,54 @@ if [[ "$DESTROY" == "true" ]]; then
   warn "Destroy mode: this will tear down ALL DecisionBox infrastructure."
   echo ""
 
-  # Load config from tfvars
-  TFVARS_FILE="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
-  if [[ ! -f "$TFVARS_FILE" ]]; then
-    err "No terraform.tfvars found at ${TFVARS_FILE}"
-    err "Nothing to destroy — no previous setup found."
+  # Detect which provider was used
+  parse_tfvar() { grep "^${1}\s*=" "$1_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
+
+  GCP_TFVARS="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
+  AWS_TFVARS="${SCRIPT_DIR}/aws/prod/terraform.tfvars"
+
+  if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
+    echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
+    echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
+    echo ""
+    prompt_choice DESTROY_CLOUD "Which deployment to destroy?" "1" "1 2 gcp aws"
+    case "$DESTROY_CLOUD" in
+      1|gcp) CLOUD="gcp" ;;
+      2|aws) CLOUD="aws" ;;
+    esac
+  elif [[ -f "$GCP_TFVARS" ]]; then
+    CLOUD="gcp"
+  elif [[ -f "$AWS_TFVARS" ]]; then
+    CLOUD="aws"
+  else
+    err "No terraform.tfvars found. Nothing to destroy."
     exit 1
   fi
 
+  TFVARS_FILE="${SCRIPT_DIR}/${CLOUD}/prod/terraform.tfvars"
+  TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
+
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
 
-  CLOUD="gcp"
-  TF_DIR="${SCRIPT_DIR}/gcp/prod"
-  PROJECT_ID=$(parse_tfvar project_id)
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
 
-  if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
-    err "Failed to parse config from ${TFVARS_FILE}"
-    exit 1
+  if [[ "$CLOUD" == "gcp" ]]; then
+    PROJECT_ID=$(parse_tfvar project_id)
+    if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
+      err "Failed to parse config from ${TFVARS_FILE}"
+      exit 1
+    fi
+    echo -e "  ${BOLD}Provider:${NC}    GCP"
+    echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  elif [[ "$CLOUD" == "aws" ]]; then
+    if [[ -z "$CLUSTER_NAME" ]]; then
+      err "Failed to parse config from ${TFVARS_FILE}"
+      exit 1
+    fi
+    echo -e "  ${BOLD}Provider:${NC}    AWS"
   fi
-
-  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
   echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
@@ -954,7 +1241,14 @@ if [[ "$DESTROY" == "true" ]]; then
   echo ""
   info "Uninstalling Helm releases..."
 
-  if gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" 2>/dev/null; then
+  CLUSTER_REACHABLE=false
+  if [[ "$CLOUD" == "gcp" ]]; then
+    gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" 2>/dev/null && CLUSTER_REACHABLE=true
+  elif [[ "$CLOUD" == "aws" ]]; then
+    aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" > /dev/null 2>&1 && CLUSTER_REACHABLE=true
+  fi
+
+  if [[ "$CLUSTER_REACHABLE" == "true" ]]; then
     if kubectl get ns "$K8S_NS" > /dev/null 2>&1; then
       spinner_start "Uninstalling decisionbox-dashboard..."
       helm uninstall decisionbox-dashboard -n "$K8S_NS" > /dev/null 2>&1 || true
@@ -982,25 +1276,40 @@ if [[ "$DESTROY" == "true" ]]; then
   info "Running terraform destroy..."
   cd "$TF_DIR"
 
-  # Find state bucket from backend config or use convention
-  TF_STATE_BUCKET=$(grep 'bucket' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"bucket":\s*"//; s/".*//' || echo "${PROJECT_ID}-terraform-state")
-  TF_STATE_PREFIX=$(grep 'prefix' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"prefix":\s*"//; s/".*//' || echo "prod")
-
+  # Find state backend config
   spinner_start "Initializing Terraform..."
-  terraform init -input=false \
-    -backend-config="bucket=${TF_STATE_BUCKET}" \
-    -backend-config="prefix=${TF_STATE_PREFIX}" > /dev/null 2>&1 || {
-    spinner_stop
-    err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
-    exit 1
-  }
+  if [[ "$CLOUD" == "gcp" ]]; then
+    TF_STATE_BUCKET=$(grep 'bucket' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"bucket":\s*"//; s/".*//' || echo "${PROJECT_ID}-terraform-state")
+    TF_STATE_PREFIX=$(grep 'prefix' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"prefix":\s*"//; s/".*//' || echo "prod")
+    terraform init -input=false \
+      -backend-config="bucket=${TF_STATE_BUCKET}" \
+      -backend-config="prefix=${TF_STATE_PREFIX}" > /dev/null 2>&1 || {
+      spinner_stop
+      err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
+      exit 1
+    }
+  elif [[ "$CLOUD" == "aws" ]]; then
+    TF_STATE_BUCKET=$(grep 'bucket' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"bucket":\s*"//; s/".*//' || echo "terraform-state")
+    TF_STATE_KEY=$(grep '"key"' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"key":\s*"//; s/".*//' || echo "prod/terraform.tfstate")
+    terraform init -input=false \
+      -backend-config="bucket=${TF_STATE_BUCKET}" \
+      -backend-config="key=${TF_STATE_KEY}" \
+      -backend-config="region=${REGION}" \
+      -backend-config="use_lockfile=true" > /dev/null 2>&1 || {
+      spinner_stop
+      err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
+      exit 1
+    }
+  fi
   spinner_stop
   ok "Terraform initialized"
 
-  echo ""
-  info "Disabling deletion protection on GKE cluster (required before destroy)..."
-  terraform apply -var="deletion_protection=false" -auto-approve > /dev/null 2>&1 || true
-  ok "Deletion protection disabled"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    echo ""
+    info "Disabling deletion protection on GKE cluster (required before destroy)..."
+    terraform apply -var="deletion_protection=false" -auto-approve > /dev/null 2>&1 || true
+    ok "Deletion protection disabled"
+  fi
 
   # Show destroy plan before applying
   echo ""
@@ -1012,7 +1321,9 @@ if [[ "$DESTROY" == "true" ]]; then
   prompt CONFIRM_APPLY_DESTROY "Proceed with destroying these resources? (yes/no)" "no"
   if [[ "$CONFIRM_APPLY_DESTROY" != "yes" ]]; then
     warn "Destroy cancelled. Resources are still running."
-    info "Deletion protection has been disabled — re-enable with: terraform apply -var=\"deletion_protection=true\""
+    if [[ "$CLOUD" == "gcp" ]]; then
+      info "Deletion protection has been disabled — re-enable with: terraform apply -var=\"deletion_protection=true\""
+    fi
     exit 0
   fi
 
@@ -1043,41 +1354,72 @@ if [[ "$RESUME" == "true" ]]; then
   info "Resume mode: loading config from previous run..."
   echo ""
 
-  # Find tfvars
-  TFVARS_FILE="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
-  if [[ ! -f "$TFVARS_FILE" ]]; then
-    err "No terraform.tfvars found at ${TFVARS_FILE}"
-    err "Run setup.sh without --resume first."
+  # Find tfvars — check both providers
+  GCP_TFVARS="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
+  AWS_TFVARS="${SCRIPT_DIR}/aws/prod/terraform.tfvars"
+
+  if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
+    echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
+    echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
+    echo ""
+    prompt_choice RESUME_CLOUD "Which deployment to resume?" "1" "1 2 gcp aws"
+    case "$RESUME_CLOUD" in
+      1|gcp) CLOUD="gcp" ;;
+      2|aws) CLOUD="aws" ;;
+    esac
+  elif [[ -f "$GCP_TFVARS" ]]; then
+    CLOUD="gcp"
+  elif [[ -f "$AWS_TFVARS" ]]; then
+    CLOUD="aws"
+  else
+    err "No terraform.tfvars found. Run setup.sh without --resume first."
     exit 1
   fi
+
+  TFVARS_FILE="${SCRIPT_DIR}/${CLOUD}/prod/terraform.tfvars"
+  TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
 
   # Parse tfvars (HCL key = "value" format)
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
 
-  CLOUD="gcp"
-  TF_DIR="${SCRIPT_DIR}/gcp/prod"
-  PROJECT_ID=$(parse_tfvar project_id)
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
-  MACHINE_TYPE=$(parse_tfvar machine_type)
-  MIN_NODES=$(parse_tfvar min_node_count)
-  MAX_NODES=$(parse_tfvar max_node_count)
-  ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
-  SECRET_NS=$(parse_tfvar secret_namespace)
-  BQ_IAM=$(parse_tfvar enable_bigquery_iam)
   HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
   HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
 
-  # Validate required values loaded
-  if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
-    err "Failed to parse required values from ${TFVARS_FILE}"
-    exit 1
+  if [[ "$CLOUD" == "gcp" ]]; then
+    PROJECT_ID=$(parse_tfvar project_id)
+    MACHINE_TYPE=$(parse_tfvar machine_type)
+    MIN_NODES=$(parse_tfvar min_node_count)
+    MAX_NODES=$(parse_tfvar max_node_count)
+    ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
+    SECRET_NS=$(parse_tfvar secret_namespace)
+    BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+    if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
+      err "Failed to parse required values from ${TFVARS_FILE}"
+      exit 1
+    fi
+  elif [[ "$CLOUD" == "aws" ]]; then
+    INSTANCE_TYPE=$(parse_tfvar instance_type)
+    MIN_NODES=$(parse_tfvar min_node_count)
+    MAX_NODES=$(parse_tfvar max_node_count)
+    DESIRED_NODES=$(parse_tfvar desired_node_count)
+    ENABLE_SECRETS=$(parse_tfvar enable_aws_secrets)
+    SECRET_NS=$(parse_tfvar secret_namespace)
+    REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
+    if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
+      err "Failed to parse required values from ${TFVARS_FILE}"
+      exit 1
+    fi
   fi
 
   ok "Loaded config from ${TFVARS_FILE}"
   echo ""
-  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  echo -e "  ${BOLD}Provider:${NC}    $(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  fi
   echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
@@ -1092,9 +1434,15 @@ if [[ "$RESUME" == "true" ]]; then
   spinner_start "Verifying cluster connectivity..."
 
   # Ensure kubectl is configured
-  gcloud container clusters get-credentials "$CLUSTER_NAME" \
-    --region "$REGION" \
-    --project "$PROJECT_ID" 2>/dev/null || true
+  if [[ "$CLOUD" == "gcp" ]]; then
+    gcloud container clusters get-credentials "$CLUSTER_NAME" \
+      --region "$REGION" \
+      --project "$PROJECT_ID" 2>/dev/null || true
+  elif [[ "$CLOUD" == "aws" ]]; then
+    aws eks update-kubeconfig \
+      --name "$CLUSTER_NAME" \
+      --region "$REGION" > /dev/null 2>&1 || true
+  fi
 
   if kubectl get nodes > /dev/null 2>&1; then
     spinner_stop

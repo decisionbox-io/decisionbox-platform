@@ -301,5 +301,6 @@ kubectl delete namespace decisionbox
 
 - [Helm Values Reference](../reference/helm-values.md) — Complete values.yaml documentation
 - [Terraform GCP](terraform-gcp.md) — Automated GKE cluster provisioning
+- [Terraform AWS](terraform-aws.md) — Automated EKS cluster provisioning
 - [Production Considerations](production.md) — Scaling, monitoring, backups
 - [Configuration Reference](../reference/configuration.md) — All environment variables

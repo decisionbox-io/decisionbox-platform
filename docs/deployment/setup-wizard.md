@@ -26,7 +26,7 @@ cd terraform
 
 Verifies all required tools are installed with version info:
 - `terraform` (1.5+)
-- `gcloud` (for GCP)
+- `gcloud` (for GCP) or `aws` (for AWS)
 - `kubectl`
 - `helm` (3.7+)
 - `openssl`
@@ -36,20 +36,20 @@ If any tool is missing, the wizard shows an install link and exits.
 ### Step 2: Cloud Provider
 
 Select your cloud provider:
-- **GCP** — Google Cloud Platform (available)
-- **AWS** — Amazon Web Services (coming soon, visible but disabled)
+- **GCP** — Google Cloud Platform
+- **AWS** — Amazon Web Services
 
 ### Step 3: Secrets Configuration
 
 Configure the secret namespace prefix used to scope secrets. Format: `{namespace}-{projectID}-{key}`.
 
 Choose between:
-- **Cloud Secret Manager** (GCP Secret Manager) — recommended for production
+- **Cloud Secret Manager** (GCP Secret Manager or AWS Secrets Manager) — recommended for production
 - **MongoDB encrypted secrets** — uses AES-256 encryption with `SECRET_ENCRYPTION_KEY`
 
 ### Step 4: Cloud Provider Settings
 
-For GCP:
+**GCP:**
 - Project ID (validated against GCP naming rules)
 - Region (default: `us-central1`)
 - GKE cluster name (default: `decisionbox-prod`)
@@ -57,34 +57,39 @@ For GCP:
 - Node pool: machine type, min/max nodes per zone (numeric validation, min <= max check)
 - BigQuery IAM (optional)
 
+**AWS:**
+- Region (default: `us-east-1`)
+- EKS cluster name (default: `decisionbox-prod`)
+- Kubernetes namespace (default: `decisionbox`)
+- Node group: instance type, min/max/desired nodes (numeric validation)
+- Redshift IAM (optional)
+
 ### Step 5: Authentication
 
-Choose how Terraform authenticates with GCP:
+**GCP** — choose how Terraform authenticates:
 
-**User credentials (Application Default Credentials):**
-- If ADC already exists and is a user credential, offers to reuse
-- If ADC is missing or is a service account, prompts for interactive login
-- Uses `--no-browser` mode — paste the auth code directly in the terminal
+- **User credentials (ADC):** If ADC already exists and is a user credential, offers to reuse. Otherwise prompts for interactive login with `--no-browser` mode.
+- **Service account key file:** Provide a JSON key file path. Sets `GOOGLE_APPLICATION_CREDENTIALS`.
+- Verifies 4 GCP permissions: GKE, Storage, IAM, Compute.
 
-**Service account key file:**
-- Provide a path to a JSON key file
-- File existence validated before proceeding
-- Sets `GOOGLE_APPLICATION_CREDENTIALS` for the session
+**AWS** — choose how Terraform authenticates:
 
-After authentication, the wizard verifies 4 key GCP permissions:
-- `container.clusters.list` (GKE)
-- `storage.buckets.list` (Terraform state)
-- `iam.serviceAccounts.list` (Workload Identity)
-- `compute.networks.list` (VPC)
-
-If permissions are missing, shows specific error messages with `gcloud` grant commands.
+- **AWS CLI profile:** Use an existing profile (default or named).
+- **Environment variables:** Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+- Verifies identity via `aws sts get-caller-identity`.
 
 ### Step 6: Terraform State
 
-Configure the GCS bucket for Terraform remote state:
+**GCP:** Configure a GCS bucket for remote state:
 - Bucket name (default: `{project-id}-terraform-state`)
 - State prefix / environment name (default: `prod`)
 - Auto-creates the bucket with versioning if it doesn't exist
+
+**AWS:** Configure an S3 bucket + DynamoDB for remote state with locking:
+- S3 bucket name (default: `{account-id}-terraform-state`)
+- State key (default: `prod/terraform.tfstate`)
+- DynamoDB lock table (default: `terraform-state-lock`)
+- Auto-creates bucket, versioning, and DynamoDB table if they don't exist
 
 ### Step 7: Review
 
@@ -148,7 +153,7 @@ If the Helm deployment fails (e.g., missing chart dependencies, image pull error
 ```
 
 Resume mode:
-1. Reads config from existing `terraform/gcp/prod/terraform.tfvars`
+1. Reads config from existing `terraform.tfvars` (auto-detects GCP or AWS)
 2. Validates the cluster is reachable
 3. Checks if Helm releases already exist (asks before re-deploying)
 4. Automatically adds Bitnami Helm repo if missing
@@ -174,13 +179,13 @@ Tear down all infrastructure:
 ```
 
 Destroy mode:
-1. Reads config from existing `terraform/gcp/prod/terraform.tfvars`
+1. Reads config from existing `terraform.tfvars` (auto-detects GCP or AWS)
 2. Requires typing `destroy` to confirm (safety check)
 3. Uninstalls Helm releases (dashboard, API)
 4. Deletes the Kubernetes namespace
-5. Disables deletion protection on the GKE cluster
+5. Disables deletion protection (GCP only — GKE requires this before destroy)
 6. Runs `terraform destroy` to remove all cloud resources
-7. Leaves the Terraform state bucket intact (contains state history)
+7. Leaves the state bucket intact (contains state history)
 
 ## Terminal Features
 
@@ -188,20 +193,21 @@ Destroy mode:
 - **Color output** (auto-disabled for non-TTY / piped output)
 - **Graceful cancel** — Ctrl+C cleans up tfplan and stops spinners
 - **Input validation** — numeric checks, boolean checks, choice validation
-- **Permission verification** — checks GCP IAM before proceeding
-- **ADC type detection** — warns if Application Default Credentials use a service account instead of user credentials
+- **Permission verification** — checks GCP IAM or AWS identity before proceeding
+- **ADC type detection** — warns if GCP Application Default Credentials use a service account instead of user credentials
 
 ## Generated Files
 
 | File | Gitignored | Purpose |
 |------|-----------|---------|
-| `terraform/gcp/prod/terraform.tfvars` | Yes | Terraform input variables |
+| `terraform/{gcp,aws}/prod/terraform.tfvars` | Yes | Terraform input variables |
 | `helm-charts/decisionbox-api/values-secrets.yaml` | Yes | Helm values with secret provider config |
 
 Both files are gitignored to prevent committing environment-specific values.
 
 ## Next Steps
 
-- [Terraform GCP](terraform-gcp.md) — Variables reference and module details
+- [Terraform GCP](terraform-gcp.md) — GKE module variables and details
+- [Terraform AWS](terraform-aws.md) — EKS module variables and details
 - [Kubernetes (Helm)](kubernetes.md) — Manual Helm deployment guide
 - [Production Considerations](production.md) — Scaling, monitoring, backups

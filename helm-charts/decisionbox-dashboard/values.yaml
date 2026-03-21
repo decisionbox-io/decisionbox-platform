@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: ghcr.io/decisionbox-io/decisionbox-dashboard
@@ -72,6 +72,15 @@ service:
 
 ingress:
   enabled: true
+  # Set ingressClassName for your cluster's ingress controller.
+  # Examples: "nginx", "alb" (AWS), "gce" (GCP)
+  ingressClassName: ""
+  annotations: {}
+    # AWS ALB example:
+    #   alb.ingress.kubernetes.io/scheme: internet-facing
+    #   alb.ingress.kubernetes.io/target-type: ip
+    # GCP example:
+    #   kubernetes.io/ingress.class: gce
   # Set host for domain-based routing (e.g., dashboard.example.com).
   # Leave empty for path-based catch-all (suitable for dev/testing).
   host: ""

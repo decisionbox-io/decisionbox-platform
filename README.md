@@ -232,7 +232,7 @@ Full reference: [Configuration](docs/reference/configuration.md).
 | LLM | Claude, OpenAI, Ollama, Vertex AI, Bedrock |
 | Warehouse | BigQuery, Amazon Redshift |
 | CI/CD | GitHub Actions, GHCR |
-| Deployment | Docker Compose, Kubernetes (Helm), Terraform (GCP) |
+| Deployment | Docker Compose, Kubernetes (Helm), Terraform (GCP, AWS) |
 
 ## Contributing
 
@@ -250,11 +250,10 @@ We welcome contributions. See [Contributing Guide](docs/contributing/development
 | **Docker Compose** | Local dev, single server | [docs/deployment/docker.md](docs/deployment/docker.md) |
 | **Kubernetes (Helm)** | Production on any K8s cluster | [docs/deployment/kubernetes.md](docs/deployment/kubernetes.md) |
 | **Terraform (GCP)** | Automated GKE provisioning | [docs/deployment/terraform-gcp.md](docs/deployment/terraform-gcp.md) |
+| **Terraform (AWS)** | Automated EKS provisioning | [docs/deployment/terraform-aws.md](docs/deployment/terraform-aws.md) |
 | **Setup Wizard** | One-command GKE + Helm deploy | [docs/deployment/setup-wizard.md](docs/deployment/setup-wizard.md) |
 
 ## Roadmap
-
-- Terraform module for AWS (EKS)
 - More warehouse providers (PostgreSQL, Snowflake, Databricks)
 - More domain packs (e-commerce, SaaS, fintech, education)
 - Natural language queries ("Ask your data")

@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Helm charts for Kubernetes deployment (API, Dashboard, MongoDB subchart)
 - Public Helm chart repository at `https://decisionbox-io.github.io/decisionbox-platform`
 - GCP Terraform module (GKE, VPC, IAM, BigQuery)
+- AWS Terraform module (EKS, VPC, IAM, IRSA, Secrets Manager, Redshift)
 - Multi-arch Docker images (linux/amd64 + linux/arm64)
 - GitHub Actions CI for Docker image builds
 - 350+ tests (unit, integration, testcontainers)

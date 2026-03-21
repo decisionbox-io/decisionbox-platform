@@ -18,7 +18,7 @@ Source code for the charts is in `helm-charts/`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `replicaCount` | int | `2` | Number of API replicas |
+| `replicaCount` | int | `1` | Number of API replicas |
 | `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-api` | Container image |
 | `image.tag` | string | `main` | Image tag (defaults to `appVersion` if not set) |
 | `image.pullPolicy` | string | `Always` | Pull policy |
@@ -131,7 +131,7 @@ For production, set `mongodb.enabled=false` and provide `env.MONGODB_URI` pointi
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `replicaCount` | int | `2` | Number of dashboard replicas |
+| `replicaCount` | int | `1` | Number of dashboard replicas |
 | `image.repository` | string | `ghcr.io/decisionbox-io/decisionbox-dashboard` | Container image |
 | `image.tag` | string | `main` | Image tag |
 | `image.pullPolicy` | string | `Always` | Pull policy |

@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: ghcr.io/decisionbox-io/decisionbox-api
@@ -102,6 +102,12 @@ service:
 
 ingress:
   enabled: false
+  ingressClassName: ""
+  annotations: {}
+  host: ""
+  tlsSecretName: ""
+  pathType: Prefix
+  path: /
 
 rbac:
   enabled: true
