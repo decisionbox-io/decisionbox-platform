@@ -37,7 +37,6 @@ export default function ProjectSettingsPage() {
   const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
   const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
-  const [newSecretKey, setNewSecretKey] = useState('llm-api-key');
   const [newSecretValue, setNewSecretValue] = useState('');
   const [savingSecret, setSavingSecret] = useState(false);
 
@@ -257,24 +256,17 @@ export default function ProjectSettingsPage() {
             )}
 
             <Group gap="xs" align="end">
-              <Select label="Key" size="xs" w={180} value={newSecretKey}
-                onChange={(v) => setNewSecretKey(v || 'llm-api-key')}
-                data={[
-                  { value: 'llm-api-key', label: 'LLM API Key' },
-                  { value: 'warehouse-credentials', label: 'Warehouse Credentials (SA Key JSON)' },
-                ]}
-                allowDeselect={false} />
-              <TextInput label="Value" size="xs" style={{ flex: 1 }}
-                placeholder="Enter secret value" value={newSecretValue}
+              <TextInput label="LLM API Key" size="xs" style={{ flex: 1 }}
+                placeholder="Enter API key" value={newSecretValue}
                 onChange={(e) => setNewSecretValue(e.target.value)}
                 type="password" />
               <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
                 onClick={async () => {
                   setSavingSecret(true);
                   try {
-                    await api.setSecret(id, newSecretKey, newSecretValue);
+                    await api.setSecret(id, 'llm-api-key', newSecretValue);
                     setNewSecretValue('');
-                    notifications.show({ title: 'Saved', message: `Secret "${newSecretKey}" saved`, color: 'green' });
+                    notifications.show({ title: 'Saved', message: 'LLM API key saved', color: 'green' });
                     const updated = await api.listSecrets(id);
                     setSecretsList(updated || []);
                   } catch (e: unknown) {
