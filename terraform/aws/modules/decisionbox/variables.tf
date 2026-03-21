@@ -170,6 +170,12 @@ variable "k8s_service_account" {
   default     = "decisionbox-api"
 }
 
+variable "k8s_agent_service_account" {
+  description = "Kubernetes service account name for the agent IRSA binding"
+  type        = string
+  default     = "decisionbox-agent"
+}
+
 # Optional: AWS Secrets Manager
 variable "enable_aws_secrets" {
   description = "Grant the IRSA role permission to manage secrets in AWS Secrets Manager, scoped to the secret_namespace prefix."

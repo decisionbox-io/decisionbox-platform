@@ -35,6 +35,11 @@ output "irsa_role_arn" {
   value       = aws_iam_role.irsa_api.arn
 }
 
+output "irsa_agent_role_arn" {
+  description = "IRSA role ARN for the DecisionBox Agent service account"
+  value       = aws_iam_role.irsa_agent.arn
+}
+
 output "oidc_provider_arn" {
   description = "OIDC provider ARN for IRSA"
   value       = aws_iam_openid_connect_provider.eks.arn

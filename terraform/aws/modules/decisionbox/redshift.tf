@@ -2,7 +2,7 @@ resource "aws_iam_role_policy" "redshift" {
   count = var.enable_redshift_iam ? 1 : 0
 
   name = "redshift-read"
-  role = aws_iam_role.irsa_api.id
+  role = aws_iam_role.irsa_agent.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -16,6 +16,10 @@ resource "aws_iam_role_policy" "redshift" {
           "redshift-data:DescribeStatement",
           "redshift-data:ListStatements",
           "redshift-data:CancelStatement",
+          "redshift-data:ListTables",
+          "redshift-data:DescribeTable",
+          "redshift-data:ListSchemas",
+          "redshift-data:ListDatabases",
           "redshift:GetClusterCredentials",
           "redshift:DescribeClusters",
           "redshift-serverless:GetCredentials",

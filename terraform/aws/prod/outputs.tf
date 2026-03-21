@@ -25,6 +25,11 @@ output "irsa_role_arn" {
   value       = module.decisionbox.irsa_role_arn
 }
 
+output "irsa_agent_role_arn" {
+  description = "IRSA role ARN for DecisionBox Agent"
+  value       = module.decisionbox.irsa_agent_role_arn
+}
+
 output "lb_controller_role_arn" {
   description = "IAM role ARN for AWS Load Balancer Controller"
   value       = module.decisionbox.lb_controller_role_arn

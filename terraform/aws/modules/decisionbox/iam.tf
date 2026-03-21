@@ -293,3 +293,51 @@ resource "aws_iam_role" "irsa_api" {
 
   tags = local.common_tags
 }
+
+# ─── IRSA Role (DecisionBox Agent) ──────────────────────────────────────────
+
+resource "aws_iam_role" "irsa_agent" {
+  name = "${var.cluster_name}-agent"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Effect = "Allow"
+      Principal = {
+        Federated = local.oidc_provider_arn
+      }
+      Condition = {
+        StringEquals = {
+          "${local.oidc_provider_id}:aud" = "sts.amazonaws.com"
+          "${local.oidc_provider_id}:sub" = "system:serviceaccount:${var.k8s_namespace}:${var.k8s_agent_service_account}"
+        }
+      }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+# ─── Bedrock IAM (Agent) ──────────────────────────────────────────────────
+
+resource "aws_iam_role_policy" "bedrock" {
+  name = "bedrock-invoke"
+  role = aws_iam_role.irsa_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "BedrockInvoke"
+      Effect   = "Allow"
+      Action   = [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+      ]
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:*:inference-profile/*",
+      ]
+    }]
+  })
+}

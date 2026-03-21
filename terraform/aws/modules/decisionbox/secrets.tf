@@ -1,14 +1,10 @@
-# Secrets Manager IAM — grants the API's IRSA role permission to
-# create, read, and list secrets scoped to the configured namespace prefix.
-# The API itself creates and manages secrets at runtime (not Terraform).
+# Secrets Manager IAM — grants the API and Agent IRSA roles permission to
+# manage secrets scoped to the configured namespace prefix.
+# The API creates and manages secrets at runtime (not Terraform).
+# The Agent reads secrets (e.g., LLM API keys) during discovery runs.
 
-resource "aws_iam_role_policy" "secrets_manager" {
-  count = var.enable_aws_secrets ? 1 : 0
-
-  name = "secrets-manager"
-  role = aws_iam_role.irsa_api.id
-
-  policy = jsonencode({
+locals {
+  secrets_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -35,4 +31,20 @@ resource "aws_iam_role_policy" "secrets_manager" {
       },
     ]
   })
+}
+
+resource "aws_iam_role_policy" "secrets_manager" {
+  count = var.enable_aws_secrets ? 1 : 0
+
+  name   = "secrets-manager"
+  role   = aws_iam_role.irsa_api.id
+  policy = local.secrets_policy
+}
+
+resource "aws_iam_role_policy" "secrets_manager_agent" {
+  count = var.enable_aws_secrets ? 1 : 0
+
+  name   = "secrets-manager"
+  role   = aws_iam_role.irsa_agent.id
+  policy = local.secrets_policy
 }
