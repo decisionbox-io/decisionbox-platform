@@ -104,6 +104,18 @@ func TestVertexAIProvider_Registered(t *testing.T) {
 	}
 }
 
+func TestVertexAIProvider_Validate_UnsupportedModel(t *testing.T) {
+	p := &VertexAIProvider{
+		projectID: "test-project",
+		location:  "us-east5",
+		model:     "llama-3",
+	}
+	err := p.Validate(nil)
+	if err == nil {
+		t.Error("Validate should fail with unsupported model")
+	}
+}
+
 func TestVertexAIProvider_ConfigFields(t *testing.T) {
 	meta, ok := gollm.GetProviderMeta("vertex-ai")
 	if !ok {

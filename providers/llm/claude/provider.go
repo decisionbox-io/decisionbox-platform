@@ -99,6 +99,20 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 	}, nil
 }
 
+// Validate checks that the API key is valid by sending a minimal Chat request.
+// Uses max_tokens=1 to minimize token consumption.
+func (p *ClaudeProvider) Validate(ctx context.Context) error {
+	_, err := p.sendRequest(ctx, &claudeRequest{
+		Model:     p.model,
+		MaxTokens: 1,
+		Messages:  []claudeMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		return fmt.Errorf("claude: validation failed: %w", err)
+	}
+	return nil
+}
+
 // Chat sends a conversation to Claude and returns a response.
 func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if p.delayMs > 0 {

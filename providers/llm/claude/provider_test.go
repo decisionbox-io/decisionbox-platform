@@ -242,6 +242,18 @@ func TestChat_ServerDown(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidKey(t *testing.T) {
+	p, _ := NewClaudeProvider(ClaudeConfig{
+		APIKey:     "sk-ant-invalid",
+		MaxRetries: 1,
+		Timeout:    5_000_000_000,
+	})
+	err := p.Validate(context.Background())
+	if err == nil {
+		t.Error("Validate should error with invalid API key")
+	}
+}
+
 func TestDefaultPricing(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("claude")
 

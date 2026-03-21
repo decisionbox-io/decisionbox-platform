@@ -7,9 +7,9 @@ import {
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconCheck, IconDatabase, IconKey, IconPlus, IconSettings, IconShieldCheck } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconDatabase, IconKey, IconPlus, IconPlugConnected, IconSettings, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse } from '@/lib/api';
+import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -199,6 +199,8 @@ export default function ProjectSettingsPage() {
               <TextInput label="Filter Value" placeholder="my-app-123" value={filterValue}
                 onChange={(e) => setFilterValue(e.target.value)} />
             </Group>
+
+            <TestConnectionButton projectId={id} target="warehouse" />
           </SettingsSection>
         </Tabs.Panel>
 
@@ -223,6 +225,8 @@ export default function ProjectSettingsPage() {
                   value={llmConfig[field.key] || ''}
                   onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
               ))}
+
+            <TestConnectionButton projectId={id} target="llm" />
           </SettingsSection>
         </Tabs.Panel>
 
@@ -325,6 +329,61 @@ function SettingsSection({ children }: { children: React.ReactNode }) {
       maxWidth: 640,
     }}>
       <Stack gap="md">{children}</Stack>
+    </div>
+  );
+}
+
+function TestConnectionButton({ projectId, target }: { projectId: string; target: 'warehouse' | 'llm' }) {
+  const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const label = target === 'warehouse' ? 'Test Warehouse Connection' : 'Test AI Provider Connection';
+
+  const handleTest = async () => {
+    setStatus('testing');
+    setErrorMsg('');
+    try {
+      const result: TestConnectionResult = target === 'warehouse'
+        ? await api.testWarehouse(projectId)
+        : await api.testLLM(projectId);
+
+      if (result.success) {
+        setStatus('success');
+        notifications.show({ title: 'Connection successful', message: `${result.provider} is reachable`, color: 'green' });
+      } else {
+        setStatus('error');
+        setErrorMsg(result.error || 'Unknown error');
+      }
+    } catch (e: unknown) {
+      setStatus('error');
+      setErrorMsg((e as Error).message);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <Group gap="sm" align="center">
+        <button onClick={handleTest} disabled={status === 'testing'} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: 'none', color: 'var(--db-text-primary)',
+          border: '1px solid var(--db-border-default)', borderRadius: 6,
+          padding: '5px 12px', fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+          cursor: status === 'testing' ? 'default' : 'pointer',
+          opacity: status === 'testing' ? 0.6 : 1,
+          transition: 'all 120ms ease',
+        }}
+        onMouseEnter={e => { if (status !== 'testing') e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
+        >
+          {status === 'testing' ? <Loader size={14} /> : <IconPlugConnected size={14} />}
+          {status === 'testing' ? 'Testing...' : label}
+        </button>
+        {status === 'success' && <IconCheck size={16} color="var(--db-green-text)" />}
+        {status === 'error' && <IconX size={16} color="var(--db-red-text)" />}
+      </Group>
+      {status === 'error' && errorMsg && (
+        <Text size="xs" c="red" mt={6} style={{ maxWidth: 560, wordBreak: 'break-word' }}>{errorMsg}</Text>
+      )}
     </div>
   );
 }

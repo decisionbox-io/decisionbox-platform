@@ -84,6 +84,28 @@ func NewOpenAIProvider(apiKey, model, baseURL string) *OpenAIProvider {
 	}
 }
 
+// Validate checks that the API key is valid by listing models.
+// GET /v1/models — no token cost.
+func (p *OpenAIProvider) Validate(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	if err != nil {
+		return fmt.Errorf("openai: failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("openai: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("openai: validation failed (status %d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // chatRequest is the OpenAI chat completions request body.
 type chatRequest struct {
 	Model       string        `json:"model"`

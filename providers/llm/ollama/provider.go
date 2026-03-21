@@ -71,6 +71,28 @@ func NewOllamaProvider(host, model string) (*OllamaProvider, error) {
 	}, nil
 }
 
+// Validate checks that Ollama is reachable and the model is available.
+// Uses the List API — no inference cost.
+func (p *OllamaProvider) Validate(ctx context.Context) error {
+	list, err := p.client.List(ctx)
+	if err != nil {
+		return fmt.Errorf("ollama: cannot reach server: %w", err)
+	}
+
+	for _, m := range list.Models {
+		// Ollama model names may include tag (e.g., "qwen2.5:7b")
+		if m.Name == p.model || strings.HasPrefix(m.Name, p.model+":") {
+			return nil
+		}
+	}
+
+	available := make([]string, len(list.Models))
+	for i, m := range list.Models {
+		available[i] = m.Name
+	}
+	return fmt.Errorf("ollama: model %q not found (available: %v)", p.model, available)
+}
+
 // Chat sends a conversation to Ollama and returns the response.
 func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	model := req.Model

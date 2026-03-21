@@ -53,6 +53,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
 	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)
+	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
 
 	// Health endpoints
 	// /health and /health/ready — for K8s liveness/readiness probes (from go-common)
@@ -111,6 +112,10 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 
 	// Cost estimation
 	mux.HandleFunc("POST /api/v1/projects/{id}/discover/estimate", estimate.Estimate)
+
+	// Connection testing (runs agent subprocess with --test-connection)
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/warehouse", testConn.TestWarehouse)
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/llm", testConn.TestLLM)
 
 	// Secrets (per-project, no delete via API)
 	if secretProvider != nil {
