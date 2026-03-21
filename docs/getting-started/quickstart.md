@@ -31,20 +31,14 @@ Click **New Project** and fill in:
 
 1. **Basics** — Project name, domain (e.g., Gaming or Social Network), category (e.g., Match-3, Idle, Casual, Content Sharing)
 2. **Data Warehouse** — Select your warehouse provider and enter connection details
-3. **AI Provider** — Select your LLM provider and enter model name
+3. **AI Provider** — Select your LLM provider, model, and API key (Claude, OpenAI). Providers that use cloud auth (Vertex AI, Bedrock, Ollama) don't need a key.
 4. **Schedule** — Leave disabled for now (you'll trigger runs manually)
 
-Click **Create Project**.
+Click **Create Project**. Your API key is encrypted and stored per-project.
 
-## 3. Add Your API Key
+## 3. Verify Connection
 
-Go to **Settings** (left sidebar) → **Secrets** tab.
-
-1. Select **LLM API Key** from the dropdown
-2. Paste your API key (e.g., `sk-ant-...` for Claude, `sk-...` for OpenAI)
-3. Click **Save Secret**
-
-The key is encrypted and stored per-project. It's never exposed in full via the API.
+Go to **Settings** → **Data Warehouse** or **AI Provider** tab and click **Test Connection** to verify your setup works before running a discovery.
 
 ## 4. Run Your First Discovery
 
