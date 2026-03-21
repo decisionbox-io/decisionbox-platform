@@ -18,6 +18,7 @@ export default function ProjectSettingsPage() {
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Form state
@@ -108,6 +109,7 @@ export default function ProjectSettingsPage() {
         profile,
       });
 
+      setDirty(false);
       notifications.show({ title: 'Saved', message: 'Project settings updated', color: 'green' });
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
@@ -175,7 +177,7 @@ export default function ProjectSettingsPage() {
         <Tabs.Panel value="warehouse">
           <SettingsSection>
             <Select label="Provider" data={warehouseProviders.map((p) => ({ value: p.id, label: p.name }))}
-              value={whProvider} onChange={(v) => setWhProvider(v || '')} />
+              value={whProvider} onChange={(v) => { setWhProvider(v || ''); setDirty(true); }} />
             {selectedWh?.description && <Text size="xs" c="dimmed">{selectedWh.description}</Text>}
 
             {selectedWh?.config_fields
@@ -183,23 +185,23 @@ export default function ProjectSettingsPage() {
               .map((field) => (
                 <DynamicField key={field.key} field={field}
                   value={whConfig[field.key] || ''}
-                  onChange={(val) => setWhConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                  onChange={(val) => { setWhConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
               ))}
 
             <TextInput label="Datasets" description="Comma-separated dataset names"
               placeholder="events_prod, features_prod"
-              value={datasets} onChange={(e) => setDatasets(e.target.value)} />
+              value={datasets} onChange={(e) => { setDatasets(e.target.value); setDirty(true); }} />
 
             <div style={{ fontSize: 13, fontWeight: 500, marginTop: 8 }}>Filter (optional)</div>
             <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
             <Group grow>
               <TextInput label="Filter Field" placeholder="app_id" value={filterField}
-                onChange={(e) => setFilterField(e.target.value)} />
+                onChange={(e) => { setFilterField(e.target.value); setDirty(true); }} />
               <TextInput label="Filter Value" placeholder="my-app-123" value={filterValue}
-                onChange={(e) => setFilterValue(e.target.value)} />
+                onChange={(e) => { setFilterValue(e.target.value); setDirty(true); }} />
             </Group>
 
-            <TestConnectionButton projectId={id} target="warehouse" />
+            <TestConnectionButton projectId={id} target="warehouse" disabled={dirty} />
           </SettingsSection>
         </Tabs.Panel>
 
@@ -211,10 +213,11 @@ export default function ProjectSettingsPage() {
                 setLlmProvider(v || '');
                 setLlmModel('');
                 setLlmConfig({});
+                setDirty(true);
               }} />
             {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
 
-            <TextInput label="Model" value={llmModel} onChange={(e) => setLlmModel(e.target.value)}
+            <TextInput label="Model" value={llmModel} onChange={(e) => { setLlmModel(e.target.value); setDirty(true); }}
               placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro" />
 
             {selectedLlm?.config_fields
@@ -222,10 +225,10 @@ export default function ProjectSettingsPage() {
               .map((field) => (
                 <DynamicField key={field.key} field={field}
                   value={llmConfig[field.key] || ''}
-                  onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
               ))}
 
-            <TestConnectionButton projectId={id} target="llm" />
+            <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
           </SettingsSection>
         </Tabs.Panel>
 
@@ -325,7 +328,9 @@ function SettingsSection({ children }: { children: React.ReactNode }) {
   );
 }
 
-function TestConnectionButton({ projectId, target }: { projectId: string; target: 'warehouse' | 'llm' }) {
+function TestConnectionButton({ projectId, target, disabled }: {
+  projectId: string; target: 'warehouse' | 'llm'; disabled?: boolean;
+}) {
   const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -355,16 +360,16 @@ function TestConnectionButton({ projectId, target }: { projectId: string; target
   return (
     <div style={{ marginTop: 4 }}>
       <Group gap="sm" align="center">
-        <button onClick={handleTest} disabled={status === 'testing'} style={{
+        <button onClick={handleTest} disabled={disabled || status === 'testing'} style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           background: 'none', color: 'var(--db-text-primary)',
           border: '1px solid var(--db-border-default)', borderRadius: 6,
           padding: '5px 12px', fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
-          cursor: status === 'testing' ? 'default' : 'pointer',
-          opacity: status === 'testing' ? 0.6 : 1,
+          cursor: disabled || status === 'testing' ? 'default' : 'pointer',
+          opacity: disabled || status === 'testing' ? 0.5 : 1,
           transition: 'all 120ms ease',
         }}
-        onMouseEnter={e => { if (status !== 'testing') e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
+        onMouseEnter={e => { if (!disabled && status !== 'testing') e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
         onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
         >
           {status === 'testing' ? <Loader size={14} /> : <IconPlugConnected size={14} />}
@@ -373,6 +378,7 @@ function TestConnectionButton({ projectId, target }: { projectId: string; target
         {status === 'success' && <IconCheck size={16} color="var(--db-green-text)" />}
         {status === 'error' && <IconX size={16} color="var(--db-red-text)" />}
       </Group>
+      {disabled && <Text size="xs" c="dimmed">Save settings first to test the connection.</Text>}
       {status === 'error' && errorMsg && (
         <Text size="xs" c="red" mt={6} style={{ maxWidth: 560, wordBreak: 'break-word' }}>{errorMsg}</Text>
       )}
