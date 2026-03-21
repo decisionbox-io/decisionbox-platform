@@ -582,6 +582,59 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
 
 ---
 
+## Connection Testing
+
+### POST /api/v1/projects/{id}/test/warehouse
+
+Test the warehouse connection for a project.
+Spawns the agent with `--test-connection warehouse` to validate using the agent's IAM context.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test/warehouse
+```
+
+```json
+{
+  "data": {
+    "success": true,
+    "provider": "bigquery",
+    "datasets": ["events_prod"]
+  }
+}
+```
+
+On failure:
+
+```json
+{
+  "data": {
+    "success": false,
+    "error": "bigquery: cannot access dataset events_prod: googleapi: Error 403: Access Denied"
+  }
+}
+```
+
+### POST /api/v1/projects/{id}/test/llm
+
+Test the LLM provider connection for a project.
+Spawns the agent with `--test-connection llm` to validate credentials and model access.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test/llm
+```
+
+```json
+{
+  "data": {
+    "success": true,
+    "provider": "claude",
+    "model": "claude-sonnet-4-20250514"
+  }
+}
+```
+
+---
+
 ## Secrets
 
 ### PUT /api/v1/projects/{id}/secrets/{key}
@@ -593,11 +646,6 @@ Create or update a per-project secret. The value is encrypted at rest.
 curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets/llm-api-key \
   -H "Content-Type: application/json" \
   -d '{"value": "sk-ant-api03-..."}'
-
-# Set warehouse credentials
-curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets/warehouse-credentials \
-  -H "Content-Type: application/json" \
-  -d '{"value": "{\"type\":\"service_account\",\"project_id\":\"...\"}"}'
 ```
 
 ### GET /api/v1/projects/{id}/secrets

@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recommendation-to-insight linking with cross-references in UI
 - Selective discovery (run specific analysis areas)
 - Live discovery progress with phase tracking, step details, and expandable SQL
+- Test Connection buttons for LLM and warehouse providers in project settings
+- LLM API key input during project creation (conditional — only for providers that need one)
+- `Validate(ctx)` method on LLM Provider interface for credential verification
+- `RunSync` on Runner interface for synchronous agent invocations (test connection)
 - K8s runner for production (API creates K8s Jobs per discovery)
 - Subprocess runner for local development
 - Docker Compose setup for local development
