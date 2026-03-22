@@ -52,7 +52,7 @@ func init() {
 
 // OllamaProvider implements llm.Provider using a local Ollama instance.
 type OllamaProvider struct {
-	client *ollamaapi.Client
+	client ollamaClient
 	model  string
 }
 

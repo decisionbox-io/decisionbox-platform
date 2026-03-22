@@ -50,7 +50,7 @@ type secretDoc struct {
 
 // MongoProvider implements secrets.Provider with AES-256-GCM encryption.
 type MongoProvider struct {
-	col       *mongo.Collection
+	col       secretCollection
 	namespace string
 	gcm       cipher.AEAD // nil if no encryption key
 }

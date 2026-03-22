@@ -38,7 +38,7 @@ func init() {
 
 // GCPProvider implements secrets.Provider using Google Cloud Secret Manager.
 type GCPProvider struct {
-	client    *secretmanager.Client
+	client     smClient
 	gcpProject string
 	namespace  string
 }
@@ -60,7 +60,7 @@ func NewGCPProvider(ctx context.Context, gcpProject, namespace string) (*GCPProv
 }
 
 // NewGCPProviderWithClient creates a provider with a custom client (for testing with emulators).
-func NewGCPProviderWithClient(client *secretmanager.Client, gcpProject, namespace string) *GCPProvider {
+func NewGCPProviderWithClient(client smClient, gcpProject, namespace string) *GCPProvider {
 	if namespace == "" {
 		namespace = "decisionbox"
 	}

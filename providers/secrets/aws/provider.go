@@ -37,7 +37,7 @@ func init() {
 
 // AWSProvider implements secrets.Provider using AWS Secrets Manager.
 type AWSProvider struct {
-	client    *secretsmanager.Client
+	client    smClient
 	namespace string
 }
 
@@ -57,7 +57,7 @@ func NewAWSProvider(ctx context.Context, region, namespace string) (*AWSProvider
 }
 
 // NewAWSProviderWithClient creates a provider with a custom client (for testing with LocalStack).
-func NewAWSProviderWithClient(client *secretsmanager.Client, namespace string) *AWSProvider {
+func NewAWSProviderWithClient(client smClient, namespace string) *AWSProvider {
 	if namespace == "" {
 		namespace = "decisionbox"
 	}

@@ -66,7 +66,7 @@ type BigQueryConfig struct {
 
 // BigQueryProvider implements warehouse.Provider for Google BigQuery.
 type BigQueryProvider struct {
-	client  *bq.Client
+	client  bqClient
 	dataset string
 	config  BigQueryConfig
 }

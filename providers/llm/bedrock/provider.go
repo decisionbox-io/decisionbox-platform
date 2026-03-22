@@ -80,7 +80,7 @@ func init() {
 // BedrockProvider implements llm.Provider for AWS Bedrock.
 // Routes to different API formats based on model prefix.
 type BedrockProvider struct {
-	client     *bedrockruntime.Client
+	client     bedrockClient
 	region     string
 	model      string
 	httpClient *http.Client
