@@ -271,3 +271,194 @@ func TestAnalysisAreaPriorityOrdering(t *testing.T) {
 		prevPriority = a.Priority
 	}
 }
+
+func TestAllAreasHaveNonEmptyPrompts(t *testing.T) {
+	pack := NewPack()
+
+	// Test base prompts
+	basePrompts := pack.Prompts("")
+	baseAreas := pack.AnalysisAreas("")
+	for _, area := range baseAreas {
+		content, ok := basePrompts.AnalysisAreas[area.ID]
+		if !ok {
+			t.Errorf("base area %q has no analysis prompt", area.ID)
+			continue
+		}
+		if content == "" {
+			t.Errorf("base area %q has empty analysis prompt", area.ID)
+		}
+	}
+
+	// Test content_sharing prompts
+	csPrompts := pack.Prompts("content_sharing")
+	csAreas := pack.AnalysisAreas("content_sharing")
+	for _, area := range csAreas {
+		content, ok := csPrompts.AnalysisAreas[area.ID]
+		if !ok {
+			t.Errorf("content_sharing area %q has no analysis prompt", area.ID)
+			continue
+		}
+		if content == "" {
+			t.Errorf("content_sharing area %q has empty analysis prompt", area.ID)
+		}
+	}
+
+	// Verify exploration and recommendation prompts are non-empty
+	if csPrompts.Exploration == "" {
+		t.Error("content_sharing Exploration prompt is empty")
+	}
+	if csPrompts.Recommendations == "" {
+		t.Error("content_sharing Recommendations prompt is empty")
+	}
+	if csPrompts.BaseContext == "" {
+		t.Error("content_sharing BaseContext is empty")
+	}
+}
+
+func TestProfileSchema_JSONSchemaFields(t *testing.T) {
+	pack := NewPack()
+
+	tests := []struct {
+		name       string
+		categoryID string
+	}{
+		{"base schema", ""},
+		{"content_sharing schema", "content_sharing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := pack.ProfileSchema(tt.categoryID)
+
+			if _, ok := schema["error"]; ok {
+				t.Fatalf("ProfileSchema returned error: %v", schema["error"])
+			}
+
+			// Check $schema field
+			schemaURI, ok := schema["$schema"]
+			if !ok {
+				t.Error("schema missing $schema field")
+			} else {
+				s, ok := schemaURI.(string)
+				if !ok {
+					t.Error("$schema field is not a string")
+				} else if !strings.Contains(s, "json-schema.org") {
+					t.Errorf("$schema = %q, expected JSON Schema URI", s)
+				}
+			}
+
+			// Check type field
+			schemaType, ok := schema["type"]
+			if !ok {
+				t.Error("schema missing type field")
+			} else if schemaType != "object" {
+				t.Errorf("type = %q, want %q", schemaType, "object")
+			}
+
+			// Check properties field
+			props, ok := schema["properties"]
+			if !ok {
+				t.Error("schema missing properties field")
+			} else {
+				propsMap, ok := props.(map[string]interface{})
+				if !ok {
+					t.Error("properties is not a map")
+				} else if len(propsMap) == 0 {
+					t.Error("properties map is empty")
+				}
+			}
+		})
+	}
+}
+
+func TestProfileSchema_UnknownCategory(t *testing.T) {
+	pack := NewPack()
+	schema := pack.ProfileSchema("nonexistent")
+
+	// Should return base schema without error
+	if _, ok := schema["error"]; ok {
+		t.Fatalf("ProfileSchema returned error for unknown category: %v", schema["error"])
+	}
+
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("schema has no properties")
+	}
+
+	// Should have base properties
+	for _, expected := range []string{"platform_info", "engagement_model", "monetization", "kpis"} {
+		if _, ok := props[expected]; !ok {
+			t.Errorf("missing base property: %s", expected)
+		}
+	}
+}
+
+func TestAnalysisAreas_DescriptionNonEmpty(t *testing.T) {
+	pack := NewPack()
+	areas := pack.AnalysisAreas("content_sharing")
+
+	for _, a := range areas {
+		if a.Description == "" {
+			t.Errorf("area %q has empty Description", a.ID)
+		}
+		if a.ID == "" {
+			t.Error("found area with empty ID")
+		}
+	}
+}
+
+func TestPrompts_WithMissingDomainPackPath(t *testing.T) {
+	// Temporarily set DOMAIN_PACK_PATH to a nonexistent directory
+	origPath := os.Getenv("DOMAIN_PACK_PATH")
+	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
+	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+
+	pack := NewPack()
+
+	// All prompts should return empty strings gracefully
+	prompts := pack.Prompts("content_sharing")
+	if prompts.Exploration != "" {
+		t.Error("expected empty Exploration with invalid path")
+	}
+	if prompts.Recommendations != "" {
+		t.Error("expected empty Recommendations with invalid path")
+	}
+	if prompts.BaseContext != "" {
+		t.Error("expected empty BaseContext with invalid path")
+	}
+	if len(prompts.AnalysisAreas) != 0 {
+		t.Errorf("expected empty AnalysisAreas, got %d", len(prompts.AnalysisAreas))
+	}
+}
+
+func TestAnalysisAreas_WithMissingDomainPackPath(t *testing.T) {
+	origPath := os.Getenv("DOMAIN_PACK_PATH")
+	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
+	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+
+	pack := NewPack()
+	areas := pack.AnalysisAreas("content_sharing")
+	if len(areas) != 0 {
+		t.Errorf("expected 0 areas with invalid path, got %d", len(areas))
+	}
+}
+
+func TestProfileSchema_WithMissingDomainPackPath(t *testing.T) {
+	origPath := os.Getenv("DOMAIN_PACK_PATH")
+	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
+	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+
+	pack := NewPack()
+	schema := pack.ProfileSchema("")
+
+	// Should return error map when base schema not found
+	errVal, ok := schema["error"]
+	if !ok {
+		t.Error("expected error key in schema when path is invalid")
+	}
+	if errStr, ok := errVal.(string); ok {
+		if !strings.Contains(errStr, "base schema not found") {
+			t.Errorf("error = %q, should mention 'base schema not found'", errStr)
+		}
+	}
+}

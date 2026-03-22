@@ -261,17 +261,40 @@ jobs:
           MONGODB_URI: mongodb://localhost:27017
           MONGODB_DB: decisionbox_test
         run: |
-          (cd services/agent && go test -tags=integration -count=1 -timeout=5m .)
-          (cd services/agent && go test -tags=integration -count=1 -timeout=5m ./internal/database/)
+          COV="${GITHUB_WORKSPACE}/coverage"
+          mkdir -p "$COV"
+          (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-integ.txt" .)
+          (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-db-integ.txt" ./internal/database/)
 
       - name: API integration tests
         env:
           MONGODB_URI: mongodb://localhost:27017
           MONGODB_DB: decisionbox_test
-        run: cd services/api && go test -tags=integration -count=1 -timeout=5m .
+        run: |
+          COV="${GITHUB_WORKSPACE}/coverage"
+          mkdir -p "$COV"
+          cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-integ.txt" .
 
       - name: Secrets provider integration tests
         env:
           MONGODB_URI: mongodb://localhost:27017
           MONGODB_DB: decisionbox_test
-        run: cd providers/secrets/mongodb && go test -tags=integration -count=1 -timeout=5m ./...
+        run: |
+          COV="${GITHUB_WORKSPACE}/coverage"
+          mkdir -p "$COV"
+          cd providers/secrets/mongodb && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/secrets-mongodb-integ.txt" ./...
+
+      - name: Merge integration coverage profiles
+        run: |
+          echo "mode: set" > coverage/coverage.txt
+          for f in coverage/*-integ.txt; do
+            [ -f "$f" ] || continue
+            tail -n +2 "$f" | sed 's|github.com/decisionbox-io/decisionbox/||g' >> coverage/coverage.txt
+          done
+
+      - name: Upload integration coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/coverage.txt
+          flags: integration
+          token: ${{ secrets.CODECOV_TOKEN }}

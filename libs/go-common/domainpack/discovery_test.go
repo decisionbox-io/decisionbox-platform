@@ -1,6 +1,7 @@
 package domainpack
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,74 @@ func TestRegisteredPacks(t *testing.T) {
 	}
 	if !found {
 		t.Error("should find registered test pack")
+	}
+}
+
+func TestRegister_PanicOnNil(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Register(nil) should panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Errorf("panic value should be a string, got %T", r)
+			return
+		}
+		if msg != "domainpack: Register pack is nil for nil-test" {
+			t.Errorf("unexpected panic message: %s", msg)
+		}
+	}()
+	Register("nil-test", nil)
+}
+
+func TestRegister_PanicOnDuplicate(t *testing.T) {
+	// First register a unique pack name for this test
+	const name = "dup-test"
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Register duplicate should panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Errorf("panic value should be a string, got %T", r)
+			return
+		}
+		if msg != "domainpack: Register called twice for "+name {
+			t.Errorf("unexpected panic message: %s", msg)
+		}
+	}()
+	Register(name, &mockPack{name: name})
+	Register(name, &mockPack{name: name}) // should panic
+}
+
+func TestGet_NonExistent(t *testing.T) {
+	pack, err := Get("absolutely-nonexistent-domain-pack-xyz")
+	if err == nil {
+		t.Error("Get for nonexistent pack should return error")
+	}
+	if pack != nil {
+		t.Error("Get for nonexistent pack should return nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "unknown domain") {
+		t.Errorf("error should mention 'unknown domain', got: %s", err.Error())
+	}
+}
+
+func TestGet_RegisteredPack(t *testing.T) {
+	const name = "get-test-pack"
+	defer func() { recover() }() // in case already registered from prior run
+	Register(name, &mockDiscoveryPack{name: name})
+
+	pack, err := Get(name)
+	if err != nil {
+		t.Fatalf("Get(%q) error: %v", name, err)
+	}
+	if pack == nil {
+		t.Fatal("Get should return non-nil pack")
+	}
+	if pack.Name() != name {
+		t.Errorf("pack.Name() = %q, want %q", pack.Name(), name)
 	}
 }

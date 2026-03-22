@@ -1,6 +1,6 @@
 codecov:
   notify:
-    after_n_builds: 2
+    after_n_builds: 3
 
 coverage:
   status:
@@ -18,6 +18,12 @@ flags:
       - services/
       - providers/
       - domain-packs/
+    carryforward: true
+  integration:
+    paths:
+      - libs/
+      - services/
+      - providers/
     carryforward: true
   dashboard:
     paths:
