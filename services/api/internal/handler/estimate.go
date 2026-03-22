@@ -16,10 +16,10 @@ import (
 
 // EstimateHandler handles cost estimation endpoints.
 type EstimateHandler struct {
-	projectRepo *database.ProjectRepository
+	projectRepo database.ProjectRepo
 }
 
-func NewEstimateHandler(projectRepo *database.ProjectRepository) *EstimateHandler {
+func NewEstimateHandler(projectRepo database.ProjectRepo) *EstimateHandler {
 	return &EstimateHandler{projectRepo: projectRepo}
 }
 

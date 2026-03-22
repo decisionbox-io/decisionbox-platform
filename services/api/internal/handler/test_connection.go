@@ -14,11 +14,11 @@ import (
 // TestConnectionHandler handles provider test endpoints.
 // Tests run via the Runner interface (subprocess or K8s Job).
 type TestConnectionHandler struct {
-	projectRepo *database.ProjectRepository
+	projectRepo database.ProjectRepo
 	runner      runner.Runner
 }
 
-func NewTestConnectionHandler(projectRepo *database.ProjectRepository, r runner.Runner) *TestConnectionHandler {
+func NewTestConnectionHandler(projectRepo database.ProjectRepo, r runner.Runner) *TestConnectionHandler {
 	return &TestConnectionHandler{projectRepo: projectRepo, runner: r}
 }
 

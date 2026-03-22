@@ -13,7 +13,7 @@ import (
 
 // SeedPricingFromProviders collects default pricing from all registered providers
 // and seeds it to MongoDB if not already present.
-func SeedPricingFromProviders(ctx context.Context, repo *database.PricingRepository) {
+func SeedPricingFromProviders(ctx context.Context, repo database.PricingRepo) {
 	existing, _ := repo.Get(ctx)
 	if existing != nil {
 		return // already seeded
@@ -60,10 +60,10 @@ func SeedPricingFromProviders(ctx context.Context, repo *database.PricingReposit
 
 // PricingHandler handles pricing CRUD.
 type PricingHandler struct {
-	repo *database.PricingRepository
+	repo database.PricingRepo
 }
 
-func NewPricingHandler(repo *database.PricingRepository) *PricingHandler {
+func NewPricingHandler(repo database.PricingRepo) *PricingHandler {
 	return &PricingHandler{repo: repo}
 }
 

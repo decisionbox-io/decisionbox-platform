@@ -22,13 +22,13 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo        *database.DiscoveryRepository
-	projectRepo *database.ProjectRepository
-	runRepo     *database.RunRepository
+	repo        database.DiscoveryRepo
+	projectRepo database.ProjectRepo
+	runRepo     database.RunRepo
 	agentRunner runner.Runner
 }
 
-func NewDiscoveriesHandler(repo *database.DiscoveryRepository, projectRepo *database.ProjectRepository, runRepo *database.RunRepository, r runner.Runner) *DiscoveriesHandler {
+func NewDiscoveriesHandler(repo database.DiscoveryRepo, projectRepo database.ProjectRepo, runRepo database.RunRepo, r runner.Runner) *DiscoveriesHandler {
 	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, agentRunner: r}
 }
 

@@ -11,10 +11,10 @@ import (
 
 // ProjectsHandler handles project CRUD endpoints.
 type ProjectsHandler struct {
-	repo *database.ProjectRepository
+	repo database.ProjectRepo
 }
 
-func NewProjectsHandler(repo *database.ProjectRepository) *ProjectsHandler {
+func NewProjectsHandler(repo database.ProjectRepo) *ProjectsHandler {
 	return &ProjectsHandler{repo: repo}
 }
 

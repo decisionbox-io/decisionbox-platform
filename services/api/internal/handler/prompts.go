@@ -54,7 +54,7 @@ func SeedProjectPrompts(project *models.Project) {
 
 // GetPrompts returns the prompts for a project.
 // GET /api/v1/projects/{id}/prompts
-func GetPrompts(projectRepo *database.ProjectRepository) http.HandlerFunc {
+func GetPrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
@@ -78,7 +78,7 @@ func GetPrompts(projectRepo *database.ProjectRepository) http.HandlerFunc {
 
 // UpdatePrompts updates the prompts for a project.
 // PUT /api/v1/projects/{id}/prompts
-func UpdatePrompts(projectRepo *database.ProjectRepository) http.HandlerFunc {
+func UpdatePrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 

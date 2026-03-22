@@ -10,10 +10,10 @@ import (
 
 // FeedbackHandler handles feedback endpoints.
 type FeedbackHandler struct {
-	repo *database.FeedbackRepository
+	repo database.FeedbackRepo
 }
 
-func NewFeedbackHandler(repo *database.FeedbackRepository) *FeedbackHandler {
+func NewFeedbackHandler(repo database.FeedbackRepo) *FeedbackHandler {
 	return &FeedbackHandler{repo: repo}
 }
 

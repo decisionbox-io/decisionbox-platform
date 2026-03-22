@@ -11,10 +11,10 @@ import (
 // SecretsHandler handles per-project secret management.
 type SecretsHandler struct {
 	secretProvider secrets.Provider
-	projectRepo    *database.ProjectRepository
+	projectRepo    database.ProjectRepo
 }
 
-func NewSecretsHandler(sp secrets.Provider, projectRepo *database.ProjectRepository) *SecretsHandler {
+func NewSecretsHandler(sp secrets.Provider, projectRepo database.ProjectRepo) *SecretsHandler {
 	return &SecretsHandler{secretProvider: sp, projectRepo: projectRepo}
 }
 
