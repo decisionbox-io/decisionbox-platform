@@ -184,9 +184,16 @@ variable "enable_aws_secrets" {
 }
 
 variable "secret_namespace" {
-  description = "Namespace prefix for AWS Secrets Manager secrets (e.g., decisionbox). The API creates secrets named {namespace}-{projectID}-{key}."
+  description = "Namespace prefix for AWS Secrets Manager secrets (e.g., decisionbox). The API creates secrets named {namespace}/{projectID}/{key}."
   type        = string
   default     = "decisionbox"
+}
+
+# Optional: Bedrock IAM
+variable "enable_bedrock_iam" {
+  description = "Grant Bedrock InvokeModel access to the agent IRSA role"
+  type        = bool
+  default     = false
 }
 
 # Optional: Redshift IAM

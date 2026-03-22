@@ -13,7 +13,7 @@ Provision a production-ready EKS cluster for DecisionBox using the included Terr
 | **EKS cluster** | Private API + public endpoint, KMS-encrypted secrets, control plane logging |
 | **Managed node group** | Auto-scaling with configurable instance type and disk |
 | **KMS keys** | Encryption for EKS secrets and CloudWatch logs |
-| **IAM roles** | Cluster role, node role, OIDC provider, IRSA role for API |
+| **IAM roles** | Cluster role, node role, OIDC provider, IRSA roles for API + Agent, LB controller |
 | **VPC flow logs** | Traffic logging to CloudWatch (optional) |
 
 ## Prerequisites
@@ -47,15 +47,9 @@ aws s3api create-bucket --bucket $BUCKET --region $REGION
 aws s3api put-bucket-versioning --bucket $BUCKET --versioning-configuration Status=Enabled
 aws s3api put-public-access-block --bucket $BUCKET \
   --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-
-# Create DynamoDB table for state locking
-aws dynamodb create-table \
-  --table-name terraform-state-lock \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region $REGION
 ```
+
+State locking uses S3-native locking (`use_lockfile=true`, Terraform 1.10+) — no DynamoDB table needed.
 
 ### Step 2: Configure Variables
 
@@ -84,12 +78,16 @@ desired_node_count = 2
 disk_size_gb       = 50
 
 # IRSA
-k8s_namespace       = "decisionbox"
-k8s_service_account = "decisionbox-api"
+k8s_namespace              = "decisionbox"
+k8s_service_account        = "decisionbox-api"
+k8s_agent_service_account  = "decisionbox-agent"
 
 # Optional: AWS Secrets Manager
 enable_aws_secrets = true
 secret_namespace   = "decisionbox"
+
+# Optional: Bedrock (LLM)
+enable_bedrock_iam = false
 
 # Optional: Redshift read access
 enable_redshift_iam = false
@@ -109,8 +107,7 @@ cd terraform/aws/prod
 terraform init \
   -backend-config="bucket=$BUCKET" \
   -backend-config="key=prod/terraform.tfstate" \
-  -backend-config="region=$REGION" \
-  -backend-config="dynamodb_table=terraform-state-lock"
+  -backend-config="region=$REGION"
 
 terraform plan -out=tfplan
 terraform apply tfplan
@@ -136,10 +133,11 @@ serviceAccountAnnotations:
   eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/decisionbox-prod-api"
 ```
 
-Get the IRSA role ARN from Terraform output:
+Get the IRSA role ARNs from Terraform output:
 
 ```bash
 terraform output irsa_role_arn
+terraform output irsa_agent_role_arn
 ```
 
 ## Module Architecture
@@ -151,7 +149,7 @@ terraform/aws/
 │   ├── variables.tf     # Environment-level variables
 │   ├── main.tf          # Module instantiation
 │   ├── outputs.tf       # Cluster outputs
-│   └── terraform.tfvars.example
+│   └── terraform.tfvars.example  # Copy and edit for your environment
 └── modules/decisionbox/
     ├── vpc.tf            # VPC, subnets, NAT, IGW, route tables, flow logs
     ├── eks.tf            # EKS cluster, KMS, node group, security group
@@ -218,10 +216,12 @@ Set `region` and `cluster_name` to match your environment.
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `k8s_namespace` | string | `decisionbox` | Kubernetes namespace for IRSA |
-| `k8s_service_account` | string | `decisionbox-api` | K8s service account name |
+| `k8s_service_account` | string | `decisionbox-api` | K8s service account name (API) |
+| `k8s_agent_service_account` | string | `decisionbox-agent` | K8s service account name (Agent) |
 | `enable_aws_secrets` | bool | `false` | Grant Secrets Manager access |
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM scoping |
-| `enable_redshift_iam` | bool | `false` | Grant Redshift Data API read access |
+| `enable_bedrock_iam` | bool | `false` | Grant Bedrock InvokeModel access (Agent) |
+| `enable_redshift_iam` | bool | `false` | Grant Redshift Data API read access (Agent) |
 
 ### Tags
 
@@ -240,37 +240,53 @@ Set `region` and `cluster_name` to match your environment.
 | `private_subnet_ids` | No | Private subnet IDs |
 | `public_subnet_ids` | No | Public subnet IDs |
 | `irsa_role_arn` | No | IRSA role ARN for DecisionBox API |
+| `irsa_agent_role_arn` | No | IRSA role ARN for DecisionBox Agent |
 | `oidc_provider_arn` | No | OIDC provider ARN |
+| `lb_controller_role_arn` | No | IAM role ARN for AWS Load Balancer Controller |
 | `aws_secrets_iam_enabled` | No | Whether Secrets Manager IAM was configured |
 | `redshift_iam_enabled` | No | Whether Redshift IAM was configured |
 
 ## IRSA (IAM Roles for Service Accounts)
 
-The module creates an OIDC provider and an IAM role bound to the API's Kubernetes service account via [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html).
-This allows the API pod to authenticate to AWS services (Secrets Manager, Redshift) without storing credentials.
+The module creates an OIDC provider and two IAM roles bound to Kubernetes service accounts via [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html).
+This allows pods to authenticate to AWS services without storing credentials.
 
 ```
 K8s ServiceAccount: decisionbox/decisionbox-api
     ↕ IRSA binding (OIDC)
 IAM Role: decisionbox-prod-api
     ↓ IAM policies
-AWS Secrets Manager (namespace-scoped)
+AWS Secrets Manager (read/write, namespace-scoped)
+
+K8s ServiceAccount: decisionbox/decisionbox-agent
+    ↕ IRSA binding (OIDC)
+IAM Role: decisionbox-prod-agent
+    ↓ IAM policies
+AWS Secrets Manager (read-only, namespace-scoped)
+Amazon Bedrock (InvokeModel)
 Amazon Redshift Data API (read-only)
 ```
 
-The Helm chart must annotate the K8s service account:
+The Helm chart must annotate both K8s service accounts:
 
 ```yaml
+# API service account
 serviceAccountAnnotations:
   eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/decisionbox-prod-api"
+
+# Agent service account
+agentServiceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/decisionbox-prod-agent"
 ```
 
 ## Secrets Manager Scoping
 
-When `enable_aws_secrets=true`, the module creates IAM policies that restrict the API to secrets prefixed with the configured namespace:
+When `enable_aws_secrets=true`, the module creates IAM policies scoped to the configured namespace prefix.
+The API gets read/write access; the Agent gets read-only access.
 
-- **Allowed**: `decisionbox-project123-llm-api-key`
-- **Blocked**: `other-app-database-password`
+- **Allowed**: `decisionbox/project123/llm-api-key`
+- **Blocked**: `other-app/database-password`
 
 This ensures multi-tenant isolation when multiple applications share an AWS account.
 

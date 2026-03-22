@@ -34,7 +34,7 @@ for arg in "$@"; do
       echo "  --destroy      Tear down everything (Helm releases, K8s namespace, Terraform resources)"
       echo ""
       echo "This wizard will:"
-      echo "  1. Check prerequisites (terraform, gcloud, kubectl, helm)"
+      echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
       echo "  2. Select cloud provider"
       echo "  3. Configure secrets"
       echo "  4. Configure cloud provider settings"
@@ -365,6 +365,7 @@ do_step_4_provider_config() {
     fi
 
     echo ""
+    prompt_boolean BEDROCK_IAM "Enable Bedrock IAM for LLM access?" "${BEDROCK_IAM:-false}" || return 1
     prompt_boolean REDSHIFT_IAM "Enable Redshift IAM for data warehouse access?" "${REDSHIFT_IAM:-false}" || return 1
   fi
 }
@@ -584,6 +585,7 @@ do_step_7_review() {
     echo -e "  ${BOLD}K8s namespace:${NC}      ${K8S_NS}"
     echo -e "  ${BOLD}Instance type:${NC}      ${INSTANCE_TYPE}"
     echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES} (desired: ${DESIRED_NODES})"
+    echo -e "  ${BOLD}Bedrock IAM:${NC}        ${BEDROCK_IAM}"
     echo -e "  ${BOLD}Redshift IAM:${NC}       ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
   fi
@@ -711,6 +713,7 @@ k8s_namespace = "${K8S_NS}"
 # Optional features
 enable_aws_secrets  = ${ENABLE_SECRETS}
 secret_namespace    = "${SECRET_NS}"
+enable_bedrock_iam  = ${BEDROCK_IAM}
 enable_redshift_iam = ${REDSHIFT_IAM}
 EOF
 
@@ -1179,8 +1182,6 @@ if [[ "$DESTROY" == "true" ]]; then
   echo ""
 
   # Detect which provider was used
-  parse_tfvar() { grep "^${1}\s*=" "$1_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
-
   GCP_TFVARS="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
   AWS_TFVARS="${SCRIPT_DIR}/aws/prod/terraform.tfvars"
 
@@ -1210,31 +1211,40 @@ if [[ "$DESTROY" == "true" ]]; then
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
-  ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
-  BQ_IAM=$(parse_tfvar enable_bigquery_iam)
-  VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
 
   if [[ "$CLOUD" == "gcp" ]]; then
     PROJECT_ID=$(parse_tfvar project_id)
+    ENABLE_SECRETS=$(parse_tfvar enable_gcp_secrets)
+    BQ_IAM=$(parse_tfvar enable_bigquery_iam)
+    VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
     if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" ]]; then
       err "Failed to parse config from ${TFVARS_FILE}"
       exit 1
     fi
     echo -e "  ${BOLD}Provider:${NC}    GCP"
     echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+    echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}Region:${NC}      ${REGION}"
+    echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+    echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+    echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
+    echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
   elif [[ "$CLOUD" == "aws" ]]; then
+    ENABLE_SECRETS=$(parse_tfvar enable_aws_secrets)
+    REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
+    BEDROCK_IAM=$(parse_tfvar enable_bedrock_iam)
     if [[ -z "$CLUSTER_NAME" ]]; then
       err "Failed to parse config from ${TFVARS_FILE}"
       exit 1
     fi
     echo -e "  ${BOLD}Provider:${NC}    AWS"
+    echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}Region:${NC}      ${REGION}"
+    echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+    echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+    echo -e "  ${BOLD}Redshift:${NC}    ${REDSHIFT_IAM}"
+    echo -e "  ${BOLD}Bedrock:${NC}     ${BEDROCK_IAM}"
   fi
-  echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
-  echo -e "  ${BOLD}Region:${NC}      ${REGION}"
-  echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
-  echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
-  echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
-  echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
   echo ""
 
   prompt CONFIRM_DESTROY "Type 'destroy' to confirm teardown"
@@ -1417,6 +1427,7 @@ if [[ "$RESUME" == "true" ]]; then
     DESIRED_NODES=$(parse_tfvar desired_node_count)
     ENABLE_SECRETS=$(parse_tfvar enable_aws_secrets)
     SECRET_NS=$(parse_tfvar secret_namespace)
+    BEDROCK_IAM=$(parse_tfvar enable_bedrock_iam)
     REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
     if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
       err "Failed to parse required values from ${TFVARS_FILE}"
@@ -1461,7 +1472,11 @@ if [[ "$RESUME" == "true" ]]; then
     spinner_stop
     err "Cannot reach cluster ${CLUSTER_NAME}."
     err "Ensure Terraform has been applied and the cluster is running."
-    dim "Check: gcloud container clusters list --project=${PROJECT_ID}"
+    if [[ "$CLOUD" == "gcp" ]]; then
+      dim "Check: gcloud container clusters list --project=${PROJECT_ID}"
+    elif [[ "$CLOUD" == "aws" ]]; then
+      dim "Check: aws eks list-clusters --region ${REGION}"
+    fi
     exit 1
   fi
 
@@ -1498,6 +1513,13 @@ if [[ "$RESUME" == "true" ]]; then
     if [[ "$REDEPLOY" != "yes" ]]; then
       info "Skipping deploy. Checking ingress..."
       DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+      if [[ "$CLOUD" == "aws" ]]; then
+        DASH_ARGS+=(
+          --set "ingress.ingressClassName=alb"
+          --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
+          --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
+        )
+      fi
       wait_for_ingress_and_show_result
       exit 0
     fi

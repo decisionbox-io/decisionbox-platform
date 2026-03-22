@@ -76,6 +76,8 @@ Source code for the charts is in `helm-charts/`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `ingress.enabled` | bool | `false` | Enable ingress (keep disabled — API is internal) |
+| `ingress.ingressClassName` | string | `""` | Ingress class (e.g., `alb` for AWS, `nginx` for NGINX) |
+| `ingress.annotations` | map | `{}` | Ingress annotations (e.g., ALB scheme, target type) |
 | `ingress.host` | string | `""` | Hostname for host-based routing |
 | `ingress.tlsSecretName` | string | `""` | TLS secret name |
 | `ingress.pathType` | string | `Prefix` | Ingress path type |
@@ -174,6 +176,8 @@ The dashboard proxies `/api/*` requests to the API URL. This must point to the A
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `ingress.enabled` | bool | `true` | Enable ingress (dashboard is user-facing) |
+| `ingress.ingressClassName` | string | `""` | Ingress class (e.g., `alb` for AWS, `nginx` for NGINX) |
+| `ingress.annotations` | map | `{}` | Ingress annotations (e.g., ALB scheme, target type) |
 | `ingress.host` | string | `""` | Hostname |
 | `ingress.tlsSecretName` | string | `""` | TLS secret |
 | `ingress.pathType` | string | `Prefix` | Path type |
@@ -236,6 +240,40 @@ kubectl create secret generic decisionbox-api-secrets \
   --from-literal=SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   --from-literal=MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/decisionbox_prod" \
   -n decisionbox
+```
+
+### AWS (EKS + Secrets Manager + Bedrock)
+
+```yaml
+# values-prod.yaml (API)
+
+mongodb:
+  enabled: false
+
+env:
+  LOG_LEVEL: "warn"
+  MONGODB_DB: "decisionbox_prod"
+  SECRET_PROVIDER: "aws"
+  SECRET_NAMESPACE: "decisionbox"
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+serviceAccountAnnotations:
+  eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/decisionbox-prod-api"
+
+agentServiceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/decisionbox-prod-agent"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "2000m"
+    memory: "4Gi"
 ```
 
 ## Next Steps

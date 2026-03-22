@@ -20,12 +20,14 @@ module "decisionbox" {
   desired_node_count = var.desired_node_count
 
   # IRSA
-  k8s_namespace       = var.k8s_namespace
-  k8s_service_account = var.k8s_service_account
+  k8s_namespace             = var.k8s_namespace
+  k8s_service_account       = var.k8s_service_account
+  k8s_agent_service_account = var.k8s_agent_service_account
 
   # Optional
   enable_aws_secrets  = var.enable_aws_secrets
   secret_namespace    = var.secret_namespace
+  enable_bedrock_iam  = var.enable_bedrock_iam
   enable_redshift_iam = var.enable_redshift_iam
 
   tags = var.tags

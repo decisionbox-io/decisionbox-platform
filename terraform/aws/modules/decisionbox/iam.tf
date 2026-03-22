@@ -112,9 +112,9 @@ resource "aws_iam_policy" "lb_controller" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ELBPermissions"
-        Effect   = "Allow"
-        Action   = [
+        Sid    = "ELBPermissions"
+        Effect = "Allow"
+        Action = [
           "iam:CreateServiceLinkedRole",
           "ec2:DescribeAccountAttributes",
           "ec2:DescribeAddresses",
@@ -146,9 +146,9 @@ resource "aws_iam_policy" "lb_controller" {
         Resource = "*"
       },
       {
-        Sid      = "CognitoPermissions"
-        Effect   = "Allow"
-        Action   = [
+        Sid    = "CognitoPermissions"
+        Effect = "Allow"
+        Action = [
           "cognito-idp:DescribeUserPoolClient",
           "acm:ListCertificates",
           "acm:DescribeCertificate",
@@ -170,9 +170,9 @@ resource "aws_iam_policy" "lb_controller" {
         Resource = "*"
       },
       {
-        Sid      = "ALBManagement"
-        Effect   = "Allow"
-        Action   = [
+        Sid    = "ALBManagement"
+        Effect = "Allow"
+        Action = [
           "ec2:AuthorizeSecurityGroupIngress",
           "ec2:RevokeSecurityGroupIngress",
           "ec2:CreateSecurityGroup",
@@ -322,15 +322,17 @@ resource "aws_iam_role" "irsa_agent" {
 # ─── Bedrock IAM (Agent) ──────────────────────────────────────────────────
 
 resource "aws_iam_role_policy" "bedrock" {
+  count = var.enable_bedrock_iam ? 1 : 0
+
   name = "bedrock-invoke"
   role = aws_iam_role.irsa_agent.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "BedrockInvoke"
-      Effect   = "Allow"
-      Action   = [
+      Sid    = "BedrockInvoke"
+      Effect = "Allow"
+      Action = [
         "bedrock:InvokeModel",
         "bedrock:InvokeModelWithResponseStream",
       ]

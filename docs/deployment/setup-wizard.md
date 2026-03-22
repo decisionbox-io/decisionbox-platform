@@ -86,11 +86,11 @@ Choose between:
 - State prefix / environment name (default: `prod`)
 - Auto-creates the bucket with versioning if it doesn't exist
 
-**AWS:** Configure an S3 bucket + DynamoDB for remote state with locking:
+**AWS:** Configure an S3 bucket for remote state with native locking:
 - S3 bucket name (default: `{account-id}-terraform-state`)
 - State key (default: `prod/terraform.tfstate`)
-- DynamoDB lock table (default: `terraform-state-lock`)
-- Auto-creates bucket, versioning, and DynamoDB table if they don't exist
+- Auto-creates the bucket with versioning if it doesn't exist
+- Uses S3-native locking (`use_lockfile=true`, Terraform 1.10+)
 
 ### Step 7: Review
 

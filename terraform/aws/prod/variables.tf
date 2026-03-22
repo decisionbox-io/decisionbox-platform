@@ -91,6 +91,12 @@ variable "k8s_service_account" {
   default     = "decisionbox-api"
 }
 
+variable "k8s_agent_service_account" {
+  description = "Kubernetes service account name for the agent IRSA binding"
+  type        = string
+  default     = "decisionbox-agent"
+}
+
 # Optional
 variable "enable_aws_secrets" {
   description = "Grant Secrets Manager access to the IRSA role."
@@ -102,6 +108,12 @@ variable "secret_namespace" {
   description = "Namespace prefix for Secrets Manager secrets."
   type        = string
   default     = "decisionbox"
+}
+
+variable "enable_bedrock_iam" {
+  description = "Grant Bedrock InvokeModel access to the agent IRSA role."
+  type        = bool
+  default     = false
 }
 
 variable "enable_redshift_iam" {
