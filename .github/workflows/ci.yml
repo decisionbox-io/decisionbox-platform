@@ -74,38 +74,31 @@ jobs:
             services/api/go.sum
             services/agent/go.sum
 
-      - name: Test go-common
-        run: cd libs/go-common && go test ./...
-
-      - name: Test domain packs
+      - name: Test with coverage
         run: |
-          cd domain-packs/gaming/go && go test ./... && cd ../../..
-          cd domain-packs/social/go && go test ./...
+          mkdir -p coverage
+          (cd libs/go-common && go test -coverprofile=../../coverage/go-common.out ./...)
+          (cd domain-packs/gaming/go && go test -coverprofile=../../../coverage/gaming.out ./...)
+          (cd domain-packs/social/go && go test -coverprofile=../../../coverage/social.out ./...)
+          (cd providers/llm/claude && go test -coverprofile=../../../../coverage/llm-claude.out ./...)
+          (cd providers/llm/openai && go test -coverprofile=../../../../coverage/llm-openai.out ./...)
+          (cd providers/llm/ollama && go test -coverprofile=../../../../coverage/llm-ollama.out ./...)
+          (cd providers/llm/vertex-ai && go test -coverprofile=../../../../coverage/llm-vertex.out ./...)
+          (cd providers/llm/bedrock && go test -coverprofile=../../../../coverage/llm-bedrock.out ./...)
+          (cd providers/secrets/mongodb && go test -coverprofile=../../../../coverage/secrets-mongodb.out ./...)
+          (cd providers/secrets/gcp && go test -coverprofile=../../../../coverage/secrets-gcp.out ./...)
+          (cd providers/secrets/aws && go test -coverprofile=../../../../coverage/secrets-aws.out ./...)
+          (cd providers/warehouse/bigquery && go test -coverprofile=../../../../coverage/warehouse-bigquery.out ./...)
+          (cd providers/warehouse/redshift && go test -coverprofile=../../../../coverage/warehouse-redshift.out ./...)
+          (cd services/agent && go test -coverprofile=../../coverage/agent.out ./...)
+          (cd services/api && go test -coverprofile=../../coverage/api.out ./...)
 
-      - name: Test LLM providers
-        run: |
-          (cd providers/llm/claude && go test ./...)
-          (cd providers/llm/openai && go test ./...)
-          (cd providers/llm/ollama && go test ./...)
-          (cd providers/llm/vertex-ai && go test ./...)
-          (cd providers/llm/bedrock && go test ./...)
-
-      - name: Test secret providers
-        run: |
-          (cd providers/secrets/mongodb && go test ./...)
-          (cd providers/secrets/gcp && go test ./...)
-          (cd providers/secrets/aws && go test ./...)
-
-      - name: Test warehouse providers
-        run: |
-          (cd providers/warehouse/bigquery && go test ./...)
-          (cd providers/warehouse/redshift && go test ./...)
-
-      - name: Test Agent
-        run: cd services/agent && go test ./...
-
-      - name: Test API
-        run: cd services/api && go test ./...
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          directory: coverage
+          flags: go
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   go-lint:
     name: Go Lint
@@ -189,8 +182,15 @@ jobs:
       - name: Install dependencies
         run: cd ui/dashboard && npm ci
 
-      - name: Test
-        run: cd ui/dashboard && npm test
+      - name: Test with coverage
+        run: cd ui/dashboard && npm test -- --coverage --coverageReporters=lcov
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          directory: ui/dashboard/coverage
+          flags: dashboard
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Lint
         run: cd ui/dashboard && npm run lint
