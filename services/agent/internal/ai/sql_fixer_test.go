@@ -1,9 +1,12 @@
 package ai
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
 func TestExtractFixedSQL_CodeBlock(t *testing.T) {
@@ -112,5 +115,147 @@ func TestExtractCodeBlock(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewSQLFixer(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "test-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix this {{ORIGINAL_SQL}} query. Error: {{ERROR_MESSAGE}}",
+		Dataset:      "test_dataset",
+		Filter:       "WHERE app_id = 'test'",
+	})
+
+	if fixer == nil {
+		t.Fatal("fixer should not be nil")
+	}
+	if fixer.dataset != "test_dataset" {
+		t.Errorf("dataset = %q", fixer.dataset)
+	}
+	if fixer.filter != "WHERE app_id = 'test'" {
+		t.Errorf("filter = %q", fixer.filter)
+	}
+}
+
+func TestSQLFixer_FixSQL_Success(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    "```sql\nSELECT COUNT(*) FROM `test_dataset.sessions` WHERE app_id = 'test'\n```",
+		Model:      "mock-model",
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 100, OutputTokens: 50},
+	}
+
+	client, _ := New(provider, "mock-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix this {{ORIGINAL_SQL}} query. Error: {{ERROR_MESSAGE}}",
+		Dataset:      "test_dataset",
+		Filter:       "",
+	})
+
+	fixed, err := fixer.FixSQL(context.Background(), "SELECT BAD FROM sessions", "column BAD not found", 0)
+	if err != nil {
+		t.Fatalf("FixSQL error: %v", err)
+	}
+	if fixed == "" {
+		t.Error("fixed query should not be empty")
+	}
+	if fixed != "SELECT COUNT(*) FROM `test_dataset.sessions` WHERE app_id = 'test'" {
+		t.Errorf("fixed = %q", fixed)
+	}
+}
+
+func TestSQLFixer_FixSQL_LLMError(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.Error = fmt.Errorf("LLM unavailable")
+
+	client, _ := New(provider, "mock-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix query",
+		Dataset:      "ds",
+	})
+
+	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0)
+	if err == nil {
+		t.Error("should return error when LLM fails")
+	}
+}
+
+func TestSQLFixer_FixSQL_NotSQLResponse(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    "I cannot fix this query because the table doesn't exist.",
+		Model:      "mock-model",
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 100, OutputTokens: 50},
+	}
+
+	client, _ := New(provider, "mock-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix query",
+		Dataset:      "ds",
+	})
+
+	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0)
+	if err == nil {
+		t.Error("should return error when response is not SQL")
+	}
+}
+
+func TestSQLFixer_SetSchemaContext(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "mock-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix {{SCHEMA_INFO}}",
+	})
+
+	fixer.SetSchemaContext(`{"sessions": {"columns": ["user_id"]}}`)
+
+	if fixer.schemaCtx != `{"sessions": {"columns": ["user_id"]}}` {
+		t.Errorf("schemaCtx = %q", fixer.schemaCtx)
+	}
+}
+
+func TestSQLFixer_FixSQL_TemplateSubstitution(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    "SELECT 1 FROM `ds.table`",
+		Model:      "mock-model",
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 100, OutputTokens: 50},
+	}
+
+	client, _ := New(provider, "mock-model")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}} error {{ERROR_MESSAGE}} dataset {{DATASET}} filter {{FILTER}} schema {{SCHEMA_INFO}}",
+		Dataset:      "my_dataset",
+		Filter:       "WHERE app_id = 'x'",
+	})
+	fixer.SetSchemaContext("schema_info_here")
+
+	fixed, err := fixer.FixSQL(context.Background(), "BAD SQL", "syntax error", 0)
+	if err != nil {
+		t.Fatalf("FixSQL error: %v", err)
+	}
+	if fixed == "" {
+		t.Error("should return fixed SQL")
+	}
+
+	// Verify the system prompt was properly substituted by checking the call was made
+	if len(provider.Calls) != 1 {
+		t.Fatalf("provider should be called once, got %d", len(provider.Calls))
 	}
 }

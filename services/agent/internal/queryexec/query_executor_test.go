@@ -226,3 +226,243 @@ func (w *queryWrapper) GetTableSchemaInDataset(ctx context.Context, dataset, tab
 func (w *queryWrapper) ValidateReadOnly(ctx context.Context) error { return nil }
 func (w *queryWrapper) HealthCheck(ctx context.Context) error { return nil }
 func (w *queryWrapper) Close() error            { return nil }
+
+func TestExecute_EmptyQuery(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 1,
+	})
+
+	// Empty query should still be executed (warehouse decides if it's valid)
+	result, err := executor.Execute(context.Background(), "", "test empty")
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+	if result.OriginalQuery != "" {
+		t.Errorf("OriginalQuery = %q, want empty", result.OriginalQuery)
+	}
+}
+
+func TestExecuteWithHistory_Error(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("connection refused")
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 0, // No retries
+	})
+
+	result, history := executor.ExecuteWithHistory(context.Background(), "SELECT 1", "test error")
+
+	// result may be nil on error
+	if result != nil {
+		t.Error("result should be nil on error with no fixer")
+	}
+
+	if history == nil {
+		t.Fatal("history should not be nil even on error")
+	}
+	if history.Success {
+		t.Error("history.Success should be false on error")
+	}
+	if history.Error == "" {
+		t.Error("history.Error should be set")
+	}
+	if history.Query != "SELECT 1" {
+		t.Errorf("history.Query = %q, want 'SELECT 1'", history.Query)
+	}
+	if history.Purpose != "test error" {
+		t.Errorf("history.Purpose = %q, want 'test error'", history.Purpose)
+	}
+}
+
+func TestExecuteWithHistory_Success_Fields(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 3,
+	})
+
+	result, history := executor.ExecuteWithHistory(context.Background(), "SELECT COUNT(*) FROM users", "count users")
+
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+	if history == nil {
+		t.Fatal("history should not be nil")
+	}
+	if !history.Success {
+		t.Error("history.Success should be true")
+	}
+	if history.Query != "SELECT COUNT(*) FROM users" {
+		t.Errorf("history.Query = %q", history.Query)
+	}
+	if history.Purpose != "count users" {
+		t.Errorf("history.Purpose = %q", history.Purpose)
+	}
+	if history.RowsReturned != result.RowCount {
+		t.Errorf("history.RowsReturned = %d, want %d", history.RowsReturned, result.RowCount)
+	}
+	if history.ExecutionTimeMs != result.ExecutionTimeMs {
+		t.Errorf("history.ExecutionTimeMs = %d, want %d", history.ExecutionTimeMs, result.ExecutionTimeMs)
+	}
+	if history.ExecutedAt.IsZero() {
+		t.Error("history.ExecutedAt should be set")
+	}
+}
+
+func TestNewQueryExecutor_DefaultMaxRetries(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse: wh,
+		// MaxRetries not set — should default to 5
+	})
+
+	if executor.maxRetries != 5 {
+		t.Errorf("maxRetries = %d, want 5 (default)", executor.maxRetries)
+	}
+}
+
+func TestNewQueryExecutor_CustomMaxRetries(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 10,
+	})
+
+	if executor.maxRetries != 10 {
+		t.Errorf("maxRetries = %d, want 10", executor.maxRetries)
+	}
+}
+
+func TestExecutor_SetStep(t *testing.T) {
+	executor := &QueryExecutor{}
+
+	executor.SetStep(5)
+	if executor.currentStep != 5 {
+		t.Errorf("currentStep = %d, want 5", executor.currentStep)
+	}
+}
+
+func TestExecutor_SetPhase(t *testing.T) {
+	executor := &QueryExecutor{}
+
+	executor.SetPhase("analysis")
+	if executor.currentPhase != "analysis" {
+		t.Errorf("currentPhase = %q, want analysis", executor.currentPhase)
+	}
+}
+
+func TestExecuteResult_Fields(t *testing.T) {
+	result := ExecuteResult{
+		Data:            []map[string]interface{}{{"count": 42}},
+		RowCount:        1,
+		ExecutionTimeMs: 200,
+		FixAttempts:     2,
+		Fixed:           true,
+		OriginalQuery:   "SELECT BAD",
+		FinalQuery:      "SELECT count(*) FROM t",
+		Errors:          []string{"syntax error", "column not found"},
+	}
+
+	if result.RowCount != 1 {
+		t.Errorf("RowCount = %d, want 1", result.RowCount)
+	}
+	if !result.Fixed {
+		t.Error("Fixed should be true")
+	}
+	if result.FixAttempts != 2 {
+		t.Errorf("FixAttempts = %d, want 2", result.FixAttempts)
+	}
+	if result.OriginalQuery != "SELECT BAD" {
+		t.Errorf("OriginalQuery = %q", result.OriginalQuery)
+	}
+	if result.FinalQuery != "SELECT count(*) FROM t" {
+		t.Errorf("FinalQuery = %q", result.FinalQuery)
+	}
+	if len(result.Errors) != 2 {
+		t.Errorf("Errors = %d, want 2", len(result.Errors))
+	}
+}
+
+func TestExecute_FilterSecurityViolation(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wh,
+		MaxRetries:  3,
+		FilterField: "tenant_id",
+		FilterValue: "abc",
+	})
+
+	// Query missing required filter field
+	_, err := executor.Execute(context.Background(), "SELECT * FROM users", "test")
+	if err == nil {
+		t.Error("should fail when required filter field is missing")
+	}
+	if !contains(err.Error(), "security violation") {
+		t.Errorf("error = %q, should contain 'security violation'", err.Error())
+	}
+}
+
+func TestExecute_FixerFailure(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("table not found")
+
+	fixer := &testutil.MockSQLFixer{
+		Error: fmt.Errorf("fixer broke"),
+	}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		SQLFixer:   fixer,
+		MaxRetries: 3,
+	})
+
+	_, err := executor.Execute(context.Background(), "SELECT 1", "test")
+	if err == nil {
+		t.Error("should fail when fixer fails")
+	}
+	if !contains(err.Error(), "failed to fix SQL") {
+		t.Errorf("error = %q, should mention fixer failure", err.Error())
+	}
+}
+
+func TestExecute_FixedQueryFailsFilterCheck(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("syntax error")
+
+	fixer := &testutil.MockSQLFixer{
+		// Returns a fixed query that doesn't include the required filter field
+		FixedQuery: "SELECT * FROM users",
+	}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wh,
+		SQLFixer:    fixer,
+		MaxRetries:  3,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+
+	_, err := executor.Execute(context.Background(),
+		"SELECT * FROM users WHERE app_id = 'test'", "test")
+	if err == nil {
+		t.Error("should fail when fixed query doesn't pass filter check")
+	}
+	if !contains(err.Error(), "security violation") {
+		t.Errorf("error = %q, should mention security violation", err.Error())
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

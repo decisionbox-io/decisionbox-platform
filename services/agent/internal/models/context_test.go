@@ -262,3 +262,200 @@ func TestRecommendationSummary_Fields(t *testing.T) {
 		t.Error("fields not set correctly")
 	}
 }
+
+// --- ProjectContext schema knowledge ---
+
+func TestProjectContext_SchemaKnowledge(t *testing.T) {
+	ctx := NewProjectContext("proj-123")
+
+	now := time.Now()
+	ctx.KnownSchemas["sessions"] = SchemaKnowledge{
+		TableName:         "sessions",
+		FirstSeen:         now,
+		LastSeen:          now,
+		SchemaVersion:     1,
+		CurrentSchema: TableSchema{
+			TableName: "sessions",
+			RowCount:  5000,
+			Columns: []ColumnInfo{
+				{Name: "user_id", Type: "STRING", Nullable: false, Category: "primary_key"},
+				{Name: "duration", Type: "INT64", Nullable: true, Category: "metric"},
+			},
+		},
+		UsefulColumns:     []string{"user_id", "duration"},
+		CommonFilters:     []string{"app_id"},
+		EstimatedRowCount: 5000,
+	}
+
+	sk, ok := ctx.KnownSchemas["sessions"]
+	if !ok {
+		t.Fatal("should contain sessions schema")
+	}
+	if sk.TableName != "sessions" {
+		t.Errorf("TableName = %q, want sessions", sk.TableName)
+	}
+	if sk.SchemaVersion != 1 {
+		t.Errorf("SchemaVersion = %d, want 1", sk.SchemaVersion)
+	}
+	if len(sk.CurrentSchema.Columns) != 2 {
+		t.Errorf("Columns = %d, want 2", len(sk.CurrentSchema.Columns))
+	}
+	if sk.EstimatedRowCount != 5000 {
+		t.Errorf("EstimatedRowCount = %d, want 5000", sk.EstimatedRowCount)
+	}
+	if len(sk.UsefulColumns) != 2 {
+		t.Errorf("UsefulColumns = %d, want 2", len(sk.UsefulColumns))
+	}
+	if len(sk.CommonFilters) != 1 {
+		t.Errorf("CommonFilters = %d, want 1", len(sk.CommonFilters))
+	}
+}
+
+func TestHistoricalPattern_StatusTransitions(t *testing.T) {
+	ctx := NewProjectContext("proj-123")
+
+	// First time: new insight -> status "active"
+	insights := []Insight{
+		{Name: "High Churn", AnalysisArea: "churn", Description: "Players leaving"},
+	}
+	ctx.UpdatePatterns(insights)
+
+	if ctx.HistoricalPatterns[0].Status != "active" {
+		t.Errorf("initial status = %q, want active", ctx.HistoricalPatterns[0].Status)
+	}
+	if ctx.HistoricalPatterns[0].SeenCount != 1 {
+		t.Errorf("initial SeenCount = %d, want 1", ctx.HistoricalPatterns[0].SeenCount)
+	}
+
+	// Second time: seen again -> status "recurring"
+	ctx.UpdatePatterns(insights)
+
+	if ctx.HistoricalPatterns[0].Status != "recurring" {
+		t.Errorf("after second sighting status = %q, want recurring", ctx.HistoricalPatterns[0].Status)
+	}
+	if ctx.HistoricalPatterns[0].SeenCount != 2 {
+		t.Errorf("after second sighting SeenCount = %d, want 2", ctx.HistoricalPatterns[0].SeenCount)
+	}
+
+	// Third time: still recurring
+	ctx.UpdatePatterns(insights)
+
+	if ctx.HistoricalPatterns[0].Status != "recurring" {
+		t.Errorf("after third sighting status = %q, want recurring", ctx.HistoricalPatterns[0].Status)
+	}
+	if ctx.HistoricalPatterns[0].SeenCount != 3 {
+		t.Errorf("after third sighting SeenCount = %d, want 3", ctx.HistoricalPatterns[0].SeenCount)
+	}
+
+	// Verify LastSeen is updated on each call
+	lastSeen := ctx.HistoricalPatterns[0].LastSeen
+	if lastSeen.IsZero() {
+		t.Error("LastSeen should not be zero")
+	}
+}
+
+func TestProjectContext_Empty(t *testing.T) {
+	var ctx ProjectContext
+
+	if ctx.ProjectID != "" {
+		t.Error("zero-value ProjectID should be empty")
+	}
+	if ctx.TotalDiscoveries != 0 {
+		t.Errorf("zero-value TotalDiscoveries = %d, want 0", ctx.TotalDiscoveries)
+	}
+	if ctx.ConsecutiveFailures != 0 {
+		t.Errorf("zero-value ConsecutiveFailures = %d, want 0", ctx.ConsecutiveFailures)
+	}
+	if ctx.KnownSchemas != nil {
+		t.Error("zero-value KnownSchemas should be nil")
+	}
+	if ctx.SuccessfulQueries != nil {
+		t.Error("zero-value SuccessfulQueries should be nil")
+	}
+	if ctx.FailedQueries != nil {
+		t.Error("zero-value FailedQueries should be nil")
+	}
+	if ctx.HistoricalPatterns != nil {
+		t.Error("zero-value HistoricalPatterns should be nil")
+	}
+	if ctx.Notes != nil {
+		t.Error("zero-value Notes should be nil")
+	}
+	if !ctx.CreatedAt.IsZero() {
+		t.Error("zero-value CreatedAt should be zero")
+	}
+	if !ctx.UpdatedAt.IsZero() {
+		t.Error("zero-value UpdatedAt should be zero")
+	}
+}
+
+func TestProjectContext_QueryHistoryFields(t *testing.T) {
+	qh := QueryHistory{
+		Query:           "SELECT COUNT(*) FROM sessions WHERE app_id = 'test'",
+		Purpose:         "count sessions",
+		ExecutedAt:      time.Now(),
+		Success:         true,
+		RowsReturned:    1,
+		ExecutionTimeMs: 250,
+		FixAttempts:     0,
+	}
+
+	if qh.Query == "" {
+		t.Error("Query should be set")
+	}
+	if qh.Purpose != "count sessions" {
+		t.Errorf("Purpose = %q, want 'count sessions'", qh.Purpose)
+	}
+	if !qh.Success {
+		t.Error("Success should be true")
+	}
+	if qh.RowsReturned != 1 {
+		t.Errorf("RowsReturned = %d, want 1", qh.RowsReturned)
+	}
+	if qh.ExecutionTimeMs != 250 {
+		t.Errorf("ExecutionTimeMs = %d, want 250", qh.ExecutionTimeMs)
+	}
+}
+
+func TestProjectContext_QueryHistoryWithError(t *testing.T) {
+	qh := QueryHistory{
+		Query:       "SELECT invalid FROM nonexistent",
+		Purpose:     "bad query",
+		ExecutedAt:  time.Now(),
+		Success:     false,
+		Error:       "table not found",
+		FixAttempts: 2,
+	}
+
+	if qh.Success {
+		t.Error("Success should be false")
+	}
+	if qh.Error != "table not found" {
+		t.Errorf("Error = %q, want 'table not found'", qh.Error)
+	}
+	if qh.FixAttempts != 2 {
+		t.Errorf("FixAttempts = %d, want 2", qh.FixAttempts)
+	}
+}
+
+func TestContextNote_Fields(t *testing.T) {
+	note := ContextNote{
+		Timestamp: time.Now(),
+		Category:  "schema",
+		Note:      "sessions table has user_id column",
+		Relevance: 0.95,
+	}
+
+	if note.Category != "schema" {
+		t.Errorf("Category = %q, want 'schema'", note.Category)
+	}
+	if note.Note == "" {
+		t.Error("Note should not be empty")
+	}
+	if note.Relevance != 0.95 {
+		t.Errorf("Relevance = %f, want 0.95", note.Relevance)
+	}
+	if note.Timestamp.IsZero() {
+		t.Error("Timestamp should not be zero")
+	}
+}

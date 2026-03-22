@@ -167,3 +167,48 @@ func TestExportToJSON(t *testing.T) {
 		t.Error("export should contain messages")
 	}
 }
+
+func TestGetDuration(t *testing.T) {
+	c := NewConversation(ConversationOptions{MaxMessages: 100})
+	duration := c.GetDuration()
+	if duration < 0 {
+		t.Error("duration should be non-negative")
+	}
+}
+
+func TestGetLastAssistantMessage_NoAssistant(t *testing.T) {
+	c := NewConversation(ConversationOptions{MaxMessages: 100})
+	c.AddUserMessage("question")
+
+	last := c.GetLastAssistantMessage()
+	if last != nil {
+		t.Error("should return nil when no assistant messages exist")
+	}
+}
+
+func TestConversation_DefaultMaxMessages(t *testing.T) {
+	c := NewConversation(ConversationOptions{})
+	if c.maxMessages != 100 {
+		t.Errorf("maxMessages = %d, want 100 (default)", c.maxMessages)
+	}
+}
+
+func TestConversation_TrimPreservesOrder(t *testing.T) {
+	c := NewConversation(ConversationOptions{MaxMessages: 3})
+
+	c.AddUserMessage("first")
+	c.AddAssistantMessage("response1")
+	c.AddUserMessage("second")
+	c.AddAssistantMessage("response2")
+
+	// After trimming to 3, should keep the most recent 3
+	if c.MessageCount() != 3 {
+		t.Errorf("count = %d, want 3", c.MessageCount())
+	}
+
+	msgs := c.GetMessages()
+	// Oldest message ("first") should be trimmed
+	if msgs[0].Content == "first" {
+		t.Error("oldest message should have been trimmed")
+	}
+}

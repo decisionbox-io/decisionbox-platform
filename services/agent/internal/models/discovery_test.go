@@ -314,3 +314,377 @@ func TestImpactFieldsRestored(t *testing.T) {
 		t.Errorf("TotalValue = %f, want 52675.00", impact.TotalValue)
 	}
 }
+
+func TestDiscoveryResult_FailedRunType(t *testing.T) {
+	result := DiscoveryResult{
+		ProjectID: "proj-123",
+		Domain:    "gaming",
+		Category:  "match3",
+		RunType:   "failed",
+		Summary: Summary{
+			Errors: []string{"churn: LLM timeout", "levels: parse error"},
+		},
+	}
+
+	if result.RunType != "failed" {
+		t.Errorf("RunType = %q, want failed", result.RunType)
+	}
+	if len(result.Summary.Errors) != 2 {
+		t.Errorf("Errors = %d, want 2", len(result.Summary.Errors))
+	}
+	if len(result.Insights) != 0 {
+		t.Errorf("Insights = %d, want 0 for failed run", len(result.Insights))
+	}
+	if len(result.Recommendations) != 0 {
+		t.Errorf("Recommendations = %d, want 0 for failed run", len(result.Recommendations))
+	}
+}
+
+func TestTableSchema_WithEmptyColumns(t *testing.T) {
+	schema := TableSchema{
+		TableName: "empty_table",
+		RowCount:  0,
+		Columns:   []ColumnInfo{},
+	}
+
+	if schema.TableName != "empty_table" {
+		t.Errorf("TableName = %q, want empty_table", schema.TableName)
+	}
+	if schema.RowCount != 0 {
+		t.Errorf("RowCount = %d, want 0", schema.RowCount)
+	}
+	if len(schema.Columns) != 0 {
+		t.Errorf("Columns = %d, want 0", len(schema.Columns))
+	}
+	if schema.KeyColumns != nil {
+		t.Error("KeyColumns should be nil when not set")
+	}
+	if schema.Metrics != nil {
+		t.Error("Metrics should be nil when not set")
+	}
+	if schema.Dimensions != nil {
+		t.Error("Dimensions should be nil when not set")
+	}
+	if schema.SampleData != nil {
+		t.Error("SampleData should be nil when not set")
+	}
+}
+
+func TestColumnInfo_AllFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		col      ColumnInfo
+		wantType string
+		wantCat  string
+	}{
+		{
+			name:     "primary key column",
+			col:      ColumnInfo{Name: "user_id", Type: "STRING", Nullable: false, Category: "primary_key"},
+			wantType: "STRING",
+			wantCat:  "primary_key",
+		},
+		{
+			name:     "timestamp column",
+			col:      ColumnInfo{Name: "created_at", Type: "TIMESTAMP", Nullable: false, Category: "time"},
+			wantType: "TIMESTAMP",
+			wantCat:  "time",
+		},
+		{
+			name:     "metric column",
+			col:      ColumnInfo{Name: "duration", Type: "INT64", Nullable: true, Category: "metric"},
+			wantType: "INT64",
+			wantCat:  "metric",
+		},
+		{
+			name:     "dimension column",
+			col:      ColumnInfo{Name: "country", Type: "STRING", Nullable: true, Category: "dimension"},
+			wantType: "STRING",
+			wantCat:  "dimension",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.col.Name == "" {
+				t.Error("Name should not be empty")
+			}
+			if tt.col.Type != tt.wantType {
+				t.Errorf("Type = %q, want %q", tt.col.Type, tt.wantType)
+			}
+			if tt.col.Category != tt.wantCat {
+				t.Errorf("Category = %q, want %q", tt.col.Category, tt.wantCat)
+			}
+		})
+	}
+}
+
+func TestImpact_OptionalFields(t *testing.T) {
+	// Impact with all optional fields populated
+	impact := Impact{
+		Metric:               "revenue",
+		EstimatedImprovement: "25-30%",
+		Reasoning:            "Based on segment analysis",
+		ReturnRate:           0.65,
+		ConversionRate:       0.12,
+		EstimatedValue:       150.00,
+		TotalValue:           75000.00,
+	}
+
+	if impact.ReturnRate != 0.65 {
+		t.Errorf("ReturnRate = %f, want 0.65", impact.ReturnRate)
+	}
+	if impact.ConversionRate != 0.12 {
+		t.Errorf("ConversionRate = %f, want 0.12", impact.ConversionRate)
+	}
+	if impact.EstimatedValue != 150.00 {
+		t.Errorf("EstimatedValue = %f, want 150.00", impact.EstimatedValue)
+	}
+
+	// Impact with no optional fields (zero values)
+	impactMinimal := Impact{
+		Metric:               "retention_rate",
+		EstimatedImprovement: "10%",
+		Reasoning:            "simple estimate",
+	}
+
+	if impactMinimal.ReturnRate != 0 {
+		t.Errorf("ReturnRate should default to 0, got %f", impactMinimal.ReturnRate)
+	}
+	if impactMinimal.ConversionRate != 0 {
+		t.Errorf("ConversionRate should default to 0, got %f", impactMinimal.ConversionRate)
+	}
+	if impactMinimal.EstimatedValue != 0 {
+		t.Errorf("EstimatedValue should default to 0, got %f", impactMinimal.EstimatedValue)
+	}
+	if impactMinimal.TotalValue != 0 {
+		t.Errorf("TotalValue should default to 0, got %f", impactMinimal.TotalValue)
+	}
+}
+
+func TestImpact_JSONRoundTrip(t *testing.T) {
+	impact := Impact{
+		Metric:               "revenue",
+		EstimatedImprovement: "20%",
+		Reasoning:            "test reasoning",
+		ReturnRate:           0.5,
+		ConversionRate:       0.3,
+		EstimatedValue:       100.00,
+		TotalValue:           50000.00,
+	}
+
+	data, err := json.Marshal(impact)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var parsed Impact
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if parsed.Metric != impact.Metric {
+		t.Errorf("Metric = %q, want %q", parsed.Metric, impact.Metric)
+	}
+	if parsed.ReturnRate != impact.ReturnRate {
+		t.Errorf("ReturnRate = %f, want %f", parsed.ReturnRate, impact.ReturnRate)
+	}
+	if parsed.ConversionRate != impact.ConversionRate {
+		t.Errorf("ConversionRate = %f, want %f", parsed.ConversionRate, impact.ConversionRate)
+	}
+	if parsed.EstimatedValue != impact.EstimatedValue {
+		t.Errorf("EstimatedValue = %f, want %f", parsed.EstimatedValue, impact.EstimatedValue)
+	}
+	if parsed.TotalValue != impact.TotalValue {
+		t.Errorf("TotalValue = %f, want %f", parsed.TotalValue, impact.TotalValue)
+	}
+}
+
+func TestTableSchema_AllFields(t *testing.T) {
+	now := time.Now()
+	schema := TableSchema{
+		TableName: "sessions",
+		RowCount:  50000,
+		Columns: []ColumnInfo{
+			{Name: "user_id", Type: "STRING"},
+			{Name: "session_start", Type: "TIMESTAMP"},
+		},
+		KeyColumns: []string{"user_id"},
+		Metrics:    []string{"duration", "event_count"},
+		Dimensions: []string{"country", "platform"},
+		SampleData: []map[string]interface{}{
+			{"user_id": "u1", "duration": 300},
+		},
+		DiscoveredAt: now,
+	}
+
+	if schema.RowCount != 50000 {
+		t.Errorf("RowCount = %d, want 50000", schema.RowCount)
+	}
+	if len(schema.KeyColumns) != 1 {
+		t.Errorf("KeyColumns = %d, want 1", len(schema.KeyColumns))
+	}
+	if len(schema.Metrics) != 2 {
+		t.Errorf("Metrics = %d, want 2", len(schema.Metrics))
+	}
+	if len(schema.Dimensions) != 2 {
+		t.Errorf("Dimensions = %d, want 2", len(schema.Dimensions))
+	}
+	if len(schema.SampleData) != 1 {
+		t.Errorf("SampleData = %d, want 1", len(schema.SampleData))
+	}
+	if schema.DiscoveredAt.IsZero() {
+		t.Error("DiscoveredAt should not be zero")
+	}
+}
+
+func TestSQLMetadata_Fields(t *testing.T) {
+	now := time.Now()
+	meta := SQLMetadata{
+		Query:           "SELECT COUNT(*) FROM sessions",
+		ExecutionTimeMs: 450,
+		RowsReturned:    1,
+		ExecutedAt:      now,
+	}
+
+	if meta.Query == "" {
+		t.Error("Query should not be empty")
+	}
+	if meta.ExecutionTimeMs != 450 {
+		t.Errorf("ExecutionTimeMs = %d, want 450", meta.ExecutionTimeMs)
+	}
+	if meta.RowsReturned != 1 {
+		t.Errorf("RowsReturned = %d, want 1", meta.RowsReturned)
+	}
+}
+
+func TestSummary_Fields(t *testing.T) {
+	s := Summary{
+		Date:                 time.Now(),
+		Text:                 "Discovery found 5 insights",
+		KeyFindings:          []string{"High churn at level 45", "Revenue drop"},
+		TopRecommendations:   []string{"Send extra lives"},
+		TotalInsights:        5,
+		TotalRecommendations: 3,
+		QueriesExecuted:      20,
+		Errors:               []string{"levels: timeout"},
+	}
+
+	if s.TotalInsights != 5 {
+		t.Errorf("TotalInsights = %d, want 5", s.TotalInsights)
+	}
+	if s.TotalRecommendations != 3 {
+		t.Errorf("TotalRecommendations = %d, want 3", s.TotalRecommendations)
+	}
+	if s.QueriesExecuted != 20 {
+		t.Errorf("QueriesExecuted = %d, want 20", s.QueriesExecuted)
+	}
+	if len(s.KeyFindings) != 2 {
+		t.Errorf("KeyFindings = %d, want 2", len(s.KeyFindings))
+	}
+	if len(s.Errors) != 1 {
+		t.Errorf("Errors = %d, want 1", len(s.Errors))
+	}
+}
+
+func TestRecommendationStep_Fields(t *testing.T) {
+	step := RecommendationStep{
+		RunAt:        time.Now(),
+		Prompt:       "Generate recommendations based on insights...",
+		InsightCount: 5,
+		Response:     `{"recommendations": []}`,
+		TokensIn:     1000,
+		TokensOut:    500,
+		DurationMs:   2000,
+	}
+
+	if step.InsightCount != 5 {
+		t.Errorf("InsightCount = %d, want 5", step.InsightCount)
+	}
+	if step.Prompt == "" {
+		t.Error("Prompt should be captured")
+	}
+	if step.Response == "" {
+		t.Error("Response should be captured")
+	}
+	if step.TokensIn != 1000 {
+		t.Errorf("TokensIn = %d, want 1000", step.TokensIn)
+	}
+}
+
+func TestDiscoveryResult_JSONRoundTrip(t *testing.T) {
+	now := time.Now()
+	result := DiscoveryResult{
+		ProjectID:     "proj-123",
+		Domain:        "gaming",
+		Category:      "match3",
+		DiscoveryDate: now,
+		RunType:       "full",
+		TotalSteps:    25,
+		Insights: []Insight{
+			{ID: "i-1", Name: "High Churn", AnalysisArea: "churn", Severity: "critical"},
+		},
+		Recommendations: []Recommendation{
+			{ID: "r-1", Title: "Send Lives", Priority: 1, RelatedInsightIDs: []string{"i-1"}},
+		},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var parsed DiscoveryResult
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if parsed.ProjectID != "proj-123" {
+		t.Errorf("ProjectID = %q, want proj-123", parsed.ProjectID)
+	}
+	if parsed.RunType != "full" {
+		t.Errorf("RunType = %q, want full", parsed.RunType)
+	}
+	if len(parsed.Insights) != 1 {
+		t.Fatalf("Insights = %d, want 1", len(parsed.Insights))
+	}
+	if parsed.Insights[0].Severity != "critical" {
+		t.Errorf("Insight severity = %q, want critical", parsed.Insights[0].Severity)
+	}
+	if len(parsed.Recommendations) != 1 {
+		t.Fatalf("Recommendations = %d, want 1", len(parsed.Recommendations))
+	}
+	if parsed.Recommendations[0].RelatedInsightIDs[0] != "i-1" {
+		t.Errorf("RelatedInsightIDs[0] = %q, want i-1", parsed.Recommendations[0].RelatedInsightIDs[0])
+	}
+}
+
+func TestInsightValidation_JSONRoundTrip(t *testing.T) {
+	iv := InsightValidation{
+		Status:        "confirmed",
+		VerifiedCount: 2800,
+		OriginalCount: 2847,
+		Query:         "SELECT COUNT(DISTINCT user_id) FROM sessions",
+		Reasoning:     "Within tolerance",
+		ValidatedAt:   time.Now(),
+	}
+
+	data, err := json.Marshal(iv)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var parsed InsightValidation
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if parsed.Status != "confirmed" {
+		t.Errorf("Status = %q, want confirmed", parsed.Status)
+	}
+	if parsed.VerifiedCount != 2800 {
+		t.Errorf("VerifiedCount = %d, want 2800", parsed.VerifiedCount)
+	}
+	if parsed.OriginalCount != 2847 {
+		t.Errorf("OriginalCount = %d, want 2847", parsed.OriginalCount)
+	}
+}
