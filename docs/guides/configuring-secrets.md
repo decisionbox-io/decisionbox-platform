@@ -125,11 +125,10 @@ Outside AWS: Uses `~/.aws/credentials` or environment variables.
 
 ### Setting Secrets (Dashboard)
 
-1. Go to project **Settings → Secrets** tab
-2. Select key from dropdown:
-   - **LLM API Key** — Your LLM provider's API key
-   - **Warehouse Credentials (SA Key JSON)** — Service account JSON for cross-cloud warehouse access
-3. Enter the value and click **Save Secret**
+**During project creation:** If you select an LLM provider that requires an API key (Claude, OpenAI), the wizard asks for it in the AI step.
+The key is saved as an encrypted secret immediately after the project is created.
+
+**After project creation:** Go to project **Settings → Secrets** tab to update the LLM API key.
 
 ### Setting Secrets (API)
 
@@ -143,8 +142,7 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/secrets/llm-api-key \
 
 1. Agent initializes the secret provider (same config as API)
 2. Reads `llm-api-key` for the project → passes to LLM provider
-3. Reads `warehouse-credentials` (if set) → passes to warehouse provider
-4. If `warehouse-credentials` is not set, falls back to local cloud credentials (ADC, IAM role)
+3. Warehouse uses the agent's cloud credentials (ADC on GCP, IAM role on AWS)
 
 ### No Delete Via API
 

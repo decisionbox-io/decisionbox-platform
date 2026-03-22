@@ -23,6 +23,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
 	// LLM provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"     // registers "claude"
@@ -51,6 +52,7 @@ func main() {
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
+		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse' or 'llm'")
 	)
 
 	flag.Parse()
@@ -65,6 +67,23 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Test connection mode runs before logger init — its own logging is minimal
+	if *testConnection != "" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		if err := runTestConnection(cfg, *projectID, *testConnection); err != nil {
+			applog.WithError(err).Error("Test connection failed")
+			applog.Sync()
+			result, _ := json.Marshal(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			fmt.Println(string(result))
+			os.Exit(1)
+		}
+		applog.Sync()
+		return
 	}
 
 	applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
@@ -99,19 +118,226 @@ func main() {
 	applog.Info("Discovery completed successfully")
 }
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps int, skipCache, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
-	ctx := context.Background()
+// --- Shared provider initialization helpers ---
+// Used by both runDiscovery and runTestConnection to avoid duplication.
 
-	// Initialize MongoDB
+func initMongoDB(ctx context.Context, cfg *config.Config) (*gomongo.Client, error) {
 	mongoCfg := gomongo.DefaultConfig()
 	mongoCfg.URI = cfg.MongoDB.URI
 	mongoCfg.Database = cfg.MongoDB.Database
-	mongoClient, err := gomongo.NewClient(ctx, mongoCfg)
+	client, err := gomongo.NewClient(ctx, mongoCfg)
 	if err != nil {
-		return fmt.Errorf("failed to connect to MongoDB: %w", err)
+		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
+	}
+	applog.Info("Connected to MongoDB")
+	return client, nil
+}
+
+func initSecretProvider(mongoClient *gomongo.Client) (gosecrets.Provider, error) {
+	secretsCfg := gosecrets.LoadConfig()
+	if secretsCfg.Provider == "mongodb" || secretsCfg.Provider == "" {
+		sp, err := mongoSecrets.NewMongoProvider(
+			mongoClient.Collection("secrets"),
+			secretsCfg.Namespace,
+			secretsCfg.EncryptionKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create secret provider: %w", err)
+		}
+		applog.WithField("provider", "mongodb").Info("Secret provider initialized")
+		return sp, nil
+	}
+	sp, err := gosecrets.NewProvider(secretsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secret provider: %w", err)
+	}
+	applog.WithField("provider", secretsCfg.Provider).Info("Secret provider initialized")
+	return sp, nil
+}
+
+func initWarehouseProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
+	if project.Warehouse.Provider == "" {
+		return nil, fmt.Errorf("no warehouse provider configured")
+	}
+
+	datasets := project.Warehouse.GetDatasets()
+	if len(datasets) == 0 {
+		return nil, fmt.Errorf("no datasets configured in project")
+	}
+
+	whCfg := gowarehouse.ProviderConfig{
+		"project_id": project.Warehouse.ProjectID,
+		"dataset":    datasets[0],
+		"location":   project.Warehouse.Location,
+	}
+	for k, v := range project.Warehouse.Config {
+		whCfg[k] = v
+	}
+
+	whCreds, err := secretProvider.Get(ctx, projectID, "warehouse-credentials")
+	if err == nil && whCreds != "" {
+		whCfg["credentials_json"] = whCreds
+		applog.Info("Warehouse credentials loaded from secret provider")
+	} else if err != nil && err != gosecrets.ErrNotFound {
+		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
+	}
+
+	provider, err := gowarehouse.NewProvider(project.Warehouse.Provider, whCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", project.Warehouse.Provider, err)
+	}
+
+	applog.WithFields(applog.Fields{
+		"provider": project.Warehouse.Provider,
+		"datasets": datasets,
+	}).Info("Warehouse provider initialized")
+
+	return provider, nil
+}
+
+func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (gollm.Provider, error) {
+	if project.LLM.Provider == "" {
+		return nil, fmt.Errorf("no LLM provider configured")
+	}
+
+	apiKey := ""
+	key, err := secretProvider.Get(ctx, projectID, "llm-api-key")
+	if err == nil && key != "" {
+		apiKey = key
+		applog.Info("LLM API key loaded from secret provider")
+	} else if err != nil && err != gosecrets.ErrNotFound {
+		applog.WithError(err).Warn("Failed to read LLM API key from secret provider")
+	}
+
+	llmCfg := gollm.ProviderConfig{
+		"api_key":          apiKey,
+		"model":            project.LLM.Model,
+		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
+		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),
+		"request_delay_ms": strconv.Itoa(cfg.LLM.RequestDelayMs),
+	}
+	mergedKeys := make([]string, 0)
+	for k, v := range project.LLM.Config {
+		llmCfg[k] = v
+		mergedKeys = append(mergedKeys, k)
+	}
+	if len(mergedKeys) > 0 {
+		applog.WithFields(applog.Fields{
+			"provider":    project.LLM.Provider,
+			"config_keys": mergedKeys,
+		}).Debug("Merged provider-specific config from project")
+	}
+
+	provider, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"provider": project.LLM.Provider,
+			"error":    err.Error(),
+		}).Error("Failed to create LLM provider")
+		return nil, fmt.Errorf("failed to create LLM provider (%s): %w", project.LLM.Provider, err)
+	}
+
+	applog.WithFields(applog.Fields{
+		"provider": project.LLM.Provider,
+		"model":    project.LLM.Model,
+	}).Info("LLM provider initialized")
+
+	return provider, nil
+}
+
+// --- Test connection ---
+
+func runTestConnection(cfg *config.Config, projectID, target string) error {
+	if target != "warehouse" && target != "llm" {
+		return fmt.Errorf("invalid test target %q: must be 'warehouse' or 'llm'", target)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mongoClient, err := initMongoDB(ctx, cfg)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = mongoClient.Disconnect(ctx) }()
-	applog.Info("Connected to MongoDB")
+
+	db := database.New(mongoClient)
+	projectRepo := database.NewProjectRepository(db)
+	project, err := projectRepo.GetByID(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to load project %s: %w", projectID, err)
+	}
+
+	secretProvider, err := initSecretProvider(mongoClient)
+	if err != nil {
+		return err
+	}
+
+	switch target {
+	case "warehouse":
+		provider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+
+		if err := provider.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("warehouse health check failed: %w", err)
+		}
+
+		datasets := project.Warehouse.GetDatasets()
+		out, err := json.Marshal(map[string]interface{}{
+			"success":  true,
+			"provider": project.Warehouse.Provider,
+			"datasets": datasets,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
+
+	case "llm":
+		// For test connection, use max_retries=1 and no request delay
+		testCfg := *cfg
+		testCfg.LLM.MaxRetries = 1
+		testCfg.LLM.RequestDelayMs = 0
+
+		provider, err := initLLMProvider(ctx, &testCfg, project, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
+
+		if err := provider.Validate(ctx); err != nil {
+			return err
+		}
+
+		out, err := json.Marshal(map[string]interface{}{
+			"success":  true,
+			"provider": project.LLM.Provider,
+			"model":    project.LLM.Model,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
+
+	default:
+		return fmt.Errorf("unknown test target: %s", target)
+	}
+
+	return nil
+}
+
+// --- Discovery ---
+
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps int, skipCache, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+	ctx := context.Background()
+
+	mongoClient, err := initMongoDB(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = mongoClient.Disconnect(ctx) }()
 
 	db := database.New(mongoClient)
 
@@ -138,105 +364,21 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return fmt.Errorf("domain pack %q does not support discovery", project.Domain)
 	}
 
-	// Initialize secret provider first — needed for both warehouse and LLM credentials
-	secretsCfg := gosecrets.LoadConfig()
-	var secretProvider gosecrets.Provider
-	if secretsCfg.Provider == "mongodb" || secretsCfg.Provider == "" {
-		sp, spErr := mongoSecrets.NewMongoProvider(
-			mongoClient.Collection("secrets"),
-			secretsCfg.Namespace,
-			secretsCfg.EncryptionKey,
-		)
-		if spErr != nil {
-			return fmt.Errorf("failed to create secret provider: %w", spErr)
-		}
-		secretProvider = sp
-	} else {
-		sp, spErr := gosecrets.NewProvider(secretsCfg)
-		if spErr != nil {
-			return fmt.Errorf("failed to create secret provider: %w", spErr)
-		}
-		secretProvider = sp
-	}
-	applog.WithField("provider", secretsCfg.Provider).Info("Secret provider initialized")
-
-	// Warehouse config comes from project
-	datasets := project.Warehouse.GetDatasets()
-	if len(datasets) == 0 {
-		return fmt.Errorf("no datasets configured in project")
-	}
-
-	whCfg := gowarehouse.ProviderConfig{
-		"project_id": project.Warehouse.ProjectID,
-		"dataset":    datasets[0],
-		"location":   project.Warehouse.Location,
-	}
-	// Merge provider-specific config (workgroup, database, region for Redshift, etc.)
-	for k, v := range project.Warehouse.Config {
-		whCfg[k] = v
-	}
-
-	// Read warehouse credentials from secret provider (for cross-cloud access)
-	whCreds, err := secretProvider.Get(ctx, projectID, "warehouse-credentials")
-	if err == nil && whCreds != "" {
-		whCfg["credentials_json"] = whCreds
-		applog.Info("Warehouse credentials loaded from secret provider")
-	} else if err != nil && err != gosecrets.ErrNotFound {
-		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
-	}
-
-	warehouseProvider, err := gowarehouse.NewProvider(project.Warehouse.Provider, whCfg)
+	secretProvider, err := initSecretProvider(mongoClient)
 	if err != nil {
-		return fmt.Errorf("failed to create warehouse provider (%s): %w", project.Warehouse.Provider, err)
+		return err
+	}
+
+	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+	if err != nil {
+		return err
 	}
 	defer warehouseProvider.Close()
-	applog.WithFields(applog.Fields{
-		"provider": project.Warehouse.Provider,
-		"datasets": datasets,
-	}).Info("Warehouse provider initialized")
 
-	// Read LLM API key from secret provider (per-project)
-	apiKey := ""
-	key, err := secretProvider.Get(ctx, projectID, "llm-api-key")
-	if err == nil && key != "" {
-		apiKey = key
-		applog.Info("LLM API key loaded from secret provider")
-	} else if err != nil && err != gosecrets.ErrNotFound {
-		applog.WithError(err).Warn("Failed to read LLM API key from secret provider")
-	}
-
-	// LLM config comes from project + secrets
-	llmCfg := gollm.ProviderConfig{
-		"api_key":          apiKey,
-		"model":            project.LLM.Model,
-		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
-		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),
-		"request_delay_ms": strconv.Itoa(cfg.LLM.RequestDelayMs),
-	}
-	// Merge provider-specific config from project (e.g., project_id, location for Vertex AI)
-	mergedKeys := make([]string, 0)
-	for k, v := range project.LLM.Config {
-		llmCfg[k] = v
-		mergedKeys = append(mergedKeys, k)
-	}
-	if len(mergedKeys) > 0 {
-		applog.WithFields(applog.Fields{
-			"provider":    project.LLM.Provider,
-			"config_keys": mergedKeys,
-		}).Debug("Merged provider-specific config from project")
-	}
-	llm, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
+	llm, err := initLLMProvider(ctx, cfg, project, secretProvider, projectID)
 	if err != nil {
-		applog.WithFields(applog.Fields{
-			"provider": project.LLM.Provider,
-			"error":    err.Error(),
-		}).Error("Failed to create LLM provider")
-		return fmt.Errorf("failed to create LLM provider (%s): %w", project.LLM.Provider, err)
+		return err
 	}
-	applog.WithFields(applog.Fields{
-		"provider": project.LLM.Provider,
-		"model":    project.LLM.Model,
-	}).Info("LLM provider initialized")
 
 	// Initialize AI client
 	aiClient, err := ai.New(llm, project.LLM.Model)
@@ -266,6 +408,8 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Initialize run repository for status updates
 	runRepo := database.NewRunRepository(db)
+
+	datasets := project.Warehouse.GetDatasets()
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
@@ -337,4 +481,3 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	return nil
 }
-// build trigger 20260319111744

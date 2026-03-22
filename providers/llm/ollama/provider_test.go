@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"context"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -82,6 +83,16 @@ func TestOllamaProvider_DefaultHost(t *testing.T) {
 	}
 	if p == nil {
 		t.Error("provider should not be nil")
+	}
+}
+
+func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
+	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Validate(context.Background()); err == nil {
+		t.Error("Validate should fail when server is unreachable")
 	}
 }
 

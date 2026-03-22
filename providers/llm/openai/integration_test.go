@@ -171,6 +171,57 @@ func TestIntegration_InvalidModel(t *testing.T) {
 	t.Logf("Invalid model error: %v", err)
 }
 
+func TestIntegration_Validate_Success(t *testing.T) {
+	apiKey := os.Getenv("INTEGRATION_TEST_OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
+	}
+
+	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := provider.Validate(ctx); err != nil {
+		t.Fatalf("Validate should succeed with valid API key: %v", err)
+	}
+	t.Log("OpenAI Validate succeeded")
+}
+
+func TestIntegration_Validate_InvalidKey(t *testing.T) {
+	provider := NewOpenAIProvider("sk-invalid-key-12345", "gpt-4o-mini", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := provider.Validate(ctx); err == nil {
+		t.Fatal("Validate should fail with invalid API key")
+	}
+}
+
+func TestIntegration_Validate_ViaFactory(t *testing.T) {
+	apiKey := os.Getenv("INTEGRATION_TEST_OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
+	}
+
+	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
+		"api_key": apiKey,
+		"model":   "gpt-4o-mini",
+	})
+	if err != nil {
+		t.Fatalf("Factory error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := provider.Validate(ctx); err != nil {
+		t.Fatalf("Validate via factory should succeed: %v", err)
+	}
+	t.Log("OpenAI Validate via factory succeeded")
+}
+
 func TestIntegration_ContextCancellation(t *testing.T) {
 	apiKey := os.Getenv("INTEGRATION_TEST_OPENAI_API_KEY")
 	if apiKey == "" {

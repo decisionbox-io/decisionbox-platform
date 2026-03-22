@@ -69,6 +69,14 @@ func TestBedrockProvider_Registered(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_Validate_UnsupportedModel(t *testing.T) {
+	p := &BedrockProvider{model: "meta.llama3-70b-instruct-v1:0"}
+	err := p.Validate(nil)
+	if err == nil {
+		t.Error("Validate should fail for unsupported model")
+	}
+}
+
 func TestBedrockProvider_ConfigFields(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("bedrock")
 

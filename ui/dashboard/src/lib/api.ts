@@ -309,6 +309,14 @@ export interface SecretEntryResponse {
   warning?: string;
 }
 
+export interface TestConnectionResult {
+  success: boolean;
+  error?: string;
+  provider?: string;
+  model?: string;
+  datasets?: string[];
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -387,5 +395,11 @@ export const api = {
     }),
   listSecrets: (projectId: string) =>
     request<SecretEntryResponse[]>(`/api/v1/projects/${projectId}/secrets`),
+
+  // Connection testing
+  testWarehouse: (projectId: string) =>
+    request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/warehouse`, { method: 'POST' }),
+  testLLM: (projectId: string) =>
+    request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/llm`, { method: 'POST' }),
 };
 // build trigger 20260319111744

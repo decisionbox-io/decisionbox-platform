@@ -16,7 +16,20 @@ import (
 // Runner spawns and manages agent processes for discovery runs.
 type Runner interface {
 	Run(ctx context.Context, opts RunOptions) error
+	RunSync(ctx context.Context, opts RunSyncOptions) (*RunSyncResult, error)
 	Cancel(ctx context.Context, runID string) error
+}
+
+// RunSyncOptions configures a synchronous agent invocation (e.g., test-connection).
+type RunSyncOptions struct {
+	ProjectID string
+	Args      []string // additional CLI args (e.g., "--test-connection", "warehouse")
+}
+
+// RunSyncResult holds the output of a synchronous agent invocation.
+type RunSyncResult struct {
+	Output []byte // stdout
+	Error  string // stderr summary
 }
 
 // RunOptions configures a discovery agent run.

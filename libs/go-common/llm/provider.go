@@ -10,6 +10,11 @@ import "context"
 type Provider interface {
 	// Chat sends a conversation to the LLM and returns a response.
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+
+	// Validate checks that the provider credentials and configuration are valid.
+	// Implementations should use lightweight API calls (e.g., list models)
+	// that verify access without consuming tokens.
+	Validate(ctx context.Context) error
 }
 
 // ChatRequest defines the input for an LLM chat call.

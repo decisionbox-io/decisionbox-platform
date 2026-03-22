@@ -10,8 +10,13 @@ This guide shows how to add support for a new LLM service. You'll implement one 
 // libs/go-common/llm/provider.go
 type Provider interface {
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+    Validate(ctx context.Context) error
 }
 ```
+
+`Validate` checks that credentials and configuration are valid without consuming tokens.
+Use lightweight API calls (e.g., list models) when possible.
+Called by the "Test Connection" button in the dashboard.
 
 **ChatRequest:**
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -382,6 +383,139 @@ func TestExtractJSONField(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractJSONField(%q, %q) = %q, want %q", tt.line, tt.field, got, tt.want)
 		}
+	}
+}
+
+// --- RunSync tests ---
+
+func TestKubernetesRunner_RunSync_CreatesJob(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	projectID := "proj-test-conn"
+
+	// Simulate K8s controller: watch for job creation, then mark it succeeded
+	go func() {
+		for {
+			time.Sleep(100 * time.Millisecond)
+			jobs, err := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				continue
+			}
+			job := jobs.Items[0]
+			if job.Status.Succeeded > 0 {
+				return
+			}
+			job.Status.Succeeded = 1
+			r.client.BatchV1().Jobs("test-ns").UpdateStatus(context.Background(), &job, metav1.UpdateOptions{})
+			return
+		}
+	}()
+
+	result, err := r.RunSync(ctx, RunSyncOptions{
+		ProjectID: projectID,
+		Args:      []string{"--test-connection", "warehouse"},
+	})
+	if err != nil {
+		t.Fatalf("RunSync failed: %v", err)
+	}
+	// Output is nil because fake client has no pod logs — that's expected
+	_ = result
+
+	// Verify Job was created with correct spec
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+
+	job := jobs.Items[0]
+
+	if job.Labels["app"] != "decisionbox-agent" {
+		t.Errorf("label app = %q", job.Labels["app"])
+	}
+	if job.Labels["type"] != "test-connection" {
+		t.Errorf("label type = %q, want test-connection", job.Labels["type"])
+	}
+
+	c := job.Spec.Template.Spec.Containers[0]
+	argsStr := ""
+	for _, a := range c.Args {
+		argsStr += a + " "
+	}
+	if !containsStr(argsStr, "--test-connection") || !containsStr(argsStr, "warehouse") {
+		t.Errorf("args missing --test-connection warehouse: %v", c.Args)
+	}
+
+	if *job.Spec.TTLSecondsAfterFinished != 60 {
+		t.Errorf("TTL = %d, want 60 for test jobs", *job.Spec.TTLSecondsAfterFinished)
+	}
+	if *job.Spec.ActiveDeadlineSeconds != 60 {
+		t.Errorf("deadline = %d, want 60", *job.Spec.ActiveDeadlineSeconds)
+	}
+
+	cpuLim := c.Resources.Limits["cpu"]
+	if cpuLim.String() != "500m" {
+		t.Errorf("cpu limit = %q, want 500m", cpuLim.String())
+	}
+	memLim := c.Resources.Limits["memory"]
+	if memLim.String() != "256Mi" {
+		t.Errorf("memory limit = %q, want 256Mi", memLim.String())
+	}
+}
+
+func TestKubernetesRunner_RunSync_JobFails(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simulate K8s controller: mark job as failed
+	go func() {
+		for {
+			time.Sleep(100 * time.Millisecond)
+			jobs, err := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(jobs.Items) == 0 {
+				continue
+			}
+			job := jobs.Items[0]
+			job.Status.Failed = 1
+			r.client.BatchV1().Jobs("test-ns").UpdateStatus(context.Background(), &job, metav1.UpdateOptions{})
+			return
+		}
+	}()
+
+	_, err := r.RunSync(ctx, RunSyncOptions{
+		ProjectID: "proj-fail",
+		Args:      []string{"--test-connection", "llm"},
+	})
+	if err == nil {
+		t.Error("RunSync should return error when job fails")
+	}
+}
+
+func TestKubernetesRunner_RunSync_ContextCancelled(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Don't simulate completion — let context expire
+	_, err := r.RunSync(ctx, RunSyncOptions{
+		ProjectID: "proj-timeout",
+		Args:      []string{"--test-connection", "warehouse"},
+	})
+	if err == nil {
+		t.Error("RunSync should return error when context is cancelled")
+	}
+}
+
+func TestSubprocessRunner_RunSync_MissingBinary(t *testing.T) {
+	r := NewSubprocessRunner()
+	_, err := r.RunSync(context.Background(), RunSyncOptions{
+		ProjectID: "test",
+		Args:      []string{"--test-connection", "llm"},
+	})
+	if err == nil {
+		t.Error("RunSync should fail when agent binary is not in PATH")
 	}
 }
 

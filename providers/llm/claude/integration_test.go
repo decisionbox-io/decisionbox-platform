@@ -212,6 +212,78 @@ func TestIntegration_InvalidModel(t *testing.T) {
 	t.Logf("Invalid model error: %v", err)
 }
 
+func TestIntegration_Validate_Success(t *testing.T) {
+	apiKey := os.Getenv("INTEGRATION_TEST_ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		t.Skip("INTEGRATION_TEST_ANTHROPIC_API_KEY not set")
+	}
+
+	provider, err := NewClaudeProvider(ClaudeConfig{
+		APIKey:     apiKey,
+		Model:      "claude-haiku-4-5-20251001",
+		MaxRetries: 1,
+		Timeout:    30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := provider.Validate(ctx); err != nil {
+		t.Fatalf("Validate should succeed with valid API key: %v", err)
+	}
+	t.Log("Claude Validate succeeded")
+}
+
+func TestIntegration_Validate_InvalidKey(t *testing.T) {
+	provider, err := NewClaudeProvider(ClaudeConfig{
+		APIKey:     "sk-ant-invalid-key-for-test",
+		Model:      "claude-haiku-4-5-20251001",
+		MaxRetries: 1,
+		Timeout:    10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Provider creation should succeed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = provider.Validate(ctx)
+	if err == nil {
+		t.Fatal("Validate should fail with invalid API key")
+	}
+	if !strings.Contains(err.Error(), "authentication") && !strings.Contains(err.Error(), "API error") {
+		t.Errorf("error should mention auth issue, got: %v", err)
+	}
+	t.Logf("Claude Validate with invalid key error: %v", err)
+}
+
+func TestIntegration_Validate_ViaFactory(t *testing.T) {
+	apiKey := os.Getenv("INTEGRATION_TEST_ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		t.Skip("INTEGRATION_TEST_ANTHROPIC_API_KEY not set")
+	}
+
+	provider, err := gollm.NewProvider("claude", gollm.ProviderConfig{
+		"api_key": apiKey,
+		"model":   "claude-haiku-4-5-20251001",
+	})
+	if err != nil {
+		t.Fatalf("Factory error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := provider.Validate(ctx); err != nil {
+		t.Fatalf("Validate via factory should succeed: %v", err)
+	}
+	t.Log("Claude Validate via factory succeeded")
+}
+
 func TestIntegration_ContextCancellation(t *testing.T) {
 	apiKey := os.Getenv("INTEGRATION_TEST_ANTHROPIC_API_KEY")
 	if apiKey == "" {

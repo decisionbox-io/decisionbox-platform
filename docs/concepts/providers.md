@@ -17,6 +17,7 @@ All three provider types follow the same pattern:
 // 1. Interface (libs/go-common/llm/provider.go)
 type Provider interface {
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+    Validate(ctx context.Context) error
 }
 
 // 2. Registry (libs/go-common/llm/registry.go)
@@ -65,9 +66,11 @@ The API returns this metadata via `GET /api/v1/providers/llm` and `GET /api/v1/p
 
 ### LLM Providers
 
-**Interface:** `llm.Provider` — One method: `Chat(ctx, request) → response`
+**Interface:** `llm.Provider` — Two methods: `Chat(ctx, request) → response` and `Validate(ctx) → error`
 
 **Purpose:** Send prompts to an AI model and get text responses.
+`Validate` checks credentials and model access using lightweight API calls (e.g., list models) without consuming tokens.
+Used by the "Test Connection" button in the dashboard.
 
 | Provider | ID | Auth | Models |
 |----------|----|------|--------|

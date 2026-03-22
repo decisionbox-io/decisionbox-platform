@@ -267,6 +267,48 @@ func TestProviderFactory_MissingKey(t *testing.T) {
 	}
 }
 
+func TestValidate_Success(t *testing.T) {
+	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %s, want /models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("auth = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
+	})
+	defer server.Close()
+
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	if err := provider.Validate(context.Background()); err != nil {
+		t.Fatalf("Validate should succeed: %v", err)
+	}
+}
+
+func TestValidate_Unauthorized(t *testing.T) {
+	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
+	})
+	defer server.Close()
+
+	provider := NewOpenAIProvider("bad-key", "gpt-4o", server.URL)
+	if err := provider.Validate(context.Background()); err == nil {
+		t.Error("Validate should fail with bad key")
+	}
+}
+
+func TestValidate_ServerDown(t *testing.T) {
+	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://localhost:1")
+	if err := provider.Validate(context.Background()); err == nil {
+		t.Error("Validate should fail when server is unreachable")
+	}
+}
+
 func TestProviderFactory_DefaultModel(t *testing.T) {
 	// Can't fully test without actual API, but verify factory doesn't error
 	// We use a bad base_url to avoid real API calls

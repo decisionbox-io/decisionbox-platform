@@ -86,6 +86,20 @@ type BedrockProvider struct {
 	httpClient *http.Client
 }
 
+// Validate checks that AWS credentials are valid and the model is accessible.
+// Makes a minimal request (max_tokens=1) to verify auth and model access.
+func (p *BedrockProvider) Validate(ctx context.Context) error {
+	_, err := p.Chat(ctx, gollm.ChatRequest{
+		Model:     p.model,
+		Messages:  []gollm.Message{{Role: "user", Content: "hi"}},
+		MaxTokens: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("bedrock: validation failed: %w", err)
+	}
+	return nil
+}
+
 // Chat sends a conversation to AWS Bedrock.
 // Routes to the correct format based on model prefix.
 func (p *BedrockProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {

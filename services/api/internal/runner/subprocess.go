@@ -91,6 +91,29 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	return nil
 }
 
+func (r *SubprocessRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*RunSyncResult, error) {
+	args := append([]string{"--project-id", opts.ProjectID}, opts.Args...)
+
+	cmd := exec.CommandContext(ctx, "decisionbox-agent", args...) //nolint:gosec // controlled binary name
+	cmd.Env = append(os.Environ(),
+		"MONGODB_URI="+getEnv("MONGODB_URI", "mongodb://localhost:27017"),
+		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	output, err := cmd.Output()
+	if err != nil {
+		return &RunSyncResult{
+			Output: output,
+			Error:  extractErrorMessage(stderr.String(), err),
+		}, err
+	}
+
+	return &RunSyncResult{Output: output}, nil
+}
+
 func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
 	r.mu.Lock()
 	proc, ok := r.processes[runID]

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -46,6 +47,80 @@ func NewKubernetesRunner(cfg Config) (*KubernetesRunner, error) {
 	}, nil
 }
 
+// jobSpec holds the variable parts for building a K8s Job.
+type jobSpec struct {
+	name      string
+	labels    map[string]string
+	podLabels map[string]string
+	args      []string
+	ttl       int32
+	deadline  *int64 // nil = no deadline
+	cpuReq    string
+	cpuLim    string
+	memReq    string
+	memLim    string
+}
+
+// buildJob creates a K8s Job from the spec, using shared config (image, SA, env vars).
+func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
+	envVars := []corev1.EnvVar{
+		{Name: "MONGODB_URI", Value: getEnv("MONGODB_URI", "mongodb://localhost:27017")},
+		{Name: "MONGODB_DB", Value: getEnv("MONGODB_DB", "decisionbox")},
+		{Name: "DOMAIN_PACK_PATH", Value: "/app/domain-packs"},
+	}
+	for _, kv := range []struct{ key, envKey string }{
+		{"SECRET_PROVIDER", "SECRET_PROVIDER"},
+		{"SECRET_NAMESPACE", "SECRET_NAMESPACE"},
+		{"SECRET_ENCRYPTION_KEY", "SECRET_ENCRYPTION_KEY"},
+		{"SECRET_GCP_PROJECT_ID", "SECRET_GCP_PROJECT_ID"},
+	} {
+		if v := getEnv(kv.envKey, ""); v != "" {
+			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
+		}
+	}
+
+	backoffLimit := int32(0)
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      spec.name,
+			Namespace: r.config.Namespace,
+			Labels:    spec.labels,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            &backoffLimit,
+			TTLSecondsAfterFinished: &spec.ttl,
+			ActiveDeadlineSeconds:   spec.deadline,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: spec.podLabels},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: r.config.ServiceAccountName,
+					RestartPolicy:      corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
+						{
+							Name:  "agent",
+							Image: r.config.AgentImage,
+							Args:  spec.args,
+							Env:   envVars,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse(spec.cpuReq),
+									corev1.ResourceMemory: resource.MustParse(spec.memReq),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse(spec.cpuLim),
+									corev1.ResourceMemory: resource.MustParse(spec.memLim),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return job
+}
+
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
 
@@ -60,74 +135,19 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
 	}
 
-	// Build env vars from current API environment (MongoDB, LLM key, domain pack path)
-	envVars := []corev1.EnvVar{
-		{Name: "MONGODB_URI", Value: getEnv("MONGODB_URI", "mongodb://localhost:27017")},
-		{Name: "MONGODB_DB", Value: getEnv("MONGODB_DB", "decisionbox")},
-		{Name: "DOMAIN_PACK_PATH", Value: "/app/domain-packs"},
-	}
-	// Pass secret provider config so agent reads secrets from same store
-	if sp := getEnv("SECRET_PROVIDER", ""); sp != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "SECRET_PROVIDER", Value: sp})
-	}
-	if ns := getEnv("SECRET_NAMESPACE", ""); ns != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "SECRET_NAMESPACE", Value: ns})
-	}
-	if ek := getEnv("SECRET_ENCRYPTION_KEY", ""); ek != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "SECRET_ENCRYPTION_KEY", Value: ek})
-	}
-	if gp := getEnv("SECRET_GCP_PROJECT_ID", ""); gp != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "SECRET_GCP_PROJECT_ID", Value: gp})
-	}
-
-	backoffLimit := int32(0) // no retries — agent handles its own
-	ttl := int32(3600)       // clean up completed jobs after 1 hour
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: r.config.Namespace,
-			Labels: map[string]string{
-				"app":        "decisionbox-agent",
-				"project-id": opts.ProjectID,
-				"run-id":     opts.RunID,
-			},
+	job := r.buildJob(jobSpec{
+		name: jobName,
+		labels: map[string]string{
+			"app": "decisionbox-agent", "project-id": opts.ProjectID, "run-id": opts.RunID,
 		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoffLimit,
-			TTLSecondsAfterFinished: &ttl,
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app":    "decisionbox-agent",
-						"run-id": opts.RunID,
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: r.config.ServiceAccountName,
-					RestartPolicy:      corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{
-							Name:  "agent",
-							Image: r.config.AgentImage,
-							Args:  args,
-							Env:   envVars,
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(r.config.CPURequest),
-									corev1.ResourceMemory: resource.MustParse(r.config.MemoryRequest),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(r.config.CPULimit),
-									corev1.ResourceMemory: resource.MustParse(r.config.MemoryLimit),
-								},
-							},
-						},
-					},
-				},
-			},
+		podLabels: map[string]string{
+			"app": "decisionbox-agent", "run-id": opts.RunID,
 		},
-	}
+		args:   args,
+		ttl:    3600,
+		cpuReq: r.config.CPURequest, cpuLim: r.config.CPULimit,
+		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
+	})
 
 	created, err := r.client.BatchV1().Jobs(r.config.Namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
@@ -153,6 +173,83 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	return nil
+}
+
+func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*RunSyncResult, error) {
+	jobName := fmt.Sprintf("test-%s-%d", opts.ProjectID[:min(len(opts.ProjectID), 12)], time.Now().UnixMilli()%100000)
+	args := append([]string{"--project-id", opts.ProjectID}, opts.Args...)
+	deadline := int64(60)
+
+	job := r.buildJob(jobSpec{
+		name: jobName,
+		labels: map[string]string{
+			"app": "decisionbox-agent", "type": "test-connection", "project-id": opts.ProjectID,
+		},
+		podLabels: map[string]string{
+			"app": "decisionbox-agent", "type": "test-connection",
+		},
+		args: args, ttl: 60, deadline: &deadline,
+		cpuReq: "100m", cpuLim: "500m", memReq: "128Mi", memLim: "256Mi",
+	})
+
+	if _, err := r.client.BatchV1().Jobs(r.config.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return nil, fmt.Errorf("failed to create test Job: %w", err)
+	}
+
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "project_id": opts.ProjectID,
+	}).Info("Test connection K8s Job created")
+
+	// Poll until Job completes or fails
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			j, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if j.Status.Succeeded > 0 {
+				logs := r.readPodLogs(ctx, jobName)
+				return &RunSyncResult{Output: logs}, nil
+			}
+			if j.Status.Failed > 0 {
+				logs := r.readPodLogs(ctx, jobName)
+				errMsg := r.getPodErrorMessage(ctx, jobName)
+				if errMsg == "" {
+					errMsg = "test connection job failed"
+				}
+				return &RunSyncResult{Output: logs, Error: errMsg}, fmt.Errorf("%s", errMsg)
+			}
+		}
+	}
+}
+
+// readPodLogs reads stdout from a pod created by a Job.
+func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []byte {
+	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return nil
+	}
+
+	req := r.client.CoreV1().Pods(r.config.Namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return nil
+	}
+	defer stream.Close()
+
+	var buf bytes.Buffer
+	if _, err = buf.ReadFrom(stream); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // watchJob polls the Job status until it completes or fails.

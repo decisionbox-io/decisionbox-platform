@@ -33,6 +33,7 @@ export default function NewProjectPage() {
   const [filterValue, setFilterValue] = useState('');
   const [llmProvider, setLlmProvider] = useState('');
   const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
+  const [llmApiKey, setLlmApiKey] = useState('');
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -71,10 +72,12 @@ export default function NewProjectPage() {
   const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouseProvider);
   const selectedLLM = llmProviders.find((p) => p.id === llmProvider);
 
+  const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
+
   const canProceed = [
     () => name && domain && category,
     () => warehouseProvider && warehouseConfig['dataset'],
-    () => llmProvider && llmConfig['model'],
+    () => llmProvider && llmConfig['model'] && (!llmNeedsApiKey || llmApiKey),
     () => true,
   ];
 
@@ -103,6 +106,11 @@ export default function NewProjectPage() {
         },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
+      // Save LLM API key as a secret if provided
+      if (llmApiKey && project.id) {
+        await api.setSecret(project.id, 'llm-api-key', llmApiKey);
+      }
+
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });
       router.push(`/projects/${project.id}`);
     } catch (e: unknown) {
@@ -186,6 +194,7 @@ export default function NewProjectPage() {
                       value={llmProvider}
                       onChange={(v) => {
                         setLlmProvider(v || '');
+                        setLlmApiKey('');
                         const prov = llmProviders.find((p) => p.id === v);
                         if (prov) setLlmConfig(buildDefaults(prov.config_fields));
                       }} />
@@ -201,9 +210,18 @@ export default function NewProjectPage() {
                           onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
                       ))}
 
-                    <Text size="xs" c="dimmed">
-                      API keys are managed per-project via Settings → Secrets after project creation.
-                    </Text>
+                    {llmNeedsApiKey && (
+                      <TextInput label="API Key" required type="password"
+                        placeholder={selectedLLM?.config_fields.find((f) => f.key === 'api_key')?.placeholder || 'Enter API key'}
+                        value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)}
+                        description="Stored encrypted. Never exposed in full." />
+                    )}
+
+                    {!llmNeedsApiKey && (
+                      <Text size="xs" c="dimmed">
+                        This provider uses cloud credentials (IAM / ADC). No API key needed.
+                      </Text>
+                    )}
                   </Stack>
                 </Card>
               </Stepper.Step>

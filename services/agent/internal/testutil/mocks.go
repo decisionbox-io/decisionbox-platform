@@ -42,6 +42,10 @@ func NewMockLLMProvider() *MockLLMProvider {
 	}
 }
 
+func (m *MockLLMProvider) Validate(ctx context.Context) error {
+	return m.Error
+}
+
 func (m *MockLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	m.Calls = append(m.Calls, MockLLMCall{Request: req})
 
