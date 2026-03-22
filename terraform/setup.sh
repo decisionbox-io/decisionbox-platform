@@ -1206,7 +1206,7 @@ if [[ "$DESTROY" == "true" ]]; then
   TFVARS_FILE="${SCRIPT_DIR}/${CLOUD}/prod/terraform.tfvars"
   TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
 
-  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
+  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
 
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
@@ -1407,7 +1407,7 @@ if [[ "$RESUME" == "true" ]]; then
   TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
 
   # Parse tfvars (HCL key = "value" format)
-  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' ; }
+  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
 
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
