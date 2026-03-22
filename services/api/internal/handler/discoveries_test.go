@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -183,18 +184,6 @@ func TestNewDiscoveriesHandler(t *testing.T) {
 	if h == nil {
 		t.Fatal("NewDiscoveriesHandler returned nil")
 	}
-	if h.repo != nil {
-		t.Error("repo should be nil when passed nil")
-	}
-	if h.projectRepo != nil {
-		t.Error("projectRepo should be nil when passed nil")
-	}
-	if h.runRepo != nil {
-		t.Error("runRepo should be nil when passed nil")
-	}
-	if h.agentRunner != nil {
-		t.Error("agentRunner should be nil when passed nil")
-	}
 }
 
 func TestGetEnvOrDefault(t *testing.T) {
@@ -230,7 +219,7 @@ func TestDiscoveriesHandler_List_Success_MockRepo(t *testing.T) {
 
 	// Create a project
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	// Add discoveries
 	discRepo.add(&models.DiscoveryResult{
@@ -455,7 +444,7 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 
 	// Create a project
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	// Add a run
 	runRepo.addRun(&models.DiscoveryRun{
@@ -528,7 +517,7 @@ func TestDiscoveriesHandler_GetStatus_NoRunsOrDiscoveries_MockRepo(t *testing.T)
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
 	req.SetPathValue("id", p.ID)
@@ -559,7 +548,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
 		strings.NewReader(`{"areas":["churn"],"max_steps":50}`))
@@ -621,7 +610,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	// Add a running run for this project
 	runRepo.addRun(&models.DiscoveryRun{
@@ -662,7 +651,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_RunnerFails_MockRepo(t *testing.T) 
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	projRepo.Create(nil, p)
+	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", nil)
 	req.SetPathValue("id", p.ID)

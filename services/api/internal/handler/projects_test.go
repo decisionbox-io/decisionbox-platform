@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -305,7 +306,7 @@ func TestProjectsHandler_List_Success_MockRepo(t *testing.T) {
 			Domain:   "gaming",
 			Category: "match3",
 		}
-		repo.Create(nil, p)
+		repo.Create(context.Background(), p)
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
@@ -373,7 +374,7 @@ func TestProjectsHandler_Get_Success_MockRepo(t *testing.T) {
 
 	// Create a project
 	p := &models.Project{Name: "My Project", Domain: "gaming", Category: "match3"}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
@@ -444,7 +445,7 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 		Category: "match3",
 		Warehouse: models.WarehouseConfig{Provider: "bigquery"},
 	}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	// Update the name
 	body := `{"name":"Updated Name"}`
@@ -473,7 +474,7 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	}
 
 	// Verify the update persisted in the repo
-	updated, _ := repo.GetByID(nil, p.ID)
+	updated, _ := repo.GetByID(context.Background(), p.ID)
 	if updated.Name != "Updated Name" {
 		t.Errorf("repo name = %q, want 'Updated Name'", updated.Name)
 	}
@@ -502,7 +503,7 @@ func TestProjectsHandler_Update_InvalidJSON_MockRepo(t *testing.T) {
 
 	// Create a project so GetByID succeeds
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(`not json`))
 	req.Header.Set("Content-Type", "application/json")
@@ -522,7 +523,7 @@ func TestProjectsHandler_Update_RepoError_MockRepo(t *testing.T) {
 
 	// Create a project, then inject an update error
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 	repo.updateErr = fmt.Errorf("write conflict")
 
 	body := `{"name":"Updated"}`
@@ -544,7 +545,7 @@ func TestProjectsHandler_Delete_Success_MockRepo(t *testing.T) {
 
 	// Create a project
 	p := &models.Project{Name: "To Delete", Domain: "gaming", Category: "match3"}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
@@ -564,7 +565,7 @@ func TestProjectsHandler_Delete_Success_MockRepo(t *testing.T) {
 	}
 
 	// Verify project is gone
-	got, _ := repo.GetByID(nil, p.ID)
+	got, _ := repo.GetByID(context.Background(), p.ID)
 	if got != nil {
 		t.Error("project should be deleted from repo")
 	}
@@ -593,7 +594,7 @@ func TestProjectsHandler_Delete_RepoError_MockRepo(t *testing.T) {
 
 	// Create a project — the deleteErr will override
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
@@ -618,7 +619,7 @@ func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 		Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"events"}},
 		LLM:       models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4"},
 	}
-	repo.Create(nil, p)
+	repo.Create(context.Background(), p)
 
 	// Update only LLM provider — warehouse should be preserved
 	body := `{"llm":{"provider":"openai","model":"gpt-4o"}}`
@@ -633,7 +634,7 @@ func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	updated, _ := repo.GetByID(nil, p.ID)
+	updated, _ := repo.GetByID(context.Background(), p.ID)
 	if updated.LLM.Provider != "openai" {
 		t.Errorf("LLM provider = %q, want 'openai'", updated.LLM.Provider)
 	}
@@ -662,7 +663,7 @@ func TestProjectsHandler_Create_SeedsPrompts_MockRepo(t *testing.T) {
 	for id := range repo.projects {
 		storedID = id
 	}
-	stored, _ := repo.GetByID(nil, storedID)
+	stored, _ := repo.GetByID(context.Background(), storedID)
 	if stored.Prompts == nil {
 		t.Error("prompts should be seeded on create for gaming domain")
 	}

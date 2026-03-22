@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -56,7 +57,7 @@ func TestPricingHandler_Get_Success_MockRepo(t *testing.T) {
 	h := NewPricingHandler(repo)
 
 	// Seed pricing data
-	repo.Save(nil, &models.Pricing{
+	repo.Save(context.Background(), &models.Pricing{
 		LLM: map[string]map[string]models.TokenPrice{
 			"claude": {
 				"claude-sonnet-4": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
@@ -170,12 +171,12 @@ func TestPricingHandler_Update_Success_MockRepo(t *testing.T) {
 	}
 
 	// Verify it was persisted in the repo
-	stored, _ := repo.Get(nil)
-	if stored == nil {
-		t.Fatal("pricing should be saved in repo")
+	stored, err := repo.Get(context.Background())
+	if err != nil {
+		t.Fatalf("repo.Get error: %v", err)
 	}
-	if stored.LLM["openai"] == nil {
-		t.Error("repo should have openai pricing")
+	if stored == nil || stored.LLM["openai"] == nil {
+		t.Error("repo should have openai pricing saved")
 	}
 }
 
@@ -201,7 +202,7 @@ func TestPricingHandler_Update_Overwrite_MockRepo(t *testing.T) {
 	h := NewPricingHandler(repo)
 
 	// Set initial pricing
-	repo.Save(nil, &models.Pricing{
+	repo.Save(context.Background(), &models.Pricing{
 		LLM: map[string]map[string]models.TokenPrice{
 			"claude": {"claude-sonnet-4": {InputPerMillion: 3.0, OutputPerMillion: 15.0}},
 		},
@@ -220,7 +221,7 @@ func TestPricingHandler_Update_Overwrite_MockRepo(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	stored, _ := repo.Get(nil)
+	stored, _ := repo.Get(context.Background())
 	if stored.LLM["claude"] != nil {
 		t.Error("claude pricing should be overwritten (full replace)")
 	}

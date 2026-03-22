@@ -164,16 +164,6 @@ func TestExtractFieldValue_StringNotConverted(t *testing.T) {
 
 // --- Mock client tests ---
 
-func newMockProvider() *RedshiftProvider {
-	return &RedshiftProvider{
-		client:    &mockDataAPIClient{},
-		workgroup: "test-workgroup",
-		database:  "testdb",
-		dataset:   "public",
-		timeout:   10 * time.Second,
-	}
-}
-
 func TestMock_Query_Success(t *testing.T) {
 	mock := &mockDataAPIClient{
 		resultColumns: []types.ColumnMetadata{

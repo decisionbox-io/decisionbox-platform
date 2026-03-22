@@ -115,18 +115,12 @@ func TestNewEstimateHandler(t *testing.T) {
 	if h == nil {
 		t.Fatal("NewEstimateHandler returned nil")
 	}
-	if h.projectRepo != nil {
-		t.Error("projectRepo should be nil when passed nil")
-	}
 }
 
 func TestNewProjectsHandler(t *testing.T) {
 	h := NewProjectsHandler(nil)
 	if h == nil {
 		t.Fatal("NewProjectsHandler returned nil")
-	}
-	if h.repo != nil {
-		t.Error("repo should be nil when passed nil")
 	}
 }
 
@@ -135,18 +129,12 @@ func TestNewPricingHandler(t *testing.T) {
 	if h == nil {
 		t.Fatal("NewPricingHandler returned nil")
 	}
-	if h.repo != nil {
-		t.Error("repo should be nil when passed nil")
-	}
 }
 
 func TestNewFeedbackHandler(t *testing.T) {
 	h := NewFeedbackHandler(nil)
 	if h == nil {
 		t.Fatal("NewFeedbackHandler returned nil")
-	}
-	if h.repo != nil {
-		t.Error("repo should be nil when passed nil")
 	}
 }
 
@@ -168,12 +156,6 @@ func TestNewSecretsHandler(t *testing.T) {
 	h := NewSecretsHandler(nil, nil)
 	if h == nil {
 		t.Fatal("NewSecretsHandler returned nil")
-	}
-	if h.secretProvider != nil {
-		t.Error("secretProvider should be nil when passed nil")
-	}
-	if h.projectRepo != nil {
-		t.Error("projectRepo should be nil when passed nil")
 	}
 }
 

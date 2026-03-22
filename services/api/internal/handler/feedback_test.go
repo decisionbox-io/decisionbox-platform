@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -261,19 +262,19 @@ func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 	h := NewFeedbackHandler(repo)
 
 	// Add some feedback items
-	repo.Upsert(nil, &models.Feedback{
+	repo.Upsert(context.Background(), &models.Feedback{
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",
 		Rating:      "like",
 	})
-	repo.Upsert(nil, &models.Feedback{
+	repo.Upsert(context.Background(), &models.Feedback{
 		DiscoveryID: "disc-1",
 		TargetType:  "recommendation",
 		TargetID:    "r-0",
 		Rating:      "dislike",
 	})
-	repo.Upsert(nil, &models.Feedback{
+	repo.Upsert(context.Background(), &models.Feedback{
 		DiscoveryID: "disc-2",
 		TargetType:  "insight",
 		TargetID:    "i-1",
@@ -337,7 +338,7 @@ func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 	h := NewFeedbackHandler(repo)
 
 	// Create a feedback item
-	fb, _ := repo.Upsert(nil, &models.Feedback{
+	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",
@@ -388,7 +389,7 @@ func TestFeedbackHandler_Delete_RepoError_MockRepo(t *testing.T) {
 	h := NewFeedbackHandler(repo)
 
 	// Create an item, but deleteErr will override
-	fb, _ := repo.Upsert(nil, &models.Feedback{
+	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",

@@ -15,66 +15,6 @@ func mockClaudeServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
-func defaultClaudeHandler(t *testing.T) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		if r.Header.Get("x-api-key") == "" {
-			t.Error("missing x-api-key header")
-		}
-		if r.Header.Get("anthropic-version") != anthropicAPIVersion {
-			t.Errorf("anthropic-version = %q, want %q", r.Header.Get("anthropic-version"), anthropicAPIVersion)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Error("missing Content-Type header")
-		}
-
-		var req claudeRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		resp := claudeResponse{
-			ID:    "msg_test_123",
-			Model: req.Model,
-			Content: []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}{
-				{Type: "text", Text: "Hello from mock Claude"},
-			},
-			StopReason: "end_turn",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{
-				InputTokens:  12,
-				OutputTokens: 5,
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}
-}
-
-// newTestProvider creates a ClaudeProvider that talks to a mock server.
-func newTestProvider(t *testing.T, serverURL string) *ClaudeProvider {
-	t.Helper()
-	p, err := NewClaudeProvider(ClaudeConfig{
-		APIKey:     "test-key",
-		Model:      "claude-sonnet-4-20250514",
-		MaxRetries: 1,
-		Timeout:    5_000_000_000, // 5s
-	})
-	if err != nil {
-		t.Fatalf("NewClaudeProvider: %v", err)
-	}
-	return p
-}
-
-// sendToMock overrides the API URL by using a custom sendRequest that hits the mock.
-// Since claudeProvider uses a hardcoded URL, we test via the factory + mock server pattern.
-
 func TestNewClaudeProvider_Defaults(t *testing.T) {
 	p, err := NewClaudeProvider(ClaudeConfig{
 		APIKey: "test-key",
