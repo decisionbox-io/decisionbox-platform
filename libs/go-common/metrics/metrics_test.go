@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestHandler(t *testing.T) {
@@ -81,29 +84,43 @@ func TestResponseWriterCapturesStatus(t *testing.T) {
 	}
 }
 
+var (
+	testCounter   *prometheus.CounterVec
+	testHistogram *prometheus.HistogramVec
+	testGauge     *prometheus.GaugeVec
+	metricsOnce   sync.Once
+)
+
+func initTestMetrics() {
+	metricsOnce.Do(func() {
+		testCounter = NewCounter("test_counter_unit", "A test counter", "label1")
+		testHistogram = NewHistogram("test_histogram_unit", "A test histogram", "label1")
+		testGauge = NewGauge("test_gauge_unit", "A test gauge", "label1")
+	})
+}
+
 func TestNewCounter_NoPanic(t *testing.T) {
-	c := NewCounter("test_counter_unit", "A test counter", "label1")
-	if c == nil {
+	initTestMetrics()
+	if testCounter == nil {
 		t.Error("NewCounter returned nil")
 	}
-	// Verify it can be used without panic
-	c.WithLabelValues("val1").Inc()
+	testCounter.WithLabelValues("val1").Inc()
 }
 
 func TestNewHistogram_NoPanic(t *testing.T) {
-	h := NewHistogram("test_histogram_unit", "A test histogram", "label1")
-	if h == nil {
+	initTestMetrics()
+	if testHistogram == nil {
 		t.Error("NewHistogram returned nil")
 	}
-	h.WithLabelValues("val1").Observe(0.5)
+	testHistogram.WithLabelValues("val1").Observe(0.5)
 }
 
 func TestNewGauge_NoPanic(t *testing.T) {
-	g := NewGauge("test_gauge_unit", "A test gauge", "label1")
-	if g == nil {
+	initTestMetrics()
+	if testGauge == nil {
 		t.Error("NewGauge returned nil")
 	}
-	g.WithLabelValues("val1").Set(42)
+	testGauge.WithLabelValues("val1").Set(42)
 }
 
 func TestHTTPMiddleware_StatusCodes(t *testing.T) {
