@@ -34,8 +34,9 @@ COPY services/api/ services/api/
 WORKDIR /workspace/services/api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-api .
 
-FROM alpine:3.21
+FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && \
+    apk upgrade --no-cache && \
     addgroup -g 1000 -S app && adduser -u 1000 -S app -G app
 
 WORKDIR /app
