@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -45,7 +47,10 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 		"project_id": projectID, "target": target,
 	}).Info("Running connection test")
 
-	result, err := h.runner.RunSync(r.Context(), runner.RunSyncOptions{
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	result, err := h.runner.RunSync(ctx, runner.RunSyncOptions{
 		ProjectID: projectID,
 		Args:      []string{"--test-connection", target},
 	})

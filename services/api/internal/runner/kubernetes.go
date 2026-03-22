@@ -186,7 +186,7 @@ func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*R
 			"app": "decisionbox-agent", "type": "test-connection", "project-id": opts.ProjectID,
 		},
 		podLabels: map[string]string{
-			"app": "decisionbox-agent", "type": "test-connection", "job": jobName,
+			"app": "decisionbox-agent", "type": "test-connection",
 		},
 		args: args, ttl: 60, deadline: &deadline,
 		cpuReq: "100m", cpuLim: "500m", memReq: "128Mi", memLim: "256Mi",
@@ -232,7 +232,7 @@ func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*R
 // readPodLogs reads stdout from a pod created by a Job.
 func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []byte {
 	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("job=%s", jobName),
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		return nil

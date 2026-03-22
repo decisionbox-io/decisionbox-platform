@@ -286,12 +286,15 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 		}
 
 		datasets := project.Warehouse.GetDatasets()
-		result, _ := json.Marshal(map[string]interface{}{
+		out, err := json.Marshal(map[string]interface{}{
 			"success":  true,
 			"provider": project.Warehouse.Provider,
 			"datasets": datasets,
 		})
-		fmt.Println(string(result))
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
 
 	case "llm":
 		// For test connection, use max_retries=1 and no request delay
@@ -308,12 +311,18 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 			return err
 		}
 
-		result, _ := json.Marshal(map[string]interface{}{
+		out, err := json.Marshal(map[string]interface{}{
 			"success":  true,
 			"provider": project.LLM.Provider,
 			"model":    project.LLM.Model,
 		})
-		fmt.Println(string(result))
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
+
+	default:
+		return fmt.Errorf("unknown test target: %s", target)
 	}
 
 	return nil
