@@ -272,3 +272,180 @@ func TestDefaultPricing(t *testing.T) {
 		}
 	}
 }
+
+// redirectTransport intercepts HTTP requests and sends them to a mock server
+// instead of the real Anthropic API. This lets us test the full Chat path
+// (including sendRequest, headers, retry logic) without modifying source code.
+type redirectTransport struct {
+	mockURL   string
+	transport http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Redirect the request to the mock server
+	mockReq := req.Clone(req.Context())
+	u, _ := http.NewRequest(req.Method, rt.mockURL, nil)
+	mockReq.URL = u.URL
+	mockReq.Host = u.URL.Host
+	return rt.transport.RoundTrip(mockReq)
+}
+
+// newProviderWithMockServer creates a ClaudeProvider whose HTTP client
+// redirects all requests to the given mock server URL.
+func newProviderWithMockServer(t *testing.T, mockURL string) *ClaudeProvider {
+	t.Helper()
+	p := &ClaudeProvider{
+		apiKey:     "test-key-mock",
+		model:      "claude-sonnet-4-20250514",
+		maxRetries: 1,
+		httpClient: &http.Client{
+			Transport: &redirectTransport{
+				mockURL:   mockURL,
+				transport: http.DefaultTransport,
+			},
+		},
+	}
+	return p
+}
+
+func TestChat_Success(t *testing.T) {
+	server := mockClaudeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Verify headers
+		if r.Header.Get("x-api-key") != "test-key-mock" {
+			t.Errorf("x-api-key = %q, want test-key-mock", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != anthropicAPIVersion {
+			t.Errorf("anthropic-version = %q", r.Header.Get("anthropic-version"))
+		}
+
+		var req claudeRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		resp := claudeResponse{
+			ID:    "msg_success_123",
+			Model: req.Model,
+			Content: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				{Type: "text", Text: "The answer is 42."},
+			},
+			StopReason: "end_turn",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{
+				InputTokens:  25,
+				OutputTokens: 10,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	defer server.Close()
+
+	p := newProviderWithMockServer(t, server.URL)
+
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:  []gollm.Message{{Role: "user", Content: "What is the meaning of life?"}},
+		MaxTokens: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "The answer is 42." {
+		t.Errorf("content = %q, want %q", resp.Content, "The answer is 42.")
+	}
+	if resp.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("model = %q, want claude-sonnet-4-20250514", resp.Model)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Errorf("stop_reason = %q, want end_turn", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 25 {
+		t.Errorf("input_tokens = %d, want 25", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 10 {
+		t.Errorf("output_tokens = %d, want 10", resp.Usage.OutputTokens)
+	}
+}
+
+func TestChat_RateLimit(t *testing.T) {
+	server := mockClaudeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"type":    "rate_limit_error",
+				"message": "Rate limit exceeded",
+			},
+		})
+	})
+	defer server.Close()
+
+	p := newProviderWithMockServer(t, server.URL)
+
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for 429 response")
+	}
+	if !stringContains(err.Error(), "rate_limit_error") {
+		t.Errorf("error = %q, should mention rate_limit_error", err.Error())
+	}
+}
+
+func TestChat_TokenCounting(t *testing.T) {
+	server := mockClaudeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := claudeResponse{
+			ID:    "msg_tokens_456",
+			Model: "claude-sonnet-4-20250514",
+			Content: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				{Type: "text", Text: "Short response."},
+			},
+			StopReason: "max_tokens",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{
+				InputTokens:  500,
+				OutputTokens: 200,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	defer server.Close()
+
+	p := newProviderWithMockServer(t, server.URL)
+
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:  []gollm.Message{{Role: "user", Content: "Tell me a long story about dragons and wizards."}},
+		MaxTokens: 200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Usage.InputTokens != 500 {
+		t.Errorf("input_tokens = %d, want 500", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 200 {
+		t.Errorf("output_tokens = %d, want 200", resp.Usage.OutputTokens)
+	}
+	if resp.StopReason != "max_tokens" {
+		t.Errorf("stop_reason = %q, want max_tokens", resp.StopReason)
+	}
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

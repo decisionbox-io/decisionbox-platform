@@ -353,3 +353,31 @@ func TestMock_EmptyResult(t *testing.T) {
 		t.Errorf("columns = %d, want 1", len(result.Columns))
 	}
 }
+
+func TestRedshiftProvider_SQLFixPrompt(t *testing.T) {
+	p := &RedshiftProvider{}
+	prompt := p.SQLFixPrompt()
+	// Currently returns empty string (Redshift-specific SQL fix prompt not yet implemented)
+	if prompt != "" {
+		t.Errorf("SQLFixPrompt() = %q, want empty string", prompt)
+	}
+}
+
+func TestMock_Query_EmptyColumns(t *testing.T) {
+	mock := &mockDataAPIClient{
+		resultColumns: []types.ColumnMetadata{},
+		resultRecords: [][]types.Field{},
+	}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 10 * time.Second}
+
+	result, err := p.Query(context.Background(), "SELECT 1 WHERE false", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Columns) != 0 {
+		t.Errorf("columns = %d, want 0", len(result.Columns))
+	}
+	if len(result.Rows) != 0 {
+		t.Errorf("rows = %d, want 0", len(result.Rows))
+	}
+}

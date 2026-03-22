@@ -127,3 +127,63 @@ func TestBigQueryFactory_CredentialsPassthrough(t *testing.T) {
 		t.Error("expected error for invalid credentials")
 	}
 }
+
+func TestBigQueryProvider_SQLDialect(t *testing.T) {
+	p := &BigQueryProvider{dataset: "test_dataset"}
+	dialect := p.SQLDialect()
+	if dialect != "BigQuery Standard SQL" {
+		t.Errorf("SQLDialect() = %q, want %q", dialect, "BigQuery Standard SQL")
+	}
+}
+
+func TestBigQueryProvider_SQLFixPrompt(t *testing.T) {
+	p := &BigQueryProvider{dataset: "test_dataset"}
+	prompt := p.SQLFixPrompt()
+	if prompt == "" {
+		t.Error("SQLFixPrompt() should not be empty")
+	}
+	// Verify it contains expected template variables
+	if !bqContains(prompt, "{{DATASET}}") {
+		t.Error("SQLFixPrompt should contain {{DATASET}} template variable")
+	}
+	if !bqContains(prompt, "{{ORIGINAL_SQL}}") {
+		t.Error("SQLFixPrompt should contain {{ORIGINAL_SQL}} template variable")
+	}
+	if !bqContains(prompt, "{{ERROR_MESSAGE}}") {
+		t.Error("SQLFixPrompt should contain {{ERROR_MESSAGE}} template variable")
+	}
+	// Verify BigQuery-specific content
+	if !bqContains(prompt, "BigQuery") {
+		t.Error("SQLFixPrompt should mention BigQuery")
+	}
+}
+
+func TestBigQueryProvider_GetDataset(t *testing.T) {
+	tests := []struct {
+		name    string
+		dataset string
+		want    string
+	}{
+		{"single dataset", "events_prod", "events_prod"},
+		{"comma-separated", "events_prod, features_prod", "events_prod, features_prod"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &BigQueryProvider{dataset: tt.dataset}
+			got := p.GetDataset()
+			if got != tt.want {
+				t.Errorf("GetDataset() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func bqContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
