@@ -1359,10 +1359,18 @@ if [[ "$DESTROY" == "true" ]]; then
   echo -e "  ${RED}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
   echo ""
   echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME} ${DIM}(deleted)${NC}"
-  echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
+  elif [[ "$CLOUD" == "aws" ]]; then
+    echo -e "  ${BOLD}Account:${NC}     ${AWS_ACCOUNT_ID}"
+  fi
   echo ""
   echo -e "  ${DIM}Destroy time: ${TF_DESTROY_SECS}s${NC}"
-  echo -e "  ${DIM}State bucket gs://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    echo -e "  ${DIM}State bucket gs://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
+  elif [[ "$CLOUD" == "aws" ]]; then
+    echo -e "  ${DIM}State bucket s3://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
+  fi
   echo ""
   exit 0
 fi

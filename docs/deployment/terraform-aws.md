@@ -107,7 +107,8 @@ cd terraform/aws/prod
 terraform init \
   -backend-config="bucket=$BUCKET" \
   -backend-config="key=prod/terraform.tfstate" \
-  -backend-config="region=$REGION"
+  -backend-config="region=$REGION" \
+  -backend-config="use_lockfile=true"
 
 terraform plan -out=tfplan
 terraform apply tfplan
