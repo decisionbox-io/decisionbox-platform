@@ -164,7 +164,7 @@ jobs:
     needs: [detect-changes, build]
     if: always() && needs.build.result == 'success' && github.event_name != 'pull_request'
     permissions:
-      contents: read
+      contents: write
       security-events: write
 
     strategy:
