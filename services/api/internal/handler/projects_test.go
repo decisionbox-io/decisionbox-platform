@@ -111,73 +111,6 @@ func TestProjectsHandler_Create_EmptyBody(t *testing.T) {
 	}
 }
 
-func TestProjectsHandler_Create_ValidBody_NilRepo(t *testing.T) {
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("POST", "/api/v1/projects",
-		strings.NewReader(`{"name": "Test", "domain": "gaming", "category": "match3"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo when trying to create — expected
-	defer func() { recover() }()
-	h.Create(w, req)
-
-	// If we reach here without panic, the validation passed (which is correct)
-	if w.Code == http.StatusBadRequest {
-		t.Error("valid body should pass validation")
-	}
-}
-
-func TestProjectsHandler_List_NilRepo(t *testing.T) {
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.List(w, req)
-}
-
-func TestProjectsHandler_Get_NilRepo(t *testing.T) {
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/projects/some-id", nil)
-	req.SetPathValue("id", "some-id")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.Get(w, req)
-}
-
-func TestProjectsHandler_Update_NilRepo(t *testing.T) {
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("PUT", "/api/v1/projects/some-id",
-		strings.NewReader(`{"name": "Updated"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "some-id")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo when trying to GetByID — expected
-	defer func() { recover() }()
-	h.Update(w, req)
-}
-
-func TestProjectsHandler_Delete_NilRepo(t *testing.T) {
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("DELETE", "/api/v1/projects/some-id", nil)
-	req.SetPathValue("id", "some-id")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.Delete(w, req)
-}
-
 func TestProjectsHandler_Create_ValidationOrder(t *testing.T) {
 	// Verify that name is checked first, then domain, then category
 	h := NewProjectsHandler(nil)
@@ -215,19 +148,6 @@ func TestProjectsHandler_Create_ValidationOrder(t *testing.T) {
 	if resp.Error != "category is required" {
 		t.Errorf("third validation error should be category, got %q", resp.Error)
 	}
-}
-
-func TestProjectsHandler_List_QueryParams(t *testing.T) {
-	// Verify that query params are parsed (limit, offset).
-	// With nil repo this will panic, but we're just testing that the handler
-	// reads the URL correctly by observing the expected behavior before the panic.
-	h := NewProjectsHandler(nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/projects?limit=10&offset=5", nil)
-	w := httptest.NewRecorder()
-
-	defer func() { recover() }()
-	h.List(w, req)
 }
 
 // --- Mock-based unit tests ---

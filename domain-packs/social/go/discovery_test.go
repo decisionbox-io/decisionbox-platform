@@ -408,10 +408,7 @@ func TestAnalysisAreas_DescriptionNonEmpty(t *testing.T) {
 }
 
 func TestPrompts_WithMissingDomainPackPath(t *testing.T) {
-	// Temporarily set DOMAIN_PACK_PATH to a nonexistent directory
-	origPath := os.Getenv("DOMAIN_PACK_PATH")
-	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
-	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+	t.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
 
 	pack := NewPack()
 
@@ -432,9 +429,7 @@ func TestPrompts_WithMissingDomainPackPath(t *testing.T) {
 }
 
 func TestAnalysisAreas_WithMissingDomainPackPath(t *testing.T) {
-	origPath := os.Getenv("DOMAIN_PACK_PATH")
-	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
-	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+	t.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
 
 	pack := NewPack()
 	areas := pack.AnalysisAreas("content_sharing")
@@ -444,9 +439,7 @@ func TestAnalysisAreas_WithMissingDomainPackPath(t *testing.T) {
 }
 
 func TestProfileSchema_WithMissingDomainPackPath(t *testing.T) {
-	origPath := os.Getenv("DOMAIN_PACK_PATH")
-	os.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
-	defer os.Setenv("DOMAIN_PACK_PATH", origPath)
+	t.Setenv("DOMAIN_PACK_PATH", "/nonexistent/path")
 
 	pack := NewPack()
 	schema := pack.ProfileSchema("")

@@ -1,13 +1,11 @@
 package config
 
 import (
-	"os"
 	"testing"
 )
 
 func TestLoadDefaults(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	defer os.Unsetenv("MONGODB_URI")
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
 
 	cfg, err := Load()
 	if err != nil {
@@ -58,9 +56,7 @@ func TestIsProduction(t *testing.T) {
 }
 
 func TestLLMConfigDefaults(t *testing.T) {
-	// LLM config has no API key — secrets come from secret provider
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	defer os.Unsetenv("MONGODB_URI")
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
 
 	cfg, err := Load()
 	if err != nil {
@@ -75,8 +71,7 @@ func TestLLMConfigDefaults(t *testing.T) {
 }
 
 func TestLoad_MissingMongoDBURI(t *testing.T) {
-	os.Unsetenv("MONGODB_URI")
-
+	// t.Setenv not needed — MONGODB_URI is not set by default in test env
 	_, err := Load()
 	if err == nil {
 		t.Error("Load() should fail without MONGODB_URI")
@@ -84,24 +79,14 @@ func TestLoad_MissingMongoDBURI(t *testing.T) {
 }
 
 func TestLoad_CustomEnvVars(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://custom:27017")
-	os.Setenv("MONGODB_DB", "custom-db")
-	os.Setenv("SERVICE_NAME", "custom-agent")
-	os.Setenv("ENV", "staging")
-	os.Setenv("LOG_LEVEL", "debug")
-	os.Setenv("LLM_MAX_RETRIES", "5")
-	os.Setenv("LLM_TIMEOUT", "600s")
-	os.Setenv("LLM_REQUEST_DELAY_MS", "2000")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("MONGODB_DB")
-		os.Unsetenv("SERVICE_NAME")
-		os.Unsetenv("ENV")
-		os.Unsetenv("LOG_LEVEL")
-		os.Unsetenv("LLM_MAX_RETRIES")
-		os.Unsetenv("LLM_TIMEOUT")
-		os.Unsetenv("LLM_REQUEST_DELAY_MS")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://custom:27017")
+	t.Setenv("MONGODB_DB", "custom-db")
+	t.Setenv("SERVICE_NAME", "custom-agent")
+	t.Setenv("ENV", "staging")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LLM_MAX_RETRIES", "5")
+	t.Setenv("LLM_TIMEOUT", "600s")
+	t.Setenv("LLM_REQUEST_DELAY_MS", "2000")
 
 	cfg, err := Load()
 	if err != nil {
@@ -157,12 +142,8 @@ func TestIsProduction_AllVariants(t *testing.T) {
 }
 
 func TestLoad_InvalidLLMTimeout(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("LLM_TIMEOUT", "not-a-duration")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("LLM_TIMEOUT")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("LLM_TIMEOUT", "not-a-duration")
 
 	cfg, err := Load()
 	if err != nil {

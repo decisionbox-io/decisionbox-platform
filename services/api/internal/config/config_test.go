@@ -1,14 +1,10 @@
 package config
 
 import (
-	"os"
 	"testing"
 )
 
 func TestLoad_Defaults_RequiresMongoDBURI(t *testing.T) {
-	// Ensure MONGODB_URI is not set
-	os.Unsetenv("MONGODB_URI")
-
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Load() should return error when MONGODB_URI is not set")
@@ -19,13 +15,7 @@ func TestLoad_Defaults_RequiresMongoDBURI(t *testing.T) {
 }
 
 func TestLoad_WithMongoDBURI(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	defer os.Unsetenv("MONGODB_URI")
-
-	// Clear overrides to get defaults
-	for _, key := range []string{"SERVICE_NAME", "ENV", "LOG_LEVEL", "MONGODB_DB", "PORT"} {
-		os.Unsetenv(key)
-	}
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
 
 	cfg, err := Load()
 	if err != nil {
@@ -53,12 +43,8 @@ func TestLoad_WithMongoDBURI(t *testing.T) {
 }
 
 func TestLoad_CustomPort(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("PORT", "9090")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("PORT")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("PORT", "9090")
 
 	cfg, err := Load()
 	if err != nil {
@@ -71,12 +57,8 @@ func TestLoad_CustomPort(t *testing.T) {
 }
 
 func TestLoad_CustomServiceName(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("SERVICE_NAME", "my-api")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("SERVICE_NAME")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("SERVICE_NAME", "my-api")
 
 	cfg, err := Load()
 	if err != nil {
@@ -89,12 +71,8 @@ func TestLoad_CustomServiceName(t *testing.T) {
 }
 
 func TestLoad_CustomEnvironment(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("ENV", "production")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("ENV")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("ENV", "production")
 
 	cfg, err := Load()
 	if err != nil {
@@ -107,12 +85,8 @@ func TestLoad_CustomEnvironment(t *testing.T) {
 }
 
 func TestLoad_CustomLogLevel(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("LOG_LEVEL", "debug")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("LOG_LEVEL")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("LOG_LEVEL", "debug")
 
 	cfg, err := Load()
 	if err != nil {
@@ -125,12 +99,8 @@ func TestLoad_CustomLogLevel(t *testing.T) {
 }
 
 func TestLoad_CustomDatabase(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://localhost:27017")
-	os.Setenv("MONGODB_DB", "mydb")
-	defer func() {
-		os.Unsetenv("MONGODB_URI")
-		os.Unsetenv("MONGODB_DB")
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("MONGODB_DB", "mydb")
 
 	cfg, err := Load()
 	if err != nil {
@@ -143,17 +113,12 @@ func TestLoad_CustomDatabase(t *testing.T) {
 }
 
 func TestLoad_AllCustomValues(t *testing.T) {
-	os.Setenv("MONGODB_URI", "mongodb://prod-host:27017/prod")
-	os.Setenv("MONGODB_DB", "proddb")
-	os.Setenv("PORT", "3000")
-	os.Setenv("SERVICE_NAME", "prod-api")
-	os.Setenv("ENV", "production")
-	os.Setenv("LOG_LEVEL", "warn")
-	defer func() {
-		for _, key := range []string{"MONGODB_URI", "MONGODB_DB", "PORT", "SERVICE_NAME", "ENV", "LOG_LEVEL"} {
-			os.Unsetenv(key)
-		}
-	}()
+	t.Setenv("MONGODB_URI", "mongodb://prod-host:27017/prod")
+	t.Setenv("MONGODB_DB", "proddb")
+	t.Setenv("PORT", "3000")
+	t.Setenv("SERVICE_NAME", "prod-api")
+	t.Setenv("ENV", "production")
+	t.Setenv("LOG_LEVEL", "warn")
 
 	cfg, err := Load()
 	if err != nil {

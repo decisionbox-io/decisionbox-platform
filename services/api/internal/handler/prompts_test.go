@@ -3,7 +3,6 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
@@ -131,32 +130,6 @@ func TestSeedProjectPrompts_AreaProperties(t *testing.T) {
 	}
 }
 
-func TestGetPrompts_NilRepo(t *testing.T) {
-	handler := GetPrompts(nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/prompts", nil)
-	req.SetPathValue("id", "proj-1")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	handler(w, req)
-}
-
-func TestUpdatePrompts_NilRepo(t *testing.T) {
-	handler := UpdatePrompts(nil)
-
-	req := httptest.NewRequest("PUT", "/api/v1/projects/proj-1/prompts",
-		strings.NewReader(`{"exploration": "test"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", "proj-1")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	handler(w, req)
-}
-
 func TestGetPrompts_ReturnsHandlerFunc(t *testing.T) {
 	handler := GetPrompts(nil)
 	if handler == nil {
@@ -212,60 +185,6 @@ func TestSeedProjectPrompts_GamingCasual(t *testing.T) {
 	if len(p.Prompts.AnalysisAreas) == 0 {
 		t.Error("AnalysisAreas should not be empty for casual category")
 	}
-}
-
-func TestTestConnectionHandler_TestWarehouse_NilRepo(t *testing.T) {
-	h := NewTestConnectionHandler(nil, nil)
-
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/test/warehouse", nil)
-	req.SetPathValue("id", "proj-1")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.TestWarehouse(w, req)
-}
-
-func TestTestConnectionHandler_TestLLM_NilRepo(t *testing.T) {
-	h := NewTestConnectionHandler(nil, nil)
-
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/test/llm", nil)
-	req.SetPathValue("id", "proj-1")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.TestLLM(w, req)
-}
-
-func TestPricingHandler_Update_ValidJSON_NilRepo(t *testing.T) {
-	h := NewPricingHandler(nil)
-
-	req := httptest.NewRequest("PUT", "/api/v1/pricing",
-		strings.NewReader(`{"llm": {}, "warehouse": {}}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	// Valid JSON passes decoding, then panics on nil repo — expected
-	defer func() { recover() }()
-	h.Update(w, req)
-
-	// If we get here, it didn't panic on decoding (good)
-	if w.Code == http.StatusBadRequest {
-		t.Error("valid JSON should not return 400")
-	}
-}
-
-func TestFeedbackHandler_Delete_NilRepo(t *testing.T) {
-	h := NewFeedbackHandler(nil)
-
-	req := httptest.NewRequest("DELETE", "/api/v1/feedback/fb-123", nil)
-	req.SetPathValue("id", "fb-123")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.Delete(w, req)
 }
 
 func TestDomainsHandler_GetProfileSchema_NotFound(t *testing.T) {

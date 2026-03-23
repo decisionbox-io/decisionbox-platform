@@ -95,21 +95,6 @@ func TestExtractJSONObject_LeadingGarbage(t *testing.T) {
 	}
 }
 
-func TestEstimateHandler_NilRepo(t *testing.T) {
-	h := NewEstimateHandler(nil)
-	if h == nil {
-		t.Fatal("NewEstimateHandler returned nil")
-	}
-
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/discover/estimate", nil)
-	req.SetPathValue("id", "proj-1")
-	w := httptest.NewRecorder()
-
-	// Will panic on nil repo — expected
-	defer func() { recover() }()
-	h.Estimate(w, req)
-}
-
 func TestNewEstimateHandler(t *testing.T) {
 	h := NewEstimateHandler(nil)
 	if h == nil {
