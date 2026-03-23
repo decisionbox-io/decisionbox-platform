@@ -8,6 +8,7 @@
   <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build" /></a>
   <a href="https://codecov.io/gh/decisionbox-io/decisionbox-platform"><img src="https://codecov.io/gh/decisionbox-io/decisionbox-platform/graph/badge.svg" alt="Coverage" /></a>
+  <a href="https://github.com/decisionbox-io/decisionbox-platform/releases/latest"><img src="https://img.shields.io/github/v/release/decisionbox-io/decisionbox-platform" alt="Latest Release" /></a>
   <a href="https://github.com/decisionbox-io/decisionbox-platform/issues"><img src="https://img.shields.io/github/issues/decisionbox-io/decisionbox-platform" alt="Issues" /></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
   <a href="https://decisionbox.io/docs"><img src="https://img.shields.io/badge/docs-decisionbox.io-blue" alt="Docs" /></a>
@@ -55,6 +56,24 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Editable prompts** — Customize all AI prompts per-project from the dashboard
 - **Extensible** — Add your own domain packs, LLM providers, warehouse providers via plugin architecture
 
+## Use Cases
+
+DecisionBox works with any queryable data. Point it at your data source and it discovers insights specific to your domain.
+
+**Gaming** — _"Players who fail level 12 more than 3 times have 68% higher Day-7 churn. Consider adding a hint system or difficulty adjustment at this stage."_
+
+**Social Network** — _"Posts published between 6–8 PM with images get 3.2x more shares, but only 12% of creators post during this window. A scheduling nudge could boost platform-wide engagement."_
+
+**E-commerce** — _"Cart abandonment spikes 40% when shipping cost exceeds 8% of cart value. Free shipping threshold at $75 would recover an estimated 1,200 orders/month."_
+
+**Fraud Detection** — _"Accounts created in the last 48 hours with 5+ high-value transactions account for 82% of chargebacks. Flagging this pattern would prevent $34K/month in losses."_
+
+**SaaS** — _"Teams that don't use the dashboard feature within 14 days of signup have 3x higher churn. An onboarding email on Day 3 highlighting dashboards could improve activation."_
+
+**SQL Performance** — _"The top 10 slowest queries consume 62% of warehouse compute. 7 of them scan full tables where a partition filter would reduce cost by ~$4,800/month."_
+
+These are examples — create a [domain pack](https://decisionbox.io/docs/guides/creating-domain-packs) for any industry and DecisionBox adapts its analysis accordingly.
+
 ## Quick Start
 
 **Prerequisites:** Docker and Docker Compose
@@ -75,72 +94,19 @@ The dashboard will guide you through creating your first project. You'll need:
 - A data warehouse connection (BigQuery project ID or Redshift workgroup)
 - An LLM API key (Anthropic, OpenAI, or configure Vertex AI / Bedrock)
 
-For detailed setup instructions, see the [Installation Guide](docs/getting-started/installation.md).
+For detailed setup instructions, see the [Installation Guide](https://decisionbox.io/docs/getting-started/installation).
 
-## Architecture
+## Deployment
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Dashboard (Next.js)                │
-│              http://localhost:3000                    │
-│    Project setup, insights, recommendations, live    │
-│    progress, prompt editing, feedback                │
-└──────────────────────┬──────────────────────────────┘
-                       │ /api/* proxy
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│                    API (Go)                          │
-│              http://localhost:8080                    │
-│    Projects, discoveries, secrets, health,           │
-│    spawns agent as subprocess or K8s Job             │
-└───────┬──────────────────────────────┬──────────────┘
-        │ spawns                       │ reads/writes
-        ▼                              ▼
-┌────────────────────┐        ┌────────────────────┐
-│   Agent (Go)       │        │   MongoDB          │
-│   Autonomous AI    │───────▶│   Projects,        │
-│   data explorer    │ writes │   discoveries,     │
-│                    │        │   secrets, runs     │
-│   - LLM provider  │        └────────────────────┘
-│   - Warehouse      │
-│   - Domain pack    │
-│   - Prompts        │
-└────────┬───────────┘
-         │ SQL queries
-         ▼
-┌────────────────────┐
-│  Data Warehouse    │
-│  (BigQuery /       │
-│   Redshift / ...)  │
-└────────────────────┘
-```
+| Method | Use case | Guide |
+|--------|----------|-------|
+| **Docker Compose** | Local dev, single server | [Docker](https://decisionbox.io/docs/deployment/docker) |
+| **Kubernetes (Helm)** | Production on any K8s cluster | [Kubernetes](https://decisionbox.io/docs/deployment/kubernetes) |
+| **Terraform (GCP)** | Automated GKE provisioning | [Terraform GCP](https://decisionbox.io/docs/deployment/terraform-gcp) |
+| **Terraform (AWS)** | Automated EKS provisioning | [Terraform AWS](https://decisionbox.io/docs/deployment/terraform-aws) |
+| **Setup Wizard** | One-command GKE + Helm deploy | [Setup Wizard](https://decisionbox.io/docs/deployment/setup-wizard) |
 
-**Only infrastructure dependency:** MongoDB. No Kafka, Redis, or RabbitMQ.
-
-## Project Structure
-
-```
-decisionbox-platform/
-├── services/
-│   ├── agent/          # AI discovery agent (Go)
-│   └── api/            # REST API (Go)
-├── ui/
-│   └── dashboard/      # Web dashboard (Next.js 16, React 19, Mantine 8)
-├── libs/
-│   └── go-common/      # Shared Go libraries (LLM, warehouse, secrets interfaces)
-├── providers/
-│   ├── llm/            # LLM providers (claude, openai, ollama, vertex-ai, bedrock)
-│   ├── warehouse/      # Warehouse providers (bigquery, redshift)
-│   └── secrets/        # Secret providers (mongodb, gcp, aws)
-├── domain-packs/
-│   ├── gaming/         # Gaming domain pack (match-3, idle, casual)
-│   └── social/         # Social network domain pack (content sharing)
-├── docs/               # Documentation
-├── docker-compose.yml  # Local development stack
-├── Makefile            # Build, test, dev commands
-└── .github/
-    └── workflows/      # CI/CD (Docker image builds)
-```
+Resources: [Helm charts](helm-charts/) | [Terraform modules](terraform/) | [Helm values reference](https://decisionbox.io/docs/reference/helm-values)
 
 ## Development
 
@@ -186,19 +152,19 @@ Domain packs define how the AI analyzes data for a specific industry. A domain p
 - Prompt templates (how the AI reasons)
 - Profile schemas (what context users provide)
 
-See [Creating Domain Packs](docs/guides/creating-domain-packs.md).
+See [Creating Domain Packs](https://decisionbox.io/docs/guides/creating-domain-packs).
 
 ### LLM Providers
 
 Add support for any LLM by implementing the `llm.Provider` interface (one method: `Chat`).
 
-See [Adding LLM Providers](docs/guides/adding-llm-providers.md).
+See [Adding LLM Providers](https://decisionbox.io/docs/guides/adding-llm-providers).
 
 ### Warehouse Providers
 
 Add support for any SQL warehouse by implementing the `warehouse.Provider` interface.
 
-See [Adding Warehouse Providers](docs/guides/adding-warehouse-providers.md).
+See [Adding Warehouse Providers](https://decisionbox.io/docs/guides/adding-warehouse-providers).
 
 ## Configuration
 
@@ -213,18 +179,20 @@ Key environment variables:
 | `DOMAIN_PACK_PATH` | `/app/domain-packs` | Path to domain pack files |
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call |
 
-Full reference: [Configuration](docs/reference/configuration.md).
+Full reference: [Configuration](https://decisionbox.io/docs/reference/configuration).
 
 ## Documentation
 
-- [Quick Start](docs/getting-started/quickstart.md)
-- [Installation Guide](docs/getting-started/installation.md)
-- [Architecture](docs/concepts/architecture.md)
-- [API Reference](docs/reference/api.md)
-- [Configuration Reference](docs/reference/configuration.md)
-- [Creating Domain Packs](docs/guides/creating-domain-packs.md)
-- [Adding Providers](docs/guides/adding-llm-providers.md)
-- [Contributing](docs/contributing/development.md)
+**[decisionbox.io/docs](https://decisionbox.io/docs/)** — Full documentation including:
+
+- [Quick Start](https://decisionbox.io/docs/getting-started/quickstart)
+- [Installation Guide](https://decisionbox.io/docs/getting-started/installation)
+- [Architecture](https://decisionbox.io/docs/concepts/architecture)
+- [Providers](https://decisionbox.io/docs/concepts/providers)
+- [Domain Packs](https://decisionbox.io/docs/concepts/domain-packs)
+- [API Reference](https://decisionbox.io/docs/reference/api)
+- [Configuration Reference](https://decisionbox.io/docs/reference/configuration)
+- [Contributing](https://decisionbox.io/docs/contributing/development)
 
 ## Tech Stack
 
@@ -234,33 +202,18 @@ Full reference: [Configuration](docs/reference/configuration.md).
 | API | Go 1.25, net/http (stdlib) |
 | Dashboard | Next.js 16, React 19, TypeScript, Mantine 8 |
 | Database | MongoDB |
-| LLM | Claude, OpenAI, Ollama, Vertex AI, Bedrock |
-| Warehouse | BigQuery, Amazon Redshift |
 | CI/CD | GitHub Actions, GHCR |
 | Deployment | Docker Compose, Kubernetes (Helm), Terraform (GCP, AWS) |
 
 ## Contributing
 
-We welcome contributions. See [Contributing Guide](docs/contributing/development.md) for development setup, testing, and PR process.
+We welcome contributions. See [Contributing Guide](https://decisionbox.io/docs/contributing/development) for development setup, testing, and PR process.
 
 ## Community
 
 - [GitHub Issues](https://github.com/decisionbox-io/decisionbox-platform/issues) — Bug reports, feature requests
 - [GitHub Discussions](https://github.com/decisionbox-io/decisionbox-platform/discussions) — Questions, ideas
 
-## Deployment
-
-| Method | Use case | Guide |
-|--------|----------|-------|
-| **Docker Compose** | Local dev, single server | [docs/deployment/docker.md](docs/deployment/docker.md) |
-| **Kubernetes (Helm)** | Production on any K8s cluster | [docs/deployment/kubernetes.md](docs/deployment/kubernetes.md) |
-| **Terraform (GCP)** | Automated GKE provisioning | [docs/deployment/terraform-gcp.md](docs/deployment/terraform-gcp.md) |
-| **Terraform (AWS)** | Automated EKS provisioning | [docs/deployment/terraform-aws.md](docs/deployment/terraform-aws.md) |
-| **Setup Wizard** | One-command GKE + Helm deploy | [docs/deployment/setup-wizard.md](docs/deployment/setup-wizard.md) |
-
 ## Roadmap
-- More warehouse providers (PostgreSQL, Snowflake, Databricks)
-- More domain packs (e-commerce, SaaS, fintech, education)
-- Natural language queries ("Ask your data")
-- Scheduled discovery runs (cron)
-- Multi-user authentication
+
+See the full roadmap on the [project board](https://github.com/orgs/decisionbox-io/projects/4/views/3).
