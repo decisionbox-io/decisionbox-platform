@@ -104,7 +104,7 @@ For detailed setup instructions, see the [Installation Guide](https://decisionbo
 | **Kubernetes (Helm)** | Production on any K8s cluster | [Kubernetes](https://decisionbox.io/docs/deployment/kubernetes) |
 | **Terraform (GCP)** | Automated GKE provisioning | [Terraform GCP](https://decisionbox.io/docs/deployment/terraform-gcp) |
 | **Terraform (AWS)** | Automated EKS provisioning | [Terraform AWS](https://decisionbox.io/docs/deployment/terraform-aws) |
-| **Setup Wizard** | One-command GKE + Helm deploy | [Setup Wizard](https://decisionbox.io/docs/deployment/setup-wizard) |
+| **Setup Wizard** | One-command GKE/EKS + Helm deploy | [Setup Wizard](https://decisionbox.io/docs/deployment/setup-wizard) |
 
 Resources: [Helm charts](helm-charts/) | [Terraform modules](terraform/) | [Helm values reference](https://decisionbox.io/docs/reference/helm-values)
 
