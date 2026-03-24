@@ -29,6 +29,7 @@ export default function NewProjectPage() {
   const [category, setCategory] = useState('');
   const [warehouseProvider, setWarehouseProvider] = useState('');
   const [warehouseConfig, setWarehouseConfig] = useState<Record<string, string>>({});
+  const [warehouseCredential, setWarehouseCredential] = useState('');
   const [filterField, setFilterField] = useState('');
   const [filterValue, setFilterValue] = useState('');
   const [llmProvider, setLlmProvider] = useState('');
@@ -72,11 +73,13 @@ export default function NewProjectPage() {
   const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouseProvider);
   const selectedLLM = llmProviders.find((p) => p.id === llmProvider);
 
+  const whCredentialField = selectedWarehouse?.config_fields.find((f) => f.type === 'credential');
+  const whNeedsCredential = whCredentialField?.required ?? false;
   const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
 
   const canProceed = [
     () => name && domain && category,
-    () => warehouseProvider && warehouseConfig['dataset'],
+    () => warehouseProvider && warehouseConfig['dataset'] && (!whNeedsCredential || warehouseCredential),
     () => llmProvider && llmConfig['model'] && (!llmNeedsApiKey || llmApiKey),
     () => true,
   ];
@@ -106,9 +109,12 @@ export default function NewProjectPage() {
         },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
-      // Save LLM API key as a secret if provided
+      // Save secrets
       if (llmApiKey && project.id) {
         await api.setSecret(project.id, 'llm-api-key', llmApiKey);
+      }
+      if (warehouseCredential && project.id) {
+        await api.setSecret(project.id, 'warehouse-credentials', warehouseCredential);
       }
 
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });
@@ -161,6 +167,7 @@ export default function NewProjectPage() {
                       value={warehouseProvider}
                       onChange={(v) => {
                         setWarehouseProvider(v || '');
+                        setWarehouseCredential('');
                         const prov = warehouseProviders.find((p) => p.id === v);
                         if (prov) setWarehouseConfig(buildDefaults(prov.config_fields));
                       }} />
@@ -168,11 +175,33 @@ export default function NewProjectPage() {
                       <Text size="xs" c="dimmed">{selectedWarehouse.description}</Text>
                     )}
 
-                    {selectedWarehouse?.config_fields.map((field) => (
-                      <DynamicField key={field.key} field={field}
-                        value={warehouseConfig[field.key] || ''}
-                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
-                    ))}
+                    {selectedWarehouse?.config_fields
+                      .filter((f) => f.type !== 'credential')
+                      .map((field) => (
+                        <DynamicField key={field.key} field={field}
+                          value={warehouseConfig[field.key] || ''}
+                          onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                      ))}
+
+                    {whCredentialField && (
+                      <Textarea
+                        label={whCredentialField.label}
+                        required={whCredentialField.required}
+                        placeholder={whCredentialField.placeholder}
+                        description={whCredentialField.description + ' Stored encrypted.'}
+                        value={warehouseCredential}
+                        onChange={(e) => setWarehouseCredential(e.target.value)}
+                        minRows={3}
+                        autosize
+                        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
+                      />
+                    )}
+
+                    {!whCredentialField && selectedWarehouse && (
+                      <Text size="xs" c="dimmed">
+                        This provider uses cloud credentials (IAM / ADC). No credentials needed here.
+                      </Text>
+                    )}
 
                     <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
                     <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
@@ -267,6 +296,21 @@ export default function NewProjectPage() {
 }
 
 function DynamicField({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
+  if (field.type === 'textarea') {
+    return (
+      <Textarea
+        label={field.label}
+        required={field.required}
+        placeholder={field.placeholder || field.default}
+        description={field.description}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        minRows={6}
+        autosize
+        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
+      />
+    );
+  }
   return (
     <TextInput
       label={field.label}

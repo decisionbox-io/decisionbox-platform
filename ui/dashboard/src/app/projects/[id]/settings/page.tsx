@@ -181,7 +181,7 @@ export default function ProjectSettingsPage() {
             {selectedWh?.description && <Text size="xs" c="dimmed">{selectedWh.description}</Text>}
 
             {selectedWh?.config_fields
-              .filter((f) => f.key !== 'dataset')
+              .filter((f) => f.key !== 'dataset' && f.type !== 'credential')
               .map((field) => (
                 <DynamicField key={field.key} field={field}
                   value={whConfig[field.key] || ''}
@@ -387,6 +387,15 @@ function TestConnectionButton({ projectId, target, disabled }: {
 }
 
 function DynamicField({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
+  if (field.type === 'textarea') {
+    return (
+      <Textarea label={field.label} required={field.required}
+        placeholder={field.placeholder || field.default} description={field.description}
+        value={value} onChange={(e) => onChange(e.target.value)}
+        minRows={6} autosize
+        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }} />
+    );
+  }
   return (
     <TextInput label={field.label} required={field.required}
       placeholder={field.placeholder || field.default} description={field.description}

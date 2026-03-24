@@ -152,7 +152,7 @@ Services import provider packages with blank imports (`_`). The `init()` functio
 | Plugin | Interface | Purpose | Shipped Implementations |
 |--------|-----------|---------|------------------------|
 | **LLM** | `llm.Provider` | AI model access | claude, openai, ollama, vertex-ai, bedrock |
-| **Warehouse** | `warehouse.Provider` | Data warehouse access | bigquery, redshift |
+| **Warehouse** | `warehouse.Provider` | Data warehouse access | bigquery, redshift, snowflake |
 | **Secrets** | `secrets.Provider` | Encrypted key storage | mongodb, gcp, aws |
 | **Domain Pack** | `domainpack.DiscoveryPack` | Domain-specific analysis | gaming (match-3, idle, casual), social (content sharing) |
 

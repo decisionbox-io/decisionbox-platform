@@ -137,6 +137,70 @@ The agent automatically excludes Redshift system tables from discovery:
 - `stl_*` tables (system log)
 - `svv_*` tables (system views)
 
+## Snowflake
+
+### Prerequisites
+
+- A Snowflake account (trial or production)
+- Username with access to the target database and schema
+- A virtual warehouse (e.g., `COMPUTE_WH`)
+
+### Dashboard Setup
+
+1. Select **Snowflake** as warehouse provider
+2. Fill in:
+   - **Account Identifier**: Your Snowflake account (e.g., `ORGNAME-ACCOUNTNAME`)
+   - **Username**: Snowflake user
+   - **Warehouse**: Virtual warehouse name (e.g., `COMPUTE_WH`)
+   - **Database**: Database name (e.g., `ANALYTICS_DB`)
+3. Optionally set **Schema** (default: `PUBLIC`) and **Role**
+4. Enter **Datasets**: Schema names (e.g., `PUBLIC`)
+
+### Authentication
+
+**Username/Password:**
+
+1. In DecisionBox: **Settings → Secrets → Warehouse Credentials**
+2. Paste your Snowflake password
+
+**Key Pair (JWT) — recommended for production:**
+
+1. Generate an RSA key pair:
+   ```bash
+   openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
+   openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+   ```
+2. Assign the public key to your Snowflake user:
+   ```sql
+   ALTER USER my_user SET RSA_PUBLIC_KEY='MIIBIjANBg...';
+   ```
+3. In DecisionBox: **Settings → Secrets → Warehouse Credentials**
+4. Paste the entire PEM private key content (including `-----BEGIN PRIVATE KEY-----`)
+
+The provider auto-detects password vs key pair based on the credential content.
+
+### Data Type Handling
+
+Snowflake types are automatically normalized:
+- `NUMBER`, `INT`, `BIGINT`, `SMALLINT`, `TINYINT`, `BYTEINT` → `INT64`
+- `NUMBER(p,s)`, `FLOAT`, `DOUBLE`, `REAL`, `DECIMAL`, `NUMERIC` → `FLOAT64`
+- `VARCHAR`, `STRING`, `CHAR`, `TEXT` → `STRING`
+- `BOOLEAN` → `BOOL`
+- `DATE` → `DATE`
+- `TIMESTAMP_NTZ`, `TIMESTAMP_LTZ`, `TIMESTAMP_TZ` → `TIMESTAMP`
+- `VARIANT`, `OBJECT`, `ARRAY` → `RECORD` (JSON string in query results)
+- `BINARY`, `VARBINARY` → `BYTES`
+
+### Schema Metadata
+
+The provider uses `INFORMATION_SCHEMA` for table listing and column metadata.
+Row counts come from `INFORMATION_SCHEMA.TABLES.ROW_COUNT` — no full-table scans needed.
+
+### Cost
+
+Snowflake charges per-second based on warehouse size (credits per hour).
+There is no dry-run API, so the cost estimation feature is not available for Snowflake.
+
 ## Cross-Cloud Authentication
 
 DecisionBox supports accessing warehouses from a different cloud:
@@ -145,7 +209,8 @@ DecisionBox supports accessing warehouses from a different cloud:
 |----------|-----|
 | BigQuery from AWS | Store GCP SA key JSON in secret provider |
 | Redshift from GCP | Configure AWS credentials on the machine |
-| Any from local dev | Configure cloud CLI (`gcloud auth`, `aws configure`) |
+| Snowflake from any cloud | Store password or PEM private key in secret provider |
+| Any from local dev | Configure cloud CLI (`gcloud auth`, `aws configure`) or store credentials in secret provider |
 
 The key concept: warehouse credentials can be stored in the **secret provider** (`Settings → Secrets → Warehouse Credentials`). The agent reads credentials from the secret provider before initializing the warehouse provider.
 

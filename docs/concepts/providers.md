@@ -100,6 +100,7 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 |----------|----|------|-------------|
 | Google BigQuery | `bigquery` | GCP ADC or SA key | BigQuery Standard SQL |
 | Amazon Redshift | `redshift` | AWS credentials | PostgreSQL-compatible |
+| Snowflake | `snowflake` | Password or key pair (JWT) | Snowflake SQL |
 
 **Location:** `providers/warehouse/{provider-name}/`
 
