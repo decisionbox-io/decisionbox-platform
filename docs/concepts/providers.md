@@ -1,6 +1,6 @@
 # Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 Providers are DecisionBox's plugin system for external services. Instead of hardcoding support for specific LLMs, warehouses, or secret managers, DecisionBox defines interfaces and lets provider packages implement them.
 
@@ -32,7 +32,8 @@ func init() {
 }
 
 // 4. Selection (services/agent/main.go)
-import _ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+// Services import aggregator packages — no individual imports needed:
+import _ "github.com/decisionbox-io/decisionbox/providers/llm/all"
 
 provider, err := llm.NewProvider("claude", llm.ProviderConfig{
     "api_key": apiKey,
@@ -162,23 +163,19 @@ See [Adding Secret Providers](../guides/adding-secret-providers.md) to implement
 
 ### Agent
 
-The agent imports all providers and selects based on project configuration:
+The agent imports all providers via aggregator packages and selects based on project configuration:
 
 ```go
 // services/agent/main.go
 
-// Import all providers (triggers init() registration)
+// Import all providers via aggregator packages (triggers init() registration).
+// To add a new provider, update the relevant aggregator
+// (e.g., providers/warehouse/all/all.go) — no changes needed here.
 import (
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
-    _ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
-    _ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"
-    _ "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-    _ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
-    _ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
+    _ "github.com/decisionbox-io/decisionbox/providers/llm/all"
+    _ "github.com/decisionbox-io/decisionbox/providers/secrets/all"
+    _ "github.com/decisionbox-io/decisionbox/providers/warehouse/all"
+    _ "github.com/decisionbox-io/decisionbox/domain-packs/all"
 )
 
 // Create providers from project config
@@ -203,10 +200,12 @@ The API imports providers for two reasons:
 2. **Pricing** — Seeds default pricing from provider registrations
 
 ```go
-// services/api/main.go
+// services/api/main.go — same aggregator imports as agent
 import (
-    _ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
-    // ... same imports as agent
+    _ "github.com/decisionbox-io/decisionbox/providers/llm/all"
+    _ "github.com/decisionbox-io/decisionbox/providers/secrets/all"
+    _ "github.com/decisionbox-io/decisionbox/providers/warehouse/all"
+    _ "github.com/decisionbox-io/decisionbox/domain-packs/all"
 )
 
 // GET /api/v1/providers/llm returns:
@@ -226,10 +225,13 @@ To add support for a new LLM, warehouse, or secret manager:
 1. Create a package in the appropriate `providers/` directory
 2. Implement the interface
 3. Register with metadata in `init()`
-4. Import in agent + API `main.go`
-5. Write tests
+4. Add blank import to the relevant aggregator package (e.g., `providers/llm/all/all.go`)
+5. Add `use` directive to `go.work` and `require`/`replace` to the aggregator's `go.mod`
+6. Add Dockerfile COPY line for the new provider's `go.mod`
+7. Write tests
 
-No other code changes needed — the dashboard automatically shows the new provider in dropdowns and renders config forms from metadata.
+The Makefile and CI auto-discover new provider directories via glob patterns — no changes needed there.
+The dashboard automatically shows the new provider in dropdowns and renders config forms from metadata.
 
 See the implementation guides:
 - [Adding LLM Providers](../guides/adding-llm-providers.md)

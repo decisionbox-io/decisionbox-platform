@@ -1,6 +1,6 @@
 # Adding Secret Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 Secret providers store per-project credentials (LLM API keys, warehouse service account keys). This guide shows how to add a new secret backend.
 
@@ -131,9 +131,11 @@ For custom env vars (like `VAULT_ADDR`), read them from `os.Getenv()` in your fa
 
 ## Registration and Testing
 
-1. Import in `services/agent/main.go` and `services/api/main.go`
-2. Add `replace` directives in both go.mod files
-3. Write tests:
+1. Add blank import to `providers/secrets/all/all.go`
+2. Add module to `go.work` and `require`/`replace` to `providers/secrets/all/go.mod`
+3. Add Dockerfile COPY line for the new provider's `go.mod`
+4. Run `go mod tidy` in both services
+5. Write tests:
    - Interface compliance (`var _ secrets.Provider = (*VaultProvider)(nil)`)
    - Secret naming format
    - Factory validation (missing required config)
@@ -147,7 +149,7 @@ For custom env vars (like `VAULT_ADDR`), read them from `os.Getenv()` in your fa
 - [ ] Secrets scoped by namespace + projectID + key
 - [ ] Warning field populated on permission errors
 - [ ] Registered via `secrets.Register()` in `init()`
-- [ ] Imported in agent + API
+- [ ] Blank import in `providers/secrets/all/all.go`, module in `go.work`, Dockerfile COPY
 - [ ] Unit tests + integration tests
 
 ## Next Steps

@@ -1,6 +1,6 @@
 # Development Setup
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 This guide covers setting up a local development environment for contributing to DecisionBox.
 
@@ -64,18 +64,31 @@ decisionbox-platform/
 
 ## Go Module Structure
 
-The project uses Go workspaces with local `replace` directives. Each provider and service has its own `go.mod`:
+The project uses a Go workspace (`go.work` at the repo root). Each provider and service has its own `go.mod`:
 
 ```
+go.work                                  # Workspace — lists all modules
 libs/go-common/go.mod                    # Shared library
 providers/llm/claude/go.mod              # Claude provider
+providers/llm/all/go.mod                 # LLM aggregator (imports all LLM providers)
 providers/warehouse/bigquery/go.mod      # BigQuery provider
-services/agent/go.mod                    # Agent (imports all providers)
-services/api/go.mod                      # API (imports all providers)
+providers/warehouse/all/go.mod           # Warehouse aggregator
+providers/secrets/all/go.mod             # Secrets aggregator
+domain-packs/all/go.mod                  # Domain packs aggregator
+services/agent/go.mod                    # Agent (imports aggregators)
+services/api/go.mod                      # API (imports aggregators)
 domain-packs/gaming/go/go.mod           # Gaming domain pack
 ```
 
-When adding a new provider, create a new `go.mod` and add `replace` directives to the service go.mod files.
+Services import aggregator packages (`providers/*/all/`) instead of individual providers.
+When adding a new provider:
+1. Add a blank import to the relevant aggregator (`providers/*/all/all.go`)
+2. Add a `use` directive to `go.work`
+3. Add `require`/`replace` to the aggregator's `go.mod`
+4. Add a Dockerfile COPY line for the new provider's `go.mod`
+5. Run `go mod tidy` in both services
+
+The Makefile and CI auto-discover provider directories via glob patterns — no manual changes needed.
 
 ## Key Development Patterns
 

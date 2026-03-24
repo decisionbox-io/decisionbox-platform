@@ -16,25 +16,15 @@ import (
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 
-	// Secret provider registrations
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
 
-	// Domain pack registrations
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
-
-	// LLM provider registrations (for /api/v1/providers/llm listing)
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
-
-	// Warehouse provider registrations (for /api/v1/providers/warehouse listing)
-	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
-	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"
+	// Provider and domain pack registrations via aggregator packages.
+	// To add a new provider or domain pack, update the relevant aggregator
+	// (e.g., providers/warehouse/all/all.go) — no changes needed here.
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/all"
 )
 
 func main() {

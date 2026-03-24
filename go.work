@@ -1,0 +1,34 @@
+go 1.25.0
+
+use (
+
+	// Aggregator packages
+	./domain-packs/all
+
+	// Domain packs
+	./domain-packs/gaming/go
+	./domain-packs/social/go
+	// Core (rarely changes)
+	./libs/go-common
+	./providers/llm/all
+
+	// LLM providers
+	./providers/llm/bedrock
+	./providers/llm/claude
+	./providers/llm/ollama
+	./providers/llm/openai
+	./providers/llm/vertex-ai
+	./providers/secrets/all
+
+	// Secret providers
+	./providers/secrets/aws
+	./providers/secrets/gcp
+	./providers/secrets/mongodb
+	./providers/warehouse/all
+
+	// Warehouse providers
+	./providers/warehouse/bigquery
+	./providers/warehouse/redshift
+	./services/agent
+	./services/api
+)

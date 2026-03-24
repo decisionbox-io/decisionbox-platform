@@ -3,19 +3,20 @@ module github.com/decisionbox-io/decisionbox/services/api
 go 1.25.0
 
 require (
+	github.com/decisionbox-io/decisionbox/domain-packs/all v0.0.0
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go v0.0.0
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/claude v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0-00010101000000-000000000000
-	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/warehouse/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
 	github.com/testcontainers/testcontainers-go/modules/k3s v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.41.0
 	go.mongodb.org/mongo-driver v1.17.9
@@ -26,13 +27,13 @@ require (
 )
 
 require (
-	cloud.google.com/go v0.120.0 // indirect
-	cloud.google.com/go/auth v0.16.2 // indirect
+	cloud.google.com/go v0.123.0 // indirect
+	cloud.google.com/go/auth v0.18.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/bigquery v1.67.0 // indirect
+	cloud.google.com/go/bigquery v1.74.0 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	cloud.google.com/go/iam v1.5.2 // indirect
-	cloud.google.com/go/secretmanager v1.14.7 // indirect
+	cloud.google.com/go/iam v1.5.3 // indirect
+	cloud.google.com/go/secretmanager v1.16.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -64,7 +65,10 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
@@ -85,8 +89,8 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
-	github.com/googleapis/gax-go/v2 v2.14.2 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
+	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
@@ -111,7 +115,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
@@ -129,7 +133,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
@@ -147,11 +151,11 @@ require (
 	golang.org/x/telemetry v0.0.0-20260209163413-e7419c687ee4 // indirect
 	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/api v0.239.0 // indirect
-	google.golang.org/genproto v0.0.0-20250505200425-f936aa4a68b2 // indirect
+	google.golang.org/api v0.265.0 // indirect
+	google.golang.org/genproto v0.0.0-20260128011058-8636f8732409 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
@@ -169,17 +173,21 @@ require (
 )
 
 replace (
+	github.com/decisionbox-io/decisionbox/domain-packs/all => ../../domain-packs/all
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go => ../../domain-packs/gaming/go
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go => ../../domain-packs/social/go
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
+	github.com/decisionbox-io/decisionbox/providers/llm/all => ../../providers/llm/all
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock
 	github.com/decisionbox-io/decisionbox/providers/llm/claude => ../../providers/llm/claude
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
+	github.com/decisionbox-io/decisionbox/providers/secrets/all => ../../providers/secrets/all
 	github.com/decisionbox-io/decisionbox/providers/secrets/aws => ../../providers/secrets/aws
 	github.com/decisionbox-io/decisionbox/providers/secrets/gcp => ../../providers/secrets/gcp
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
+	github.com/decisionbox-io/decisionbox/providers/warehouse/all => ../../providers/warehouse/all
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift => ../../providers/warehouse/redshift
 )

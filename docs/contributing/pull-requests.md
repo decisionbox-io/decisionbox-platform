@@ -80,10 +80,11 @@ test(llm): add Claude integration tests with error paths
 - [ ] Provider registered via `init()` with `RegisterWithMeta()`
 - [ ] ConfigFields defined for dashboard form rendering
 - [ ] DefaultPricing set (LLM/warehouse)
-- [ ] Imported in both `services/agent/main.go` and `services/api/main.go`
-- [ ] `replace` directive in both service go.mod files
+- [ ] Blank import added to the relevant aggregator (`providers/*/all/all.go`)
+- [ ] Module added to `go.work`
+- [ ] `require`/`replace` added to the aggregator's `go.mod`
 - [ ] Dockerfile COPY line for go.mod/go.sum
-- [ ] Added to Makefile test targets
+- [ ] `go mod tidy` run in both services
 - [ ] Unit tests (registration, config validation)
 - [ ] Integration tests (skip without credentials)
 

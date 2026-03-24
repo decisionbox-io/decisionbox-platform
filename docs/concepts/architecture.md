@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 DecisionBox has three services, one database, and a plugin system for extensibility. There are no message queues, caches, or event streams — just MongoDB.
 
@@ -136,16 +136,20 @@ func init() {
     })
 }
 
-// In a service (e.g., services/agent/main.go)
+// Aggregator package (providers/llm/all/all.go) imports all providers:
 import _ "github.com/decisionbox-io/decisionbox/providers/llm/claude" // triggers init()
 
+// Services import aggregators — no individual provider imports needed:
+import _ "github.com/decisionbox-io/decisionbox/providers/llm/all"
+
+// At runtime, create providers by name:
 provider, err := llm.NewProvider("claude", llm.ProviderConfig{
     "api_key": "sk-ant-...",
     "model":   "claude-sonnet-4-20250514",
 })
 ```
 
-Services import provider packages with blank imports (`_`). The `init()` function runs at startup and registers the provider factory. The service then creates providers by name.
+Provider packages register themselves via `init()`. Aggregator packages (`providers/*/all/`) collect all providers for a given type. Services import aggregators so adding a new provider doesn't require service code changes.
 
 ### Four Plugin Types
 

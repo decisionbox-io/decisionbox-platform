@@ -1,6 +1,6 @@
 # Creating Domain Packs
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one from scratch.
 
@@ -590,25 +590,33 @@ func readJSON(path string) map[string]interface{} {
 }
 ```
 
-## Step 5: Register in Services
+## Step 5: Register in Build System
 
-Add your domain pack import to both the agent and API:
+Add your domain pack import to the domain packs aggregator:
 
 ```go
-// services/agent/main.go
-import _ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"
-
-// services/api/main.go
-import _ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"
+// domain-packs/all/all.go — add one blank import line:
+_ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"  // registers "ecommerce"
 ```
 
-Add the `replace` directive in both `services/agent/go.mod` and `services/api/go.mod`:
+Add the module to `go.work` at the repo root:
+
+```
+use (
+    // ... existing modules ...
+    ./domain-packs/ecommerce/go
+)
+```
+
+Add `require` and `replace` to the aggregator's `go.mod` (`domain-packs/all/go.mod`):
 
 ```
 require github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go v0.0.0
-
-replace github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go => ../../domain-packs/ecommerce/go
+replace github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go => ../ecommerce/go
 ```
+
+Then run `go mod tidy` in both services.
+No changes to `services/agent/main.go` or `services/api/main.go` needed.
 
 ## Step 6: Write Tests
 

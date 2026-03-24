@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet — new changes will appear here until the next release._
+### Changed
+
+#### Plugin Architecture
+- Added Go workspace (`go.work`) at the repo root for centralized module resolution
+- Added aggregator packages (`providers/*/all/`, `domain-packs/all/`) that consolidate provider imports — services no longer need individual blank imports in `main.go`
+- Makefile and CI now auto-discover provider directories via glob patterns — no manual updates needed when adding new providers
+- Dockerfiles updated to include `go.work` for workspace-aware builds
 
 ## [0.1.0] - 2026-03-23
 

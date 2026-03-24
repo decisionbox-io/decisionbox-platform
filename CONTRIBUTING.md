@@ -212,7 +212,7 @@ Your Data Warehouse          DecisionBox Agent          Dashboard
 | Providers | `providers/` | Go -- LLM, warehouse, secret implementations |
 | Domain packs | `domain-packs/` | Markdown + JSON -- prompts, areas, profile schemas |
 
-The project uses Go workspaces. Each provider and service has its own `go.mod` with `replace` directives pointing to local modules. For the full architecture, see [docs/concepts/architecture.md](docs/concepts/architecture.md).
+The project uses a Go workspace (`go.work` at the repo root). Each provider and service has its own `go.mod`. Aggregator packages (`providers/llm/all/`, `providers/warehouse/all/`, etc.) consolidate provider imports so services don't need individual blank imports. For the full architecture, see [docs/concepts/architecture.md](docs/concepts/architecture.md).
 
 ### Key Files
 
@@ -304,10 +304,11 @@ For the full testing guide including how to write tests and test patterns, see [
 - [ ] Provider registered via `init()` with `RegisterWithMeta()`
 - [ ] ConfigFields defined for dashboard form rendering
 - [ ] DefaultPricing set (for LLM and warehouse providers)
-- [ ] Imported in both `services/agent/main.go` and `services/api/main.go`
-- [ ] `replace` directive added in both service `go.mod` files
+- [ ] Blank import added to the relevant aggregator (`providers/*/all/all.go`)
+- [ ] Module added to `go.work`
+- [ ] `require`/`replace` added to the aggregator's `go.mod`
 - [ ] Dockerfile COPY line added for provider `go.mod`/`go.sum`
-- [ ] Added to relevant Makefile test targets
+- [ ] `go mod tidy` run in both services
 - [ ] Unit tests: registration, config validation, factory with missing config
 - [ ] Integration tests: skip gracefully without credentials using `t.Skip()`
 
@@ -320,7 +321,7 @@ For the full testing guide including how to write tests and test patterns, see [
 - [ ] Recommendations prompt includes `related_insight_ids` instruction
 - [ ] Profile schema is valid JSON Schema
 - [ ] Go implementation registered via `init()` with tests
-- [ ] Registered in both `services/agent/main.go` and `services/api/main.go`
+- [ ] Blank import added to `domain-packs/all/all.go`, module added to `go.work`
 
 ### Review Process
 

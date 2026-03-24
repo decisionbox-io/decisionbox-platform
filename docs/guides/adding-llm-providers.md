@@ -1,6 +1,6 @@
 # Adding LLM Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 This guide shows how to add support for a new LLM service. You'll implement one Go interface method, register with metadata, and import in two files.
 
@@ -142,23 +142,29 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 - **Return accurate token counts** — Used for cost estimation and context tracking
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
 
-## Step 3: Register in Services
+## Step 3: Register in Build System
 
-Add blank imports to both services:
+Add your provider to the LLM aggregator package:
 
 ```go
-// services/agent/main.go
-import _ "github.com/decisionbox-io/decisionbox/providers/llm/myprovider"
-
-// services/api/main.go
-import _ "github.com/decisionbox-io/decisionbox/providers/llm/myprovider"
+// providers/llm/all/all.go — add one blank import line:
+_ "github.com/decisionbox-io/decisionbox/providers/llm/myprovider"  // registers "myprovider"
 ```
 
-Add `replace` directives to both `services/agent/go.mod` and `services/api/go.mod`:
+Add your module to `go.work` at the repo root:
+
+```
+use (
+    // ... existing modules ...
+    ./providers/llm/myprovider
+)
+```
+
+Add `require` and `replace` to the aggregator's `go.mod` (`providers/llm/all/go.mod`):
 
 ```
 require github.com/decisionbox-io/decisionbox/providers/llm/myprovider v0.0.0
-replace github.com/decisionbox-io/decisionbox/providers/llm/myprovider => ../../providers/llm/myprovider
+replace github.com/decisionbox-io/decisionbox/providers/llm/myprovider => ../myprovider
 ```
 
 Update Dockerfiles to copy the go.mod (and go.sum if needed):
@@ -167,6 +173,10 @@ Update Dockerfiles to copy the go.mod (and go.sum if needed):
 # In services/agent/Dockerfile and services/api/Dockerfile
 COPY providers/llm/myprovider/go.mod providers/llm/myprovider/
 ```
+
+Then run `go mod tidy` in both services — transitive dependencies are resolved automatically.
+
+No changes to `services/agent/main.go` or `services/api/main.go` needed.
 
 ## Step 4: Write Tests
 
@@ -249,14 +259,14 @@ func TestIntegration_BasicChat(t *testing.T) {
 }
 ```
 
-## Step 5: Add to Makefile
+## Step 5: Makefile and CI
 
-Add your provider to the test targets:
+The Makefile and CI workflow auto-discover provider directories via glob patterns — no manual changes needed.
+Your provider will be tested and linted automatically.
+
+For integration tests, add your provider to the `test-llm` target in the Makefile:
 
 ```makefile
-# In test-go target:
-cd providers/llm/myprovider && go test ./...
-
 # In test-llm target (integration):
 cd providers/llm/myprovider && go test -tags=integration -count=1 -timeout=2m -v ./...
 ```
@@ -269,12 +279,13 @@ cd providers/llm/myprovider && go test -tags=integration -count=1 -timeout=2m -v
 - [ ] `timeout_seconds` read from config (not hardcoded)
 - [ ] Model override supported (`req.Model` takes priority)
 - [ ] Token usage returned accurately
-- [ ] Imported in agent + API `main.go`
-- [ ] `replace` directive in both go.mod files
+- [ ] Blank import added to `providers/llm/all/all.go`
+- [ ] Module added to `go.work`
+- [ ] `require`/`replace` added to `providers/llm/all/go.mod`
 - [ ] Dockerfile COPY line for go.mod
+- [ ] `go mod tidy` run in both services
 - [ ] Unit tests (registration, factory, config validation)
 - [ ] Integration tests (skip without credentials)
-- [ ] Added to Makefile test targets
 
 ## Next Steps
 

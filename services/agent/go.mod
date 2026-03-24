@@ -4,19 +4,17 @@ go 1.25.0
 
 require (
 	cloud.google.com/go/bigquery v1.74.0
+	github.com/decisionbox-io/decisionbox/domain-packs/all v0.0.0
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go v0.0.0
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/claude v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0-00010101000000-000000000000
-	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/secrets/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/warehouse/all v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
-	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.41.0
@@ -65,7 +63,13 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.1 // indirect
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/secrets/aws v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/secrets/gcp v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
@@ -100,7 +104,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
@@ -144,17 +148,21 @@ require (
 )
 
 replace (
+	github.com/decisionbox-io/decisionbox/domain-packs/all => ../../domain-packs/all
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go => ../../domain-packs/gaming/go
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go => ../../domain-packs/social/go
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
+	github.com/decisionbox-io/decisionbox/providers/llm/all => ../../providers/llm/all
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock
 	github.com/decisionbox-io/decisionbox/providers/llm/claude => ../../providers/llm/claude
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai
+	github.com/decisionbox-io/decisionbox/providers/secrets/all => ../../providers/secrets/all
 	github.com/decisionbox-io/decisionbox/providers/secrets/aws => ../../providers/secrets/aws
 	github.com/decisionbox-io/decisionbox/providers/secrets/gcp => ../../providers/secrets/gcp
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
+	github.com/decisionbox-io/decisionbox/providers/warehouse/all => ../../providers/warehouse/all
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift => ../../providers/warehouse/redshift
 )

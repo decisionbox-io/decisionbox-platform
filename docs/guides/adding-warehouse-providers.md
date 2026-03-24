@@ -1,6 +1,6 @@
 # Adding Warehouse Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 This guide shows how to add support for a new SQL data warehouse (e.g., Snowflake, PostgreSQL, Databricks).
 
@@ -210,14 +210,16 @@ The `SQLFixPrompt()` is crucial. When the AI writes invalid SQL, the agent feeds
 
 ## Step 3: Register and Test
 
-Same pattern as LLM providers:
+1. Add blank import to `providers/warehouse/all/all.go`
+2. Add module to `go.work`
+3. Add `require`/`replace` to `providers/warehouse/all/go.mod`
+4. Add Dockerfile COPY line for the new provider's `go.mod`
+5. Run `go mod tidy` in both services
+6. Write unit tests (registration, config validation, type normalization)
+7. Write integration tests (skip without credentials)
 
-1. Import in `services/agent/main.go` and `services/api/main.go`
-2. Add `replace` directives in go.mod files
-3. Update Dockerfiles with COPY line
-4. Write unit tests (registration, config validation, type normalization)
-5. Write integration tests (skip without credentials)
-6. Add to Makefile test targets
+The Makefile and CI auto-discover new provider directories — no changes needed there.
+No changes to `services/agent/main.go` or `services/api/main.go` needed.
 
 ## Checklist
 
@@ -228,7 +230,7 @@ Same pattern as LLM providers:
 - [ ] ConfigFields includes all user-facing config options
 - [ ] ProviderMeta includes DefaultPricing
 - [ ] Cross-cloud auth via `credentials_json` config field (optional)
-- [ ] Imported in agent + API, replace directives, Dockerfile COPY
+- [ ] Blank import in `providers/warehouse/all/all.go`, module in `go.work`, Dockerfile COPY
 - [ ] Unit tests + integration tests (skip without credentials)
 
 ## Next Steps

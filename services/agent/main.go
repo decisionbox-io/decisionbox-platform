@@ -16,8 +16,6 @@ import (
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp" // registers "gcp"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws" // registers "aws"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -25,20 +23,13 @@ import (
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
-	// LLM provider registrations
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"     // registers "claude"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"     // registers "openai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"     // registers "ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"  // registers "vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"    // registers "bedrock" (stub)
-
-	// Warehouse provider registrations
-	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"  // registers "bigquery"
-	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"  // registers "redshift"
-
-	// Domain pack registrations
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go" // registers "gaming"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go" // registers "social"
+	// Provider and domain pack registrations via aggregator packages.
+	// To add a new provider or domain pack, update the relevant aggregator
+	// (e.g., providers/warehouse/all/all.go) — no changes needed here.
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/all"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/all"
 )
 
 func main() {
