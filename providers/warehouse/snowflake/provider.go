@@ -21,6 +21,7 @@ import (
 	_ "embed"
 	"encoding/pem"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,9 @@ func init() {
 		if database == "" {
 			return nil, fmt.Errorf("snowflake: database is required")
 		}
+		if !validIdentifier(database) {
+			return nil, fmt.Errorf("snowflake: invalid database name %q", database)
+		}
 
 		schema := cfg["dataset"]
 		if schema == "" {
@@ -81,7 +85,10 @@ func init() {
 		}
 
 		// Determine authentication method from credentials content.
-		if creds != "" {
+		if creds == "" {
+			return nil, fmt.Errorf("snowflake: credentials are required (password or PEM private key)")
+		}
+		{
 			if strings.Contains(creds, "PRIVATE KEY") {
 				key, err := parsePrivateKey(creds)
 				if err != nil {
@@ -284,7 +291,11 @@ func (p *SnowflakeProvider) SQLFixPrompt() string {
 }
 
 func (p *SnowflakeProvider) ValidateReadOnly(ctx context.Context) error {
-	// Snowflake roles control write access; the provider doesn't enforce it.
+	// Snowflake roles control write access. We verify connectivity works.
+	_, err := p.client.QueryContext(ctx, "SELECT 1")
+	if err != nil {
+		return fmt.Errorf("snowflake: read-only validation failed: %w", err)
+	}
 	return nil
 }
 
@@ -383,4 +394,12 @@ func normalizeSnowflakeType(t string) string {
 		// VARCHAR, CHAR, STRING, TEXT, TIME, etc.
 		return "STRING"
 	}
+}
+
+// validIdentifier checks that a Snowflake identifier contains only safe characters.
+// Prevents SQL injection when interpolating database/schema names into queries.
+var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
+
+func validIdentifier(s string) bool {
+	return identifierRe.MatchString(s)
 }

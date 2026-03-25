@@ -61,10 +61,10 @@ SELECT data:customer:name::STRING AS cust_name FROM {{DATASET}}.EVENTS
 SELECT data['customer']['name']::STRING AS cust_name FROM {{DATASET}}.EVENTS
 ```
 
-**ILIKE** — Case-insensitive pattern matching:
+**ILIKE** — Case-insensitive pattern matching (use instead of LIKE for case-insensitive):
 ```sql
 WHERE name ILIKE '%search%'    -- case-insensitive LIKE
-SELECT * ILIKE 'user%'         -- select columns matching pattern
+WHERE name ILIKE ANY ('%foo%', '%bar%')  -- match any pattern
 ```
 
 ### Useful Context Functions

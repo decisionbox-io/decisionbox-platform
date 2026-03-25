@@ -182,8 +182,9 @@ The provider auto-detects password vs key pair based on the credential content.
 ### Data Type Handling
 
 Snowflake types are automatically normalized:
-- `NUMBER`, `INT`, `BIGINT`, `SMALLINT`, `TINYINT`, `BYTEINT` → `INT64`
-- `NUMBER(p,s)`, `FLOAT`, `DOUBLE`, `REAL`, `DECIMAL`, `NUMERIC` → `FLOAT64`
+- `NUMBER`, `INT`, `BIGINT`, `SMALLINT`, `TINYINT`, `BYTEINT` → `INT64` (in schema metadata)
+- `FLOAT`, `DOUBLE`, `REAL`, `DECIMAL(p,s)`, `NUMERIC(p,s)` → `FLOAT64`
+- In query results, `NUMBER` values with decimals are returned as `FLOAT64` (the driver reports actual precision)
 - `VARCHAR`, `STRING`, `CHAR`, `TEXT` → `STRING`
 - `BOOLEAN` → `BOOL`
 - `DATE` → `DATE`

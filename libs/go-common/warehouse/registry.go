@@ -36,7 +36,7 @@ type ConfigField struct {
 	Label       string `json:"label"`        // display label: "GCP Project ID"
 	Description string `json:"description"`  // help text
 	Required    bool   `json:"required"`
-	Type        string `json:"type"`         // "string", "number", "boolean"
+	Type        string `json:"type"`         // "string", "number", "boolean", "credential" (stored as secret, not in project config)
 	Default     string `json:"default"`      // default value
 	Placeholder string `json:"placeholder"`  // placeholder text
 }

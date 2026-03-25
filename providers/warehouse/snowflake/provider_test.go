@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestFactoryMissingAccount(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing account")
 	}
-	if !contains(err.Error(), "account") {
+	if !strings.Contains(err.Error(), "account") {
 		t.Errorf("error should mention 'account', got: %v", err)
 	}
 }
@@ -68,7 +69,7 @@ func TestFactoryMissingUser(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing user")
 	}
-	if !contains(err.Error(), "user") {
+	if !strings.Contains(err.Error(), "user") {
 		t.Errorf("error should mention 'user', got: %v", err)
 	}
 }
@@ -92,6 +93,22 @@ func TestFactoryMissingDatabase(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for missing database")
+	}
+}
+
+func TestFactoryInvalidDatabaseName(t *testing.T) {
+	_, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+		"account":   "org-acct",
+		"user":      "test",
+		"warehouse": "WH",
+		"database":  "DB; DROP TABLE",
+		"password":  "pw",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid database name")
+	}
+	if !strings.Contains(err.Error(), "invalid database name") {
+		t.Errorf("error should mention 'invalid database name', got: %v", err)
 	}
 }
 
@@ -168,11 +185,11 @@ func TestFactoryCustomSchema(t *testing.T) {
 func TestSQLDialect(t *testing.T) {
 	p := &SnowflakeProvider{}
 	dialect := p.SQLDialect()
-	if !contains(dialect, "Snowflake") {
+	if !strings.Contains(dialect, "Snowflake") {
 		t.Errorf("dialect should mention Snowflake, got %q", dialect)
 	}
 	for _, keyword := range []string{"QUALIFY", "FLATTEN", "VARIANT", "ILIKE", "LATERAL"} {
-		if !contains(dialect, keyword) {
+		if !strings.Contains(dialect, keyword) {
 			t.Errorf("dialect should mention %s, got %q", keyword, dialect)
 		}
 	}
@@ -189,7 +206,7 @@ func TestSQLFixPrompt(t *testing.T) {
 		"QUALIFY", "FLATTEN", "LATERAL", "VARIANT", "ILIKE",
 		"TRY_CAST", "CURRENT_DATABASE", "UPPERCASE",
 	} {
-		if !contains(prompt, required) {
+		if !strings.Contains(prompt, required) {
 			t.Errorf("SQL fix prompt should contain %q", required)
 		}
 	}
@@ -396,9 +413,19 @@ func TestParsePrivateKey_Invalid(t *testing.T) {
 }
 
 func TestValidateReadOnly(t *testing.T) {
-	p := &SnowflakeProvider{}
-	if err := p.ValidateReadOnly(context.Background()); err != nil {
-		t.Errorf("unexpected error: %v", err)
+	mock := &mockSFClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			return nil, fmt.Errorf("mock: not supported")
+		},
+	}
+	p := &SnowflakeProvider{client: mock}
+
+	err := p.ValidateReadOnly(context.Background())
+	if err == nil {
+		t.Error("expected error when query fails")
+	}
+	if !strings.Contains(err.Error(), "read-only validation failed") {
+		t.Errorf("error should mention 'read-only validation failed', got: %v", err)
 	}
 }
 
@@ -426,7 +453,7 @@ func TestQueryError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error")
 	}
-	if !contains(err.Error(), "query failed") {
+	if !strings.Contains(err.Error(), "query failed") {
 		t.Errorf("error should mention 'query failed', got: %v", err)
 	}
 }
@@ -460,7 +487,7 @@ func TestListTablesError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error")
 	}
-	if !contains(err.Error(), "list tables failed") {
+	if !strings.Contains(err.Error(), "list tables failed") {
 		t.Errorf("error should mention 'list tables failed', got: %v", err)
 	}
 }
@@ -477,7 +504,7 @@ func TestGetTableSchemaError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error")
 	}
-	if !contains(err.Error(), "get table schema failed") {
+	if !strings.Contains(err.Error(), "get table schema failed") {
 		t.Errorf("error should mention 'get table schema failed', got: %v", err)
 	}
 }
@@ -569,17 +596,18 @@ func TestParsePrivateKey_InvalidPEMContent(t *testing.T) {
 }
 
 func TestFactoryNoCredentials(t *testing.T) {
-	// Provider should still be created (Snowflake supports external browser auth, etc.)
-	p, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+	_, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
 		"account":   "org-acct",
 		"user":      "test",
 		"warehouse": "WH",
 		"database":  "DB",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for missing credentials")
 	}
-	defer p.Close()
+	if !strings.Contains(err.Error(), "credentials") {
+		t.Errorf("error should mention 'credentials', got: %v", err)
+	}
 }
 
 func TestFactoryTimeoutConfig(t *testing.T) {
@@ -621,16 +649,3 @@ func TestFactoryDefaultTimeout(t *testing.T) {
 	}
 }
 
-// contains checks if s contains substr.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchStr(s, substr)
-}
-
-func searchStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

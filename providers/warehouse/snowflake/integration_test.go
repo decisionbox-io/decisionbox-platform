@@ -5,6 +5,7 @@ package snowflake
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func getIntegrationConfig(t *testing.T) gowarehouse.ProviderConfig {
 	return gowarehouse.ProviderConfig{
 		"account":          account,
 		"user":             user,
-		"password":         password,
+		"credentials_json": password,
 		"warehouse":        warehouse,
 		"database":         database,
 		"dataset":          schema,
@@ -71,8 +72,8 @@ func TestIntegration_SQLDialect(t *testing.T) {
 	defer provider.Close()
 
 	dialect := provider.SQLDialect()
-	if dialect != "Snowflake SQL" {
-		t.Errorf("unexpected dialect: %q", dialect)
+	if !strings.Contains(dialect, "Snowflake") {
+		t.Errorf("dialect should mention Snowflake, got %q", dialect)
 	}
 	t.Logf("SQLDialect: %q", dialect)
 }
@@ -86,7 +87,7 @@ func TestIntegration_GetDataset(t *testing.T) {
 	defer provider.Close()
 
 	dataset := provider.GetDataset()
-	expected := cfg["schema"]
+	expected := cfg["dataset"]
 	if dataset != expected {
 		t.Errorf("expected %q, got %q", expected, dataset)
 	}
