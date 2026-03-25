@@ -58,6 +58,7 @@ export default function NewProjectPage() {
         if (whProviders.length > 0) {
           setWarehouseProvider(whProviders[0].id);
           setWarehouseConfig(buildDefaults(whProviders[0].config_fields));
+          if (whProviders[0].auth_methods?.length === 1) setWarehouseAuthMethod(whProviders[0].auth_methods[0].id);
         }
         if (llmProvs.length > 0) {
           const claude = llmProvs.find((p) => p.id === 'claude');

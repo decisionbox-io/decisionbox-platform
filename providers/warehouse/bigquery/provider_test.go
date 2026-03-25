@@ -39,7 +39,7 @@ func TestBigQueryConfig_WithoutCredentials(t *testing.T) {
 }
 
 func TestNewBigQueryProvider_MissingProjectID(t *testing.T) {
-	_, err := NewBigQueryProvider(nil, BigQueryConfig{
+	_, err := NewBigQueryProvider(context.TODO(), BigQueryConfig{
 		Dataset: "test",
 	})
 	if err == nil {
@@ -48,7 +48,7 @@ func TestNewBigQueryProvider_MissingProjectID(t *testing.T) {
 }
 
 func TestNewBigQueryProvider_MissingDataset(t *testing.T) {
-	_, err := NewBigQueryProvider(nil, BigQueryConfig{
+	_, err := NewBigQueryProvider(context.TODO(), BigQueryConfig{
 		ProjectID: "test",
 	})
 	if err == nil {
@@ -58,7 +58,7 @@ func TestNewBigQueryProvider_MissingDataset(t *testing.T) {
 
 func TestNewBigQueryProvider_InvalidCredentials(t *testing.T) {
 	// Invalid JSON credentials should fail at client creation
-	_, err := NewBigQueryProvider(nil, BigQueryConfig{
+	_, err := NewBigQueryProvider(context.TODO(), BigQueryConfig{
 		ProjectID:       "test",
 		Dataset:         "test",
 		CredentialsJSON: "not-valid-json",
@@ -122,6 +122,7 @@ func TestBigQueryFactory_CredentialsPassthrough(t *testing.T) {
 	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
 		"project_id":       "test-project",
 		"dataset":          "test_dataset",
+		"auth_method":      "sa_key",
 		"credentials_json": `{"type":"invalid"}`,
 	})
 	if err == nil {
@@ -200,23 +201,40 @@ func TestRegisteredAuthMethods(t *testing.T) {
 	}
 }
 
-func TestBigQueryProvider_AuthMethodADC_NoCredentials(t *testing.T) {
-	// ADC auth should work without credentials_json
-	_, err := NewBigQueryProvider(context.Background(), BigQueryConfig{
-		ProjectID: "test-project",
-		Dataset:   "test_dataset",
+func TestBigQueryFactory_SAKeyMissing(t *testing.T) {
+	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
+		"project_id":  "test-project",
+		"dataset":     "test_dataset",
+		"auth_method": "sa_key",
 	})
-	// May fail without real ADC but should not panic
-	if err != nil {
-		t.Logf("ADC creation failed (expected without real GCP): %v", err)
+	if err == nil {
+		t.Fatal("expected error for missing SA key")
+	}
+	if !bqContains(err.Error(), "service account key is required") {
+		t.Errorf("wrong error: %v", err)
+	}
+}
+
+func TestBigQueryFactory_UnsupportedAuthMethod(t *testing.T) {
+	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
+		"project_id":  "test-project",
+		"dataset":     "test_dataset",
+		"auth_method": "oauth",
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported auth method")
+	}
+	if !bqContains(err.Error(), "unsupported auth method") {
+		t.Errorf("wrong error: %v", err)
 	}
 }
 
 func TestBigQueryProvider_AuthMethodSAKey_InvalidJSON(t *testing.T) {
-	_, err := NewBigQueryProvider(context.Background(), BigQueryConfig{
-		ProjectID:       "test-project",
-		Dataset:         "test_dataset",
-		CredentialsJSON: "not-valid-json",
+	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
+		"project_id":      "test-project",
+		"dataset":         "test_dataset",
+		"auth_method":     "sa_key",
+		"credentials_json": "not-valid-json",
 	})
 	if err == nil {
 		t.Error("expected error for invalid SA key JSON")

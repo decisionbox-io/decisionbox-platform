@@ -26,12 +26,26 @@ func init() {
 			timeoutMin = 5
 		}
 
+		// Resolve credentials based on auth method.
+		var credentialsJSON string
+		switch cfg["auth_method"] {
+		case "sa_key":
+			credentialsJSON = cfg["credentials_json"]
+			if credentialsJSON == "" {
+				return nil, fmt.Errorf("bigquery: service account key is required for sa_key auth")
+			}
+		case "adc", "":
+			// Application Default Credentials — no explicit credentials needed.
+		default:
+			return nil, fmt.Errorf("bigquery: unsupported auth method %q", cfg["auth_method"])
+		}
+
 		return NewBigQueryProvider(context.Background(), BigQueryConfig{
 			ProjectID:       cfg["project_id"],
 			Dataset:         cfg["dataset"],
 			Location:        cfg["location"],
 			Timeout:         time.Duration(timeoutMin) * time.Minute,
-			CredentialsJSON: cfg["credentials_json"],
+			CredentialsJSON: credentialsJSON,
 		})
 	}, gowarehouse.ProviderMeta{
 		Name:        "Google BigQuery",
@@ -187,7 +201,7 @@ func (p *BigQueryProvider) GetTableSchema(ctx context.Context, table string) (*g
 
 	schema := &gowarehouse.TableSchema{
 		Name:     table,
-		RowCount: int64(metadata.NumRows),
+		RowCount: int64(metadata.NumRows), //nolint:gosec // NumRows won't exceed int64 max
 	}
 
 	if metadata.Schema != nil {
@@ -230,7 +244,7 @@ func (p *BigQueryProvider) GetTableSchemaInDataset(ctx context.Context, dataset,
 
 	schema := &gowarehouse.TableSchema{
 		Name:     table,
-		RowCount: int64(metadata.NumRows),
+		RowCount: int64(metadata.NumRows), //nolint:gosec // NumRows won't exceed int64 max
 	}
 
 	if metadata.Schema != nil {

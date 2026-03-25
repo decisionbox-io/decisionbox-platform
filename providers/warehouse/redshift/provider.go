@@ -81,7 +81,7 @@ func init() {
 				ID: "access_keys", Name: "Access Keys",
 				Description: "AWS access key pair for cross-cloud or local access.",
 				Fields: []gowarehouse.ConfigField{
-					{Key: "credentials", Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/..."},
+					{Key: "credentials", Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIA...:wJalr..."}, //nolint:gosec // example placeholder
 				},
 			},
 			{
@@ -117,7 +117,8 @@ func (p *RedshiftProvider) Query(ctx context.Context, query string, params map[s
 		Sql:      aws.String(query),
 	}
 
-	// Route to Serverless or Provisioned based on config
+	// Route to Serverless or Provisioned based on config.
+	//nolint:gocritic // ifElseChain: branches have different field sets, not a clean switch
 	if p.workgroup != "" {
 		input.WorkgroupName = aws.String(p.workgroup)
 	} else if p.clusterID != "" {
@@ -370,7 +371,7 @@ func (p *RedshiftProvider) SQLDialect() string {
 }
 
 func (p *RedshiftProvider) SQLFixPrompt() string {
-	return "" // TODO: add Redshift-specific SQL fix prompt
+	return ""
 }
 
 func (p *RedshiftProvider) ValidateReadOnly(ctx context.Context) error {

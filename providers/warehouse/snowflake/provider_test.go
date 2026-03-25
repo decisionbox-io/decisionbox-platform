@@ -151,8 +151,9 @@ func TestFactoryPasswordAuth(t *testing.T) {
 	}
 }
 
-func TestFactoryKeyPairAuth(t *testing.T) {
-	// Generate a test RSA key pair
+func TestFactoryPasswordWithPEMFallback(t *testing.T) {
+	// Without auth_method set, PEM content is treated as password (not key pair).
+	// This tests backward compatibility — the correct way is TestFactoryKeyPairAuthMethod.
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate RSA key: %v", err)
@@ -166,6 +167,7 @@ func TestFactoryKeyPairAuth(t *testing.T) {
 		Bytes: pkcs8Bytes,
 	})
 
+	// Without auth_method, defaults to "password" — PEM is used as password string
 	p, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
 		"account":          "org-acct",
 		"user":             "test",

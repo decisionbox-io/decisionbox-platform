@@ -43,7 +43,7 @@ func TestRedshiftProvider_MissingIdentifier(t *testing.T) {
 		database: "dev",
 	}
 
-	_, err := p.Query(nil, "SELECT 1", nil)
+	_, err := p.Query(context.TODO(), "SELECT 1", nil)
 	if err == nil {
 		t.Error("expected error when both workgroup and cluster_id are empty")
 	}

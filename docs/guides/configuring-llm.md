@@ -26,7 +26,7 @@ Sign up at [console.anthropic.com](https://console.anthropic.com) and create an 
 
 1. Create a project (or edit existing) → select **Claude (Anthropic)** as LLM provider
 2. Enter model name: `claude-sonnet-4-20250514` (recommended) or `claude-opus-4-20250514` (most capable)
-3. Go to **Settings → Secrets** → set **LLM API Key** to your `sk-ant-...` key
+3. Go to **Settings → AI Provider** → set **API Key** to your `sk-ant-...` key
 
 ### 3. Model Options
 
@@ -48,7 +48,7 @@ Sign up at [platform.openai.com](https://platform.openai.com) and create an API 
 
 1. Select **OpenAI** as LLM provider
 2. Enter model name: `gpt-4o` (recommended) or `gpt-4o-mini` (cheaper)
-3. Go to **Settings → Secrets** → set **LLM API Key** to your `sk-...` key
+3. Go to **Settings → AI Provider** → set **API Key** to your `sk-...` key
 
 ## Ollama (Local Models)
 

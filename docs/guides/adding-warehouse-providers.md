@@ -111,12 +111,25 @@ func init() {
         if account == "" {
             return nil, fmt.Errorf("snowflake: account is required")
         }
-        // Initialize your warehouse client here
+
+        // Apply authentication based on selected method.
+        // cfg["credentials_json"] is populated by the agent from the secret provider.
+        // cfg["auth_method"] is the ID selected by the user in the dashboard.
+        creds := cfg["credentials_json"]
+        switch cfg["auth_method"] {
+        case "key_pair":
+            // Parse PEM key and configure JWT auth
+        case "password", "":
+            // Use creds as password
+        default:
+            return nil, fmt.Errorf("snowflake: unsupported auth method %q", cfg["auth_method"])
+        }
+
         return &SnowflakeProvider{
             account:   account,
             warehouse: cfg["warehouse"],
             database:  cfg["database"],
-            schema:    cfg["schema"],
+            schema:    cfg["dataset"],
         }, nil
     }, gowarehouse.ProviderMeta{
         Name:        "Snowflake",
@@ -125,11 +138,25 @@ func init() {
             {Key: "account", Label: "Account", Required: true, Type: "string", Placeholder: "myorg-myaccount"},
             {Key: "warehouse", Label: "Warehouse", Required: true, Type: "string", Default: "COMPUTE_WH"},
             {Key: "database", Label: "Database", Required: true, Type: "string"},
-            {Key: "schema", Label: "Schema", Type: "string", Default: "PUBLIC"},
+            {Key: "dataset", Label: "Schema", Required: true, Type: "string", Default: "PUBLIC"},
         },
-        DefaultPricing: gowarehouse.WarehousePricing{
+        AuthMethods: []gowarehouse.AuthMethod{
+            {
+                ID: "password", Name: "Username / Password",
+                Fields: []gowarehouse.ConfigField{
+                    {Key: "credentials", Label: "Password", Required: true, Type: "credential"},
+                },
+            },
+            {
+                ID: "key_pair", Name: "Key Pair (JWT)",
+                Description: "RSA private key authentication.",
+                Fields: []gowarehouse.ConfigField{
+                    {Key: "credentials", Label: "PEM Private Key", Required: true, Type: "credential"},
+                },
+            },
+        },
+        DefaultPricing: &gowarehouse.WarehousePricing{
             CostModel: "per_second",
-            CostRate:  0.00056, // $2/hour ÷ 3600 = $0.00056/second
         },
     })
 }
@@ -225,11 +252,13 @@ Same pattern as LLM providers:
 - [ ] Type normalization (warehouse types → STRING, INT64, FLOAT64, etc.)
 - [ ] System tables filtered from ListTables (e.g., `pg_*`, `information_schema`)
 - [ ] SQLFixPrompt includes warehouse-specific SQL rules
-- [ ] ConfigFields includes all user-facing config options
+- [ ] ConfigFields includes all connection config options
+- [ ] AuthMethods declared with `type: "credential"` fields for secrets
+- [ ] Factory uses `switch cfg["auth_method"]` with a `default` error case
 - [ ] ProviderMeta includes DefaultPricing
-- [ ] Cross-cloud auth via `credentials_json` config field (optional)
 - [ ] Imported in agent + API, replace directives, Dockerfile COPY
-- [ ] Unit tests + integration tests (skip without credentials)
+- [ ] Unit tests: auth method registration, factory validation, unsupported method error
+- [ ] Integration tests (skip without credentials, opt-in via `INTEGRATION_TEST_*` env vars)
 
 ## Next Steps
 

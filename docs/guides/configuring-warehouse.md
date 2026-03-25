@@ -202,7 +202,7 @@ DecisionBox supports accessing warehouses from a different cloud:
 | Snowflake from any cloud | Store password or PEM private key in secret provider |
 | Any from local dev | Configure cloud CLI (`gcloud auth`, `aws configure`) or store credentials in secret provider |
 
-The key concept: warehouse credentials can be stored in the **secret provider** (`Settings → Secrets → Warehouse Credentials`). The agent reads credentials from the secret provider before initializing the warehouse provider.
+The key concept: warehouse credentials are stored encrypted via the **secret provider**. When creating a project, select the appropriate auth method and enter credentials inline. The agent reads credentials from the secret provider before initializing the warehouse provider.
 
 ## Next Steps
 

@@ -61,7 +61,7 @@ Click **Create Project**.
 
 ## Step 2: Add Your API Key
 
-After creating the project, go to **Settings** → **Secrets** tab.
+After creating the project, go to **Settings** → **AI Provider** tab.
 
 1. Select **LLM API Key** from the dropdown
 2. Enter your API key
