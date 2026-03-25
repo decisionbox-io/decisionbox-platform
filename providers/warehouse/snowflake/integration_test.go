@@ -38,6 +38,7 @@ func getIntegrationConfig(t *testing.T) gowarehouse.ProviderConfig {
 	return gowarehouse.ProviderConfig{
 		"account":          account,
 		"user":             user,
+		"auth_method":      "password",
 		"credentials_json": password,
 		"warehouse":        warehouse,
 		"database":         database,
