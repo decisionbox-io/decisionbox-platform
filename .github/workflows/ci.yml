@@ -143,6 +143,12 @@ jobs:
           version: v2.11.3
           working-directory: domain-packs/social/go
 
+      - name: Lint Snowflake warehouse provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/warehouse/snowflake
+
       - name: Lint Agent
         uses: golangci/golangci-lint-action@v7
         with:

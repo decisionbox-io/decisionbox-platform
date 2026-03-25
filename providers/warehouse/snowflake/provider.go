@@ -66,6 +66,9 @@ func init() {
 		if schema == "" {
 			schema = "PUBLIC"
 		}
+		if !validIdentifier(schema) {
+			return nil, fmt.Errorf("snowflake: invalid schema name %q", schema)
+		}
 
 		timeoutMin, _ := strconv.Atoi(cfg["timeout_minutes"])
 		if timeoutMin == 0 {

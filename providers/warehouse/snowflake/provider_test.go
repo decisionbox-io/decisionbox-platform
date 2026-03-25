@@ -112,6 +112,23 @@ func TestFactoryInvalidDatabaseName(t *testing.T) {
 	}
 }
 
+func TestFactoryInvalidSchemaName(t *testing.T) {
+	_, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+		"account":   "org-acct",
+		"user":      "test",
+		"warehouse": "WH",
+		"database":  "DB",
+		"dataset":   "SCHEMA; DROP TABLE",
+		"password":  "pw",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid schema name")
+	}
+	if !strings.Contains(err.Error(), "invalid schema name") {
+		t.Errorf("error should mention 'invalid schema name', got: %v", err)
+	}
+}
+
 func TestFactoryPasswordAuth(t *testing.T) {
 	p, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
 		"account":          "org-acct",
