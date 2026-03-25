@@ -76,9 +76,10 @@ export default function NewProjectPage() {
 
   const whAuthMethods = selectedWarehouse?.auth_methods || [];
   const selectedAuthMethod = whAuthMethods.find((m) => m.id === warehouseAuthMethod);
-  const authCredentialField = selectedAuthMethod?.fields.find((f) => f.type === 'credential');
+  const authFields = selectedAuthMethod?.fields || [];
+  const authCredentialField = authFields.find((f) => f.type === 'credential');
   const authNeedsCredential = authCredentialField?.required ?? false;
-  const authConfigFields = selectedAuthMethod?.fields.filter((f) => f.type !== 'credential') || [];
+  const authConfigFields = authFields.filter((f) => f.type !== 'credential');
   const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
 
   const canProceed = [
@@ -193,8 +194,8 @@ export default function NewProjectPage() {
                     ))}
 
                     {whAuthMethods.length > 0 && (
-                      <Select label="Authentication" required placeholder="Select auth method"
-                        data={whAuthMethods.map((m) => ({ value: m.id, label: m.name, description: m.description }))}
+                      <Select key={`auth-${warehouseProvider}`} label="Authentication" required placeholder="Select auth method"
+                        data={whAuthMethods.map((m) => ({ value: m.id, label: m.name }))}
                         value={warehouseAuthMethod}
                         onChange={(v) => { setWarehouseAuthMethod(v || ''); setWarehouseCredential(''); }} />
                     )}
