@@ -372,6 +372,149 @@ func TestMock_Query_EmptyColumns(t *testing.T) {
 	}
 }
 
+// --- Provider method tests ---
+
+func TestRedshiftProvider_HealthCheck(t *testing.T) {
+	mock := &mockDataAPIClient{
+		resultColumns: []types.ColumnMetadata{{Name: aws.String("c")}},
+		resultRecords: [][]types.Field{{&types.FieldMemberLongValue{Value: 1}}},
+	}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 10 * time.Second}
+
+	err := p.HealthCheck(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRedshiftProvider_Close(t *testing.T) {
+	p := &RedshiftProvider{}
+	if err := p.Close(); err != nil {
+		t.Errorf("Close should return nil: %v", err)
+	}
+}
+
+func TestRedshiftProvider_ValidateReadOnly(t *testing.T) {
+	p := &RedshiftProvider{}
+	if err := p.ValidateReadOnly(context.Background()); err != nil {
+		t.Errorf("ValidateReadOnly should return nil: %v", err)
+	}
+}
+
+func TestRedshiftProvider_WaitForCompletion_Timeout(t *testing.T) {
+	mock := &mockDataAPIClient{
+		describeStatus: types.StatusStringStarted, // never finishes
+	}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 500 * time.Millisecond}
+
+	err := p.waitForCompletion(context.Background(), "stmt-1")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestRedshiftProvider_WaitForCompletion_ContextCancelled(t *testing.T) {
+	mock := &mockDataAPIClient{
+		describeStatus: types.StatusStringStarted,
+	}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 10 * time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := p.waitForCompletion(ctx, "stmt-1")
+	if err == nil {
+		t.Fatal("expected context cancelled error")
+	}
+}
+
+func TestRedshiftProvider_ListTables_Provisioned(t *testing.T) {
+	mock := &mockDataAPIClient{
+		tables: []types.TableMember{
+			{Name: aws.String("users")},
+			{Name: aws.String("pg_catalog")},
+			{Name: aws.String("stl_load")},
+			{Name: aws.String("orders")},
+		},
+	}
+	p := &RedshiftProvider{client: mock, clusterID: "cluster-1", dbUser: "admin", database: "db", dataset: "public"}
+
+	tables, err := p.ListTables(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should filter pg_ and stl_ prefixed tables
+	if len(tables) != 2 {
+		t.Errorf("expected 2 tables (filtered), got %d: %v", len(tables), tables)
+	}
+}
+
+func TestRedshiftProvider_GetTableSchema_Provisioned(t *testing.T) {
+	mock := &mockDataAPIClient{
+		describeCols: []types.ColumnMetadata{
+			{Name: aws.String("id"), TypeName: aws.String("integer"), Nullable: 0},
+			{Name: aws.String("name"), TypeName: aws.String("varchar"), Nullable: 1},
+		},
+		// For row count query
+		resultColumns: []types.ColumnMetadata{{Name: aws.String("cnt")}},
+		resultRecords: [][]types.Field{{&types.FieldMemberLongValue{Value: 42}}},
+	}
+	p := &RedshiftProvider{client: mock, clusterID: "cluster-1", dbUser: "admin", database: "db", dataset: "public", timeout: 10 * time.Second}
+
+	schema, err := p.GetTableSchema(context.Background(), "users")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if schema.Name != "users" {
+		t.Errorf("expected name 'users', got %q", schema.Name)
+	}
+	if len(schema.Columns) != 2 {
+		t.Errorf("expected 2 columns, got %d", len(schema.Columns))
+	}
+	if schema.Columns[0].Type != "INT64" {
+		t.Errorf("expected INT64, got %q", schema.Columns[0].Type)
+	}
+	if schema.RowCount != 42 {
+		t.Errorf("expected row count 42, got %d", schema.RowCount)
+	}
+}
+
+func TestLoadAWSConfig_AccessKeysEmptyParts(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method":      "access_keys",
+		"credentials_json": ":secret",
+	}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err == nil {
+		t.Fatal("expected error for empty access key ID")
+	}
+}
+
+func TestLoadAWSConfig_AssumeRoleWithExternalID(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "assume_role",
+		"role_arn":    "arn:aws:iam::123456789012:role/TestRole",
+		"external_id": "ext-123",
+	}
+	awsCfg, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if awsCfg.Region != "us-east-1" {
+		t.Errorf("expected region us-east-1, got %q", awsCfg.Region)
+	}
+}
+
+func TestLoadAWSConfig_ExplicitIAMRole(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "iam_role",
+	}
+	_, err := loadAWSConfig(context.Background(), "eu-west-1", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- Auth method tests ---
 
 func TestRegisteredAuthMethods(t *testing.T) {

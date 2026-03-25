@@ -1,6 +1,7 @@
 package bigquery
 
 import (
+	"context"
 	"testing"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -197,6 +198,79 @@ func TestRegisteredAuthMethods(t *testing.T) {
 	if !ids["sa_key"] {
 		t.Error("missing 'sa_key' auth method")
 	}
+}
+
+func TestBigQueryProvider_AuthMethodADC_NoCredentials(t *testing.T) {
+	// ADC auth should work without credentials_json
+	_, err := NewBigQueryProvider(context.Background(), BigQueryConfig{
+		ProjectID: "test-project",
+		Dataset:   "test_dataset",
+	})
+	// May fail without real ADC but should not panic
+	if err != nil {
+		t.Logf("ADC creation failed (expected without real GCP): %v", err)
+	}
+}
+
+func TestBigQueryProvider_AuthMethodSAKey_InvalidJSON(t *testing.T) {
+	_, err := NewBigQueryProvider(context.Background(), BigQueryConfig{
+		ProjectID:       "test-project",
+		Dataset:         "test_dataset",
+		CredentialsJSON: "not-valid-json",
+	})
+	if err == nil {
+		t.Error("expected error for invalid SA key JSON")
+	}
+}
+
+func TestBigQueryProvider_AuthMethodFields(t *testing.T) {
+	meta, _ := gowarehouse.GetProviderMeta("bigquery")
+
+	// ADC should have no fields
+	adc := findAuthMethod(meta.AuthMethods, "adc")
+	if adc == nil {
+		t.Fatal("missing adc auth method")
+	}
+	if len(adc.Fields) != 0 {
+		t.Errorf("ADC should have 0 fields, got %d", len(adc.Fields))
+	}
+
+	// SA Key should have 1 credential field
+	saKey := findAuthMethod(meta.AuthMethods, "sa_key")
+	if saKey == nil {
+		t.Fatal("missing sa_key auth method")
+	}
+	if len(saKey.Fields) != 1 {
+		t.Fatalf("SA Key should have 1 field, got %d", len(saKey.Fields))
+	}
+	if saKey.Fields[0].Type != "credential" {
+		t.Errorf("SA Key field should be type 'credential', got %q", saKey.Fields[0].Type)
+	}
+	if !saKey.Fields[0].Required {
+		t.Error("SA Key credential field should be required")
+	}
+}
+
+func TestBigQueryProvider_DefaultPricing(t *testing.T) {
+	meta, _ := gowarehouse.GetProviderMeta("bigquery")
+	if meta.DefaultPricing == nil {
+		t.Fatal("expected default pricing")
+	}
+	if meta.DefaultPricing.CostModel != "per_byte_scanned" {
+		t.Errorf("expected cost model 'per_byte_scanned', got %q", meta.DefaultPricing.CostModel)
+	}
+	if meta.DefaultPricing.CostPerTBScannedUSD != 6.25 {
+		t.Errorf("expected 6.25, got %f", meta.DefaultPricing.CostPerTBScannedUSD)
+	}
+}
+
+func findAuthMethod(methods []gowarehouse.AuthMethod, id string) *gowarehouse.AuthMethod {
+	for i := range methods {
+		if methods[i].ID == id {
+			return &methods[i]
+		}
+	}
+	return nil
 }
 
 func bqContains(s, substr string) bool {
