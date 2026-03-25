@@ -4,6 +4,7 @@ import "time"
 
 type Project struct {
 	ID          string `bson:"_id,omitempty" json:"id"`
+	OrgID       string `bson:"org_id" json:"org_id"`
 	Name        string `bson:"name" json:"name"`
 	Description string `bson:"description,omitempty" json:"description,omitempty"`
 	Domain      string `bson:"domain" json:"domain"`

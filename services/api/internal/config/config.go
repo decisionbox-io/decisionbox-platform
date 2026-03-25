@@ -7,9 +7,22 @@ import (
 )
 
 type Config struct {
-	Service  ServiceConfig
-	MongoDB  MongoDBConfig
-	Server   ServerConfig
+	Service ServiceConfig
+	MongoDB MongoDBConfig
+	Server  ServerConfig
+	Auth    AuthConfig
+}
+
+type AuthConfig struct {
+	Enabled      bool
+	IssuerURL    string
+	Audience     string
+	ClaimSub     string
+	ClaimEmail   string
+	ClaimOrgID   string
+	ClaimRoles   string
+	DefaultOrgID string
+	DefaultRole  string
 }
 
 type ServiceConfig struct {
@@ -41,6 +54,17 @@ func Load() (*Config, error) {
 		Server: ServerConfig{
 			Port: goconfig.GetEnvOrDefault("PORT", "8080"),
 		},
+		Auth: AuthConfig{
+			Enabled:      goconfig.GetEnvAsBool("AUTH_ENABLED", false),
+			IssuerURL:    goconfig.GetEnv("AUTH_ISSUER_URL"),
+			Audience:     goconfig.GetEnv("AUTH_AUDIENCE"),
+			ClaimSub:     goconfig.GetEnvOrDefault("AUTH_CLAIM_SUB", "sub"),
+			ClaimEmail:   goconfig.GetEnvOrDefault("AUTH_CLAIM_EMAIL", "email"),
+			ClaimOrgID:   goconfig.GetEnvOrDefault("AUTH_CLAIM_ORG_ID", "org_id"),
+			ClaimRoles:   goconfig.GetEnvOrDefault("AUTH_CLAIM_ROLES", "roles"),
+			DefaultOrgID: goconfig.GetEnvOrDefault("AUTH_DEFAULT_ORG_ID", "default"),
+			DefaultRole:  goconfig.GetEnvOrDefault("AUTH_DEFAULT_ROLE", "member"),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -53,6 +77,14 @@ func Load() (*Config, error) {
 func (c *Config) Validate() error {
 	if c.MongoDB.URI == "" {
 		return fmt.Errorf("MONGODB_URI is required")
+	}
+	if c.Auth.Enabled {
+		if c.Auth.IssuerURL == "" {
+			return fmt.Errorf("AUTH_ISSUER_URL is required when AUTH_ENABLED=true")
+		}
+		if c.Auth.Audience == "" {
+			return fmt.Errorf("AUTH_AUDIENCE is required when AUTH_ENABLED=true")
+		}
 	}
 	return nil
 }

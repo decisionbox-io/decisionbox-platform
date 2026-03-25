@@ -1,14 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
-// Runtime API proxy — reads API_URL env var at request time (not build time).
-// Proxies all /api/* requests to the backend API server-side.
-// Browser never talks to the API directly — only to the dashboard.
-//
-// Configuration via env var:
-//   API_URL=http://decisionbox-api:8080  (K8s cluster-internal)
-//   API_URL=http://localhost:8080         (local dev, default)
+const authEnabled = process.env.AUTH_ENABLED === 'true';
+
+// Runtime API proxy + auth enforcement.
+// When AUTH_ENABLED=true: checks session, redirects to login, injects JWT.
+// When AUTH_ENABLED=false: proxy only (current behavior), no auth checks.
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+
+  // Auth.js routes — always pass through
+  if (pathname.startsWith('/api/auth/')) {
+    return NextResponse.next();
+  }
+
+  // Login page — always accessible
+  if (pathname === '/login') {
+    return NextResponse.next();
+  }
+
+  // If auth enabled, check session for non-API routes
+  if (authEnabled && !pathname.startsWith('/api/')) {
+    const session = await auth();
+    if (!session) {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
+    return NextResponse.next();
+  }
 
   // Only proxy /api/* requests (not /health or other dashboard routes)
   if (!pathname.startsWith('/api/')) {
@@ -22,6 +40,17 @@ export async function middleware(request: NextRequest) {
   const headers = new Headers(request.headers);
   // Remove host header (will be set by fetch to the target)
   headers.delete('host');
+
+  // If auth enabled, inject JWT from session
+  if (authEnabled) {
+    const session = await auth();
+    if (!session) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+    if (session.idToken) {
+      headers.set('Authorization', `Bearer ${session.idToken}`);
+    }
+  }
 
   const response = await fetch(targetUrl, {
     method: request.method,
@@ -44,6 +73,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Only run middleware on /api/* paths
-  matcher: '/api/:path*',
+  // Run on API routes, login, and all app pages
+  matcher: ['/((?!_next/static|_next/image|favicon\\.ico|favicon\\.svg).*)'],
 };

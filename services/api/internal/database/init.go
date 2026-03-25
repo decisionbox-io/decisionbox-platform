@@ -29,6 +29,7 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "created_at", Value: -1}}},
 			{Keys: bson.D{{Key: "domain", Value: 1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
+			{Keys: bson.D{{Key: "org_id", Value: 1}, {Key: "created_at", Value: -1}}},
 		},
 	},
 	{

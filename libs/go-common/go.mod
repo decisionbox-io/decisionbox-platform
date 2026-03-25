@@ -3,6 +3,8 @@ module github.com/decisionbox-io/decisionbox/libs/go-common
 go 1.25.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.17.0
+	github.com/go-jose/go-jose/v4 v4.1.3
 	github.com/prometheus/client_golang v1.21.1
 	go.mongodb.org/mongo-driver v1.17.9
 	go.uber.org/zap v1.27.1
@@ -24,6 +26,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect

@@ -3,8 +3,9 @@
 import { ReactNode, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
+import { useSession, signOut } from 'next-auth/react';
 import {
-  IconBook2, IconDatabase, IconSearch, IconSettings, IconStack2, IconTool,
+  IconBook2, IconDatabase, IconLogout, IconSearch, IconSettings, IconStack2, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 
@@ -189,6 +190,9 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
             />
           </nav>
         )}
+
+        {/* User menu (only when auth is enabled) */}
+        <UserMenu />
       </aside>
 
       {/* Main area */}
@@ -247,6 +251,64 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
         }}>
           {children}
         </main>
+      </div>
+    </div>
+  );
+}
+
+/* --- User Menu Component --- */
+
+function UserMenu() {
+  const { data: session } = useSession();
+
+  // Don't render if no session (auth disabled or not logged in)
+  if (!session?.user) return null;
+
+  return (
+    <div style={{
+      borderTop: '1px solid var(--db-border-default)',
+      padding: '12px',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 10px',
+      }}>
+        <div style={{
+          width: 28,
+          height: 28,
+          borderRadius: '50%',
+          background: 'var(--db-bg-muted)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 12,
+          fontWeight: 600,
+          flexShrink: 0,
+        }}>
+          {session.user.email?.[0]?.toUpperCase() || '?'}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {session.user.name || session.user.email}
+          </div>
+        </div>
+        <button
+          onClick={() => signOut({ callbackUrl: '/login' })}
+          title="Sign out"
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 4,
+            display: 'flex',
+            color: 'var(--db-text-tertiary)',
+            borderRadius: 4,
+          }}
+        >
+          <IconLogout size={16} />
+        </button>
       </div>
     </div>
   );

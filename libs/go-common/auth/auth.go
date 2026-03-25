@@ -6,11 +6,12 @@ import (
 )
 
 // UserPrincipal represents the authenticated user.
+// Field names match standard OIDC claim names.
 type UserPrincipal struct {
-	ID    string
-	AppID string
-	OrgID string
-	Roles []string
+	Sub   string   `json:"sub"`
+	Email string   `json:"email"`
+	OrgID string   `json:"org_id"`
+	Roles []string `json:"roles"`
 }
 
 type contextKey string

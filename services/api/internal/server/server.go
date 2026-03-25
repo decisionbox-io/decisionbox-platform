@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
@@ -14,7 +15,7 @@ import (
 
 // New creates an HTTP server with all routes registered.
 // Cleans up stale discovery runs from previous container lifecycle.
-func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider) http.Handler {
+func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider) http.Handler {
 	mux := http.NewServeMux()
 
 	// Repos
@@ -55,7 +56,17 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)
 	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
 
-	// Health endpoints
+	// RBAC helpers — wrap a handler with role-based access control
+	viewer := auth.RequireRole("viewer")
+	member := auth.RequireRole("member")
+	admin := auth.RequireRole("admin")
+
+	withRole := func(mw func(http.Handler) http.Handler, fn http.HandlerFunc) http.HandlerFunc {
+		wrapped := mw(fn)
+		return wrapped.ServeHTTP
+	}
+
+	// Health endpoints — no auth required
 	// /health and /health/ready — for K8s liveness/readiness probes (from go-common)
 	// /api/v1/health — for dashboard and API consumers
 	if healthHandler != nil {
@@ -66,65 +77,65 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		mux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
 	}
 
-	// Providers
-	mux.HandleFunc("GET /api/v1/providers/llm", providers.ListLLMProviders)
-	mux.HandleFunc("GET /api/v1/providers/warehouse", providers.ListWarehouseProviders)
+	// Providers — viewer
+	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
+	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 
-	// Domains
-	mux.HandleFunc("GET /api/v1/domains", domains.ListDomains)
-	mux.HandleFunc("GET /api/v1/domains/{domain}/categories", domains.ListCategories)
-	mux.HandleFunc("GET /api/v1/domains/{domain}/categories/{category}/schema", domains.GetProfileSchema)
-	mux.HandleFunc("GET /api/v1/domains/{domain}/categories/{category}/areas", domains.GetAnalysisAreas)
+	// Domains — viewer
+	mux.HandleFunc("GET /api/v1/domains", withRole(viewer, domains.ListDomains))
+	mux.HandleFunc("GET /api/v1/domains/{domain}/categories", withRole(viewer, domains.ListCategories))
+	mux.HandleFunc("GET /api/v1/domains/{domain}/categories/{category}/schema", withRole(viewer, domains.GetProfileSchema))
+	mux.HandleFunc("GET /api/v1/domains/{domain}/categories/{category}/areas", withRole(viewer, domains.GetAnalysisAreas))
 
-	// Projects
-	mux.HandleFunc("POST /api/v1/projects", projects.Create)
-	mux.HandleFunc("GET /api/v1/projects", projects.List)
-	mux.HandleFunc("GET /api/v1/projects/{id}", projects.Get)
-	mux.HandleFunc("PUT /api/v1/projects/{id}", projects.Update)
-	mux.HandleFunc("DELETE /api/v1/projects/{id}", projects.Delete)
+	// Projects — viewer for read, member for write, admin for delete
+	mux.HandleFunc("POST /api/v1/projects", withRole(member, projects.Create))
+	mux.HandleFunc("GET /api/v1/projects", withRole(viewer, projects.List))
+	mux.HandleFunc("GET /api/v1/projects/{id}", withRole(viewer, projects.Get))
+	mux.HandleFunc("PUT /api/v1/projects/{id}", withRole(member, projects.Update))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", withRole(admin, projects.Delete))
 
-	// Prompts
-	mux.HandleFunc("GET /api/v1/projects/{id}/prompts", handler.GetPrompts(projectRepo))
-	mux.HandleFunc("PUT /api/v1/projects/{id}/prompts", handler.UpdatePrompts(projectRepo))
+	// Prompts — viewer for read, member for write
+	mux.HandleFunc("GET /api/v1/projects/{id}/prompts", withRole(viewer, handler.GetPrompts(projectRepo)))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/prompts", withRole(member, handler.UpdatePrompts(projectRepo)))
 
-	// Discoveries
-	mux.HandleFunc("POST /api/v1/projects/{id}/discover", discoveries.TriggerDiscovery)
-	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries", discoveries.List)
-	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries/latest", discoveries.GetLatest)
-	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries/{date}", discoveries.GetByDate)
-	mux.HandleFunc("GET /api/v1/projects/{id}/status", discoveries.GetStatus)
+	// Discoveries — member for trigger, viewer for read
+	mux.HandleFunc("POST /api/v1/projects/{id}/discover", withRole(member, discoveries.TriggerDiscovery))
+	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries", withRole(viewer, discoveries.List))
+	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries/latest", withRole(viewer, discoveries.GetLatest))
+	mux.HandleFunc("GET /api/v1/projects/{id}/discoveries/{date}", withRole(viewer, discoveries.GetByDate))
+	mux.HandleFunc("GET /api/v1/projects/{id}/status", withRole(viewer, discoveries.GetStatus))
 
 	// Single discovery by ID
-	mux.HandleFunc("GET /api/v1/discoveries/{id}", discoveries.GetDiscoveryByID)
+	mux.HandleFunc("GET /api/v1/discoveries/{id}", withRole(viewer, discoveries.GetDiscoveryByID))
 
-	// Runs (live status + cancel)
-	mux.HandleFunc("GET /api/v1/runs/{runId}", discoveries.GetRun)
-	mux.HandleFunc("DELETE /api/v1/runs/{runId}", discoveries.CancelRun)
+	// Runs — viewer for read, admin for cancel
+	mux.HandleFunc("GET /api/v1/runs/{runId}", withRole(viewer, discoveries.GetRun))
+	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
 
-	// Feedback
-	mux.HandleFunc("POST /api/v1/discoveries/{runId}/feedback", feedback.Submit)
-	mux.HandleFunc("GET /api/v1/discoveries/{runId}/feedback", feedback.List)
-	mux.HandleFunc("DELETE /api/v1/feedback/{id}", feedback.Delete)
+	// Feedback — member for submit, viewer for read, admin for delete
+	mux.HandleFunc("POST /api/v1/discoveries/{runId}/feedback", withRole(member, feedback.Submit))
+	mux.HandleFunc("GET /api/v1/discoveries/{runId}/feedback", withRole(viewer, feedback.List))
+	mux.HandleFunc("DELETE /api/v1/feedback/{id}", withRole(admin, feedback.Delete))
 
-	// Pricing
-	mux.HandleFunc("GET /api/v1/pricing", pricing.Get)
-	mux.HandleFunc("PUT /api/v1/pricing", pricing.Update)
+	// Pricing — viewer for read, admin for update
+	mux.HandleFunc("GET /api/v1/pricing", withRole(viewer, pricing.Get))
+	mux.HandleFunc("PUT /api/v1/pricing", withRole(admin, pricing.Update))
 
-	// Cost estimation
-	mux.HandleFunc("POST /api/v1/projects/{id}/discover/estimate", estimate.Estimate)
+	// Cost estimation — member
+	mux.HandleFunc("POST /api/v1/projects/{id}/discover/estimate", withRole(member, estimate.Estimate))
 
-	// Connection testing (runs agent subprocess with --test-connection)
-	mux.HandleFunc("POST /api/v1/projects/{id}/test/warehouse", testConn.TestWarehouse)
-	mux.HandleFunc("POST /api/v1/projects/{id}/test/llm", testConn.TestLLM)
+	// Connection testing — admin
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/warehouse", withRole(admin, testConn.TestWarehouse))
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/llm", withRole(admin, testConn.TestLLM))
 
-	// Secrets (per-project, no delete via API)
+	// Secrets — admin
 	if secretProvider != nil {
-		mux.HandleFunc("PUT /api/v1/projects/{id}/secrets/{key}", secretsHandler.Set)
-		mux.HandleFunc("GET /api/v1/projects/{id}/secrets", secretsHandler.List)
+		mux.HandleFunc("PUT /api/v1/projects/{id}/secrets/{key}", withRole(admin, secretsHandler.Set))
+		mux.HandleFunc("GET /api/v1/projects/{id}/secrets", withRole(admin, secretsHandler.List))
 	}
 
-	// Middleware chain: CORS → Logging → Router
-	return corsMiddleware(handler.LoggingMiddleware(mux))
+	// Middleware chain: CORS → Auth → Logging → Router
+	return corsMiddleware(authProvider.Middleware()(handler.LoggingMiddleware(mux)))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

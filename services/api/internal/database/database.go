@@ -77,9 +77,14 @@ func (r *ProjectRepository) GetByID(ctx context.Context, id string) (*models.Pro
 	return &p, nil
 }
 
-func (r *ProjectRepository) List(ctx context.Context, limit, offset int) ([]*models.Project, error) {
+func (r *ProjectRepository) List(ctx context.Context, orgID string, limit, offset int) ([]*models.Project, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+
+	filter := bson.M{}
+	if orgID != "" {
+		filter["org_id"] = orgID
 	}
 
 	opts := options.Find().
@@ -87,7 +92,7 @@ func (r *ProjectRepository) List(ctx context.Context, limit, offset int) ([]*mod
 		SetLimit(int64(limit)).
 		SetSkip(int64(offset))
 
-	cursor, err := r.col.Find(ctx, bson.M{}, opts)
+	cursor, err := r.col.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}

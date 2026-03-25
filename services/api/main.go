@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
@@ -109,8 +110,37 @@ func main() {
 		}).Info("Secret provider initialized")
 	}
 
+	// Auth provider
+	authChain, err := auth.NewChainProvider(ctx, auth.ChainConfig{
+		AuthEnabled: cfg.Auth.Enabled,
+		OIDCConfig: func() *auth.OIDCConfig {
+			if !cfg.Auth.Enabled {
+				return nil
+			}
+			return &auth.OIDCConfig{
+				IssuerURL:    cfg.Auth.IssuerURL,
+				Audience:     cfg.Auth.Audience,
+				ClaimSub:     cfg.Auth.ClaimSub,
+				ClaimEmail:   cfg.Auth.ClaimEmail,
+				ClaimOrgID:   cfg.Auth.ClaimOrgID,
+				ClaimRoles:   cfg.Auth.ClaimRoles,
+				DefaultOrgID: cfg.Auth.DefaultOrgID,
+				DefaultRole:  cfg.Auth.DefaultRole,
+			}
+		}(),
+	})
+	if err != nil {
+		apilog.WithError(err).Error("Failed to create auth provider")
+		os.Exit(1)
+	}
+	if cfg.Auth.Enabled {
+		apilog.WithField("issuer", cfg.Auth.IssuerURL).Info("Auth enabled (OIDC)")
+	} else {
+		apilog.Info("Auth disabled (NoAuth mode)")
+	}
+
 	// HTTP server
-	handler := server.New(db, healthHandler, secretProvider)
+	handler := server.New(db, healthHandler, secretProvider, authChain)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      handler,

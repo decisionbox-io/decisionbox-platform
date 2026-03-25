@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
@@ -40,6 +41,11 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set org_id from authenticated user
+	if user, ok := auth.FromContext(r.Context()); ok {
+		p.OrgID = user.OrgID
+	}
+
 	// Seed default prompts from domain pack
 	if p.Prompts == nil {
 		SeedProjectPrompts(&p)
@@ -69,7 +75,12 @@ func (h *ProjectsHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	projects, err := h.repo.List(r.Context(), limit, offset)
+	var orgID string
+	if user, ok := auth.FromContext(r.Context()); ok {
+		orgID = user.OrgID
+	}
+
+	projects, err := h.repo.List(r.Context(), orgID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list projects: "+err.Error())
 		return
@@ -97,6 +108,11 @@ func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user, ok := auth.FromContext(r.Context()); ok && p.OrgID != "" && p.OrgID != user.OrgID {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -109,6 +125,11 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.repo.GetByID(r.Context(), id)
 	if err != nil || existing == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if user, ok := auth.FromContext(r.Context()); ok && existing.OrgID != "" && existing.OrgID != user.OrgID {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
@@ -156,6 +177,17 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/v1/projects/{id}
 func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	existing, err := h.repo.GetByID(r.Context(), id)
+	if err != nil || existing == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if user, ok := auth.FromContext(r.Context()); ok && existing.OrgID != "" && existing.OrgID != user.OrgID {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
 
 	if err := h.repo.Delete(r.Context(), id); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to delete project")

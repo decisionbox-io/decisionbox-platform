@@ -5,6 +5,7 @@ import { DM_Sans } from 'next/font/google';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/dates/styles.css';
+import AuthProvider from '@/components/providers/AuthProvider';
 import '@/styles/tokens.css';
 
 const dmSans = DM_Sans({
@@ -40,10 +41,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ColorSchemeScript />
       </head>
       <body>
-        <MantineProvider theme={theme}>
-          <Notifications position="top-right" />
-          {children}
-        </MantineProvider>
+        <AuthProvider>
+          <MantineProvider theme={theme}>
+            <Notifications position="top-right" />
+            {children}
+          </MantineProvider>
+        </AuthProvider>
       </body>
     </html>
   );

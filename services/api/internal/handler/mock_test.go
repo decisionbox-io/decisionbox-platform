@@ -69,7 +69,7 @@ func (m *mockProjectRepo) GetByID(_ context.Context, id string) (*models.Project
 	return &cp, nil
 }
 
-func (m *mockProjectRepo) List(_ context.Context, limit, offset int) ([]*models.Project, error) {
+func (m *mockProjectRepo) List(_ context.Context, orgID string, limit, offset int) ([]*models.Project, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
@@ -77,6 +77,9 @@ func (m *mockProjectRepo) List(_ context.Context, limit, offset int) ([]*models.
 	defer m.mu.Unlock()
 	var result []*models.Project
 	for _, p := range m.projects {
+		if orgID != "" && p.OrgID != orgID {
+			continue
+		}
 		cp := *p
 		result = append(result, &cp)
 	}

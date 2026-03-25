@@ -501,9 +501,9 @@ func TestProjectsHandler_Delete_NotFound_MockRepo(t *testing.T) {
 
 	h.Delete(w, req)
 
-	// Delete handler returns 500 when repo returns an error for missing ID
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", w.Code)
+	// Delete handler returns 404 when project does not exist
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 

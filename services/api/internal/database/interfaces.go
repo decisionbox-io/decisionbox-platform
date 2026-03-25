@@ -11,7 +11,7 @@ import (
 type ProjectRepo interface {
 	Create(ctx context.Context, p *models.Project) error
 	GetByID(ctx context.Context, id string) (*models.Project, error)
-	List(ctx context.Context, limit, offset int) ([]*models.Project, error)
+	List(ctx context.Context, orgID string, limit, offset int) ([]*models.Project, error)
 	Update(ctx context.Context, id string, p *models.Project) error
 	Delete(ctx context.Context, id string) error
 }
