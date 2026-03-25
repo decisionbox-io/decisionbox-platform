@@ -354,9 +354,8 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 // Snowflake column type. The gosnowflake driver returns NUMBER, DECIMAL,
 // and FIXED columns as strings.
 func convertStringByType(val string, dbType string) interface{} {
-	dbType = strings.ToUpper(dbType)
-	switch {
-	case dbType == "FIXED" || dbType == "NUMBER" || dbType == "DECIMAL" || dbType == "NUMERIC":
+	switch strings.ToUpper(dbType) {
+	case "FIXED", "NUMBER", "DECIMAL", "NUMERIC":
 		// Try int64 first (whole numbers), fall back to float64 (decimals)
 		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
 			return i
@@ -365,7 +364,7 @@ func convertStringByType(val string, dbType string) interface{} {
 			return f
 		}
 		return val
-	case dbType == "REAL" || dbType == "FLOAT" || dbType == "DOUBLE":
+	case "REAL", "FLOAT", "DOUBLE":
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			return f
 		}

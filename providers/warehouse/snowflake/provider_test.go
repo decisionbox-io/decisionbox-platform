@@ -559,7 +559,7 @@ func TestListTablesDefaultSchema(t *testing.T) {
 
 	// ListTables should use the default schema
 	_, _ = p.ListTables(context.Background())
-	if mock.lastArgs == nil || len(mock.lastArgs) == 0 {
+	if len(mock.lastArgs) == 0 {
 		t.Error("expected query args to be set")
 	}
 }
