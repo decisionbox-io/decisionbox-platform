@@ -87,21 +87,26 @@ func init() {
 			ValidateDefaultParameters: sf.ConfigBoolFalse,
 		}
 
-		// Determine authentication method from credentials content.
-		if creds == "" {
-			return nil, fmt.Errorf("snowflake: credentials are required (password or PEM private key)")
-		}
-		{
-			if strings.Contains(creds, "PRIVATE KEY") {
-				key, err := parsePrivateKey(creds)
-				if err != nil {
-					return nil, fmt.Errorf("snowflake: failed to parse private key: %w", err)
-				}
-				sfConfig.Authenticator = sf.AuthTypeJwt
-				sfConfig.PrivateKey = key
-			} else {
-				sfConfig.Password = creds
+		// Apply authentication based on selected method.
+		authMethod := cfg["auth_method"]
+		switch authMethod {
+		case "key_pair":
+			if creds == "" {
+				return nil, fmt.Errorf("snowflake: PEM private key is required for key pair auth")
 			}
+			key, err := parsePrivateKey(creds)
+			if err != nil {
+				return nil, fmt.Errorf("snowflake: failed to parse private key: %w", err)
+			}
+			sfConfig.Authenticator = sf.AuthTypeJwt
+			sfConfig.PrivateKey = key
+		case "password", "":
+			if creds == "" {
+				return nil, fmt.Errorf("snowflake: password is required")
+			}
+			sfConfig.Password = creds
+		default:
+			return nil, fmt.Errorf("snowflake: unsupported auth method %q", authMethod)
 		}
 
 		connector := sf.NewConnector(sf.SnowflakeDriver{}, *sfConfig)
@@ -126,7 +131,21 @@ func init() {
 			{Key: "database", Label: "Database", Required: true, Type: "string"},
 			{Key: "dataset", Label: "Schema", Required: true, Type: "string", Default: "PUBLIC", Description: "Snowflake schema to explore."},
 			{Key: "role", Label: "Role", Type: "string", Placeholder: "ANALYST_ROLE", Description: "Snowflake role to use for the session."},
-			{Key: "credentials", Label: "Credentials", Required: true, Type: "credential", Description: "Password or PEM private key for key pair (JWT) authentication."},
+		},
+		AuthMethods: []gowarehouse.AuthMethod{
+			{
+				ID: "password", Name: "Username / Password",
+				Fields: []gowarehouse.ConfigField{
+					{Key: "credentials", Label: "Password", Required: true, Type: "credential"},
+				},
+			},
+			{
+				ID: "key_pair", Name: "Key Pair (JWT)",
+				Description: "RSA private key authentication — recommended for production.",
+				Fields: []gowarehouse.ConfigField{
+					{Key: "credentials", Label: "PEM Private Key", Required: true, Type: "credential", Placeholder: "-----BEGIN PRIVATE KEY-----"},
+				},
+			},
 		},
 		DefaultPricing: &gowarehouse.WarehousePricing{
 			CostModel:           "per_second",

@@ -622,8 +622,77 @@ func TestFactoryNoCredentials(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing credentials")
 	}
-	if !strings.Contains(err.Error(), "credentials") {
-		t.Errorf("error should mention 'credentials', got: %v", err)
+	if !strings.Contains(err.Error(), "password is required") {
+		t.Errorf("error should mention 'password is required', got: %v", err)
+	}
+}
+
+func TestFactoryKeyPairAuthMethod(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pkcs8, _ := x509.MarshalPKCS8PrivateKey(key)
+	pemStr := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}))
+
+	p, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+		"account":          "org-acct",
+		"user":             "test",
+		"warehouse":        "WH",
+		"database":         "DB",
+		"auth_method":      "key_pair",
+		"credentials_json": pemStr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer p.Close()
+}
+
+func TestFactoryKeyPairMissingKey(t *testing.T) {
+	_, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+		"account":     "org-acct",
+		"user":        "test",
+		"warehouse":   "WH",
+		"database":    "DB",
+		"auth_method": "key_pair",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing PEM key")
+	}
+	if !strings.Contains(err.Error(), "PEM private key is required") {
+		t.Errorf("error should mention PEM, got: %v", err)
+	}
+}
+
+func TestFactoryUnsupportedAuthMethod(t *testing.T) {
+	_, err := gowarehouse.NewProvider("snowflake", gowarehouse.ProviderConfig{
+		"account":     "org-acct",
+		"user":        "test",
+		"warehouse":   "WH",
+		"database":    "DB",
+		"auth_method": "oauth",
+		"password":    "pw",
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported auth method")
+	}
+	if !strings.Contains(err.Error(), "unsupported auth method") {
+		t.Errorf("error should mention unsupported, got: %v", err)
+	}
+}
+
+func TestRegisteredAuthMethods(t *testing.T) {
+	meta, _ := gowarehouse.GetProviderMeta("snowflake")
+	if len(meta.AuthMethods) != 2 {
+		t.Fatalf("expected 2 auth methods, got %d", len(meta.AuthMethods))
+	}
+	ids := map[string]bool{}
+	for _, m := range meta.AuthMethods {
+		ids[m.ID] = true
+	}
+	if !ids["password"] {
+		t.Error("missing 'password' auth method")
+	}
+	if !ids["key_pair"] {
+		t.Error("missing 'key_pair' auth method")
 	}
 }
 

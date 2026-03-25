@@ -231,6 +231,14 @@ export interface ProviderMeta {
   name: string;
   description: string;
   config_fields: ConfigField[];
+  auth_methods?: AuthMethod[];
+}
+
+export interface AuthMethod {
+  id: string;
+  name: string;
+  description: string;
+  fields: ConfigField[];
 }
 
 export interface ConfigField {

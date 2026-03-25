@@ -26,7 +26,19 @@ type ProviderMeta struct {
 	Name           string            `json:"name"`
 	Description    string            `json:"description"`
 	ConfigFields   []ConfigField     `json:"config_fields"`
+	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`
 	DefaultPricing *WarehousePricing  `json:"default_pricing,omitempty"`
+}
+
+// AuthMethod describes an authentication option for a warehouse provider.
+// Each provider declares its supported auth methods. The UI renders a
+// selector and shows auth-method-specific fields. The selected method ID
+// is stored in the project config as "auth_method".
+type AuthMethod struct {
+	ID          string        `json:"id"`          // e.g. "adc", "sa_key", "password", "assume_role"
+	Name        string        `json:"name"`        // display name: "Application Default Credentials"
+	Description string        `json:"description"` // help text
+	Fields      []ConfigField `json:"fields"`      // fields specific to this auth method
 }
 
 // ConfigField describes a single configuration field for a provider.

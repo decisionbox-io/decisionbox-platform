@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Snowflake warehouse provider** — Connect to Snowflake data warehouses with username/password or key pair (JWT) authentication. Supports all Snowflake data types including NUMBER, FLOAT, BOOLEAN, DATE, TIMESTAMP (NTZ/LTZ/TZ), VARIANT, OBJECT, ARRAY, and BINARY. Uses INFORMATION_SCHEMA for metadata queries (no full-table scans for row counts). Includes Snowflake-specific SQL fix prompt for AI error correction.
+- **Structured auth methods for warehouse providers** — Each warehouse provider declares its supported authentication methods via metadata. The dashboard renders an auth method selector with provider-specific fields. BigQuery supports ADC and Service Account Key. Redshift supports IAM Role, Access Keys, and Assume Role (with optional external ID for cross-account). Snowflake supports Username/Password and Key Pair (JWT).
 
 ## [0.1.0] - 2026-03-23
 

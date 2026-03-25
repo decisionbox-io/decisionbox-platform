@@ -29,6 +29,7 @@ export default function NewProjectPage() {
   const [category, setCategory] = useState('');
   const [warehouseProvider, setWarehouseProvider] = useState('');
   const [warehouseConfig, setWarehouseConfig] = useState<Record<string, string>>({});
+  const [warehouseAuthMethod, setWarehouseAuthMethod] = useState('');
   const [warehouseCredential, setWarehouseCredential] = useState('');
   const [filterField, setFilterField] = useState('');
   const [filterValue, setFilterValue] = useState('');
@@ -73,13 +74,16 @@ export default function NewProjectPage() {
   const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouseProvider);
   const selectedLLM = llmProviders.find((p) => p.id === llmProvider);
 
-  const whCredentialField = selectedWarehouse?.config_fields.find((f) => f.type === 'credential');
-  const whNeedsCredential = whCredentialField?.required ?? false;
+  const whAuthMethods = selectedWarehouse?.auth_methods || [];
+  const selectedAuthMethod = whAuthMethods.find((m) => m.id === warehouseAuthMethod);
+  const authCredentialField = selectedAuthMethod?.fields.find((f) => f.type === 'credential');
+  const authNeedsCredential = authCredentialField?.required ?? false;
+  const authConfigFields = selectedAuthMethod?.fields.filter((f) => f.type !== 'credential') || [];
   const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
 
   const canProceed = [
     () => name && domain && category,
-    () => warehouseProvider && warehouseConfig['dataset'] && (!whNeedsCredential || warehouseCredential),
+    () => warehouseProvider && warehouseConfig['dataset'] && (whAuthMethods.length === 0 || warehouseAuthMethod) && (!authNeedsCredential || warehouseCredential),
     () => llmProvider && llmConfig['model'] && (!llmNeedsApiKey || llmApiKey),
     () => true,
   ];
@@ -96,9 +100,12 @@ export default function NewProjectPage() {
           location: warehouseConfig['location'] || '',
           filter_field: filterField,
           filter_value: filterValue,
-          config: Object.fromEntries(
-            Object.entries(warehouseConfig).filter(([k]) => k !== 'project_id' && k !== 'location' && k !== 'dataset')
-          ),
+          config: {
+            ...Object.fromEntries(
+              Object.entries(warehouseConfig).filter(([k]) => k !== 'project_id' && k !== 'location' && k !== 'dataset')
+            ),
+            ...(warehouseAuthMethod ? { auth_method: warehouseAuthMethod } : {}),
+          },
         },
         llm: {
           provider: llmProvider,
@@ -167,40 +174,53 @@ export default function NewProjectPage() {
                       value={warehouseProvider}
                       onChange={(v) => {
                         setWarehouseProvider(v || '');
+                        setWarehouseAuthMethod('');
                         setWarehouseCredential('');
                         const prov = warehouseProviders.find((p) => p.id === v);
-                        if (prov) setWarehouseConfig(buildDefaults(prov.config_fields));
+                        if (prov) {
+                          setWarehouseConfig(buildDefaults(prov.config_fields));
+                          if (prov.auth_methods?.length === 1) setWarehouseAuthMethod(prov.auth_methods[0].id);
+                        }
                       }} />
                     {selectedWarehouse && (
                       <Text size="xs" c="dimmed">{selectedWarehouse.description}</Text>
                     )}
 
-                    {selectedWarehouse?.config_fields
-                      .filter((f) => f.type !== 'credential')
-                      .map((field) => (
-                        <DynamicField key={field.key} field={field}
-                          value={warehouseConfig[field.key] || ''}
-                          onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
-                      ))}
+                    {selectedWarehouse?.config_fields.map((field) => (
+                      <DynamicField key={field.key} field={field}
+                        value={warehouseConfig[field.key] || ''}
+                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                    ))}
 
-                    {whCredentialField && (
+                    {whAuthMethods.length > 0 && (
+                      <Select label="Authentication" required placeholder="Select auth method"
+                        data={whAuthMethods.map((m) => ({ value: m.id, label: m.name, description: m.description }))}
+                        value={warehouseAuthMethod}
+                        onChange={(v) => { setWarehouseAuthMethod(v || ''); setWarehouseCredential(''); }} />
+                    )}
+
+                    {selectedAuthMethod?.description && (
+                      <Text size="xs" c="dimmed">{selectedAuthMethod.description}</Text>
+                    )}
+
+                    {authConfigFields.map((field) => (
+                      <DynamicField key={field.key} field={field}
+                        value={warehouseConfig[field.key] || ''}
+                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                    ))}
+
+                    {authCredentialField && (
                       <Textarea
-                        label={whCredentialField.label}
-                        required={whCredentialField.required}
-                        placeholder={whCredentialField.placeholder}
-                        description={whCredentialField.description + ' Stored encrypted.'}
+                        label={authCredentialField.label}
+                        required={authCredentialField.required}
+                        placeholder={authCredentialField.placeholder}
+                        description={(authCredentialField.description || '') + ' Stored encrypted.'}
                         value={warehouseCredential}
                         onChange={(e) => setWarehouseCredential(e.target.value)}
                         minRows={3}
                         autosize
                         styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
                       />
-                    )}
-
-                    {!whCredentialField && selectedWarehouse && (
-                      <Text size="xs" c="dimmed">
-                        This provider uses cloud credentials (IAM / ADC). No credentials needed here.
-                      </Text>
                     )}
 
                     <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>

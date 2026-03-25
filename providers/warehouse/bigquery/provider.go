@@ -41,6 +41,19 @@ func init() {
 			{Key: "dataset", Label: "Datasets", Description: "Comma-separated dataset names", Required: true, Type: "string", Placeholder: "events_prod, features_prod"},
 			{Key: "location", Label: "Location", Type: "string", Default: "US", Placeholder: "US"},
 		},
+		AuthMethods: []gowarehouse.AuthMethod{
+			{
+				ID: "adc", Name: "Application Default Credentials",
+				Description: "Automatic — GKE Workload Identity, gcloud auth, VM service account. No credentials needed.",
+			},
+			{
+				ID: "sa_key", Name: "Service Account Key",
+				Description: "GCP service account JSON key. Also supports Workload Identity Federation credential configs.",
+				Fields: []gowarehouse.ConfigField{
+					{Key: "credentials", Label: "Service Account JSON", Required: true, Type: "credential"},
+				},
+			},
+		},
 		DefaultPricing: &gowarehouse.WarehousePricing{
 			CostModel:           "per_byte_scanned",
 			CostPerTBScannedUSD: 6.25,

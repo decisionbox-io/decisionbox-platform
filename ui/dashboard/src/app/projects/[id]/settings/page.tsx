@@ -181,12 +181,19 @@ export default function ProjectSettingsPage() {
             {selectedWh?.description && <Text size="xs" c="dimmed">{selectedWh.description}</Text>}
 
             {selectedWh?.config_fields
-              .filter((f) => f.key !== 'dataset' && f.type !== 'credential')
+              .filter((f) => f.key !== 'dataset')
               .map((field) => (
                 <DynamicField key={field.key} field={field}
                   value={whConfig[field.key] || ''}
                   onChange={(val) => { setWhConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
               ))}
+
+            {(selectedWh?.auth_methods?.length ?? 0) > 0 && (
+              <Select label="Authentication" size="xs"
+                data={selectedWh!.auth_methods!.map((m) => ({ value: m.id, label: m.name }))}
+                value={whConfig['auth_method'] || ''}
+                onChange={(v) => { setWhConfig((prev) => ({ ...prev, auth_method: v || '' })); setDirty(true); }} />
+            )}
 
             <TextInput label="Datasets" description="Comma-separated dataset names"
               placeholder="events_prod, features_prod"

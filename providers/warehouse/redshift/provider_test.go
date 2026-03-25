@@ -371,3 +371,88 @@ func TestMock_Query_EmptyColumns(t *testing.T) {
 		t.Errorf("rows = %d, want 0", len(result.Rows))
 	}
 }
+
+// --- Auth method tests ---
+
+func TestRegisteredAuthMethods(t *testing.T) {
+	meta, _ := gowarehouse.GetProviderMeta("redshift")
+	if len(meta.AuthMethods) != 3 {
+		t.Fatalf("expected 3 auth methods, got %d", len(meta.AuthMethods))
+	}
+	ids := map[string]bool{}
+	for _, m := range meta.AuthMethods {
+		ids[m.ID] = true
+	}
+	for _, id := range []string{"iam_role", "access_keys", "assume_role"} {
+		if !ids[id] {
+			t.Errorf("missing %q auth method", id)
+		}
+	}
+}
+
+func TestLoadAWSConfig_AccessKeys(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method":      "access_keys",
+		"credentials_json": "AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}
+	awsCfg, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	creds, err := awsCfg.Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("failed to retrieve credentials: %v", err)
+	}
+	if creds.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("access key = %q, want AKIAIOSFODNN7EXAMPLE", creds.AccessKeyID)
+	}
+}
+
+func TestLoadAWSConfig_AccessKeysInvalidFormat(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method":      "access_keys",
+		"credentials_json": "no-colon-separator",
+	}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+}
+
+func TestLoadAWSConfig_AccessKeysMissing(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "access_keys",
+	}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err == nil {
+		t.Fatal("expected error for missing credentials")
+	}
+}
+
+func TestLoadAWSConfig_AssumeRoleMissingARN(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "assume_role",
+	}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err == nil {
+		t.Fatal("expected error for missing role ARN")
+	}
+}
+
+func TestLoadAWSConfig_IAMRoleDefault(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadAWSConfig_UnsupportedMethod(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "oauth",
+	}
+	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported auth method")
+	}
+}

@@ -179,6 +179,26 @@ func TestBigQueryProvider_GetDataset(t *testing.T) {
 	}
 }
 
+func TestRegisteredAuthMethods(t *testing.T) {
+	meta, ok := gowarehouse.GetProviderMeta("bigquery")
+	if !ok {
+		t.Fatal("bigquery not registered")
+	}
+	if len(meta.AuthMethods) != 2 {
+		t.Fatalf("expected 2 auth methods, got %d", len(meta.AuthMethods))
+	}
+	ids := map[string]bool{}
+	for _, m := range meta.AuthMethods {
+		ids[m.ID] = true
+	}
+	if !ids["adc"] {
+		t.Error("missing 'adc' auth method")
+	}
+	if !ids["sa_key"] {
+		t.Error("missing 'sa_key' auth method")
+	}
+}
+
 func bqContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {

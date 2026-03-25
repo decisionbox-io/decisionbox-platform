@@ -96,11 +96,11 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 
 **Purpose:** Execute SQL queries against a data warehouse (read-only).
 
-| Provider | ID | Auth | SQL Dialect |
-|----------|----|------|-------------|
-| Google BigQuery | `bigquery` | GCP ADC or SA key | BigQuery Standard SQL |
-| Amazon Redshift | `redshift` | AWS credentials | PostgreSQL-compatible |
-| Snowflake | `snowflake` | Password or key pair (JWT) | Snowflake SQL |
+| Provider | ID | Auth Methods | SQL Dialect |
+|----------|----|-------------|-------------|
+| Google BigQuery | `bigquery` | ADC, Service Account Key | BigQuery Standard SQL |
+| Amazon Redshift | `redshift` | IAM Role, Access Keys, Assume Role | PostgreSQL-compatible |
+| Snowflake | `snowflake` | Password, Key Pair (JWT) | Snowflake SQL |
 
 **Location:** `providers/warehouse/{provider-name}/`
 
