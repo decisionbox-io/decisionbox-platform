@@ -128,7 +128,7 @@ Outside AWS: Uses `~/.aws/credentials` or environment variables.
 **During project creation:** If you select an LLM provider that requires an API key (Claude, OpenAI), the wizard asks for it in the AI step.
 The key is saved as an encrypted secret immediately after the project is created.
 
-**After project creation:** Go to project **Settings → Secrets** tab to update the LLM API key.
+**After project creation:** Go to project **Settings → AI Provider** tab to update the API key, or **Settings → Data Warehouse** tab to update warehouse credentials.
 
 ### Setting Secrets (API)
 

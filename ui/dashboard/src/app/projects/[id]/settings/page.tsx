@@ -195,7 +195,19 @@ export default function ProjectSettingsPage() {
                   key={`auth-${whProvider}`}
                   data={selectedWh!.auth_methods!.map((m) => ({ value: m.id, label: m.name }))}
                   value={whConfig['auth_method'] || ''}
-                  onChange={(v) => { setWhConfig((prev) => ({ ...prev, auth_method: v || '' })); setDirty(true); }} />
+                  onChange={(v) => {
+                    // Clear stale keys from previous auth method
+                    const allAuthKeys: string[] = [];
+                    for (const m of selectedWh!.auth_methods!) {
+                      for (const f of (m.fields || [])) { allAuthKeys.push(f.key); }
+                    }
+                    setWhConfig((prev) => {
+                      const next: Record<string, string> = { ...prev, auth_method: v || '' };
+                      for (const k of allAuthKeys) { delete next[k]; }
+                      return next;
+                    });
+                    setDirty(true);
+                  }} />
                 {(() => {
                   const am = selectedWh!.auth_methods!.find((m) => m.id === whConfig['auth_method']);
                   if (!am) return null;
