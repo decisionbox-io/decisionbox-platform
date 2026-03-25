@@ -7,7 +7,7 @@ import {
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconCheck, IconDatabase, IconKey, IconPlus, IconPlugConnected, IconSettings, IconShieldCheck, IconX } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconDatabase, IconPlus, IconPlugConnected, IconSettings, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
@@ -39,7 +39,9 @@ export default function ProjectSettingsPage() {
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
   const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
   const [newSecretValue, setNewSecretValue] = useState('');
+  const [newWhCredential, setNewWhCredential] = useState('');
   const [savingSecret, setSavingSecret] = useState(false);
+  const [savingWhCredential, setSavingWhCredential] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -156,7 +158,6 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
           <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
-          <Tabs.Tab value="secrets">Secrets</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
         </Tabs.List>
@@ -189,10 +190,71 @@ export default function ProjectSettingsPage() {
               ))}
 
             {(selectedWh?.auth_methods?.length ?? 0) > 0 && (
-              <Select label="Authentication" size="xs"
-                data={selectedWh!.auth_methods!.map((m) => ({ value: m.id, label: m.name }))}
-                value={whConfig['auth_method'] || ''}
-                onChange={(v) => { setWhConfig((prev) => ({ ...prev, auth_method: v || '' })); setDirty(true); }} />
+              <>
+                <Select label="Authentication" size="xs"
+                  key={`auth-${whProvider}`}
+                  data={selectedWh!.auth_methods!.map((m) => ({ value: m.id, label: m.name }))}
+                  value={whConfig['auth_method'] || ''}
+                  onChange={(v) => { setWhConfig((prev) => ({ ...prev, auth_method: v || '' })); setDirty(true); }} />
+                {(() => {
+                  const am = selectedWh!.auth_methods!.find((m) => m.id === whConfig['auth_method']);
+                  if (!am) return null;
+                  const fields = am.fields || [];
+                  const configFields = fields.filter((f) => f.type !== 'credential');
+                  const credField = fields.find((f) => f.type === 'credential');
+                  return (
+                    <>
+                      {am.description && <Text size="xs" c="dimmed">{am.description}</Text>}
+                      {configFields.map((field) => (
+                        <DynamicField key={field.key} field={field}
+                          value={whConfig[field.key] || ''}
+                          onChange={(val) => { setWhConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
+                      ))}
+                      {credField && (
+                        <>
+                          {secretsList.some((s) => s.key === 'warehouse-credentials') && (
+                            <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
+                              <Group gap="xs">
+                                <IconShieldCheck size={14} color="var(--db-green-text)" />
+                                <Text size="xs" fw={500}>{credField.label} saved</Text>
+                                <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                                  {secretsList.find((s) => s.key === 'warehouse-credentials')?.masked}
+                                </Text>
+                              </Group>
+                            </div>
+                          )}
+                          <Textarea size="xs"
+                            label={`Update ${credField.label}`}
+                            placeholder={credField.placeholder || `Enter ${credField.label.toLowerCase()}`}
+                            description={(credField.description || '') + ' Stored encrypted. Leave empty to keep current.'}
+                            value={newWhCredential}
+                            onChange={(e) => setNewWhCredential(e.target.value)}
+                            minRows={2} autosize
+                            styles={{ input: { fontFamily: 'monospace', fontSize: '12px' } }}
+                          />
+                          <Button size="xs" loading={savingWhCredential} disabled={!newWhCredential}
+                            onClick={async () => {
+                              setSavingWhCredential(true);
+                              try {
+                                await api.setSecret(id, 'warehouse-credentials', newWhCredential);
+                                setNewWhCredential('');
+                                notifications.show({ title: 'Saved', message: 'Warehouse credentials updated', color: 'green' });
+                                const updated = await api.listSecrets(id);
+                                setSecretsList(updated || []);
+                              } catch (e: unknown) {
+                                notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                              } finally {
+                                setSavingWhCredential(false);
+                              }
+                            }}>
+                            Update Credential
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
+              </>
             )}
 
             <TextInput label="Datasets" description="Comma-separated dataset names"
@@ -235,59 +297,51 @@ export default function ProjectSettingsPage() {
                   onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
               ))}
 
-            <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
-          </SettingsSection>
-        </Tabs.Panel>
-
-        {/* Secrets */}
-        <Tabs.Panel value="secrets">
-          <SettingsSection>
-            <Text size="xs" c="dimmed" mb="md">
-              API keys are stored encrypted and never exposed in full. Per-project — each project has its own keys.
-            </Text>
-
-            {secretsList.length > 0 && (
-              <Stack gap="xs" mb="md">
-                {secretsList.map((s) => (
-                  <div key={s.key} style={{
-                    borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8,
-                  }}>
-                    <Group justify="space-between">
-                      <Group gap="xs">
-                        <IconShieldCheck size={14} color={s.warning ? 'var(--db-amber-text)' : 'var(--db-green-text)'} />
-                        <Text size="sm" fw={500}>{s.key}</Text>
-                      </Group>
-                      <Text size="xs" c="dimmed" style={{ fontFamily: 'SF Mono, Fira Code, monospace' }}>{s.masked}</Text>
+            {selectedLlm?.config_fields.some((f) => f.key === 'api_key') && (
+              <>
+                {secretsList.some((s) => s.key === 'llm-api-key') && (
+                  <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
+                    <Group gap="xs">
+                      <IconShieldCheck size={14} color="var(--db-green-text)" />
+                      <Text size="xs" fw={500}>API Key saved</Text>
+                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                        {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
+                      </Text>
                     </Group>
-                    {s.warning && <Text size="xs" c="orange" mt={4}>{s.warning}</Text>}
                   </div>
-                ))}
-              </Stack>
+                )}
+                <Group gap="xs" align="end">
+                  <TextInput label="Update API Key" size="xs" style={{ flex: 1 }}
+                    placeholder="Enter new API key" value={newSecretValue}
+                    onChange={(e) => setNewSecretValue(e.target.value)}
+                    type="password"
+                    description="Stored encrypted. Leave empty to keep current." />
+                  <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
+                    onClick={async () => {
+                      setSavingSecret(true);
+                      try {
+                        await api.setSecret(id, 'llm-api-key', newSecretValue);
+                        setNewSecretValue('');
+                        notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
+                        const updated = await api.listSecrets(id);
+                        setSecretsList(updated || []);
+                      } catch (e: unknown) {
+                        notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                      } finally {
+                        setSavingSecret(false);
+                      }
+                    }}>
+                    Update Key
+                  </Button>
+                </Group>
+              </>
             )}
 
-            <Group gap="xs" align="end">
-              <TextInput label="LLM API Key" size="xs" style={{ flex: 1 }}
-                placeholder="Enter API key" value={newSecretValue}
-                onChange={(e) => setNewSecretValue(e.target.value)}
-                type="password" />
-              <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
-                onClick={async () => {
-                  setSavingSecret(true);
-                  try {
-                    await api.setSecret(id, 'llm-api-key', newSecretValue);
-                    setNewSecretValue('');
-                    notifications.show({ title: 'Saved', message: 'LLM API key saved', color: 'green' });
-                    const updated = await api.listSecrets(id);
-                    setSecretsList(updated || []);
-                  } catch (e: unknown) {
-                    notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                  } finally {
-                    setSavingSecret(false);
-                  }
-                }}>
-                Save Secret
-              </Button>
-            </Group>
+            {!selectedLlm?.config_fields.some((f) => f.key === 'api_key') && selectedLlm && (
+              <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
+            )}
+
+            <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
           </SettingsSection>
         </Tabs.Panel>
 
