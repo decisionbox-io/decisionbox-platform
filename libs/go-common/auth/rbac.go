@@ -26,12 +26,12 @@ func RequireRole(minRole string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := FromContext(r.Context())
 			if !ok {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 
 			if !hasMinRole(user.Roles, minLevel) {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				writeJSONError(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
 

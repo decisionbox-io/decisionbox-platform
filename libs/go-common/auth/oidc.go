@@ -111,13 +111,13 @@ func (p *OIDCProvider) Middleware() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := extractBearerToken(r)
 			if token == "" {
-				http.Error(w, "missing authorization token", http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "missing authorization token")
 				return
 			}
 
 			user, err := p.ValidateToken(r.Context(), token)
 			if err != nil {
-				http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
 				return
 			}
 

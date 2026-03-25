@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 )
 
@@ -33,4 +34,11 @@ func WithUser(ctx context.Context, user *UserPrincipal) context.Context {
 type Provider interface {
 	ValidateToken(ctx context.Context, token string) (*UserPrincipal, error)
 	Middleware() func(http.Handler) http.Handler
+}
+
+// writeJSONError writes a JSON error response matching the API's error format.
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

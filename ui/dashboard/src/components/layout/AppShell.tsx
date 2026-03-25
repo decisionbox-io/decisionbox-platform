@@ -295,7 +295,12 @@ function UserMenu() {
           </div>
         </div>
         <button
-          onClick={() => signOut({ callbackUrl: '/login' })}
+          onClick={async () => {
+            await signOut({ redirect: false });
+            // Redirect to IdP logout to clear IdP session, then back to /login
+            const idpLogoutUrl = `/api/auth/logout`;
+            window.location.href = idpLogoutUrl;
+          }}
           title="Sign out"
           style={{
             background: 'none',
