@@ -697,12 +697,14 @@ func TestAuthMethodFields(t *testing.T) {
 
 	if pwMethod == nil {
 		t.Fatal("missing password auth method")
+		return
 	}
 	if len(pwMethod.Fields) != 1 || pwMethod.Fields[0].Type != "credential" {
 		t.Error("password method should have 1 credential field")
 	}
 	if kpMethod == nil {
 		t.Fatal("missing key_pair auth method")
+		return
 	}
 	if len(kpMethod.Fields) != 1 || kpMethod.Fields[0].Type != "credential" {
 		t.Error("key_pair method should have 1 credential field")
