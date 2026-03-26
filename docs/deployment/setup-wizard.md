@@ -20,7 +20,7 @@ cd terraform
 | `--resume` | Resume from Helm deploy — skips Terraform, reloads config from existing `terraform.tfvars` |
 | `--destroy` | Tear down everything — Helm releases, K8s namespace, Terraform resources |
 
-## 9-Step Flow
+## 10-Step Flow
 
 ### Step 1: Prerequisites
 
@@ -47,7 +47,23 @@ Choose between:
 - **Cloud Secret Manager** (GCP Secret Manager or AWS Secrets Manager) — recommended for production
 - **MongoDB encrypted secrets** — uses AES-256 encryption with `SECRET_ENCRYPTION_KEY`
 
-### Step 4: Cloud Provider Settings
+### Step 4: Authentication (OIDC)
+
+Configure OIDC authentication for the platform.
+Skip this step (set to `false`) for development or internal deployments without auth.
+
+When enabled, prompts for:
+- OIDC issuer URL (e.g., `https://your-tenant.auth0.com/`)
+- JWT audience (API identifier or client ID)
+- Dashboard OIDC client ID and secret
+- Token type: `access_token` (Auth0, Okta, Entra ID, Keycloak) or `id_token` (Google)
+- IdP logout URL (for federated logout)
+- Claim mapping: JWT claim names for roles and org ID
+- Default role and org ID for tokens without claims
+
+See [Configuring Authentication](../guides/configuring-authentication.md) for IdP-specific setup guides.
+
+### Step 5: Cloud Provider Settings
 
 **GCP:**
 - Project ID (validated against GCP naming rules)
@@ -65,7 +81,7 @@ Choose between:
 - Node group: instance type, min/max/desired nodes (numeric validation)
 - Redshift IAM (optional)
 
-### Step 5: Authentication
+### Step 6: Cloud Authentication
 
 **GCP** — choose how Terraform authenticates:
 
@@ -79,7 +95,7 @@ Choose between:
 - **Environment variables:** Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 - Verifies identity via `aws sts get-caller-identity`.
 
-### Step 6: Terraform State
+### Step 7: Terraform State
 
 **GCP:** Configure a GCS bucket for remote state:
 - Bucket name (default: `{project-id}-terraform-state`)
@@ -92,11 +108,11 @@ Choose between:
 - Auto-creates the bucket with versioning if it doesn't exist
 - Uses S3-native locking (`use_lockfile=true`, Terraform 1.10+)
 
-### Step 7: Review
+### Step 8: Review
 
 Displays all collected configuration for review before proceeding. Type `back` to change any value.
 
-### Step 8: Generate Config Files
+### Step 9: Generate Config Files
 
 Generates two files:
 
@@ -132,7 +148,7 @@ env:
   SECRET_PROVIDER: "mongodb"
 ```
 
-### Step 9: Terraform & Deploy
+### Step 10: Terraform & Deploy
 
 1. **Terraform init** — initializes with remote backend (spinner + elapsed time)
 2. **Terraform plan** — shows changes, prompts for approval
@@ -144,7 +160,7 @@ env:
 
 ## Navigation
 
-Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-7 support back navigation. Steps 8-9 are sequential.
+Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-8 support back navigation. Steps 9-10 are sequential.
 
 ## Resume Mode
 
@@ -203,9 +219,10 @@ Destroy mode:
 | File | Gitignored | Purpose |
 |------|-----------|---------|
 | `terraform/{gcp,aws}/prod/terraform.tfvars` | Yes | Terraform input variables |
-| `helm-charts/decisionbox-api/values-secrets.yaml` | Yes | Helm values with secret provider config |
+| `helm-charts/decisionbox-api/values-secrets.yaml` | Yes | Helm values with secret provider + auth config |
+| `helm-charts/decisionbox-dashboard/values-auth.yaml` | Yes | Helm values with dashboard OIDC credentials (only when auth enabled) |
 
-Both files are gitignored to prevent committing environment-specific values.
+All files are gitignored to prevent committing environment-specific values and secrets.
 
 ## Next Steps
 
