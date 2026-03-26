@@ -170,6 +170,100 @@ func TestValidate_ValidURI(t *testing.T) {
 	}
 }
 
+// --- Auth config validation ---
+
+func TestLoad_AuthEnabled_RequiresIssuerURL(t *testing.T) {
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_AUDIENCE", "my-api")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() should return error when AUTH_ENABLED=true and AUTH_ISSUER_URL is missing")
+	}
+	if err.Error() != "AUTH_ISSUER_URL is required when AUTH_ENABLED=true" {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestLoad_AuthEnabled_RequiresAudience(t *testing.T) {
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_ISSUER_URL", "https://example.auth0.com/")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() should return error when AUTH_ENABLED=true and AUTH_AUDIENCE is missing")
+	}
+	if err.Error() != "AUTH_AUDIENCE is required when AUTH_ENABLED=true" {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestLoad_AuthEnabled_Valid(t *testing.T) {
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_ISSUER_URL", "https://example.auth0.com/")
+	t.Setenv("AUTH_AUDIENCE", "my-api")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Auth.Enabled {
+		t.Error("Auth.Enabled should be true")
+	}
+	if cfg.Auth.IssuerURL != "https://example.auth0.com/" {
+		t.Errorf("Auth.IssuerURL = %q", cfg.Auth.IssuerURL)
+	}
+	if cfg.Auth.Audience != "my-api" {
+		t.Errorf("Auth.Audience = %q", cfg.Auth.Audience)
+	}
+}
+
+func TestLoad_AuthDisabled_NoValidation(t *testing.T) {
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	// AUTH_ENABLED defaults to false — no auth env vars needed
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Auth.Enabled {
+		t.Error("Auth.Enabled should be false by default")
+	}
+}
+
+func TestLoad_AuthDefaults(t *testing.T) {
+	t.Setenv("MONGODB_URI", "mongodb://localhost:27017")
+	t.Setenv("AUTH_ENABLED", "true")
+	t.Setenv("AUTH_ISSUER_URL", "https://example.auth0.com/")
+	t.Setenv("AUTH_AUDIENCE", "my-api")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Auth.ClaimSub != "sub" {
+		t.Errorf("Auth.ClaimSub = %q, want default %q", cfg.Auth.ClaimSub, "sub")
+	}
+	if cfg.Auth.ClaimEmail != "email" {
+		t.Errorf("Auth.ClaimEmail = %q, want default %q", cfg.Auth.ClaimEmail, "email")
+	}
+	if cfg.Auth.ClaimOrgID != "org_id" {
+		t.Errorf("Auth.ClaimOrgID = %q, want default %q", cfg.Auth.ClaimOrgID, "org_id")
+	}
+	if cfg.Auth.ClaimRoles != "roles" {
+		t.Errorf("Auth.ClaimRoles = %q, want default %q", cfg.Auth.ClaimRoles, "roles")
+	}
+	if cfg.Auth.DefaultOrgID != "default" {
+		t.Errorf("Auth.DefaultOrgID = %q, want default %q", cfg.Auth.DefaultOrgID, "default")
+	}
+	if cfg.Auth.DefaultRole != "member" {
+		t.Errorf("Auth.DefaultRole = %q, want default %q", cfg.Auth.DefaultRole, "member")
+	}
+}
+
 func TestConfig_StructFields(t *testing.T) {
 	cfg := Config{
 		Service: ServiceConfig{
