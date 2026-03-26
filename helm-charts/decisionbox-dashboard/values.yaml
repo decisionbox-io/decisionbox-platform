@@ -19,6 +19,17 @@ containerPort: 3000
 
 env:
   API_URL: "http://decisionbox-api-service:8080"
+  # Authentication — set AUTH_ENABLED=true and configure OIDC to enable.
+  # See docs/guides/configuring-authentication.md for IdP-specific setup.
+  AUTH_ENABLED: "false"
+  # AUTH_ISSUER_URL: "https://your-tenant.auth0.com/"
+  # AUTH_CLIENT_ID: ""
+  # AUTH_CLIENT_SECRET: ""
+  # AUTH_AUDIENCE: ""
+  # AUTH_TOKEN_TYPE: "access_token"
+  # AUTH_LOGOUT_URL: ""
+  # NEXTAUTH_URL: "https://dashboard.example.com"
+  # NEXTAUTH_SECRET: ""   # Generate with: openssl rand -base64 32
 
 securityContext:
   runAsNonRoot: true

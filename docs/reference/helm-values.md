@@ -52,6 +52,13 @@ Source code for the charts is in `helm-charts/`.
 | `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |
 | `env.AGENT_SERVICE_ACCOUNT` | string | `decisionbox-agent` | K8s service account for agent Jobs (Workload Identity) |
 | `env.AGENT_JOB_TIMEOUT_HOURS` | string | `6` | Max time to watch agent Jobs |
+| `env.AUTH_ENABLED` | string | `false` | Enable OIDC authentication |
+| `env.AUTH_ISSUER_URL` | string | — | OIDC issuer URL (required when auth enabled) |
+| `env.AUTH_AUDIENCE` | string | — | Expected JWT audience (required when auth enabled) |
+| `env.AUTH_CLAIM_ROLES` | string | `roles` | JWT claim name for roles |
+| `env.AUTH_CLAIM_ORG_ID` | string | `org_id` | JWT claim name for organization |
+| `env.AUTH_DEFAULT_ROLE` | string | `member` | Default role when claim absent |
+| `env.AUTH_DEFAULT_ORG_ID` | string | `default` | Default org when claim absent |
 | `extraEnv` | list | `[]` | Additional env vars as `{name, value}` pairs |
 | `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`) |
 
@@ -152,8 +159,19 @@ For production, set `mongodb.enabled=false` and provide `env.MONGODB_URI` pointi
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `env.API_URL` | string | `http://decisionbox-api-service:8080` | API service URL (internal) |
+| `env.AUTH_ENABLED` | string | `false` | Enable OIDC authentication (must match API) |
+| `env.AUTH_ISSUER_URL` | string | — | OIDC issuer URL (same as API) |
+| `env.AUTH_CLIENT_ID` | string | — | OIDC client ID for the dashboard |
+| `env.AUTH_CLIENT_SECRET` | string | — | OIDC client secret (use `extraEnvFrom` with a K8s Secret) |
+| `env.AUTH_AUDIENCE` | string | — | API audience (for access_token flow) |
+| `env.AUTH_TOKEN_TYPE` | string | `access_token` | Token type: `access_token` or `id_token` |
+| `env.AUTH_LOGOUT_URL` | string | — | IdP logout endpoint for federated logout |
+| `env.NEXTAUTH_URL` | string | — | Dashboard public URL (for OAuth callbacks) |
+| `env.NEXTAUTH_SECRET` | string | — | Session encryption key (use `extraEnvFrom` with a K8s Secret) |
 
 The dashboard proxies `/api/*` requests to the API URL. This must point to the API's ClusterIP service.
+
+For authentication setup, see [Configuring Authentication](../guides/configuring-authentication.md).
 
 ### Resources
 

@@ -39,6 +39,15 @@ env:
   AGENT_NAMESPACE: "decisionbox"
   AGENT_SERVICE_ACCOUNT: "decisionbox-agent"
   AGENT_JOB_TIMEOUT_HOURS: "6"
+  # Authentication — set AUTH_ENABLED=true and configure OIDC to enable.
+  # See docs/guides/configuring-authentication.md for IdP-specific setup.
+  AUTH_ENABLED: "false"
+  # AUTH_ISSUER_URL: "https://your-tenant.auth0.com/"
+  # AUTH_AUDIENCE: "your-api-identifier"
+  # AUTH_CLAIM_ROLES: "roles"
+  # AUTH_CLAIM_ORG_ID: "org_id"
+  # AUTH_DEFAULT_ROLE: "member"
+  # AUTH_DEFAULT_ORG_ID: "default"
 
 extraEnv: {}
 
