@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { auth, signOut } from '@/lib/auth';
 import { cookies } from 'next/headers';
 
 // Logout route — clears the local session and redirects to IdP logout
