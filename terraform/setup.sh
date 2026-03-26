@@ -16,7 +16,7 @@ RESUME=false
 DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 
 # ─── Parse arguments ─────────────────────────────────────────────────────────
 
@@ -37,12 +37,13 @@ for arg in "$@"; do
       echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
       echo "  2. Select cloud provider"
       echo "  3. Configure secrets"
-      echo "  4. Configure cloud provider settings"
-      echo "  5. Authenticate with cloud provider (user or service account)"
-      echo "  6. Set up Terraform state backend"
-      echo "  7. Review configuration"
-      echo "  8. Generate Terraform variables and Helm values"
-      echo "  9. Run terraform init, plan, apply + deploy via Helm"
+      echo "  4. Configure authentication (OIDC)"
+      echo "  5. Configure cloud provider settings"
+      echo "  6. Authenticate with cloud provider (user or service account)"
+      echo "  7. Set up Terraform state backend"
+      echo "  8. Review configuration"
+      echo "  9. Generate Terraform variables and Helm values"
+      echo "  10. Run terraform init, plan, apply + deploy via Helm"
       echo ""
       echo "Type 'back' at any prompt to return to the previous step."
       echo ""
@@ -306,9 +307,65 @@ do_step_3_secrets() {
   ok "Cloud secret manager: ${BOLD}${ENABLE_SECRETS}${NC}"
 }
 
-do_step_4_provider_config() {
+do_step_4_authentication_config() {
+  step_header 4 "$TOTAL_STEPS" "Authentication (OIDC)"
+
+  info "DecisionBox supports OIDC authentication with any identity provider."
+  dim "Auth0, Okta, Entra ID, Google, Keycloak, AWS Cognito, etc."
+  dim "Skip this step to run without authentication (NoAuth mode)."
+  echo ""
+
+  prompt_boolean AUTH_ENABLED "Enable OIDC authentication?" "${AUTH_ENABLED:-false}" || return 1
+
+  if [[ "$AUTH_ENABLED" == "true" ]]; then
+    echo ""
+    info "Configure your OIDC identity provider."
+    dim "See docs/guides/configuring-authentication.md for IdP-specific setup."
+    echo ""
+
+    prompt AUTH_ISSUER_URL "OIDC issuer URL (e.g., https://your-tenant.auth0.com/)" "${AUTH_ISSUER_URL:-}" || return 1
+    prompt AUTH_AUDIENCE "JWT audience (API identifier or client ID)" "${AUTH_AUDIENCE:-}" || return 1
+
+    echo ""
+    info "Dashboard OIDC client credentials:"
+    prompt AUTH_CLIENT_ID "OIDC client ID" "${AUTH_CLIENT_ID:-}" || return 1
+    prompt AUTH_CLIENT_SECRET "OIDC client secret" "${AUTH_CLIENT_SECRET:-}" || return 1
+
+    echo ""
+    echo -e "  ${BOLD}1)${NC} access_token  — Auth0, Okta, Entra ID, Keycloak ${DIM}(default)${NC}"
+    echo -e "  ${BOLD}2)${NC} id_token      — Google ${DIM}(opaque access tokens)${NC}"
+    echo ""
+    prompt_choice AUTH_TOKEN_CHOICE "Token type" "1" "1 2 access_token id_token" || return 1
+    case "$AUTH_TOKEN_CHOICE" in
+      1|access_token) AUTH_TOKEN_TYPE="access_token" ;;
+      2|id_token) AUTH_TOKEN_TYPE="id_token" ;;
+    esac
+
+    echo ""
+    prompt AUTH_LOGOUT_URL "IdP logout URL (leave empty to skip)" "${AUTH_LOGOUT_URL:-none}" || return 1
+    [[ "$AUTH_LOGOUT_URL" == "none" ]] && AUTH_LOGOUT_URL=""
+
+    echo ""
+    info "Claim mapping (press Enter for defaults):"
+    prompt AUTH_CLAIM_ROLES "JWT claim for roles" "${AUTH_CLAIM_ROLES:-roles}" || return 1
+    prompt AUTH_CLAIM_ORG_ID "JWT claim for org ID" "${AUTH_CLAIM_ORG_ID:-org_id}" || return 1
+    prompt AUTH_DEFAULT_ROLE "Default role (when claim absent)" "${AUTH_DEFAULT_ROLE:-member}" || return 1
+    prompt AUTH_DEFAULT_ORG_ID "Default org ID (when claim absent)" "${AUTH_DEFAULT_ORG_ID:-default}" || return 1
+
+    echo ""
+    ok "Authentication: ${BOLD}enabled${NC} (${AUTH_ISSUER_URL})"
+  else
+    AUTH_ISSUER_URL="" AUTH_AUDIENCE="" AUTH_CLIENT_ID="" AUTH_CLIENT_SECRET=""
+    AUTH_TOKEN_TYPE="access_token" AUTH_LOGOUT_URL=""
+    AUTH_CLAIM_ROLES="roles" AUTH_CLAIM_ORG_ID="org_id"
+    AUTH_DEFAULT_ROLE="member" AUTH_DEFAULT_ORG_ID="default"
+    ok "Authentication: ${BOLD}disabled${NC} (NoAuth mode)"
+  fi
+}
+
+do_step_5_provider_config() {
   if [[ "$CLOUD" == "gcp" ]]; then
-    step_header 4 "$TOTAL_STEPS" "GCP Configuration"
+    step_header 5 "$TOTAL_STEPS" "GCP Configuration"
 
     TF_DIR="${SCRIPT_DIR}/gcp/prod"
 
@@ -339,7 +396,7 @@ do_step_4_provider_config() {
     prompt_boolean VERTEX_AI_IAM "Enable Vertex AI IAM for LLM access (Claude via Vertex, Gemini)?" "${VERTEX_AI_IAM:-false}" || return 1
 
   elif [[ "$CLOUD" == "aws" ]]; then
-    step_header 4 "$TOTAL_STEPS" "AWS Configuration"
+    step_header 5 "$TOTAL_STEPS" "AWS Configuration"
 
     TF_DIR="${SCRIPT_DIR}/aws/prod"
 
@@ -370,9 +427,9 @@ do_step_4_provider_config() {
   fi
 }
 
-do_step_5_authentication() {
+do_step_6_cloud_auth() {
   if [[ "$CLOUD" == "aws" ]]; then
-    step_header 5 "$TOTAL_STEPS" "AWS Authentication"
+    step_header 6 "$TOTAL_STEPS" "AWS Authentication"
 
     info "Terraform needs AWS credentials. Choose how to authenticate:"
     echo ""
@@ -420,7 +477,7 @@ do_step_5_authentication() {
 
   if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
 
-  step_header 5 "$TOTAL_STEPS" "GCP Authentication"
+  step_header 6 "$TOTAL_STEPS" "GCP Authentication"
 
   info "Terraform needs GCP credentials. Choose how to authenticate:"
   echo ""
@@ -502,8 +559,8 @@ do_step_5_authentication() {
   fi
 }
 
-do_step_6_terraform_state() {
-  step_header 6 "$TOTAL_STEPS" "Terraform State"
+do_step_7_terraform_state() {
+  step_header 7 "$TOTAL_STEPS" "Terraform State"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
@@ -560,12 +617,17 @@ do_step_6_terraform_state() {
   fi
 }
 
-do_step_7_review() {
-  step_header 7 "$TOTAL_STEPS" "Review Configuration"
+do_step_8_review() {
+  step_header 8 "$TOTAL_STEPS" "Review Configuration"
 
   echo -e "  ${BOLD}Cloud:${NC}              $(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
   echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
   echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
+  echo -e "  ${BOLD}Authentication:${NC}     ${AUTH_ENABLED}"
+  if [[ "$AUTH_ENABLED" == "true" ]]; then
+    echo -e "  ${BOLD}OIDC issuer:${NC}        ${AUTH_ISSUER_URL}"
+    echo -e "  ${BOLD}Token type:${NC}         ${AUTH_TOKEN_TYPE}"
+  fi
   echo ""
 
   if [[ "$CLOUD" == "gcp" ]]; then
@@ -604,8 +666,8 @@ do_step_7_review() {
   fi
 }
 
-do_step_8_generate() {
-  step_header 8 "$TOTAL_STEPS" "Generate Config Files"
+do_step_9_generate() {
+  step_header 9 "$TOTAL_STEPS" "Generate Config Files"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     TFVARS_FILE="${TF_DIR}/terraform.tfvars"
@@ -687,6 +749,19 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+EOF
+    fi
+
+    # Append auth env vars to API values
+    if [[ "$AUTH_ENABLED" == "true" ]]; then
+      cat >> "$HELM_VALUES" <<EOF
+  AUTH_ENABLED: "true"
+  AUTH_ISSUER_URL: "${AUTH_ISSUER_URL}"
+  AUTH_AUDIENCE: "${AUTH_AUDIENCE}"
+  AUTH_CLAIM_ROLES: "${AUTH_CLAIM_ROLES}"
+  AUTH_CLAIM_ORG_ID: "${AUTH_CLAIM_ORG_ID}"
+  AUTH_DEFAULT_ROLE: "${AUTH_DEFAULT_ROLE}"
+  AUTH_DEFAULT_ORG_ID: "${AUTH_DEFAULT_ORG_ID}"
 EOF
     fi
 
@@ -777,7 +852,40 @@ env:
 EOF
     fi
 
+    # Append auth env vars to API values
+    if [[ "$AUTH_ENABLED" == "true" ]]; then
+      cat >> "$HELM_VALUES" <<EOF
+  AUTH_ENABLED: "true"
+  AUTH_ISSUER_URL: "${AUTH_ISSUER_URL}"
+  AUTH_AUDIENCE: "${AUTH_AUDIENCE}"
+  AUTH_CLAIM_ROLES: "${AUTH_CLAIM_ROLES}"
+  AUTH_CLAIM_ORG_ID: "${AUTH_CLAIM_ORG_ID}"
+  AUTH_DEFAULT_ROLE: "${AUTH_DEFAULT_ROLE}"
+  AUTH_DEFAULT_ORG_ID: "${AUTH_DEFAULT_ORG_ID}"
+EOF
+    fi
+
     ok "Generated ${HELM_VALUES}"
+  fi
+
+  # Generate dashboard auth values if auth is enabled
+  if [[ "$AUTH_ENABLED" == "true" ]]; then
+    DASH_AUTH_VALUES="${SCRIPT_DIR}/../helm-charts/decisionbox-dashboard/values-auth.yaml"
+    NEXTAUTH_SECRET=$(openssl rand -base64 32)
+    cat > "$DASH_AUTH_VALUES" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+env:
+  AUTH_ENABLED: "true"
+  AUTH_ISSUER_URL: "${AUTH_ISSUER_URL}"
+  AUTH_CLIENT_ID: "${AUTH_CLIENT_ID}"
+  AUTH_CLIENT_SECRET: "${AUTH_CLIENT_SECRET}"
+  AUTH_AUDIENCE: "${AUTH_AUDIENCE}"
+  AUTH_TOKEN_TYPE: "${AUTH_TOKEN_TYPE}"
+  AUTH_LOGOUT_URL: "${AUTH_LOGOUT_URL}"
+  NEXTAUTH_SECRET: "${NEXTAUTH_SECRET}"
+EOF
+    ok "Generated ${DASH_AUTH_VALUES}"
   fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -881,6 +989,10 @@ do_helm_deploy() {
   # Deploy Dashboard
   spinner_start "Deploying Dashboard..."
   DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
+  DASH_AUTH_VALUES="${DASH_DIR}/values-auth.yaml"
+  if [[ -f "$DASH_AUTH_VALUES" ]]; then
+    DASH_ARGS+=(-f "$DASH_AUTH_VALUES")
+  fi
   if [[ "$CLOUD" == "aws" ]]; then
     DASH_ARGS+=(
       --set "ingress.ingressClassName=alb"
@@ -1003,8 +1115,8 @@ wait_for_ingress_and_show_result() {
   fi
 }
 
-do_step_9_deploy() {
-  step_header 9 "$TOTAL_STEPS" "Terraform & Deploy"
+do_step_10_deploy() {
+  step_header 10 "$TOTAL_STEPS" "Terraform & Deploy"
 
   cd "$TF_DIR"
   dim "Working directory: ${TF_DIR}"
@@ -1453,6 +1565,13 @@ if [[ "$RESUME" == "true" ]]; then
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
   echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+
+  # Check for auth config in API values
+  AUTH_CONFIGURED="false"
+  if [[ -f "$HELM_VALUES" ]] && grep -q "AUTH_ENABLED.*true" "$HELM_VALUES" 2>/dev/null; then
+    AUTH_CONFIGURED="true"
+  fi
+  echo -e "  ${BOLD}Auth:${NC}        ${AUTH_CONFIGURED}"
   echo ""
 
   # Check prerequisites
@@ -1553,15 +1672,16 @@ do_step_1_prerequisites
 
 CURRENT_STEP=2
 
-while [[ "$CURRENT_STEP" -le 7 ]]; do
+while [[ "$CURRENT_STEP" -le 8 ]]; do
   STEP_RC=0
   case "$CURRENT_STEP" in
     2) do_step_2_cloud_provider || STEP_RC=$? ;;
     3) do_step_3_secrets || STEP_RC=$? ;;
-    4) do_step_4_provider_config || STEP_RC=$? ;;
-    5) do_step_5_authentication || STEP_RC=$? ;;
-    6) do_step_6_terraform_state || STEP_RC=$? ;;
-    7) do_step_7_review || STEP_RC=$? ;;
+    4) do_step_4_authentication_config || STEP_RC=$? ;;
+    5) do_step_5_provider_config || STEP_RC=$? ;;
+    6) do_step_6_cloud_auth || STEP_RC=$? ;;
+    7) do_step_7_terraform_state || STEP_RC=$? ;;
+    8) do_step_8_review || STEP_RC=$? ;;
   esac
 
   if [[ "$GO_BACK" == "true" ]]; then
@@ -1576,5 +1696,5 @@ while [[ "$CURRENT_STEP" -le 7 ]]; do
   fi
 done
 
-do_step_8_generate
-do_step_9_deploy
+do_step_9_generate
+do_step_10_deploy
