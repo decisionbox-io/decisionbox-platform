@@ -291,6 +291,12 @@ jobs:
           mkdir -p "$COV"
           cd providers/secrets/mongodb && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/secrets-mongodb-integ.txt" ./...
 
+      - name: Auth integration tests (Keycloak testcontainer)
+        run: |
+          COV="${GITHUB_WORKSPACE}/coverage"
+          mkdir -p "$COV"
+          cd libs/go-common && go test -tags=integration_auth -count=1 -timeout=5m -coverprofile="$COV/auth-integ.txt" ./auth/
+
       - name: Merge integration coverage profiles
         run: |
           echo "mode: set" > coverage/coverage.txt
