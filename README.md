@@ -55,6 +55,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Cost estimation** — Estimate LLM + warehouse costs before running
 - **Live progress** — Watch the agent explore in real-time with step-by-step updates
 - **Editable prompts** — Customize all AI prompts per-project from the dashboard
+- **Authentication & RBAC** — OIDC single sign-on with any identity provider, role-based access control (viewer/member/admin)
 - **Extensible** — Add your own domain packs, LLM providers, warehouse providers via plugin architecture
 
 ## Use Cases

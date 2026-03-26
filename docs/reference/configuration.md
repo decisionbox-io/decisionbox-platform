@@ -127,6 +127,20 @@ The API spawns the agent for each discovery run. Two modes:
 | `ENV` | `dev` | Environment (`dev` or `prod`). |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_ENABLED` | `false` | Enable OIDC authentication. When `false`, all requests are granted admin access (NoAuth mode for development). |
+| `AUTH_ISSUER_URL` | *(required when enabled)* | OIDC issuer URL. Auto-discovers endpoints via `.well-known/openid-configuration`. Examples: `https://your-tenant.auth0.com/`, `https://accounts.google.com`, `https://login.microsoftonline.com/{tenant}/v2.0` |
+| `AUTH_AUDIENCE` | *(required when enabled)* | Expected JWT audience claim. For access_token flow: the API identifier (e.g., `my-api`). For id_token flow: the OIDC client ID. |
+| `AUTH_CLAIM_SUB` | `sub` | JWT claim name for user subject identifier. |
+| `AUTH_CLAIM_EMAIL` | `email` | JWT claim name for user email. |
+| `AUTH_CLAIM_ORG_ID` | `org_id` | JWT claim name for organization ID. Auth0 uses namespaced claims (e.g., `https://example.com/org_id`). |
+| `AUTH_CLAIM_ROLES` | `roles` | JWT claim name for user roles. Auth0 uses namespaced claims (e.g., `https://example.com/roles`). |
+| `AUTH_DEFAULT_ORG_ID` | `default` | Fallback organization ID when the JWT has no org claim. |
+| `AUTH_DEFAULT_ROLE` | `member` | Fallback role when the JWT has no roles claim. |
+
 ---
 
 ## Dashboard
@@ -140,6 +154,20 @@ The dashboard (`decisionbox-dashboard`) is a Next.js application that proxies AP
 | `HOSTNAME` | `0.0.0.0` | Bind address. `0.0.0.0` = all interfaces. `127.0.0.1` = localhost only. |
 
 **Important:** `API_URL` is a runtime variable read by Next.js middleware on each request. It is NOT baked at build time. This means a single Docker image works across all environments — just change the environment variable.
+
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_ENABLED` | `false` | Enable OIDC authentication in the dashboard. Must match the API setting. |
+| `AUTH_ISSUER_URL` | *(required when enabled)* | OIDC issuer URL. Same as the API. |
+| `AUTH_CLIENT_ID` | *(required when enabled)* | OIDC client ID for the dashboard application. |
+| `AUTH_CLIENT_SECRET` | *(required when enabled)* | OIDC client secret. |
+| `AUTH_AUDIENCE` | *(empty)* | API audience. Required for access_token flow (Auth0, Okta). Not needed for id_token flow (Google). |
+| `AUTH_TOKEN_TYPE` | `access_token` | Which token to send to the API. `access_token` for Auth0/Okta/Entra ID/Keycloak. `id_token` for Google. |
+| `AUTH_LOGOUT_URL` | *(empty)* | IdP logout endpoint URL for federated logout. Examples: `https://tenant.auth0.com/v2/logout`, `https://org.okta.com/oauth2/v1/logout`. |
+| `NEXTAUTH_URL` | `http://localhost:3000` | Dashboard public URL. Used for OAuth callbacks. |
+| `NEXTAUTH_SECRET` | *(required when enabled)* | Random secret for session encryption. Generate with `openssl rand -base64 32`. |
 
 ---
 
