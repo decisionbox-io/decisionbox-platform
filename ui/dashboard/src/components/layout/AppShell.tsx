@@ -295,11 +295,11 @@ function UserMenu() {
           </div>
         </div>
         <button
-          onClick={async () => {
-            await signOut({ redirect: false });
-            // Redirect to IdP logout to clear IdP session, then back to /login
-            const idpLogoutUrl = `/api/auth/logout`;
-            window.location.href = idpLogoutUrl;
+          onClick={() => {
+            // Redirect to IdP logout to clear both IdP and local sessions.
+            // The /api/auth/logout route clears the NextAuth session server-side
+            // then redirects to the IdP logout endpoint.
+            window.location.href = '/api/auth/logout';
           }}
           title="Sign out"
           style={{

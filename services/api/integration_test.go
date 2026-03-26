@@ -887,8 +887,19 @@ func TestInteg_Feedback_Validation(t *testing.T) {
 }
 
 func TestInteg_Feedback_ExplorationStep(t *testing.T) {
+	// Create a project for feedback submission (project_id is required)
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "feedback-step-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
 	// exploration_step is a valid target type
-	resp := doRequest(t, "POST", "/api/v1/discoveries/test-step-run/feedback", map[string]interface{}{
+	resp = doRequest(t, "POST", "/api/v1/discoveries/test-step-run/feedback", map[string]interface{}{
+		"project_id":  projectID,
 		"target_type": "exploration_step",
 		"target_id":   "3",
 		"rating":      "like",
@@ -899,7 +910,7 @@ func TestInteg_Feedback_ExplorationStep(t *testing.T) {
 
 	// Verify it's stored
 	resp = doRequest(t, "GET", "/api/v1/discoveries/test-step-run/feedback", nil)
-	r := decodeResponse(t, resp)
+	r = decodeResponse(t, resp)
 	items := r.Data.([]interface{})
 	found := false
 	for _, item := range items {

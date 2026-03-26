@@ -77,7 +77,7 @@ func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 		apilog.WithFields(apilog.Fields{
 			"project_id": projectID, "error": errMsg,
 		}).Error("Cost estimation failed")
-		writeError(w, http.StatusInternalServerError, errMsg)
+		writeError(w, http.StatusInternalServerError, "estimation failed")
 		return
 	}
 
@@ -90,7 +90,7 @@ func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 
 	var estimate models.CostEstimate
 	if err := json.Unmarshal(jsonBytes, &estimate); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to parse estimate: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to parse estimate")
 		return
 	}
 

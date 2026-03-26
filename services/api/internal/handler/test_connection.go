@@ -96,7 +96,7 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"error":   "failed to parse agent result: " + err.Error(),
+			"error":   "failed to parse agent result",
 		})
 		return
 	}

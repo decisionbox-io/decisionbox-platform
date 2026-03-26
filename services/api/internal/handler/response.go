@@ -45,7 +45,12 @@ func getProjectWithOrgCheck(w http.ResponseWriter, r *http.Request, repo databas
 		writeError(w, http.StatusNotFound, "project not found")
 		return nil
 	}
-	if user, ok := auth.FromContext(r.Context()); ok && p.OrgID != user.OrgID {
+	user, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return nil
+	}
+	if p.OrgID != user.OrgID {
 		writeError(w, http.StatusNotFound, "project not found")
 		return nil
 	}

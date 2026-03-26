@@ -44,7 +44,7 @@ func (h *DiscoveriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	results, err := h.repo.List(r.Context(), projectID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list discoveries: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to list discoveries")
 		return
 	}
 
@@ -58,7 +58,7 @@ func (h *DiscoveriesHandler) GetDiscoveryByID(w http.ResponseWriter, r *http.Req
 
 	result, err := h.repo.GetByID(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get discovery: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get discovery")
 		return
 	}
 	if result == nil {
@@ -85,7 +85,7 @@ func (h *DiscoveriesHandler) GetLatest(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.repo.GetLatest(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get discovery: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get discovery")
 		return
 	}
 	if result == nil {
@@ -114,7 +114,7 @@ func (h *DiscoveriesHandler) GetByDate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.repo.GetByDate(r.Context(), projectID, date)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get discovery: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get discovery")
 		return
 	}
 	if result == nil {
@@ -155,7 +155,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	// Create a run record
 	runID, err := h.runRepo.Create(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create run: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create run")
 		return
 	}
 
@@ -229,7 +229,7 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.runRepo.GetByID(r.Context(), runID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get run")
 		return
 	}
 	if run == nil {
@@ -252,7 +252,7 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.runRepo.GetByID(r.Context(), runID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get run")
 		return
 	}
 	if run == nil {

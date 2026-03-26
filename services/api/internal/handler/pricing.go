@@ -72,7 +72,7 @@ func NewPricingHandler(repo database.PricingRepo) *PricingHandler {
 func (h *PricingHandler) Get(w http.ResponseWriter, r *http.Request) {
 	pricing, err := h.repo.Get(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get pricing: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get pricing")
 		return
 	}
 	if pricing == nil {
@@ -90,12 +90,12 @@ func (h *PricingHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *PricingHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var pricing models.Pricing
 	if err := decodeJSON(r, &pricing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
 	if err := h.repo.Save(r.Context(), &pricing); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save pricing: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to save pricing")
 		return
 	}
 

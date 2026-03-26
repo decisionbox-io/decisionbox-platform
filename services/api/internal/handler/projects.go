@@ -24,7 +24,7 @@ func NewProjectsHandler(repo database.ProjectRepo) *ProjectsHandler {
 func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var p models.Project
 	if err := decodeJSON(r, &p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -56,7 +56,7 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.repo.Create(r.Context(), &p); err != nil {
 		apilog.WithError(err).Error("Failed to create project")
-		writeError(w, http.StatusInternalServerError, "failed to create project: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create project")
 		return
 	}
 
@@ -121,7 +121,7 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var incoming models.Project
 	if err := decodeJSON(r, &incoming); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -150,7 +150,7 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
-		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to update project")
 		return
 	}
 
@@ -169,7 +169,7 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.repo.Delete(r.Context(), id); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to delete project")
-		writeError(w, http.StatusInternalServerError, "failed to delete project: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to delete project")
 		return
 	}
 

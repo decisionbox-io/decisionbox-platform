@@ -36,6 +36,11 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "project_id is required")
+		return
+	}
+
 	if body.TargetType == "" || body.TargetID == "" || body.Rating == "" {
 		writeError(w, http.StatusBadRequest, "target_type, target_id, and rating are required")
 		return
@@ -52,10 +57,8 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify project belongs to user's org
-	if body.ProjectID != "" && h.projectRepo != nil {
-		if getProjectWithOrgCheck(w, r, h.projectRepo, body.ProjectID) == nil {
-			return
-		}
+	if getProjectWithOrgCheck(w, r, h.projectRepo, body.ProjectID) == nil {
+		return
 	}
 
 	fb := &models.Feedback{
@@ -70,7 +73,7 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.repo.Upsert(r.Context(), fb)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save feedback: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to save feedback")
 		return
 	}
 
@@ -84,8 +87,15 @@ func (h *FeedbackHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.repo.ListByDiscovery(r.Context(), runID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list feedback: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to list feedback")
 		return
+	}
+
+	// Verify org ownership via the first result's project
+	if len(results) > 0 && results[0].ProjectID != "" {
+		if getProjectWithOrgCheck(w, r, h.projectRepo, results[0].ProjectID) == nil {
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, results)
@@ -96,8 +106,25 @@ func (h *FeedbackHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *FeedbackHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	// Fetch feedback to verify org ownership via its project
+	fb, err := h.repo.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get feedback")
+		return
+	}
+	if fb == nil {
+		writeError(w, http.StatusNotFound, "feedback not found")
+		return
+	}
+
+	if fb.ProjectID != "" {
+		if getProjectWithOrgCheck(w, r, h.projectRepo, fb.ProjectID) == nil {
+			return
+		}
+	}
+
 	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete feedback: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to delete feedback")
 		return
 	}
 

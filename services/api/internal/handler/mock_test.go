@@ -369,6 +369,18 @@ func newMockFeedbackRepo() *mockFeedbackRepo {
 	return &mockFeedbackRepo{}
 }
 
+func (m *mockFeedbackRepo) GetByID(_ context.Context, id string) (*models.Feedback, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, fb := range m.items {
+		if fb.ID == id {
+			cp := *fb
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *mockFeedbackRepo) Upsert(_ context.Context, fb *models.Feedback) (*models.Feedback, error) {
 	if m.upsertErr != nil {
 		return nil, m.upsertErr

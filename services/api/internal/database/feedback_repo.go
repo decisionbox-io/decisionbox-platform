@@ -63,6 +63,22 @@ func (r *FeedbackRepository) Upsert(ctx context.Context, fb *models.Feedback) (*
 	return fb, nil
 }
 
+// GetByID returns a single feedback entry by its ID.
+func (r *FeedbackRepository) GetByID(ctx context.Context, id string) (*models.Feedback, error) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, nil
+	}
+	var fb models.Feedback
+	if err := r.col.FindOne(ctx, bson.M{"_id": oid}).Decode(&fb); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find feedback: %w", err)
+	}
+	return &fb, nil
+}
+
 // ListByDiscovery returns all feedback for a discovery run.
 func (r *FeedbackRepository) ListByDiscovery(ctx context.Context, discoveryID string) ([]*models.Feedback, error) {
 	cursor, err := r.col.Find(ctx, bson.M{"discovery_id": discoveryID})

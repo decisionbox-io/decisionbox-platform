@@ -37,6 +37,7 @@ type RunRepo interface {
 // FeedbackRepo abstracts feedback operations for handler unit testing.
 type FeedbackRepo interface {
 	Upsert(ctx context.Context, fb *models.Feedback) (*models.Feedback, error)
+	GetByID(ctx context.Context, id string) (*models.Feedback, error)
 	ListByDiscovery(ctx context.Context, discoveryID string) ([]*models.Feedback, error)
 	Delete(ctx context.Context, id string) error
 }

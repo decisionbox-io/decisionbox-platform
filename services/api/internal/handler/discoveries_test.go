@@ -89,7 +89,7 @@ func TestDiscoveriesHandler_List_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
 	// Create a project
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	// Add discoveries
@@ -109,6 +109,7 @@ func TestDiscoveriesHandler_List_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/discoveries", nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -272,7 +273,7 @@ func TestDiscoveriesHandler_GetDiscoveryByID_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
 	// Project must exist for org-scoping check
-	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
 
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-abc",
@@ -286,6 +287,7 @@ func TestDiscoveriesHandler_GetDiscoveryByID_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-abc", nil)
 	req.SetPathValue("id", "disc-abc")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetDiscoveryByID(w, req)
@@ -326,7 +328,7 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
 	// Create a project
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	// Add a run
@@ -349,6 +351,7 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetStatus(w, req)
@@ -399,11 +402,12 @@ func TestDiscoveriesHandler_GetStatus_NoRunsOrDiscoveries_MockRepo(t *testing.T)
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetStatus(w, req)
@@ -430,13 +434,14 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
 		strings.NewReader(`{"areas":["churn"],"max_steps":50}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.TriggerDiscovery(w, req)
@@ -492,7 +497,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	// Add a running run for this project
@@ -506,6 +511,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.TriggerDiscovery(w, req)
@@ -533,11 +539,12 @@ func TestDiscoveriesHandler_TriggerDiscovery_RunnerFails_MockRepo(t *testing.T) 
 	mockRun.runErr = fmt.Errorf("binary not found")
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.TriggerDiscovery(w, req)
@@ -566,7 +573,7 @@ func TestDiscoveriesHandler_GetRun_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
-	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
 
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-abc",
@@ -579,6 +586,7 @@ func TestDiscoveriesHandler_GetRun_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/runs/run-abc", nil)
 	req.SetPathValue("runId", "run-abc")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetRun(w, req)
@@ -622,7 +630,7 @@ func TestDiscoveriesHandler_CancelRun_Success_MockRepo(t *testing.T) {
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
-	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
 
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-to-cancel",
@@ -634,6 +642,7 @@ func TestDiscoveriesHandler_CancelRun_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-to-cancel", nil)
 	req.SetPathValue("runId", "run-to-cancel")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.CancelRun(w, req)
@@ -687,7 +696,7 @@ func TestDiscoveriesHandler_CancelRun_NotActive_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
-	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
 
 	// Add a completed run
 	now := time.Now()
@@ -702,6 +711,7 @@ func TestDiscoveriesHandler_CancelRun_NotActive_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-done", nil)
 	req.SetPathValue("runId", "run-done")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.CancelRun(w, req)
@@ -724,7 +734,7 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
 
-	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
 
 	// Pending runs should also be cancellable
 	runRepo.addRun(&models.DiscoveryRun{
@@ -737,6 +747,7 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-pending", nil)
 	req.SetPathValue("runId", "run-pending")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.CancelRun(w, req)

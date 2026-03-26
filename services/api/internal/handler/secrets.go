@@ -32,7 +32,7 @@ func (h *SecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if body.Value == "" {
@@ -44,7 +44,7 @@ func (h *SecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 		apilog.WithFields(apilog.Fields{
 			"project_id": projectID, "key": key, "error": err.Error(),
 		}).Error("Failed to set secret")
-		writeError(w, http.StatusInternalServerError, "failed to set secret: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to set secret")
 		return
 	}
 
@@ -73,7 +73,7 @@ func (h *SecretsHandler) List(w http.ResponseWriter, r *http.Request) {
 		apilog.WithFields(apilog.Fields{
 			"project_id": projectID, "error": err.Error(),
 		}).Error("Failed to list secrets")
-		writeError(w, http.StatusInternalServerError, "failed to list secrets: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to list secrets")
 		return
 	}
 

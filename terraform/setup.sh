@@ -781,7 +781,8 @@ EOF
 EOF
     fi
 
-    ok "Generated ${HELM_VALUES}"
+    chmod 600 "$HELM_VALUES"
+    ok "Generated ${HELM_VALUES} (mode 600)"
 
   elif [[ "$CLOUD" == "aws" ]]; then
     TFVARS_FILE="${TF_DIR}/terraform.tfvars"
@@ -881,7 +882,8 @@ EOF
 EOF
     fi
 
-    ok "Generated ${HELM_VALUES}"
+    chmod 600 "$HELM_VALUES"
+    ok "Generated ${HELM_VALUES} (mode 600)"
   fi
 
   # Generate dashboard auth values if auth is enabled

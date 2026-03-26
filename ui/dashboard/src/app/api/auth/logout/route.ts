@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { auth, signOut } from '@/lib/auth';
+import { cookies } from 'next/headers';
 
-// Logout route — redirects to IdP logout endpoint to clear the IdP session.
-// Without this, the IdP retains its session cookie and automatically
-// re-authenticates the user on the next sign-in attempt.
+// Logout route — clears the local session and redirects to IdP logout
+// endpoint to clear the IdP session. Without IdP logout, the IdP retains
+// its session cookie and automatically re-authenticates the user.
 //
 // Configure via AUTH_LOGOUT_URL — the full IdP logout endpoint:
 //   Auth0:    https://your-tenant.auth0.com/v2/logout
@@ -17,12 +18,15 @@ export async function GET() {
   const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
   const returnTo = `${baseUrl}/login`;
 
-  // Verify the user has an active session before redirecting to IdP logout
-  const session = await auth();
-  if (!session) {
-    return NextResponse.redirect(returnTo);
-  }
+  // Clear the NextAuth session cookie
+  const cookieStore = await cookies();
+  cookieStore.getAll().forEach((cookie) => {
+    if (cookie.name.startsWith('authjs.') || cookie.name.startsWith('__Secure-authjs.')) {
+      cookieStore.delete(cookie.name);
+    }
+  });
 
+  // Redirect to IdP logout to clear the IdP session
   const logoutUrl = process.env.AUTH_LOGOUT_URL;
   if (logoutUrl) {
     const clientId = process.env.AUTH_CLIENT_ID || '';

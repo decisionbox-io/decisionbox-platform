@@ -88,14 +88,14 @@ func UpdatePrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 
 		var prompts models.ProjectPrompts
 		if err := decodeJSON(r, &prompts); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			writeError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
 
 		// Update via project repo
 		p.Prompts = &prompts
 		if err := projectRepo.Update(r.Context(), id, p); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update prompts: "+err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to update prompts")
 			return
 		}
 

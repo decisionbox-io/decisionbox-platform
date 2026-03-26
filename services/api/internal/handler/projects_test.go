@@ -213,8 +213,8 @@ func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 
 	var resp APIResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if !strings.Contains(resp.Error, "database connection failed") {
-		t.Errorf("error = %q, should contain repo error message", resp.Error)
+	if !strings.Contains(resp.Error, "failed to create project") {
+		t.Errorf("error = %q, want generic error message", resp.Error)
 	}
 }
 
@@ -300,11 +300,12 @@ func TestProjectsHandler_Get_Success_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	// Create a project
-	p := &models.Project{Name: "My Project", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "My Project", Domain: "gaming", Category: "match3", OrgID: "default"}
 	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Get(w, req)
@@ -367,9 +368,10 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 
 	// Create a project first
 	p := &models.Project{
-		Name:     "Original Name",
-		Domain:   "gaming",
-		Category: "match3",
+		Name:      "Original Name",
+		Domain:    "gaming",
+		Category:  "match3",
+		OrgID:     "default",
 		Warehouse: models.WarehouseConfig{Provider: "bigquery"},
 	}
 	repo.Create(context.Background(), p)
@@ -379,6 +381,7 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Update(w, req)
@@ -429,12 +432,13 @@ func TestProjectsHandler_Update_InvalidJSON_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	// Create a project so GetByID succeeds
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(`not json`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Update(w, req)
@@ -449,7 +453,7 @@ func TestProjectsHandler_Update_RepoError_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	// Create a project, then inject an update error
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	repo.Create(context.Background(), p)
 	repo.updateErr = fmt.Errorf("write conflict")
 
@@ -457,6 +461,7 @@ func TestProjectsHandler_Update_RepoError_MockRepo(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Update(w, req)
@@ -471,11 +476,12 @@ func TestProjectsHandler_Delete_Success_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	// Create a project
-	p := &models.Project{Name: "To Delete", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "To Delete", Domain: "gaming", Category: "match3", OrgID: "default"}
 	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Delete(w, req)
@@ -520,11 +526,12 @@ func TestProjectsHandler_Delete_RepoError_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	// Create a project — the deleteErr will override
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", OrgID: "default"}
 	repo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/"+p.ID, nil)
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Delete(w, req)
@@ -543,6 +550,7 @@ func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 		Name:      "Test Project",
 		Domain:    "gaming",
 		Category:  "match3",
+		OrgID:     "default",
 		Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"events"}},
 		LLM:       models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4"},
 	}
@@ -553,6 +561,7 @@ func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", p.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Update(w, req)

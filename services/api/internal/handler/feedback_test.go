@@ -119,12 +119,15 @@ func TestFeedbackHandler_Submit_EmptyTargetID(t *testing.T) {
 
 func TestFeedbackHandler_Submit_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like","comment":"great insight"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Submit(w, req)
@@ -157,13 +160,16 @@ func TestFeedbackHandler_Submit_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Submit_Upsert_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	// Submit initial feedback
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 	h.Submit(w, req)
 
@@ -176,6 +182,7 @@ func TestFeedbackHandler_Submit_Upsert_MockRepo(t *testing.T) {
 	req = httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w = httptest.NewRecorder()
 	h.Submit(w, req)
 
@@ -194,12 +201,15 @@ func TestFeedbackHandler_Submit_Upsert_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Submit_RecommendationType_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	body := `{"project_id":"proj-1","target_type":"recommendation","target_id":"r-0","rating":"dislike"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Submit(w, req)
@@ -212,12 +222,15 @@ func TestFeedbackHandler_Submit_RecommendationType_MockRepo(t *testing.T) {
 func TestFeedbackHandler_Submit_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.upsertErr = fmt.Errorf("write conflict")
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Submit(w, req)
@@ -229,22 +242,27 @@ func TestFeedbackHandler_Submit_RepoError_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	// Add some feedback items
 	repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID:   "proj-1",
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",
 		Rating:      "like",
 	})
 	repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID:   "proj-1",
 		DiscoveryID: "disc-1",
 		TargetType:  "recommendation",
 		TargetID:    "r-0",
 		Rating:      "dislike",
 	})
 	repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID:   "proj-1",
 		DiscoveryID: "disc-2",
 		TargetType:  "insight",
 		TargetID:    "i-1",
@@ -253,6 +271,7 @@ func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-1/feedback", nil)
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -274,10 +293,13 @@ func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_List_Empty_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-no-feedback/feedback", nil)
 	req.SetPathValue("runId", "disc-no-feedback")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -290,10 +312,13 @@ func TestFeedbackHandler_List_Empty_MockRepo(t *testing.T) {
 func TestFeedbackHandler_List_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.listErr = fmt.Errorf("database error")
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-1/feedback", nil)
 	req.SetPathValue("runId", "disc-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -305,10 +330,13 @@ func TestFeedbackHandler_List_RepoError_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	// Create a feedback item
 	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID:   "proj-1",
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",
@@ -317,6 +345,7 @@ func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/feedback/"+fb.ID, nil)
 	req.SetPathValue("id", fb.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Delete(w, req)
@@ -340,26 +369,32 @@ func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Delete_NotFound_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/feedback/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Delete(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 (repo returns error for missing)", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 
 func TestFeedbackHandler_Delete_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.deleteErr = fmt.Errorf("permission denied")
-	h := NewFeedbackHandler(repo, nil)
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+	h := NewFeedbackHandler(repo, projRepo)
 
 	// Create an item, but deleteErr will override
 	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID:   "proj-1",
 		DiscoveryID: "disc-1",
 		TargetType:  "insight",
 		TargetID:    "i-0",
@@ -368,11 +403,84 @@ func TestFeedbackHandler_Delete_RepoError_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/feedback/"+fb.ID, nil)
 	req.SetPathValue("id", fb.ID)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Delete(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
+// --- Org-scoping tests ---
+
+func TestFeedbackHandler_Submit_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockFeedbackRepo()
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	h := NewFeedbackHandler(repo, projRepo)
+
+	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like"}`
+	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("runId", "disc-1")
+	req = withOrgUser(req, "attacker", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.Submit(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org feedback submit blocked)", w.Code)
+	}
+	if len(repo.items) != 0 {
+		t.Error("feedback should not have been created for cross-org project")
+	}
+}
+
+func TestFeedbackHandler_List_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockFeedbackRepo()
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	h := NewFeedbackHandler(repo, projRepo)
+
+	repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID: "proj-1", DiscoveryID: "disc-1", TargetType: "insight", TargetID: "i-0", Rating: "like",
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-1/feedback", nil)
+	req.SetPathValue("runId", "disc-1")
+	req = withOrgUser(req, "attacker", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.List(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org feedback list blocked)", w.Code)
+	}
+}
+
+func TestFeedbackHandler_Delete_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockFeedbackRepo()
+	projRepo := newMockProjectRepo()
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	h := NewFeedbackHandler(repo, projRepo)
+
+	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
+		ProjectID: "proj-1", DiscoveryID: "disc-1", TargetType: "insight", TargetID: "i-0", Rating: "like",
+	})
+
+	req := httptest.NewRequest("DELETE", "/api/v1/feedback/"+fb.ID, nil)
+	req.SetPathValue("id", fb.ID)
+	req = withOrgUser(req, "attacker", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.Delete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org feedback delete blocked)", w.Code)
+	}
+	if len(repo.items) != 1 {
+		t.Error("feedback should not have been deleted by cross-org user")
 	}
 }
