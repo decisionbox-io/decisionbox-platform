@@ -160,6 +160,7 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	body := `{"name":"Test Project","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Create(w, req)
@@ -201,6 +202,7 @@ func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 	body := `{"name":"Test","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Create(w, req)
@@ -226,11 +228,13 @@ func TestProjectsHandler_List_Success_MockRepo(t *testing.T) {
 			Name:     fmt.Sprintf("Project %d", i+1),
 			Domain:   "gaming",
 			Category: "match3",
+			OrgID:    "default",
 		}
 		repo.Create(context.Background(), p)
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -255,6 +259,7 @@ func TestProjectsHandler_List_Empty_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -280,6 +285,7 @@ func TestProjectsHandler_List_RepoError_MockRepo(t *testing.T) {
 	h := NewProjectsHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.List(w, req)
@@ -571,6 +577,7 @@ func TestProjectsHandler_Create_SeedsPrompts_MockRepo(t *testing.T) {
 	body := `{"name":"Prompt Test","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.Create(w, req)

@@ -79,6 +79,10 @@ func (h *DiscoveriesHandler) GetDiscoveryByID(w http.ResponseWriter, r *http.Req
 func (h *DiscoveriesHandler) GetLatest(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
+		return
+	}
+
 	result, err := h.repo.GetLatest(r.Context(), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get discovery: "+err.Error())
@@ -101,6 +105,10 @@ func (h *DiscoveriesHandler) GetByDate(w http.ResponseWriter, r *http.Request) {
 	date, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid date format, use YYYY-MM-DD")
+		return
+	}
+
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 

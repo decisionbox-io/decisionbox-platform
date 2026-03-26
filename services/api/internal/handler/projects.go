@@ -41,10 +41,13 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set org_id from authenticated user
-	if user, ok := auth.FromContext(r.Context()); ok {
-		p.OrgID = user.OrgID
+	// Set org_id from authenticated user (fail closed)
+	user, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
 	}
+	p.OrgID = user.OrgID
 
 	// Seed default prompts from domain pack
 	if p.Prompts == nil {
@@ -75,14 +78,15 @@ func (h *ProjectsHandler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	var orgID string
-	if user, ok := auth.FromContext(r.Context()); ok {
-		orgID = user.OrgID
+	user, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
 	}
 
-	projects, err := h.repo.List(r.Context(), orgID, limit, offset)
+	projects, err := h.repo.List(r.Context(), user.OrgID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list projects: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to list projects")
 		return
 	}
 

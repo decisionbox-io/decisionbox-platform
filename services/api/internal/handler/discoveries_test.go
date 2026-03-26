@@ -151,6 +151,8 @@ func TestDiscoveriesHandler_GetLatest_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-old",
 		ProjectID:     "proj-1",
@@ -167,6 +169,7 @@ func TestDiscoveriesHandler_GetLatest_Success_MockRepo(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries/latest", nil)
 	req.SetPathValue("id", "proj-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetLatest(w, req)
@@ -189,8 +192,11 @@ func TestDiscoveriesHandler_GetLatest_NotFound_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries/latest", nil)
 	req.SetPathValue("id", "proj-1")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetLatest(w, req)
@@ -212,6 +218,8 @@ func TestDiscoveriesHandler_GetByDate_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "default", Name: "Test"}
+
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-march20",
 		ProjectID:     "proj-1",
@@ -222,6 +230,7 @@ func TestDiscoveriesHandler_GetByDate_Success_MockRepo(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries/2026-03-20", nil)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("date", "2026-03-20")
+	req = withDefaultUser(req)
 	w := httptest.NewRecorder()
 
 	h.GetByDate(w, req)

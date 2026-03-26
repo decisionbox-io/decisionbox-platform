@@ -13,7 +13,7 @@ import (
 )
 
 func TestFeedbackHandler_Submit_MissingFields(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	// Empty body
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
@@ -30,7 +30,7 @@ func TestFeedbackHandler_Submit_MissingFields(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_InvalidRating(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
 		strings.NewReader(`{"target_type":"insight","target_id":"0","rating":"meh"}`))
@@ -52,7 +52,7 @@ func TestFeedbackHandler_Submit_InvalidRating(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_InvalidTargetType(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
 		strings.NewReader(`{"target_type":"sql_query","target_id":"0","rating":"like"}`))
@@ -68,7 +68,7 @@ func TestFeedbackHandler_Submit_InvalidTargetType(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_InvalidBody(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
 		strings.NewReader(`not json`))
@@ -84,7 +84,7 @@ func TestFeedbackHandler_Submit_InvalidBody(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_EmptyRating(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
 		strings.NewReader(`{"target_type":"insight","target_id":"0","rating":""}`))
@@ -100,7 +100,7 @@ func TestFeedbackHandler_Submit_EmptyRating(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_EmptyTargetID(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/run1/feedback",
 		strings.NewReader(`{"target_type":"insight","target_id":"","rating":"like"}`))
@@ -119,7 +119,7 @@ func TestFeedbackHandler_Submit_EmptyTargetID(t *testing.T) {
 
 func TestFeedbackHandler_Submit_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like","comment":"great insight"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
@@ -157,7 +157,7 @@ func TestFeedbackHandler_Submit_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Submit_Upsert_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	// Submit initial feedback
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like"}`
@@ -194,7 +194,7 @@ func TestFeedbackHandler_Submit_Upsert_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Submit_RecommendationType_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	body := `{"project_id":"proj-1","target_type":"recommendation","target_id":"r-0","rating":"dislike"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
@@ -212,7 +212,7 @@ func TestFeedbackHandler_Submit_RecommendationType_MockRepo(t *testing.T) {
 func TestFeedbackHandler_Submit_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.upsertErr = fmt.Errorf("write conflict")
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	body := `{"project_id":"proj-1","target_type":"insight","target_id":"i-0","rating":"like"}`
 	req := httptest.NewRequest("POST", "/api/v1/discoveries/disc-1/feedback", strings.NewReader(body))
@@ -229,7 +229,7 @@ func TestFeedbackHandler_Submit_RepoError_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	// Add some feedback items
 	repo.Upsert(context.Background(), &models.Feedback{
@@ -274,7 +274,7 @@ func TestFeedbackHandler_List_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_List_Empty_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-no-feedback/feedback", nil)
 	req.SetPathValue("runId", "disc-no-feedback")
@@ -290,7 +290,7 @@ func TestFeedbackHandler_List_Empty_MockRepo(t *testing.T) {
 func TestFeedbackHandler_List_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.listErr = fmt.Errorf("database error")
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-1/feedback", nil)
 	req.SetPathValue("runId", "disc-1")
@@ -305,7 +305,7 @@ func TestFeedbackHandler_List_RepoError_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	// Create a feedback item
 	fb, _ := repo.Upsert(context.Background(), &models.Feedback{
@@ -340,7 +340,7 @@ func TestFeedbackHandler_Delete_Success_MockRepo(t *testing.T) {
 
 func TestFeedbackHandler_Delete_NotFound_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/feedback/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -356,7 +356,7 @@ func TestFeedbackHandler_Delete_NotFound_MockRepo(t *testing.T) {
 func TestFeedbackHandler_Delete_RepoError_MockRepo(t *testing.T) {
 	repo := newMockFeedbackRepo()
 	repo.deleteErr = fmt.Errorf("permission denied")
-	h := NewFeedbackHandler(repo)
+	h := NewFeedbackHandler(repo, nil)
 
 	// Create an item, but deleteErr will override
 	fb, _ := repo.Upsert(context.Background(), &models.Feedback{

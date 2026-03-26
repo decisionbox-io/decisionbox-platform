@@ -117,7 +117,7 @@ func TestNewPricingHandler(t *testing.T) {
 }
 
 func TestNewFeedbackHandler(t *testing.T) {
-	h := NewFeedbackHandler(nil)
+	h := NewFeedbackHandler(nil, nil)
 	if h == nil {
 		t.Fatal("NewFeedbackHandler returned nil")
 	}

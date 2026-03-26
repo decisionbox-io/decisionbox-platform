@@ -50,7 +50,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	domains := handler.NewDomainsHandler()
 	projects := handler.NewProjectsHandler(projectRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, agentRunner)
-	feedback := handler.NewFeedbackHandler(feedbackRepo)
+	feedback := handler.NewFeedbackHandler(feedbackRepo, projectRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
 	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)

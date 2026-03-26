@@ -10,11 +10,12 @@ import (
 
 // FeedbackHandler handles feedback endpoints.
 type FeedbackHandler struct {
-	repo database.FeedbackRepo
+	repo        database.FeedbackRepo
+	projectRepo database.ProjectRepo
 }
 
-func NewFeedbackHandler(repo database.FeedbackRepo) *FeedbackHandler {
-	return &FeedbackHandler{repo: repo}
+func NewFeedbackHandler(repo database.FeedbackRepo, projectRepo database.ProjectRepo) *FeedbackHandler {
+	return &FeedbackHandler{repo: repo, projectRepo: projectRepo}
 }
 
 // Submit creates or updates feedback for a target.
@@ -48,6 +49,13 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if body.TargetType != "insight" && body.TargetType != "recommendation" && body.TargetType != "exploration_step" {
 		writeError(w, http.StatusBadRequest, "target_type must be 'insight', 'recommendation', or 'exploration_step'")
 		return
+	}
+
+	// Verify project belongs to user's org
+	if body.ProjectID != "" && h.projectRepo != nil {
+		if getProjectWithOrgCheck(w, r, h.projectRepo, body.ProjectID) == nil {
+			return
+		}
 	}
 
 	fb := &models.Feedback{

@@ -38,14 +38,14 @@ func decodeJSON(r *http.Request, v interface{}) error {
 func getProjectWithOrgCheck(w http.ResponseWriter, r *http.Request, repo database.ProjectRepo, projectID string) *models.Project {
 	p, err := repo.GetByID(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get project: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get project")
 		return nil
 	}
 	if p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
 		return nil
 	}
-	if user, ok := auth.FromContext(r.Context()); ok && p.OrgID != "" && p.OrgID != user.OrgID {
+	if user, ok := auth.FromContext(r.Context()); ok && p.OrgID != user.OrgID {
 		writeError(w, http.StatusNotFound, "project not found")
 		return nil
 	}

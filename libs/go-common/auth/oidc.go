@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -68,6 +69,12 @@ func (p *OIDCProvider) extractUserPrincipal(claims map[string]any) (*UserPrincip
 
 	roles := p.extractRoles(claims)
 	if len(roles) == 0 {
+		// Claim was absent or empty — use default role.
+		// Log a warning if the claim key was present but had no recognized values,
+		// which suggests a misconfigured AUTH_CLAIM_ROLES.
+		if _, claimExists := claims[p.config.ClaimRoles]; claimExists {
+			log.Printf("[auth] warning: JWT has claim %q but no recognized roles — using default %q", p.config.ClaimRoles, p.config.DefaultRole)
+		}
 		roles = []string{p.config.DefaultRole}
 	}
 

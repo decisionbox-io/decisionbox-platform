@@ -3,13 +3,22 @@ package handler
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
+
+// withDefaultUser injects a default user context (org_id="default", role="admin")
+// into a request. Used by tests that don't test org-scoping specifically.
+func withDefaultUser(r *http.Request) *http.Request {
+	user := &auth.UserPrincipal{Sub: "test-user", OrgID: "default", Roles: []string{"admin"}}
+	return r.WithContext(auth.WithUser(r.Context(), user))
+}
 
 // Compile-time checks: mocks satisfy interfaces.
 var (

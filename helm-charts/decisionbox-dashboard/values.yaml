@@ -24,12 +24,22 @@ env:
   AUTH_ENABLED: "false"
   # AUTH_ISSUER_URL: "https://your-tenant.auth0.com/"
   # AUTH_CLIENT_ID: ""
+  # WARNING: Do not set secrets here in production — use extraEnvFrom with a K8s Secret.
   # AUTH_CLIENT_SECRET: ""
   # AUTH_AUDIENCE: ""
   # AUTH_TOKEN_TYPE: "access_token"
   # AUTH_LOGOUT_URL: ""
   # NEXTAUTH_URL: "https://dashboard.example.com"
+  # WARNING: Do not set secrets here in production — use extraEnvFrom with a K8s Secret.
   # NEXTAUTH_SECRET: ""   # Generate with: openssl rand -base64 32
+
+# Inject env vars from existing Secrets or ConfigMaps.
+# Use this for AUTH_CLIENT_SECRET and NEXTAUTH_SECRET in production.
+# Example:
+#   extraEnvFrom:
+#     - secretRef:
+#         name: decisionbox-dashboard-secrets   # must contain AUTH_CLIENT_SECRET, NEXTAUTH_SECRET
+extraEnvFrom: []
 
 securityContext:
   runAsNonRoot: true

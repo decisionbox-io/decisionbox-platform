@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
 // Logout route — redirects to IdP logout endpoint to clear the IdP session.
 // Without this, the IdP retains its session cookie and automatically
@@ -13,12 +14,18 @@ import { NextResponse } from 'next/server';
 // The route appends both standard OIDC (post_logout_redirect_uri) and
 // Auth0-specific (returnTo, client_id) parameters for maximum compatibility.
 export async function GET() {
-  const logoutUrl = process.env.AUTH_LOGOUT_URL;
-  const clientId = process.env.AUTH_CLIENT_ID || '';
   const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
   const returnTo = `${baseUrl}/login`;
 
+  // Verify the user has an active session before redirecting to IdP logout
+  const session = await auth();
+  if (!session) {
+    return NextResponse.redirect(returnTo);
+  }
+
+  const logoutUrl = process.env.AUTH_LOGOUT_URL;
   if (logoutUrl) {
+    const clientId = process.env.AUTH_CLIENT_ID || '';
     const url = new URL(logoutUrl);
     // OIDC RP-Initiated Logout standard (Okta, Entra ID, Keycloak)
     url.searchParams.set('post_logout_redirect_uri', returnTo);

@@ -136,7 +136,7 @@ func main() {
 	if cfg.Auth.Enabled {
 		apilog.WithField("issuer", cfg.Auth.IssuerURL).Info("Auth enabled (OIDC)")
 	} else {
-		apilog.Info("Auth disabled (NoAuth mode)")
+		apilog.Warn("Auth disabled (NoAuth mode) — all requests granted admin access. Do not use in production.")
 	}
 
 	// HTTP server
