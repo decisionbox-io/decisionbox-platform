@@ -1069,3 +1069,174 @@ func TestInteg_CORS(t *testing.T) {
 		t.Error("missing CORS header")
 	}
 }
+
+// --- Org Isolation ---
+
+func TestInteg_OrgIsolation_ListFilters(t *testing.T) {
+	// Create a project via API (gets org_id="default" from NoAuth)
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "default-org-project", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	if resp.StatusCode != 201 {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	r := decodeResponse(t, resp)
+	defaultOrgID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+defaultOrgID, nil)
+
+	// Insert a project directly into MongoDB with a different org_id
+	otherOrgProject := models.Project{
+		OrgID:    "other-org",
+		Name:     "Other Org Project",
+		Domain:   "gaming",
+		Category: "match3",
+		Status:   "active",
+	}
+	insertResult, err := testDB.Collection("projects").InsertOne(context.Background(), otherOrgProject)
+	if err != nil {
+		t.Fatalf("insert other-org project: %v", err)
+	}
+	otherOrgProjectID := insertResult.InsertedID
+
+	// List projects — should NOT include the other-org project
+	resp = doRequest(t, "GET", "/api/v1/projects", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	projects := r.Data.([]interface{})
+	for _, p := range projects {
+		pm := p.(map[string]interface{})
+		if pm["org_id"] == "other-org" {
+			t.Error("list should not include projects from other orgs")
+		}
+	}
+
+	// Cleanup
+	testDB.Collection("projects").DeleteOne(context.Background(), map[string]interface{}{"_id": otherOrgProjectID})
+}
+
+func TestInteg_OrgIsolation_GetBlocked(t *testing.T) {
+	// Insert a project with a different org_id directly into MongoDB
+	otherProject := models.Project{
+		OrgID:    "other-org",
+		Name:     "Secret Project",
+		Domain:   "gaming",
+		Category: "match3",
+		Status:   "active",
+	}
+	insertResult, err := testDB.Collection("projects").InsertOne(context.Background(), otherProject)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Extract the hex ID
+	oid := insertResult.InsertedID.(interface{ Hex() string })
+	projectID := oid.Hex()
+
+	// GET — should return 404 (NoAuth user has org_id="default", project has org_id="other-org")
+	resp := doRequest(t, "GET", "/api/v1/projects/"+projectID, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("get other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// UPDATE — should also be blocked
+	resp = doRequest(t, "PUT", "/api/v1/projects/"+projectID, map[string]interface{}{"name": "hacked"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("update other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// DELETE — should also be blocked
+	resp = doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("delete other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Verify the project still exists (wasn't deleted)
+	var found models.Project
+	err = testDB.Collection("projects").FindOne(context.Background(), map[string]interface{}{"_id": insertResult.InsertedID}).Decode(&found)
+	if err != nil {
+		t.Error("project should still exist after blocked delete attempt")
+	}
+
+	// Cleanup
+	testDB.Collection("projects").DeleteOne(context.Background(), map[string]interface{}{"_id": insertResult.InsertedID})
+}
+
+func TestInteg_OrgIsolation_DiscoveryBlocked(t *testing.T) {
+	// Insert a project with a different org_id
+	otherProject := models.Project{
+		OrgID:    "other-org",
+		Name:     "Other Discoveries",
+		Domain:   "gaming",
+		Category: "match3",
+		Status:   "active",
+	}
+	projResult, _ := testDB.Collection("projects").InsertOne(context.Background(), otherProject)
+	projOID := projResult.InsertedID.(interface{ Hex() string })
+	projectID := projOID.Hex()
+
+	// Insert a discovery for that project
+	disc := models.DiscoveryResult{
+		ProjectID:     projectID,
+		Domain:        "gaming",
+		Category:      "match3",
+		DiscoveryDate: time.Now(),
+		TotalSteps:    10,
+		Summary:       models.Summary{TotalInsights: 1},
+	}
+	testDB.Collection("discoveries").InsertOne(context.Background(), disc)
+
+	// List discoveries — should be blocked
+	resp := doRequest(t, "GET", "/api/v1/projects/"+projectID+"/discoveries", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("list discoveries for other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Trigger discovery — should be blocked
+	resp = doRequest(t, "POST", "/api/v1/projects/"+projectID+"/discover", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("trigger discovery for other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Status — should be blocked
+	resp = doRequest(t, "GET", "/api/v1/projects/"+projectID+"/status", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status for other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Cleanup
+	testDB.Collection("projects").DeleteOne(context.Background(), map[string]interface{}{"_id": projResult.InsertedID})
+}
+
+func TestInteg_OrgIsolation_PromptsBlocked(t *testing.T) {
+	// Insert a project with a different org_id
+	otherProject := models.Project{
+		OrgID:    "other-org",
+		Name:     "Other Prompts",
+		Domain:   "gaming",
+		Category: "match3",
+		Status:   "active",
+	}
+	projResult, _ := testDB.Collection("projects").InsertOne(context.Background(), otherProject)
+	projOID := projResult.InsertedID.(interface{ Hex() string })
+	projectID := projOID.Hex()
+
+	// GET prompts — should be blocked
+	resp := doRequest(t, "GET", "/api/v1/projects/"+projectID+"/prompts", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("get prompts for other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// PUT prompts — should be blocked
+	resp = doRequest(t, "PUT", "/api/v1/projects/"+projectID+"/prompts",
+		map[string]interface{}{"exploration": "hacked prompt"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("update prompts for other-org project: status = %d, want 404", resp.StatusCode)
+	}
+
+	// Cleanup
+	testDB.Collection("projects").DeleteOne(context.Background(), map[string]interface{}{"_id": projResult.InsertedID})
+}
