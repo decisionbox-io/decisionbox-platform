@@ -3,7 +3,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
-import { useSession, signOut } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import {
   IconBook2, IconLogout, IconSearch, IconSettings, IconStack2, IconTool,
 } from '@tabler/icons-react';
