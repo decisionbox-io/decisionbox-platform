@@ -2,15 +2,17 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 )
 
 // UserPrincipal represents the authenticated user.
+// Field names match standard OIDC claim names.
 type UserPrincipal struct {
-	ID    string
-	AppID string
-	OrgID string
-	Roles []string
+	Sub   string   `json:"sub"`
+	Email string   `json:"email"`
+	OrgID string   `json:"org_id"`
+	Roles []string `json:"roles"`
 }
 
 type contextKey string
@@ -32,4 +34,11 @@ func WithUser(ctx context.Context, user *UserPrincipal) context.Context {
 type Provider interface {
 	ValidateToken(ctx context.Context, token string) (*UserPrincipal, error)
 	Middleware() func(http.Handler) http.Handler
+}
+
+// WriteJSONError writes a JSON error response matching the API's error format.
+func WriteJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
