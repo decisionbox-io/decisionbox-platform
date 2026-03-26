@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 )
 
@@ -586,5 +587,147 @@ func TestProjectsHandler_Create_SeedsPrompts_MockRepo(t *testing.T) {
 	stored, _ := repo.GetByID(context.Background(), storedID)
 	if stored.Prompts == nil {
 		t.Error("prompts should be seeded on create for gaming domain")
+	}
+}
+
+// --- Org-scoping tests ---
+
+func withOrgUser(r *http.Request, sub, orgID, role string) *http.Request {
+	user := &auth.UserPrincipal{Sub: sub, OrgID: orgID, Roles: []string{role}}
+	return r.WithContext(auth.WithUser(r.Context(), user))
+}
+
+func TestProjectsHandler_Create_SetsOrgID(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	body := `{"name":"Org Test","domain":"gaming","category":"match3"}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withOrgUser(req, "user1", "acme", "member")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+
+	// Verify org_id was set from the authenticated user
+	for _, p := range repo.projects {
+		if p.OrgID != "acme" {
+			t.Errorf("OrgID = %q, want %q", p.OrgID, "acme")
+		}
+	}
+}
+
+func TestProjectsHandler_List_FiltersByOrgID(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	// Create projects in two different orgs
+	repo.projects["p1"] = &models.Project{ID: "p1", OrgID: "acme", Name: "Acme Project"}
+	repo.projects["p2"] = &models.Project{ID: "p2", OrgID: "beta", Name: "Beta Project"}
+	repo.projects["p3"] = &models.Project{ID: "p3", OrgID: "acme", Name: "Acme Project 2"}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	req = withOrgUser(req, "user1", "acme", "viewer")
+	w := httptest.NewRecorder()
+
+	h.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	projects := resp.Data.([]interface{})
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects for acme org, got %d", len(projects))
+	}
+}
+
+func TestProjectsHandler_Get_OwnOrg_Allowed(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	repo.projects["p1"] = &models.Project{ID: "p1", OrgID: "acme", Name: "Acme Project"}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = withOrgUser(req, "user1", "acme", "viewer")
+	w := httptest.NewRecorder()
+
+	h.Get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProjectsHandler_Get_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	repo.projects["p1"] = &models.Project{ID: "p1", OrgID: "acme", Name: "Acme Project"}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = withOrgUser(req, "user2", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.Get(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org access blocked)", w.Code)
+	}
+}
+
+func TestProjectsHandler_Update_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	repo.projects["p1"] = &models.Project{ID: "p1", OrgID: "acme", Name: "Acme Project"}
+
+	body := `{"name":"Hacked"}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/p1", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	req.Header.Set("Content-Type", "application/json")
+	req = withOrgUser(req, "attacker", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org update blocked)", w.Code)
+	}
+
+	// Verify name was NOT changed
+	if repo.projects["p1"].Name != "Acme Project" {
+		t.Error("project name should not have been modified by cross-org user")
+	}
+}
+
+func TestProjectsHandler_Delete_OtherOrg_Blocked(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo)
+
+	repo.projects["p1"] = &models.Project{ID: "p1", OrgID: "acme", Name: "Acme Project"}
+
+	req := httptest.NewRequest("DELETE", "/api/v1/projects/p1", nil)
+	req.SetPathValue("id", "p1")
+	req = withOrgUser(req, "attacker", "beta", "admin")
+	w := httptest.NewRecorder()
+
+	h.Delete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org delete blocked)", w.Code)
+	}
+
+	// Verify project was NOT deleted
+	if _, ok := repo.projects["p1"]; !ok {
+		t.Error("project should not have been deleted by cross-org user")
 	}
 }

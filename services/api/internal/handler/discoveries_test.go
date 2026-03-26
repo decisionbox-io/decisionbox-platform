@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 )
 
@@ -733,5 +734,110 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (pending runs are active)", w.Code)
+	}
+}
+
+// --- Org-scoping tests ---
+
+func TestDiscoveriesHandler_List_OtherOrg_Blocked(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries", nil)
+	req.SetPathValue("id", "proj-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: "u1", OrgID: "beta", Roles: []string{"admin"}}))
+	w := httptest.NewRecorder()
+
+	h.List(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org access blocked)", w.Code)
+	}
+}
+
+func TestDiscoveriesHandler_GetDiscoveryByID_OtherOrg_Blocked(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	discRepo.add(&models.DiscoveryResult{ID: "disc-1", ProjectID: "proj-1", DiscoveryDate: time.Now()})
+
+	req := httptest.NewRequest("GET", "/api/v1/discoveries/disc-1", nil)
+	req.SetPathValue("id", "disc-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: "u1", OrgID: "beta", Roles: []string{"admin"}}))
+	w := httptest.NewRecorder()
+
+	h.GetDiscoveryByID(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org discovery access blocked)", w.Code)
+	}
+}
+
+func TestDiscoveriesHandler_GetRun_OtherOrg_Blocked(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	runRepo.addRun(&models.DiscoveryRun{ID: "run-1", ProjectID: "proj-1", Status: "running", StartedAt: time.Now()})
+
+	req := httptest.NewRequest("GET", "/api/v1/runs/run-1", nil)
+	req.SetPathValue("runId", "run-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: "u1", OrgID: "beta", Roles: []string{"admin"}}))
+	w := httptest.NewRecorder()
+
+	h.GetRun(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org run access blocked)", w.Code)
+	}
+}
+
+func TestDiscoveriesHandler_CancelRun_OtherOrg_Blocked(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+	runRepo.addRun(&models.DiscoveryRun{ID: "run-1", ProjectID: "proj-1", Status: "running", StartedAt: time.Now()})
+
+	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-1", nil)
+	req.SetPathValue("runId", "run-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: "u1", OrgID: "beta", Roles: []string{"admin"}}))
+	w := httptest.NewRecorder()
+
+	h.CancelRun(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org cancel blocked)", w.Code)
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_OtherOrg_Blocked(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", OrgID: "acme", Name: "Acme"}
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/discover", nil)
+	req.SetPathValue("id", "proj-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: "u1", OrgID: "beta", Roles: []string{"admin"}}))
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (cross-org trigger blocked)", w.Code)
 	}
 }
