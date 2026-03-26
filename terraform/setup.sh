@@ -16,7 +16,23 @@ RESUME=false
 DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
-TOTAL_STEPS=9
+INCLUDE_FILES=()
+
+# ─── Plugin step registry ───────────────────────────────────────────────────
+# Plugins register extra steps via register_step(). Steps are inserted before
+# the review step. Each step is a function name + title.
+
+PLUGIN_STEPS=()
+PLUGIN_STEP_TITLES=()
+
+# register_step registers an additional wizard step.
+# Usage: register_step <function_name> <title>
+# The function must accept no arguments and follow the same conventions
+# as built-in steps (use prompt helpers, set GO_BACK=true to go back).
+register_step() {
+  PLUGIN_STEPS+=("$1")
+  PLUGIN_STEP_TITLES+=("$2")
+}
 
 # ─── Parse arguments ─────────────────────────────────────────────────────────
 
@@ -32,6 +48,7 @@ for arg in "$@"; do
       echo "  --dry-run      Generate config files only (no terraform apply, no helm deploy)"
       echo "  --resume       Resume from Helm deploy (skips Terraform, reloads config from tfvars)"
       echo "  --destroy      Tear down everything (Helm releases, K8s namespace, Terraform resources)"
+      echo "  --include FILE Source a plugin script that registers additional steps via register_step()"
       echo ""
       echo "This wizard will:"
       echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
@@ -58,10 +75,18 @@ for arg in "$@"; do
     --destroy)
       DESTROY=true
       ;;
+    --include)
+      NEXT_IS_INCLUDE=true
+      ;;
     *)
-      echo "Unknown argument: $arg"
-      echo "Run ./setup.sh --help for usage."
-      exit 1
+      if [[ "${NEXT_IS_INCLUDE:-}" == "true" ]]; then
+        INCLUDE_FILES+=("$arg")
+        NEXT_IS_INCLUDE=false
+      else
+        echo "Unknown argument: $arg"
+        echo "Run ./setup.sh --help for usage."
+        exit 1
+      fi
       ;;
   esac
 done
@@ -590,6 +615,15 @@ do_step_7_review() {
     echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
   fi
 
+  # Show plugin review sections (plugins define <step_fn>_review)
+  for fn in "${PLUGIN_STEPS[@]}"; do
+    local review_fn="${fn}_review"
+    if declare -f "$review_fn" > /dev/null 2>&1; then
+      echo ""
+      "$review_fn"
+    fi
+  done
+
   echo ""
   prompt CONFIRM "Proceed with this configuration? (yes/no/back)" "yes" || return 1
 
@@ -779,6 +813,14 @@ EOF
 
     ok "Generated ${HELM_VALUES}"
   fi
+
+  # Run plugin generate hooks (plugins define <step_fn>_generate)
+  for fn in "${PLUGIN_STEPS[@]}"; do
+    local gen_fn="${fn}_generate"
+    if declare -f "$gen_fn" > /dev/null 2>&1; then
+      "$gen_fn"
+    fi
+  done
 
   if [[ "$DRY_RUN" == "true" ]]; then
     echo ""
@@ -1541,32 +1583,51 @@ if [[ "$RESUME" == "true" ]]; then
   exit 0
 fi
 
+# ─── Source plugin files ──────────────────────────────────────────────────
+# Plugins register extra steps via register_step(). These run between
+# "Terraform State" and "Review" in the wizard flow.
+
+for include_file in "${INCLUDE_FILES[@]}"; do
+  if [[ ! -f "$include_file" ]]; then
+    err "Include file not found: ${include_file}"
+    exit 1
+  fi
+  source "$include_file"
+done
+
+# Recalculate total steps after plugins registered
+TOTAL_STEPS=$(( 9 + ${#PLUGIN_STEPS[@]} ))
+
 # ─── Normal Flow ──────────────────────────────────────────────────────────
 
 dim "Type 'back' at any prompt to return to the previous step."
 
-# Steps 1 is not navigable (prerequisites must pass).
-# Steps 2-7 support "back" navigation.
-# Steps 8-9 are sequential (no going back after generation/deploy).
-
 do_step_1_prerequisites
 
-CURRENT_STEP=2
+# Build navigable step list: core steps + plugin steps + review
+NAV_STEPS=(
+  do_step_2_cloud_provider
+  do_step_3_secrets
+  do_step_4_provider_config
+  do_step_5_authentication
+  do_step_6_terraform_state
+)
 
-while [[ "$CURRENT_STEP" -le 7 ]]; do
-  STEP_RC=0
-  case "$CURRENT_STEP" in
-    2) do_step_2_cloud_provider || STEP_RC=$? ;;
-    3) do_step_3_secrets || STEP_RC=$? ;;
-    4) do_step_4_provider_config || STEP_RC=$? ;;
-    5) do_step_5_authentication || STEP_RC=$? ;;
-    6) do_step_6_terraform_state || STEP_RC=$? ;;
-    7) do_step_7_review || STEP_RC=$? ;;
-  esac
+# Insert plugin steps before review
+for i in "${!PLUGIN_STEPS[@]}"; do
+  NAV_STEPS+=("${PLUGIN_STEPS[$i]}")
+done
+
+NAV_STEPS+=(do_step_7_review)
+
+CURRENT_STEP=0
+
+while [[ "$CURRENT_STEP" -lt ${#NAV_STEPS[@]} ]]; do
+  "${NAV_STEPS[$CURRENT_STEP]}" || true
 
   if [[ "$GO_BACK" == "true" ]]; then
     GO_BACK=false
-    if [[ "$CURRENT_STEP" -gt 2 ]]; then
+    if [[ "$CURRENT_STEP" -gt 0 ]]; then
       CURRENT_STEP=$((CURRENT_STEP - 1))
     else
       info "Already at the first configurable step."

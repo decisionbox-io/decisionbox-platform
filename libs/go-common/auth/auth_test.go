@@ -9,8 +9,8 @@ import (
 
 func TestWithUserAndFromContext(t *testing.T) {
 	user := &UserPrincipal{
-		ID:    "user1",
-		AppID: "app1",
+		Sub:   "user1",
+		Email: "user1@example.com",
 		OrgID: "org1",
 		Roles: []string{"admin"},
 	}
@@ -20,8 +20,8 @@ func TestWithUserAndFromContext(t *testing.T) {
 	if !ok {
 		t.Fatal("FromContext() returned false")
 	}
-	if got.ID != "user1" {
-		t.Errorf("ID = %q, want %q", got.ID, "user1")
+	if got.Sub != "user1" {
+		t.Errorf("Sub = %q, want %q", got.Sub, "user1")
 	}
 	if got.OrgID != "org1" {
 		t.Errorf("OrgID = %q, want %q", got.OrgID, "org1")
@@ -41,8 +41,8 @@ func TestNoAuthProviderValidateToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateToken() error = %v", err)
 	}
-	if user.ID != "anonymous" {
-		t.Errorf("ID = %q, want %q", user.ID, "anonymous")
+	if user.Sub != "anonymous" {
+		t.Errorf("Sub = %q, want %q", user.Sub, "anonymous")
 	}
 	if user.OrgID != "default" {
 		t.Errorf("OrgID = %q, want %q", user.OrgID, "default")
@@ -70,7 +70,15 @@ func TestNoAuthProviderMiddleware(t *testing.T) {
 	if capturedUser == nil {
 		t.Fatal("user not set in context")
 	}
-	if capturedUser.ID != "anonymous" {
-		t.Errorf("user ID = %q, want %q", capturedUser.ID, "anonymous")
+	if capturedUser.Sub != "anonymous" {
+		t.Errorf("user Sub = %q, want %q", capturedUser.Sub, "anonymous")
+	}
+}
+
+func TestFromContextWrongType(t *testing.T) {
+	ctx := context.WithValue(context.Background(), userKey, "not-a-user-principal")
+	_, ok := FromContext(ctx)
+	if ok {
+		t.Error("FromContext() should return false for wrong type in context")
 	}
 }

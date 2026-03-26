@@ -2,6 +2,11 @@ codecov:
   notify:
     after_n_builds: 1
 
+ignore:
+  - "services/api/main.go"
+  - "services/api/apiserver/apiserver.go"  # startup/wiring — tested by integration tests
+  - "services/agent/main.go"
+
 coverage:
   status:
     project:
