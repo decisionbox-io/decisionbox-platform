@@ -261,6 +261,9 @@ func TestDiscoveriesHandler_GetDiscoveryByID_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	// Project must exist for org-scoping check
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-abc",
 		ProjectID:     "proj-1",
@@ -553,6 +556,8 @@ func TestDiscoveriesHandler_GetRun_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-abc",
 		ProjectID: "proj-1",
@@ -606,6 +611,8 @@ func TestDiscoveriesHandler_CancelRun_Success_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
 
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-to-cancel",
@@ -670,6 +677,8 @@ func TestDiscoveriesHandler_CancelRun_NotActive_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
 
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
+
 	// Add a completed run
 	now := time.Now()
 	runRepo.addRun(&models.DiscoveryRun{
@@ -704,6 +713,8 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	projRepo.projects["proj-1"] = &models.Project{ID: "proj-1", Name: "Test"}
 
 	// Pending runs should also be cancellable
 	runRepo.addRun(&models.DiscoveryRun{

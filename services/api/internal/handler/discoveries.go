@@ -37,9 +37,7 @@ func NewDiscoveriesHandler(repo database.DiscoveryRepo, projectRepo database.Pro
 func (h *DiscoveriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 
@@ -65,6 +63,11 @@ func (h *DiscoveriesHandler) GetDiscoveryByID(w http.ResponseWriter, r *http.Req
 	}
 	if result == nil {
 		writeError(w, http.StatusNotFound, "discovery not found")
+		return
+	}
+
+	// Verify org ownership via the discovery's project
+	if getProjectWithOrgCheck(w, r, h.projectRepo, result.ProjectID) == nil {
 		return
 	}
 
@@ -119,9 +122,7 @@ func (h *DiscoveriesHandler) GetByDate(w http.ResponseWriter, r *http.Request) {
 func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 
@@ -185,9 +186,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 
@@ -230,6 +229,11 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify org ownership via the run's project
+	if getProjectWithOrgCheck(w, r, h.projectRepo, run.ProjectID) == nil {
+		return
+	}
+
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -245,6 +249,11 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if run == nil {
 		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// Verify org ownership via the run's project
+	if getProjectWithOrgCheck(w, r, h.projectRepo, run.ProjectID) == nil {
 		return
 	}
 

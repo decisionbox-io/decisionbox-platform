@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
 import {
-  IconBook2, IconDatabase, IconLogout, IconSearch, IconSettings, IconStack2, IconTool,
+  IconBook2, IconLogout, IconSearch, IconSettings, IconStack2, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 

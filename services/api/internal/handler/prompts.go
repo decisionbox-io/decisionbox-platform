@@ -58,9 +58,8 @@ func GetPrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
-		p, err := projectRepo.GetByID(r.Context(), id)
-		if err != nil || p == nil {
-			writeError(w, http.StatusNotFound, "project not found")
+		p := getProjectWithOrgCheck(w, r, projectRepo, id)
+		if p == nil {
 			return
 		}
 
@@ -82,9 +81,8 @@ func UpdatePrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
-		p, err := projectRepo.GetByID(r.Context(), id)
-		if err != nil || p == nil {
-			writeError(w, http.StatusNotFound, "project not found")
+		p := getProjectWithOrgCheck(w, r, projectRepo, id)
+		if p == nil {
 			return
 		}
 

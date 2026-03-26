@@ -53,19 +53,40 @@ func (c *ChainProvider) ValidateToken(ctx context.Context, token string) (*UserP
 		return c.noAuth.ValidateToken(ctx, token)
 	}
 
-	// Future #99: route "dbx_" prefixed tokens to APIKeyProvider
-	if strings.HasPrefix(token, "dbx_") {
+	// Future #99: route API key tokens to APIKeyProvider
+	if strings.HasPrefix(token, apiKeyPrefix) {
 		return nil, fmt.Errorf("API key authentication is not yet supported")
 	}
 
 	return c.oidc.ValidateToken(ctx, token)
 }
 
+// apiKeyPrefix is the token prefix for API key authentication (future #99).
+const apiKeyPrefix = "dbx_"
+
 // Middleware returns HTTP middleware that authenticates requests.
+// Routes tokens to the appropriate provider via ValidateToken.
 func (c *ChainProvider) Middleware() func(http.Handler) http.Handler {
 	if !c.authEnabled {
 		return c.noAuth.Middleware()
 	}
 
-	return c.oidc.Middleware()
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := extractBearerToken(r)
+			if token == "" {
+				writeJSONError(w, http.StatusUnauthorized, "missing authorization token")
+				return
+			}
+
+			user, err := c.ValidateToken(r.Context(), token)
+			if err != nil {
+				writeJSONError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
+
+			ctx := WithUser(r.Context(), user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }

@@ -28,9 +28,7 @@ func NewEstimateHandler(projectRepo database.ProjectRepo) *EstimateHandler {
 func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 

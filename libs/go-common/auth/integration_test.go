@@ -314,10 +314,10 @@ func TestIntegAuth_OIDCProvider_RoleExtraction(t *testing.T) {
 	}
 }
 
-func TestIntegAuth_OIDCProvider_ExpiredToken(t *testing.T) {
+func TestIntegAuth_OIDCProvider_InvalidToken(t *testing.T) {
 	provider := newTestProvider(t)
 
-	// Use a garbage token that looks like a JWT
+	// Token with valid JWT structure but invalid signature
 	_, err := provider.ValidateToken(context.Background(), "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.invalid")
 	if err == nil {
 		t.Fatal("ValidateToken() should return error for invalid token")

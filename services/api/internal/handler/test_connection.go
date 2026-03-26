@@ -37,9 +37,7 @@ func (h *TestConnectionHandler) TestLLM(w http.ResponseWriter, r *http.Request) 
 func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, target string) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 

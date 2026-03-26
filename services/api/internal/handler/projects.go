@@ -96,23 +96,10 @@ func (h *ProjectsHandler) List(w http.ResponseWriter, r *http.Request) {
 // Get returns a project by ID.
 // GET /api/v1/projects/{id}
 func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	p, err := h.repo.GetByID(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get project: "+err.Error())
-		return
-	}
+	p := getProjectWithOrgCheck(w, r, h.repo, r.PathValue("id"))
 	if p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-
-	if user, ok := auth.FromContext(r.Context()); ok && p.OrgID != "" && p.OrgID != user.OrgID {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -123,14 +110,8 @@ func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	existing, err := h.repo.GetByID(r.Context(), id)
-	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	if user, ok := auth.FromContext(r.Context()); ok && existing.OrgID != "" && existing.OrgID != user.OrgID {
-		writeError(w, http.StatusNotFound, "project not found")
+	existing := getProjectWithOrgCheck(w, r, h.repo, id)
+	if existing == nil {
 		return
 	}
 
@@ -178,14 +159,7 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	existing, err := h.repo.GetByID(r.Context(), id)
-	if err != nil || existing == nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	if user, ok := auth.FromContext(r.Context()); ok && existing.OrgID != "" && existing.OrgID != user.OrgID {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.repo, id) == nil {
 		return
 	}
 

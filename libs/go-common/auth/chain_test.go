@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/go-jose/go-jose/v4"
 )
 
 func TestChainProvider_NoAuthMode(t *testing.T) {
@@ -195,6 +193,3 @@ func TestChainProvider_AuthEnabled_MissingOIDCConfig(t *testing.T) {
 		t.Fatal("NewChainProvider() should return error when auth enabled but no OIDC config")
 	}
 }
-
-// Suppress unused import warning for jose (used in testOIDCServer via oidc_test.go)
-var _ jose.Signer

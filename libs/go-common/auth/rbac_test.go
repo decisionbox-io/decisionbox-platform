@@ -126,7 +126,7 @@ func TestHasMinRole(t *testing.T) {
 		{"empty roles", []string{}, 1, false},
 		{"nil roles", nil, 1, false},
 		{"unknown role ignored", []string{"unknown"}, 1, false},
-		{"zero min level always passes", []string{"viewer"}, 0, true},
+		{"zero min level passes any known role", []string{"viewer"}, 0, true},
 	}
 
 	for _, tt := range tests {
@@ -141,25 +141,14 @@ func TestHasMinRole(t *testing.T) {
 
 // --- RequireRole with unknown min role ---
 
-func TestRequireRole_UnknownMinRole(t *testing.T) {
-	// Unknown min role defaults to level 0, so any known role passes
-	middleware := RequireRole("nonexistent")
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	handler := middleware(inner)
-	req := httptest.NewRequest("GET", "/test", nil)
-	ctx := WithUser(req.Context(), &UserPrincipal{Sub: "u11", Roles: []string{"viewer"}})
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 (unknown min role defaults to level 0)", w.Code)
-	}
+func TestRequireRole_UnknownMinRole_Panics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("RequireRole with unknown role should panic")
+		}
+	}()
+	RequireRole("nonexistent")
 }
 
 // --- Verify context is preserved through middleware ---

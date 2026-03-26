@@ -24,10 +24,7 @@ func (h *SecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	key := r.PathValue("key")
 
-	// Verify project exists
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 
@@ -67,9 +64,7 @@ func (h *SecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 func (h *SecretsHandler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
+	if getProjectWithOrgCheck(w, r, h.projectRepo, projectID) == nil {
 		return
 	}
 

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
@@ -62,7 +63,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	testServer = httptest.NewServer(server.New(testDB, nil, nil))
+	testServer = httptest.NewServer(server.New(testDB, nil, nil, auth.NewNoAuthProvider()))
 	defer testServer.Close()
 
 	os.Exit(m.Run())

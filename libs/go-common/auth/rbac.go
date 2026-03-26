@@ -19,7 +19,7 @@ var roleHierarchy = map[string]int{
 func RequireRole(minRole string) func(http.Handler) http.Handler {
 	minLevel, ok := roleHierarchy[minRole]
 	if !ok {
-		minLevel = 0
+		panic("auth: unknown role " + minRole + " passed to RequireRole (valid: viewer, member, admin)")
 	}
 
 	return func(next http.Handler) http.Handler {

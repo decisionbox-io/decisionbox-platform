@@ -47,8 +47,8 @@ export async function middleware(request: NextRequest) {
     if (!session) {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
-    if (session.accessToken) {
-      headers.set('Authorization', `Bearer ${session.accessToken}`);
+    if (session.apiToken) {
+      headers.set('Authorization', `Bearer ${session.apiToken}`);
     }
   }
 

@@ -36,6 +36,13 @@ type Provider interface {
 	Middleware() func(http.Handler) http.Handler
 }
 
+// Compile-time checks: all providers satisfy the Provider interface.
+var (
+	_ Provider = (*NoAuthProvider)(nil)
+	_ Provider = (*OIDCProvider)(nil)
+	_ Provider = (*ChainProvider)(nil)
+)
+
 // writeJSONError writes a JSON error response matching the API's error format.
 func writeJSONError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")

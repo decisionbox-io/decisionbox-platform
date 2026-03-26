@@ -66,15 +66,15 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		return wrapped.ServeHTTP
 	}
 
-	// Health endpoints — no auth required
-	// /health and /health/ready — for K8s liveness/readiness probes (from go-common)
-	// /api/v1/health — for dashboard and API consumers
+	// Health endpoints — registered on a separate mux, no auth required.
+	// K8s probes and load balancers don't send auth headers.
+	healthMux := http.NewServeMux()
 	if healthHandler != nil {
-		mux.HandleFunc("GET /health", healthHandler.LivenessHandler())
-		mux.HandleFunc("GET /health/ready", healthHandler.ReadinessHandler())
-		mux.HandleFunc("GET /api/v1/health", healthHandler.ReadinessHandler())
+		healthMux.HandleFunc("GET /health", healthHandler.LivenessHandler())
+		healthMux.HandleFunc("GET /health/ready", healthHandler.ReadinessHandler())
+		healthMux.HandleFunc("GET /api/v1/health", healthHandler.ReadinessHandler())
 	} else {
-		mux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
+		healthMux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
 	}
 
 	// Providers — viewer
@@ -134,8 +134,15 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		mux.HandleFunc("GET /api/v1/projects/{id}/secrets", withRole(admin, secretsHandler.List))
 	}
 
-	// Middleware chain: CORS → Auth → Logging → Router
-	return corsMiddleware(authProvider.Middleware()(handler.LoggingMiddleware(mux)))
+	// Combine: health endpoints (no auth) + app endpoints (with auth)
+	// Middleware chain: CORS → Logging → Auth → RBAC → Router
+	root := http.NewServeMux()
+	root.Handle("/health", healthMux)
+	root.Handle("/health/", healthMux)
+	root.Handle("/api/v1/health", healthMux)
+	root.Handle("/", authProvider.Middleware()(mux))
+
+	return corsMiddleware(handler.LoggingMiddleware(root))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
