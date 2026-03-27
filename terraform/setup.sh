@@ -1650,6 +1650,9 @@ if [[ "$RESUME" == "true" ]]; then
   echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
   echo ""
 
+  # Set TOTAL_STEPS before calling any step functions
+  TOTAL_STEPS=$(( 10 + ${#PLUGIN_STEPS[@]} ))
+
   # Check prerequisites
   do_step_1_prerequisites
 
