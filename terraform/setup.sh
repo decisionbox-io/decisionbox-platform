@@ -778,7 +778,7 @@ EOF
     ok "Generated ${TFVARS_FILE}"
 
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    HELM_VALUES="${TF_DIR}/values-secrets.yaml"
     K8S_SA="decisionbox-api"
     K8S_AGENT_SA="decisionbox-agent"
     GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -863,7 +863,7 @@ EOF
     ok "Generated ${TFVARS_FILE}"
 
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    HELM_VALUES="${TF_DIR}/values-secrets.yaml"
     K8S_SA="decisionbox-api"
     K8S_AGENT_SA="decisionbox-agent"
     IRSA_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-api"
@@ -1608,7 +1608,7 @@ if [[ "$RESUME" == "true" ]]; then
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
   HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-  HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+  HELM_VALUES="${TF_DIR}/values-secrets.yaml"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     PROJECT_ID=$(parse_tfvar project_id)
