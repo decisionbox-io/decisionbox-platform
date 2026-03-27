@@ -11,6 +11,7 @@ COPY providers/llm/openai/go.mod providers/llm/openai/
 COPY providers/llm/ollama/go.mod providers/llm/ollama/go.sum providers/llm/ollama/
 COPY providers/llm/vertex-ai/go.mod providers/llm/vertex-ai/go.sum providers/llm/vertex-ai/
 COPY providers/llm/bedrock/go.mod providers/llm/bedrock/go.sum providers/llm/bedrock/
+COPY providers/llm/azure-foundry/go.mod providers/llm/azure-foundry/
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY providers/warehouse/redshift/go.mod providers/warehouse/redshift/go.sum providers/warehouse/redshift/
 COPY providers/warehouse/snowflake/go.mod providers/warehouse/snowflake/go.sum providers/warehouse/snowflake/

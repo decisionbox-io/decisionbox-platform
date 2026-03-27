@@ -86,6 +86,7 @@ jobs:
           (cd providers/llm/ollama && go test -coverprofile="$COV/llm-ollama.txt" ./...)
           (cd providers/llm/vertex-ai && go test -coverprofile="$COV/llm-vertex.txt" ./...)
           (cd providers/llm/bedrock && go test -coverprofile="$COV/llm-bedrock.txt" ./...)
+          (cd providers/llm/azure-foundry && go test -coverprofile="$COV/llm-azure-foundry.txt" ./...)
           (cd providers/secrets/mongodb && go test -coverprofile="$COV/secrets-mongodb.txt" ./...)
           (cd providers/secrets/gcp && go test -coverprofile="$COV/secrets-gcp.txt" ./...)
           (cd providers/secrets/aws && go test -coverprofile="$COV/secrets-aws.txt" ./...)
