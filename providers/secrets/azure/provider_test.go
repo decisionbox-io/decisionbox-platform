@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -445,6 +446,95 @@ func TestNewAzureProviderWithClient_DefaultNamespace(t *testing.T) {
 	p := NewAzureProviderWithClient(&mockKVClient{}, "")
 	if p.namespace != "decisionbox" {
 		t.Errorf("namespace = %q, want %q", p.namespace, "decisionbox")
+	}
+}
+
+func TestValidateSecretName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"decisionbox-proj-1-llm-api-key", false},
+		{"myapp-prod-proj-456-warehouse-creds", false},
+		{"a", false},
+		{"ABC-123", false},
+		{"has_underscore", true},
+		{"has.dot", true},
+		{"has space", true},
+		{"has/slash", true},
+		{"", true},
+		{strings.Repeat("a", 128), true},
+		{strings.Repeat("a", 127), false},
+	}
+	for _, tt := range tests {
+		err := validateSecretName(tt.name)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateSecretName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestAzureProvider_Get_InvalidName(t *testing.T) {
+	p := NewAzureProviderWithClient(&mockKVClient{}, "decisionbox")
+
+	_, err := p.Get(context.Background(), "proj_with_underscore", "key")
+	if err == nil {
+		t.Fatal("Get() should reject names with underscores")
+	}
+	if !strings.Contains(err.Error(), "invalid secret name") {
+		t.Errorf("error = %q, should mention invalid secret name", err.Error())
+	}
+}
+
+func TestAzureProvider_Set_InvalidName(t *testing.T) {
+	p := NewAzureProviderWithClient(&mockKVClient{}, "decisionbox")
+
+	err := p.Set(context.Background(), "proj.with.dots", "key", "value")
+	if err == nil {
+		t.Fatal("Set() should reject names with dots")
+	}
+	if !strings.Contains(err.Error(), "invalid secret name") {
+		t.Errorf("error = %q, should mention invalid secret name", err.Error())
+	}
+}
+
+func TestIsConflict(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"409 conflict", &azcore.ResponseError{StatusCode: http.StatusConflict}, true},
+		{"404 not found", &azcore.ResponseError{StatusCode: http.StatusNotFound}, false},
+		{"generic error", fmt.Errorf("some error"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isConflict(tt.err); got != tt.want {
+				t.Errorf("isConflict() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAzureProvider_Set_SoftDeleteConflict(t *testing.T) {
+	mock := &mockKVClient{
+		setSecretFn: func(_ context.Context, _ string, _ azsecrets.SetSecretParameters, _ *azsecrets.SetSecretOptions) (azsecrets.SetSecretResponse, error) {
+			return azsecrets.SetSecretResponse{}, &azcore.ResponseError{StatusCode: http.StatusConflict}
+		},
+	}
+
+	p := NewAzureProviderWithClient(mock, "decisionbox")
+
+	err := p.Set(context.Background(), "proj-1", "key", "value")
+	if err == nil {
+		t.Fatal("Set() should return error for 409 Conflict")
+	}
+	if !strings.Contains(err.Error(), "soft-deleted") {
+		t.Errorf("error = %q, should mention soft-deleted state", err.Error())
+	}
+	if !strings.Contains(err.Error(), "purge") {
+		t.Errorf("error = %q, should mention purge action", err.Error())
 	}
 }
 

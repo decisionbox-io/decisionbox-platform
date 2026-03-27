@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 )
+
+// validSecretName matches Azure Key Vault's naming constraint: alphanumerics and hyphens, 1-127 chars.
+// Reference: https://learn.microsoft.com/en-us/azure/key-vault/general/about-keys-secrets-certificates
+var validSecretName = regexp.MustCompile(`^[a-zA-Z0-9-]{1,127}$`)
 
 func init() {
 	secrets.Register("azure", func(cfg secrets.Config) (secrets.Provider, error) {
@@ -71,12 +76,21 @@ func (p *AzureProvider) secretName(projectID, key string) string {
 	return fmt.Sprintf("%s-%s-%s", p.namespace, projectID, key)
 }
 
-func (p *AzureProvider) secretPrefix() string {
-	return p.namespace + "-"
+// validateSecretName checks that the composed secret name meets Azure Key Vault's
+// naming constraints: alphanumerics and hyphens only, 1-127 characters.
+// Underscores, dots, spaces, and other characters are not allowed.
+func validateSecretName(name string) error {
+	if !validSecretName.MatchString(name) {
+		return fmt.Errorf("azure secrets: invalid secret name %q — must be 1-127 alphanumeric or hyphen characters (no underscores, dots, or spaces)", name)
+	}
+	return nil
 }
 
 func (p *AzureProvider) Get(ctx context.Context, projectID, key string) (string, error) {
 	name := p.secretName(projectID, key)
+	if err := validateSecretName(name); err != nil {
+		return "", err
+	}
 
 	resp, err := p.client.GetSecret(ctx, name, "", nil)
 	if err != nil {
@@ -94,6 +108,9 @@ func (p *AzureProvider) Get(ctx context.Context, projectID, key string) (string,
 
 func (p *AzureProvider) Set(ctx context.Context, projectID, key, value string) error {
 	name := p.secretName(projectID, key)
+	if err := validateSecretName(name); err != nil {
+		return err
+	}
 
 	tags := map[string]*string{
 		"managed-by": strPtr("decisionbox"),
@@ -106,6 +123,13 @@ func (p *AzureProvider) Set(ctx context.Context, projectID, key, value string) e
 		Tags:  tags,
 	}, nil)
 	if err != nil {
+		// Azure Key Vault has mandatory soft-delete. If a secret was previously
+		// deleted externally (via portal/CLI), its name is occupied in the
+		// soft-deleted state and SetSecret returns 409 Conflict. The secret must
+		// be purged via the Azure portal or CLI before it can be recreated.
+		if isConflict(err) {
+			return fmt.Errorf("azure secrets set: secret %q is in a soft-deleted state — purge it via Azure portal or CLI (az keyvault secret purge) before recreating", name)
+		}
 		return fmt.Errorf("azure secrets set: %w", err)
 	}
 
@@ -116,6 +140,11 @@ func (p *AzureProvider) List(ctx context.Context, projectID string) ([]secrets.S
 	prefix := fmt.Sprintf("%s-%s-", p.namespace, projectID)
 	entries := make([]secrets.SecretEntry, 0)
 
+	// Azure Key Vault does not support server-side prefix filtering on secret names.
+	// We list all secrets in the vault and filter client-side by namespace+projectID prefix.
+	// For each matching secret, we call GetSecret to obtain the value for masking (N+1 pattern).
+	// This is acceptable for typical DecisionBox usage (few secrets per project) but could be
+	// slow for vaults with thousands of secrets across many projects.
 	pager := p.client.NewListSecretPropertiesPager(nil)
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
@@ -134,6 +163,9 @@ func (p *AzureProvider) List(ctx context.Context, projectID string) ([]secrets.S
 			if !strings.HasPrefix(name, prefix) {
 				continue
 			}
+
+			// Include all secrets regardless of enabled/disabled state.
+			// Disabled secrets are still relevant for listing (admin visibility).
 
 			key := strings.TrimPrefix(name, prefix)
 
@@ -194,6 +226,16 @@ func isNotFound(err error) bool {
 	var respErr *azcore.ResponseError
 	if errors.As(err, &respErr) {
 		return respErr.StatusCode == http.StatusNotFound
+	}
+	return false
+}
+
+// isConflict checks if an Azure error indicates a 409 Conflict.
+// This occurs when setting a secret whose name is occupied by a soft-deleted secret.
+func isConflict(err error) bool {
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) {
+		return respErr.StatusCode == http.StatusConflict
 	}
 	return false
 }

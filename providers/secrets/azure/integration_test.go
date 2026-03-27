@@ -95,6 +95,13 @@ func cleanupPrefix(ctx context.Context, prefix string) {
 			if strings.HasPrefix(name, prefix) {
 				if _, err := cleanupClient.DeleteSecret(ctx, name, nil); err != nil {
 					fmt.Fprintf(os.Stderr, "Cleanup delete error for %s: %v\n", name, err)
+					continue
+				}
+				// Purge the soft-deleted secret so the name is fully released.
+				// Without purging, the name stays occupied for the retention period
+				// (default 90 days) and would cause 409 Conflict on re-creation.
+				if _, err := cleanupClient.PurgeDeletedSecret(ctx, name, nil); err != nil {
+					fmt.Fprintf(os.Stderr, "Cleanup purge error for %s: %v\n", name, err)
 				}
 			}
 		}
