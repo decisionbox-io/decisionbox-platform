@@ -141,6 +141,7 @@ See [Adding Warehouse Providers](../guides/adding-warehouse-providers.md) to imp
 | MongoDB (default) | `mongodb` | Encryption key env var | Encrypted MongoDB collection |
 | Google Cloud | `gcp` | GCP ADC | GCP Secret Manager |
 | AWS | `aws` | AWS credentials | AWS Secrets Manager |
+| Azure | `azure` | Azure DefaultAzureCredential | Azure Key Vault |
 
 **Location:** `providers/secrets/{provider-name}/`
 
@@ -180,6 +181,7 @@ import (
     _ "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
     _ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
     _ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
+    _ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 )
 
 // Create providers from project config

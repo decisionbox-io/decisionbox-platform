@@ -78,6 +78,7 @@ func LoadConfig() Config {
 		EncryptionKey: os.Getenv("SECRET_ENCRYPTION_KEY"),
 		GCPProjectID:  os.Getenv("SECRET_GCP_PROJECT_ID"),
 		AWSRegion:     getEnv("SECRET_AWS_REGION", "us-east-1"),
+		AzureVaultURL: os.Getenv("SECRET_AZURE_VAULT_URL"),
 	}
 }
 

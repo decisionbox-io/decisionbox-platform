@@ -17,6 +17,7 @@ COPY providers/warehouse/snowflake/go.mod providers/warehouse/snowflake/go.sum p
 COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers/secrets/mongodb/
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
 COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
+COPY providers/secrets/azure/go.mod providers/secrets/azure/go.sum providers/secrets/azure/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
 COPY domain-packs/social/go/go.mod domain-packs/social/go/
 COPY services/api/go.mod services/api/go.sum services/api/

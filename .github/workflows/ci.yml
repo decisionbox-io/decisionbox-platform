@@ -89,6 +89,7 @@ jobs:
           (cd providers/secrets/mongodb && go test -coverprofile="$COV/secrets-mongodb.txt" ./...)
           (cd providers/secrets/gcp && go test -coverprofile="$COV/secrets-gcp.txt" ./...)
           (cd providers/secrets/aws && go test -coverprofile="$COV/secrets-aws.txt" ./...)
+          (cd providers/secrets/azure && go test -coverprofile="$COV/secrets-azure.txt" ./...)
           (cd providers/warehouse/bigquery && go test -coverprofile="$COV/warehouse-bigquery.txt" ./...)
           (cd providers/warehouse/redshift && go test -coverprofile="$COV/warehouse-redshift.txt" ./...)
           (cd providers/warehouse/snowflake && go test -coverprofile="$COV/warehouse-snowflake.txt" ./...)

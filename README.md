@@ -49,7 +49,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Domain-aware analysis** — Pluggable domain packs (gaming, social network shipped — bring your own)
 - **Multiple LLM providers** — Claude, OpenAI, Ollama, Vertex AI, Bedrock
 - **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned), Snowflake
-- **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager)
+- **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
 - **Insight validation** — AI claims are verified against your actual data
 - **Feedback loop** — Like/dislike insights, agent learns from feedback on next run
 - **Cost estimation** — Estimate LLM + warehouse costs before running

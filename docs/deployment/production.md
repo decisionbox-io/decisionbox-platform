@@ -37,6 +37,10 @@ SECRET_GCP_PROJECT_ID=my-project
 # AWS
 SECRET_PROVIDER=aws
 SECRET_AWS_REGION=us-east-1
+
+# Azure
+SECRET_PROVIDER=azure
+SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/
 ```
 
 Cloud providers handle encryption, access control, audit logging, and key rotation.
