@@ -1,6 +1,6 @@
 # Setup Wizard
 
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 
 The setup wizard (`terraform/setup.sh`) is an interactive script that provisions cloud infrastructure and deploys DecisionBox in one flow. It handles Terraform configuration, cloud authentication, Kubernetes setup, and Helm deployment.
 
@@ -19,8 +19,45 @@ cd terraform
 | `--dry-run` | Generate config files (tfvars + Helm values) without applying |
 | `--resume` | Resume from Helm deploy — skips Terraform, reloads config from existing `terraform.tfvars` |
 | `--destroy` | Tear down everything — Helm releases, K8s namespace, Terraform resources |
+| `--project NAME` | Project name (default: `decisionbox`) |
+| `--env ENV` | Environment: `prod`, `staging`, `dev`, or custom (default: `prod`) |
+| `--base DIR` | Base directory for deployment files (default: script's directory) |
+| `--provider CLOUD` | Cloud provider: `gcp` or `aws` (for `--resume`/`--destroy`) |
+| `--include FILE` | Source a plugin script that registers additional steps |
 
-## 9-Step Flow
+## Multi-Deployment Support
+
+Each deployment gets its own isolated directory with independent `.terraform/`, `terraform.tfvars`, and `values-secrets.yaml`:
+
+```
+{base}/{project}/{cloud}/{env}/
+├── main.tf              # Copied from template, module source rewritten
+├── variables.tf
+├── outputs.tf
+├── versions.tf
+├── terraform.tfvars     # Generated per deployment
+├── values-secrets.yaml  # Helm values (per deployment)
+└── .terraform/          # Isolated provider cache + state link
+```
+
+**Examples:**
+
+```bash
+# Default: terraform/decisionbox/gcp/prod/
+./setup.sh
+
+# Named project + staging environment
+./setup.sh --project acme-corp --env staging
+
+# External directory (outside the repo)
+./setup.sh --project acme-corp --base ~/deployments
+
+# Resume or destroy a specific deployment
+./setup.sh --resume --project acme-corp --env staging --provider gcp
+./setup.sh --destroy --project acme-corp --env prod --provider aws
+```
+
+## 10-Step Flow
 
 ### Step 1: Prerequisites
 
@@ -33,13 +70,22 @@ Verifies all required tools are installed with version info:
 
 If any tool is missing, the wizard shows an install link and exits.
 
-### Step 2: Cloud Provider
+### Step 2: Deployment Identity
+
+Configure the deployment's project name, environment, and base directory:
+- **Project name** (default: `decisionbox`) — lowercase alphanumeric + hyphens
+- **Environment** (default: `prod`) — e.g., `prod`, `staging`, `dev`
+- **Base directory** (default: script's directory) — where deployment files are stored
+
+These determine the deployment directory: `{base}/{project}/{cloud}/{env}/`.
+
+### Step 3: Cloud Provider
 
 Select your cloud provider:
 - **GCP** — Google Cloud Platform
 - **AWS** — Amazon Web Services
 
-### Step 3: Secrets Configuration
+### Step 4: Secrets Configuration
 
 Configure the secret namespace prefix used to scope secrets. Format: `{namespace}-{projectID}-{key}`.
 
@@ -47,12 +93,12 @@ Choose between:
 - **Cloud Secret Manager** (GCP Secret Manager or AWS Secrets Manager) — recommended for production
 - **MongoDB encrypted secrets** — uses AES-256 encryption with `SECRET_ENCRYPTION_KEY`
 
-### Step 4: Cloud Provider Settings
+### Step 5: Cloud Provider Settings
 
 **GCP:**
 - Project ID (validated against GCP naming rules)
 - Region (default: `us-central1`)
-- GKE cluster name (default: `decisionbox-prod`)
+- GKE cluster name (default: `{project}-{env}`)
 - Kubernetes namespace (default: `decisionbox`)
 - Node pool: machine type, min/max nodes per zone (numeric validation, min <= max check)
 - BigQuery IAM (optional — for data warehouse access)
@@ -60,12 +106,13 @@ Choose between:
 
 **AWS:**
 - Region (default: `us-east-1`)
-- EKS cluster name (default: `decisionbox-prod`)
+- EKS cluster name (default: `{project}-{env}`)
 - Kubernetes namespace (default: `decisionbox`)
 - Node group: instance type, min/max/desired nodes (numeric validation)
-- Redshift IAM (optional)
+- Bedrock IAM (optional — for LLM access)
+- Redshift IAM (optional — for data warehouse access)
 
-### Step 5: Authentication
+### Step 6: Authentication
 
 **GCP** — choose how Terraform authenticates:
 
@@ -79,60 +126,43 @@ Choose between:
 - **Environment variables:** Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 - Verifies identity via `aws sts get-caller-identity`.
 
-### Step 6: Terraform State
+### Step 7: Terraform State
 
 **GCP:** Configure a GCS bucket for remote state:
 - Bucket name (default: `{project-id}-terraform-state`)
-- State prefix / environment name (default: `prod`)
+- State prefix (default: `{project}/{env}`)
 - Auto-creates the bucket with versioning if it doesn't exist
 
 **AWS:** Configure an S3 bucket for remote state with native locking:
 - S3 bucket name (default: `{account-id}-terraform-state`)
-- State key (default: `prod/terraform.tfstate`)
+- State key (default: `{project}/{env}/terraform.tfstate`)
 - Auto-creates the bucket with versioning if it doesn't exist
 - Uses S3-native locking (`use_lockfile=true`, Terraform 1.10+)
 
-### Step 7: Review
+### Step 8: Review
 
-Displays all collected configuration for review before proceeding. Type `back` to change any value.
+Displays all collected configuration for review before proceeding, including project name, environment, and deployment directory. Type `back` to change any value.
 
-### Step 8: Generate Config Files
+### Step 9: Generate Config Files
 
-Generates two files:
+Creates the deployment directory (if new) by copying template files from `terraform/{cloud}/prod/` and rewriting the module source path. Then generates:
 
-**`terraform/gcp/prod/terraform.tfvars`** — Terraform variables:
+**`{base}/{project}/{cloud}/{env}/terraform.tfvars`** — Terraform variables:
 ```hcl
 project_id   = "my-project"
 region       = "us-central1"
-cluster_name = "decisionbox-prod"
+cluster_name = "acme-corp-prod"
 machine_type = "e2-standard-2"
 min_node_count = 1
 max_node_count = 2
 k8s_namespace = "decisionbox"
 enable_gcp_secrets  = true
 secret_namespace    = "decisionbox"
-enable_bigquery_iam  = false
-enable_vertex_ai_iam = false
 ```
 
-**`helm-charts/decisionbox-api/values-secrets.yaml`** — Helm values:
+**`{base}/{project}/{cloud}/{env}/values-secrets.yaml`** — Helm values with secret provider config.
 
-When cloud secrets are enabled:
-```yaml
-serviceAccountAnnotations:
-  iam.gke.io/gcp-service-account: "cluster-api@project.iam.gserviceaccount.com"
-env:
-  SECRET_PROVIDER: "gcp"
-  SECRET_GCP_PROJECT_ID: "my-project"
-```
-
-When using MongoDB secrets:
-```yaml
-env:
-  SECRET_PROVIDER: "mongodb"
-```
-
-### Step 9: Terraform & Deploy
+### Step 10: Terraform & Deploy
 
 1. **Terraform init** — initializes with remote backend (spinner + elapsed time)
 2. **Terraform plan** — shows changes, prompts for approval
@@ -144,7 +174,7 @@ env:
 
 ## Navigation
 
-Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-7 support back navigation. Steps 8-9 are sequential.
+Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-8 support back navigation. Steps 9-10 are sequential.
 
 ## Resume Mode
 
@@ -152,15 +182,15 @@ If the Helm deployment fails (e.g., missing chart dependencies, image pull error
 
 ```bash
 ./setup.sh --resume
+./setup.sh --resume --project acme-corp --env staging --provider gcp
 ```
 
 Resume mode:
-1. Reads config from existing `terraform.tfvars` (auto-detects GCP or AWS)
-2. Validates the cluster is reachable
-3. Checks if Helm releases already exist (asks before re-deploying)
-4. Automatically adds Bitnami Helm repo if missing
-5. Runs `helm dependency build` before deploying
-6. On failure, suggests `./setup.sh --resume` again
+1. Prompts for project/env (or uses `--project`/`--env` flags)
+2. Reads config from existing `terraform.tfvars`
+3. Validates the cluster is reachable
+4. Checks if Helm releases already exist (asks before re-deploying)
+5. On failure, suggests `./setup.sh --resume` again
 
 ## Dry Run
 
@@ -178,16 +208,18 @@ Tear down all infrastructure:
 
 ```bash
 ./setup.sh --destroy
+./setup.sh --destroy --project acme-corp --env prod --provider aws
 ```
 
 Destroy mode:
-1. Reads config from existing `terraform.tfvars` (auto-detects GCP or AWS)
-2. Requires typing `destroy` to confirm (safety check)
-3. Uninstalls Helm releases (dashboard, API)
-4. Deletes the Kubernetes namespace
-5. Disables deletion protection (GCP only — GKE requires this before destroy)
-6. Runs `terraform destroy` to remove all cloud resources
-7. Leaves the state bucket intact (contains state history)
+1. Prompts for project/env (or uses `--project`/`--env`/`--provider` flags)
+2. Reads config from existing `terraform.tfvars`
+3. Requires typing `destroy` to confirm (safety check)
+4. Uninstalls Helm releases (dashboard, API)
+5. Deletes the Kubernetes namespace
+6. Disables deletion protection (GCP only — GKE requires this before destroy)
+7. Runs `terraform destroy` to remove all cloud resources
+8. Leaves the state bucket intact (contains state history)
 
 ## Terminal Features
 
@@ -202,8 +234,8 @@ Destroy mode:
 
 | File | Gitignored | Purpose |
 |------|-----------|---------|
-| `terraform/{gcp,aws}/prod/terraform.tfvars` | Yes | Terraform input variables |
-| `helm-charts/decisionbox-api/values-secrets.yaml` | Yes | Helm values with secret provider config |
+| `{base}/{project}/{cloud}/{env}/terraform.tfvars` | Yes (`*.tfvars`) | Terraform input variables |
+| `{base}/{project}/{cloud}/{env}/values-secrets.yaml` | Yes | Helm values with secret provider config |
 
 Both files are gitignored to prevent committing environment-specific values.
 

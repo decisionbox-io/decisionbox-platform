@@ -127,6 +127,21 @@ for arg in "$@"; do
   esac
 done
 
+# Validate CLI flag values (catch --project without a value, etc.)
+for pending_var in NEXT_IS_INCLUDE NEXT_IS_PROJECT NEXT_IS_ENV NEXT_IS_BASE NEXT_IS_PROVIDER; do
+  if [[ "${!pending_var:-}" == "true" ]]; then
+    flag_name="${pending_var#NEXT_IS_}"
+    echo "Error: --${flag_name,,} requires a value."
+    exit 1
+  fi
+done
+
+# Validate --provider value if provided
+if [[ -n "$CLI_PROVIDER" && "$CLI_PROVIDER" != "gcp" && "$CLI_PROVIDER" != "aws" ]]; then
+  echo "Error: --provider must be 'gcp' or 'aws', got '${CLI_PROVIDER}'"
+  exit 1
+fi
+
 # ─── Colors (disabled if not a TTY) ──────────────────────────────────────────
 
 if [[ -t 1 ]]; then
@@ -259,6 +274,59 @@ elapsed() {
   fi
 }
 
+# ─── Deployment discovery (shared by --resume and --destroy) ────────────────
+# Sets: PROJECT_NAME, ENVIRONMENT, CLOUD, DEPLOY_BASE, TF_DIR, TFVARS_FILE
+
+resolve_deployment_dir() {
+  local action_label="$1"  # "resume" or "destroy"
+
+  PROJECT_NAME="${CLI_PROJECT:-}"
+  ENVIRONMENT="${CLI_ENV:-}"
+  CLOUD="${CLI_PROVIDER:-}"
+  DEPLOY_BASE="${CLI_BASE:-${SCRIPT_DIR}}"
+  DEPLOY_BASE="${DEPLOY_BASE/#\~/$HOME}"
+
+  if [[ -z "$PROJECT_NAME" ]]; then
+    prompt PROJECT_NAME "Project name" "decisionbox"
+  fi
+  if [[ -z "$ENVIRONMENT" ]]; then
+    prompt ENVIRONMENT "Environment" "prod"
+  fi
+
+  if [[ -z "$CLOUD" ]]; then
+    local gcp_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
+    local aws_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
+
+    if [[ -f "$gcp_tfvars" && -f "$aws_tfvars" ]]; then
+      echo -e "  ${BOLD}1)${NC} GCP  — ${gcp_tfvars}"
+      echo -e "  ${BOLD}2)${NC} AWS  — ${aws_tfvars}"
+      echo ""
+      local cloud_choice
+      prompt_choice cloud_choice "Which deployment to ${action_label}?" "1" "1 2 gcp aws"
+      case "$cloud_choice" in
+        1|gcp) CLOUD="gcp" ;;
+        2|aws) CLOUD="aws" ;;
+      esac
+    elif [[ -f "$gcp_tfvars" ]]; then
+      CLOUD="gcp"
+    elif [[ -f "$aws_tfvars" ]]; then
+      CLOUD="aws"
+    else
+      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws}/${ENVIRONMENT}/."
+      dim "Specify --project, --env, and --base if using a custom location."
+      exit 1
+    fi
+  fi
+
+  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
+  TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+
+  if [[ ! -f "$TFVARS_FILE" ]]; then
+    err "No terraform.tfvars found at ${TFVARS_FILE}"
+    exit 1
+  fi
+}
+
 # ─── Cleanup on exit ────────────────────────────────────────────────────────
 
 cleanup() {
@@ -324,6 +392,7 @@ do_step_2_deployment() {
   # Validate: lowercase alphanumeric + hyphens
   if [[ ! "$PROJECT_NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
     err "Project name must be lowercase alphanumeric with hyphens (e.g., my-project)."
+    PROJECT_NAME=""
     return 1
   fi
   ok "Project: ${BOLD}${PROJECT_NAME}${NC}"
@@ -332,6 +401,7 @@ do_step_2_deployment() {
   prompt ENVIRONMENT "Environment (prod, staging, dev, or custom)" "${ENVIRONMENT:-${CLI_ENV:-prod}}" || return 1
   if [[ ! "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
     err "Environment must be lowercase alphanumeric with hyphens."
+    ENVIRONMENT=""
     return 1
   fi
   ok "Environment: ${BOLD}${ENVIRONMENT}${NC}"
@@ -718,7 +788,9 @@ do_step_9_generate() {
     info "Creating deployment directory: ${TF_DIR}"
     mkdir -p "$TF_DIR"
 
-    # Copy template files from the repo's template directory
+    # Copy template files from the repo's canonical template directory.
+    # Always uses prod/ as the template regardless of target env — the env
+    # difference is in terraform.tfvars (generated below), not in the HCL files.
     TEMPLATE_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
     for f in main.tf variables.tf outputs.tf versions.tf; do
       if [[ -f "${TEMPLATE_DIR}/${f}" ]]; then
@@ -736,13 +808,18 @@ do_step_9_generate() {
     REPO_ABS="$(cd "$SCRIPT_DIR/.." && pwd)"
 
     if [[ "$DEPLOY_ABS" == "$REPO_ABS"/* ]]; then
-      # Inside the repo — compute relative path from TF_DIR to modules
-      # Count directory depth from TF_DIR to SCRIPT_DIR, then append {cloud}/modules/decisionbox
-      REL_PATH=$(python3 -c "import os.path; print(os.path.relpath('${MODULE_ABS}', '${DEPLOY_ABS}'))" 2>/dev/null || echo "$MODULE_ABS")
-      sed -i "s|source\s*=\s*\"../modules/decisionbox\"|source = \"${REL_PATH}\"|g" "${TF_DIR}/main.tf" 2>/dev/null || true
+      # Inside the repo — compute relative path from TF_DIR to modules (pure bash)
+      # Walk up from DEPLOY_ABS to REPO_ABS counting levels, then append the module subpath
+      local remaining="${DEPLOY_ABS#$REPO_ABS/}"
+      local depth
+      depth=$(echo "$remaining" | tr -cd '/' | wc -c)
+      local ups=""
+      for ((i = 0; i <= depth; i++)); do ups+="../"; done
+      REL_PATH="${ups}terraform/${CLOUD}/modules/decisionbox"
+      sed -i.bak "s|source[[:space:]]*=[[:space:]]*\"../modules/decisionbox\"|source = \"${REL_PATH}\"|g" "${TF_DIR}/main.tf" && rm -f "${TF_DIR}/main.tf.bak"
     else
       # Outside the repo — use absolute path to modules
-      sed -i "s|source\s*=\s*\"../modules/decisionbox\"|source = \"${MODULE_ABS}\"|g" "${TF_DIR}/main.tf" 2>/dev/null || true
+      sed -i.bak "s|source[[:space:]]*=[[:space:]]*\"../modules/decisionbox\"|source = \"${MODULE_ABS}\"|g" "${TF_DIR}/main.tf" && rm -f "${TF_DIR}/main.tf.bak"
     fi
 
     ok "Scaffolded ${TF_DIR} from template"
@@ -1329,55 +1406,13 @@ if [[ "$DESTROY" == "true" ]]; then
     exit 1
   fi
 
+  # Set TOTAL_STEPS before calling any step functions
+  TOTAL_STEPS=$(( 10 + ${#PLUGIN_STEPS[@]} ))
+
   warn "Destroy mode: this will tear down ALL DecisionBox infrastructure."
   echo ""
 
-  # Use CLI flags if provided, otherwise prompt
-  PROJECT_NAME="${CLI_PROJECT:-}"
-  ENVIRONMENT="${CLI_ENV:-}"
-  CLOUD="${CLI_PROVIDER:-}"
-  DEPLOY_BASE="${CLI_BASE:-${SCRIPT_DIR}}"
-  DEPLOY_BASE="${DEPLOY_BASE/#\~/$HOME}"
-
-  if [[ -z "$PROJECT_NAME" ]]; then
-    prompt PROJECT_NAME "Project name" "decisionbox"
-  fi
-  if [[ -z "$ENVIRONMENT" ]]; then
-    prompt ENVIRONMENT "Environment" "prod"
-  fi
-
-  # Try to find the deployment — check both providers if not specified
-  if [[ -z "$CLOUD" ]]; then
-    GCP_TFVARS="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
-    AWS_TFVARS="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
-
-    if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
-      echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
-      echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
-      echo ""
-      prompt_choice DESTROY_CLOUD "Which deployment to destroy?" "1" "1 2 gcp aws"
-      case "$DESTROY_CLOUD" in
-        1|gcp) CLOUD="gcp" ;;
-        2|aws) CLOUD="aws" ;;
-      esac
-    elif [[ -f "$GCP_TFVARS" ]]; then
-      CLOUD="gcp"
-    elif [[ -f "$AWS_TFVARS" ]]; then
-      CLOUD="aws"
-    else
-      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws}/${ENVIRONMENT}/."
-      dim "Specify --project, --env, and --base if using a custom location."
-      exit 1
-    fi
-  fi
-
-  TFVARS_FILE="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}/terraform.tfvars"
-  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
-
-  if [[ ! -f "$TFVARS_FILE" ]]; then
-    err "No terraform.tfvars found at ${TFVARS_FILE}"
-    exit 1
-  fi
+  resolve_deployment_dir "destroy"
 
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
 
@@ -1554,52 +1589,7 @@ if [[ "$RESUME" == "true" ]]; then
   info "Resume mode: loading config from previous run..."
   echo ""
 
-  # Use CLI flags if provided, otherwise prompt
-  PROJECT_NAME="${CLI_PROJECT:-}"
-  ENVIRONMENT="${CLI_ENV:-}"
-  CLOUD="${CLI_PROVIDER:-}"
-  DEPLOY_BASE="${CLI_BASE:-${SCRIPT_DIR}}"
-  DEPLOY_BASE="${DEPLOY_BASE/#\~/$HOME}"
-
-  if [[ -z "$PROJECT_NAME" ]]; then
-    prompt PROJECT_NAME "Project name" "decisionbox"
-  fi
-  if [[ -z "$ENVIRONMENT" ]]; then
-    prompt ENVIRONMENT "Environment" "prod"
-  fi
-
-  # Try to find the deployment — check both providers if not specified
-  if [[ -z "$CLOUD" ]]; then
-    GCP_TFVARS="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
-    AWS_TFVARS="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
-
-    if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
-      echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
-      echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
-      echo ""
-      prompt_choice RESUME_CLOUD "Which deployment to resume?" "1" "1 2 gcp aws"
-      case "$RESUME_CLOUD" in
-        1|gcp) CLOUD="gcp" ;;
-        2|aws) CLOUD="aws" ;;
-      esac
-    elif [[ -f "$GCP_TFVARS" ]]; then
-      CLOUD="gcp"
-    elif [[ -f "$AWS_TFVARS" ]]; then
-      CLOUD="aws"
-    else
-      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws}/${ENVIRONMENT}/."
-      dim "Specify --project, --env, and --base if using a custom location."
-      exit 1
-    fi
-  fi
-
-  TFVARS_FILE="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}/terraform.tfvars"
-  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
-
-  if [[ ! -f "$TFVARS_FILE" ]]; then
-    err "No terraform.tfvars found at ${TFVARS_FILE}"
-    exit 1
-  fi
+  resolve_deployment_dir "resume"
 
   # Parse tfvars (HCL key = "value" format)
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
