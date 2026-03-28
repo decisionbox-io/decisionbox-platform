@@ -3,12 +3,11 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Accordion, Badge, Code, Collapse, Loader, Progress, Text,
+  Accordion, Code, Loader, Text,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
   IconAlertCircle, IconBulb, IconChevronDown, IconClipboardX, IconDatabase, IconSearch,
-  IconThumbDown, IconThumbUp,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';

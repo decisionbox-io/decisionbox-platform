@@ -3,13 +3,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Badge, Button, Checkbox, Code, Collapse, Loader, Menu, NumberInput,
-  Progress, ScrollArea, Text,
+  Checkbox, Collapse, Loader, Menu, NumberInput,
+  ScrollArea, Text,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import {
-  IconAlertTriangle, IconBulb, IconChartBar, IconCheck, IconChevronDown,
+  IconAlertTriangle, IconBulb, IconChartBar, IconCheck,
   IconDatabase, IconPlayerPlay, IconShieldCheck, IconStack2, IconX,
 } from '@tabler/icons-react';
 import Link from 'next/link';
@@ -68,7 +68,7 @@ export default function ProjectPage() {
     return () => clearInterval(interval);
   }, [run, pollStatus]);
 
-  useEffect(() => { pollStatus(); }, []);
+  useEffect(() => { pollStatus(); }, [pollStatus]);
 
   const handleRun = (areas?: string[]) => {
     if (estimateFirst) handleEstimate(areas);
@@ -546,7 +546,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
       {steps.length > 0 && (
         <div style={{ borderTop: '1px solid var(--db-border-default)' }}>
           <ScrollArea h={400} type="auto" viewportRef={(el) => { scrollRef.current = el; }}
-            onScrollPositionChange={({ y }) => {
+            onScrollPositionChange={() => {
               const el = scrollRef.current;
               if (!el) return;
               userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 40;

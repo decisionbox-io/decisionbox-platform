@@ -8,9 +8,9 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
-  SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination, normalizeConfidence,
+  SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
-import { api, DiscoveryResult, Feedback, Insight } from '@/lib/api';
+import { api, Feedback, Insight } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,

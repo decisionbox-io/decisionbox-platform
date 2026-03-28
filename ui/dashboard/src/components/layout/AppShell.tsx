@@ -1,10 +1,11 @@
 'use client';
 
 import { ReactNode, useEffect, useState } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
-  IconBook2, IconDatabase, IconSearch, IconSettings, IconStack2, IconTool,
+  IconBook2, IconSearch, IconSettings, IconStack2, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 
@@ -20,11 +21,6 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
   const projectId = params?.id;
 
   const [project, setProject] = useState<Project | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
-
-  useEffect(() => {
-    api.listProjects().then(setProjects).catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (!projectId) return;
@@ -35,7 +31,6 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
   const activeProject = projectId ? project : null;
 
   const isActive = (path: string) => pathname === path;
-  const isActivePrefix = (prefix: string) => pathname.startsWith(prefix);
 
   // Build initials from project name
   const initials = activeProject
@@ -65,7 +60,7 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
           gap: 8,
           borderBottom: '1px solid var(--db-border-default)',
         }}>
-          <img src="/logo-icon.png" alt="DecisionBox" width={22} height={22} style={{ flexShrink: 0 }} />
+          <Image src="/logo-icon.png" alt="DecisionBox" width={22} height={22} style={{ flexShrink: 0 }} />
           <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.3px' }}>
             DecisionBox
           </span>

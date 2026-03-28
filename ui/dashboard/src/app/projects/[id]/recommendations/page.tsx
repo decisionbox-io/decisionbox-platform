@@ -11,7 +11,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
 } from '@/components/common/UIComponents';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation } from '@/lib/api';
+import { api, Feedback, Insight, Recommendation } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
   discoveryId: string;
