@@ -136,23 +136,23 @@ SECRET_NAMESPACE=decisionbox
 
 ### Prerequisites
 
-- Azure subscription with a Key Vault instance
-- RBAC role assignment on the vault:
-  - **Key Vault Secrets Officer** (for API — full read/write)
-  - **Key Vault Secrets User** (for Agent — read-only)
+- Azure Key Vault with RBAC authorization enabled
+- Managed identity or service principal with:
+  - **Key Vault Secrets Officer** (for API — create, read, update, list, delete)
+  - **Key Vault Secrets User** (for Agent — read-only: get, list)
 
 ### How It Works
 
 - Secrets stored as Azure Key Vault secrets
 - Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-api-key`)
 - Tags: `managed-by=decisionbox`, `namespace=...`, `project-id=...`
-- Listing enumerates all secrets and filters by namespace prefix
-- Updates use `SetSecret` (creates a new version)
+- Listing filtered by tags (only shows DecisionBox-managed secrets)
+- Updates create new secret versions automatically
 
 ### Authentication
 
-On AKS: Uses Workload Identity or Managed Identity automatically.
-Outside Azure: Uses Azure CLI credentials (`az login`) or environment variables (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`).
+On AKS: Uses Workload Identity (federated credentials) automatically.
+Outside Azure: Uses Azure CLI credentials (`az login`) or service principal environment variables (`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`).
 
 ## Using Secrets
 
@@ -175,7 +175,7 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/secrets/llm-api-key \
 
 1. Agent initializes the secret provider (same config as API)
 2. Reads `llm-api-key` for the project → passes to LLM provider
-3. Warehouse uses the agent's cloud credentials (ADC on GCP, IAM role on AWS)
+3. Warehouse uses the agent's cloud credentials (ADC on GCP, IAM role on AWS, Workload Identity on Azure)
 
 ### No Delete Via API
 

@@ -63,7 +63,7 @@ Each deployment gets its own isolated directory with independent `.terraform/`, 
 
 Verifies all required tools are installed with version info:
 - `terraform` (1.5+)
-- `gcloud` (for GCP) or `aws` (for AWS)
+- `gcloud` (for GCP), `aws` (for AWS), or `az` (for Azure)
 - `kubectl`
 - `helm` (3.7+)
 - `openssl`
@@ -84,13 +84,14 @@ These determine the deployment directory: `{base}/{project}/{cloud}/{env}/`.
 Select your cloud provider:
 - **GCP** — Google Cloud Platform
 - **AWS** — Amazon Web Services
+- **Azure** — Microsoft Azure
 
 ### Step 4: Secrets Configuration
 
 Configure the secret namespace prefix used to scope secrets. Format: `{namespace}-{projectID}-{key}`.
 
 Choose between:
-- **Cloud Secret Manager** (GCP Secret Manager or AWS Secrets Manager) — recommended for production
+- **Cloud Secret Manager** (GCP Secret Manager, AWS Secrets Manager, or Azure Key Vault) — recommended for production
 - **MongoDB encrypted secrets** — uses AES-256 encryption with `SECRET_ENCRYPTION_KEY`
 
 ### Step 5: Cloud Provider Settings
@@ -112,6 +113,14 @@ Choose between:
 - Bedrock IAM (optional — for LLM access)
 - Redshift IAM (optional — for data warehouse access)
 
+**Azure:**
+- Subscription ID
+- Location / region (default: `eastus`)
+- AKS cluster name (default: `{project}-{env}`)
+- Kubernetes namespace (default: `decisionbox`)
+- Node pool: VM size, min/max nodes (numeric validation)
+- Key Vault (optional — for secret storage)
+
 ### Step 6: Authentication
 
 **GCP** — choose how Terraform authenticates:
@@ -126,6 +135,12 @@ Choose between:
 - **Environment variables:** Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 - Verifies identity via `aws sts get-caller-identity`.
 
+**Azure** — choose how Terraform authenticates:
+
+- **Azure CLI (`az login`):** If already logged in to the correct subscription, offers to reuse. Otherwise opens browser for interactive login.
+- **Service principal:** Provide tenant ID, client ID, and client secret. Sets `ARM_*` environment variables.
+- Verifies identity via `az account show`.
+
 ### Step 7: Terraform State
 
 **GCP:** Configure a GCS bucket for remote state:
@@ -138,6 +153,13 @@ Choose between:
 - State key (default: `{project}/{env}/terraform.tfstate`)
 - Auto-creates the bucket with versioning if it doesn't exist
 - Uses S3-native locking (`use_lockfile=true`, Terraform 1.10+)
+
+**Azure:** Configure an Azure Storage Account for remote state:
+- Resource group for state storage (default: `terraform-state-rg`)
+- Storage account name (must be globally unique, 3-24 lowercase chars)
+- Container name (default: `tfstate`)
+- State key (default: `prod.terraform.tfstate`)
+- Auto-creates the resource group, storage account, and container if they don't exist
 
 ### Step 8: Review
 
@@ -186,11 +208,13 @@ If the Helm deployment fails (e.g., missing chart dependencies, image pull error
 ```
 
 Resume mode:
-1. Prompts for project/env (or uses `--project`/`--env` flags)
-2. Reads config from existing `terraform.tfvars`
+1. Prompts for project/env (or uses `--project`/`--env`/`--provider` flags)
+2. Reads config from existing `terraform.tfvars` (auto-detects GCP, AWS, or Azure)
 3. Validates the cluster is reachable
 4. Checks if Helm releases already exist (asks before re-deploying)
-5. On failure, suggests `./setup.sh --resume` again
+5. Automatically adds Bitnami Helm repo if missing
+6. Runs `helm dependency build` before deploying
+7. On failure, suggests `./setup.sh --resume` again
 
 ## Dry Run
 
@@ -213,7 +237,7 @@ Tear down all infrastructure:
 
 Destroy mode:
 1. Prompts for project/env (or uses `--project`/`--env`/`--provider` flags)
-2. Reads config from existing `terraform.tfvars`
+2. Reads config from existing `terraform.tfvars` (auto-detects GCP, AWS, or Azure)
 3. Requires typing `destroy` to confirm (safety check)
 4. Uninstalls Helm releases (dashboard, API)
 5. Deletes the Kubernetes namespace
@@ -227,7 +251,7 @@ Destroy mode:
 - **Color output** (auto-disabled for non-TTY / piped output)
 - **Graceful cancel** — Ctrl+C cleans up tfplan and stops spinners
 - **Input validation** — numeric checks, boolean checks, choice validation
-- **Permission verification** — checks GCP IAM or AWS identity before proceeding
+- **Permission verification** — checks GCP IAM, AWS identity, or Azure subscription before proceeding
 - **ADC type detection** — warns if GCP Application Default Credentials use a service account instead of user credentials
 
 ## Generated Files
@@ -243,5 +267,6 @@ Both files are gitignored to prevent committing environment-specific values.
 
 - [Terraform GCP](terraform-gcp.md) — GKE module variables and details
 - [Terraform AWS](terraform-aws.md) — EKS module variables and details
+- [Terraform Azure](terraform-azure.md) — AKS module variables and details
 - [Kubernetes (Helm)](kubernetes.md) — Manual Helm deployment guide
 - [Production Considerations](production.md) — Scaling, monitoring, backups

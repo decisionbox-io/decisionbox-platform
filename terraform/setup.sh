@@ -16,6 +16,7 @@ RESUME=false
 DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
+TOTAL_STEPS=9
 INCLUDE_FILES=()
 
 # Multi-deployment support: project name, environment, and base directory
@@ -59,10 +60,10 @@ for arg in "$@"; do
       echo "  --project NAME   Project name (default: decisionbox)"
       echo "  --env ENV        Environment: prod, staging, dev, or custom (default: prod)"
       echo "  --base DIR       Base directory for deployment files (default: this script's directory)"
-      echo "  --provider CLOUD Cloud provider: gcp or aws (for --resume/--destroy)"
+      echo "  --provider CLOUD Cloud provider: gcp, aws, or azure (for --resume/--destroy)"
       echo ""
       echo "This wizard will:"
-      echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
+      echo "  1. Check prerequisites (terraform, gcloud/aws/az, kubectl, helm)"
       echo "  2. Set project name, environment, and deployment directory"
       echo "  3. Select cloud provider"
       echo "  4. Configure secrets"
@@ -75,7 +76,7 @@ for arg in "$@"; do
       echo ""
       echo "Type 'back' at any prompt to return to the previous step."
       echo ""
-      echo "Supported providers: GCP, AWS"
+      echo "Supported providers: GCP, AWS, Azure"
       exit 0
       ;;
     --dry-run)
@@ -137,8 +138,8 @@ for pending_var in NEXT_IS_INCLUDE NEXT_IS_PROJECT NEXT_IS_ENV NEXT_IS_BASE NEXT
 done
 
 # Validate --provider value if provided
-if [[ -n "$CLI_PROVIDER" && "$CLI_PROVIDER" != "gcp" && "$CLI_PROVIDER" != "aws" ]]; then
-  echo "Error: --provider must be 'gcp' or 'aws', got '${CLI_PROVIDER}'"
+if [[ -n "$CLI_PROVIDER" && "$CLI_PROVIDER" != "gcp" && "$CLI_PROVIDER" != "aws" && "$CLI_PROVIDER" != "azure" ]]; then
+  echo "Error: --provider must be 'gcp', 'aws', or 'azure', got '${CLI_PROVIDER}'"
   exit 1
 fi
 
@@ -296,25 +297,37 @@ resolve_deployment_dir() {
   if [[ -z "$CLOUD" ]]; then
     local gcp_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
     local aws_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
+    local azure_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/azure/${ENVIRONMENT}/terraform.tfvars"
 
-    if [[ -f "$gcp_tfvars" && -f "$aws_tfvars" ]]; then
-      echo -e "  ${BOLD}1)${NC} GCP  — ${gcp_tfvars}"
-      echo -e "  ${BOLD}2)${NC} AWS  — ${aws_tfvars}"
-      echo ""
-      local cloud_choice
-      prompt_choice cloud_choice "Which deployment to ${action_label}?" "1" "1 2 gcp aws"
-      case "$cloud_choice" in
-        1|gcp) CLOUD="gcp" ;;
-        2|aws) CLOUD="aws" ;;
-      esac
-    elif [[ -f "$gcp_tfvars" ]]; then
-      CLOUD="gcp"
-    elif [[ -f "$aws_tfvars" ]]; then
-      CLOUD="aws"
-    else
-      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws}/${ENVIRONMENT}/."
+    local found_providers=()
+    [[ -f "$gcp_tfvars" ]] && found_providers+=("gcp")
+    [[ -f "$aws_tfvars" ]] && found_providers+=("aws")
+    [[ -f "$azure_tfvars" ]] && found_providers+=("azure")
+
+    if [[ ${#found_providers[@]} -eq 0 ]]; then
+      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws,azure}/${ENVIRONMENT}/."
       dim "Specify --project, --env, and --base if using a custom location."
       exit 1
+    elif [[ ${#found_providers[@]} -eq 1 ]]; then
+      CLOUD="${found_providers[0]}"
+    else
+      local idx=1
+      local valid_choices=""
+      for p in "${found_providers[@]}"; do
+        local p_upper
+        p_upper=$(echo "$p" | tr '[:lower:]' '[:upper:]')
+        echo -e "  ${BOLD}${idx})${NC} ${p_upper}  — ${DEPLOY_BASE}/${PROJECT_NAME}/${p}/${ENVIRONMENT}/terraform.tfvars"
+        valid_choices+="${idx} ${p} "
+        idx=$((idx + 1))
+      done
+      echo ""
+      local cloud_choice
+      prompt_choice cloud_choice "Which deployment to ${action_label}?" "1" "$valid_choices"
+      if [[ "$cloud_choice" =~ ^[0-9]+$ ]]; then
+        CLOUD="${found_providers[$((cloud_choice - 1))]}"
+      else
+        CLOUD="$cloud_choice"
+      fi
     fi
   fi
 
@@ -341,6 +354,34 @@ cleanup() {
 
 trap 'cleanup INT' INT
 trap 'spinner_stop' EXIT
+
+# ─── Kubeconfig helper ────────────────────────────────────────────────────────
+# Ensure ~/.kube/config is in KUBECONFIG so kubectl can see contexts written
+# by cloud CLIs (az aks get-credentials writes there by default).
+ensure_default_kubeconfig() {
+  local default_kc="$HOME/.kube/config"
+  if [[ -f "$default_kc" ]] && [[ ":${KUBECONFIG:-}:" != *":${default_kc}:"* ]]; then
+    export KUBECONFIG="${KUBECONFIG:+${KUBECONFIG}:}${default_kc}"
+  fi
+}
+
+# Get the kubeconfig file to write Azure credentials into.
+# Uses the first writable file in KUBECONFIG, falling back to ~/.kube/config.
+azure_kubeconfig_file() {
+  if [[ -n "${KUBECONFIG:-}" ]]; then
+    local IFS=':'
+    for f in $KUBECONFIG; do
+      [[ -n "$f" && -w "$f" ]] && { echo "$f"; return; }
+    done
+    # No writable file found — check for config-files dir pattern
+    local config_dir="$HOME/.kube/config-files"
+    if [[ -d "$config_dir" ]]; then
+      echo "${config_dir}/${CLUSTER_NAME}-azure"
+      return
+    fi
+  fi
+  echo "$HOME/.kube/config"
+}
 
 # ─── Prerequisites ───────────────────────────────────────────────────────────
 
@@ -420,14 +461,16 @@ do_step_2_deployment() {
 do_step_3_cloud_provider() {
   step_header 3 "$TOTAL_STEPS" "Cloud Provider"
 
-  echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
-  echo -e "  ${BOLD}2)${NC} AWS  — Amazon Web Services"
+  echo -e "  ${BOLD}1)${NC} GCP   — Google Cloud Platform"
+  echo -e "  ${BOLD}2)${NC} AWS   — Amazon Web Services"
+  echo -e "  ${BOLD}3)${NC} Azure — Microsoft Azure"
   echo ""
-  prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 2 gcp GCP aws AWS" || return 1
+  prompt_choice CLOUD_CHOICE "Select cloud provider" "1" "1 2 3 gcp GCP aws AWS azure Azure AZURE" || return 1
 
   case "$CLOUD_CHOICE" in
     1|gcp|GCP) CLOUD="gcp" ;;
     2|aws|AWS) CLOUD="aws" ;;
+    3|azure|Azure|AZURE) CLOUD="azure" ;;
   esac
 
   CLOUD_UPPER="$(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
@@ -444,6 +487,11 @@ do_step_3_cloud_provider() {
       err "AWS CLI is required for AWS. Install and re-run."
       exit 1
     }
+  elif [[ "$CLOUD" == "azure" ]]; then
+    check_tool "az" "Install: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli" || {
+      err "Azure CLI is required for Azure. Install and re-run."
+      exit 1
+    }
   fi
 }
 
@@ -458,7 +506,9 @@ do_step_4_secrets() {
 
   echo ""
   CLOUD_UPPER="$(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
-  echo -e "  ${BOLD}1)${NC} Enable  — Use ${CLOUD_UPPER} Secret Manager ${DIM}(recommended for production)${NC}"
+  local secrets_service="${CLOUD_UPPER} Secret Manager"
+  [[ "$CLOUD" == "azure" ]] && secrets_service="Azure Key Vault"
+  echo -e "  ${BOLD}1)${NC} Enable  — Use ${secrets_service} ${DIM}(recommended for production)${NC}"
   echo -e "  ${BOLD}2)${NC} Disable — Use MongoDB encrypted secrets or K8s native secrets"
   echo ""
   prompt_choice SECRETS_CHOICE "Enable cloud secret manager?" "1" "1 2 yes y no n" || return 1
@@ -531,10 +581,104 @@ do_step_5_provider_config() {
     echo ""
     prompt_boolean BEDROCK_IAM "Enable Bedrock IAM for LLM access?" "${BEDROCK_IAM:-false}" || return 1
     prompt_boolean REDSHIFT_IAM "Enable Redshift IAM for data warehouse access?" "${REDSHIFT_IAM:-false}" || return 1
+
+  elif [[ "$CLOUD" == "azure" ]]; then
+    step_header 4 "$TOTAL_STEPS" "Azure Configuration"
+
+    TF_DIR="${SCRIPT_DIR}/azure/prod"
+
+    prompt SUBSCRIPTION_ID "Azure subscription ID" "${SUBSCRIPTION_ID:-}" || return 1
+    prompt LOCATION "Azure region (location)" "${LOCATION:-eastus}" || return 1
+    REGION="$LOCATION"
+    prompt CLUSTER_NAME "AKS cluster name" "${CLUSTER_NAME:-decisionbox-prod}" || return 1
+    prompt AZURE_RG "Resource group name" "${AZURE_RG:-${CLUSTER_NAME}-rg}" || return 1
+    prompt K8S_NS "Kubernetes namespace" "${K8S_NS:-decisionbox}" || return 1
+
+    echo ""
+    info "Node pool configuration:"
+    prompt VM_SIZE "VM size" "${VM_SIZE:-Standard_D2s_v5}" || return 1
+    prompt_number MIN_NODES "Min nodes" "${MIN_NODES:-3}" || return 1
+    prompt_number MAX_NODES "Max nodes" "${MAX_NODES:-3}" || return 1
+
+    if [[ "$MIN_NODES" -gt "$MAX_NODES" ]]; then
+      err "Min nodes (${MIN_NODES}) cannot be greater than max nodes (${MAX_NODES})."
+      return 1
+    fi
+
+    # Key Vault toggle follows the cloud secret manager choice from step 3
+    ENABLE_KEY_VAULT="$ENABLE_SECRETS"
   fi
 }
 
 do_step_6_authentication() {
+  if [[ "$CLOUD" == "azure" ]]; then
+    step_header 6 "$TOTAL_STEPS" "Azure Authentication"
+
+    info "Terraform needs Azure credentials. Choose how to authenticate:"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Azure CLI login    — Use your Azure account via ${BOLD}az login${NC}"
+    dim "     Best for: interactive setup, personal subscriptions"
+    echo -e "  ${BOLD}2)${NC} Service principal  — Use an existing service principal"
+    dim "     Best for: CI/CD, automated pipelines"
+    echo ""
+    prompt_choice AZURE_AUTH_CHOICE "Authentication method" "1" "1 2" || return 1
+
+    if [[ "$AZURE_AUTH_CHOICE" == "1" ]]; then
+      # Check if already logged in
+      if az account show > /dev/null 2>&1; then
+        local current_sub
+        current_sub=$(az account show --query "id" -o tsv 2>/dev/null)
+        if [[ "$current_sub" == "$SUBSCRIPTION_ID" ]]; then
+          ok "Already logged in to subscription ${SUBSCRIPTION_ID}"
+          prompt USE_EXISTING_AZ "Use existing credentials? (yes/no)" "yes" || return 1
+          if [[ "$USE_EXISTING_AZ" != "yes" ]]; then
+            az login > /dev/null 2>&1
+          fi
+        else
+          info "Currently logged in to subscription ${current_sub}, switching..."
+          az account set --subscription "$SUBSCRIPTION_ID" 2>/dev/null || {
+            warn "Failed to switch subscription. Logging in again..."
+            az login > /dev/null 2>&1
+            az account set --subscription "$SUBSCRIPTION_ID"
+          }
+        fi
+      else
+        info "Opening browser for Azure login..."
+        az login > /dev/null 2>&1
+        az account set --subscription "$SUBSCRIPTION_ID"
+      fi
+      ok "Authenticated with Azure CLI"
+    else
+      prompt AZURE_TENANT_ID "Azure tenant ID" "${AZURE_TENANT_ID:-}" || return 1
+      prompt AZURE_CLIENT_ID "Service principal client ID" "${AZURE_CLIENT_ID:-}" || return 1
+      prompt AZURE_CLIENT_SECRET "Service principal client secret" "${AZURE_CLIENT_SECRET:-}" || return 1
+      export ARM_TENANT_ID="$AZURE_TENANT_ID"
+      export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+      export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+      export ARM_SUBSCRIPTION_ID="$SUBSCRIPTION_ID"
+      ok "Service principal credentials set for this session"
+    fi
+
+    # Verify identity
+    echo ""
+    spinner_start "Verifying Azure identity..."
+    AZURE_ACCOUNT=$(az account show --subscription "$SUBSCRIPTION_ID" -o json 2>&1) && AZURE_AUTH_RC=0 || AZURE_AUTH_RC=$?
+    spinner_stop
+
+    if [[ "$AZURE_AUTH_RC" -ne 0 ]]; then
+      err "Azure authentication failed:"
+      echo "$AZURE_ACCOUNT"
+      return 1
+    fi
+
+    AZURE_SUB_NAME=$(echo "$AZURE_ACCOUNT" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
+    AZURE_TENANT=$(echo "$AZURE_ACCOUNT" | grep -o '"tenantId"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+    ok "Subscription: ${BOLD}${AZURE_SUB_NAME}${NC} (${SUBSCRIPTION_ID})"
+    ok "Tenant: ${DIM}${AZURE_TENANT}${NC}"
+
+    return 0
+  fi
+
   if [[ "$CLOUD" == "aws" ]]; then
     step_header 6 "$TOTAL_STEPS" "AWS Authentication"
 
@@ -721,6 +865,59 @@ do_step_7_terraform_state() {
     else
       dim "Dry-run: skipping bucket/table creation"
     fi
+
+  elif [[ "$CLOUD" == "azure" ]]; then
+    info "Terraform state must be stored in an Azure Storage Account for persistence and team collaboration."
+    echo ""
+    prompt TF_STATE_RG "Resource group for Terraform state" "${TF_STATE_RG:-decisionbox-tfstate-rg}" || return 1
+    # Azure storage account: 3-24 chars, lowercase + digits only, globally unique
+    local sa_default
+    sa_default=$(echo "${CLUSTER_NAME}tfstate" | sed 's/[-_]//g' | tr '[:upper:]' '[:lower:]' | cut -c1-24)
+    prompt TF_STATE_SA "Storage account name (3-24 chars, lowercase, no hyphens)" "${TF_STATE_SA:-$sa_default}" || return 1
+    prompt TF_STATE_CONTAINER "Container name" "${TF_STATE_CONTAINER:-tfstate}" || return 1
+    prompt TF_STATE_KEY "State key" "${TF_STATE_KEY:-prod.terraform.tfstate}" || return 1
+
+    if [[ "$DRY_RUN" == "false" ]]; then
+      # Resource group
+      if az group show --name "$TF_STATE_RG" > /dev/null 2>&1; then
+        ok "Resource group ${TF_STATE_RG} already exists"
+      else
+        spinner_start "Creating resource group ${TF_STATE_RG}..."
+        az group create --name "$TF_STATE_RG" --location "$LOCATION" > /dev/null 2>&1
+        spinner_stop
+        ok "Created resource group ${TF_STATE_RG}"
+      fi
+
+      # Storage account
+      if az storage account show --name "$TF_STATE_SA" --resource-group "$TF_STATE_RG" > /dev/null 2>&1; then
+        ok "Storage account ${TF_STATE_SA} already exists"
+      else
+        spinner_start "Creating storage account ${TF_STATE_SA}..."
+        az storage account create \
+          --name "$TF_STATE_SA" \
+          --resource-group "$TF_STATE_RG" \
+          --location "$LOCATION" \
+          --sku Standard_LRS \
+          --min-tls-version TLS1_2 \
+          --allow-blob-public-access false > /dev/null 2>&1
+        spinner_stop
+        ok "Created storage account ${TF_STATE_SA}"
+      fi
+
+      # Container
+      if az storage container show --name "$TF_STATE_CONTAINER" --account-name "$TF_STATE_SA" > /dev/null 2>&1; then
+        ok "Container ${TF_STATE_CONTAINER} already exists"
+      else
+        spinner_start "Creating container ${TF_STATE_CONTAINER}..."
+        az storage container create \
+          --name "$TF_STATE_CONTAINER" \
+          --account-name "$TF_STATE_SA" > /dev/null 2>&1
+        spinner_stop
+        ok "Created container ${TF_STATE_CONTAINER}"
+      fi
+    else
+      dim "Dry-run: skipping storage account creation"
+    fi
   fi
 }
 
@@ -755,10 +952,20 @@ do_step_8_review() {
     echo -e "  ${BOLD}Bedrock IAM:${NC}        ${BEDROCK_IAM}"
     echo -e "  ${BOLD}Redshift IAM:${NC}       ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    echo -e "  ${BOLD}Subscription:${NC}       ${SUBSCRIPTION_ID}"
+    echo -e "  ${BOLD}Location:${NC}           ${LOCATION}"
+    echo -e "  ${BOLD}Cluster:${NC}            ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}Resource group:${NC}     ${AZURE_RG}"
+    echo -e "  ${BOLD}K8s namespace:${NC}      ${K8S_NS}"
+    echo -e "  ${BOLD}VM size:${NC}            ${VM_SIZE}"
+    echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES}"
+    echo -e "  ${BOLD}Key Vault:${NC}          ${ENABLE_KEY_VAULT}"
+    echo -e "  ${BOLD}State:${NC}              ${TF_STATE_SA}/${TF_STATE_CONTAINER}/${TF_STATE_KEY}"
   fi
 
   # Show plugin review sections (plugins define <step_fn>_review)
-  for fn in "${PLUGIN_STEPS[@]}"; do
+  for fn in ${PLUGIN_STEPS[@]+"${PLUGIN_STEPS[@]}"}; do
     local review_fn="${fn}_review"
     if declare -f "$review_fn" > /dev/null 2>&1; then
       echo ""
@@ -998,10 +1205,101 @@ EOF
     fi
 
     ok "Generated ${HELM_VALUES}"
+
+  elif [[ "$CLOUD" == "azure" ]]; then
+    TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+
+    cat > "$TFVARS_FILE" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+subscription_id     = "${SUBSCRIPTION_ID}"
+location            = "${LOCATION}"
+cluster_name        = "${CLUSTER_NAME}"
+resource_group_name = "${AZURE_RG}"
+
+# AKS node pool
+vm_size        = "${VM_SIZE}"
+min_node_count = ${MIN_NODES}
+max_node_count = ${MAX_NODES}
+
+# Workload Identity
+k8s_namespace = "${K8S_NS}"
+
+# Optional features
+enable_key_vault    = ${ENABLE_KEY_VAULT}
+secret_namespace    = "${SECRET_NS}"
+EOF
+
+    ok "Generated ${TFVARS_FILE}"
+
+    HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
+    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    K8S_SA="decisionbox-api"
+    K8S_AGENT_SA="decisionbox-agent"
+
+    # Client IDs will be filled after terraform apply (from outputs)
+    AZURE_API_CLIENT_ID="\${API_CLIENT_ID}"
+    AZURE_AGENT_CLIENT_ID="\${AGENT_CLIENT_ID}"
+
+    if [[ "$ENABLE_KEY_VAULT" == "true" ]]; then
+      cat > "$HELM_VALUES" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# NOTE: After terraform apply, update client IDs from terraform output:
+#   terraform -chdir=${TF_DIR} output api_identity_client_id
+#   terraform -chdir=${TF_DIR} output agent_identity_client_id
+
+namespace: ${K8S_NS}
+
+serviceAccountName: ${K8S_SA}
+serviceAccountAnnotations:
+  azure.workload-identity/client-id: "${AZURE_API_CLIENT_ID}"
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
+  annotations:
+    azure.workload-identity/client-id: "${AZURE_AGENT_CLIENT_ID}"
+
+podLabels:
+  azure.workload-identity/use: "true"
+
+automountServiceAccountToken: true
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+env:
+  SECRET_PROVIDER: "azure"
+  SECRET_NAMESPACE: "${SECRET_NS}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+EOF
+    else
+      cat > "$HELM_VALUES" <<EOF
+# Generated by setup.sh v${VERSION} on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+namespace: ${K8S_NS}
+
+serviceAccountName: ${K8S_SA}
+
+agentServiceAccount:
+  name: ${K8S_AGENT_SA}
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+env:
+  SECRET_PROVIDER: "mongodb"
+  SECRET_NAMESPACE: "${SECRET_NS}"
+  AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+EOF
+    fi
+
+    ok "Generated ${HELM_VALUES}"
   fi
 
   # Run plugin generate hooks (plugins define <step_fn>_generate)
-  for fn in "${PLUGIN_STEPS[@]}"; do
+  for fn in ${PLUGIN_STEPS[@]+"${PLUGIN_STEPS[@]}"}; do
     local gen_fn="${fn}_generate"
     if declare -f "$gen_fn" > /dev/null 2>&1; then
       "$gen_fn"
@@ -1018,6 +1316,8 @@ EOF
       dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"prefix=${TF_STATE_PREFIX}\""
     elif [[ "$CLOUD" == "aws" ]]; then
       dim "  terraform init -backend-config=\"bucket=${TF_STATE_BUCKET}\" -backend-config=\"key=${TF_STATE_KEY}\" -backend-config=\"region=${REGION}\" -backend-config=\"use_lockfile=true\""
+    elif [[ "$CLOUD" == "azure" ]]; then
+      dim "  terraform init -backend-config=\"resource_group_name=${TF_STATE_RG}\" -backend-config=\"storage_account_name=${TF_STATE_SA}\" -backend-config=\"container_name=${TF_STATE_CONTAINER}\" -backend-config=\"key=${TF_STATE_KEY}\""
     fi
     dim "  terraform plan -out=tfplan"
     dim "  terraform apply tfplan"
@@ -1115,6 +1415,10 @@ do_helm_deploy() {
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
     )
+  elif [[ "$CLOUD" == "azure" ]]; then
+    DASH_ARGS+=(
+      --set "ingress.ingressClassName=webapprouting.kubernetes.azure.com"
+    )
   fi
   DASH_OUTPUT=$("${DASH_ARGS[@]}" 2>&1) && DASH_RC=0 || DASH_RC=$?
   spinner_stop
@@ -1182,8 +1486,8 @@ wait_for_ingress_and_show_result() {
   if [[ -n "$INGRESS_ADDR" && "$INGRESS_ADDR" != "null" ]]; then
     ok "Ingress address: ${BOLD}${INGRESS_ADDR}${NC}"
 
-    # Health checks (GCP-specific annotation check — skip for AWS ALB)
-    if [[ "$CLOUD" != "aws" ]]; then
+    # Health checks (GCP-specific annotation check — skip for AWS ALB and Azure)
+    if [[ "$CLOUD" == "gcp" ]]; then
       spinner_start "Waiting for health checks (3-5 min)..."
       RETRIES=0
       while true; do
@@ -1244,6 +1548,8 @@ do_step_10_deploy() {
     TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${TF_STATE_PREFIX}")
   elif [[ "$CLOUD" == "aws" ]]; then
     TF_INIT_ARGS=(-input=false -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${REGION}" -backend-config="use_lockfile=true")
+  elif [[ "$CLOUD" == "azure" ]]; then
+    TF_INIT_ARGS=(-input=false -backend-config="resource_group_name=${TF_STATE_RG}" -backend-config="storage_account_name=${TF_STATE_SA}" -backend-config="container_name=${TF_STATE_CONTAINER}" -backend-config="key=${TF_STATE_KEY}")
   fi
   TF_INIT_OUTPUT=$(terraform init "${TF_INIT_ARGS[@]}" 2>&1) && TF_INIT_RC=0 || TF_INIT_RC=$?
   spinner_stop
@@ -1257,6 +1563,8 @@ do_step_10_deploy() {
     ok "Terraform initialized ${DIM}(state: gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/)${NC}"
   elif [[ "$CLOUD" == "aws" ]]; then
     ok "Terraform initialized ${DIM}(state: s3://${TF_STATE_BUCKET}/${TF_STATE_KEY})${NC}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    ok "Terraform initialized ${DIM}(state: ${TF_STATE_SA}/${TF_STATE_CONTAINER}/${TF_STATE_KEY})${NC}"
   fi
 
   # ─── Terraform Plan ────────────────────────────────────────────────
@@ -1309,6 +1617,40 @@ do_step_10_deploy() {
       --region "$REGION" > /dev/null 2>&1
     spinner_stop
     ok "kubectl configured for ${CLUSTER_NAME}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    spinner_start "Fetching cluster credentials..."
+    AZURE_RG=$(terraform -chdir="$TF_DIR" output -raw resource_group_name 2>/dev/null || echo "${CLUSTER_NAME}-rg")
+    AZ_KC_FILE=$(azure_kubeconfig_file)
+    az aks get-credentials \
+      --name "$CLUSTER_NAME" \
+      --resource-group "$AZURE_RG" \
+      --file "$AZ_KC_FILE" \
+      --overwrite-existing > /dev/null 2>&1
+    ensure_default_kubeconfig
+    kubectl config use-context "$CLUSTER_NAME" > /dev/null 2>&1 || true
+    spinner_stop
+    ok "kubectl configured for ${CLUSTER_NAME}"
+
+    # Update Helm values with actual client IDs from terraform outputs
+    API_CLIENT_ID=$(terraform -chdir="$TF_DIR" output -raw api_identity_client_id 2>/dev/null || echo "")
+    AGENT_CLIENT_ID=$(terraform -chdir="$TF_DIR" output -raw agent_identity_client_id 2>/dev/null || echo "")
+    if [[ -n "$API_CLIENT_ID" && -f "$HELM_VALUES" ]]; then
+      sed -i.bak "s|\${API_CLIENT_ID}|${API_CLIENT_ID}|g" "$HELM_VALUES" 2>/dev/null || \
+        sed -i '' "s|\${API_CLIENT_ID}|${API_CLIENT_ID}|g" "$HELM_VALUES"
+      sed -i.bak "s|\${AGENT_CLIENT_ID}|${AGENT_CLIENT_ID}|g" "$HELM_VALUES" 2>/dev/null || \
+        sed -i '' "s|\${AGENT_CLIENT_ID}|${AGENT_CLIENT_ID}|g" "$HELM_VALUES"
+      rm -f "${HELM_VALUES}.bak"
+      ok "Updated Helm values with managed identity client IDs"
+
+      # Add Key Vault URL if enabled
+      if [[ "$ENABLE_KEY_VAULT" == "true" ]]; then
+        KEY_VAULT_URI=$(terraform -chdir="$TF_DIR" output -raw key_vault_uri 2>/dev/null || echo "")
+        if [[ -n "$KEY_VAULT_URI" ]]; then
+          echo "  SECRET_AZURE_VAULT_URL: \"${KEY_VAULT_URI}\"" >> "$HELM_VALUES"
+          ok "Added Key Vault URI to Helm values"
+        fi
+      fi
+    fi
   fi
 
   spinner_start "Waiting for Kubernetes API..."
@@ -1414,7 +1756,7 @@ if [[ "$DESTROY" == "true" ]]; then
 
   resolve_deployment_dir "destroy"
 
-  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
+  parse_tfvar() { grep -E "^${1}[[:space:]]*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/"//g; s/[[:space:]]*$//' || true ; }
 
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
@@ -1452,6 +1794,23 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
     echo -e "  ${BOLD}Redshift:${NC}    ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}Bedrock:${NC}     ${BEDROCK_IAM}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    SUBSCRIPTION_ID=$(parse_tfvar subscription_id)
+    LOCATION=$(parse_tfvar location)
+    AZURE_RG=$(parse_tfvar resource_group_name)
+    [[ -z "$AZURE_RG" ]] && AZURE_RG="${CLUSTER_NAME}-rg"
+    ENABLE_KEY_VAULT=$(parse_tfvar enable_key_vault)
+    if [[ -z "$CLUSTER_NAME" ]]; then
+      err "Failed to parse config from ${TFVARS_FILE}"
+      exit 1
+    fi
+    echo -e "  ${BOLD}Provider:${NC}    Azure"
+    echo -e "  ${BOLD}Subscription:${NC} ${SUBSCRIPTION_ID}"
+    echo -e "  ${BOLD}Cluster:${NC}     ${CLUSTER_NAME}"
+    echo -e "  ${BOLD}Resource group:${NC} ${AZURE_RG}"
+    echo -e "  ${BOLD}Location:${NC}    ${LOCATION}"
+    echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
+    echo -e "  ${BOLD}Key Vault:${NC}   ${ENABLE_KEY_VAULT}"
   fi
   echo ""
 
@@ -1473,6 +1832,11 @@ if [[ "$DESTROY" == "true" ]]; then
     gcloud container clusters get-credentials "$CLUSTER_NAME" --region "$REGION" --project "$PROJECT_ID" 2>/dev/null && CLUSTER_REACHABLE=true
   elif [[ "$CLOUD" == "aws" ]]; then
     aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" > /dev/null 2>&1 && CLUSTER_REACHABLE=true
+  elif [[ "$CLOUD" == "azure" ]]; then
+    AZURE_RG=$(parse_tfvar resource_group_name)
+    [[ -z "$AZURE_RG" ]] && AZURE_RG="${CLUSTER_NAME}-rg"
+    AZ_KC_FILE=$(azure_kubeconfig_file)
+    az aks get-credentials --name "$CLUSTER_NAME" --resource-group "$AZURE_RG" --file "$AZ_KC_FILE" --overwrite-existing > /dev/null 2>&1 && { ensure_default_kubeconfig; kubectl config use-context "$CLUSTER_NAME" > /dev/null 2>&1 || true; CLUSTER_REACHABLE=true; }
   fi
 
   if [[ "$CLUSTER_REACHABLE" == "true" ]]; then
@@ -1527,6 +1891,21 @@ if [[ "$DESTROY" == "true" ]]; then
       err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
       exit 1
     }
+  elif [[ "$CLOUD" == "azure" ]]; then
+    state_rg="" ; state_sa="" ; state_container="" ; state_key=""
+    state_rg=$(grep 'resource_group_name' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"resource_group_name":\s*"//; s/".*//' || echo "terraform-state-rg")
+    state_sa=$(grep 'storage_account_name' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"storage_account_name":\s*"//; s/".*//' || echo "")
+    state_container=$(grep 'container_name' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"container_name":\s*"//; s/".*//' || echo "tfstate")
+    state_key=$(grep '"key"' .terraform/terraform.tfstate 2>/dev/null | head -1 | sed 's/.*"key":\s*"//; s/".*//' || echo "prod.terraform.tfstate")
+    terraform init -input=false \
+      -backend-config="resource_group_name=${state_rg}" \
+      -backend-config="storage_account_name=${state_sa}" \
+      -backend-config="container_name=${state_container}" \
+      -backend-config="key=${state_key}" > /dev/null 2>&1 || {
+      spinner_stop
+      err "Terraform init failed. Run manually: cd ${TF_DIR} && terraform init"
+      exit 1
+    }
   fi
   spinner_stop
   ok "Terraform initialized"
@@ -1571,6 +1950,8 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Project:${NC}     ${PROJECT_ID}"
   elif [[ "$CLOUD" == "aws" ]]; then
     echo -e "  ${BOLD}Account:${NC}     ${AWS_ACCOUNT_ID}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    echo -e "  ${BOLD}Subscription:${NC} ${SUBSCRIPTION_ID}"
   fi
   echo ""
   echo -e "  ${DIM}Destroy time: ${TF_DESTROY_SECS}s${NC}"
@@ -1578,6 +1959,8 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${DIM}State bucket gs://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
   elif [[ "$CLOUD" == "aws" ]]; then
     echo -e "  ${DIM}State bucket s3://${TF_STATE_BUCKET} still exists (contains state history)${NC}"
+  elif [[ "$CLOUD" == "azure" ]]; then
+    echo -e "  ${DIM}State storage account ${state_sa:-} still exists (contains state history)${NC}"
   fi
   echo ""
   exit 0
@@ -1592,7 +1975,7 @@ if [[ "$RESUME" == "true" ]]; then
   resolve_deployment_dir "resume"
 
   # Parse tfvars (HCL key = "value" format)
-  parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
+  parse_tfvar() { grep -E "^${1}[[:space:]]*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/"//g; s/[[:space:]]*$//' || true ; }
 
   REGION=$(parse_tfvar region)
   CLUSTER_NAME=$(parse_tfvar cluster_name)
@@ -1622,6 +2005,21 @@ if [[ "$RESUME" == "true" ]]; then
     SECRET_NS=$(parse_tfvar secret_namespace)
     BEDROCK_IAM=$(parse_tfvar enable_bedrock_iam)
     REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
+    if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
+      err "Failed to parse required values from ${TFVARS_FILE}"
+      exit 1
+    fi
+  elif [[ "$CLOUD" == "azure" ]]; then
+    SUBSCRIPTION_ID=$(parse_tfvar subscription_id)
+    LOCATION=$(parse_tfvar location)
+    REGION="$LOCATION"
+    VM_SIZE=$(parse_tfvar vm_size)
+    MIN_NODES=$(parse_tfvar min_node_count)
+    MAX_NODES=$(parse_tfvar max_node_count)
+    ENABLE_KEY_VAULT=$(parse_tfvar enable_key_vault)
+    ENABLE_SECRETS="$ENABLE_KEY_VAULT"
+    SECRET_NS=$(parse_tfvar secret_namespace)
+    [[ -z "$SECRET_NS" ]] && SECRET_NS="decisionbox"
     if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
       err "Failed to parse required values from ${TFVARS_FILE}"
       exit 1
@@ -1659,6 +2057,17 @@ if [[ "$RESUME" == "true" ]]; then
     aws eks update-kubeconfig \
       --name "$CLUSTER_NAME" \
       --region "$REGION" > /dev/null 2>&1 || true
+  elif [[ "$CLOUD" == "azure" ]]; then
+    AZURE_RG=$(parse_tfvar resource_group_name)
+    [[ -z "$AZURE_RG" ]] && AZURE_RG="${CLUSTER_NAME}-rg"
+    AZ_KC_FILE=$(azure_kubeconfig_file)
+    az aks get-credentials \
+      --name "$CLUSTER_NAME" \
+      --resource-group "$AZURE_RG" \
+      --file "$AZ_KC_FILE" \
+      --overwrite-existing > /dev/null 2>&1 || true
+    ensure_default_kubeconfig
+    kubectl config use-context "$CLUSTER_NAME" > /dev/null 2>&1 || true
   fi
 
   if kubectl get nodes > /dev/null 2>&1; then
@@ -1672,6 +2081,8 @@ if [[ "$RESUME" == "true" ]]; then
       dim "Check: gcloud container clusters list --project=${PROJECT_ID}"
     elif [[ "$CLOUD" == "aws" ]]; then
       dim "Check: aws eks list-clusters --region ${REGION}"
+    elif [[ "$CLOUD" == "azure" ]]; then
+      dim "Check: az aks list --resource-group ${AZURE_RG:-${CLUSTER_NAME}-rg}"
     fi
     exit 1
   fi
@@ -1715,6 +2126,10 @@ if [[ "$RESUME" == "true" ]]; then
           --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
           --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
         )
+      elif [[ "$CLOUD" == "azure" ]]; then
+        DASH_ARGS+=(
+          --set "ingress.ingressClassName=webapprouting.kubernetes.azure.com"
+        )
       fi
       wait_for_ingress_and_show_result
       exit 0
@@ -1733,7 +2148,7 @@ fi
 # Plugins register extra steps via register_step(). These run between
 # "Terraform State" and "Review" in the wizard flow.
 
-for include_file in "${INCLUDE_FILES[@]}"; do
+for include_file in ${INCLUDE_FILES[@]+"${INCLUDE_FILES[@]}"}; do
   if [[ ! -f "$include_file" ]]; then
     err "Include file not found: ${include_file}"
     exit 1
@@ -1761,7 +2176,7 @@ NAV_STEPS=(
 )
 
 # Insert plugin steps before review
-for i in "${!PLUGIN_STEPS[@]}"; do
+for i in ${!PLUGIN_STEPS[@]+"${!PLUGIN_STEPS[@]}"}; do
   NAV_STEPS+=("${PLUGIN_STEPS[$i]}")
 done
 

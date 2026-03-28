@@ -162,12 +162,13 @@ helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set env.SECRET_PROVIDER=azure \
   --set env.SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/ \
   --set env.SECRET_NAMESPACE=decisionbox \
-  --set "serviceAccountAnnotations.azure\.workload\.identity/client-id=<managed-identity-client-id>" \
+  --set "serviceAccountAnnotations.azure\.workload-identity/client-id=<api-managed-identity-client-id>" \
+  --set "podLabels.azure\.workload-identity/use=true" \
   --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
 
-The `serviceAccountAnnotations` binds the K8s service account to an Azure managed identity via [Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview). The managed identity must have the **Key Vault Secrets Officer** RBAC role on the vault.
+The `serviceAccountAnnotations` binds the K8s service account to a managed identity via [Azure Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview). The `podLabels` enables the Workload Identity webhook to inject tokens. The managed identity must have the **Key Vault Secrets Officer** RBAC role on the vault. See [Terraform Azure](terraform-azure.md) for automated setup.
 
 ### Agent Configuration
 
@@ -315,5 +316,6 @@ kubectl delete namespace decisionbox
 - [Helm Values Reference](../reference/helm-values.md) — Complete values.yaml documentation
 - [Terraform GCP](terraform-gcp.md) — Automated GKE cluster provisioning
 - [Terraform AWS](terraform-aws.md) — Automated EKS cluster provisioning
+- [Terraform Azure](terraform-azure.md) — Automated AKS cluster provisioning
 - [Production Considerations](production.md) — Scaling, monitoring, backups
 - [Configuration Reference](../reference/configuration.md) — All environment variables
