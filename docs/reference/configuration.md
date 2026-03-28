@@ -21,11 +21,12 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SECRET_PROVIDER` | `mongodb` | Which secret provider to use. Options: `mongodb`, `gcp`, `aws` |
+| `SECRET_PROVIDER` | `mongodb` | Which secret provider to use. Options: `mongodb`, `gcp`, `aws`, `azure` |
 | `SECRET_NAMESPACE` | `decisionbox` | Namespace prefix for all secrets. Prevents conflicts in shared cloud accounts. |
 | `SECRET_ENCRYPTION_KEY` | *(empty)* | Base64-encoded 32-byte AES key for MongoDB secret provider. Generate with: `openssl rand -base64 32`. If empty, secrets are stored in plaintext (with warning). |
 | `SECRET_GCP_PROJECT_ID` | *(empty)* | GCP project ID. Only required when `SECRET_PROVIDER=gcp`. |
 | `SECRET_AWS_REGION` | `us-east-1` | AWS region. Only used when `SECRET_PROVIDER=aws`. |
+| `SECRET_AZURE_VAULT_URL` | *(empty)* | Azure Key Vault URL (e.g., `https://my-vault.vault.azure.net/`). Only required when `SECRET_PROVIDER=azure`. |
 
 ### LLM Behavior
 
@@ -89,6 +90,7 @@ Same variables as the agent — the API reads secrets to display masked values i
 | `SECRET_ENCRYPTION_KEY` | *(empty)* | Same as agent. Must match. |
 | `SECRET_GCP_PROJECT_ID` | *(empty)* | Same as agent. |
 | `SECRET_AWS_REGION` | `us-east-1` | Same as agent. |
+| `SECRET_AZURE_VAULT_URL` | *(empty)* | Same as agent. |
 
 ### Domain Packs
 

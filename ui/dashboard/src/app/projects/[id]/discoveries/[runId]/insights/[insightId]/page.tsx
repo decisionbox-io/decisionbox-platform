@@ -11,7 +11,7 @@ import {
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',

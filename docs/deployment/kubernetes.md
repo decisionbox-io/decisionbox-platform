@@ -156,6 +156,19 @@ helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
 
 The `serviceAccountAnnotations` binds the K8s service account to an IAM role via [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) or [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html).
 
+**Azure Key Vault (with Workload Identity):**
+```bash
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
+  --set env.SECRET_PROVIDER=azure \
+  --set env.SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/ \
+  --set env.SECRET_NAMESPACE=decisionbox \
+  --set "serviceAccountAnnotations.azure\.workload\.identity/client-id=<managed-identity-client-id>" \
+  --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
+  -n decisionbox
+```
+
+The `serviceAccountAnnotations` binds the K8s service account to an Azure managed identity via [Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview). The managed identity must have the **Key Vault Secrets Officer** RBAC role on the vault.
+
 ### Agent Configuration
 
 The API spawns agent processes as K8s Jobs. Configure via Helm values:

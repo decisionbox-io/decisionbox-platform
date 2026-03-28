@@ -95,8 +95,12 @@ export default function PromptsPage() {
 
   const removeArea = (areaId: string) => {
     if (!prompts) return;
-    const { [areaId]: _, ...rest } = prompts.analysis_areas;
-    setPrompts({ ...prompts, analysis_areas: rest });
+    setPrompts({
+      ...prompts,
+      analysis_areas: Object.fromEntries(
+        Object.entries(prompts.analysis_areas).filter(([key]) => key !== areaId),
+      ),
+    });
   };
 
   if (loading) return <Shell><Loader /></Shell>;

@@ -7,7 +7,7 @@ import {
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconCheck, IconDatabase, IconPlus, IconPlugConnected, IconSettings, IconShieldCheck, IconX } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 

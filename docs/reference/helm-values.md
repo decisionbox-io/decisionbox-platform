@@ -43,10 +43,11 @@ Source code for the charts is in `helm-charts/`.
 | `env.LOG_LEVEL` | string | `warn` | Log level (debug, info, warn, error) |
 | `env.MONGODB_URI` | string | — | MongoDB connection string (required if `mongodb.enabled=false`) |
 | `env.MONGODB_DB` | string | `decisionbox` | MongoDB database name |
-| `env.SECRET_PROVIDER` | string | `mongodb` | Secret provider: `mongodb`, `gcp`, or `aws` |
+| `env.SECRET_PROVIDER` | string | `mongodb` | Secret provider: `mongodb`, `gcp`, `aws`, or `azure` |
 | `env.SECRET_NAMESPACE` | string | `decisionbox` | Secret name prefix |
 | `env.SECRET_GCP_PROJECT_ID` | string | — | GCP project (when `SECRET_PROVIDER=gcp`) |
 | `env.SECRET_AWS_REGION` | string | — | AWS region (when `SECRET_PROVIDER=aws`) |
+| `env.SECRET_AZURE_VAULT_URL` | string | — | Azure Key Vault URL (when `SECRET_PROVIDER=azure`) |
 | `env.RUNNER_MODE` | string | `kubernetes` | Agent runner: `kubernetes` or `subprocess` |
 | `env.AGENT_IMAGE` | string | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Agent container image |
 | `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |

@@ -2,7 +2,7 @@
 
 > **Version**: 0.1.0
 
-Secrets store per-project credentials like LLM API keys and warehouse service account keys. DecisionBox supports three secret backends.
+Secrets store per-project credentials like LLM API keys and warehouse service account keys. DecisionBox supports four secret backends.
 
 ## Provider Comparison
 
@@ -11,6 +11,7 @@ Secrets store per-project credentials like LLM API keys and warehouse service ac
 | **MongoDB** (default) | Local dev, single-server | AES-256-GCM | None (uses existing MongoDB) |
 | **GCP Secret Manager** | GCP production | Google-managed | GCP project + IAM |
 | **AWS Secrets Manager** | AWS production | AWS-managed | AWS account + IAM |
+| **Azure Key Vault** | Azure production | Azure-managed | Azure subscription + RBAC |
 
 ## MongoDB Provider (Default)
 
@@ -121,6 +122,38 @@ SECRET_NAMESPACE=decisionbox
 On EKS: Uses IAM role for service accounts (IRSA) automatically.
 Outside AWS: Uses `~/.aws/credentials` or environment variables.
 
+## Azure Key Vault
+
+Uses Azure Key Vault for production Azure deployments.
+
+### Setup
+
+```bash
+SECRET_PROVIDER=azure
+SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/
+SECRET_NAMESPACE=decisionbox
+```
+
+### Prerequisites
+
+- Azure subscription with a Key Vault instance
+- RBAC role assignment on the vault:
+  - **Key Vault Secrets Officer** (for API — full read/write)
+  - **Key Vault Secrets User** (for Agent — read-only)
+
+### How It Works
+
+- Secrets stored as Azure Key Vault secrets
+- Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-api-key`)
+- Tags: `managed-by=decisionbox`, `namespace=...`, `project-id=...`
+- Listing enumerates all secrets and filters by namespace prefix
+- Updates use `SetSecret` (creates a new version)
+
+### Authentication
+
+On AKS: Uses Workload Identity or Managed Identity automatically.
+Outside Azure: Uses Azure CLI credentials (`az login`) or environment variables (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`).
+
 ## Using Secrets
 
 ### Setting Secrets (Dashboard)
@@ -150,6 +183,7 @@ Secrets cannot be deleted through the DecisionBox API. This is intentional — t
 - **MongoDB provider**: Delete from the `secrets` collection directly
 - **GCP provider**: Delete via GCP Console or `gcloud secrets delete`
 - **AWS provider**: Delete via AWS Console or `aws secretsmanager delete-secret`
+- **Azure provider**: Delete via Azure Portal or `az keyvault secret delete`
 
 ## Namespace Isolation
 

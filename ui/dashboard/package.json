@@ -28,6 +28,13 @@
     "react-dom": "19.2.3",
     "recharts": "^3.8.0"
   },
+  "overrides": {
+    "minimatch": {
+      "brace-expansion": "1.1.13"
+    },
+    "handlebars": "4.7.9",
+    "picomatch": "4.0.4"
+  },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",

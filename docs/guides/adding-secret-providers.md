@@ -118,12 +118,13 @@ The `secrets.Config` struct:
 
 ```go
 type Config struct {
-    Provider     string            // "vault" (from SECRET_PROVIDER env var)
-    Namespace    string            // From SECRET_NAMESPACE env var
-    EncryptionKey string           // From SECRET_ENCRYPTION_KEY env var (MongoDB only)
-    GCPProjectID string            // From SECRET_GCP_PROJECT_ID env var
-    AWSRegion    string            // From SECRET_AWS_REGION env var
-    Extra        map[string]string // Additional provider-specific config
+    Provider      string            // "vault" (from SECRET_PROVIDER env var)
+    Namespace     string            // From SECRET_NAMESPACE env var
+    EncryptionKey string            // From SECRET_ENCRYPTION_KEY env var (MongoDB only)
+    GCPProjectID  string            // From SECRET_GCP_PROJECT_ID env var
+    AWSRegion     string            // From SECRET_AWS_REGION env var
+    AzureVaultURL string            // From SECRET_AZURE_VAULT_URL env var
+    Extra         map[string]string // Additional provider-specific config
 }
 ```
 

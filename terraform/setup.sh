@@ -8,7 +8,7 @@ set -euo pipefail
 # Usage: ./setup.sh [--help] [--dry-run]
 # ══════════════════════════════════════════════════════════════════════════════
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_START=$(date +%s)
 DRY_RUN=false
@@ -17,6 +17,13 @@ DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
 INCLUDE_FILES=()
+
+# Multi-deployment support: project name, environment, and base directory
+# can be set via CLI flags or interactively during the wizard.
+CLI_PROJECT=""
+CLI_ENV=""
+CLI_BASE=""
+CLI_PROVIDER=""
 
 # ─── Plugin step registry ───────────────────────────────────────────────────
 # Plugins register extra steps via register_step(). Steps are inserted before
@@ -44,22 +51,27 @@ for arg in "$@"; do
       echo "Usage: ./setup.sh [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --help, -h     Show this help message"
-      echo "  --dry-run      Generate config files only (no terraform apply, no helm deploy)"
-      echo "  --resume       Resume from Helm deploy (skips Terraform, reloads config from tfvars)"
-      echo "  --destroy      Tear down everything (Helm releases, K8s namespace, Terraform resources)"
-      echo "  --include FILE Source a plugin script that registers additional steps via register_step()"
+      echo "  --help, -h       Show this help message"
+      echo "  --dry-run        Generate config files only (no terraform apply, no helm deploy)"
+      echo "  --resume         Resume from Helm deploy (skips Terraform, reloads config from tfvars)"
+      echo "  --destroy        Tear down everything (Helm releases, K8s namespace, Terraform resources)"
+      echo "  --include FILE   Source a plugin script that registers additional steps via register_step()"
+      echo "  --project NAME   Project name (default: decisionbox)"
+      echo "  --env ENV        Environment: prod, staging, dev, or custom (default: prod)"
+      echo "  --base DIR       Base directory for deployment files (default: this script's directory)"
+      echo "  --provider CLOUD Cloud provider: gcp or aws (for --resume/--destroy)"
       echo ""
       echo "This wizard will:"
       echo "  1. Check prerequisites (terraform, gcloud/aws, kubectl, helm)"
-      echo "  2. Select cloud provider"
-      echo "  3. Configure secrets"
-      echo "  4. Configure cloud provider settings"
-      echo "  5. Authenticate with cloud provider (user or service account)"
-      echo "  6. Set up Terraform state backend"
-      echo "  7. Review configuration"
-      echo "  8. Generate Terraform variables and Helm values"
-      echo "  9. Run terraform init, plan, apply + deploy via Helm"
+      echo "  2. Set project name, environment, and deployment directory"
+      echo "  3. Select cloud provider"
+      echo "  4. Configure secrets"
+      echo "  5. Configure cloud provider settings"
+      echo "  6. Authenticate with cloud provider (user or service account)"
+      echo "  7. Set up Terraform state backend"
+      echo "  8. Review configuration"
+      echo "  9. Generate Terraform variables and Helm values"
+      echo " 10. Run terraform init, plan, apply + deploy via Helm"
       echo ""
       echo "Type 'back' at any prompt to return to the previous step."
       echo ""
@@ -78,10 +90,34 @@ for arg in "$@"; do
     --include)
       NEXT_IS_INCLUDE=true
       ;;
+    --project)
+      NEXT_IS_PROJECT=true
+      ;;
+    --env)
+      NEXT_IS_ENV=true
+      ;;
+    --base)
+      NEXT_IS_BASE=true
+      ;;
+    --provider)
+      NEXT_IS_PROVIDER=true
+      ;;
     *)
       if [[ "${NEXT_IS_INCLUDE:-}" == "true" ]]; then
         INCLUDE_FILES+=("$arg")
         NEXT_IS_INCLUDE=false
+      elif [[ "${NEXT_IS_PROJECT:-}" == "true" ]]; then
+        CLI_PROJECT="$arg"
+        NEXT_IS_PROJECT=false
+      elif [[ "${NEXT_IS_ENV:-}" == "true" ]]; then
+        CLI_ENV="$arg"
+        NEXT_IS_ENV=false
+      elif [[ "${NEXT_IS_BASE:-}" == "true" ]]; then
+        CLI_BASE="$arg"
+        NEXT_IS_BASE=false
+      elif [[ "${NEXT_IS_PROVIDER:-}" == "true" ]]; then
+        CLI_PROVIDER="$arg"
+        NEXT_IS_PROVIDER=false
       else
         echo "Unknown argument: $arg"
         echo "Run ./setup.sh --help for usage."
@@ -90,6 +126,21 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Validate CLI flag values (catch --project without a value, etc.)
+for pending_var in NEXT_IS_INCLUDE NEXT_IS_PROJECT NEXT_IS_ENV NEXT_IS_BASE NEXT_IS_PROVIDER; do
+  if [[ "${!pending_var:-}" == "true" ]]; then
+    flag_name="${pending_var#NEXT_IS_}"
+    echo "Error: --${flag_name,,} requires a value."
+    exit 1
+  fi
+done
+
+# Validate --provider value if provided
+if [[ -n "$CLI_PROVIDER" && "$CLI_PROVIDER" != "gcp" && "$CLI_PROVIDER" != "aws" ]]; then
+  echo "Error: --provider must be 'gcp' or 'aws', got '${CLI_PROVIDER}'"
+  exit 1
+fi
 
 # ─── Colors (disabled if not a TTY) ──────────────────────────────────────────
 
@@ -223,6 +274,59 @@ elapsed() {
   fi
 }
 
+# ─── Deployment discovery (shared by --resume and --destroy) ────────────────
+# Sets: PROJECT_NAME, ENVIRONMENT, CLOUD, DEPLOY_BASE, TF_DIR, TFVARS_FILE
+
+resolve_deployment_dir() {
+  local action_label="$1"  # "resume" or "destroy"
+
+  PROJECT_NAME="${CLI_PROJECT:-}"
+  ENVIRONMENT="${CLI_ENV:-}"
+  CLOUD="${CLI_PROVIDER:-}"
+  DEPLOY_BASE="${CLI_BASE:-${SCRIPT_DIR}}"
+  DEPLOY_BASE="${DEPLOY_BASE/#\~/$HOME}"
+
+  if [[ -z "$PROJECT_NAME" ]]; then
+    prompt PROJECT_NAME "Project name" "decisionbox"
+  fi
+  if [[ -z "$ENVIRONMENT" ]]; then
+    prompt ENVIRONMENT "Environment" "prod"
+  fi
+
+  if [[ -z "$CLOUD" ]]; then
+    local gcp_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
+    local aws_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
+
+    if [[ -f "$gcp_tfvars" && -f "$aws_tfvars" ]]; then
+      echo -e "  ${BOLD}1)${NC} GCP  — ${gcp_tfvars}"
+      echo -e "  ${BOLD}2)${NC} AWS  — ${aws_tfvars}"
+      echo ""
+      local cloud_choice
+      prompt_choice cloud_choice "Which deployment to ${action_label}?" "1" "1 2 gcp aws"
+      case "$cloud_choice" in
+        1|gcp) CLOUD="gcp" ;;
+        2|aws) CLOUD="aws" ;;
+      esac
+    elif [[ -f "$gcp_tfvars" ]]; then
+      CLOUD="gcp"
+    elif [[ -f "$aws_tfvars" ]]; then
+      CLOUD="aws"
+    else
+      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws}/${ENVIRONMENT}/."
+      dim "Specify --project, --env, and --base if using a custom location."
+      exit 1
+    fi
+  fi
+
+  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
+  TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+
+  if [[ ! -f "$TFVARS_FILE" ]]; then
+    err "No terraform.tfvars found at ${TFVARS_FILE}"
+    exit 1
+  fi
+}
+
 # ─── Cleanup on exit ────────────────────────────────────────────────────────
 
 cleanup() {
@@ -277,8 +381,44 @@ do_step_1_prerequisites() {
   ok "All prerequisites met"
 }
 
-do_step_2_cloud_provider() {
-  step_header 2 "$TOTAL_STEPS" "Cloud Provider"
+do_step_2_deployment() {
+  step_header 2 "$TOTAL_STEPS" "Deployment Identity"
+
+  info "Each deployment gets its own directory, state, and configuration."
+  dim "Structure: {base}/{project}/{cloud}/{environment}/"
+  echo ""
+
+  prompt PROJECT_NAME "Project name" "${PROJECT_NAME:-${CLI_PROJECT:-decisionbox}}" || return 1
+  # Validate: lowercase alphanumeric + hyphens
+  if [[ ! "$PROJECT_NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    err "Project name must be lowercase alphanumeric with hyphens (e.g., my-project)."
+    PROJECT_NAME=""
+    return 1
+  fi
+  ok "Project: ${BOLD}${PROJECT_NAME}${NC}"
+
+  echo ""
+  prompt ENVIRONMENT "Environment (prod, staging, dev, or custom)" "${ENVIRONMENT:-${CLI_ENV:-prod}}" || return 1
+  if [[ ! "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    err "Environment must be lowercase alphanumeric with hyphens."
+    ENVIRONMENT=""
+    return 1
+  fi
+  ok "Environment: ${BOLD}${ENVIRONMENT}${NC}"
+
+  echo ""
+  info "Base directory for deployment files."
+  dim "Default keeps files inside the repo. Set a custom path for external deployments."
+  prompt DEPLOY_BASE "Base directory" "${DEPLOY_BASE:-${CLI_BASE:-${SCRIPT_DIR}}}" || return 1
+  # Expand ~ if present
+  DEPLOY_BASE="${DEPLOY_BASE/#\~/$HOME}"
+  # Resolve to absolute path
+  DEPLOY_BASE="$(cd "$DEPLOY_BASE" 2>/dev/null && pwd || echo "$DEPLOY_BASE")"
+  ok "Base directory: ${BOLD}${DEPLOY_BASE}${NC}"
+}
+
+do_step_3_cloud_provider() {
+  step_header 3 "$TOTAL_STEPS" "Cloud Provider"
 
   echo -e "  ${BOLD}1)${NC} GCP  — Google Cloud Platform"
   echo -e "  ${BOLD}2)${NC} AWS  — Amazon Web Services"
@@ -307,8 +447,8 @@ do_step_2_cloud_provider() {
   fi
 }
 
-do_step_3_secrets() {
-  step_header 3 "$TOTAL_STEPS" "Secrets Configuration"
+do_step_4_secrets() {
+  step_header 4 "$TOTAL_STEPS" "Secrets Configuration"
 
   info "The secret namespace prefixes all secrets to avoid conflicts."
   dim "Format: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)"
@@ -331,11 +471,12 @@ do_step_3_secrets() {
   ok "Cloud secret manager: ${BOLD}${ENABLE_SECRETS}${NC}"
 }
 
-do_step_4_provider_config() {
-  if [[ "$CLOUD" == "gcp" ]]; then
-    step_header 4 "$TOTAL_STEPS" "GCP Configuration"
+do_step_5_provider_config() {
+  # Compute TF_DIR from project/cloud/env collected in step 2
+  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
 
-    TF_DIR="${SCRIPT_DIR}/gcp/prod"
+  if [[ "$CLOUD" == "gcp" ]]; then
+    step_header 5 "$TOTAL_STEPS" "GCP Configuration"
 
     prompt PROJECT_ID "GCP project ID" "${PROJECT_ID:-}" || return 1
 
@@ -345,7 +486,7 @@ do_step_4_provider_config() {
     fi
 
     prompt REGION "GCP region" "${REGION:-us-central1}" || return 1
-    prompt CLUSTER_NAME "GKE cluster name" "${CLUSTER_NAME:-decisionbox-prod}" || return 1
+    prompt CLUSTER_NAME "GKE cluster name" "${CLUSTER_NAME:-${PROJECT_NAME}-${ENVIRONMENT}}" || return 1
     prompt K8S_NS "Kubernetes namespace" "${K8S_NS:-decisionbox}" || return 1
 
     echo ""
@@ -364,13 +505,11 @@ do_step_4_provider_config() {
     prompt_boolean VERTEX_AI_IAM "Enable Vertex AI IAM for LLM access (Claude via Vertex, Gemini)?" "${VERTEX_AI_IAM:-false}" || return 1
 
   elif [[ "$CLOUD" == "aws" ]]; then
-    step_header 4 "$TOTAL_STEPS" "AWS Configuration"
-
-    TF_DIR="${SCRIPT_DIR}/aws/prod"
+    step_header 5 "$TOTAL_STEPS" "AWS Configuration"
 
     prompt AWS_REGION "AWS region" "${AWS_REGION:-us-east-1}" || return 1
     REGION="$AWS_REGION"
-    prompt CLUSTER_NAME "EKS cluster name" "${CLUSTER_NAME:-decisionbox-prod}" || return 1
+    prompt CLUSTER_NAME "EKS cluster name" "${CLUSTER_NAME:-${PROJECT_NAME}-${ENVIRONMENT}}" || return 1
     prompt K8S_NS "Kubernetes namespace" "${K8S_NS:-decisionbox}" || return 1
 
     echo ""
@@ -395,9 +534,9 @@ do_step_4_provider_config() {
   fi
 }
 
-do_step_5_authentication() {
+do_step_6_authentication() {
   if [[ "$CLOUD" == "aws" ]]; then
-    step_header 5 "$TOTAL_STEPS" "AWS Authentication"
+    step_header 6 "$TOTAL_STEPS" "AWS Authentication"
 
     info "Terraform needs AWS credentials. Choose how to authenticate:"
     echo ""
@@ -445,7 +584,7 @@ do_step_5_authentication() {
 
   if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
 
-  step_header 5 "$TOTAL_STEPS" "GCP Authentication"
+  step_header 6 "$TOTAL_STEPS" "GCP Authentication"
 
   info "Terraform needs GCP credentials. Choose how to authenticate:"
   echo ""
@@ -527,14 +666,14 @@ do_step_5_authentication() {
   fi
 }
 
-do_step_6_terraform_state() {
-  step_header 6 "$TOTAL_STEPS" "Terraform State"
+do_step_7_terraform_state() {
+  step_header 7 "$TOTAL_STEPS" "Terraform State"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
     echo ""
     prompt TF_STATE_BUCKET "GCS bucket name" "${TF_STATE_BUCKET:-${PROJECT_ID}-terraform-state}" || return 1
-    prompt TF_STATE_PREFIX "State prefix (environment)" "${TF_STATE_PREFIX:-prod}" || return 1
+    prompt TF_STATE_PREFIX "State prefix" "${TF_STATE_PREFIX:-${PROJECT_NAME}/${ENVIRONMENT}}" || return 1
 
     if [[ "$DRY_RUN" == "false" ]]; then
       if gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" --project="$PROJECT_ID" > /dev/null 2>&1; then
@@ -558,7 +697,7 @@ do_step_6_terraform_state() {
     info "Terraform state must be stored in an S3 bucket (uses S3-native locking)."
     echo ""
     prompt TF_STATE_BUCKET "S3 bucket name" "${TF_STATE_BUCKET:-${AWS_ACCOUNT_ID}-terraform-state}" || return 1
-    prompt TF_STATE_KEY "State key" "${TF_STATE_KEY:-prod/terraform.tfstate}" || return 1
+    prompt TF_STATE_KEY "State key" "${TF_STATE_KEY:-${PROJECT_NAME}/${ENVIRONMENT}/terraform.tfstate}" || return 1
 
     if [[ "$DRY_RUN" == "false" ]]; then
       # S3 bucket
@@ -585,9 +724,12 @@ do_step_6_terraform_state() {
   fi
 }
 
-do_step_7_review() {
-  step_header 7 "$TOTAL_STEPS" "Review Configuration"
+do_step_8_review() {
+  step_header 8 "$TOTAL_STEPS" "Review Configuration"
 
+  echo -e "  ${BOLD}Project:${NC}            ${PROJECT_NAME}"
+  echo -e "  ${BOLD}Environment:${NC}        ${ENVIRONMENT}"
+  echo -e "  ${BOLD}Deploy dir:${NC}         ${TF_DIR}"
   echo -e "  ${BOLD}Cloud:${NC}              $(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
   echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
   echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
@@ -638,8 +780,52 @@ do_step_7_review() {
   fi
 }
 
-do_step_8_generate() {
-  step_header 8 "$TOTAL_STEPS" "Generate Config Files"
+do_step_9_generate() {
+  step_header 9 "$TOTAL_STEPS" "Generate Config Files"
+
+  # ─── Scaffold deployment directory if it doesn't exist ───────────
+  if [[ ! -d "$TF_DIR" ]]; then
+    info "Creating deployment directory: ${TF_DIR}"
+    mkdir -p "$TF_DIR"
+
+    # Copy template files from the repo's canonical template directory.
+    # Always uses prod/ as the template regardless of target env — the env
+    # difference is in terraform.tfvars (generated below), not in the HCL files.
+    TEMPLATE_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
+    for f in main.tf variables.tf outputs.tf versions.tf; do
+      if [[ -f "${TEMPLATE_DIR}/${f}" ]]; then
+        cp "${TEMPLATE_DIR}/${f}" "${TF_DIR}/${f}"
+      fi
+    done
+
+    # Compute the correct module source path.
+    # If TF_DIR is inside the repo, use a relative path. Otherwise, use absolute.
+    MODULE_DIR="${SCRIPT_DIR}/${CLOUD}/modules/decisionbox"
+    MODULE_ABS="$(cd "$MODULE_DIR" && pwd)"
+
+    # Check if relative path works by testing common prefix
+    DEPLOY_ABS="$(cd "$TF_DIR" && pwd)"
+    REPO_ABS="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+    if [[ "$DEPLOY_ABS" == "$REPO_ABS"/* ]]; then
+      # Inside the repo — compute relative path from TF_DIR to modules (pure bash)
+      # Walk up from DEPLOY_ABS to REPO_ABS counting levels, then append the module subpath
+      local remaining="${DEPLOY_ABS#$REPO_ABS/}"
+      local depth
+      depth=$(echo "$remaining" | tr -cd '/' | wc -c)
+      local ups=""
+      for ((i = 0; i <= depth; i++)); do ups+="../"; done
+      REL_PATH="${ups}terraform/${CLOUD}/modules/decisionbox"
+      sed -i.bak "s|source[[:space:]]*=[[:space:]]*\"../modules/decisionbox\"|source = \"${REL_PATH}\"|g" "${TF_DIR}/main.tf" && rm -f "${TF_DIR}/main.tf.bak"
+    else
+      # Outside the repo — use absolute path to modules
+      sed -i.bak "s|source[[:space:]]*=[[:space:]]*\"../modules/decisionbox\"|source = \"${MODULE_ABS}\"|g" "${TF_DIR}/main.tf" && rm -f "${TF_DIR}/main.tf.bak"
+    fi
+
+    ok "Scaffolded ${TF_DIR} from template"
+  else
+    dim "Deployment directory already exists: ${TF_DIR}"
+  fi
 
   if [[ "$CLOUD" == "gcp" ]]; then
     TFVARS_FILE="${TF_DIR}/terraform.tfvars"
@@ -669,7 +855,7 @@ EOF
     ok "Generated ${TFVARS_FILE}"
 
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    HELM_VALUES="${TF_DIR}/values-secrets.yaml"
     K8S_SA="decisionbox-api"
     K8S_AGENT_SA="decisionbox-agent"
     GCP_SA="${CLUSTER_NAME}-api@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -754,7 +940,7 @@ EOF
     ok "Generated ${TFVARS_FILE}"
 
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+    HELM_VALUES="${TF_DIR}/values-secrets.yaml"
     K8S_SA="decisionbox-api"
     K8S_AGENT_SA="decisionbox-agent"
     IRSA_ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-api"
@@ -1045,8 +1231,8 @@ wait_for_ingress_and_show_result() {
   fi
 }
 
-do_step_9_deploy() {
-  step_header 9 "$TOTAL_STEPS" "Terraform & Deploy"
+do_step_10_deploy() {
+  step_header 10 "$TOTAL_STEPS" "Terraform & Deploy"
 
   cd "$TF_DIR"
   dim "Working directory: ${TF_DIR}"
@@ -1220,33 +1406,13 @@ if [[ "$DESTROY" == "true" ]]; then
     exit 1
   fi
 
+  # Set TOTAL_STEPS before calling any step functions
+  TOTAL_STEPS=$(( 10 + ${#PLUGIN_STEPS[@]} ))
+
   warn "Destroy mode: this will tear down ALL DecisionBox infrastructure."
   echo ""
 
-  # Detect which provider was used
-  GCP_TFVARS="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
-  AWS_TFVARS="${SCRIPT_DIR}/aws/prod/terraform.tfvars"
-
-  if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
-    echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
-    echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
-    echo ""
-    prompt_choice DESTROY_CLOUD "Which deployment to destroy?" "1" "1 2 gcp aws"
-    case "$DESTROY_CLOUD" in
-      1|gcp) CLOUD="gcp" ;;
-      2|aws) CLOUD="aws" ;;
-    esac
-  elif [[ -f "$GCP_TFVARS" ]]; then
-    CLOUD="gcp"
-  elif [[ -f "$AWS_TFVARS" ]]; then
-    CLOUD="aws"
-  else
-    err "No terraform.tfvars found. Nothing to destroy."
-    exit 1
-  fi
-
-  TFVARS_FILE="${SCRIPT_DIR}/${CLOUD}/prod/terraform.tfvars"
-  TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
+  resolve_deployment_dir "destroy"
 
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
 
@@ -1423,30 +1589,7 @@ if [[ "$RESUME" == "true" ]]; then
   info "Resume mode: loading config from previous run..."
   echo ""
 
-  # Find tfvars — check both providers
-  GCP_TFVARS="${SCRIPT_DIR}/gcp/prod/terraform.tfvars"
-  AWS_TFVARS="${SCRIPT_DIR}/aws/prod/terraform.tfvars"
-
-  if [[ -f "$GCP_TFVARS" && -f "$AWS_TFVARS" ]]; then
-    echo -e "  ${BOLD}1)${NC} GCP  — ${GCP_TFVARS}"
-    echo -e "  ${BOLD}2)${NC} AWS  — ${AWS_TFVARS}"
-    echo ""
-    prompt_choice RESUME_CLOUD "Which deployment to resume?" "1" "1 2 gcp aws"
-    case "$RESUME_CLOUD" in
-      1|gcp) CLOUD="gcp" ;;
-      2|aws) CLOUD="aws" ;;
-    esac
-  elif [[ -f "$GCP_TFVARS" ]]; then
-    CLOUD="gcp"
-  elif [[ -f "$AWS_TFVARS" ]]; then
-    CLOUD="aws"
-  else
-    err "No terraform.tfvars found. Run setup.sh without --resume first."
-    exit 1
-  fi
-
-  TFVARS_FILE="${SCRIPT_DIR}/${CLOUD}/prod/terraform.tfvars"
-  TF_DIR="${SCRIPT_DIR}/${CLOUD}/prod"
+  resolve_deployment_dir "resume"
 
   # Parse tfvars (HCL key = "value" format)
   parse_tfvar() { grep "^${1}\s*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//; s/"//g; s/\s*$//' || true ; }
@@ -1455,7 +1598,7 @@ if [[ "$RESUME" == "true" ]]; then
   CLUSTER_NAME=$(parse_tfvar cluster_name)
   K8S_NS=$(parse_tfvar k8s_namespace)
   HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
-  HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
+  HELM_VALUES="${TF_DIR}/values-secrets.yaml"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     PROJECT_ID=$(parse_tfvar project_id)
@@ -1496,6 +1639,9 @@ if [[ "$RESUME" == "true" ]]; then
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
   echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
   echo ""
+
+  # Set TOTAL_STEPS before calling any step functions
+  TOTAL_STEPS=$(( 10 + ${#PLUGIN_STEPS[@]} ))
 
   # Check prerequisites
   do_step_1_prerequisites
@@ -1596,7 +1742,7 @@ for include_file in "${INCLUDE_FILES[@]}"; do
 done
 
 # Recalculate total steps after plugins registered
-TOTAL_STEPS=$(( 9 + ${#PLUGIN_STEPS[@]} ))
+TOTAL_STEPS=$(( 10 + ${#PLUGIN_STEPS[@]} ))
 
 # ─── Normal Flow ──────────────────────────────────────────────────────────
 
@@ -1606,11 +1752,12 @@ do_step_1_prerequisites
 
 # Build navigable step list: core steps + plugin steps + review
 NAV_STEPS=(
-  do_step_2_cloud_provider
-  do_step_3_secrets
-  do_step_4_provider_config
-  do_step_5_authentication
-  do_step_6_terraform_state
+  do_step_2_deployment
+  do_step_3_cloud_provider
+  do_step_4_secrets
+  do_step_5_provider_config
+  do_step_6_authentication
+  do_step_7_terraform_state
 )
 
 # Insert plugin steps before review
@@ -1618,7 +1765,7 @@ for i in "${!PLUGIN_STEPS[@]}"; do
   NAV_STEPS+=("${PLUGIN_STEPS[$i]}")
 done
 
-NAV_STEPS+=(do_step_7_review)
+NAV_STEPS+=(do_step_8_review)
 
 CURRENT_STEP=0
 
@@ -1637,5 +1784,5 @@ while [[ "$CURRENT_STEP" -lt ${#NAV_STEPS[@]} ]]; do
   fi
 done
 
-do_step_8_generate
-do_step_9_deploy
+do_step_9_generate
+do_step_10_deploy

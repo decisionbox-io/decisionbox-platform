@@ -24,6 +24,7 @@ import (
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
