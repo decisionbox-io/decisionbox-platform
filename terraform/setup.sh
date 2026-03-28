@@ -281,6 +281,96 @@ prompt_boolean() {
   done
 }
 
+# ─── CIDR / IP helpers ───────────────────────────────────────────────────────
+
+validate_cidr() {
+  local cidr="$1"
+  if [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+    local IFS='./'; read -ra parts <<< "$cidr"
+    for i in 0 1 2 3; do
+      [[ "${parts[$i]}" -gt 255 ]] && return 1
+    done
+    [[ "${parts[4]}" -gt 32 ]] && return 1
+    return 0
+  fi
+  return 1
+}
+
+prompt_cidr_list() {
+  local var_name="$1" prompt_text="$2" default="${3:-}"
+
+  echo ""
+  info "$prompt_text"
+  dim "Enter CIDR blocks one per line. Press Enter on an empty line when done."
+  dim "Example: 203.0.113.0/24"
+  if [[ -n "$default" ]]; then
+    dim "Current: ${default//,/, }"
+    dim "Press Enter on the first line to keep current values, or type 'clear' to remove all."
+  fi
+  echo ""
+
+  local cidrs=()
+  local first_line=true
+  while true; do
+    local input
+    read -rp "$(echo -e "${CYAN}+${NC} CIDR block ${DIM}(empty to finish)${NC}: ")" input
+    if [[ "$input" == "back" ]]; then
+      GO_BACK=true
+      return 1
+    fi
+    if [[ -z "$input" ]]; then
+      if $first_line && [[ -n "$default" ]]; then
+        printf -v "$var_name" '%s' "$default"
+        return 0
+      fi
+      break
+    fi
+    if [[ "$input" == "clear" ]]; then
+      cidrs=()
+      ok "Cleared all IP ranges (unrestricted access)"
+      break
+    fi
+    first_line=false
+    if validate_cidr "$input"; then
+      cidrs+=("$input")
+      ok "Added: $input"
+    else
+      err "Invalid CIDR format: $input (expected: x.x.x.x/y where x=0-255, y=0-32)"
+    fi
+  done
+
+  local result
+  result=$(IFS=','; echo "${cidrs[*]}")
+  printf -v "$var_name" '%s' "$result"
+}
+
+csv_to_hcl_list() {
+  local csv="$1"
+  if [[ -z "$csv" ]]; then
+    echo "[]"
+    return
+  fi
+  local result="["
+  local first=true
+  IFS=',' read -ra items <<< "$csv"
+  for item in "${items[@]}"; do
+    if $first; then
+      result+="\"${item}\""
+      first=false
+    else
+      result+=", \"${item}\""
+    fi
+  done
+  result+="]"
+  echo "$result"
+}
+
+parse_tfvar_list() {
+  local raw
+  raw=$(grep -E "^${1}[[:space:]]*=" "$TFVARS_FILE" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//' || true)
+  echo "$raw" | tr -d '[]"[:space:]'
+}
+
 # ─── Elapsed time ────────────────────────────────────────────────────────────
 
 elapsed() {
@@ -571,6 +661,19 @@ do_step_5_provider_config() {
     prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "${BQ_IAM:-false}" || return 1
     prompt_boolean VERTEX_AI_IAM "Enable Vertex AI IAM for LLM access (Claude via Vertex, Gemini)?" "${VERTEX_AI_IAM:-false}" || return 1
 
+    echo ""
+    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
+    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
+      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
+      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
+        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
+        ENABLE_IP_RESTRICTION="false"
+      fi
+    else
+      ALLOWED_IP_RANGES=""
+    fi
+
   elif [[ "$CLOUD" == "aws" ]]; then
     step_header 5 "$TOTAL_STEPS" "AWS Configuration"
 
@@ -599,6 +702,19 @@ do_step_5_provider_config() {
     prompt_boolean BEDROCK_IAM "Enable Bedrock IAM for LLM access?" "${BEDROCK_IAM:-false}" || return 1
     prompt_boolean REDSHIFT_IAM "Enable Redshift IAM for data warehouse access?" "${REDSHIFT_IAM:-false}" || return 1
 
+    echo ""
+    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
+    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
+      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
+      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
+        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
+        ENABLE_IP_RESTRICTION="false"
+      fi
+    else
+      ALLOWED_IP_RANGES=""
+    fi
+
   elif [[ "$CLOUD" == "azure" ]]; then
     step_header 4 "$TOTAL_STEPS" "Azure Configuration"
 
@@ -624,6 +740,19 @@ do_step_5_provider_config() {
 
     # Key Vault toggle follows the cloud secret manager choice from step 3
     ENABLE_KEY_VAULT="$ENABLE_SECRETS"
+
+    echo ""
+    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
+    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
+      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
+      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
+        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
+        ENABLE_IP_RESTRICTION="false"
+      fi
+    else
+      ALLOWED_IP_RANGES=""
+    fi
   fi
 }
 
@@ -959,6 +1088,11 @@ do_step_8_review() {
     echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
     echo -e "  ${BOLD}Vertex AI IAM:${NC}      ${VERTEX_AI_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
+    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
+    else
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
+    fi
   elif [[ "$CLOUD" == "aws" ]]; then
     echo -e "  ${BOLD}AWS account:${NC}        ${AWS_ACCOUNT_ID}"
     echo -e "  ${BOLD}Region:${NC}             ${REGION}"
@@ -969,6 +1103,11 @@ do_step_8_review() {
     echo -e "  ${BOLD}Bedrock IAM:${NC}        ${BEDROCK_IAM}"
     echo -e "  ${BOLD}Redshift IAM:${NC}       ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
+    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
+    else
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
+    fi
   elif [[ "$CLOUD" == "azure" ]]; then
     echo -e "  ${BOLD}Subscription:${NC}       ${SUBSCRIPTION_ID}"
     echo -e "  ${BOLD}Location:${NC}           ${LOCATION}"
@@ -979,6 +1118,11 @@ do_step_8_review() {
     echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES}"
     echo -e "  ${BOLD}Key Vault:${NC}          ${ENABLE_KEY_VAULT}"
     echo -e "  ${BOLD}State:${NC}              ${TF_STATE_SA}/${TF_STATE_CONTAINER}/${TF_STATE_KEY}"
+    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
+    else
+      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
+    fi
   fi
 
   # Show plugin review sections (plugins define <step_fn>_review)
@@ -1074,6 +1218,9 @@ enable_gcp_secrets  = ${ENABLE_SECRETS}
 secret_namespace    = "${SECRET_NS}"
 enable_bigquery_iam  = ${BQ_IAM}
 enable_vertex_ai_iam = ${VERTEX_AI_IAM}
+
+# IP restriction
+allowed_ip_ranges = $(csv_to_hcl_list "${ALLOWED_IP_RANGES:-}")
 EOF
 
     ok "Generated ${TFVARS_FILE}"
@@ -1159,6 +1306,9 @@ enable_aws_secrets  = ${ENABLE_SECRETS}
 secret_namespace    = "${SECRET_NS}"
 enable_bedrock_iam  = ${BEDROCK_IAM}
 enable_redshift_iam = ${REDSHIFT_IAM}
+
+# IP restriction
+allowed_ip_ranges = $(csv_to_hcl_list "${ALLOWED_IP_RANGES:-}")
 EOF
 
     ok "Generated ${TFVARS_FILE}"
@@ -1245,6 +1395,7 @@ k8s_namespace = "${K8S_NS}"
 # Optional features
 enable_key_vault    = ${ENABLE_KEY_VAULT}
 secret_namespace    = "${SECRET_NS}"
+allowed_ip_ranges   = $(csv_to_hcl_list "${ALLOWED_IP_RANGES:-}")
 EOF
 
     ok "Generated ${TFVARS_FILE}"
@@ -1800,6 +1951,10 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
     echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
     echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
+    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
+    fi
   elif [[ "$CLOUD" == "aws" ]]; then
     ENABLE_SECRETS=$(parse_tfvar enable_aws_secrets)
     REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
@@ -1815,12 +1970,17 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
     echo -e "  ${BOLD}Redshift:${NC}    ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}Bedrock:${NC}     ${BEDROCK_IAM}"
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
+    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
+    fi
   elif [[ "$CLOUD" == "azure" ]]; then
     SUBSCRIPTION_ID=$(parse_tfvar subscription_id)
     LOCATION=$(parse_tfvar location)
     AZURE_RG=$(parse_tfvar resource_group_name)
     [[ -z "$AZURE_RG" ]] && AZURE_RG="${CLUSTER_NAME}-rg"
     ENABLE_KEY_VAULT=$(parse_tfvar enable_key_vault)
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
     if [[ -z "$CLUSTER_NAME" ]]; then
       err "Failed to parse config from ${TFVARS_FILE}"
       exit 1
@@ -1832,6 +1992,9 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Location:${NC}    ${LOCATION}"
     echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
     echo -e "  ${BOLD}Key Vault:${NC}   ${ENABLE_KEY_VAULT}"
+    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
+      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
+    fi
   fi
   echo ""
 
@@ -2013,6 +2176,7 @@ if [[ "$RESUME" == "true" ]]; then
     SECRET_NS=$(parse_tfvar secret_namespace)
     BQ_IAM=$(parse_tfvar enable_bigquery_iam)
     VERTEX_AI_IAM=$(parse_tfvar enable_vertex_ai_iam)
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
     if [[ -z "$PROJECT_ID" || -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
       err "Failed to parse required values from ${TFVARS_FILE}"
       exit 1
@@ -2026,6 +2190,7 @@ if [[ "$RESUME" == "true" ]]; then
     SECRET_NS=$(parse_tfvar secret_namespace)
     BEDROCK_IAM=$(parse_tfvar enable_bedrock_iam)
     REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
     if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
       err "Failed to parse required values from ${TFVARS_FILE}"
       exit 1
@@ -2043,6 +2208,7 @@ if [[ "$RESUME" == "true" ]]; then
     ENABLE_SECRETS="$ENABLE_KEY_VAULT"
     SECRET_NS=$(parse_tfvar secret_namespace)
     [[ -z "$SECRET_NS" ]] && SECRET_NS="decisionbox"
+    ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
     HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
     HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
     if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
@@ -2061,6 +2227,9 @@ if [[ "$RESUME" == "true" ]]; then
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
   echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
+  if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+    echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
+  fi
   echo ""
 
   # Set TOTAL_STEPS before calling any step functions

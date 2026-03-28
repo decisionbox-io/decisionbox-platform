@@ -122,6 +122,12 @@ variable "enable_redshift_iam" {
   default     = false
 }
 
+variable "allowed_ip_ranges" {
+  description = "CIDR blocks allowed to access HTTP/HTTPS services. Empty list allows all traffic."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

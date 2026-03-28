@@ -152,6 +152,18 @@ variable "health_check_source_ranges" {
   default     = ["35.191.0.0/16", "130.211.0.0/22"]
 }
 
+# IP Allowlisting
+variable "allowed_ip_ranges" {
+  description = "CIDR blocks allowed to access HTTP/HTTPS services via the load balancer. Empty list allows all traffic (no restriction). Creates a Cloud Armor security policy."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for cidr in var.allowed_ip_ranges : can(cidrhost(cidr, 0))])
+    error_message = "Each entry in allowed_ip_ranges must be a valid CIDR block (e.g., 203.0.113.0/24)."
+  }
+}
+
 # GKE - cluster
 variable "deletion_protection" {
   description = "Enable deletion protection on the GKE cluster. Set to false for dev/sandbox environments."

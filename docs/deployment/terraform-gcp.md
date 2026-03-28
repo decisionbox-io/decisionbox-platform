@@ -95,6 +95,9 @@ enable_bigquery_iam = true
 
 # Optional: Vertex AI access (for Claude via Vertex or Gemini)
 enable_vertex_ai_iam = true
+
+# Optional: Restrict HTTP/HTTPS to specific IPs (empty = unrestricted)
+# allowed_ip_ranges = ["203.0.113.0/24", "198.51.100.0/24"]
 ```
 
 ### Step 3: Initialize and Apply
@@ -242,6 +245,7 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM conditions |
 | `enable_bigquery_iam` | bool | `false` | Grant BigQuery read access to the agent SA |
 | `enable_vertex_ai_iam` | bool | `false` | Grant Vertex AI access to the agent SA (Claude via Vertex, Gemini) |
+| `allowed_ip_ranges` | list(string) | `[]` | CIDR blocks allowed for HTTP/HTTPS. Empty = unrestricted. Creates a Cloud Armor security policy. |
 
 ### Labels
 

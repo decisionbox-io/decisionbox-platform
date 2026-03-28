@@ -92,6 +92,9 @@ enable_bedrock_iam = false
 # Optional: Redshift read access
 enable_redshift_iam = false
 
+# Optional: Restrict HTTP/HTTPS to specific IPs (empty = unrestricted)
+# allowed_ip_ranges = ["203.0.113.0/24", "198.51.100.0/24"]
+
 tags = {
   project     = "decisionbox"
   environment = "prod"
@@ -223,6 +226,7 @@ Set `region` and `cluster_name` to match your environment.
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM scoping |
 | `enable_bedrock_iam` | bool | `false` | Grant Bedrock InvokeModel access (Agent) |
 | `enable_redshift_iam` | bool | `false` | Grant Redshift Data API read access (Agent) |
+| `allowed_ip_ranges` | list(string) | `[]` | CIDR blocks allowed for HTTP/HTTPS. Empty = unrestricted. Creates a security group for ALB attachment. |
 
 ### Tags
 

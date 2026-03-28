@@ -49,3 +49,8 @@ output "vertex_ai_iam_enabled" {
   description = "Whether Vertex AI IAM was enabled"
   value       = var.enable_vertex_ai_iam
 }
+
+output "security_policy_name" {
+  description = "Cloud Armor security policy name for IP allowlisting (empty if no IP restriction)"
+  value       = length(var.allowed_ip_ranges) > 0 ? google_compute_security_policy.ip_allowlist[0].name : ""
+}
