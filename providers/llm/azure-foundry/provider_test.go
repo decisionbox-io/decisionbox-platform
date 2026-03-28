@@ -1,6 +1,9 @@
 package azurefoundry
 
 import (
+	"context"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,19 +35,20 @@ func TestIsClaude(t *testing.T) {
 
 func TestAzureFoundryProvider_ChatDefaultModel(t *testing.T) {
 	p := &AzureFoundryProvider{
-		endpoint: "https://test.services.ai.azure.com",
-		apiKey:   "test-key",
-		model:    "claude-sonnet-4-6",
+		endpoint:   "https://nonexistent.services.ai.azure.com",
+		apiKey:     "test-key",
+		model:      "claude-sonnet-4-6",
+		httpClient: &http.Client{Timeout: 1 * time.Second},
 	}
 
 	// Empty model in request should fall back to provider default.
 	// Will fail on HTTP (no server), but verifies routing.
-	_, err := p.Chat(nil, gollm.ChatRequest{
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "test"}},
 	})
 
 	// Should fail on HTTP, not on model routing
-	if err != nil && contains(err.Error(), "unsupported model") {
+	if err != nil && strings.Contains(err.Error(), "unsupported model") {
 		t.Error("should route to claude, not fail on model check")
 	}
 }
@@ -73,11 +77,12 @@ func TestAzureFoundryProvider_Registered(t *testing.T) {
 
 func TestAzureFoundryProvider_Validate_NoServer(t *testing.T) {
 	p := &AzureFoundryProvider{
-		endpoint: "https://nonexistent.services.ai.azure.com",
-		apiKey:   "test-key",
-		model:    "claude-sonnet-4-6",
+		endpoint:   "https://nonexistent.services.ai.azure.com",
+		apiKey:     "test-key",
+		model:      "claude-sonnet-4-6",
+		httpClient: &http.Client{Timeout: 1 * time.Second},
 	}
-	err := p.Validate(nil)
+	err := p.Validate(context.Background())
 	if err == nil {
 		t.Error("Validate should fail with no server")
 	}
@@ -113,7 +118,7 @@ func TestAzureFoundryProvider_Factory_MissingEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing endpoint")
 	}
-	if !contains(err.Error(), "endpoint is required") {
+	if !strings.Contains(err.Error(), "endpoint is required") {
 		t.Errorf("error = %q, should mention endpoint is required", err.Error())
 	}
 }
@@ -126,7 +131,7 @@ func TestAzureFoundryProvider_Factory_MissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing api_key")
 	}
-	if !contains(err.Error(), "api_key is required") {
+	if !strings.Contains(err.Error(), "api_key is required") {
 		t.Errorf("error = %q, should mention api_key is required", err.Error())
 	}
 }
@@ -139,7 +144,7 @@ func TestAzureFoundryProvider_Factory_MissingModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing model")
 	}
-	if !contains(err.Error(), "model is required") {
+	if !strings.Contains(err.Error(), "model is required") {
 		t.Errorf("error = %q, should mention model is required", err.Error())
 	}
 }
@@ -190,13 +195,4 @@ func TestAzureFoundryProvider_Factory_CustomTimeout(t *testing.T) {
 	if p.httpClient.Timeout != expected {
 		t.Errorf("timeout = %v, want %v", p.httpClient.Timeout, expected)
 	}
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -140,7 +140,7 @@ func TestAzureFoundry_ClaudeChat_APIError(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error for API error response")
 			}
-			if !contains(err.Error(), "API error") {
+			if !strings.Contains(err.Error(), "API error") {
 				t.Errorf("error = %q, should mention API error", err.Error())
 			}
 		})
@@ -499,7 +499,7 @@ func TestAzureFoundry_OpenAIChat_APIError(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error for API error response")
 			}
-			if !contains(err.Error(), "API error") {
+			if !strings.Contains(err.Error(), "API error") {
 				t.Errorf("error = %q, should mention API error", err.Error())
 			}
 		})
@@ -569,7 +569,7 @@ func TestAzureFoundry_OpenAIChat_EmptyChoices(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty choices")
 	}
-	if !contains(err.Error(), "no choices") {
+	if !strings.Contains(err.Error(), "no choices") {
 		t.Errorf("error = %q, should mention no choices", err.Error())
 	}
 }
@@ -707,7 +707,7 @@ func TestAzureFoundry_Validate_APIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate should fail with API error")
 	}
-	if !contains(err.Error(), "validation failed") {
+	if !strings.Contains(err.Error(), "validation failed") {
 		t.Errorf("error = %q, should mention validation failed", err.Error())
 	}
 }
