@@ -64,6 +64,10 @@ readinessProbe:
   timeoutSeconds: 3
   failureThreshold: 3
 
+# podLabels is not needed for the dashboard since it does not authenticate
+# to Azure services directly. Workload Identity labels are only required on
+# the API pods which access Key Vault and other cloud resources.
+
 automountServiceAccountToken: false
 
 service:

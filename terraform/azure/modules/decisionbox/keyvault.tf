@@ -4,7 +4,7 @@
 
 resource "azurerm_key_vault" "main" {
   count               = var.enable_key_vault ? 1 : 0
-  name                = replace("${var.cluster_name}-kv", "_", "-")
+  name                = substr(replace("${var.cluster_name}-kv", "_", "-"), 0, 24)
   resource_group_name = local.resource_group_name
   location            = var.location
   tenant_id           = data.azurerm_client_config.current.tenant_id
@@ -12,7 +12,7 @@ resource "azurerm_key_vault" "main" {
 
   # Soft delete is mandatory on new vaults; configure retention
   soft_delete_retention_days = var.key_vault_soft_delete_retention_days
-  purge_protection_enabled   = false
+  purge_protection_enabled   = var.key_vault_purge_protection
 
   # Use Azure RBAC for access control (not access policies)
   rbac_authorization_enabled = true

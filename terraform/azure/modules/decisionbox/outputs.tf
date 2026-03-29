@@ -14,12 +14,6 @@ output "kube_config_host" {
   sensitive   = true
 }
 
-output "kube_config_raw" {
-  description = "Raw kubeconfig for the AKS cluster"
-  value       = var.create_cluster ? azurerm_kubernetes_cluster.main[0].kube_config_raw : data.azurerm_kubernetes_cluster.existing[0].kube_config_raw
-  sensitive   = true
-}
-
 output "resource_group_name" {
   description = "Resource group name"
   value       = local.resource_group_name

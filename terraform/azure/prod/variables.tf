@@ -132,6 +132,20 @@ variable "k8s_agent_service_account" {
   default     = "decisionbox-agent"
 }
 
+# Secrets
+variable "secret_namespace" {
+  description = "Namespace prefix for secrets stored in Key Vault or MongoDB to avoid naming conflicts across deployments"
+  type        = string
+  default     = "decisionbox"
+}
+
+# Observability
+variable "enable_oms_agent" {
+  description = "Enable OMS agent for Azure Monitor Container Insights"
+  type        = bool
+  default     = true
+}
+
 # Optional
 variable "enable_key_vault" {
   description = "Create an Azure Key Vault for secret storage"

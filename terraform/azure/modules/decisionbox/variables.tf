@@ -158,6 +158,12 @@ variable "enable_azure_policy" {
   default     = false
 }
 
+variable "enable_web_app_routing" {
+  description = "Enable Web App Routing add-on for AKS ingress"
+  type        = bool
+  default     = true
+}
+
 variable "enable_oms_agent" {
   description = "Enable OMS agent for Azure Monitor Container Insights"
   type        = bool
@@ -238,6 +244,13 @@ variable "k8s_agent_service_account" {
   default     = "decisionbox-agent"
 }
 
+# Secrets
+variable "secret_namespace" {
+  description = "Namespace prefix for secrets stored in Key Vault or MongoDB to avoid naming conflicts across deployments"
+  type        = string
+  default     = "decisionbox"
+}
+
 # Optional: Azure Key Vault
 variable "enable_key_vault" {
   description = "Create an Azure Key Vault and grant the API managed identity access to manage secrets."
@@ -257,9 +270,8 @@ variable "key_vault_soft_delete_retention_days" {
   default     = 7
 }
 
-# Optional: Bedrock IAM (for cross-cloud LLM access)
-variable "enable_bedrock_iam" {
-  description = "Create an Azure AD app registration for cross-cloud access to AWS Bedrock (future use)"
+variable "key_vault_purge_protection" {
+  description = "Enable purge protection on the Key Vault. Set to true for production to prevent permanent deletion during the retention period."
   type        = bool
   default     = false
 }

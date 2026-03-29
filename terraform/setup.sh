@@ -252,6 +252,23 @@ prompt_number() {
   done
 }
 
+prompt_secret() {
+  local var_name="$1" prompt_text="$2"
+  GO_BACK=false
+  local back_hint="${DIM}(back)${NC}"
+  local value
+  read -rs -p "$(echo -e "${CYAN}?${NC} ${prompt_text} ${back_hint}: ")" value
+  echo ""
+  if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
+  while [[ -z "$value" ]]; do
+    err "This field is required."
+    read -rs -p "$(echo -e "${CYAN}?${NC} ${prompt_text} ${back_hint}: ")" value
+    echo ""
+    if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
+  done
+  printf -v "$var_name" '%s' "$value"
+}
+
 prompt_boolean() {
   local var_name="$1" prompt_text="$2" default="${3:-false}"
   while true; do
@@ -651,7 +668,7 @@ do_step_6_authentication() {
     else
       prompt AZURE_TENANT_ID "Azure tenant ID" "${AZURE_TENANT_ID:-}" || return 1
       prompt AZURE_CLIENT_ID "Service principal client ID" "${AZURE_CLIENT_ID:-}" || return 1
-      prompt AZURE_CLIENT_SECRET "Service principal client secret" "${AZURE_CLIENT_SECRET:-}" || return 1
+      prompt_secret AZURE_CLIENT_SECRET "Service principal client secret" || return 1
       export ARM_TENANT_ID="$AZURE_TENANT_ID"
       export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
       export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
@@ -2017,6 +2034,8 @@ if [[ "$RESUME" == "true" ]]; then
     SUBSCRIPTION_ID=$(parse_tfvar subscription_id)
     LOCATION=$(parse_tfvar location)
     REGION="$LOCATION"
+    AZURE_RG=$(parse_tfvar resource_group_name)
+    [[ -z "$AZURE_RG" ]] && AZURE_RG="${CLUSTER_NAME}-rg"
     VM_SIZE=$(parse_tfvar vm_size)
     MIN_NODES=$(parse_tfvar min_node_count)
     MAX_NODES=$(parse_tfvar max_node_count)
@@ -2024,6 +2043,8 @@ if [[ "$RESUME" == "true" ]]; then
     ENABLE_SECRETS="$ENABLE_KEY_VAULT"
     SECRET_NS=$(parse_tfvar secret_namespace)
     [[ -z "$SECRET_NS" ]] && SECRET_NS="decisionbox"
+    HELM_DIR="${SCRIPT_DIR}/../helm-charts/decisionbox-api"
+    HELM_VALUES="${HELM_DIR}/values-secrets.yaml"
     if [[ -z "$CLUSTER_NAME" || -z "$K8S_NS" ]]; then
       err "Failed to parse required values from ${TFVARS_FILE}"
       exit 1

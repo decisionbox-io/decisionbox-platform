@@ -196,7 +196,7 @@ Azure Subscription
 │   │       └── NSG (SSH deny-by-default)
 │   ├── NAT Gateway + Public IP
 │   ├── AKS Cluster (decisionbox-prod)
-│   │   ├── Default Node Pool (Standard_D2s_v5, 1-3 nodes)
+│   │   ├── Default Node Pool (Standard_D2s_v5, 3 nodes)
 │   │   ├── Workload Identity (OIDC issuer)
 │   │   └── Container Insights → Log Analytics
 │   ├── Key Vault (decisionbox-prod-kv)
@@ -250,12 +250,12 @@ The existing cluster must have:
 | Resource | Default | Monthly Estimate |
 |----------|---------|-----------------|
 | AKS control plane (Free tier) | Free | $0 |
-| 2x Standard_D2s_v5 nodes | 2 vCPU, 8 GB | ~$140 |
+| 3x Standard_D2s_v5 nodes | 2 vCPU, 8 GB each | ~$210 |
 | NAT Gateway | Standard | ~$32 |
 | Public IP (NAT) | Standard/Static | ~$4 |
 | Key Vault | Standard | ~$0.03/10k ops |
 | Log Analytics | 30-day retention | ~$2.76/GB |
-| **Total** | | **~$180/mo** |
+| **Total** | | **~$250/mo** |
 
 Scale down for development:
 ```hcl

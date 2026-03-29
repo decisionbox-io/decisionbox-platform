@@ -30,6 +30,9 @@ module "decisionbox" {
   k8s_service_account       = var.k8s_service_account
   k8s_agent_service_account = var.k8s_agent_service_account
 
+  # Observability
+  enable_oms_agent = var.enable_oms_agent
+
   # Optional
   enable_key_vault = var.enable_key_vault
 
