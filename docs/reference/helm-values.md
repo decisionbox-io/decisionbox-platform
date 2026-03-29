@@ -32,8 +32,11 @@ Source code for the charts is in `helm-charts/`.
 | `containerPort` | int | `8080` | Container port |
 | `serviceAccountName` | string | `decisionbox-api` | API service account name |
 | `serviceAccountAnnotations` | map | `{}` | API SA annotations (e.g., Workload Identity) |
+| `serviceAccountLabels` | map | `{}` | API SA labels (e.g., Azure Workload Identity `azure.workload.identity/use`) |
 | `agentServiceAccount.name` | string | `decisionbox-agent` | Agent service account name (for K8s Jobs) |
 | `agentServiceAccount.annotations` | map | `{}` | Agent SA annotations (e.g., Workload Identity for read-only access) |
+| `agentServiceAccount.labels` | map | `{}` | Agent SA labels (e.g., Azure Workload Identity) |
+| `podLabels` | map | `{}` | Extra labels on pod template (required for Azure Workload Identity webhook) |
 
 ### Environment Variables
 
@@ -277,8 +280,54 @@ resources:
     memory: "4Gi"
 ```
 
+### Azure (AKS + Key Vault)
+
+```yaml
+# values-prod.yaml (API)
+
+mongodb:
+  enabled: false
+
+env:
+  LOG_LEVEL: "warn"
+  MONGODB_DB: "decisionbox_prod"
+  SECRET_PROVIDER: "azure"
+  SECRET_AZURE_VAULT_URL: "https://decisionbox-prod-kv.vault.azure.net/"
+  SECRET_NAMESPACE: "decisionbox"
+
+extraEnvFrom:
+  - secretRef:
+      name: decisionbox-api-secrets
+
+serviceAccountAnnotations:
+  azure.workload.identity/client-id: "<api-managed-identity-client-id>"
+serviceAccountLabels:
+  azure.workload.identity/use: "true"
+
+agentServiceAccount:
+  annotations:
+    azure.workload.identity/client-id: "<agent-managed-identity-client-id>"
+  labels:
+    azure.workload.identity/use: "true"
+
+podLabels:
+  azure.workload.identity/use: "true"
+
+automountServiceAccountToken: true
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1Gi"
+  limits:
+    cpu: "2000m"
+    memory: "4Gi"
+```
+
 ## Next Steps
 
 - [Kubernetes Deployment](../deployment/kubernetes.md) — Step-by-step deployment guide
-- [Terraform GCP](../deployment/terraform-gcp.md) — Automated infrastructure provisioning
+- [Terraform GCP](../deployment/terraform-gcp.md) — Automated GKE cluster provisioning
+- [Terraform AWS](../deployment/terraform-aws.md) — Automated EKS cluster provisioning
+- [Terraform Azure](../deployment/terraform-azure.md) — Automated AKS cluster provisioning
 - [Configuration Reference](configuration.md) — All environment variables

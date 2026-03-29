@@ -265,3 +265,11 @@ max_node_count = 1
 enable_oms_agent = false              # Skip Log Analytics
 sku_tier       = "Free"               # No uptime SLA
 ```
+
+## Next Steps
+
+- [Kubernetes Deployment](kubernetes.md) — Deploy with Helm after Terraform
+- [Terraform GCP](terraform-gcp.md) — GKE cluster provisioning on GCP
+- [Terraform AWS](terraform-aws.md) — EKS cluster provisioning on AWS
+- [Helm Values Reference](../reference/helm-values.md) — All chart configuration options
+- [Production Considerations](production.md) — Scaling, monitoring, backups

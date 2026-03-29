@@ -340,5 +340,7 @@ terraform destroy
 ## Next Steps
 
 - [Kubernetes Deployment](kubernetes.md) — Deploy with Helm after Terraform
+- [Terraform GCP](terraform-gcp.md) — GKE cluster provisioning on GCP
+- [Terraform Azure](terraform-azure.md) — AKS cluster provisioning on Azure
 - [Helm Values Reference](../reference/helm-values.md) — All chart configuration options
 - [Production Considerations](production.md) — Scaling, monitoring, backups

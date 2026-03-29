@@ -169,5 +169,7 @@ curl http://localhost:3000/health
 
 - [Kubernetes (Helm)](kubernetes.md) — Production deployment on K8s
 - [Terraform GCP](terraform-gcp.md) — Automated GKE cluster provisioning
+- [Terraform AWS](terraform-aws.md) — Automated EKS cluster provisioning
+- [Terraform Azure](terraform-azure.md) — Automated AKS cluster provisioning
 - [Configuration Reference](../reference/configuration.md) — All environment variables
 - [Production Considerations](production.md) — Security, scaling, monitoring
