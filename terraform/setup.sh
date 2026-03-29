@@ -285,12 +285,16 @@ prompt_boolean() {
 
 validate_cidr() {
   local cidr="$1"
-  if [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+  # Accept bare IP (no prefix) — caller is responsible for appending /32
+  if [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then
     local IFS='./'; read -ra parts <<< "$cidr"
     for i in 0 1 2 3; do
       [[ "${parts[$i]}" -gt 255 ]] && return 1
     done
-    [[ "${parts[4]}" -gt 32 ]] && return 1
+    # If prefix is present, validate range
+    if [[ "${#parts[@]}" -eq 5 ]]; then
+      [[ "${parts[4]}" -gt 32 ]] && return 1
+    fi
     return 0
   fi
   return 1
@@ -301,8 +305,8 @@ prompt_cidr_list() {
 
   echo ""
   info "$prompt_text"
-  dim "Enter CIDR blocks one per line. Press Enter on an empty line when done."
-  dim "Example: 203.0.113.0/24"
+  dim "Enter IP addresses or CIDR blocks one per line. Press Enter on an empty line when done."
+  dim "Examples: 62.56.81.243 (single IP) or 203.0.113.0/24 (range)"
   if [[ -n "$default" ]]; then
     dim "Current: ${default//,/, }"
     dim "Press Enter on the first line to keep current values, or type 'clear' to remove all."
@@ -332,10 +336,14 @@ prompt_cidr_list() {
     fi
     first_line=false
     if validate_cidr "$input"; then
+      # Auto-append /32 for bare IP addresses
+      if [[ ! "$input" == */* ]]; then
+        input="${input}/32"
+      fi
       cidrs+=("$input")
       ok "Added: $input"
     else
-      err "Invalid CIDR format: $input (expected: x.x.x.x/y where x=0-255, y=0-32)"
+      err "Invalid format: $input (expected: x.x.x.x or x.x.x.x/y)"
     fi
   done
 
