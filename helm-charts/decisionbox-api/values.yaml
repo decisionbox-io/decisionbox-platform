@@ -17,7 +17,9 @@ serviceAccountName: "decisionbox-api"
 serviceAccountAnnotations: {}
   # GCP:   iam.gke.io/gcp-service-account: "<cluster-name>-api@<project-id>.iam.gserviceaccount.com"
   # AWS:   eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/<cluster-name>-api"
-  # Azure: azure.workload-identity/client-id: "<api-managed-identity-client-id>"
+  # Azure: azure.workload.identity/client-id: "<api-managed-identity-client-id>"
+serviceAccountLabels: {}
+  # Azure: azure.workload.identity/use: "true"
 
 # Agent service account — created by this chart for agent K8s Jobs.
 # Needs Workload Identity annotation for cloud secret + data warehouse access.
@@ -26,10 +28,12 @@ agentServiceAccount:
   annotations: {}
     # GCP:   iam.gke.io/gcp-service-account: "<cluster-name>-agent@<project-id>.iam.gserviceaccount.com"
     # AWS:   eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/<cluster-name>-agent"
-    # Azure: azure.workload-identity/client-id: "<agent-managed-identity-client-id>"
+    # Azure: azure.workload.identity/client-id: "<agent-managed-identity-client-id>"
+  labels: {}
+    # Azure: azure.workload.identity/use: "true"
 
 # Extra labels added to pod template metadata.
-# Required for Azure Workload Identity: azure.workload-identity/use: "true"
+# Required for Azure Workload Identity: azure.workload.identity/use: "true"
 podLabels: {}
 
 nodeSelector: {}

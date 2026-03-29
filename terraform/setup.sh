@@ -1252,15 +1252,19 @@ namespace: ${K8S_NS}
 
 serviceAccountName: ${K8S_SA}
 serviceAccountAnnotations:
-  azure.workload-identity/client-id: "${AZURE_API_CLIENT_ID}"
+  azure.workload.identity/client-id: "${AZURE_API_CLIENT_ID}"
+serviceAccountLabels:
+  azure.workload.identity/use: "true"
 
 agentServiceAccount:
   name: ${K8S_AGENT_SA}
   annotations:
-    azure.workload-identity/client-id: "${AZURE_AGENT_CLIENT_ID}"
+    azure.workload.identity/client-id: "${AZURE_AGENT_CLIENT_ID}"
+  labels:
+    azure.workload.identity/use: "true"
 
 podLabels:
-  azure.workload-identity/use: "true"
+  azure.workload.identity/use: "true"
 
 automountServiceAccountToken: true
 

@@ -162,8 +162,9 @@ helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
   --set env.SECRET_PROVIDER=azure \
   --set env.SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/ \
   --set env.SECRET_NAMESPACE=decisionbox \
-  --set "serviceAccountAnnotations.azure\.workload-identity/client-id=<api-managed-identity-client-id>" \
-  --set "podLabels.azure\.workload-identity/use=true" \
+  --set "serviceAccountAnnotations.azure\.workload\.identity/client-id=<api-managed-identity-client-id>" \
+  --set "serviceAccountLabels.azure\.workload\.identity/use=true" \
+  --set "podLabels.azure\.workload\.identity/use=true" \
   --set "extraEnvFrom[0].secretRef.name=decisionbox-api-secrets" \
   -n decisionbox
 ```
