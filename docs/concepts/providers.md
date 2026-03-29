@@ -79,6 +79,7 @@ Used by the "Test Connection" button in the dashboard.
 | Ollama | `ollama` | None (local) | Any model: llama3.1, qwen2.5, mistral, etc. |
 | Google Vertex AI | `vertex-ai` | GCP ADC | Claude + Gemini (via Google) |
 | AWS Bedrock | `bedrock` | AWS credentials | Claude + Llama + Mistral (via AWS) |
+| Azure AI Foundry | `azure-foundry` | API key | Claude + OpenAI GPT (via Azure) |
 
 **Location:** `providers/llm/{provider-name}/`
 
@@ -176,6 +177,7 @@ import (
     _ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
     _ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
     _ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+    _ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry"
     _ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
     _ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"
     _ "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"

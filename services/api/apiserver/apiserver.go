@@ -36,6 +36,7 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry"
 
 	// Warehouse provider registrations (for /api/v1/providers/warehouse listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"

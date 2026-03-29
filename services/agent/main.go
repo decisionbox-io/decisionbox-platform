@@ -31,7 +31,8 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"     // registers "openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"     // registers "ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"  // registers "vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"    // registers "bedrock" (stub)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"        // registers "bedrock" (stub)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
 
 	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"   // registers "bigquery"

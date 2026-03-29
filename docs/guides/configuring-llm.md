@@ -2,7 +2,7 @@
 
 > **Version**: 0.1.0
 
-DecisionBox supports five LLM providers. This guide covers setting up each one.
+DecisionBox supports six LLM providers. This guide covers setting up each one.
 
 ## Provider Comparison
 
@@ -13,6 +13,7 @@ DecisionBox supports five LLM providers. This guide covers setting up each one.
 | **Ollama** | Llama 3.1, Qwen 2.5, Mistral, any GGUF | None (local) | Free, private, no API key needed. |
 | **Vertex AI** | Claude + Gemini (via Google) | GCP ADC | GCP users. Managed billing, IAM auth. |
 | **AWS Bedrock** | Claude + Llama + Mistral (via AWS) | AWS credentials | AWS users. Managed billing, IAM auth. |
+| **Azure AI Foundry** | Claude + OpenAI GPT (via Azure) | API key | Azure users. Managed billing, Azure RBAC. |
 
 ## Claude (Direct Anthropic API)
 
@@ -167,6 +168,47 @@ LLM_TIMEOUT=600s   # 10 minutes
 ```
 
 Or set per-project in the dashboard (not yet available — use env var for now).
+
+## Azure AI Foundry
+
+Access Claude and OpenAI models through Microsoft Azure's managed AI platform.
+Billing goes through your Azure subscription via the Microsoft Marketplace.
+
+### 1. Create a Foundry Resource
+
+1. Navigate to [ai.azure.com](https://ai.azure.com/)
+2. Create a Foundry resource or select an existing one
+3. Deploy a Claude model (e.g., `claude-sonnet-4-6`) or OpenAI model (e.g., `gpt-4o`) under **Models + endpoints**
+4. Copy the endpoint URL and API key from **Keys and Endpoint**
+
+### 2. Configure in Dashboard
+
+1. Select **Azure AI Foundry** as LLM provider
+2. Enter the **Endpoint URL** (e.g., `https://my-resource.services.ai.azure.com`)
+3. Enter the **deployment name** as Model (e.g., `claude-sonnet-4-6` or `gpt-4o`)
+4. Go to **Settings → AI Provider** → set **API Key** to your Azure API key
+
+### 3. Available Models
+
+| Model | Deployment Name | Type |
+|-------|----------------|------|
+| Claude Opus 4.6 | `claude-opus-4-6` | Claude |
+| Claude Sonnet 4.6 | `claude-sonnet-4-6` | Claude |
+| Claude Sonnet 4.5 | `claude-sonnet-4-5` | Claude |
+| Claude Haiku 4.5 | `claude-haiku-4-5` | Claude |
+| GPT-4o | `gpt-4o` | OpenAI |
+| GPT-4o mini | `gpt-4o-mini` | OpenAI |
+
+The provider automatically routes to the correct API based on the model name:
+- `claude-*` models → Anthropic Messages API
+- All other models → OpenAI Chat Completions API
+
+### 4. Authentication
+
+Azure AI Foundry supports API key authentication.
+The API key is set per-project via the dashboard's AI Provider settings tab.
+
+For production on AKS, you can also use Entra ID (Azure AD) with managed identity, but this requires custom configuration outside DecisionBox.
 
 ## Next Steps
 
