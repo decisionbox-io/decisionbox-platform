@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PostgreSQL warehouse provider** — Connect to PostgreSQL databases with username/password or connection string authentication. Supports all common PostgreSQL data types including INTEGER, BIGINT, SERIAL, NUMERIC/DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMPTZ, BYTEA, JSON/JSONB, arrays, UUID, INET, and INTERVAL. Uses `information_schema` for table/column metadata and `pg_class.reltuples` for fast row count estimates. Includes comprehensive SQL fix prompt covering 13 error patterns (LATERAL joins, FILTER clause, recursive CTEs, NOT IN NULL trap, BETWEEN timestamp pitfall, and more). SSL mode configurable (default: `require`).
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
