@@ -30,5 +30,8 @@ module "decisionbox" {
   enable_bedrock_iam  = var.enable_bedrock_iam
   enable_redshift_iam = var.enable_redshift_iam
 
+  # IP restriction
+  allowed_ip_ranges = var.allowed_ip_ranges
+
   tags = var.tags
 }

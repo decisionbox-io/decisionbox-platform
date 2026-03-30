@@ -113,3 +113,45 @@ locals {
   subnet_id = var.create_vpc ? google_compute_subnetwork.gke_subnet[0].id : var.existing_subnet_id
   vpc_name  = var.create_vpc ? google_compute_network.vpc[0].name : split("/", var.existing_vpc_id)[length(split("/", var.existing_vpc_id)) - 1]
 }
+
+# ─── Cloud Armor IP restriction ────────────────────────────────────────────
+# When allowed_ip_ranges is populated, creates a security policy that
+# only permits traffic from the specified CIDRs. Attach to backend
+# services via a BackendConfig annotation:
+#   cloud.google.com/backend-config: '{"default":"<policy-name>"}'
+
+# Cloud Armor is project-scoped (not VPC-bound), so unlike AWS/Azure this is
+# intentionally not gated on create_vpc.
+resource "google_compute_security_policy" "ip_allowlist" {
+  count   = length(var.allowed_ip_ranges) > 0 ? 1 : 0
+  name    = "${var.cluster_name}-ip-allowlist"
+  project = var.project_id
+
+  # Default rule: deny all traffic not matching an allow rule
+  rule {
+    action   = "deny(403)"
+    priority = "2147483647"
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    description = "Default deny"
+  }
+
+  # Allow traffic from the specified CIDR ranges
+  rule {
+    action   = "allow"
+    priority = "1000"
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = var.allowed_ip_ranges
+      }
+    }
+    description = "Allowed IP ranges"
+  }
+
+  depends_on = [google_project_service.apis["compute.googleapis.com"]]
+}
