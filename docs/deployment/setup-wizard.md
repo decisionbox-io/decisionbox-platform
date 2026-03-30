@@ -22,7 +22,7 @@ cd terraform
 | `--project NAME` | Project name (default: `decisionbox`) |
 | `--env ENV` | Environment: `prod`, `staging`, `dev`, or custom (default: `prod`) |
 | `--base DIR` | Base directory for deployment files (default: script's directory) |
-| `--provider CLOUD` | Cloud provider: `gcp` or `aws` (for `--resume`/`--destroy`) |
+| `--provider CLOUD` | Cloud provider: `gcp`, `aws`, or `azure` (for `--resume`/`--destroy`) |
 | `--include FILE` | Source a plugin script that registers additional steps |
 
 ## Multi-Deployment Support
@@ -104,6 +104,7 @@ Choose between:
 - Node pool: machine type, min/max nodes per zone (numeric validation, min <= max check)
 - BigQuery IAM (optional — for data warehouse access)
 - Vertex AI IAM (optional — for Claude via Vertex or Gemini)
+- IP restriction (optional — restricts HTTP/HTTPS to specified CIDR blocks via Cloud Armor)
 
 **AWS:**
 - Region (default: `us-east-1`)
@@ -112,6 +113,7 @@ Choose between:
 - Node group: instance type, min/max/desired nodes (numeric validation)
 - Bedrock IAM (optional — for LLM access)
 - Redshift IAM (optional — for data warehouse access)
+- IP restriction (optional — restricts HTTP/HTTPS to specified CIDR blocks via security group)
 
 **Azure:**
 - Subscription ID
@@ -120,6 +122,7 @@ Choose between:
 - Kubernetes namespace (default: `decisionbox`)
 - Node pool: VM size, min/max nodes (numeric validation)
 - Key Vault (optional — for secret storage)
+- IP restriction (optional — restricts HTTP/HTTPS to specified CIDR blocks via NSG rules)
 
 ### Step 6: Authentication
 
@@ -163,7 +166,7 @@ Choose between:
 
 ### Step 8: Review
 
-Displays all collected configuration for review before proceeding, including project name, environment, and deployment directory. Type `back` to change any value.
+Displays all collected configuration for review before proceeding, including project name, environment, deployment directory, and IP allowlist (if configured). Type `back` to change any value.
 
 ### Step 9: Generate Config Files
 
@@ -180,6 +183,7 @@ max_node_count = 2
 k8s_namespace = "decisionbox"
 enable_gcp_secrets  = true
 secret_namespace    = "decisionbox"
+allowed_ip_ranges   = ["203.0.113.0/24"]
 ```
 
 **`{base}/{project}/{cloud}/{env}/values-secrets.yaml`** — Helm values with secret provider config.
@@ -250,7 +254,7 @@ Destroy mode:
 - **Animated spinner** with elapsed time for all long operations
 - **Color output** (auto-disabled for non-TTY / piped output)
 - **Graceful cancel** — Ctrl+C cleans up tfplan and stops spinners
-- **Input validation** — numeric checks, boolean checks, choice validation
+- **Input validation** — numeric checks, boolean checks, choice validation, CIDR format validation (bare IPs auto-append `/32`)
 - **Permission verification** — checks GCP IAM, AWS identity, or Azure subscription before proceeding
 - **ADC type detection** — warns if GCP Application Default Credentials use a service account instead of user credentials
 
