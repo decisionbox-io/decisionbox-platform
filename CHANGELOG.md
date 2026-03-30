@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-29
+
 ### Added
 
 - **Snowflake warehouse provider** — Connect to Snowflake data warehouses with username/password or key pair (JWT) authentication. Supports all Snowflake data types including NUMBER, FLOAT, BOOLEAN, DATE, TIMESTAMP (NTZ/LTZ/TZ), VARIANT, OBJECT, ARRAY, and BINARY. Uses INFORMATION_SCHEMA for metadata queries (no full-table scans for row counts). Includes Snowflake-specific SQL fix prompt for AI error correction.
@@ -89,5 +91,6 @@ Initial public release.
 - 85%+ unit test coverage across all modules
 - Comprehensive documentation (28 files across 6 sections)
 
-[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/decisionbox-io/decisionbox-platform/releases/tag/v0.1.0

@@ -75,6 +75,7 @@ Run DecisionBox in production.
 - [Docker Compose](deployment/docker.md) — Single-server deployment
 - [Kubernetes (Helm)](deployment/kubernetes.md) — Production deployment on any K8s cluster
 - [Terraform GCP](deployment/terraform-gcp.md) — Automated GKE cluster provisioning
+- [Terraform AWS](deployment/terraform-aws.md) — Automated EKS cluster provisioning
 - [Terraform Azure](deployment/terraform-azure.md) — Automated AKS cluster provisioning
 - [Setup Wizard](deployment/setup-wizard.md) — Interactive one-command GKE/EKS/AKS + Helm deploy
 - [Production Considerations](deployment/production.md) — Security, scaling, monitoring
