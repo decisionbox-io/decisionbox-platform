@@ -208,6 +208,51 @@ func TestFactoryUnsupportedAuthMethod(t *testing.T) {
 	}
 }
 
+func TestFactoryInvalidPort(t *testing.T) {
+	_, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
+		"host":             "localhost",
+		"port":             "abc",
+		"database":         "testdb",
+		"user":             "testuser",
+		"credentials_json": "pw",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid port")
+	}
+	if !strings.Contains(err.Error(), "invalid port") {
+		t.Errorf("error should mention 'invalid port', got: %v", err)
+	}
+}
+
+func TestFactoryInvalidSSLMode(t *testing.T) {
+	_, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
+		"host":             "localhost",
+		"database":         "testdb",
+		"user":             "testuser",
+		"sslmode":          "prefer",
+		"credentials_json": "pw",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid sslmode")
+	}
+	if !strings.Contains(err.Error(), "invalid sslmode") {
+		t.Errorf("error should mention 'invalid sslmode', got: %v", err)
+	}
+}
+
+func TestFactoryPasswordWithSpaces(t *testing.T) {
+	p, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
+		"host":             "localhost",
+		"database":         "testdb",
+		"user":             "testuser",
+		"credentials_json": "my password with spaces",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer p.Close()
+}
+
 func TestFactoryConnectionStringMissingDSN(t *testing.T) {
 	_, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
 		"auth_method": "connection_string",
@@ -731,5 +776,28 @@ func TestValidIdentifier(t *testing.T) {
 		if validIdentifier(id) {
 			t.Errorf("expected %q to be invalid", id)
 		}
+	}
+}
+
+func TestQuoteDSNValue(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"simple", "'simple'"},
+		{"with spaces", "'with spaces'"},
+		{"it's", `'it\'s'`},
+		{`back\slash`, `'back\\slash'`},
+		{`both 'quotes' and \slashes`, `'both \'quotes\' and \\slashes'`},
+		{"", "''"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := quoteDSNValue(tt.input)
+			if result != tt.expected {
+				t.Errorf("quoteDSNValue(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
 	}
 }

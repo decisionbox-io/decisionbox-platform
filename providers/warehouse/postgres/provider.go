@@ -74,9 +74,19 @@ func init() {
 			if port == "" {
 				port = "5432"
 			}
+			if _, err := strconv.Atoi(port); err != nil {
+				return nil, fmt.Errorf("postgres: invalid port %q", port)
+			}
+
 			sslmode := cfg["sslmode"]
 			if sslmode == "" {
 				sslmode = "require"
+			}
+			switch sslmode {
+			case "disable", "require", "verify-ca", "verify-full":
+				// valid
+			default:
+				return nil, fmt.Errorf("postgres: invalid sslmode %q (must be disable, require, verify-ca, or verify-full)", sslmode)
 			}
 
 			password := cfg["credentials_json"]
@@ -84,8 +94,12 @@ func init() {
 				return nil, fmt.Errorf("postgres: password is required")
 			}
 
+			// Build DSN with proper quoting. lib/pq uses libpq key=value format
+			// where values containing spaces or quotes must be single-quoted,
+			// with backslash escaping for single quotes and backslashes.
 			dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s search_path=%s",
-				host, port, user, password, database, sslmode, schema)
+				quoteDSNValue(host), port, quoteDSNValue(user), quoteDSNValue(password),
+				database, sslmode, schema)
 		default:
 			return nil, fmt.Errorf("postgres: unsupported auth method %q", cfg["auth_method"])
 		}
@@ -372,4 +386,12 @@ var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
 
 func validIdentifier(s string) bool {
 	return identifierRe.MatchString(s)
+}
+
+// quoteDSNValue wraps a value in single quotes for the libpq key=value DSN format.
+// Single quotes and backslashes within the value are escaped with a backslash.
+func quoteDSNValue(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
 }
