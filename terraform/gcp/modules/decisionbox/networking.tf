@@ -120,6 +120,8 @@ locals {
 # services via a BackendConfig annotation:
 #   cloud.google.com/backend-config: '{"default":"<policy-name>"}'
 
+# Cloud Armor is project-scoped (not VPC-bound), so unlike AWS/Azure this is
+# intentionally not gated on create_vpc.
 resource "google_compute_security_policy" "ip_allowlist" {
   count   = length(var.allowed_ip_ranges) > 0 ? 1 : 0
   name    = "${var.cluster_name}-ip-allowlist"

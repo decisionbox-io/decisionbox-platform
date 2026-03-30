@@ -352,6 +352,29 @@ prompt_cidr_list() {
   printf -v "$var_name" '%s' "$result"
 }
 
+prompt_ip_restriction() {
+  echo ""
+  prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
+  ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
+  if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
+    prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
+    if [[ -z "$ALLOWED_IP_RANGES" ]]; then
+      warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
+      ENABLE_IP_RESTRICTION="false"
+    fi
+  else
+    ALLOWED_IP_RANGES=""
+  fi
+}
+
+display_ip_restriction() {
+  if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+    echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
+  else
+    echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
+  fi
+}
+
 csv_to_hcl_list() {
   local csv="$1"
   if [[ -z "$csv" ]]; then
@@ -669,18 +692,7 @@ do_step_5_provider_config() {
     prompt_boolean BQ_IAM "Enable BigQuery IAM for data warehouse access?" "${BQ_IAM:-false}" || return 1
     prompt_boolean VERTEX_AI_IAM "Enable Vertex AI IAM for LLM access (Claude via Vertex, Gemini)?" "${VERTEX_AI_IAM:-false}" || return 1
 
-    echo ""
-    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
-    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
-    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
-      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
-      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
-        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
-        ENABLE_IP_RESTRICTION="false"
-      fi
-    else
-      ALLOWED_IP_RANGES=""
-    fi
+    prompt_ip_restriction || return 1
 
   elif [[ "$CLOUD" == "aws" ]]; then
     step_header 5 "$TOTAL_STEPS" "AWS Configuration"
@@ -710,18 +722,7 @@ do_step_5_provider_config() {
     prompt_boolean BEDROCK_IAM "Enable Bedrock IAM for LLM access?" "${BEDROCK_IAM:-false}" || return 1
     prompt_boolean REDSHIFT_IAM "Enable Redshift IAM for data warehouse access?" "${REDSHIFT_IAM:-false}" || return 1
 
-    echo ""
-    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
-    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
-    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
-      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
-      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
-        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
-        ENABLE_IP_RESTRICTION="false"
-      fi
-    else
-      ALLOWED_IP_RANGES=""
-    fi
+    prompt_ip_restriction || return 1
 
   elif [[ "$CLOUD" == "azure" ]]; then
     step_header 4 "$TOTAL_STEPS" "Azure Configuration"
@@ -749,18 +750,7 @@ do_step_5_provider_config() {
     # Key Vault toggle follows the cloud secret manager choice from step 3
     ENABLE_KEY_VAULT="$ENABLE_SECRETS"
 
-    echo ""
-    prompt_boolean ENABLE_IP_RESTRICTION "Restrict HTTP/HTTPS access to specific IP ranges?" "${ENABLE_IP_RESTRICTION:-false}" || return 1
-    ALLOWED_IP_RANGES="${ALLOWED_IP_RANGES:-}"
-    if [[ "$ENABLE_IP_RESTRICTION" == "true" ]]; then
-      prompt_cidr_list ALLOWED_IP_RANGES "IP allowlisting" "${ALLOWED_IP_RANGES}" || return 1
-      if [[ -z "$ALLOWED_IP_RANGES" ]]; then
-        warn "No CIDR blocks entered. HTTP/HTTPS access will be unrestricted."
-        ENABLE_IP_RESTRICTION="false"
-      fi
-    else
-      ALLOWED_IP_RANGES=""
-    fi
+    prompt_ip_restriction || return 1
   fi
 }
 
@@ -1096,11 +1086,7 @@ do_step_8_review() {
     echo -e "  ${BOLD}BigQuery IAM:${NC}       ${BQ_IAM}"
     echo -e "  ${BOLD}Vertex AI IAM:${NC}      ${VERTEX_AI_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}/"
-    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
-    else
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
-    fi
+    display_ip_restriction
   elif [[ "$CLOUD" == "aws" ]]; then
     echo -e "  ${BOLD}AWS account:${NC}        ${AWS_ACCOUNT_ID}"
     echo -e "  ${BOLD}Region:${NC}             ${REGION}"
@@ -1111,11 +1097,7 @@ do_step_8_review() {
     echo -e "  ${BOLD}Bedrock IAM:${NC}        ${BEDROCK_IAM}"
     echo -e "  ${BOLD}Redshift IAM:${NC}       ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}State bucket:${NC}       s3://${TF_STATE_BUCKET}/${TF_STATE_KEY}"
-    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
-    else
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
-    fi
+    display_ip_restriction
   elif [[ "$CLOUD" == "azure" ]]; then
     echo -e "  ${BOLD}Subscription:${NC}       ${SUBSCRIPTION_ID}"
     echo -e "  ${BOLD}Location:${NC}           ${LOCATION}"
@@ -1126,11 +1108,7 @@ do_step_8_review() {
     echo -e "  ${BOLD}Nodes:${NC}              ${MIN_NODES}-${MAX_NODES}"
     echo -e "  ${BOLD}Key Vault:${NC}          ${ENABLE_KEY_VAULT}"
     echo -e "  ${BOLD}State:${NC}              ${TF_STATE_SA}/${TF_STATE_CONTAINER}/${TF_STATE_KEY}"
-    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${ALLOWED_IP_RANGES//,/, }"
-    else
-      echo -e "  ${BOLD}IP allowlist:${NC}       ${DIM}unrestricted${NC}"
-    fi
+    display_ip_restriction
   fi
 
   # Show plugin review sections (plugins define <step_fn>_review)
@@ -1960,9 +1938,7 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}BigQuery:${NC}    ${BQ_IAM}"
     echo -e "  ${BOLD}Vertex AI:${NC}   ${VERTEX_AI_IAM}"
     ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
-    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
-    fi
+    display_ip_restriction
   elif [[ "$CLOUD" == "aws" ]]; then
     ENABLE_SECRETS=$(parse_tfvar enable_aws_secrets)
     REDSHIFT_IAM=$(parse_tfvar enable_redshift_iam)
@@ -1979,9 +1955,7 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Redshift:${NC}    ${REDSHIFT_IAM}"
     echo -e "  ${BOLD}Bedrock:${NC}     ${BEDROCK_IAM}"
     ALLOWED_IP_RANGES=$(parse_tfvar_list allowed_ip_ranges)
-    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
-    fi
+    display_ip_restriction
   elif [[ "$CLOUD" == "azure" ]]; then
     SUBSCRIPTION_ID=$(parse_tfvar subscription_id)
     LOCATION=$(parse_tfvar location)
@@ -2000,9 +1974,7 @@ if [[ "$DESTROY" == "true" ]]; then
     echo -e "  ${BOLD}Location:${NC}    ${LOCATION}"
     echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
     echo -e "  ${BOLD}Key Vault:${NC}   ${ENABLE_KEY_VAULT}"
-    if [[ -n "$ALLOWED_IP_RANGES" ]]; then
-      echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
-    fi
+    display_ip_restriction
   fi
   echo ""
 
@@ -2235,9 +2207,7 @@ if [[ "$RESUME" == "true" ]]; then
   echo -e "  ${BOLD}Region:${NC}      ${REGION}"
   echo -e "  ${BOLD}Namespace:${NC}   ${K8S_NS}"
   echo -e "  ${BOLD}Secrets:${NC}     ${ENABLE_SECRETS}"
-  if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
-    echo -e "  ${BOLD}IP allowlist:${NC} ${ALLOWED_IP_RANGES//,/, }"
-  fi
+  display_ip_restriction
   echo ""
 
   # Set TOTAL_STEPS before calling any step functions
