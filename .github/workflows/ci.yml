@@ -93,6 +93,7 @@ jobs:
           (cd providers/secrets/azure && go test -coverprofile="$COV/secrets-azure.txt" ./...)
           (cd providers/warehouse/bigquery && go test -coverprofile="$COV/warehouse-bigquery.txt" ./...)
           (cd providers/warehouse/redshift && go test -coverprofile="$COV/warehouse-redshift.txt" ./...)
+          (cd providers/warehouse/postgres && go test -coverprofile="$COV/warehouse-postgres.txt" ./...)
           (cd providers/warehouse/snowflake && go test -coverprofile="$COV/warehouse-snowflake.txt" ./...)
           (cd services/agent && go test -coverprofile="$COV/agent.txt" ./...)
           (cd services/api && go test -coverprofile="$COV/api.txt" ./...)
@@ -144,6 +145,12 @@ jobs:
         with:
           version: v2.11.3
           working-directory: domain-packs/social/go
+
+      - name: Lint PostgreSQL warehouse provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/warehouse/postgres
 
       - name: Lint Snowflake warehouse provider
         uses: golangci/golangci-lint-action@v7

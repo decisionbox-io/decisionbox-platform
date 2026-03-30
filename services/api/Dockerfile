@@ -14,6 +14,7 @@ COPY providers/llm/bedrock/go.mod providers/llm/bedrock/go.sum providers/llm/bed
 COPY providers/llm/azure-foundry/go.mod providers/llm/azure-foundry/
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY providers/warehouse/redshift/go.mod providers/warehouse/redshift/go.sum providers/warehouse/redshift/
+COPY providers/warehouse/postgres/go.mod providers/warehouse/postgres/go.sum providers/warehouse/postgres/
 COPY providers/warehouse/snowflake/go.mod providers/warehouse/snowflake/go.sum providers/warehouse/snowflake/
 COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers/secrets/mongodb/
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
