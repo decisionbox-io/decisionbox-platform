@@ -1,6 +1,6 @@
 # DecisionBox Documentation
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 DecisionBox is an open-source AI-powered data discovery platform. It connects to your data warehouse, runs autonomous AI agents that explore your data, and surfaces actionable insights and recommendations.
 

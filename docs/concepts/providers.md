@@ -1,6 +1,6 @@
 # Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 Providers are DecisionBox's plugin system for external services. Instead of hardcoding support for specific LLMs, warehouses, or secret managers, DecisionBox defines interfaces and lets provider packages implement them.
 
