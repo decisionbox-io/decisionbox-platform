@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **System-test domain pack** — Diagnostic domain pack for validating warehouse connectivity, schema discovery, data type mapping, and SQL dialect support. Not an industry pack — designed for testing and onboarding. Three categories by depth: quick (~10 queries), standard (~30-50 queries), thorough (~80-100 queries). Env-gated: only available when `DECISIONBOX_ENABLE_SYSTEM_TEST=true`.
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
