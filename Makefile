@@ -78,6 +78,16 @@ test-secrets: ## Run secrets provider integration tests (MongoDB: Docker, GCP/AW
 	cd providers/secrets/aws && go test -tags=integration -count=1 -timeout=2m -v ./...
 	cd providers/secrets/azure && go test -tags=integration -count=1 -timeout=2m -v ./...
 
+test-databricks: ## Run Databricks integration tests (set INTEGRATION_TEST_DATABRICKS_* env vars)
+	@echo "Databricks integration tests."
+	@echo "  INTEGRATION_TEST_DATABRICKS_HOST      → workspace hostname"
+	@echo "  INTEGRATION_TEST_DATABRICKS_HTTP_PATH  → SQL warehouse path"
+	@echo "  INTEGRATION_TEST_DATABRICKS_TOKEN      → personal access token"
+	@echo "  INTEGRATION_TEST_DATABRICKS_CATALOG    → catalog (default: samples)"
+	@echo "  INTEGRATION_TEST_DATABRICKS_SCHEMA     → schema (default: nyctaxi)"
+	@echo ""
+	cd providers/warehouse/databricks && go test -tags=integration_databricks -count=1 -timeout=5m -v ./...
+
 test-ollama: ## Run Ollama LLM integration tests (requires Docker, slow)
 	cd services/agent && go test -tags='integration ollama' -count=1 -timeout=10m -run TestOllama .
 

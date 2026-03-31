@@ -361,9 +361,8 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 func convertStringByType(val string, dbType string) interface{} {
 	switch strings.ToUpper(dbType) {
 	case "DECIMAL":
-		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
-			return i
-		}
+		// Always return float64 for DECIMAL to ensure consistent types
+		// across rows. The schema maps DECIMAL to FLOAT64.
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			return f
 		}

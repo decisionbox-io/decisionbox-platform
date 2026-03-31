@@ -628,9 +628,9 @@ func TestNormalizeValue(t *testing.T) {
 		t.Errorf("expected float64(123.45), got %v (%T)", v, v)
 	}
 
-	// []byte DECIMAL integer → int64
-	if v := normalizeValue([]byte("42"), "DECIMAL"); v != int64(42) {
-		t.Errorf("expected int64(42), got %v (%T)", v, v)
+	// []byte DECIMAL integer → float64 (always float64 for consistency)
+	if v := normalizeValue([]byte("42"), "DECIMAL"); v != float64(42) {
+		t.Errorf("expected float64(42), got %v (%T)", v, v)
 	}
 
 	// []byte non-DECIMAL → string
@@ -689,9 +689,9 @@ func TestNormalizeValue(t *testing.T) {
 		t.Errorf("expected float64(123.45), got %v (%T)", v, v)
 	}
 
-	// string DECIMAL integer → int64
-	if v := normalizeValue("42", "DECIMAL"); v != int64(42) {
-		t.Errorf("expected int64(42), got %v (%T)", v, v)
+	// string DECIMAL integer → float64 (always float64 for consistency)
+	if v := normalizeValue("42", "DECIMAL"); v != float64(42) {
+		t.Errorf("expected float64(42), got %v (%T)", v, v)
 	}
 }
 
@@ -702,13 +702,13 @@ func TestConvertStringByType(t *testing.T) {
 		dbType   string
 		expected interface{}
 	}{
-		{"DECIMAL integer", "42", "DECIMAL", int64(42)},
+		{"DECIMAL integer", "42", "DECIMAL", float64(42)},
 		{"DECIMAL decimal", "3.14", "DECIMAL", float64(3.14)},
-		{"DECIMAL negative", "-100", "DECIMAL", int64(-100)},
+		{"DECIMAL negative", "-100", "DECIMAL", float64(-100)},
 		{"unparseable DECIMAL", "abc", "DECIMAL", "abc"},
 		{"STRING passthrough", "hello", "STRING", "hello"},
 		{"empty type passthrough", "test", "", "test"},
-		{"case insensitive", "42", "decimal", int64(42)},
+		{"case insensitive", "42", "decimal", float64(42)},
 	}
 
 	for _, tt := range tests {
