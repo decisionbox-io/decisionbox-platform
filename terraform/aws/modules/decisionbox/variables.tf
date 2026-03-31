@@ -108,6 +108,18 @@ variable "public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
+# IP Allowlisting
+variable "allowed_ip_ranges" {
+  description = "CIDR blocks allowed to access HTTP/HTTPS services via the load balancer. Empty list allows all traffic (no restriction). Creates a security group for ALB attachment."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for cidr in var.allowed_ip_ranges : can(cidrhost(cidr, 0))])
+    error_message = "Each entry in allowed_ip_ranges must be a valid CIDR block (e.g., 203.0.113.0/24)."
+  }
+}
+
 variable "log_retention_days" {
   description = "CloudWatch log group retention in days for EKS control plane logs"
   type        = number

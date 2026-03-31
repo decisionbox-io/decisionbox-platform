@@ -255,3 +255,60 @@ resource "aws_iam_role_policy" "flow_log" {
     }]
   })
 }
+
+# ─── IP Restriction Security Group ──────────────────────────────────────────
+# When allowed_ip_ranges is populated, creates a security group that only
+# permits inbound HTTP/HTTPS from the specified CIDRs. Attach to ALBs via
+# the annotation: alb.ingress.kubernetes.io/security-groups
+
+resource "aws_security_group" "ip_allowlist" {
+  count = var.create_vpc && length(var.allowed_ip_ranges) > 0 ? 1 : 0
+
+  name_prefix = "${var.cluster_name}-ip-allowlist-"
+  vpc_id      = local.vpc_id
+  description = "Restricts HTTP/HTTPS access to allowed IP ranges"
+
+  tags = merge(local.common_tags, {
+    Name = "${var.cluster_name}-ip-allowlist"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_security_group_rule" "ip_allowlist_http" {
+  count = var.create_vpc && length(var.allowed_ip_ranges) > 0 ? 1 : 0
+
+  type              = "ingress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = var.allowed_ip_ranges
+  security_group_id = aws_security_group.ip_allowlist[0].id
+  description       = "Allow HTTP from allowed IP ranges"
+}
+
+resource "aws_security_group_rule" "ip_allowlist_https" {
+  count = var.create_vpc && length(var.allowed_ip_ranges) > 0 ? 1 : 0
+
+  type              = "ingress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = var.allowed_ip_ranges
+  security_group_id = aws_security_group.ip_allowlist[0].id
+  description       = "Allow HTTPS from allowed IP ranges"
+}
+
+resource "aws_security_group_rule" "ip_allowlist_egress" {
+  count = var.create_vpc && length(var.allowed_ip_ranges) > 0 ? 1 : 0
+
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.ip_allowlist[0].id
+  description       = "Allow all outbound"
+}

@@ -31,5 +31,8 @@ module "decisionbox" {
   enable_bigquery_iam  = var.enable_bigquery_iam
   enable_vertex_ai_iam = var.enable_vertex_ai_iam
 
+  # IP restriction
+  allowed_ip_ranges = var.allowed_ip_ranges
+
   labels = var.labels
 }
