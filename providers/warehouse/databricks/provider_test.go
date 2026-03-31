@@ -350,7 +350,7 @@ func TestSQLFixPrompt(t *testing.T) {
 	}
 	for _, required := range []string{
 		"{{DATASET}}", "{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{SCHEMA_INFO}}",
-		"QUALIFY", "PIVOT", "UNPIVOT", "MERGE INTO", "explode", "explode_outer",
+		"QUALIFY", "PIVOT", "UNPIVOT", "explode", "explode_outer",
 		"collect_list", "collect_set", "any_value", "TRY_CAST", "NULLIF",
 		"yyyy-MM-dd", "YYYY", "TABLE_OR_VIEW_NOT_FOUND", "UNRESOLVED_COLUMN",
 		"MISSING_AGGREGATION", "DIVIDE_BY_ZERO", "Delta",
@@ -722,32 +722,77 @@ func TestConvertStringByType(t *testing.T) {
 	}
 }
 
-func TestConvertBytesByType(t *testing.T) {
-	tests := []struct {
-		name     string
-		val      string
-		dbType   string
-		expected interface{}
-	}{
-		{"DECIMAL integer", "42", "DECIMAL", int64(42)},
-		{"DECIMAL decimal", "3.14", "DECIMAL", float64(3.14)},
-		{"DECIMAL negative", "-100", "DECIMAL", int64(-100)},
-		{"DECIMAL large", "9999999999999", "DECIMAL", int64(9999999999999)},
-		{"unparseable DECIMAL", "abc", "DECIMAL", "abc"},
-		{"STRING passthrough", "hello", "STRING", "hello"},
-		{"BINARY passthrough", "\x00\xff", "BINARY", "\x00\xff"},
-		{"empty type passthrough", "test", "", "test"},
-		{"case insensitive", "42", "decimal", int64(42)},
-	}
+// --- SQL injection prevention tests ---
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := convertBytesByType(tt.val, tt.dbType)
-			if result != tt.expected {
-				t.Errorf("convertBytesByType(%q, %q) = %v (%T), want %v (%T)",
-					tt.val, tt.dbType, result, result, tt.expected, tt.expected)
+func TestListTablesInDatasetInvalidSchema(t *testing.T) {
+	mock := &mockDBClient{}
+	p := &DatabricksProvider{client: mock, catalog: "main", schema: "default"}
+
+	_, err := p.ListTablesInDataset(context.Background(), "schema; DROP TABLE")
+	if err == nil {
+		t.Fatal("expected error for invalid schema name")
+	}
+	if !strings.Contains(err.Error(), "invalid schema name") {
+		t.Errorf("error should mention 'invalid schema name', got: %v", err)
+	}
+}
+
+func TestGetTableSchemaInDatasetInvalidSchema(t *testing.T) {
+	mock := &mockDBClient{}
+	p := &DatabricksProvider{client: mock, catalog: "main", schema: "default"}
+
+	_, err := p.GetTableSchemaInDataset(context.Background(), "schema; DROP TABLE", "users")
+	if err == nil {
+		t.Fatal("expected error for invalid schema name")
+	}
+	if !strings.Contains(err.Error(), "invalid schema name") {
+		t.Errorf("error should mention 'invalid schema name', got: %v", err)
+	}
+}
+
+func TestGetTableSchemaInDatasetInvalidTable(t *testing.T) {
+	mock := &mockDBClient{}
+	p := &DatabricksProvider{client: mock, catalog: "main", schema: "default"}
+
+	_, err := p.GetTableSchemaInDataset(context.Background(), "default", "table; DROP TABLE")
+	if err == nil {
+		t.Fatal("expected error for invalid table name")
+	}
+	if !strings.Contains(err.Error(), "invalid table name") {
+		t.Errorf("error should mention 'invalid table name', got: %v", err)
+	}
+}
+
+// --- Empty dataset fallback tests ---
+
+func TestListTablesInDatasetEmptyFallback(t *testing.T) {
+	mock := &mockDBClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			if !strings.Contains(query, "'my_schema'") {
+				return nil, fmt.Errorf("query should contain default schema: %s", query)
 			}
-		})
+			return nil, fmt.Errorf("expected")
+		},
+	}
+	p := &DatabricksProvider{client: mock, catalog: "main", schema: "my_schema"}
+
+	_, _ = p.ListTablesInDataset(context.Background(), "")
+	if !strings.Contains(mock.lastQuery, "'my_schema'") {
+		t.Errorf("expected query to use default schema 'my_schema', got: %s", mock.lastQuery)
+	}
+}
+
+func TestGetTableSchemaInDatasetEmptyFallback(t *testing.T) {
+	mock := &mockDBClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			return nil, fmt.Errorf("expected")
+		},
+	}
+	p := &DatabricksProvider{client: mock, catalog: "main", schema: "my_schema"}
+
+	_, _ = p.GetTableSchemaInDataset(context.Background(), "", "users")
+	if !strings.Contains(mock.lastQuery, "'my_schema'") {
+		t.Errorf("expected query to use default schema 'my_schema', got: %s", mock.lastQuery)
 	}
 }
 

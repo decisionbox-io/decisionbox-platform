@@ -92,7 +92,7 @@ open http://localhost:3000
 ```
 
 The dashboard will guide you through creating your first project. You'll need:
-- A data warehouse connection (BigQuery project ID, Redshift workgroup, or Snowflake account)
+- A data warehouse connection (BigQuery project ID, Redshift workgroup, Snowflake account, or Databricks workspace)
 - An LLM API key (Anthropic, OpenAI, or configure Vertex AI / Bedrock)
 
 For detailed setup instructions, see the [Installation Guide](https://decisionbox.io/docs/getting-started/installation).

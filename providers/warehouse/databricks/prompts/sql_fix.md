@@ -90,14 +90,6 @@ SELECT * FROM {{DATASET}}.events TIMESTAMP AS OF '2026-01-15T10:30:00'
 SELECT * FROM {{DATASET}}.events VERSION AS OF 42
 ```
 
-**MERGE INTO** — Upsert (Delta tables only):
-```sql
-MERGE INTO {{DATASET}}.target t
-USING {{DATASET}}.source s ON t.id = s.id
-WHEN MATCHED THEN UPDATE SET t.value = s.value
-WHEN NOT MATCHED THEN INSERT (id, value) VALUES (s.id, s.value)
-```
-
 **STRUCT/ARRAY/MAP access**:
 ```sql
 -- STRUCT field access (dot notation)

@@ -212,12 +212,16 @@ func (p *DatabricksProvider) ListTablesInDataset(ctx context.Context, dataset st
 	if dataset == "" {
 		dataset = p.schema
 	}
+	if !validIdentifier(dataset) {
+		return nil, fmt.Errorf("databricks: invalid schema name %q", dataset)
+	}
 
 	// Use string formatting with single-quoted values instead of ? params.
 	// The Databricks SQL driver has issues with positional ? parameters in
-	// information_schema queries. Schema names are validated by validIdentifier().
+	// information_schema queries. Schema and table names are validated by
+	// validIdentifier() above to prevent SQL injection.
 	query := fmt.Sprintf(
-		"SELECT table_name FROM %s.information_schema.tables WHERE table_schema = '%s' AND table_type IN ('TABLE', 'MANAGED', 'EXTERNAL') ORDER BY table_name",
+		"SELECT table_name FROM %s.information_schema.tables WHERE table_schema = '%s' AND table_type IN ('MANAGED', 'EXTERNAL') ORDER BY table_name",
 		p.catalog, dataset,
 	)
 
@@ -246,11 +250,17 @@ func (p *DatabricksProvider) GetTableSchemaInDataset(ctx context.Context, datase
 	if dataset == "" {
 		dataset = p.schema
 	}
+	if !validIdentifier(dataset) {
+		return nil, fmt.Errorf("databricks: invalid schema name %q", dataset)
+	}
+	if !validIdentifier(table) {
+		return nil, fmt.Errorf("databricks: invalid table name %q", table)
+	}
 
 	// Use string formatting with single-quoted values instead of ? params.
-	// Schema and table names are validated by validIdentifier() at the call site
-	// or come from information_schema (already safe). The Databricks SQL driver
-	// has issues with multiple positional ? parameters.
+	// Schema and table names are validated by validIdentifier() above to
+	// prevent SQL injection. The Databricks SQL driver has issues with
+	// multiple positional ? parameters.
 	colQuery := fmt.Sprintf(
 		"SELECT column_name, data_type, is_nullable FROM %s.information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' ORDER BY ordinal_position",
 		p.catalog, dataset, table,
@@ -317,19 +327,18 @@ func (p *DatabricksProvider) Close() error {
 // The databricks-sql-go driver returns:
 //   - TINYINT→int8, SMALLINT→int16, INT→int32, BIGINT→int64
 //   - FLOAT→float32, DOUBLE→float64
-//   - DECIMAL→sql.RawBytes ([]byte text)
+//   - DECIMAL→string (despite docs saying sql.RawBytes)
 //   - STRING→string, BOOLEAN→bool
 //   - DATE/TIMESTAMP→time.Time
-//   - BINARY/ARRAY/MAP/STRUCT→sql.RawBytes ([]byte)
+//   - BINARY/ARRAY/MAP/STRUCT→[]byte (sql.RawBytes)
 func normalizeValue(v interface{}, dbType string) interface{} {
 	if v == nil {
 		return nil
 	}
 	switch val := v.(type) {
 	case []byte:
-		return convertBytesByType(string(val), dbType)
+		return convertStringByType(string(val), dbType)
 	case string:
-		// The Databricks driver returns DECIMAL as string (not []byte).
 		return convertStringByType(val, dbType)
 	case time.Time:
 		return val.Format(time.RFC3339)
@@ -348,25 +357,8 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 
 // convertStringByType converts string values to numeric types based on the
 // Databricks column type. The driver returns DECIMAL columns as string.
+// Both []byte and string values are routed through this function.
 func convertStringByType(val string, dbType string) interface{} {
-	switch strings.ToUpper(dbType) {
-	case "DECIMAL":
-		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
-			return i
-		}
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
-			return f
-		}
-		return val
-	default:
-		return val
-	}
-}
-
-// convertBytesByType converts []byte (sql.RawBytes) values to appropriate Go types
-// based on the Databricks column type. DECIMAL columns are converted to numeric types;
-// everything else is returned as string.
-func convertBytesByType(val string, dbType string) interface{} {
 	switch strings.ToUpper(dbType) {
 	case "DECIMAL":
 		if i, err := strconv.ParseInt(val, 10, 64); err == nil {

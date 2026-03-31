@@ -236,7 +236,7 @@ SQL queries use the schema set in the project's datasets configuration.
 Databricks types are automatically normalized:
 - `TINYINT`, `SMALLINT`, `INT`, `BIGINT` → `INT64`
 - `FLOAT`, `DOUBLE` → `FLOAT64`
-- `DECIMAL(p,s)` → `FLOAT64` (parsed from driver's raw bytes representation)
+- `DECIMAL(p,s)` → `FLOAT64` (parsed from driver's string representation)
 - `STRING`, `CHAR`, `VARCHAR` → `STRING`
 - `BOOLEAN` → `BOOL`
 - `DATE` → `DATE`
