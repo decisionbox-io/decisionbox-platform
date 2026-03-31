@@ -10,6 +10,10 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 |--------|-----------|------------|-------------|
 | **Gaming** | Match-3, Idle/Incremental, Casual/Hyper-Casual | Churn, Engagement, Monetization | Player behavior, retention, and revenue analytics for games |
 | **Social Network** | Content Sharing | Growth, Engagement, Retention | User growth, engagement, content creation, and monetization analytics for social platforms |
+| **System Test** | Quick, Standard, Thorough | Connectivity, Schema Discovery | Diagnostic pack for warehouse validation and data profiling (not an industry pack) |
+
+> **Note:** The System Test domain pack is intended for testing and onboarding only.
+> It is hidden by default and requires setting `DECISIONBOX_ENABLE_SYSTEM_TEST=true` to enable.
 
 ## What's in a Domain Pack
 
