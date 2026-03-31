@@ -398,7 +398,12 @@ func normalizeDatabricksType(t string) string {
 }
 
 // validIdentifier checks that a Databricks identifier contains only safe characters.
-// Prevents SQL injection when interpolating catalog/schema names into queries.
+// This function is the SQL injection boundary for all string-formatted queries.
+// The databricks-sql-go driver does not support multiple positional ? parameters
+// reliably, so ListTablesInDataset and GetTableSchemaInDataset use fmt.Sprintf
+// with single-quoted values. Every user-provided identifier MUST be validated
+// by this function before interpolation. Do not use fmt.Sprintf with user-provided
+// values in SQL without calling validIdentifier first.
 var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
 
 func validIdentifier(s string) bool {
