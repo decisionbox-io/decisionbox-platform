@@ -15,6 +15,7 @@ COPY providers/llm/azure-foundry/go.mod providers/llm/azure-foundry/
 COPY providers/warehouse/bigquery/go.mod providers/warehouse/bigquery/go.sum providers/warehouse/bigquery/
 COPY providers/warehouse/databricks/go.mod providers/warehouse/databricks/go.sum providers/warehouse/databricks/
 COPY providers/warehouse/redshift/go.mod providers/warehouse/redshift/go.sum providers/warehouse/redshift/
+COPY providers/warehouse/postgres/go.mod providers/warehouse/postgres/go.sum providers/warehouse/postgres/
 COPY providers/warehouse/snowflake/go.mod providers/warehouse/snowflake/go.sum providers/warehouse/snowflake/
 COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers/secrets/mongodb/
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
@@ -22,6 +23,7 @@ COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets
 COPY providers/secrets/azure/go.mod providers/secrets/azure/go.sum providers/secrets/azure/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
 COPY domain-packs/social/go/go.mod domain-packs/social/go/
+COPY domain-packs/system-test/go/go.mod domain-packs/system-test/go/
 COPY services/api/go.mod services/api/go.sum services/api/
 # Download deps
 WORKDIR /workspace/services/api

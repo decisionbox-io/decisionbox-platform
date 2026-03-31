@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "System Test Profile",
+  "description": "Minimal profile for system validation runs. Provide optional notes about what you are testing.",
+  "type": "object",
+  "properties": {
+    "test_notes": {
+      "type": "string",
+      "title": "Test Notes",
+      "description": "Optional context: what you are testing, known issues to watch for, specific tables or types to focus on"
+    }
+  }
+}

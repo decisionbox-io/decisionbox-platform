@@ -1,0 +1,18 @@
+[
+  {
+    "id": "type_mapping",
+    "name": "Data Type Mapping",
+    "description": "Validate that every data type in the warehouse is correctly mapped and returned by the provider — INTEGER, DECIMAL, VARCHAR, BOOLEAN, TIMESTAMP, DATE, etc.",
+    "keywords": ["type", "cast", "decimal", "numeric", "timestamp", "boolean", "varchar", "integer", "float", "bigint", "date", "time", "data_type", "column_type"],
+    "priority": 3,
+    "prompt_file": "analysis_type_mapping.md"
+  },
+  {
+    "id": "data_profiling",
+    "name": "Data Profiling",
+    "description": "Profile data quality across tables — NULL rates, cardinality, value distributions, and data completeness",
+    "keywords": ["null", "distinct", "cardinality", "min", "max", "count", "distribution", "empty", "missing", "completeness", "statistics"],
+    "priority": 4,
+    "prompt_file": "analysis_data_profiling.md"
+  }
+]

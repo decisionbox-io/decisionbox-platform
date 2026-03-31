@@ -102,6 +102,7 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | Google BigQuery | `bigquery` | ADC, Service Account Key | BigQuery Standard SQL |
 | Amazon Redshift | `redshift` | IAM Role, Access Keys, Assume Role | PostgreSQL-compatible |
 | Snowflake | `snowflake` | Password, Key Pair (JWT) | Snowflake SQL |
+| PostgreSQL | `postgres` | Password, Connection String | PostgreSQL |
 | Databricks | `databricks` | PAT, OAuth M2M | Databricks SQL |
 
 **Location:** `providers/warehouse/{provider-name}/`

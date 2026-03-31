@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/bigquery v1.74.0
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go v0.0.0
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go v0.0.0
+	github.com/decisionbox-io/decisionbox/domain-packs/system-test/go v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
@@ -19,6 +20,7 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/warehouse/databricks v0.0.0-00010101000000-000000000000
+	github.com/decisionbox-io/decisionbox/providers/warehouse/postgres v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
@@ -123,6 +125,7 @@ require (
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
+	github.com/lib/pq v1.10.9 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
@@ -196,6 +199,7 @@ require (
 replace (
 	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go => ../../domain-packs/gaming/go
 	github.com/decisionbox-io/decisionbox/domain-packs/social/go => ../../domain-packs/social/go
+	github.com/decisionbox-io/decisionbox/domain-packs/system-test/go => ../../domain-packs/system-test/go
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry => ../../providers/llm/azure-foundry
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock
@@ -209,6 +213,7 @@ replace (
 	github.com/decisionbox-io/decisionbox/providers/secrets/mongodb => ../../providers/secrets/mongodb
 	github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery => ../../providers/warehouse/bigquery
 	github.com/decisionbox-io/decisionbox/providers/warehouse/databricks => ../../providers/warehouse/databricks
+	github.com/decisionbox-io/decisionbox/providers/warehouse/postgres => ../../providers/warehouse/postgres
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift => ../../providers/warehouse/redshift
 	github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake => ../../providers/warehouse/snowflake
 )

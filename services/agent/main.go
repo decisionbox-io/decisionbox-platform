@@ -37,12 +37,14 @@ import (
 	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"   // registers "bigquery"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/databricks" // registers "databricks"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/postgres"   // registers "postgres"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"   // registers "redshift"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"  // registers "snowflake"
 
 	// Domain pack registrations
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go" // registers "gaming"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go" // registers "social"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"      // registers "gaming"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"      // registers "social"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // registers "system-test" (env-gated)
 )
 
 func main() {

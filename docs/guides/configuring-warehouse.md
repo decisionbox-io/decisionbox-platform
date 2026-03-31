@@ -192,6 +192,74 @@ Row counts come from `INFORMATION_SCHEMA.TABLES.ROW_COUNT` — no full-table sca
 Snowflake charges per-second based on warehouse size (credits per hour).
 There is no dry-run API, so the cost estimation feature is not available for Snowflake.
 
+## PostgreSQL
+
+### Prerequisites
+
+- A PostgreSQL 12+ server accessible from the DecisionBox deployment
+- A database user with read access to the target schema
+- SSL configured (recommended for remote connections)
+
+### Dashboard Setup
+
+1. Select **PostgreSQL** as warehouse provider
+2. Fill in:
+   - **Host**: Database hostname (e.g., `db.example.com`)
+   - **Port**: Database port (default: `5432`)
+   - **Database**: Database name
+   - **Username**: Database user
+3. Optionally set **Schema** (default: `public`) and **SSL Mode** (default: `require`)
+4. Enter **Datasets**: Schema names (e.g., `public`)
+
+### Authentication
+
+When creating a project, select one of the available auth methods:
+
+**Username / Password** — Enter host, port, database, username, and password.
+The connection uses the `lib/pq` driver with the `sslmode` you configure.
+
+**Connection String** — For advanced configurations (Heroku, RDS, Cloud SQL, Supabase).
+Enter a full PostgreSQL connection string:
+```
+postgres://user:password@host:5432/dbname?sslmode=require
+```
+This method supports all `lib/pq` DSN parameters including `sslmode`, `connect_timeout`, `search_path`, and `application_name`.
+
+### SSL Mode
+
+| Mode | Description |
+|------|-------------|
+| `disable` | No SSL (only for localhost or trusted networks) |
+| `allow` | Try non-SSL first, fall back to SSL |
+| `prefer` | Try SSL first, fall back to non-SSL (common RDS default) |
+| `require` | SSL required, no certificate verification (default) |
+| `verify-ca` | SSL with CA certificate verification |
+| `verify-full` | SSL with CA + hostname verification (most secure) |
+
+### Data Type Handling
+
+PostgreSQL types are automatically normalized:
+- `INTEGER`, `BIGINT`, `SMALLINT`, `SERIAL`, `BIGSERIAL` → `INT64`
+- `REAL`, `DOUBLE PRECISION` → `FLOAT64`
+- `NUMERIC`, `DECIMAL` → `FLOAT64` (parsed from driver's `[]byte` representation)
+- `VARCHAR`, `TEXT`, `CHAR`, `UUID`, `INET`, `CIDR`, `INTERVAL`, `MONEY` → `STRING`
+- `BOOLEAN` → `BOOL`
+- `DATE` → `DATE`
+- `TIMESTAMP`, `TIMESTAMPTZ` → `TIMESTAMP`
+- `JSON`, `JSONB` → `RECORD` (JSON string in query results)
+- `BYTEA` → `BYTES`
+- `ARRAY` types → `STRING` (PostgreSQL text representation, e.g., `{1,2,3}`)
+
+### Schema Metadata
+
+The provider uses `information_schema.tables` and `information_schema.columns` for table listing and column metadata.
+Row counts come from `pg_class.reltuples` — an estimate maintained by PostgreSQL's autovacuum, no full-table scans needed.
+
+### Cost
+
+PostgreSQL is self-hosted or managed (RDS, Cloud SQL, AlloyDB, Supabase).
+There is no per-query cost model, so the cost estimation feature is not available.
+
 ## Databricks
 
 ### Prerequisites
@@ -252,7 +320,6 @@ Databricks SQL extends ANSI SQL with:
 - **PIVOT / UNPIVOT** — Rotate rows to columns and vice versa
 - **explode / explode_outer** — Expand arrays and maps into rows
 - **Delta time travel** — `TIMESTAMP AS OF` and `VERSION AS OF`
-- **MERGE INTO** — Atomic upsert operations
 - **Java SimpleDateFormat** — Use `yyyy-MM-dd` (not `YYYY-MM-DD`)
 
 ### Cost
@@ -271,6 +338,7 @@ DecisionBox supports accessing warehouses from a different cloud:
 | Redshift from GCP/Azure | Access Keys | Paste `ACCESS_KEY_ID:SECRET_ACCESS_KEY` |
 | Redshift cross-account | Assume Role | Enter Role ARN + External ID |
 | Snowflake from any cloud | Password or Key Pair | Paste password or PEM private key |
+| PostgreSQL from any cloud | Password or Connection String | Enter credentials or full DSN |
 | Databricks from any cloud | PAT or OAuth M2M | Paste token or client_id:client_secret |
 | Any from local dev | ADC / IAM Role | Configure cloud CLI (`gcloud auth`, `aws configure`) |
 

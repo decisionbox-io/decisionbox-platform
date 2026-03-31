@@ -29,6 +29,7 @@ import (
 	// Domain pack registrations
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // env-gated
 
 	// LLM provider registrations (for /api/v1/providers/llm listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
@@ -41,6 +42,7 @@ import (
 	// Warehouse provider registrations (for /api/v1/providers/warehouse listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/databricks"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/postgres"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"
 )
