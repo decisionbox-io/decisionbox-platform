@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **PostgreSQL warehouse provider** — Connect to PostgreSQL databases with username/password or connection string authentication. Supports all common PostgreSQL data types including INTEGER, BIGINT, SERIAL, NUMERIC/DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMPTZ, BYTEA, JSON/JSONB, arrays, UUID, INET, and INTERVAL. Uses `information_schema` for table/column metadata and `pg_class.reltuples` for fast row count estimates. Includes comprehensive SQL fix prompt covering 13 error patterns (LATERAL joins, FILTER clause, recursive CTEs, NOT IN NULL trap, BETWEEN timestamp pitfall, and more). SSL mode configurable (default: `require`).
+- **System-test domain pack** — Diagnostic domain pack for validating warehouse connectivity, schema discovery, data type mapping, and SQL dialect support. Not an industry pack — designed for testing and onboarding. Three categories by depth: quick (~10 queries), standard (~30-50 queries), thorough (~80-100 queries). Env-gated: only available when `DECISIONBOX_ENABLE_SYSTEM_TEST=true`.
 
 ## [0.2.0] - 2026-03-29
 
