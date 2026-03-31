@@ -161,19 +161,19 @@ func TestFactoryNoCredentials(t *testing.T) {
 	}
 }
 
-func TestFactoryInvalidDatabaseName(t *testing.T) {
-	_, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
-		"host":            "localhost",
-		"database":        "db; DROP TABLE",
-		"user":            "testuser",
+func TestFactoryDatabaseWithHyphens(t *testing.T) {
+	// Database names with hyphens (e.g., "my-app-db") are common in RDS,
+	// Cloud SQL, and Supabase. They must be accepted.
+	p, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
+		"host":             "localhost",
+		"database":         "my-app-db",
+		"user":             "testuser",
 		"credentials_json": "pw",
 	})
-	if err == nil {
-		t.Fatal("expected error for invalid database name")
+	if err != nil {
+		t.Fatalf("database names with hyphens should be accepted: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid database name") {
-		t.Errorf("error should mention 'invalid database name', got: %v", err)
-	}
+	defer p.Close()
 }
 
 func TestFactoryInvalidSchemaName(t *testing.T) {
@@ -224,12 +224,29 @@ func TestFactoryInvalidPort(t *testing.T) {
 	}
 }
 
+func TestFactoryValidSSLModes(t *testing.T) {
+	for _, mode := range []string{"disable", "allow", "prefer", "require", "verify-ca", "verify-full"} {
+		p, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
+			"host":             "localhost",
+			"database":         "testdb",
+			"user":             "testuser",
+			"sslmode":          mode,
+			"credentials_json": "pw",
+		})
+		if err != nil {
+			t.Errorf("sslmode %q should be valid: %v", mode, err)
+			continue
+		}
+		p.Close()
+	}
+}
+
 func TestFactoryInvalidSSLMode(t *testing.T) {
 	_, err := gowarehouse.NewProvider("postgres", gowarehouse.ProviderConfig{
 		"host":             "localhost",
 		"database":         "testdb",
 		"user":             "testuser",
-		"sslmode":          "prefer",
+		"sslmode":          "invalid",
 		"credentials_json": "pw",
 	})
 	if err == nil {
@@ -693,9 +710,9 @@ func TestNormalizeValue(t *testing.T) {
 		t.Errorf("expected float64(123.45), got %v (%T)", v, v)
 	}
 
-	// []byte NUMERIC integer → int64
-	if v := normalizeValue([]byte("42"), "NUMERIC"); v != int64(42) {
-		t.Errorf("expected int64(42), got %v (%T)", v, v)
+	// []byte NUMERIC integer → float64 (always float64 for consistency)
+	if v := normalizeValue([]byte("42"), "NUMERIC"); v != float64(42) {
+		t.Errorf("expected float64(42), got %v (%T)", v, v)
 	}
 
 	// []byte DECIMAL → float64
@@ -737,17 +754,17 @@ func TestConvertStringByType(t *testing.T) {
 		dbType   string
 		expected interface{}
 	}{
-		{"NUMERIC integer", "42", "NUMERIC", int64(42)},
+		{"NUMERIC integer", "42", "NUMERIC", float64(42)},
 		{"NUMERIC decimal", "3.14", "NUMERIC", float64(3.14)},
-		{"NUMERIC negative", "-100", "NUMERIC", int64(-100)},
-		{"NUMERIC large", "9999999999999", "NUMERIC", int64(9999999999999)},
+		{"NUMERIC negative", "-100", "NUMERIC", float64(-100)},
+		{"NUMERIC large", "9999999999999", "NUMERIC", float64(9999999999999)},
 		{"DECIMAL decimal", "1.5", "DECIMAL", float64(1.5)},
-		{"DECIMAL integer", "7", "DECIMAL", int64(7)},
+		{"DECIMAL integer", "7", "DECIMAL", float64(7)},
 		{"unparseable NUMERIC", "abc", "NUMERIC", "abc"},
 		{"VARCHAR passthrough", "hello", "VARCHAR", "hello"},
 		{"TEXT passthrough", "world", "TEXT", "world"},
 		{"empty type passthrough", "test", "", "test"},
-		{"case insensitive", "42", "numeric", int64(42)},
+		{"case insensitive", "42", "numeric", float64(42)},
 	}
 
 	for _, tt := range tests {

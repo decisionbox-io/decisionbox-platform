@@ -518,13 +518,8 @@ func TestIntegration_Zeroes(t *testing.T) {
 	assertType[float64](t, row, "col_real", 0.0)
 	assertType[float64](t, row, "col_double", 0.0)
 
-	// Zero numeric (converted from "0.0000").
-	if v, ok := row["col_numeric"].(int64); !ok || v != 0 {
-		// "0.0000" may parse as int64(0) or float64(0) depending on input
-		if v2, ok2 := row["col_numeric"].(float64); !ok2 || v2 != 0 {
-			t.Errorf("col_numeric: expected 0, got %v (%T)", row["col_numeric"], row["col_numeric"])
-		}
-	}
+	// Zero numeric — always float64 for NUMERIC/DECIMAL consistency.
+	assertType[float64](t, row, "col_numeric", 0.0)
 
 	// false is still bool, not nil.
 	assertType[bool](t, row, "col_bool", false)

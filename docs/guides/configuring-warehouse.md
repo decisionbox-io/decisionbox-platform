@@ -230,6 +230,8 @@ This method supports all `lib/pq` DSN parameters including `sslmode`, `connect_t
 | Mode | Description |
 |------|-------------|
 | `disable` | No SSL (only for localhost or trusted networks) |
+| `allow` | Try non-SSL first, fall back to SSL |
+| `prefer` | Try SSL first, fall back to non-SSL (common RDS default) |
 | `require` | SSL required, no certificate verification (default) |
 | `verify-ca` | SSL with CA certificate verification |
 | `verify-full` | SSL with CA + hostname verification (most secure) |

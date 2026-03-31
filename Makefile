@@ -78,6 +78,9 @@ test-secrets: ## Run secrets provider integration tests (MongoDB: Docker, GCP/AW
 	cd providers/secrets/aws && go test -tags=integration -count=1 -timeout=2m -v ./...
 	cd providers/secrets/azure && go test -tags=integration -count=1 -timeout=2m -v ./...
 
+test-postgres: ## Run PostgreSQL integration tests (requires Docker, uses testcontainer)
+	cd providers/warehouse/postgres && go test -tags=integration_postgres -count=1 -timeout=5m -v ./...
+
 test-ollama: ## Run Ollama LLM integration tests (requires Docker, slow)
 	cd services/agent && go test -tags='integration ollama' -count=1 -timeout=10m -run TestOllama .
 

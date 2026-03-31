@@ -62,9 +62,6 @@ func init() {
 			if database == "" {
 				return nil, fmt.Errorf("postgres: database is required")
 			}
-			if !validIdentifier(database) {
-				return nil, fmt.Errorf("postgres: invalid database name %q", database)
-			}
 			user := cfg["user"]
 			if user == "" {
 				return nil, fmt.Errorf("postgres: user is required")
@@ -83,10 +80,10 @@ func init() {
 				sslmode = "require"
 			}
 			switch sslmode {
-			case "disable", "require", "verify-ca", "verify-full":
-				// valid
+			case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+				// valid libpq SSL modes
 			default:
-				return nil, fmt.Errorf("postgres: invalid sslmode %q (must be disable, require, verify-ca, or verify-full)", sslmode)
+				return nil, fmt.Errorf("postgres: invalid sslmode %q (must be disable, allow, prefer, require, verify-ca, or verify-full)", sslmode)
 			}
 
 			password := cfg["credentials_json"]
@@ -99,7 +96,7 @@ func init() {
 			// with backslash escaping for single quotes and backslashes.
 			dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s search_path=%s",
 				quoteDSNValue(host), port, quoteDSNValue(user), quoteDSNValue(password),
-				database, sslmode, schema)
+				quoteDSNValue(database), sslmode, schema)
 		default:
 			return nil, fmt.Errorf("postgres: unsupported auth method %q", cfg["auth_method"])
 		}
@@ -341,9 +338,8 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 func convertStringByType(val string, dbType string) interface{} {
 	switch strings.ToUpper(dbType) {
 	case "NUMERIC", "DECIMAL":
-		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
-			return i
-		}
+		// Always return float64 for NUMERIC/DECIMAL to ensure consistent
+		// types across rows. The schema maps these to FLOAT64.
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
 			return f
 		}
