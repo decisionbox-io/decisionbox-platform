@@ -679,9 +679,46 @@ func TestNormalizeValue(t *testing.T) {
 		t.Errorf("expected true, got %v", v)
 	}
 
-	// string passthrough
+	// string passthrough (non-DECIMAL type)
 	if v := normalizeValue("test", "STRING"); v != "test" {
 		t.Errorf("expected 'test', got %v", v)
+	}
+
+	// string DECIMAL → float64 (driver returns DECIMAL as string)
+	if v := normalizeValue("123.45", "DECIMAL"); v != float64(123.45) {
+		t.Errorf("expected float64(123.45), got %v (%T)", v, v)
+	}
+
+	// string DECIMAL integer → int64
+	if v := normalizeValue("42", "DECIMAL"); v != int64(42) {
+		t.Errorf("expected int64(42), got %v (%T)", v, v)
+	}
+}
+
+func TestConvertStringByType(t *testing.T) {
+	tests := []struct {
+		name     string
+		val      string
+		dbType   string
+		expected interface{}
+	}{
+		{"DECIMAL integer", "42", "DECIMAL", int64(42)},
+		{"DECIMAL decimal", "3.14", "DECIMAL", float64(3.14)},
+		{"DECIMAL negative", "-100", "DECIMAL", int64(-100)},
+		{"unparseable DECIMAL", "abc", "DECIMAL", "abc"},
+		{"STRING passthrough", "hello", "STRING", "hello"},
+		{"empty type passthrough", "test", "", "test"},
+		{"case insensitive", "42", "decimal", int64(42)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertStringByType(tt.val, tt.dbType)
+			if result != tt.expected {
+				t.Errorf("convertStringByType(%q, %q) = %v (%T), want %v (%T)",
+					tt.val, tt.dbType, result, result, tt.expected, tt.expected)
+			}
+		})
 	}
 }
 

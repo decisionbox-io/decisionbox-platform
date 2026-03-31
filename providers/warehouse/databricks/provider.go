@@ -328,6 +328,9 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 	switch val := v.(type) {
 	case []byte:
 		return convertBytesByType(string(val), dbType)
+	case string:
+		// The Databricks driver returns DECIMAL as string (not []byte).
+		return convertStringByType(val, dbType)
 	case time.Time:
 		return val.Format(time.RFC3339)
 	case int8:
@@ -338,6 +341,23 @@ func normalizeValue(v interface{}, dbType string) interface{} {
 		return int64(val)
 	case float32:
 		return float64(val)
+	default:
+		return val
+	}
+}
+
+// convertStringByType converts string values to numeric types based on the
+// Databricks column type. The driver returns DECIMAL columns as string.
+func convertStringByType(val string, dbType string) interface{} {
+	switch strings.ToUpper(dbType) {
+	case "DECIMAL":
+		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return i
+		}
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
+		return val
 	default:
 		return val
 	}
