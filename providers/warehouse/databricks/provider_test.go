@@ -505,21 +505,19 @@ func TestListTablesError(t *testing.T) {
 }
 
 func TestListTablesUsesDefaultSchema(t *testing.T) {
-	var capturedArgs []interface{}
 	mock := &mockDBClient{
 		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-			capturedArgs = args
+			if !strings.Contains(query, "'custom_schema'") {
+				return nil, fmt.Errorf("query should contain schema: %s", query)
+			}
 			return nil, fmt.Errorf("expected")
 		},
 	}
 	p := &DatabricksProvider{client: mock, catalog: "main", schema: "custom_schema"}
 
 	_, _ = p.ListTables(context.Background())
-	if len(capturedArgs) == 0 {
-		t.Fatal("expected query args")
-	}
-	if capturedArgs[0] != "custom_schema" {
-		t.Errorf("expected schema 'custom_schema', got %v", capturedArgs[0])
+	if !strings.Contains(mock.lastQuery, "'custom_schema'") {
+		t.Errorf("expected query to contain 'custom_schema', got: %s", mock.lastQuery)
 	}
 }
 

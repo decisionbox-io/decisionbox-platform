@@ -213,12 +213,15 @@ func (p *DatabricksProvider) ListTablesInDataset(ctx context.Context, dataset st
 		dataset = p.schema
 	}
 
+	// Use string formatting with single-quoted values instead of ? params.
+	// The Databricks SQL driver has issues with positional ? parameters in
+	// information_schema queries. Schema names are validated by validIdentifier().
 	query := fmt.Sprintf(
-		"SELECT table_name FROM %s.information_schema.tables WHERE table_schema = ? AND table_type IN ('TABLE', 'MANAGED', 'EXTERNAL') ORDER BY table_name",
-		p.catalog,
+		"SELECT table_name FROM %s.information_schema.tables WHERE table_schema = '%s' AND table_type IN ('TABLE', 'MANAGED', 'EXTERNAL') ORDER BY table_name",
+		p.catalog, dataset,
 	)
 
-	rows, err := p.client.QueryContext(ctx, query, dataset)
+	rows, err := p.client.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("databricks: list tables failed: %w", err)
 	}
@@ -244,12 +247,16 @@ func (p *DatabricksProvider) GetTableSchemaInDataset(ctx context.Context, datase
 		dataset = p.schema
 	}
 
+	// Use string formatting with single-quoted values instead of ? params.
+	// Schema and table names are validated by validIdentifier() at the call site
+	// or come from information_schema (already safe). The Databricks SQL driver
+	// has issues with multiple positional ? parameters.
 	colQuery := fmt.Sprintf(
-		"SELECT column_name, data_type, is_nullable FROM %s.information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-		p.catalog,
+		"SELECT column_name, data_type, is_nullable FROM %s.information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' ORDER BY ordinal_position",
+		p.catalog, dataset, table,
 	)
 
-	rows, err := p.client.QueryContext(ctx, colQuery, dataset, table)
+	rows, err := p.client.QueryContext(ctx, colQuery)
 	if err != nil {
 		return nil, fmt.Errorf("databricks: get table schema failed: %w", err)
 	}
