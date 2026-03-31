@@ -1,6 +1,6 @@
 # Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 Providers are DecisionBox's plugin system for external services. Instead of hardcoding support for specific LLMs, warehouses, or secret managers, DecisionBox defines interfaces and lets provider packages implement them.
 
@@ -102,6 +102,7 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | Google BigQuery | `bigquery` | ADC, Service Account Key | BigQuery Standard SQL |
 | Amazon Redshift | `redshift` | IAM Role, Access Keys, Assume Role | PostgreSQL-compatible |
 | Snowflake | `snowflake` | Password, Key Pair (JWT) | Snowflake SQL |
+| Databricks | `databricks` | PAT, OAuth M2M | Databricks SQL |
 
 **Location:** `providers/warehouse/{provider-name}/`
 

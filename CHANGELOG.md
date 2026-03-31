@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Databricks warehouse provider** — Connect to Databricks SQL warehouses via Unity Catalog with Personal Access Token or OAuth M2M (service principal) authentication. Uses the official `databricks-sql-go` driver with `NewConnector` structured options. Supports all Databricks data types including TINYINT through BIGINT, FLOAT/DOUBLE, DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMP_NTZ, BINARY, and complex types (STRUCT, ARRAY, MAP, VARIANT). Schema discovery via `catalog.information_schema`. Includes Databricks-specific SQL fix prompt covering QUALIFY, PIVOT/UNPIVOT, explode/explode_outer, Delta time travel, MERGE INTO, STRUCT/ARRAY/MAP access, and the `yyyy` vs `YYYY` date format pitfall.
+
 ## [0.2.0] - 2026-03-29
 
 ### Added

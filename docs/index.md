@@ -1,6 +1,6 @@
 # DecisionBox Documentation
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 DecisionBox is an open-source AI-powered data discovery platform. It connects to your data warehouse, runs autonomous AI agents that explore your data, and surfaces actionable insights and recommendations.
 
@@ -14,7 +14,7 @@ DecisionBox is an open-source AI-powered data discovery platform. It connects to
 
 ## What Can It Do?
 
-- Connect to BigQuery or Amazon Redshift (more warehouses coming)
+- Connect to BigQuery, Amazon Redshift, Snowflake, or Databricks
 - Run AI agents that write SQL, analyze results, and iterate autonomously
 - Discover patterns across churn, engagement, monetization, and domain-specific areas
 - Validate findings against actual data (not just LLM hallucination)
@@ -51,7 +51,7 @@ Step-by-step instructions for common tasks.
 - [Adding Warehouse Providers](guides/adding-warehouse-providers.md) — Support a new data warehouse
 - [Adding Secret Providers](guides/adding-secret-providers.md) — Support a new secret manager
 - [Configuring LLM Providers](guides/configuring-llm.md) — Claude, OpenAI, Ollama, Vertex AI, Bedrock
-- [Configuring Warehouses](guides/configuring-warehouse.md) — BigQuery, Redshift setup
+- [Configuring Warehouses](guides/configuring-warehouse.md) — BigQuery, Redshift, Snowflake, Databricks setup
 - [Configuring Secrets](guides/configuring-secrets.md) — Encrypted key management
 - [Customizing Prompts](guides/customizing-prompts.md) — Edit prompts, add analysis areas
 - [Project Profiles](guides/project-profiles.md) — How profiles improve insight quality
