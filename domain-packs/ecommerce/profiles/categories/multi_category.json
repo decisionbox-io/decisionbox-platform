@@ -8,11 +8,6 @@
       "type": "object",
       "title": "Catalog",
       "properties": {
-        "total_products": {
-          "type": "integer",
-          "title": "Total Active Products",
-          "description": "Approximate number of active products in the catalog"
-        },
         "total_categories": {
           "type": "integer",
           "title": "Total Categories",

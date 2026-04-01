@@ -79,9 +79,9 @@ jobs:
           COV="${GITHUB_WORKSPACE}/coverage"
           mkdir -p "$COV"
           (cd libs/go-common && go test -coverprofile="$COV/go-common.txt" ./...)
+          (cd domain-packs/ecommerce/go && go test -coverprofile="$COV/ecommerce.txt" ./...)
           (cd domain-packs/gaming/go && go test -coverprofile="$COV/gaming.txt" ./...)
           (cd domain-packs/social/go && go test -coverprofile="$COV/social.txt" ./...)
-          (cd domain-packs/ecommerce/go && go test -coverprofile="$COV/ecommerce.txt" ./...)
           (cd domain-packs/system-test/go && go test -coverprofile="$COV/system-test.txt" ./...)
           (cd providers/llm/claude && go test -coverprofile="$COV/llm-claude.txt" ./...)
           (cd providers/llm/openai && go test -coverprofile="$COV/llm-openai.txt" ./...)
@@ -137,6 +137,12 @@ jobs:
           version: v2.11.3
           working-directory: libs/go-common
 
+      - name: Lint ecommerce domain pack
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: domain-packs/ecommerce/go
+
       - name: Lint gaming domain pack
         uses: golangci/golangci-lint-action@v7
         with:
@@ -148,12 +154,6 @@ jobs:
         with:
           version: v2.11.3
           working-directory: domain-packs/social/go
-
-      - name: Lint ecommerce domain pack
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.11.3
-          working-directory: domain-packs/ecommerce/go
 
       - name: Lint system-test domain pack
         uses: golangci/golangci-lint-action@v7

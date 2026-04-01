@@ -74,12 +74,11 @@ Respond with ONLY valid JSON:
 - **moderate**: Requires development work, typically 1-2 weeks. New feature, checkout flow change, recommendation algorithm tweak.
 - **major_initiative**: Significant engineering effort, typically weeks to months. New product area, loyalty program, personalization engine.
 
-### Priority Scale (P1 = highest):
-- **1 (Critical)**: Large revenue impact AND affects many customers. Cart abandonment spikes, conversion rate drops, high-value customer churn. Do this first.
-- **2 (High)**: Significant impact, implement soon. Strong evidence and clear path.
-- **3 (Medium)**: Moderate impact. Worth doing but not urgent.
-- **4 (Low)**: Nice to have. Small improvement.
-- **5 (Optional)**: Minor improvement. Consider if resources are available.
+### Priority Scale (P1 = highest, P4 = lowest):
+- **P1 (Critical)**: Large revenue impact AND affects many customers. Cart abandonment spikes, conversion rate drops, high-value customer churn. Do this first.
+- **P2 (High)**: Significant impact, implement soon. Strong evidence and clear path.
+- **P3 (Medium)**: Moderate impact. Worth doing but not urgent.
+- **P4 (Low)**: Nice to have. Small improvement, minor optimization.
 
 ### Category Guidelines:
 - **conversion**: Funnel optimization, checkout friction, cart recovery
