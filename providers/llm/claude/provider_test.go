@@ -78,19 +78,26 @@ func TestProviderRegistered(t *testing.T) {
 	if meta.MaxOutputTokens == nil {
 		t.Fatal("MaxOutputTokens should not be nil")
 	}
-	if len(meta.MaxOutputTokens) != 5 {
-		t.Errorf("MaxOutputTokens has %d entries, want 5", len(meta.MaxOutputTokens))
+	if len(meta.MaxOutputTokens) != 9 {
+		t.Errorf("MaxOutputTokens has %d entries, want 9", len(meta.MaxOutputTokens))
 	}
-	if meta.MaxOutputTokens["claude-sonnet-4"] != 16384 {
-		t.Errorf("MaxOutputTokens[claude-sonnet-4] = %d, want 16384", meta.MaxOutputTokens["claude-sonnet-4"])
+	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
+		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d, want 128000", meta.MaxOutputTokens["claude-opus-4-6"])
 	}
-	if meta.MaxOutputTokens["claude-haiku-4-5"] != 8192 {
-		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 8192", meta.MaxOutputTokens["claude-haiku-4-5"])
+	if meta.MaxOutputTokens["claude-sonnet-4-6"] != 64000 {
+		t.Errorf("MaxOutputTokens[claude-sonnet-4-6] = %d, want 64000", meta.MaxOutputTokens["claude-sonnet-4-6"])
+	}
+	if meta.MaxOutputTokens["claude-haiku-4-5"] != 64000 {
+		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 64000", meta.MaxOutputTokens["claude-haiku-4-5"])
 	}
 
 	// Verify GetMaxOutputTokens helper
-	if got := gollm.GetMaxOutputTokens("claude", "claude-opus-4"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(claude, claude-opus-4) = %d, want 16384", got)
+	if got := gollm.GetMaxOutputTokens("claude", "claude-opus-4"); got != 32000 {
+		t.Errorf("GetMaxOutputTokens(claude, claude-opus-4) = %d, want 32000", got)
+	}
+	// Verify _default fallback for unknown models
+	if got := gollm.GetMaxOutputTokens("claude", "claude-unknown-model"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(claude, claude-unknown-model) = %d, want 16384 (_default)", got)
 	}
 }
 

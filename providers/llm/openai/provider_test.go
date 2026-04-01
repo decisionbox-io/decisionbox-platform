@@ -271,8 +271,8 @@ func TestProviderRegistered(t *testing.T) {
 	if meta.MaxOutputTokens == nil {
 		t.Fatal("MaxOutputTokens should not be nil")
 	}
-	if len(meta.MaxOutputTokens) != 6 {
-		t.Errorf("MaxOutputTokens has %d entries, want 6", len(meta.MaxOutputTokens))
+	if len(meta.MaxOutputTokens) != 7 {
+		t.Errorf("MaxOutputTokens has %d entries, want 7", len(meta.MaxOutputTokens))
 	}
 	if meta.MaxOutputTokens["gpt-4o"] != 16384 {
 		t.Errorf("MaxOutputTokens[gpt-4o] = %d, want 16384", meta.MaxOutputTokens["gpt-4o"])
@@ -284,6 +284,10 @@ func TestProviderRegistered(t *testing.T) {
 	// Verify GetMaxOutputTokens helper
 	if got := gollm.GetMaxOutputTokens("openai", "gpt-4.1"); got != 32768 {
 		t.Errorf("GetMaxOutputTokens(openai, gpt-4.1) = %d, want 32768", got)
+	}
+	// Verify _default fallback
+	if got := gollm.GetMaxOutputTokens("openai", "gpt-future"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(openai, gpt-future) = %d, want 16384 (_default)", got)
 	}
 }
 
