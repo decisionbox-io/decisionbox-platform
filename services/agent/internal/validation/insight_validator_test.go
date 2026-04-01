@@ -343,6 +343,41 @@ func TestInsightValidator_ZeroAffectedCount(t *testing.T) {
 	}
 }
 
+func TestInsightValidator_SetSchemaContext(t *testing.T) {
+	v, _, llmProvider := newTestInsightValidator(t)
+
+	schemaJSON := `{"sessions": {"columns": ["user_id", "created_at", "country"]}}`
+	v.SetSchemaContext(schemaJSON)
+
+	if v.schemaCtx != schemaJSON {
+		t.Errorf("schemaCtx = %q", v.schemaCtx)
+	}
+
+	// Verify the schema context is included in verification query generation
+	llmProvider.DefaultResponse.Content = "SELECT COUNT(DISTINCT user_id) AS count FROM `test_dataset.sessions`"
+
+	// Check that the system prompt sent to LLM contains schema info
+	insights := []models.Insight{
+		{ID: "1", Name: "Test", AffectedCount: 0, AnalysisArea: "churn"},
+	}
+	v.ValidateInsights(context.Background(), insights)
+
+	if len(llmProvider.Calls) == 0 {
+		t.Fatal("LLM should have been called")
+	}
+	lastCall := llmProvider.Calls[len(llmProvider.Calls)-1]
+	foundSchema := false
+	for _, msg := range lastCall.Request.Messages {
+		if strings.Contains(msg.Content, "user_id") && strings.Contains(msg.Content, "created_at") {
+			foundSchema = true
+			break
+		}
+	}
+	if !foundSchema {
+		t.Error("schema context should be included in the verification query prompt")
+	}
+}
+
 func TestToInt(t *testing.T) {
 	tests := []struct {
 		input interface{}

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -86,24 +87,57 @@ func extractFixedSQL(response *gollm.ChatResponse) (string, error) {
 
 	text := response.Content
 
+	// Try ```sql code block first
 	if strings.Contains(text, "```sql") {
 		if sql := extractCodeBlock(text, "sql"); sql != "" {
 			return strings.TrimSpace(sql), nil
 		}
 	}
 
+	// Try any code block (language tag is stripped by extractCodeBlock)
 	if strings.Contains(text, "```") {
-		if sql := extractCodeBlock(text, ""); sql != "" {
-			return strings.TrimSpace(sql), nil
+		if block := extractCodeBlock(text, ""); block != "" {
+			block = strings.TrimSpace(block)
+			// If the block looks like JSON with a fixed_sql field, extract it
+			if sql := extractSQLFromJSON(block); sql != "" {
+				return sql, nil
+			}
+			if strings.Contains(strings.ToUpper(block), "SELECT") {
+				return block, nil
+			}
 		}
 	}
 
-	sql := strings.TrimSpace(text)
-	if !strings.Contains(strings.ToUpper(sql), "SELECT") {
+	// Raw text — check for JSON with fixed_sql first
+	trimmed := strings.TrimSpace(text)
+	if sql := extractSQLFromJSON(trimmed); sql != "" {
+		return sql, nil
+	}
+
+	if !strings.Contains(strings.ToUpper(trimmed), "SELECT") {
 		return "", fmt.Errorf("response does not appear to be SQL")
 	}
 
-	return sql, nil
+	return trimmed, nil
+}
+
+// extractSQLFromJSON extracts the fixed_sql field from a JSON response.
+// Returns empty string if the text is not valid JSON or lacks fixed_sql.
+func extractSQLFromJSON(text string) string {
+	if len(text) == 0 || text[0] != '{' {
+		return ""
+	}
+	var parsed struct {
+		FixedSQL string `json:"fixed_sql"`
+	}
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		return ""
+	}
+	sql := strings.TrimSpace(parsed.FixedSQL)
+	if sql == "" || !strings.Contains(strings.ToUpper(sql), "SELECT") {
+		return ""
+	}
+	return sql
 }
 
 func extractCodeBlock(text string, language string) string {
@@ -118,6 +152,15 @@ func extractCodeBlock(text string, language string) string {
 	}
 
 	startIdx += len(marker)
+
+	// Strip language tag on the same line (e.g., "json", "sql" after ```)
+	// This handles cases where we search for generic ``` and find ```json
+	if language == "" {
+		for startIdx < len(text) && text[startIdx] != '\n' && text[startIdx] != '\r' {
+			startIdx++
+		}
+	}
+
 	for startIdx < len(text) && (text[startIdx] == '\n' || text[startIdx] == '\r') {
 		startIdx++
 	}

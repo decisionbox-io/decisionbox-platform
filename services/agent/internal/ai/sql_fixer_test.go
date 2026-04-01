@@ -106,11 +106,96 @@ func TestExtractCodeBlock(t *testing.T) {
 			language: "sql",
 			want:     "",
 		},
+		{
+			name:     "generic finds json block and strips tag",
+			text:     "```json\n{\"fixed_sql\": \"SELECT 1\"}\n```",
+			language: "",
+			want:     "{\"fixed_sql\": \"SELECT 1\"}\n",
+		},
+		{
+			name:     "generic finds sql block and strips tag",
+			text:     "```sql\nSELECT 1\n```",
+			language: "",
+			want:     "SELECT 1\n",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractCodeBlock(tt.text, tt.language)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractFixedSQL_JSONResponse(t *testing.T) {
+	// LLM returns JSON with fixed_sql field (matches sql_fix.md output format)
+	resp := &gollm.ChatResponse{
+		Content: `{"action": "sql_fixed", "fixed_sql": "SELECT COUNT(*) AS count FROM ` + "`ds.sessions`" + `", "changes_made": ["qualified table"], "reasoning": "added dataset", "confidence": 95}`,
+	}
+
+	sql, err := extractFixedSQL(resp)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if sql != "SELECT COUNT(*) AS count FROM `ds.sessions`" {
+		t.Errorf("sql = %q", sql)
+	}
+}
+
+func TestExtractFixedSQL_JSONInCodeBlock(t *testing.T) {
+	// LLM wraps JSON in ```json code block
+	resp := &gollm.ChatResponse{
+		Content: "```json\n{\"action\": \"sql_fixed\", \"fixed_sql\": \"SELECT 1 FROM `ds.t`\"}\n```",
+	}
+
+	sql, err := extractFixedSQL(resp)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if sql != "SELECT 1 FROM `ds.t`" {
+		t.Errorf("sql = %q", sql)
+	}
+}
+
+func TestExtractSQLFromJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "valid json with fixed_sql",
+			text: `{"fixed_sql": "SELECT 1"}`,
+			want: "SELECT 1",
+		},
+		{
+			name: "not json",
+			text: "SELECT 1",
+			want: "",
+		},
+		{
+			name: "json without fixed_sql",
+			text: `{"action": "error"}`,
+			want: "",
+		},
+		{
+			name: "empty fixed_sql",
+			text: `{"fixed_sql": ""}`,
+			want: "",
+		},
+		{
+			name: "fixed_sql without SELECT",
+			text: `{"fixed_sql": "DROP TABLE users"}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSQLFromJSON(tt.text)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
