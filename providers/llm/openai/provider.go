@@ -60,6 +60,14 @@ func init() {
 			"o3":          {InputPerMillion: 2.0, OutputPerMillion: 8.0},
 			"o4-mini":     {InputPerMillion: 1.10, OutputPerMillion: 4.40},
 		},
+		MaxOutputTokens: map[string]int{
+			"gpt-4o":       16384,
+			"gpt-4o-mini":  16384,
+			"gpt-4.1":      32768,
+			"gpt-4.1-mini": 32768,
+			"o3":           100000,
+			"o4-mini":      100000,
+		},
 	})
 }
 

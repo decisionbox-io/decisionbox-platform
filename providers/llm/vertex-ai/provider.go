@@ -77,6 +77,15 @@ func init() {
 			"gemini-2.5-pro":    {InputPerMillion: 1.25, OutputPerMillion: 10.0},
 			"gemini-2.5-flash":  {InputPerMillion: 0.15, OutputPerMillion: 0.60},
 		},
+		MaxOutputTokens: map[string]int{
+			"claude-sonnet-4":   16384,
+			"claude-sonnet-4-5": 16384,
+			"claude-opus-4":     16384,
+			"claude-opus-4-6":   16384,
+			"claude-haiku-4-5":  8192,
+			"gemini-2.5-pro":    65536,
+			"gemini-2.5-flash":  65536,
+		},
 	})
 }
 

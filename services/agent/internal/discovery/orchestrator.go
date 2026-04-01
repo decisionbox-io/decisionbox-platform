@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -347,7 +348,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}
 
 		// Call LLM
-		chatResult, err := o.aiClient.Chat(ctx, prompt, "", 8000)
+		maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+		chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
 		if err != nil {
 			step.Error = err.Error()
 			analysisLog = append(analysisLog, step)
@@ -572,7 +574,8 @@ func (o *Orchestrator) generateRecommendations(
 
 	step.Prompt = prompt
 
-	chatResult, err := o.aiClient.Chat(ctx, prompt, "", 8000)
+	maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+	chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
 	if err != nil {
 		step.Error = err.Error()
 		applog.WithError(err).Warn("Failed to generate recommendations")

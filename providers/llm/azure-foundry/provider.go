@@ -86,6 +86,16 @@ func init() {
 			"gpt-4o":      {InputPerMillion: 2.50, OutputPerMillion: 10.0},
 			"gpt-4o-mini": {InputPerMillion: 0.15, OutputPerMillion: 0.60},
 		},
+		MaxOutputTokens: map[string]int{
+			"claude-opus-4-6":   16384,
+			"claude-sonnet-4-6": 16384,
+			"claude-sonnet-4-5": 16384,
+			"claude-opus-4-5":   16384,
+			"claude-opus-4-1":   16384,
+			"claude-haiku-4-5":  8192,
+			"gpt-4o":            16384,
+			"gpt-4o-mini":       16384,
+		},
 	})
 }
 

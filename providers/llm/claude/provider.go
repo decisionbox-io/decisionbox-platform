@@ -54,6 +54,13 @@ func init() {
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
 			"claude-haiku-4-5":  {InputPerMillion: 0.80, OutputPerMillion: 4.0},
 		},
+		MaxOutputTokens: map[string]int{
+			"claude-sonnet-4":   16384,
+			"claude-sonnet-4-5": 16384,
+			"claude-opus-4":     16384,
+			"claude-opus-4-6":   16384,
+			"claude-haiku-4-5":  8192,
+		},
 	})
 }
 

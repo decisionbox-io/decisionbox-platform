@@ -67,6 +67,25 @@ func TestBedrockProvider_Registered(t *testing.T) {
 	if len(meta.DefaultPricing) == 0 {
 		t.Error("no default pricing")
 	}
+
+	// MaxOutputTokens
+	if meta.MaxOutputTokens == nil {
+		t.Fatal("MaxOutputTokens should not be nil")
+	}
+	if len(meta.MaxOutputTokens) != 5 {
+		t.Errorf("MaxOutputTokens has %d entries, want 5", len(meta.MaxOutputTokens))
+	}
+	if meta.MaxOutputTokens["claude-sonnet-4"] != 16384 {
+		t.Errorf("MaxOutputTokens[claude-sonnet-4] = %d, want 16384", meta.MaxOutputTokens["claude-sonnet-4"])
+	}
+	if meta.MaxOutputTokens["claude-haiku-4-5"] != 8192 {
+		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 8192", meta.MaxOutputTokens["claude-haiku-4-5"])
+	}
+
+	// Verify GetMaxOutputTokens helper
+	if got := gollm.GetMaxOutputTokens("bedrock", "claude-opus-4-6"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(bedrock, claude-opus-4-6) = %d, want 16384", got)
+	}
 }
 
 func TestBedrockProvider_Validate_UnsupportedModel(t *testing.T) {

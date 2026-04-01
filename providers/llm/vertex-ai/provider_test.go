@@ -102,6 +102,25 @@ func TestVertexAIProvider_Registered(t *testing.T) {
 	if _, ok := meta.DefaultPricing["gemini-2.5-pro"]; !ok {
 		t.Error("missing gemini-2.5-pro pricing")
 	}
+
+	// MaxOutputTokens
+	if meta.MaxOutputTokens == nil {
+		t.Fatal("MaxOutputTokens should not be nil")
+	}
+	if len(meta.MaxOutputTokens) != 7 {
+		t.Errorf("MaxOutputTokens has %d entries, want 7", len(meta.MaxOutputTokens))
+	}
+	if meta.MaxOutputTokens["claude-sonnet-4"] != 16384 {
+		t.Errorf("MaxOutputTokens[claude-sonnet-4] = %d, want 16384", meta.MaxOutputTokens["claude-sonnet-4"])
+	}
+	if meta.MaxOutputTokens["gemini-2.5-pro"] != 65536 {
+		t.Errorf("MaxOutputTokens[gemini-2.5-pro] = %d, want 65536", meta.MaxOutputTokens["gemini-2.5-pro"])
+	}
+
+	// Verify GetMaxOutputTokens helper
+	if got := gollm.GetMaxOutputTokens("vertex-ai", "gemini-2.5-flash"); got != 65536 {
+		t.Errorf("GetMaxOutputTokens(vertex-ai, gemini-2.5-flash) = %d, want 65536", got)
+	}
 }
 
 func TestVertexAIProvider_Validate_UnsupportedModel(t *testing.T) {
