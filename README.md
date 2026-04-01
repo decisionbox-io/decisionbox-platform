@@ -47,7 +47,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 ## Features
 
 - **Autonomous data exploration** — AI writes and executes SQL queries, iterates based on results
-- **Domain-aware analysis** — Pluggable domain packs (gaming, social network shipped — bring your own)
+- **Domain-aware analysis** — Pluggable domain packs (gaming, social network, ecommerce shipped — bring your own)
 - **Multiple LLM providers** — Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry
 - **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned), Snowflake, PostgreSQL, Databricks
 - **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)

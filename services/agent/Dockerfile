@@ -21,6 +21,7 @@ COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
 COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
 COPY providers/secrets/azure/go.mod providers/secrets/azure/go.sum providers/secrets/azure/
+COPY domain-packs/ecommerce/go/go.mod domain-packs/ecommerce/go/
 COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
 COPY domain-packs/social/go/go.mod domain-packs/social/go/
 COPY domain-packs/system-test/go/go.mod domain-packs/system-test/go/

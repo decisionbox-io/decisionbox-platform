@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E-Commerce Project Profile",
+  "description": "Profile schema for e-commerce domain projects. Provides context to the AI agent about the business, product catalog, shipping, payment, and KPI targets.",
+  "type": "object",
+  "properties": {
+    "business_info": {
+      "type": "object",
+      "title": "Business Information",
+      "properties": {
+        "industry": {
+          "type": "string",
+          "title": "Industry",
+          "description": "E.g., 'Consumer Electronics', 'Fashion & Apparel', 'Home & Garden', 'General Retail'"
+        },
+        "business_model": {
+          "type": "string",
+          "title": "Business Model",
+          "enum": ["b2c", "b2b", "marketplace", "subscription"],
+          "description": "Primary business model"
+        },
+        "target_market": {
+          "type": "string",
+          "title": "Target Market",
+          "description": "E.g., 'US', 'Europe', 'Global', 'Southeast Asia'"
+        },
+        "platforms": {
+          "type": "array",
+          "title": "Available On",
+          "items": { "type": "string", "enum": ["Web", "iOS", "Android", "Mobile Web"] }
+        },
+        "growth_stage": {
+          "type": "string",
+          "title": "Growth Stage",
+          "enum": ["pre_launch", "early_growth", "growth", "mature", "declining"],
+          "description": "Current stage of the business lifecycle"
+        }
+      }
+    },
+    "product_catalog": {
+      "type": "object",
+      "title": "Product Catalog",
+      "properties": {
+        "total_products": {
+          "type": "integer",
+          "title": "Total Active Products",
+          "description": "Approximate number of active products in the catalog"
+        },
+        "avg_price": {
+          "type": "number",
+          "title": "Average Product Price ($)",
+          "description": "Average selling price across the catalog"
+        },
+        "categories": {
+          "type": "array",
+          "title": "Product Categories",
+          "items": { "type": "string" },
+          "description": "Main categories sold (e.g., 'Electronics', 'Appliances', 'Fashion')"
+        },
+        "inventory_model": {
+          "type": "string",
+          "title": "Inventory Model",
+          "enum": ["owned", "dropship", "marketplace", "hybrid"],
+          "description": "How inventory is managed"
+        }
+      }
+    },
+    "shipping": {
+      "type": "object",
+      "title": "Shipping",
+      "properties": {
+        "free_shipping_threshold": {
+          "type": "number",
+          "title": "Free Shipping Threshold ($)",
+          "description": "Minimum order value for free shipping (0 = always free)"
+        },
+        "avg_delivery_days": {
+          "type": "integer",
+          "title": "Average Delivery Time (days)"
+        },
+        "return_rate": {
+          "type": "number",
+          "title": "Return Rate (%)",
+          "description": "Percentage of orders returned (industry avg: 15-30%)"
+        },
+        "has_express_shipping": { "type": "boolean", "title": "Has Express Shipping" },
+        "has_in_store_pickup": { "type": "boolean", "title": "Has In-Store Pickup" }
+      }
+    },
+    "payment": {
+      "type": "object",
+      "title": "Payment",
+      "properties": {
+        "payment_methods": {
+          "type": "array",
+          "title": "Accepted Payment Methods",
+          "items": { "type": "string", "enum": ["credit_card", "debit_card", "paypal", "apple_pay", "google_pay", "bank_transfer", "buy_now_pay_later", "crypto", "cash_on_delivery"] },
+          "description": "Payment methods accepted at checkout"
+        },
+        "currencies": {
+          "type": "array",
+          "title": "Supported Currencies",
+          "items": { "type": "string" },
+          "description": "E.g., 'USD', 'EUR', 'GBP'"
+        }
+      }
+    },
+    "kpis": {
+      "type": "object",
+      "title": "Target KPIs",
+      "properties": {
+        "conversion_rate": {
+          "type": "number",
+          "title": "Conversion Rate Target (%)",
+          "description": "Target view-to-purchase conversion rate (industry avg: 2-3%)"
+        },
+        "aov": {
+          "type": "number",
+          "title": "Average Order Value Target ($)"
+        },
+        "retention_30d": {
+          "type": "number",
+          "title": "30-Day Retention Target (%)",
+          "description": "Target % of buyers who purchase again within 30 days"
+        },
+        "cac": {
+          "type": "number",
+          "title": "Customer Acquisition Cost Target ($)",
+          "description": "Target cost to acquire a new customer"
+        },
+        "ltv": {
+          "type": "number",
+          "title": "Customer Lifetime Value Target ($)",
+          "description": "Target revenue per customer over their lifetime"
+        }
+      }
+    }
+  }
+}

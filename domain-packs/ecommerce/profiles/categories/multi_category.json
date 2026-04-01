@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Multi-Category Store Profile Extensions",
+  "description": "Additional profile fields specific to multi-category online retail stores.",
+  "type": "object",
+  "properties": {
+    "catalog": {
+      "type": "object",
+      "title": "Catalog",
+      "properties": {
+        "total_categories": {
+          "type": "integer",
+          "title": "Total Categories",
+          "description": "Number of top-level product categories"
+        },
+        "top_categories": {
+          "type": "array",
+          "title": "Top Revenue Categories",
+          "items": { "type": "string" },
+          "description": "Top 3-5 categories by revenue (e.g., 'Electronics', 'Appliances', 'Computers')"
+        },
+        "has_private_label": {
+          "type": "boolean",
+          "title": "Has Private Label/Store Brand"
+        },
+        "catalog_refresh_frequency": {
+          "type": "string",
+          "title": "Catalog Refresh Frequency",
+          "enum": ["daily", "weekly", "monthly", "quarterly"],
+          "description": "How often new products are added to the catalog"
+        }
+      }
+    },
+    "search_discovery": {
+      "type": "object",
+      "title": "Search & Discovery",
+      "properties": {
+        "has_search": { "type": "boolean", "title": "Has Product Search" },
+        "has_filters": { "type": "boolean", "title": "Has Category/Brand Filters" },
+        "has_recommendations": { "type": "boolean", "title": "Has Product Recommendations" },
+        "recommendation_type": {
+          "type": "string",
+          "title": "Recommendation Type",
+          "enum": ["collaborative_filtering", "content_based", "manual_curation", "hybrid", "none"]
+        },
+        "has_recently_viewed": { "type": "boolean", "title": "Has Recently Viewed Section" },
+        "has_wishlists": { "type": "boolean", "title": "Has Wishlists/Favorites" }
+      }
+    },
+    "cross_sell": {
+      "type": "object",
+      "title": "Cross-Sell & Bundling",
+      "properties": {
+        "has_cross_sell": {
+          "type": "boolean",
+          "title": "Has Cross-Sell Recommendations",
+          "description": "'Frequently bought together', 'Customers also bought'"
+        },
+        "has_bundles": {
+          "type": "boolean",
+          "title": "Has Product Bundles"
+        },
+        "has_upsell": {
+          "type": "boolean",
+          "title": "Has Upsell Prompts",
+          "description": "'Upgrade to premium version', 'Add warranty'"
+        },
+        "has_comparison": {
+          "type": "boolean",
+          "title": "Has Product Comparison Feature"
+        }
+      }
+    }
+  }
+}

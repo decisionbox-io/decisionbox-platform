@@ -10,6 +10,7 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 |--------|-----------|------------|-------------|
 | **Gaming** | Match-3, Idle/Incremental, Casual/Hyper-Casual | Churn, Engagement, Monetization | Player behavior, retention, and revenue analytics for games |
 | **Social Network** | Content Sharing | Growth, Engagement, Retention | User growth, engagement, content creation, and monetization analytics for social platforms |
+| **Ecommerce** | Multi-Category | Conversion, Revenue, Retention | Purchase funnel, revenue & pricing, customer retention, product performance, and session behavior analytics for online stores |
 | **System Test** | Quick, Standard, Thorough | Connectivity, Schema Discovery | Diagnostic pack for warehouse validation and data profiling (not an industry pack) |
 
 > **Note:** The System Test domain pack is intended for testing and onboarding only.
@@ -58,6 +59,14 @@ Domain: Social Network
     ├── Area: Retention & Churn       (base — shared)
     ├── Area: Content Creation Health  (content sharing specific)
     └── Area: Monetization & Premium   (content sharing specific)
+
+Domain: Ecommerce
+└── Category: Multi-Category
+    ├── Area: Conversion Funnel           (base — shared)
+    ├── Area: Revenue & Pricing           (base — shared)
+    ├── Area: Customer Retention          (base — shared)
+    ├── Area: Product & Category Performance  (multi-category specific)
+    └── Area: Session & Browsing Behavior     (multi-category specific)
 ```
 
 **Base areas** are shared across all categories in a domain. **Category-specific areas** add specialized analysis. When you select "Gaming / Match-3", you get all base gaming areas PLUS match-3 specific areas.
@@ -108,7 +117,7 @@ domain-packs/gaming/
         └── casual.json            # Casual extensions
 ```
 
-The social network domain pack follows the same structure under `domain-packs/social/`.
+The social network and ecommerce domain packs follow the same structure under `domain-packs/social/` and `domain-packs/ecommerce/`.
 
 ## Areas Definition (areas.json)
 
@@ -215,6 +224,18 @@ The profile schema defines what context users provide about their product. It's 
 **Category extensions:**
 - **Content Sharing** — Content types, discovery features, interaction types (with paid flags), creator tools, moderation
 
+### Ecommerce Profile
+
+**Base schema** — Fields shared across all ecommerce categories:
+- Business info (industry, business model, target market, platforms, growth stage)
+- Product catalog (total products, average price, categories, inventory model)
+- Shipping (free shipping threshold, average delivery days, return rate)
+- Payment (payment methods, currencies)
+- KPIs (conversion rate, AOV, 30-day retention, CAC, LTV)
+
+**Category extensions:**
+- **Multi-Category** — Catalog details (total products, total categories, top categories, private label), search & discovery features, cross-sell/upsell strategy
+
 The schemas are merged at runtime (base + category). The resulting form lets users describe their specific product, which the AI uses as context for better analysis.
 
 ## How Domain Packs Are Loaded
@@ -229,6 +250,10 @@ domain-packs/
     profiles/                ← read at runtime via DOMAIN_PACK_PATH
   social/                    ← domain pack directory
     go/pack.go               ← registers via domainpack.Register("social", ...)
+    prompts/                 ← read at runtime via DOMAIN_PACK_PATH
+    profiles/                ← read at runtime via DOMAIN_PACK_PATH
+  ecommerce/                 ← domain pack directory
+    go/pack.go               ← registers via domainpack.Register("ecommerce", ...)
     prompts/                 ← read at runtime via DOMAIN_PACK_PATH
     profiles/                ← read at runtime via DOMAIN_PACK_PATH
 ```

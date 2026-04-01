@@ -1,0 +1,26 @@
+[
+  {
+    "id": "conversion",
+    "name": "Conversion Funnel",
+    "description": "Purchase funnel analysis — view to cart to purchase conversion rates, cart abandonment patterns, and cart-to-purchase friction points",
+    "keywords": ["view", "cart", "purchase", "conversion", "funnel", "abandon", "add_to_cart", "remove_from_cart", "buy", "drop_off", "browse"],
+    "priority": 1,
+    "prompt_file": "analysis_conversion.md"
+  },
+  {
+    "id": "revenue",
+    "name": "Revenue & Pricing",
+    "description": "Revenue trends, average order value, price distribution, price sensitivity, and revenue concentration across categories and brands",
+    "keywords": ["revenue", "price", "aov", "sales", "gmv", "spend", "basket", "pricing", "arpu", "monetary", "purchase_price"],
+    "priority": 2,
+    "prompt_file": "analysis_revenue.md"
+  },
+  {
+    "id": "retention",
+    "name": "Customer Retention",
+    "description": "Repeat purchase behavior, customer lifecycle analysis, repurchase intervals, and cohort-based retention tracking",
+    "keywords": ["retention", "repeat", "churn", "cohort", "returning", "loyal", "lapsed", "lifetime", "repurchase", "frequency", "recency", "rfm"],
+    "priority": 3,
+    "prompt_file": "analysis_retention.md"
+  }
+]

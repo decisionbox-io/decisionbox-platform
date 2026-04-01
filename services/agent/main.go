@@ -42,6 +42,7 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"  // registers "snowflake"
 
 	// Domain pack registrations
+	_ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"   // registers "ecommerce"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"      // registers "gaming"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"      // registers "social"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // registers "system-test" (env-gated)
