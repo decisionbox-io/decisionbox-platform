@@ -1,6 +1,6 @@
 # Adding LLM Providers
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 This guide shows how to add support for a new LLM service. You'll implement one Go interface method, register with metadata, and import in two files.
 
@@ -98,6 +98,10 @@ func init() {
         DefaultPricing: map[string]gollm.TokenPricing{
             "default-model": {InputPerMillion: 1.0, OutputPerMillion: 2.0},
         },
+        MaxOutputTokens: map[string]int{
+            "default-model": 4096,
+            "_default":      4096,
+        },
     })
 }
 
@@ -141,6 +145,7 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 - **Support model override** — `req.Model` may differ from the provider default (per-request override)
 - **Return accurate token counts** — Used for cost estimation and context tracking
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
+- **Set `MaxOutputTokens` accurately** — Check each model's API documentation for max output token limits. The agent calls `gollm.GetMaxOutputTokens(providerName, model)` to request the model's full output capacity during phases like recommendation generation. Use the `_default` key for a fallback when the exact model name is not listed.
 
 ## Step 3: Register in Services
 
@@ -266,6 +271,7 @@ cd providers/llm/myprovider && go test -tags=integration -count=1 -timeout=2m -v
 - [ ] `init()` registers with `RegisterWithMeta` (name, factory, metadata)
 - [ ] `ConfigFields` includes all user-configurable fields
 - [ ] `DefaultPricing` includes token pricing for common models
+- [ ] `MaxOutputTokens` includes per-model max output token limits (with `_default` fallback)
 - [ ] `timeout_seconds` read from config (not hardcoded)
 - [ ] Model override supported (`req.Model` takes priority)
 - [ ] Token usage returned accurately

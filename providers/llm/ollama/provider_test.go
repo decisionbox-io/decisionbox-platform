@@ -18,6 +18,22 @@ func TestOllamaProvider_Registered(t *testing.T) {
 	if meta.Description == "" {
 		t.Error("missing description")
 	}
+
+	// MaxOutputTokens
+	if meta.MaxOutputTokens == nil {
+		t.Fatal("MaxOutputTokens should not be nil")
+	}
+	if len(meta.MaxOutputTokens) != 1 {
+		t.Errorf("MaxOutputTokens has %d entries, want 1", len(meta.MaxOutputTokens))
+	}
+	if meta.MaxOutputTokens["_default"] != 8192 {
+		t.Errorf("MaxOutputTokens[_default] = %d, want 8192", meta.MaxOutputTokens["_default"])
+	}
+
+	// Verify GetMaxOutputTokens helper falls back to _default for any model
+	if got := gollm.GetMaxOutputTokens("ollama", "qwen2.5:0.5b"); got != 8192 {
+		t.Errorf("GetMaxOutputTokens(ollama, qwen2.5:0.5b) = %d, want 8192", got)
+	}
 }
 
 func TestOllamaProvider_ConfigFields(t *testing.T) {

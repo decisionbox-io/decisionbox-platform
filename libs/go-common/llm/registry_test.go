@@ -20,12 +20,13 @@ func (m *mockProvider) Validate(_ context.Context) error {
 
 // registrations use sync.Once to be safe with -count=N and -parallel.
 var (
-	registerMeta     sync.Once
-	registerSuccess  sync.Once
-	registerList     sync.Once
-	registerMetaList sync.Once
-	registerCfg      sync.Once
-	registerPricing  sync.Once
+	registerMeta       sync.Once
+	registerSuccess    sync.Once
+	registerList       sync.Once
+	registerMetaList   sync.Once
+	registerCfg        sync.Once
+	registerPricing    sync.Once
+	registerMaxTokens  sync.Once
 )
 
 func TestRegisterWithMeta(t *testing.T) {
@@ -248,5 +249,40 @@ func TestRegisterWithMeta_DefaultPricing(t *testing.T) {
 	}
 	if pricing.OutputPerMillion != 15.0 {
 		t.Errorf("OutputPerMillion = %f, want 15.0", pricing.OutputPerMillion)
+	}
+}
+
+func TestGetMaxOutputTokens(t *testing.T) {
+	name := "test-max-output-tokens"
+	registerMaxTokens.Do(func() {
+		RegisterWithMeta(name, func(_ ProviderConfig) (Provider, error) {
+			return &mockProvider{}, nil
+		}, ProviderMeta{
+			Name:        "Max Tokens Provider",
+			Description: "provider with max output tokens",
+			MaxOutputTokens: map[string]int{
+				"model-large":  16384,
+				"model-small":  8192,
+				"_default":     4096,
+			},
+		})
+	})
+
+	tests := []struct {
+		provider string
+		model    string
+		want     int
+	}{
+		{name, "model-large", 16384},
+		{name, "model-small", 8192},
+		{name, "unknown-model", 4096},   // falls back to _default
+		{"nonexistent", "any", 8192},    // unknown provider falls back to 8192
+	}
+
+	for _, tt := range tests {
+		got := GetMaxOutputTokens(tt.provider, tt.model)
+		if got != tt.want {
+			t.Errorf("GetMaxOutputTokens(%q, %q) = %d, want %d", tt.provider, tt.model, got, tt.want)
+		}
 	}
 }

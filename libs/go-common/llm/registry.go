@@ -21,11 +21,12 @@ type TokenPricing struct {
 
 // ProviderMeta describes a provider for UI rendering.
 type ProviderMeta struct {
-	ID             string                    `json:"id"`
-	Name           string                    `json:"name"`
-	Description    string                    `json:"description"`
-	ConfigFields   []ConfigField             `json:"config_fields"`
-	DefaultPricing map[string]TokenPricing   `json:"default_pricing,omitempty"` // model -> pricing
+	ID              string                    `json:"id"`
+	Name            string                    `json:"name"`
+	Description     string                    `json:"description"`
+	ConfigFields    []ConfigField             `json:"config_fields"`
+	DefaultPricing  map[string]TokenPricing   `json:"default_pricing,omitempty"`   // model -> pricing
+	MaxOutputTokens map[string]int            `json:"max_output_tokens,omitempty"` // model -> max output tokens
 }
 
 // ConfigField describes a single configuration field.
@@ -131,4 +132,22 @@ func GetProviderMeta(name string) (ProviderMeta, bool) {
 	defer providersMu.RUnlock()
 	m, ok := providerMeta[name]
 	return m, ok
+}
+
+// GetMaxOutputTokens returns the max output tokens for a provider+model combination.
+// Falls back to "_default" key, then to 8192 if not configured.
+func GetMaxOutputTokens(providerName, model string) int {
+	providersMu.RLock()
+	defer providersMu.RUnlock()
+	meta, ok := providerMeta[providerName]
+	if !ok || meta.MaxOutputTokens == nil {
+		return 8192
+	}
+	if limit, ok := meta.MaxOutputTokens[model]; ok {
+		return limit
+	}
+	if limit, ok := meta.MaxOutputTokens["_default"]; ok {
+		return limit
+	}
+	return 8192
 }

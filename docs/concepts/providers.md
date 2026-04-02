@@ -57,10 +57,20 @@ llm.RegisterWithMeta("claude", factory, llm.ProviderMeta{
     DefaultPricing: map[string]llm.TokenPricing{
         "claude-sonnet-4": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
     },
+    MaxOutputTokens: map[string]int{
+        "claude-sonnet-4":   16384,
+        "claude-opus-4":     16384,
+        "claude-haiku-4-5":  8192,
+    },
 })
 ```
 
 The API returns this metadata via `GET /api/v1/providers/llm` and `GET /api/v1/providers/warehouse`. The dashboard renders dynamic configuration forms from the `ConfigFields` array — no UI code changes needed when a new provider is added.
+
+`MaxOutputTokens` declares the maximum output tokens each model supports.
+The agent uses this via `gollm.GetMaxOutputTokens(providerName, model)` when making LLM calls (e.g., recommendation generation) so it requests the model's full output capacity instead of a fixed limit.
+The lookup checks for an exact model match first, then falls back to a `_default` key, then to 8192 if neither is found.
+For Ollama and other providers with variable model support, use the `_default` key to set a reasonable fallback.
 
 ## Three Provider Types
 

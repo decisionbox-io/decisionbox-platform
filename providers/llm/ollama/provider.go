@@ -47,6 +47,9 @@ func init() {
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"_default": {InputPerMillion: 0, OutputPerMillion: 0},
 		},
+		MaxOutputTokens: map[string]int{
+			"_default": 8192,
+		},
 	})
 }
 

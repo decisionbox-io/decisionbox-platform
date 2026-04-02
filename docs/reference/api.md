@@ -1,6 +1,6 @@
 # API Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 >
 > Base URL: `http://localhost:8080` (direct) or `http://localhost:3000/api` (via dashboard proxy)
 >
@@ -60,6 +60,11 @@ curl http://localhost:8080/api/v1/providers/llm
       "default_pricing": {
         "claude-sonnet-4": {"input_per_million": 3.0, "output_per_million": 15.0},
         "claude-opus-4": {"input_per_million": 15.0, "output_per_million": 75.0}
+      },
+      "max_output_tokens": {
+        "claude-sonnet-4": 16384,
+        "claude-opus-4": 16384,
+        "claude-haiku-4-5": 8192
       }
     }
   ]

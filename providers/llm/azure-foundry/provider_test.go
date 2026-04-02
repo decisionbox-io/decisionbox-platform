@@ -73,6 +73,29 @@ func TestAzureFoundryProvider_Registered(t *testing.T) {
 	if _, ok := meta.DefaultPricing["gpt-4o"]; !ok {
 		t.Error("missing gpt-4o pricing")
 	}
+
+	// MaxOutputTokens
+	if meta.MaxOutputTokens == nil {
+		t.Fatal("MaxOutputTokens should not be nil")
+	}
+	if len(meta.MaxOutputTokens) != 9 {
+		t.Errorf("MaxOutputTokens has %d entries, want 9", len(meta.MaxOutputTokens))
+	}
+	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
+		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d, want 128000", meta.MaxOutputTokens["claude-opus-4-6"])
+	}
+	if meta.MaxOutputTokens["claude-haiku-4-5"] != 64000 {
+		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 64000", meta.MaxOutputTokens["claude-haiku-4-5"])
+	}
+
+	// Verify GetMaxOutputTokens helper
+	if got := gollm.GetMaxOutputTokens("azure-foundry", "gpt-4o"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(azure-foundry, gpt-4o) = %d, want 16384", got)
+	}
+	// Verify _default fallback
+	if got := gollm.GetMaxOutputTokens("azure-foundry", "unknown-model"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(azure-foundry, unknown-model) = %d, want 16384 (_default)", got)
+	}
 }
 
 func TestAzureFoundryProvider_Validate_NoServer(t *testing.T) {
