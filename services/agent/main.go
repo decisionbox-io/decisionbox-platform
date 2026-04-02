@@ -193,6 +193,7 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, secretP
 	if err != nil {
 		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", project.Warehouse.Provider, err)
 	}
+	provider = gowarehouse.ApplyMiddleware(provider)
 
 	applog.WithFields(applog.Fields{
 		"provider": project.Warehouse.Provider,

@@ -128,7 +128,7 @@ func Run() {
 	handler := server.New(db, healthHandler, secretProvider, authProvider)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
-		Handler:      handler,
+		Handler:      ApplyGlobalMiddlewares(handler),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
