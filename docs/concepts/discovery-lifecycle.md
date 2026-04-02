@@ -21,16 +21,22 @@ Total time depends on exploration steps, LLM speed, and warehouse query time. A 
 
 ## Phase 1: Initialization
 
-The agent starts with a project ID and loads everything it needs:
+The agent starts with a project ID and loads everything it needs.
+The entry point is `agentserver.Run()`, which parses CLI flags, initializes providers, and runs the discovery pipeline.
+Custom builds can import `agentserver` and register plugins (e.g., warehouse middleware) via `init()` blank imports before calling `Run()`.
 
 ```
 Agent receives: --project-id=abc123 --run-id=run456 --max-steps=100
   ↓
 Loads project from MongoDB (name, domain, category, warehouse, llm, profile)
   ↓
+Sets project ID in context (warehouse.WithProjectID) for middleware
+  ↓
 Initializes secret provider (reads LLM API key, warehouse credentials)
   ↓
 Initializes warehouse provider (BigQuery/Redshift with credentials)
+  ↓
+Applies warehouse middleware (warehouse.ApplyMiddleware — e.g., governance)
   ↓
 Initializes LLM provider (Claude/OpenAI/etc. with API key from secrets)
   ↓

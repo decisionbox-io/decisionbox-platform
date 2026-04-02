@@ -4,8 +4,9 @@ codecov:
 
 ignore:
   - "services/api/main.go"
-  - "services/api/apiserver/apiserver.go"  # startup/wiring — tested by integration tests
+  - "services/api/apiserver/apiserver.go"      # startup/wiring — tested by integration tests
   - "services/agent/main.go"
+  - "services/agent/agentserver/agentserver.go" # startup/wiring — tested by integration tests
 
 coverage:
   status:
