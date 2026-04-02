@@ -236,6 +236,71 @@ import (
 // ]
 ```
 
+## Middleware Hooks
+
+In addition to providers, DecisionBox exposes two middleware registration hooks for wrapping existing functionality:
+
+### Warehouse Middleware
+
+Wraps the warehouse `Provider` with custom logic that intercepts calls like `ListTables`, `GetTableSchema`, and `Query`.
+
+```go
+warehouse.RegisterMiddleware("my-plugin", func(p warehouse.Provider) warehouse.Provider {
+    return &myWrapper{inner: p}
+})
+```
+
+The agent applies all registered middleware after creating the warehouse provider via `warehouse.ApplyMiddleware(provider)`.
+
+Use cases: query logging, access controls, cost tracking, result redaction.
+
+### HTTP Middleware
+
+Wraps all API HTTP requests with custom handlers.
+
+```go
+apiserver.RegisterGlobalMiddleware(func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // pre-processing
+        next.ServeHTTP(w, r)
+        // post-processing
+    })
+})
+```
+
+The API server applies all registered middleware via `apiserver.ApplyGlobalMiddlewares(handler)`.
+
+Use cases: request audit logging, custom authentication, route interception.
+
+### Project Context
+
+Warehouse middleware can access the project ID via context helpers:
+
+```go
+// Set by the agent before calling provider methods
+ctx = warehouse.WithProjectID(ctx, projectID)
+
+// Read by middleware in provider method implementations
+projectID := warehouse.ProjectIDFromContext(ctx)
+```
+
+### Custom Builds
+
+To use middleware hooks, create a custom binary that imports your middleware package and calls the exported `Run()` function:
+
+```go
+package main
+
+import (
+    _ "my-org/my-plugin" // registers middleware via init()
+    "github.com/decisionbox-io/decisionbox/services/agent/agentserver"
+)
+
+func main() {
+    agentserver.Run() // or apiserver.Run() for the API
+}
+```
+
 ## Adding a New Provider
 
 To add support for a new LLM, warehouse, or secret manager:

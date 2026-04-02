@@ -92,7 +92,7 @@ When adding a new provider, create a new `go.mod` and add `replace` directives t
 |------|---------|
 | `services/api/internal/server/server.go` | All route registrations |
 | `services/agent/internal/discovery/orchestrator.go` | Discovery logic (the brain) |
-| `services/agent/main.go` | Agent startup, provider initialization |
+| `services/agent/agentserver/agentserver.go` | Agent startup, provider initialization (exported `Run()`) |
 | `libs/go-common/llm/registry.go` | LLM provider interface + registry |
 | `libs/go-common/warehouse/provider.go` | Warehouse provider interface |
 | `libs/go-common/secrets/provider.go` | Secret provider interface |

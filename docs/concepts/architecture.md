@@ -124,7 +124,7 @@ All collections and indexes are created automatically on API startup (idempotent
 
 ## Plugin Architecture
 
-DecisionBox is built on four plugin systems. Each uses the same pattern: providers register themselves via `init()` functions, and services select them by name at runtime.
+DecisionBox is built on six plugin systems. Each uses the same pattern: plugins register themselves via `init()` functions, and services select or apply them at runtime.
 
 ### How Registration Works
 
@@ -147,16 +147,38 @@ provider, err := llm.NewProvider("claude", llm.ProviderConfig{
 
 Services import provider packages with blank imports (`_`). The `init()` function runs at startup and registers the provider factory. The service then creates providers by name.
 
-### Four Plugin Types
+### Six Plugin Types
 
-| Plugin | Interface | Purpose | Shipped Implementations |
-|--------|-----------|---------|------------------------|
-| **LLM** | `llm.Provider` | AI model access | claude, openai, ollama, vertex-ai, bedrock |
-| **Warehouse** | `warehouse.Provider` | Data warehouse access | bigquery, redshift, snowflake |
-| **Secrets** | `secrets.Provider` | Encrypted key storage | mongodb, gcp, aws |
-| **Domain Pack** | `domainpack.DiscoveryPack` | Domain-specific analysis | gaming (match-3, idle, casual), social (content sharing) |
+| Plugin | Interface / Hook | Purpose | Shipped Implementations |
+|--------|-----------------|---------|------------------------|
+| **LLM** | `llm.Provider` | AI model access | claude, openai, ollama, vertex-ai, bedrock, azure-foundry |
+| **Warehouse** | `warehouse.Provider` | Data warehouse access | bigquery, redshift, snowflake, postgres, databricks |
+| **Secrets** | `secrets.Provider` | Encrypted key storage | mongodb, gcp, aws, azure |
+| **Domain Pack** | `domainpack.DiscoveryPack` | Domain-specific analysis | gaming, social, ecommerce |
+| **Warehouse Middleware** | `warehouse.RegisterMiddleware()` | Wrap warehouse providers | (none shipped — extension point) |
+| **HTTP Middleware** | `apiserver.RegisterGlobalMiddleware()` | Wrap API requests | (none shipped — extension point) |
 
-For details on implementing each, see:
+The first four are provider plugins that implement an interface and register a factory.
+The last two are middleware hooks that wrap existing providers or HTTP handlers with additional logic.
+
+```go
+// Warehouse middleware — wraps the warehouse provider
+warehouse.RegisterMiddleware("my-plugin", func(p warehouse.Provider) warehouse.Provider {
+    return &myWrappedProvider{inner: p}
+})
+
+// HTTP middleware — wraps all API requests
+apiserver.RegisterGlobalMiddleware(func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // custom logic before/after
+        next.ServeHTTP(w, r)
+    })
+})
+```
+
+Custom builds can import `agentserver.Run()` or `apiserver.Run()` and register middleware via `init()` blank imports before calling `Run()`.
+
+For details on implementing providers, see:
 - [Adding LLM Providers](../guides/adding-llm-providers.md)
 - [Adding Warehouse Providers](../guides/adding-warehouse-providers.md)
 - [Adding Secret Providers](../guides/adding-secret-providers.md)

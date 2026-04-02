@@ -169,6 +169,14 @@ Add support for any SQL warehouse by implementing the `warehouse.Provider` inter
 
 See [Adding Warehouse Providers](https://decisionbox.io/docs/guides/adding-warehouse-providers).
 
+### Middleware Hooks
+
+Wrap warehouse providers or HTTP handlers with custom logic using the middleware registration system:
+
+- **Warehouse middleware** — `warehouse.RegisterMiddleware()` wraps the warehouse provider (e.g., query logging, access controls, cost tracking)
+- **HTTP middleware** — `apiserver.RegisterGlobalMiddleware()` wraps all API requests (e.g., audit logging, custom auth)
+- **Custom agent builds** — Import `agentserver.Run()` and register middleware via `init()` blank imports
+
 ## Configuration
 
 Key environment variables:
