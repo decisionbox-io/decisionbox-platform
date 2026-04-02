@@ -22,6 +22,7 @@ type InsightValidator struct {
 	executor  SelfHealingExecutor
 	dataset   string
 	filter    string
+	schemaCtx string
 }
 
 // SelfHealingExecutor executes queries with automatic SQL fix + retry.
@@ -47,6 +48,11 @@ func NewInsightValidator(opts InsightValidatorOptions) *InsightValidator {
 		dataset:   opts.Dataset,
 		filter:    opts.Filter,
 	}
+}
+
+// SetSchemaContext provides table schema information for verification query generation.
+func (v *InsightValidator) SetSchemaContext(schemaJSON string) {
+	v.schemaCtx = schemaJSON
 }
 
 // ValidateInsights verifies each insight by running a warehouse query.
@@ -213,16 +219,22 @@ func (v *InsightValidator) generateVerificationQuery(
 ) (string, error) {
 	insightJSON, _ := json.MarshalIndent(insight, "", "  ")
 
+	schemaSection := ""
+	if v.schemaCtx != "" {
+		schemaSection = fmt.Sprintf("\n**Available Table Schemas**:\n%s\n", v.schemaCtx)
+	}
+
 	prompt := fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
 
 **Available Datasets**: %s
 **SQL Dialect**: %s
 **Filter**: %s
-
+%s
 **CRITICAL TABLE NAME RULES**:
 - ALWAYS use fully qualified table names with backticks: `+"`dataset_name.table_name`"+`
 - Example: `+"`events_prod.sessions`"+` NOT just `+"`sessions`"+`
 - The dataset name MUST be included in every table reference
+- ONLY use column names that exist in the table schemas above
 
 **Insight to verify**:
 %s
@@ -231,13 +243,15 @@ Generate a single SQL query that:
 1. Counts the affected users/entities described in this insight
 2. Uses COUNT(DISTINCT user_id) for user counts
 3. Uses FULLY QUALIFIED table names: `+"`dataset.table`"+`
-4. Includes the filter clause if provided
-5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
+4. ONLY references columns that exist in the provided table schemas
+5. Includes the filter clause if provided
+6. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
 
 Return ONLY the raw SQL query, no explanations, no markdown.`,
 		v.dataset,
 		v.warehouse.SQLDialect(),
 		v.filter,
+		schemaSection,
 		string(insightJSON),
 	)
 

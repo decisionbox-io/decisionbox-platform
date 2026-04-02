@@ -239,6 +239,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// Build context for prompts
 	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
+
+	// Provide schema context to SQL fixer and insight validator
+	sqlFixer.SetSchemaContext(string(schemaJSON))
+	if o.insightValidator != nil {
+		o.insightValidator.SetSchemaContext(string(schemaJSON))
+	}
+
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
 	if len(o.profile) > 0 {
 		pj, _ := json.MarshalIndent(o.profile, "", "  ")
