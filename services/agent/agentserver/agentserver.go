@@ -269,6 +269,9 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Set project ID in context for warehouse middleware (e.g. governance)
+	ctx = gowarehouse.WithProjectID(ctx, projectID)
+
 	mongoClient, err := initMongoDB(ctx, cfg)
 	if err != nil {
 		return err
@@ -335,8 +338,6 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 		}
 		fmt.Println(string(out))
 
-	default:
-		return fmt.Errorf("unknown test target: %s", target)
 	}
 
 	return nil

@@ -8,31 +8,40 @@ import (
 // (e.g., logging, metrics, governance, or redaction).
 type Middleware func(Provider) Provider
 
+type namedMiddleware struct {
+	name string
+	mw   Middleware
+}
+
 var (
 	middlewareMu sync.RWMutex
-	middlewares  = make(map[string]Middleware)
+	middlewares  []namedMiddleware
+	middlewareNames = make(map[string]bool)
 )
 
 // RegisterMiddleware registers a warehouse provider middleware by name.
-// This is typically called from an init() function in a plugin (e.g. custom auth or governance).
+// Middlewares are applied in registration order.
+// This is typically called from an init() function in a plugin.
 func RegisterMiddleware(name string, mw Middleware) {
 	middlewareMu.Lock()
 	defer middlewareMu.Unlock()
 	if mw == nil {
-		panic("warehouse: RegisterMiddleware is nil for " + name)
+		panic("warehouse: RegisterMiddleware middleware is nil for " + name)
 	}
-	if _, exists := middlewares[name]; exists {
+	if middlewareNames[name] {
 		panic("warehouse: RegisterMiddleware called twice for " + name)
 	}
-	middlewares[name] = mw
+	middlewareNames[name] = true
+	middlewares = append(middlewares, namedMiddleware{name: name, mw: mw})
 }
 
-// ApplyMiddleware applies all registered middlewares to a provider.
+// ApplyMiddleware applies all registered middlewares to a provider
+// in registration order.
 func ApplyMiddleware(p Provider) Provider {
 	middlewareMu.RLock()
 	defer middlewareMu.RUnlock()
-	for _, mw := range middlewares {
-		p = mw(p)
+	for _, nm := range middlewares {
+		p = nm.mw(p)
 	}
 	return p
 }
