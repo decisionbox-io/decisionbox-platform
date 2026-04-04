@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -545,6 +546,26 @@ func (h *SearchHandler) saveAskHistory(ctx context.Context, projectID, question,
 	if err := h.historyRepo.Save(ctx, entry); err != nil {
 		apilog.WithError(err).Warn("Failed to save ask history")
 	}
+}
+
+// ListHistory returns recent search/ask queries for a project.
+// GET /api/v1/projects/{id}/search/history?limit=20
+func (h *SearchHandler) ListHistory(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if projectID == "" {
+		writeError(w, http.StatusBadRequest, "project ID is required")
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	entries, err := h.historyRepo.ListByProject(r.Context(), projectID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list search history")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func truncate(s string, maxLen int) string {
