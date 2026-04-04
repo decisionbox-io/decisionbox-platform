@@ -543,6 +543,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		EnableDebugLogs:   enableDebugLogs,
 		VectorStore:       qdrantProvider,
 		EmbeddingProvider: embeddingProvider,
+		DB:                db,
 	})
 
 	// Estimate mode: calculate costs without running discovery

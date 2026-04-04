@@ -70,6 +70,7 @@ const (
 	PhaseValidation      = "validation"
 	PhaseRecommendations = "recommendations"
 	PhaseSaving          = "saving"
+	PhaseEmbedIndex      = "embed_index"
 	PhaseComplete        = "complete"
 
 	RunStatusPending   = "pending"

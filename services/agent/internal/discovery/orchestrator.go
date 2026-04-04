@@ -53,6 +53,7 @@ type Orchestrator struct {
 
 	vectorStore       vectorstore.Provider
 	embeddingProvider goembedding.Provider
+	db                *database.DB
 }
 
 // OrchestratorOptions configures the orchestrator.
@@ -84,6 +85,9 @@ type OrchestratorOptions struct {
 	// Optional — nil if Qdrant/embedding not configured
 	VectorStore       vectorstore.Provider
 	EmbeddingProvider goembedding.Provider
+
+	// DB is needed for Phase 9 to write to insights/recommendations collections
+	DB *database.DB
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -145,6 +149,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		llmModel:           opts.LLMModel,
 		vectorStore:        opts.VectorStore,
 		embeddingProvider:  opts.EmbeddingProvider,
+		db:                 opts.DB,
 	}
 }
 
@@ -514,6 +519,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	if err := o.discoveryRepo.Save(ctx, result); err != nil {
 		return nil, fmt.Errorf("failed to save discovery result: %w", err)
+	}
+
+	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)
+	if o.db != nil {
+		o.runPhaseEmbedIndex(ctx, result)
 	}
 
 	// Mark run as completed
