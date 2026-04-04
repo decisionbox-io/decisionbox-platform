@@ -9,7 +9,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Project, ProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -43,16 +43,26 @@ export default function ProjectSettingsPage() {
   const [savingSecret, setSavingSecret] = useState(false);
   const [savingWhCredential, setSavingWhCredential] = useState(false);
 
+  // Embedding state
+  const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
+  const [embProvider, setEmbProvider] = useState('');
+  const [embModel, setEmbModel] = useState('');
+  const [embApiKey, setEmbApiKey] = useState('');
+  const [savingEmbKey, setSavingEmbKey] = useState(false);
+  const [embIndexedCount, setEmbIndexedCount] = useState(0);
+
   useEffect(() => {
     Promise.all([
       api.getProject(id),
       api.listWarehouseProviders(),
       api.listLLMProviders(),
+      api.listEmbeddingProviders(),
     ])
-      .then(([proj, whProvs, llmProvs]) => {
+      .then(([proj, whProvs, llmProvs, embProvs]) => {
         setProject(proj);
         setWarehouseProviders(whProvs);
         setLlmProviders(llmProvs);
+        setEmbeddingProviders(embProvs || []);
 
         setName(proj.name);
         setDescription(proj.description || '');
@@ -68,6 +78,12 @@ export default function ProjectSettingsPage() {
         setLlmProvider(proj.llm.provider);
         setLlmModel(proj.llm.model);
         setLlmConfig(proj.llm.config || {});
+        setEmbProvider(proj.embedding?.provider || '');
+        setEmbModel(proj.embedding?.model || '');
+        // Count indexed insights for re-index warning
+        if (proj.embedding?.provider) {
+          api.listStandaloneInsights(proj.id || id, 1, 0).then(ins => setEmbIndexedCount(ins?.length || 0)).catch(() => {});
+        }
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -107,6 +123,7 @@ export default function ProjectSettingsPage() {
           ),
         },
         llm: { provider: llmProvider, model: llmModel, config: llmConfig },
+        embedding: { provider: embProvider, model: embModel },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
         profile,
       });
@@ -158,6 +175,7 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
           <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
+          <Tabs.Tab value="embedding">Embedding &amp; Search</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
         </Tabs.List>
@@ -354,6 +372,92 @@ export default function ProjectSettingsPage() {
             )}
 
             <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
+          </SettingsSection>
+        </Tabs.Panel>
+
+        {/* Embedding & Search */}
+        <Tabs.Panel value="embedding">
+          <SettingsSection>
+            <Text size="sm" fw={500}>Embedding Provider</Text>
+            <Text size="xs" c="dimmed" mb="sm">
+              Configure an embedding provider to enable semantic search across your insights and recommendations.
+            </Text>
+
+            <Select
+              label="Provider"
+              placeholder="Select embedding provider"
+              value={embProvider || null}
+              onChange={(v) => {
+                setEmbProvider(v || '');
+                setEmbModel('');
+                setDirty(true);
+              }}
+              data={embeddingProviders.map(p => ({ value: p.id, label: p.name }))}
+              clearable
+            />
+
+            {embProvider && (() => {
+              const selectedEmb = embeddingProviders.find(p => p.id === embProvider);
+              if (!selectedEmb) return null;
+              return (
+                <>
+                  <Select
+                    label="Model"
+                    placeholder="Select model"
+                    value={embModel || null}
+                    onChange={(v) => { setEmbModel(v || ''); setDirty(true); }}
+                    data={selectedEmb.models.map(m => ({
+                      value: m.id,
+                      label: `${m.name} (${m.dimensions}d)`,
+                    }))}
+                  />
+
+                  {selectedEmb.config_fields.some(f => f.type === 'credential') && (
+                    <>
+                      <Text size="sm" fw={500} mt="md">Embedding API Key</Text>
+                      {secretsList.some(s => s.key === 'embedding-api-key') ? (
+                        <Text size="xs" c="dimmed">
+                          Key set: {secretsList.find(s => s.key === 'embedding-api-key')?.masked}
+                        </Text>
+                      ) : (
+                        <Text size="xs" c="orange">No API key configured yet.</Text>
+                      )}
+                      <Group>
+                        <TextInput
+                          placeholder="sk-..."
+                          value={embApiKey}
+                          onChange={(e) => setEmbApiKey(e.currentTarget.value)}
+                          type="password"
+                          style={{ flex: 1 }}
+                        />
+                        <Button size="sm" loading={savingEmbKey} disabled={!embApiKey} onClick={async () => {
+                          setSavingEmbKey(true);
+                          try {
+                            await api.setSecret(id, 'embedding-api-key', embApiKey);
+                            setEmbApiKey('');
+                            notifications.show({ title: 'Saved', message: 'Embedding API key updated', color: 'green' });
+                            const s = await api.listSecrets(id);
+                            setSecretsList(s || []);
+                          } catch (e: unknown) {
+                            notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                          } finally {
+                            setSavingEmbKey(false);
+                          }
+                        }}>
+                          Update Key
+                        </Button>
+                      </Group>
+                    </>
+                  )}
+                </>
+              );
+            })()}
+
+            {!embProvider && (
+              <Text size="xs" c="dimmed" mt="sm">
+                Search and &ldquo;Ask Insights&rdquo; features require an embedding provider. You can skip this and configure it later.
+              </Text>
+            )}
           </SettingsSection>
         </Tabs.Panel>
 

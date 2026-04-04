@@ -11,7 +11,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
 } from '@/components/common/UIComponents';
-import { api, Feedback, Insight, Recommendation } from '@/lib/api';
+import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
   discoveryId: string;
@@ -21,7 +21,7 @@ interface RecWithContext extends Recommendation {
 
 export default function RecommendationsListPage() {
   const { id } = useParams<{ id: string }>();
-  const [project, setProject] = useState<{ name: string } | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [allRecs, setAllRecs] = useState<RecWithContext[]>([]);
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
   const [loading, setLoading] = useState(true);
@@ -29,10 +29,13 @@ export default function RecommendationsListPage() {
   const [sortBy, setSortBy] = useState('Priority');
   const [page, setPage] = useState(1);
   const pageSize = 10;
+  const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const hasEmbedding = !!project?.embedding?.provider;
 
   useEffect(() => {
     Promise.all([
-      api.getProject(id).then(p => setProject({ name: p.name })),
+      api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const recs: RecWithContext[] = [];
         const seen = new Set<string>();
@@ -63,6 +66,26 @@ export default function RecommendationsListPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
+
+  // Semantic search with debounce when embedding is configured
+  useEffect(() => {
+    if (!hasEmbedding || !search.trim()) {
+      setSemanticResults(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setSearching(true);
+      api.searchInsights(id, {
+        query: search.trim(),
+        limit: 20,
+        types: ['recommendation'],
+      })
+        .then(resp => setSemanticResults(resp.results))
+        .catch(() => setSemanticResults(null))
+        .finally(() => setSearching(false));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search, hasEmbedding, id]);
 
   if (loading) return <Shell><Loader /></Shell>;
 
@@ -106,15 +129,55 @@ export default function RecommendationsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Recommendations" count={filtered.length} right={
+      <SectionHeader title="All Recommendations" count={semanticResults ? semanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <SearchInput value={search} onChange={setSearch} placeholder="Search recommendations..." />
+          {searching && <Loader size="xs" />}
+          <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
+            placeholder={hasEmbedding ? 'Semantic search recommendations...' : 'Filter recommendations...'} />
           <SortDropdown value={sortBy} onChange={setSortBy}
             options={['Priority', 'Confidence', 'Segment size', 'Date']} />
         </div>
       } />
 
-      {filtered.length > 0 ? (<>
+      {/* Semantic search results */}
+      {semanticResults && semanticResults.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {semanticResults.map(r => (
+            <Link key={r.id} href={`/projects/${id}/discoveries/${r.discovery_id}`}
+              style={{ textDecoration: 'none' }}>
+              <div style={{
+                background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
+                borderRadius: 'var(--db-radius-lg)', padding: '16px 20px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, color: 'var(--db-blue-text)',
+                    background: 'var(--db-blue-bg)', padding: '2px 8px', borderRadius: 10,
+                  }}>
+                    {Math.round(r.score * 100)}% match
+                  </span>
+                  <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>
+                    {r.name || r.title}
+                  </span>
+                </div>
+                {r.description && (
+                  <p style={{ fontSize: 13, color: 'var(--db-text-secondary)', margin: 0, lineHeight: 1.5 }}>
+                    {r.description.slice(0, 200)}{r.description.length > 200 ? '...' : ''}
+                  </p>
+                )}
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {semanticResults && semanticResults.length === 0 && !searching && (
+        <EmptyState icon={<IconStack2 size={32} />} title="No results"
+          description={`No recommendations matched "${search}". Try different keywords.`} />
+      )}
+
+      {/* Client-side filtered results (when no semantic search) */}
+      {!semanticResults && filtered.length > 0 ? (<>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {paged.map((rec, idx) => {
             const effort = rec.priority <= 1 ? 'low' : rec.priority <= 3 ? 'medium' : 'high';
@@ -222,10 +285,10 @@ export default function RecommendationsListPage() {
           })}
         </div>
         <Pagination page={page} totalPages={totalPages} onChange={p => { setPage(p); window.scrollTo(0, 0); }} />
-      </>) : (
+      </>) : !semanticResults ? (
         <EmptyState icon={<IconStack2 size={32} />} title="No recommendations found"
           description={search ? 'No recommendations match your search.' : 'Run a discovery to get recommendations.'} />
-      )}
+      ) : null}
     </Shell>
   );
 }

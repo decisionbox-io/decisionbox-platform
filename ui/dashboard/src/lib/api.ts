@@ -64,6 +64,7 @@ export interface Project {
   category: string;
   warehouse: WarehouseConfig;
   llm: LLMConfig;
+  embedding: EmbeddingConfig;
   schedule: ScheduleConfig;
   profile: Record<string, unknown>;
   status: string;
@@ -71,6 +72,11 @@ export interface Project {
   last_run_status: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface EmbeddingConfig {
+  provider: string;
+  model: string;
 }
 
 export interface WarehouseConfig {
@@ -325,6 +331,136 @@ export interface TestConnectionResult {
   datasets?: string[];
 }
 
+// --- Vector Search Types ---
+
+export interface EmbeddingProviderMeta {
+  id: string;
+  name: string;
+  description: string;
+  config_fields: ConfigField[];
+  models: EmbeddingModelMeta[];
+}
+
+export interface EmbeddingModelMeta {
+  id: string;
+  name: string;
+  dimensions: number;
+}
+
+export interface SearchRequest {
+  query: string;
+  types?: string[];
+  limit?: number;
+  min_score?: number;
+  filters?: { severity?: string; analysis_area?: string };
+}
+
+export interface CrossProjectSearchRequest {
+  query: string;
+  embedding_model: string;
+  types?: string[];
+  limit?: number;
+  min_score?: number;
+}
+
+export interface SearchResultItem {
+  id: string;
+  type: 'insight' | 'recommendation';
+  score: number;
+  name: string;
+  title?: string;
+  description: string;
+  severity?: string;
+  analysis_area?: string;
+  discovery_id: string;
+  discovered_at: string;
+  project_id?: string;
+  project_name?: string;
+}
+
+export interface SearchResponse {
+  results: SearchResultItem[];
+  embedding_model: string;
+  projects_searched?: number;
+  projects_excluded?: number;
+}
+
+export interface AskRequest {
+  question: string;
+  limit?: number;
+}
+
+export interface AskResponse {
+  answer: string;
+  sources: SearchResultItem[];
+  model: string;
+}
+
+export interface StandaloneInsight {
+  id: string;
+  project_id: string;
+  discovery_id: string;
+  domain: string;
+  category: string;
+  analysis_area: string;
+  name: string;
+  description: string;
+  severity: string;
+  affected_count: number;
+  risk_score: number;
+  confidence: number;
+  metrics: Record<string, unknown>;
+  indicators: string[];
+  target_segment: string;
+  source_steps?: number[];
+  validation?: InsightValidation;
+  embedding_text?: string;
+  embedding_model?: string;
+  duplicate_of?: string;
+  similarity_score?: number;
+  discovered_at: string;
+  created_at: string;
+}
+
+export interface StandaloneRecommendation {
+  id: string;
+  project_id: string;
+  discovery_id: string;
+  domain: string;
+  category: string;
+  recommendation_category: string;
+  title: string;
+  description: string;
+  priority: number;
+  target_segment: string;
+  segment_size: number;
+  expected_impact: { metric: string; estimated_improvement: string; reasoning?: string };
+  actions: string[];
+  related_insight_ids?: string[];
+  confidence: number;
+  embedding_text?: string;
+  embedding_model?: string;
+  duplicate_of?: string;
+  similarity_score?: number;
+  created_at: string;
+}
+
+export interface SearchHistoryEntry {
+  id: string;
+  user_id: string;
+  project_id: string;
+  query: string;
+  type: 'search' | 'ask';
+  results_count: number;
+  top_result_ids?: string[];
+  top_result_score?: number;
+  answer_summary?: string;
+  source_ids?: string[];
+  llm_model?: string;
+  tokens_used?: number;
+  created_at: string;
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -409,6 +545,31 @@ export const api = {
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/warehouse`, { method: 'POST' }),
   testLLM: (projectId: string) =>
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/llm`, { method: 'POST' }),
+
+  // Embedding providers
+  listEmbeddingProviders: () => request<EmbeddingProviderMeta[]>('/api/v1/providers/embedding'),
+
+  // Vector search
+  searchInsights: (projectId: string, req: SearchRequest) =>
+    request<SearchResponse>(`/api/v1/projects/${projectId}/search`, { method: 'POST', body: JSON.stringify(req) }),
+  crossProjectSearch: (req: CrossProjectSearchRequest) =>
+    request<SearchResponse>('/api/v1/search', { method: 'POST', body: JSON.stringify(req) }),
+  askInsights: (projectId: string, req: AskRequest) =>
+    request<AskResponse>(`/api/v1/projects/${projectId}/ask`, { method: 'POST', body: JSON.stringify(req) }),
+
+  // Standalone insights & recommendations (denormalized collections)
+  listStandaloneInsights: (projectId: string, limit = 50, offset = 0) =>
+    request<StandaloneInsight[]>(`/api/v1/projects/${projectId}/insights?limit=${limit}&offset=${offset}`),
+  getStandaloneInsight: (projectId: string, insightId: string) =>
+    request<StandaloneInsight>(`/api/v1/projects/${projectId}/insights/${insightId}`),
+  listStandaloneRecommendations: (projectId: string, limit = 50, offset = 0) =>
+    request<StandaloneRecommendation[]>(`/api/v1/projects/${projectId}/recommendations?limit=${limit}&offset=${offset}`),
+  getStandaloneRecommendation: (projectId: string, recId: string) =>
+    request<StandaloneRecommendation>(`/api/v1/projects/${projectId}/recommendations/${recId}`),
+
+  // Search history
+  listSearchHistory: (projectId: string, limit = 20) =>
+    request<SearchHistoryEntry[]>(`/api/v1/projects/${projectId}/search/history?limit=${limit}`),
 };
 // build trigger 20260319111744
 // coverage trigger

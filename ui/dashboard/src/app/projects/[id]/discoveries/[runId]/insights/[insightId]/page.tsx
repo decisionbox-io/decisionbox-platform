@@ -11,7 +11,7 @@ import {
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
-import { api, DiscoveryResult, Feedback, Insight } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
@@ -23,6 +23,7 @@ export default function InsightDetailPage() {
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
+  const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -40,6 +41,17 @@ export default function InsightDetailPage() {
       .catch(() => null)
       .finally(() => setLoading(false));
   }, [runId, insightId]);
+
+  // Fetch similar insights via semantic search (non-blocking)
+  useEffect(() => {
+    if (!insight) return;
+    api.searchInsights(id, { query: insight.name, limit: 6, types: ['insight'] })
+      .then(resp => {
+        // Exclude the current insight from results
+        setSimilarInsights(resp.results.filter(r => r.id !== insightId && r.name !== insight.name));
+      })
+      .catch(() => {});
+  }, [id, insight, insightId]);
 
   if (loading) return <Shell><Loader /></Shell>;
   if (!insight) return <Shell><Text>Insight not found</Text></Shell>;
@@ -353,6 +365,51 @@ export default function InsightDetailPage() {
 
         {insight.discovered_at && (
           <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
+        )}
+
+        {/* Similar Insights (semantic search) */}
+        {similarInsights.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <Text size="sm" fw={600} mb="xs">Similar Insights</Text>
+            <Stack gap="xs">
+              {similarInsights.map(sim => {
+                const isDuplicate = sim.score > 0.95;
+                return (
+                  <Link
+                    key={sim.id}
+                    href={`/projects/${id}/discoveries/${sim.discovery_id}`}
+                    style={{ textDecoration: 'none' }}
+                  >
+                    <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>
+                      <Group justify="space-between" wrap="nowrap">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text size="sm" truncate>{sim.name}</Text>
+                          <Text size="xs" c="dimmed">
+                            {sim.discovered_at ? new Date(sim.discovered_at).toLocaleDateString() : ''}
+                            {sim.analysis_area ? ` · ${sim.analysis_area}` : ''}
+                          </Text>
+                        </div>
+                        <Group gap={6} wrap="nowrap">
+                          {sim.severity && (
+                            <Badge size="xs" color={severityColor[sim.severity] || 'gray'} variant="light">
+                              {sim.severity}
+                            </Badge>
+                          )}
+                          <Badge
+                            size="xs"
+                            variant="light"
+                            color={isDuplicate ? 'orange' : 'blue'}
+                          >
+                            {Math.round(sim.score * 100)}% {isDuplicate ? 'duplicate' : 'related'}
+                          </Badge>
+                        </Group>
+                      </Group>
+                    </Card>
+                  </Link>
+                );
+              })}
+            </Stack>
+          </div>
         )}
       </Stack>
     </Shell>

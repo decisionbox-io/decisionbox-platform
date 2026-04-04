@@ -10,7 +10,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
-import { api, Feedback, Insight } from '@/lib/api';
+import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -23,7 +23,7 @@ interface InsightWithContext extends Insight {
 
 export default function InsightsListPage() {
   const { id } = useParams<{ id: string }>();
-  const [project, setProject] = useState<{ name: string } | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [allInsights, setAllInsights] = useState<InsightWithContext[]>([]);
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
   const [loading, setLoading] = useState(true);
@@ -32,10 +32,13 @@ export default function InsightsListPage() {
   const [sortBy, setSortBy] = useState('Severity');
   const [page, setPage] = useState(1);
   const pageSize = 20;
+  const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const hasEmbedding = !!project?.embedding?.provider;
 
   useEffect(() => {
     Promise.all([
-      api.getProject(id).then(p => setProject({ name: p.name })),
+      api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const insights: InsightWithContext[] = [];
         const seen = new Set<string>();
@@ -67,6 +70,27 @@ export default function InsightsListPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
+
+  // Semantic search with debounce when embedding is configured
+  useEffect(() => {
+    if (!hasEmbedding || !search.trim()) {
+      setSemanticResults(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setSearching(true);
+      api.searchInsights(id, {
+        query: search.trim(),
+        limit: 20,
+        types: ['insight'],
+        filters: severityFilter !== 'All' ? { severity: severityFilter.toLowerCase() } : undefined,
+      })
+        .then(resp => setSemanticResults(resp.results))
+        .catch(() => setSemanticResults(null))
+        .finally(() => setSearching(false));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search, hasEmbedding, id, severityFilter]);
 
   if (loading) return <Shell><Loader /></Shell>;
 
@@ -107,8 +131,12 @@ export default function InsightsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Insights" count={filtered.length} right={
-        <SearchInput value={search} onChange={setSearch} placeholder="Search insights..." />
+      <SectionHeader title="All Insights" count={semanticResults ? semanticResults.length : filtered.length} right={
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
+            placeholder={hasEmbedding ? 'Semantic search insights...' : 'Filter insights...'} />
+          {searching && <Loader size="xs" />}
+        </div>
       } />
 
       {/* Filter bar */}
@@ -128,7 +156,65 @@ export default function InsightsListPage() {
           options={['Severity', 'Confidence', 'Players affected', 'Date']} />
       </div>
 
-      {filtered.length > 0 ? (<>
+      {/* Semantic search results */}
+      {semanticResults && semanticResults.length > 0 && (
+        <div style={{
+          background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
+          borderRadius: 'var(--db-radius-lg)', overflow: 'hidden',
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <Th width="5%">Match</Th>
+                <Th width="30%">Insight</Th>
+                <Th>Severity</Th>
+                <Th>Area</Th>
+                <Th>Date</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {semanticResults.map(r => (
+                <tr key={r.id} style={{ borderBottom: '1px solid var(--db-border-default)' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <td style={{ padding: '10px 12px' }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, color: 'var(--db-blue-text)',
+                      background: 'var(--db-blue-bg)', padding: '2px 6px', borderRadius: 8,
+                    }}>
+                      {Math.round(r.score * 100)}%
+                    </span>
+                  </td>
+                  <td style={{ padding: '10px 12px' }}>
+                    <Link href={`/projects/${id}/discoveries/${r.discovery_id}`}
+                      style={{ fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)', textDecoration: 'none' }}>
+                      {r.name}
+                    </Link>
+                  </td>
+                  <td style={{ padding: '10px 12px' }}>
+                    {r.severity && <SeverityBadge severity={r.severity} type="severity" />}
+                  </td>
+                  <td style={{ padding: '10px 12px' }}>
+                    {r.analysis_area && <AreaBadge area={r.analysis_area} />}
+                  </td>
+                  <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--db-text-tertiary)' }}>
+                    {r.discovered_at ? new Date(r.discovered_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {semanticResults && semanticResults.length === 0 && !searching && (
+        <EmptyState icon={<IconBulb size={32} />} title="No results"
+          description={`No insights matched "${search}". Try different keywords.`} />
+      )}
+
+      {/* Client-side filtered results (when no semantic search) */}
+      {!semanticResults && filtered.length > 0 ? (<>
         <div style={{
           background: 'var(--db-bg-white)',
           border: '1px solid var(--db-border-default)',
@@ -197,10 +283,10 @@ export default function InsightsListPage() {
           </table>
         </div>
         <Pagination page={page} totalPages={totalPages} onChange={p => { setPage(p); window.scrollTo(0, 0); }} />
-      </>) : (
+      </>) : !semanticResults ? (
         <EmptyState icon={<IconBulb size={32} />} title="No insights found"
           description={search ? 'No insights match your search.' : 'Run a discovery to see insights.'} />
-      )}
+      ) : null}
     </Shell>
   );
 }
