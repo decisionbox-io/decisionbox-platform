@@ -24,6 +24,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	runRepo := database.NewRunRepository(db)
 	feedbackRepo := database.NewFeedbackRepository(db)
 	pricingRepo := database.NewPricingRepository(db)
+	insightRepo := database.NewInsightRepository(db)
+	recommendationRepo := database.NewRecommendationRepository(db)
 
 	// Clean up stale runs from previous container lifecycle
 	cleaned, err := runRepo.CleanupStaleRuns(context.Background())
@@ -55,6 +57,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	estimate := handler.NewEstimateHandler(projectRepo)
 	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)
 	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
+	insights := handler.NewInsightsHandler(insightRepo)
+	recommendations := handler.NewRecommendationsHandler(recommendationRepo)
 
 	// RBAC helpers — wrap a handler with role-based access control.
 	// With NoAuth (default), all requests get "admin" role — all routes pass.
@@ -117,6 +121,12 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("POST /api/v1/discoveries/{runId}/feedback", withRole(member, feedback.Submit))
 	mux.HandleFunc("GET /api/v1/discoveries/{runId}/feedback", withRole(viewer, feedback.List))
 	mux.HandleFunc("DELETE /api/v1/feedback/{id}", withRole(admin, feedback.Delete))
+
+	// Insights & Recommendations — viewer
+	mux.HandleFunc("GET /api/v1/projects/{id}/insights", withRole(viewer, insights.List))
+	mux.HandleFunc("GET /api/v1/projects/{id}/insights/{insightId}", withRole(viewer, insights.Get))
+	mux.HandleFunc("GET /api/v1/projects/{id}/recommendations", withRole(viewer, recommendations.List))
+	mux.HandleFunc("GET /api/v1/projects/{id}/recommendations/{recId}", withRole(viewer, recommendations.Get))
 
 	// Pricing — viewer for read, admin for update
 	mux.HandleFunc("GET /api/v1/pricing", withRole(viewer, pricing.Get))
