@@ -1057,6 +1057,308 @@ func TestInteg_Pricing_Update(t *testing.T) {
 	}
 }
 
+// --- Insights & Recommendations ---
+
+func TestInteg_Insights_CRUD(t *testing.T) {
+	// Create a project
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "insights-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	// Seed insights directly into DB
+	insightsCol := testDB.Collection("insights")
+	now := time.Now()
+	for i, name := range []string{"High churn at L45", "Session length drop", "Revenue spike"} {
+		insightsCol.InsertOne(context.Background(), map[string]interface{}{
+			"_id":           fmt.Sprintf("ins-%d", i),
+			"project_id":    projectID,
+			"discovery_id":  "disc-1",
+			"name":          name,
+			"description":   "Test insight " + name,
+			"severity":      "high",
+			"analysis_area": "churn",
+			"confidence":    0.85,
+			"created_at":    now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// List insights
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/insights", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list insights status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	insights := r.Data.([]interface{})
+	if len(insights) != 3 {
+		t.Errorf("expected 3 insights, got %d", len(insights))
+	}
+
+	// List with limit
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/insights?limit=2", projectID), nil)
+	r = decodeResponse(t, resp)
+	insights = r.Data.([]interface{})
+	if len(insights) != 2 {
+		t.Errorf("expected 2 insights with limit, got %d", len(insights))
+	}
+
+	// Get single insight
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/insights/ins-0", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("get insight status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	insight := r.Data.(map[string]interface{})
+	if insight["name"] != "High churn at L45" {
+		t.Errorf("insight name = %v", insight["name"])
+	}
+
+	// Get insight from wrong project → 404
+	resp = doRequest(t, "GET", "/api/v1/projects/wrong-project/insights/ins-0", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404 for wrong project, got %d", resp.StatusCode)
+	}
+
+	// Get nonexistent insight → 404
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/insights/nonexistent", projectID), nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404 for nonexistent insight, got %d", resp.StatusCode)
+	}
+}
+
+func TestInteg_Recommendations_CRUD(t *testing.T) {
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "recs-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	recsCol := testDB.Collection("recommendations")
+	now := time.Now()
+	for i, title := range []string{"Add retries", "Reduce difficulty"} {
+		recsCol.InsertOne(context.Background(), map[string]interface{}{
+			"_id":          fmt.Sprintf("rec-%d", i),
+			"project_id":   projectID,
+			"discovery_id": "disc-1",
+			"title":        title,
+			"description":  "Test rec " + title,
+			"priority":     i + 1,
+			"confidence":   0.78,
+			"created_at":   now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// List
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/recommendations", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list recs status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	recs := r.Data.([]interface{})
+	if len(recs) != 2 {
+		t.Errorf("expected 2 recs, got %d", len(recs))
+	}
+
+	// Get single
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/recommendations/rec-0", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("get rec status = %d", resp.StatusCode)
+	}
+
+	// Wrong project → 404
+	resp = doRequest(t, "GET", "/api/v1/projects/wrong/recommendations/rec-0", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404 for wrong project, got %d", resp.StatusCode)
+	}
+}
+
+// --- Search (without Qdrant — graceful degradation) ---
+
+func TestInteg_Search_NoQdrant(t *testing.T) {
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "search-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	// Search without Qdrant configured → 503
+	resp = doRequest(t, "POST", fmt.Sprintf("/api/v1/projects/%s/search", projectID),
+		map[string]interface{}{"query": "test"})
+	if resp.StatusCode != 503 {
+		t.Errorf("expected 503 (no Qdrant), got %d", resp.StatusCode)
+	}
+
+	// Ask without Qdrant → 503
+	resp = doRequest(t, "POST", fmt.Sprintf("/api/v1/projects/%s/ask", projectID),
+		map[string]interface{}{"question": "test"})
+	if resp.StatusCode != 503 {
+		t.Errorf("expected 503 (no Qdrant), got %d", resp.StatusCode)
+	}
+
+	// Cross-project search without Qdrant → 503
+	resp = doRequest(t, "POST", "/api/v1/search",
+		map[string]interface{}{"query": "test", "embedding_model": "test"})
+	if resp.StatusCode != 503 {
+		t.Errorf("expected 503 (no Qdrant), got %d", resp.StatusCode)
+	}
+}
+
+// --- Search History ---
+
+func TestInteg_SearchHistory(t *testing.T) {
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "history-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	// History should be empty initially
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/search/history", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("history status = %d", resp.StatusCode)
+	}
+
+	// Invalid limit → 400
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/search/history?limit=abc", projectID), nil)
+	if resp.StatusCode != 400 {
+		t.Errorf("expected 400 for invalid limit, got %d", resp.StatusCode)
+	}
+}
+
+// --- Ask Sessions ---
+
+func TestInteg_AskSessions(t *testing.T) {
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "session-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	// List sessions (empty)
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/ask/sessions", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list sessions status = %d", resp.StatusCode)
+	}
+
+	// Seed a session directly
+	sessionsCol := testDB.Collection("ask_sessions")
+	sessionsCol.InsertOne(context.Background(), map[string]interface{}{
+		"_id":           "test-session-1",
+		"project_id":    projectID,
+		"user_id":       "anonymous",
+		"title":         "Why is churn high?",
+		"messages":      []interface{}{},
+		"message_count": 0,
+		"created_at":    time.Now(),
+		"updated_at":    time.Now(),
+	})
+
+	// List sessions (1 item)
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/ask/sessions", projectID), nil)
+	r = decodeResponse(t, resp)
+	sessions := r.Data.([]interface{})
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session, got %d", len(sessions))
+	}
+
+	// Get session
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/ask/sessions/test-session-1", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("get session status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	session := r.Data.(map[string]interface{})
+	if session["title"] != "Why is churn high?" {
+		t.Errorf("session title = %v", session["title"])
+	}
+
+	// Get session from wrong project → 404
+	resp = doRequest(t, "GET", "/api/v1/projects/wrong-proj/ask/sessions/test-session-1", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404 for wrong project, got %d", resp.StatusCode)
+	}
+
+	// Delete session
+	resp = doRequest(t, "DELETE", fmt.Sprintf("/api/v1/projects/%s/ask/sessions/test-session-1", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete session status = %d", resp.StatusCode)
+	}
+
+	// Verify deleted
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/ask/sessions/test-session-1", projectID), nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404 after delete, got %d", resp.StatusCode)
+	}
+}
+
+// --- InitDatabase — New Collections ---
+
+func TestInteg_InitDatabase_VectorSearchCollections(t *testing.T) {
+	ctx := context.Background()
+	colNames, err := testDB.Collection("projects").Database().ListCollectionNames(ctx, map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"insights", "recommendations", "search_history", "ask_sessions"} {
+		found := false
+		for _, col := range colNames {
+			if col == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("collection %q not found — InitDatabase should create it", name)
+		}
+	}
+}
+
+func TestInteg_SearchHistory_TTLIndex(t *testing.T) {
+	ctx := context.Background()
+	cursor, err := testDB.Collection("search_history").Indexes().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cursor.Close(ctx)
+
+	var indexes []map[string]interface{}
+	if err := cursor.All(ctx, &indexes); err != nil {
+		t.Fatal(err)
+	}
+
+	foundTTL := false
+	for _, idx := range indexes {
+		if ttl, ok := idx["expireAfterSeconds"]; ok {
+			ttlVal := int(ttl.(int32))
+			expected := 90 * 24 * 60 * 60 // 90 days
+			if ttlVal != expected {
+				t.Errorf("TTL = %d, want %d (90 days)", ttlVal, expected)
+			}
+			foundTTL = true
+		}
+	}
+	if !foundTTL {
+		t.Error("search_history should have a TTL index")
+	}
+}
+
 // --- CORS ---
 
 func TestInteg_CORS(t *testing.T) {
