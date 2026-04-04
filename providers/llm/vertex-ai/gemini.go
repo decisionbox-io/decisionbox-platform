@@ -63,9 +63,17 @@ func (p *VertexAIProvider) geminiChat(ctx context.Context, req gollm.ChatRequest
 	}
 
 	// Vertex AI endpoint for Gemini
+	// Global endpoint has no region prefix: https://aiplatform.googleapis.com/...
+	// Regional endpoints use: https://{location}-aiplatform.googleapis.com/...
+	var host string
+	if p.location == "global" {
+		host = "aiplatform.googleapis.com"
+	} else {
+		host = fmt.Sprintf("%s-aiplatform.googleapis.com", p.location)
+	}
 	endpoint := fmt.Sprintf(
-		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
-		p.location, p.projectID, p.location, req.Model,
+		"https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
+		host, p.projectID, p.location, req.Model,
 	)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
