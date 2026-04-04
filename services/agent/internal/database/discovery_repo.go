@@ -8,6 +8,7 @@ import (
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -35,10 +36,15 @@ func (r *DiscoveryRepository) Save(ctx context.Context, result *models.Discovery
 		"steps":      result.TotalSteps,
 	}).Debug("Saving discovery result to MongoDB")
 
-	_, err := r.collection.InsertOne(ctx, result)
+	res, err := r.collection.InsertOne(ctx, result)
 	if err != nil {
 		applog.WithError(err).Error("Failed to save discovery result")
 		return fmt.Errorf("failed to save discovery result: %w", err)
+	}
+
+	// Populate the ID so downstream consumers (Phase 9) can reference this discovery.
+	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
+		result.ID = oid.Hex()
 	}
 
 	applog.WithField("project_id", result.ProjectID).Info("Discovery result saved")
