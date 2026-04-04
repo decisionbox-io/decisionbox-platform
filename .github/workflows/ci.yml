@@ -98,6 +98,9 @@ jobs:
           (cd providers/warehouse/redshift && go test -coverprofile="$COV/warehouse-redshift.txt" ./...)
           (cd providers/warehouse/postgres && go test -coverprofile="$COV/warehouse-postgres.txt" ./...)
           (cd providers/warehouse/snowflake && go test -coverprofile="$COV/warehouse-snowflake.txt" ./...)
+          (cd providers/embedding/openai && go test -coverprofile="$COV/embedding-openai.txt" ./...)
+          (cd providers/embedding/ollama && go test -coverprofile="$COV/embedding-ollama.txt" ./...)
+          (cd libs/go-common/vectorstore/qdrant && go test -coverprofile="$COV/vectorstore-qdrant.txt" ./...)
           (cd services/agent && go test -coverprofile="$COV/agent.txt" ./...)
           (cd services/api && go test -coverprofile="$COV/api.txt" ./...)
 
@@ -184,6 +187,24 @@ jobs:
         with:
           version: v2.11.3
           working-directory: providers/secrets/azure
+
+      - name: Lint OpenAI embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/openai
+
+      - name: Lint Ollama embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/ollama
+
+      - name: Lint Qdrant vectorstore provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: libs/go-common/vectorstore/qdrant
 
       - name: Lint Agent
         uses: golangci/golangci-lint-action@v7

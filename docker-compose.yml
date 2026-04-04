@@ -28,6 +28,21 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: decisionbox-qdrant
+    ports:
+      - "6333:6333"   # REST API (debug/admin)
+      - "6334:6334"   # gRPC (application traffic)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo -e 'GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && cat <&3 | head -1 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -52,6 +67,18 @@ services:
       # API listen port
       # Values: any available port number
       - PORT=8080
+
+      # ============================================================
+      # QDRANT — Optional (enables vector search)
+      # ============================================================
+
+      # Qdrant gRPC address. If empty, vector search is disabled.
+      # Values: host:port
+      - QDRANT_URL=qdrant:6334
+
+      # Qdrant API key (optional, for secured instances)
+      # Values: any string
+      #- QDRANT_API_KEY=
 
       # ============================================================
       # LLM — Required for discovery (secret)
@@ -266,3 +293,4 @@ services:
 
 volumes:
   mongodb_data:
+  qdrant_data:

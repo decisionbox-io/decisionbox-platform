@@ -49,6 +49,10 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"      // registers "gaming"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"      // registers "social"
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // registers "system-test" (env-gated)
+
+	// Embedding provider registrations
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama" // registers "ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai" // registers "openai"
 )
 
 // Run starts the DecisionBox discovery agent.

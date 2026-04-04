@@ -46,6 +46,10 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/postgres"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"
+
+	// Embedding provider registrations (for /api/v1/providers/embedding listing)
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"
 )
 
 // Run starts the DecisionBox API server.

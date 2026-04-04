@@ -6,6 +6,8 @@ WORKDIR /workspace
 
 # Copy module files first for layer caching
 COPY libs/go-common/go.mod libs/go-common/go.sum libs/go-common/
+COPY providers/embedding/openai/go.mod providers/embedding/openai/
+COPY providers/embedding/ollama/go.mod providers/embedding/ollama/
 COPY providers/llm/claude/go.mod providers/llm/claude/
 COPY providers/llm/openai/go.mod providers/llm/openai/
 COPY providers/llm/ollama/go.mod providers/llm/ollama/go.sum providers/llm/ollama/
