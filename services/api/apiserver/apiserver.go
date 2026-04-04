@@ -202,9 +202,15 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 	}
 
 	if err := provider.HealthCheck(ctx); err != nil {
-		provider.Close()
+		if closeErr := provider.Close(); closeErr != nil {
+			apilog.WithError(closeErr).Warn("Failed to close Qdrant client after health check failure")
+		}
 		return nil, func() {}, fmt.Errorf("qdrant health check failed: %w", err)
 	}
 
-	return provider, func() { provider.Close() }, nil
+	return provider, func() {
+		if err := provider.Close(); err != nil {
+			apilog.WithError(err).Warn("Failed to close Qdrant client")
+		}
+	}, nil
 }

@@ -13,6 +13,7 @@ import (
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 	"github.com/google/uuid"
 )
@@ -150,8 +151,8 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// Fetch full documents from MongoDB and build response
 	items := h.enrichResults(ctx, searchResults)
 
-	// Save search history (fire and forget)
-	go h.saveSearchHistory(context.Background(), projectID, req, items)
+	// Save search history (fire and forget — background context so it survives request cancellation)
+	go h.saveSearchHistory(context.Background(), projectID, req, items) //nolint:gosec // intentional: background context outlives the request
 
 	writeJSON(w, http.StatusOK, searchResponse{
 		Results:        items,
@@ -241,7 +242,9 @@ func (h *SearchHandler) saveSearchHistory(ctx context.Context, projectID string,
 		CreatedAt:      time.Now(),
 	}
 
-	h.historyRepo.Save(ctx, entry)
+	if err := h.historyRepo.Save(ctx, entry); err != nil {
+		apilog.WithError(err).Warn("Failed to save search history")
+	}
 }
 
 // crossSearchRequest is the request body for cross-project search.
@@ -487,8 +490,8 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save ask history
-	go h.saveAskHistory(context.Background(), projectID, req.Question, chatResp.Content, sources, project.LLM.Model, chatResp.Usage.InputTokens+chatResp.Usage.OutputTokens)
+	// Save ask history (fire and forget — background context so it survives request cancellation)
+	go h.saveAskHistory(context.Background(), projectID, req.Question, chatResp.Content, sources, project.LLM.Model, chatResp.Usage.InputTokens+chatResp.Usage.OutputTokens) //nolint:gosec // intentional: background context outlives the request
 
 	writeJSON(w, http.StatusOK, askResponse{
 		Answer:  chatResp.Content,
@@ -539,7 +542,9 @@ func (h *SearchHandler) saveAskHistory(ctx context.Context, projectID, question,
 		CreatedAt:     time.Now(),
 	}
 
-	h.historyRepo.Save(ctx, entry)
+	if err := h.historyRepo.Save(ctx, entry); err != nil {
+		apilog.WithError(err).Warn("Failed to save ask history")
+	}
 }
 
 func truncate(s string, maxLen int) string {

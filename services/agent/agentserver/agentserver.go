@@ -242,12 +242,18 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 	}
 
 	if err := provider.HealthCheck(ctx); err != nil {
-		provider.Close()
+		if closeErr := provider.Close(); closeErr != nil {
+			applog.WithError(closeErr).Warn("Failed to close Qdrant client after health check failure")
+		}
 		return nil, func() {}, fmt.Errorf("qdrant health check failed: %w", err)
 	}
 
 	applog.WithField("url", cfg.Qdrant.URL).Info("Connected to Qdrant")
-	return provider, func() { provider.Close() }, nil
+	return provider, func() {
+		if err := provider.Close(); err != nil {
+			applog.WithError(err).Warn("Failed to close Qdrant client")
+		}
+	}, nil
 }
 
 func initEmbeddingProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (goembedding.Provider, error) {

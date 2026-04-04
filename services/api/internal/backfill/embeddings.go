@@ -36,7 +36,10 @@ func RunBackfillEmbeddings(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Show what would be done without making changes")
 	denormalizeOnly := fs.Bool("denormalize-only", false, "Only populate MongoDB collections without embedding or Qdrant indexing")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
@@ -61,7 +64,11 @@ func RunBackfillEmbeddings(args []string) {
 		fmt.Fprintf(os.Stderr, "MongoDB connection failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer mongoClient.Disconnect(ctx)
+	defer func() {
+		if err := mongoClient.Disconnect(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: MongoDB disconnect failed: %v\n", err)
+		}
+	}()
 
 	fmt.Printf("Connected to MongoDB (%s)\n", mongoDBName)
 
@@ -69,7 +76,7 @@ func RunBackfillEmbeddings(args []string) {
 	secretProvider, err := initSecretProvider(mongoClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Secret provider init failed: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	// Connect to Qdrant (optional for denormalize-only mode)
@@ -79,7 +86,7 @@ func RunBackfillEmbeddings(args []string) {
 		qdrant, err = initQdrant(qdrantURL)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Qdrant connection failed: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		fmt.Printf("Connected to Qdrant (%s)\n", qdrantURL)
 	}
@@ -88,7 +95,7 @@ func RunBackfillEmbeddings(args []string) {
 	projects, err := findProjects(ctx, mongoClient, *projectID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to find projects: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	fmt.Printf("Found %d project(s) to process\n\n", len(projects))
@@ -426,7 +433,9 @@ func initQdrant(url string) (vectorstore.Provider, error) {
 	port := 6334
 	if parts := splitHostPort(host); len(parts) == 2 {
 		host = parts[0]
-		fmt.Sscanf(parts[1], "%d", &port)
+		if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
+			return nil, fmt.Errorf("invalid Qdrant port %q: %w", parts[1], err)
+		}
 	}
 
 	provider, err := qdrantstore.New(qdrantstore.Config{

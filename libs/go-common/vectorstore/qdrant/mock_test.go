@@ -232,11 +232,6 @@ func matchCondition(pt *pb.PointStruct, cond *pb.Condition) bool {
 	return true
 }
 
-// Helper for tests: get the underlying collection name
-func collectionNameForDims(dims int) string {
-	return fmt.Sprintf("decisionbox_%d", dims)
-}
-
 // Helper: check if a string contains a substring (for error messages)
 func containsStr(s, substr string) bool {
 	return strings.Contains(s, substr)

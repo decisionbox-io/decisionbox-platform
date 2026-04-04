@@ -146,9 +146,9 @@ func (p *Provider) Search(ctx context.Context, vector []float64, opts vectorstor
 	}
 
 	name := collectionName(len(vector))
-	limit := uint64(opts.Limit)
-	if limit == 0 {
-		limit = 10
+	limit := uint64(10)
+	if opts.Limit > 0 {
+		limit = uint64(opts.Limit) //nolint:gosec // Limit is a small positive int, no overflow risk
 	}
 
 	query := &pb.QueryPoints{
