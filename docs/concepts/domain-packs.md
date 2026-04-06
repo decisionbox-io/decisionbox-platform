@@ -1,6 +1,6 @@
 # Domain Packs
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 

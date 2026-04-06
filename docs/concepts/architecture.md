@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 DecisionBox has three services, one database, and a plugin system for extensibility. There are no message queues, caches, or event streams — just MongoDB.
 

@@ -1,6 +1,6 @@
 # Development Setup
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 This guide covers setting up a local development environment for contributing to DecisionBox.
 

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 All DecisionBox services are configured via environment variables. This page lists every variable, its default, and which service uses it.
 
@@ -41,6 +41,7 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOMAIN_PACK_PATH` | `/app/domain-packs` | Root directory containing domain pack files. In Docker: baked into image at `/app/domain-packs`. In development: `../../domain-packs` (relative to `services/agent/`). |
+| `DECISIONBOX_ENABLE_SYSTEM_TEST` | `false` | Enable the system-test domain pack. When `true`, the system-test pack appears in the domain pack list for validating warehouse connectivity, schema discovery, and data type mapping. Not an industry pack — intended for testing and onboarding. |
 
 ### Operational
 
