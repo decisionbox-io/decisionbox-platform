@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 )
 
 // RecommendationsHandler handles recommendation listing endpoints.

@@ -6,9 +6,9 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // SeedPricingFromProviders collects default pricing from all registered providers

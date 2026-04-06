@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // FeedbackHandler handles feedback endpoints.

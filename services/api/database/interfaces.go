@@ -5,7 +5,7 @@ import (
 	"time"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // ProjectRepo abstracts project CRUD operations for handler unit testing.

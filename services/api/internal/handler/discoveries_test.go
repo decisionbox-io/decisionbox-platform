@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 func TestDiscoveriesHandler_GetByDate_InvalidDate(t *testing.T) {

@@ -21,7 +21,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 
@@ -151,6 +151,13 @@ func Run() {
 	} else {
 		apilog.Info("Qdrant not configured — vector search disabled")
 	}
+
+	// Make shared infrastructure available to enterprise plugins
+	RegisterServices(&Services{
+		DB:             db,
+		SecretProvider: secretProvider,
+		VectorStore:    qdrantProvider,
+	})
 
 	// HTTP server
 	handler := server.New(db, healthHandler, secretProvider, authProvider, qdrantProvider)

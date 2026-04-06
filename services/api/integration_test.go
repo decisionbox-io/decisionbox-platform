@@ -16,9 +16,9 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 

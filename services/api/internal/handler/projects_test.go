@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 func TestProjectsHandler_Create_InvalidJSON(t *testing.T) {

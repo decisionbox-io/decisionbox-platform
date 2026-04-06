@@ -15,7 +15,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // mockProjectRepoForSearch implements ProjectRepo with embedding config.
