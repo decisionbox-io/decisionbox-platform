@@ -17,6 +17,7 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
@@ -588,8 +589,30 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		SelectedAreas:         selectedAreas,
 	})
 	if err != nil {
+		notify.NotifyAll(ctx, notify.Event{
+			Type:        notify.EventDiscoveryFailed,
+			ProjectID:   projectID,
+			ProjectName: project.Name,
+			RunID:       runID,
+			Error:       err.Error(),
+			Timestamp:   time.Now(),
+		})
 		return fmt.Errorf("discovery run failed: %w", err)
 	}
+
+	// Notify registered channels (async, non-fatal)
+	notify.NotifyAll(ctx, notify.Event{
+		Type:             notify.EventDiscoveryCompleted,
+		ProjectID:        projectID,
+		ProjectName:      project.Name,
+		RunID:            runID,
+		Duration:         result.Duration,
+		InsightsTotal:    len(result.Insights),
+		InsightsCritical: countBySeverity(result.Insights, "critical"),
+		InsightsHigh:     countBySeverity(result.Insights, "high"),
+		Recommendations:  len(result.Recommendations),
+		Timestamp:        time.Now(),
+	})
 
 	applog.WithFields(applog.Fields{
 		"project_id":      projectID,
@@ -601,4 +624,14 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}).Info("Discovery results summary")
 
 	return nil
+}
+
+func countBySeverity(insights []models.Insight, severity string) int {
+	count := 0
+	for _, i := range insights {
+		if i.Severity == severity {
+			count++
+		}
+	}
+	return count
 }
