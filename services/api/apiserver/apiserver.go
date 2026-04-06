@@ -53,8 +53,12 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"
 
 	// Embedding provider registrations (for /api/v1/providers/embedding listing)
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/bedrock"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"
 )
 
 // Run starts the DecisionBox API server.

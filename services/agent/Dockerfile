@@ -7,8 +7,12 @@ WORKDIR /workspace
 # Copy module files first for layer caching
 COPY libs/go-common/go.mod libs/go-common/go.sum libs/go-common/
 COPY libs/go-common/vectorstore/qdrant/go.mod libs/go-common/vectorstore/qdrant/go.sum libs/go-common/vectorstore/qdrant/
-COPY providers/embedding/openai/go.mod providers/embedding/openai/
+COPY providers/embedding/azure-openai/go.mod providers/embedding/azure-openai/
+COPY providers/embedding/bedrock/go.mod providers/embedding/bedrock/go.sum providers/embedding/bedrock/
 COPY providers/embedding/ollama/go.mod providers/embedding/ollama/
+COPY providers/embedding/openai/go.mod providers/embedding/openai/
+COPY providers/embedding/vertex-ai/go.mod providers/embedding/vertex-ai/go.sum providers/embedding/vertex-ai/
+COPY providers/embedding/voyage/go.mod providers/embedding/voyage/
 COPY providers/llm/claude/go.mod providers/llm/claude/
 COPY providers/llm/openai/go.mod providers/llm/openai/
 COPY providers/llm/ollama/go.mod providers/llm/ollama/go.sum providers/llm/ollama/

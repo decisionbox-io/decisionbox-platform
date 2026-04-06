@@ -23,8 +23,12 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
 
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/bedrock"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"
 )
 
 // RunBackfillEmbeddings runs the backfill-embeddings subcommand.

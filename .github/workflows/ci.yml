@@ -98,8 +98,12 @@ jobs:
           (cd providers/warehouse/redshift && go test -coverprofile="$COV/warehouse-redshift.txt" ./...)
           (cd providers/warehouse/postgres && go test -coverprofile="$COV/warehouse-postgres.txt" ./...)
           (cd providers/warehouse/snowflake && go test -coverprofile="$COV/warehouse-snowflake.txt" ./...)
+          (cd providers/embedding/azure-openai && go test -coverprofile="$COV/embedding-azure-openai.txt" ./...)
+          (cd providers/embedding/bedrock && go test -coverprofile="$COV/embedding-bedrock.txt" ./...)
           (cd providers/embedding/openai && go test -coverprofile="$COV/embedding-openai.txt" ./...)
           (cd providers/embedding/ollama && go test -coverprofile="$COV/embedding-ollama.txt" ./...)
+          (cd providers/embedding/vertex-ai && go test -coverprofile="$COV/embedding-vertex-ai.txt" ./...)
+          (cd providers/embedding/voyage && go test -coverprofile="$COV/embedding-voyage.txt" ./...)
           (cd libs/go-common/vectorstore/qdrant && go test -coverprofile="$COV/vectorstore-qdrant.txt" ./...)
           (cd services/agent && go test -coverprofile="$COV/agent.txt" ./...)
           (cd services/api && go test -coverprofile="$COV/api.txt" ./...)
@@ -188,6 +192,18 @@ jobs:
           version: v2.11.3
           working-directory: providers/secrets/azure
 
+      - name: Lint Azure OpenAI embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/azure-openai
+
+      - name: Lint Bedrock embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/bedrock
+
       - name: Lint OpenAI embedding provider
         uses: golangci/golangci-lint-action@v7
         with:
@@ -199,6 +215,18 @@ jobs:
         with:
           version: v2.11.3
           working-directory: providers/embedding/ollama
+
+      - name: Lint Vertex AI embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/vertex-ai
+
+      - name: Lint Voyage embedding provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/embedding/voyage
 
       - name: Lint Qdrant vectorstore provider
         uses: golangci/golangci-lint-action@v7

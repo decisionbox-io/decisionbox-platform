@@ -54,8 +54,12 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // registers "system-test" (env-gated)
 
 	// Embedding provider registrations
-	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama" // registers "ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai" // registers "openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai" // registers "azure-openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/bedrock"      // registers "bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"       // registers "ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"       // registers "openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"    // registers "vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"       // registers "voyage"
 )
 
 // Run starts the DecisionBox discovery agent.
