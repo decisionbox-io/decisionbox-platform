@@ -222,6 +222,13 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 			}
 		}
 
+		// Fall back to vector payload for discovery_id if MongoDB document didn't have it
+		if item.DiscoveryID == "" {
+			if did, ok := sr.Payload["discovery_id"].(string); ok {
+				item.DiscoveryID = did
+			}
+		}
+
 		items = append(items, item)
 	}
 

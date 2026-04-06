@@ -377,7 +377,7 @@ export default function InsightDetailPage() {
                 return (
                   <Link
                     key={sim.id}
-                    href={`/projects/${id}/discoveries/${sim.discovery_id}`}
+                    href={`/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
                     style={{ textDecoration: 'none' }}
                   >
                     <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>

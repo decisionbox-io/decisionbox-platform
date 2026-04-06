@@ -18,6 +18,14 @@ interface DisplayMessage {
   timestamp: string;
 }
 
+function sourceHref(projectId: string, src: SearchResultItem): string {
+  const type = src.type === 'insight' ? 'insights' : 'recommendations';
+  if (src.discovery_id) {
+    return `/projects/${projectId}/discoveries/${src.discovery_id}/${type}/${src.id}`;
+  }
+  return `/projects/${projectId}/${type}`;
+}
+
 export default function AskPage() {
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
@@ -197,7 +205,7 @@ export default function AskPage() {
                       <h4 style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)', marginBottom: 8 }}>Sources</h4>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         {entry.sources.map((src, j) => (
-                          <Link key={src.id} href={`/projects/${id}/discoveries/${src.discovery_id}`}
+                          <Link key={src.id} href={sourceHref(id, src)}
                             style={{
                               display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
                               color: 'var(--db-text-link)', textDecoration: 'none',
@@ -427,7 +435,7 @@ function processChildren(children: React.ReactNode, sources: SearchResultItem[],
               const src = sources[idx];
               if (!src) return <span key={j} className="cite-ref"><span className="cite-badge">{num}</span></span>;
               const name = src.name || src.title || '';
-              const href = `/projects/${src.project_id || projectId}/discoveries/${src.discovery_id}`;
+              const href = sourceHref(src.project_id || projectId, src);
               return (
                 <span key={j} className="cite-ref">
                   <Link href={href} className="cite-badge">{num}</Link>
