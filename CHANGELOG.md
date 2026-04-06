@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-06
+
 ### Added
 
+- **PostgreSQL warehouse provider** — Connect to PostgreSQL databases with username/password or connection string authentication. Supports all common PostgreSQL data types including INTEGER, BIGINT, SERIAL, NUMERIC/DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMPTZ, BYTEA, JSON/JSONB, arrays, UUID, INET, and INTERVAL. Uses `information_schema` for table/column metadata and `pg_class.reltuples` for fast row count estimates. Includes comprehensive SQL fix prompt covering 13 error patterns (LATERAL joins, FILTER clause, recursive CTEs, NOT IN NULL trap, BETWEEN timestamp pitfall, and more). SSL mode configurable (default: `require`).
+- **Databricks warehouse provider** — Connect to Databricks SQL warehouses via Unity Catalog with Personal Access Token or OAuth M2M (service principal) authentication. Uses the official `databricks-sql-go` driver with `NewConnector` structured options. Supports all Databricks data types including TINYINT through BIGINT, FLOAT/DOUBLE, DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMP_NTZ, BINARY, and complex types (STRUCT, ARRAY, MAP, VARIANT). Schema discovery via `catalog.information_schema`. Includes Databricks-specific SQL fix prompt covering QUALIFY, PIVOT/UNPIVOT, explode/explode_outer, Delta time travel, STRUCT/ARRAY/MAP access, and the `yyyy` vs `YYYY` date format pitfall.
+- **Ecommerce domain pack** — Multi-category store analysis with 5 areas: conversion funnel, revenue & pricing, customer retention, product & category performance, and session & browsing behavior. Includes profile schema for store info, business model, fulfillment, marketing, and KPIs.
+- **System-test domain pack** — Diagnostic domain pack for validating warehouse connectivity, schema discovery, data type mapping, and SQL dialect support. Not an industry pack — designed for testing and onboarding. Three categories by depth: quick (~10 queries), standard (~30-50 queries), thorough (~80-100 queries). Env-gated: only available when `DECISIONBOX_ENABLE_SYSTEM_TEST=true`.
 - **Plugin middleware hooks** — Warehouse middleware (`warehouse.RegisterMiddleware()`) allows wrapping warehouse providers with custom logic such as logging, metrics, or access controls. HTTP middleware (`apiserver.RegisterGlobalMiddleware()`) allows wrapping all API requests. Agent startup logic exported as `agentserver.Run()` for custom builds. Context helpers `warehouse.WithProjectID()` / `ProjectIDFromContext()` for project-aware middleware.
 - **Per-model max output token limits** — LLM provider metadata now includes `MaxOutputTokens` (model name → max output tokens). The agent's recommendation generation phase uses `gollm.GetMaxOutputTokens()` to request the model's full output capacity instead of a fixed 8K token limit. Lookup falls back to `_default` key, then to 8192.
-- **Ecommerce domain pack** — Multi-category store analysis with 5 areas: conversion funnel, revenue & pricing, customer retention, product & category performance, and session & browsing behavior. Includes profile schema for store info, business model, fulfillment, marketing, and KPIs.
-- **Databricks warehouse provider** — Connect to Databricks SQL warehouses via Unity Catalog with Personal Access Token or OAuth M2M (service principal) authentication. Uses the official `databricks-sql-go` driver with `NewConnector` structured options. Supports all Databricks data types including TINYINT through BIGINT, FLOAT/DOUBLE, DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMP_NTZ, BINARY, and complex types (STRUCT, ARRAY, MAP, VARIANT). Schema discovery via `catalog.information_schema`. Includes Databricks-specific SQL fix prompt covering QUALIFY, PIVOT/UNPIVOT, explode/explode_outer, Delta time travel, STRUCT/ARRAY/MAP access, and the `yyyy` vs `YYYY` date format pitfall.
-- **PostgreSQL warehouse provider** — Connect to PostgreSQL databases with username/password or connection string authentication. Supports all common PostgreSQL data types including INTEGER, BIGINT, SERIAL, NUMERIC/DECIMAL (converted to float64), BOOLEAN, DATE, TIMESTAMP/TIMESTAMPTZ, BYTEA, JSON/JSONB, arrays, UUID, INET, and INTERVAL. Uses `information_schema` for table/column metadata and `pg_class.reltuples` for fast row count estimates. Includes comprehensive SQL fix prompt covering 13 error patterns (LATERAL joins, FILTER clause, recursive CTEs, NOT IN NULL trap, BETWEEN timestamp pitfall, and more). SSL mode configurable (default: `require`).
-- **System-test domain pack** — Diagnostic domain pack for validating warehouse connectivity, schema discovery, data type mapping, and SQL dialect support. Not an industry pack — designed for testing and onboarding. Three categories by depth: quick (~10 queries), standard (~30-50 queries), thorough (~80-100 queries). Env-gated: only available when `DECISIONBOX_ENABLE_SYSTEM_TEST=true`.
+- **Optional IP restriction for Terraform modules** — GKE, EKS, and AKS control plane access can be restricted to specific CIDR ranges via `allowed_cidr_blocks`. Setup wizard prompts for IP restriction and auto-detects the user's public IP.
+
+### Fixed
+
+- **Insight validation SQL fix parsing** — Fixed SQL fix prompt parsing that could fail when the LLM response contained extra formatting. Added missing schema context to validation queries, improving SQL fix success rate.
 
 ## [0.2.0] - 2026-03-29
 
@@ -100,6 +107,7 @@ Initial public release.
 - 85%+ unit test coverage across all modules
 - Comprehensive documentation (28 files across 6 sections)
 
-[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/decisionbox-io/decisionbox-platform/releases/tag/v0.1.0
