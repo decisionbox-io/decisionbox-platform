@@ -5,8 +5,14 @@ codecov:
 ignore:
   - "services/api/main.go"
   - "services/api/apiserver/apiserver.go"      # startup/wiring — tested by integration tests
+  - "services/api/apiserver/services.go"       # startup/wiring — tested by integration tests
   - "services/agent/main.go"
   - "services/agent/agentserver/agentserver.go" # startup/wiring — tested by integration tests
+  - "services/api/internal/backfill/"           # CLI tool — tested manually
+  - "services/api/database/*_repo.go"           # MongoDB repos — covered by integration tests
+  - "services/api/database/init.go"             # DB init — covered by integration tests
+  - "services/agent/internal/discovery/embed_index_store.go" # store adapter — covered by integration tests
+  - "services/agent/internal/discovery/embed_index_repo.go"  # repo interface — covered by integration tests
 
 coverage:
   status:
