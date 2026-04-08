@@ -308,7 +308,7 @@ func TestInteg_InitDatabase_Collections(t *testing.T) {
 		t.Fatalf("ListCollectionNames error: %v", err)
 	}
 
-	expected := []string{"projects", "discoveries", "project_context", "discovery_debug_logs"}
+	expected := []string{"projects", "discoveries", "project_context", "discovery_debug_logs", "domain_packs"}
 	for _, name := range expected {
 		found := false
 		for _, col := range colNames {
@@ -1046,6 +1046,328 @@ func TestInteg_Pricing_Update(t *testing.T) {
 	custom := claude["custom-model"].(map[string]interface{})
 	if custom["input_per_million"].(float64) != 99.0 {
 		t.Errorf("custom model pricing not saved: %v", custom)
+	}
+}
+
+// --- Domain Pack CRUD ---
+
+func TestInteg_DomainPack_CRUD(t *testing.T) {
+	// List — should have seeded packs
+	resp := doRequest(t, "GET", "/api/v1/domain-packs", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("list status = %d", resp.StatusCode)
+	}
+	r := decodeResponse(t, resp)
+	packs := r.Data.([]interface{})
+	if len(packs) < 3 {
+		t.Errorf("seeded packs = %d, want >= 3 (gaming, ecommerce, social)", len(packs))
+	}
+
+	// Get gaming pack
+	resp = doRequest(t, "GET", "/api/v1/domain-packs/gaming", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("get gaming status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	gaming := r.Data.(map[string]interface{})
+	if gaming["slug"] != "gaming" {
+		t.Errorf("slug = %v", gaming["slug"])
+	}
+	cats := gaming["categories"].([]interface{})
+	if len(cats) != 3 {
+		t.Errorf("gaming categories = %d, want 3", len(cats))
+	}
+
+	// Get not found
+	resp = doRequest(t, "GET", "/api/v1/domain-packs/nonexistent", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("get nonexistent status = %d, want 404", resp.StatusCode)
+	}
+
+	// Create a new pack
+	newPack := map[string]interface{}{
+		"slug":         "test-integ",
+		"name":         "Integration Test Pack",
+		"description":  "Pack for integration testing",
+		"version":      "1.0.0",
+		"is_published": false,
+		"categories": []map[string]interface{}{
+			{"id": "default", "name": "Default", "description": "Default category"},
+		},
+		"prompts": map[string]interface{}{
+			"base": map[string]interface{}{
+				"base_context":    "## Profile\n\n{{PROFILE}}\n\n{{PREVIOUS_CONTEXT}}",
+				"exploration":     "Explore {{DATASET}} using {{SCHEMA_INFO}} {{FILTER}} {{FILTER_CONTEXT}} {{FILTER_RULE}} {{ANALYSIS_AREAS}}",
+				"recommendations": "Recommend based on {{INSIGHTS_DATA}} {{INSIGHTS_SUMMARY}} {{DISCOVERY_DATE}}",
+			},
+			"categories": map[string]interface{}{},
+		},
+		"analysis_areas": map[string]interface{}{
+			"base": []map[string]interface{}{
+				{
+					"id": "test-area", "name": "Test Area", "description": "Test",
+					"keywords": []string{"test"}, "priority": 1,
+					"prompt": "Analyze {{DATASET}} {{TOTAL_QUERIES}} {{QUERY_RESULTS}}",
+				},
+			},
+			"categories": map[string]interface{}{},
+		},
+		"profile_schema": map[string]interface{}{
+			"base":       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			"categories": map[string]interface{}{},
+		},
+	}
+	resp = doRequest(t, "POST", "/api/v1/domain-packs", newPack)
+	if resp.StatusCode != 201 {
+		body := decodeResponse(t, resp)
+		t.Fatalf("create status = %d, error = %v", resp.StatusCode, body.Error)
+	}
+	r = decodeResponse(t, resp)
+	created := r.Data.(map[string]interface{})
+	if created["slug"] != "test-integ" {
+		t.Errorf("created slug = %v", created["slug"])
+	}
+	if created["id"] == nil || created["id"] == "" {
+		t.Error("created pack should have id")
+	}
+
+	// Duplicate create should fail
+	resp = doRequest(t, "POST", "/api/v1/domain-packs", newPack)
+	if resp.StatusCode != 409 {
+		t.Errorf("duplicate create status = %d, want 409", resp.StatusCode)
+	}
+
+	// Update
+	newPack["name"] = "Updated Pack"
+	resp = doRequest(t, "PUT", "/api/v1/domain-packs/test-integ", newPack)
+	if resp.StatusCode != 200 {
+		t.Fatalf("update status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	updated := r.Data.(map[string]interface{})
+	if updated["name"] != "Updated Pack" {
+		t.Errorf("updated name = %v", updated["name"])
+	}
+	if updated["id"] == nil || updated["id"] == "" {
+		t.Error("updated pack should have id preserved")
+	}
+
+	// Export
+	resp = doRequest(t, "GET", "/api/v1/domain-packs/test-integ/export", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("export status = %d", resp.StatusCode)
+	}
+	r = decodeResponse(t, resp)
+	exported := r.Data.(map[string]interface{})
+	if exported["format"] != "decisionbox-domain-pack" {
+		t.Errorf("export format = %v", exported["format"])
+	}
+	exportedPack := exported["pack"].(map[string]interface{})
+	if exportedPack["slug"] != "test-integ" {
+		t.Errorf("exported slug = %v", exportedPack["slug"])
+	}
+
+	// Delete
+	resp = doRequest(t, "DELETE", "/api/v1/domain-packs/test-integ", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete status = %d", resp.StatusCode)
+	}
+
+	// Verify deleted
+	resp = doRequest(t, "GET", "/api/v1/domain-packs/test-integ", nil)
+	if resp.StatusCode != 404 {
+		t.Errorf("after delete status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestInteg_DomainPack_Import(t *testing.T) {
+	portable := map[string]interface{}{
+		"format":         "decisionbox-domain-pack",
+		"format_version": 1,
+		"pack": map[string]interface{}{
+			"slug":         "test-import",
+			"name":         "Imported Pack",
+			"version":      "1.0.0",
+			"is_published": false,
+			"categories": []map[string]interface{}{
+				{"id": "default", "name": "Default", "description": "Default"},
+			},
+			"prompts": map[string]interface{}{
+				"base": map[string]interface{}{
+					"base_context":    "{{PROFILE}} {{PREVIOUS_CONTEXT}}",
+					"exploration":     "{{DATASET}} {{SCHEMA_INFO}} {{FILTER}} {{FILTER_CONTEXT}} {{FILTER_RULE}} {{ANALYSIS_AREAS}}",
+					"recommendations": "{{INSIGHTS_DATA}} {{INSIGHTS_SUMMARY}} {{DISCOVERY_DATE}}",
+				},
+				"categories": map[string]interface{}{},
+			},
+			"analysis_areas": map[string]interface{}{
+				"base": []map[string]interface{}{
+					{"id": "area1", "name": "Area 1", "description": "Test", "keywords": []string{"test"}, "priority": 1, "prompt": "{{DATASET}} {{TOTAL_QUERIES}} {{QUERY_RESULTS}}"},
+				},
+				"categories": map[string]interface{}{},
+			},
+			"profile_schema": map[string]interface{}{
+				"base":       map[string]interface{}{},
+				"categories": map[string]interface{}{},
+			},
+		},
+	}
+
+	resp := doRequest(t, "POST", "/api/v1/domain-packs/import", portable)
+	if resp.StatusCode != 201 {
+		body := decodeResponse(t, resp)
+		t.Fatalf("import status = %d, error = %v", resp.StatusCode, body.Error)
+	}
+	r := decodeResponse(t, resp)
+	imported := r.Data.(map[string]interface{})
+	if imported["slug"] != "test-import" {
+		t.Errorf("imported slug = %v", imported["slug"])
+	}
+
+	// Cleanup
+	doRequest(t, "DELETE", "/api/v1/domain-packs/test-import", nil)
+}
+
+func TestInteg_DomainPack_ValidationErrors(t *testing.T) {
+	// Missing slug
+	resp := doRequest(t, "POST", "/api/v1/domain-packs", map[string]interface{}{
+		"name": "No Slug",
+	})
+	if resp.StatusCode != 400 {
+		t.Errorf("missing slug: status = %d, want 400", resp.StatusCode)
+	}
+
+	// Invalid slug format
+	resp = doRequest(t, "POST", "/api/v1/domain-packs", map[string]interface{}{
+		"slug": "Bad Slug!", "name": "Test",
+	})
+	if resp.StatusCode != 400 {
+		t.Errorf("invalid slug: status = %d, want 400", resp.StatusCode)
+	}
+
+	// Missing categories
+	resp = doRequest(t, "POST", "/api/v1/domain-packs", map[string]interface{}{
+		"slug": "test-valid", "name": "Test", "categories": []interface{}{},
+	})
+	if resp.StatusCode != 400 {
+		t.Errorf("missing categories: status = %d, want 400", resp.StatusCode)
+	}
+
+	// Invalid import format
+	resp = doRequest(t, "POST", "/api/v1/domain-packs/import", map[string]interface{}{
+		"format": "wrong-format",
+	})
+	if resp.StatusCode != 400 {
+		t.Errorf("wrong format: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestInteg_DomainPack_SeededPacksAreReadable(t *testing.T) {
+	// Verify each seeded pack has valid structure
+	for _, slug := range []string{"gaming", "ecommerce", "social"} {
+		resp := doRequest(t, "GET", "/api/v1/domain-packs/"+slug, nil)
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: status = %d", slug, resp.StatusCode)
+			continue
+		}
+		r := decodeResponse(t, resp)
+		pack := r.Data.(map[string]interface{})
+
+		if pack["slug"] != slug {
+			t.Errorf("%s: slug = %v", slug, pack["slug"])
+		}
+		cats := pack["categories"].([]interface{})
+		if len(cats) == 0 {
+			t.Errorf("%s: no categories", slug)
+		}
+
+		prompts := pack["prompts"].(map[string]interface{})
+		base := prompts["base"].(map[string]interface{})
+		if base["exploration"] == nil || base["exploration"] == "" {
+			t.Errorf("%s: empty exploration prompt", slug)
+		}
+		if base["recommendations"] == nil || base["recommendations"] == "" {
+			t.Errorf("%s: empty recommendations prompt", slug)
+		}
+
+		areas := pack["analysis_areas"].(map[string]interface{})
+		baseAreas := areas["base"].([]interface{})
+		if len(baseAreas) == 0 {
+			t.Errorf("%s: no base analysis areas", slug)
+		}
+	}
+}
+
+func TestInteg_DomainPack_ProjectCreationUsesDBPack(t *testing.T) {
+	// Create a project with gaming domain — prompts should be seeded from DB pack
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "dp-seed-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	if resp.StatusCode != 201 {
+		body := decodeResponse(t, resp)
+		t.Fatalf("create project status = %d, error = %v", resp.StatusCode, body.Error)
+	}
+	r := decodeResponse(t, resp)
+	id := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+id, nil)
+
+	// Get prompts — verify they came from the gaming domain pack
+	resp = doRequest(t, "GET", "/api/v1/projects/"+id+"/prompts", nil)
+	r = decodeResponse(t, resp)
+	prompts := r.Data.(map[string]interface{})
+
+	// Should have gaming-specific base areas
+	areas := prompts["analysis_areas"].(map[string]interface{})
+	for _, expected := range []string{"churn", "engagement", "monetization"} {
+		if _, ok := areas[expected]; !ok {
+			t.Errorf("missing base area %q from gaming pack", expected)
+		}
+	}
+	// Should have match3-specific areas
+	for _, expected := range []string{"levels", "boosters"} {
+		if _, ok := areas[expected]; !ok {
+			t.Errorf("missing match3 area %q from gaming pack", expected)
+		}
+	}
+
+	// Exploration should include match3 context (appended)
+	exploration := prompts["exploration"].(string)
+	if len(exploration) < 100 {
+		t.Error("exploration prompt seems too short — may not include category context")
+	}
+}
+
+func TestInteg_InitDatabase_DomainPacksCollection(t *testing.T) {
+	ctx := context.Background()
+
+	// Verify domain_packs collection and indexes exist
+	cursor, err := testDB.Collection("domain_packs").Indexes().List(ctx)
+	if err != nil {
+		t.Fatalf("list indexes error: %v", err)
+	}
+	defer cursor.Close(ctx)
+
+	var indexes []map[string]interface{}
+	if err := cursor.All(ctx, &indexes); err != nil {
+		t.Fatalf("decode indexes error: %v", err)
+	}
+
+	// Should have _id + slug (unique) + is_published + created_at = 4
+	if len(indexes) < 4 {
+		t.Errorf("domain_packs indexes = %d, want >= 4", len(indexes))
+	}
+
+	// Verify slug index is unique
+	for _, idx := range indexes {
+		key := idx["key"].(map[string]interface{})
+		if _, ok := key["slug"]; ok {
+			unique, _ := idx["unique"].(bool)
+			if !unique {
+				t.Error("slug index should be unique")
+			}
+		}
 	}
 }
 
