@@ -335,7 +335,7 @@ jobs:
           COV="${GITHUB_WORKSPACE}/coverage"
           mkdir -p "$COV"
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-integ.txt" .)
-          (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-db-integ.txt" ./internal/database/)
+          (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-db-integ.txt" ./database/)
 
       - name: Secrets provider integration tests
         env:
