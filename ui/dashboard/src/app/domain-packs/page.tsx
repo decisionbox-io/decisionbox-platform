@@ -8,7 +8,6 @@ import Shell from '@/components/layout/AppShell';
 import { api, DomainPack, PortableDomainPack } from '@/lib/api';
 
 export default function DomainPacksPage() {
-  const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [packs, setPacks] = useState<DomainPack[]>([]);
   const [loading, setLoading] = useState(true);
