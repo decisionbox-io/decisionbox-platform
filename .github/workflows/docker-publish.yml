@@ -2,7 +2,7 @@ name: Build & Push Docker Images
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -24,8 +24,31 @@ env:
     type=raw,value=latest,enable={{is_default_branch}}
 
 jobs:
+  gate:
+    name: Check Publish Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+    steps:
+      - name: Determine if publish should proceed
+        id: check
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]] || \
+             [[ "${{ github.ref_type }}" == "tag" ]] || \
+             [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+             [[ "${{ github.event_name }}" == "pull_request" ]] || \
+             echo "$COMMIT_MSG" | grep -qF '[publish-docker]'; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   detect-changes:
     name: Detect Changes
+    needs: [gate]
+    if: needs.gate.outputs.should-run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -89,7 +112,7 @@ jobs:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
     needs: [detect-changes, lint-dockerfiles]
-    if: always() && needs.lint-dockerfiles.result != 'failure'
+    if: always() && needs.detect-changes.result == 'success' && needs.lint-dockerfiles.result != 'failure'
     permissions:
       contents: read
 
