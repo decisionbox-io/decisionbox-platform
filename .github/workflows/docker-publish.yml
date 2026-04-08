@@ -220,11 +220,16 @@ jobs:
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: docker load -i /tmp/${{ matrix.service }}.tar
 
+      - name: Sanitize ref name
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        id: sanitize
+        run: echo "tag=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
       - name: Generate SBOM with Syft
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}:${{ github.ref_name }}
+          image: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}:${{ steps.sanitize.outputs.tag }}
           format: spdx-json
           artifact-name: sbom-${{ matrix.service }}
           output-file: sbom-${{ matrix.service }}.spdx.json
