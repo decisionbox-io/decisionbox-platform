@@ -613,3 +613,213 @@ describe('error handling', () => {
     await expect(api.listProjects()).rejects.toThrow('Cannot connect to DecisionBox API');
   });
 });
+
+// --- Embedding Providers ---
+
+describe('api.listEmbeddingProviders', () => {
+  it('returns embedding provider metadata', async () => {
+    const providers = [{ id: 'openai', name: 'OpenAI', models: [{ id: 'text-embedding-3-small', name: 'Small', dimensions: 1536 }], config_fields: [] }];
+    mockSuccess(providers);
+
+    const result = await api.listEmbeddingProviders();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('openai');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/providers/embedding'),
+      expect.any(Object)
+    );
+  });
+});
+
+// --- Vector Search ---
+
+describe('api.searchInsights', () => {
+  it('sends POST with search request', async () => {
+    const resp = { results: [{ id: 'ins-1', type: 'insight', score: 0.9, name: 'Test', description: '', discovery_id: 'd1', discovered_at: '' }], embedding_model: 'text-embedding-3-small' };
+    mockSuccess(resp);
+
+    const result = await api.searchInsights('proj-1', { query: 'churn', limit: 5 });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].score).toBe(0.9);
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/projects/proj-1/search');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ query: 'churn', limit: 5 });
+  });
+});
+
+describe('api.crossProjectSearch', () => {
+  it('sends POST to global search endpoint', async () => {
+    mockSuccess({ results: [], embedding_model: 'text-embedding-3-small' });
+
+    await api.crossProjectSearch({ query: 'retention', limit: 10 });
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/search');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ query: 'retention' });
+  });
+});
+
+describe('api.askInsights', () => {
+  it('sends POST with question', async () => {
+    const resp = { answer: 'Based on the data...', sources: [], model: 'claude-sonnet', session_id: 'sess-1' };
+    mockSuccess(resp);
+
+    const result = await api.askInsights('proj-1', { question: 'What is the churn rate?', limit: 5 });
+    expect(result.answer).toContain('Based on');
+    expect(result.session_id).toBe('sess-1');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/projects/proj-1/ask');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ question: 'What is the churn rate?' });
+  });
+});
+
+// --- Standalone Insights & Recommendations ---
+
+describe('api.listStandaloneInsights', () => {
+  it('includes limit and offset in URL', async () => {
+    mockSuccess([{ id: 'ins-1', name: 'Test Insight' }]);
+    const result = await api.listStandaloneInsights('proj-1', 10, 5);
+    expect(result).toHaveLength(1);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/insights?limit=10&offset=5'),
+      expect.any(Object)
+    );
+  });
+
+  it('uses default limit and offset', async () => {
+    mockSuccess([]);
+    await api.listStandaloneInsights('proj-1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/insights?limit=50&offset=0'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.getStandaloneInsight', () => {
+  it('includes insight id in URL', async () => {
+    mockSuccess({ id: 'ins-1', name: 'Test Insight' });
+    const result = await api.getStandaloneInsight('proj-1', 'ins-1');
+    expect(result.id).toBe('ins-1');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/insights/ins-1'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.listStandaloneRecommendations', () => {
+  it('includes limit and offset in URL', async () => {
+    mockSuccess([{ id: 'rec-1', title: 'Test Recommendation' }]);
+    const result = await api.listStandaloneRecommendations('proj-1', 20, 0);
+    expect(result).toHaveLength(1);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/recommendations?limit=20&offset=0'),
+      expect.any(Object)
+    );
+  });
+
+  it('uses default limit and offset', async () => {
+    mockSuccess([]);
+    await api.listStandaloneRecommendations('proj-1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/recommendations?limit=50&offset=0'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.getStandaloneRecommendation', () => {
+  it('includes recommendation id in URL', async () => {
+    mockSuccess({ id: 'rec-1', title: 'Test Recommendation' });
+    const result = await api.getStandaloneRecommendation('proj-1', 'rec-1');
+    expect(result.id).toBe('rec-1');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/recommendations/rec-1'),
+      expect.any(Object)
+    );
+  });
+});
+
+// --- Search History ---
+
+describe('api.listSearchHistory', () => {
+  it('includes limit in URL', async () => {
+    mockSuccess([{ query: 'churn', created_at: '2026-04-08T00:00:00Z' }]);
+    const result = await api.listSearchHistory('proj-1', 10);
+    expect(result).toHaveLength(1);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/search/history?limit=10'),
+      expect.any(Object)
+    );
+  });
+
+  it('uses default limit', async () => {
+    mockSuccess([]);
+    await api.listSearchHistory('proj-1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/search/history?limit=20'),
+      expect.any(Object)
+    );
+  });
+});
+
+// --- Ask Sessions ---
+
+describe('api.listAskSessions', () => {
+  it('includes limit in URL', async () => {
+    mockSuccess([{ id: 'sess-1', title: 'First chat', message_count: 3 }]);
+    const result = await api.listAskSessions('proj-1', 30);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('sess-1');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/ask/sessions?limit=30'),
+      expect.any(Object)
+    );
+  });
+
+  it('uses default limit', async () => {
+    mockSuccess([]);
+    await api.listAskSessions('proj-1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/ask/sessions?limit=20'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.getAskSession', () => {
+  it('includes session id in URL', async () => {
+    mockSuccess({ id: 'sess-1', title: 'Chat', messages: [] });
+    const result = await api.getAskSession('proj-1', 'sess-1');
+    expect(result.id).toBe('sess-1');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/ask/sessions/sess-1'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.deleteAskSession', () => {
+  it('sends DELETE', async () => {
+    mockSuccess({ status: 'deleted' });
+    const result = await api.deleteAskSession('proj-1', 'sess-1');
+    expect(result.status).toBe('deleted');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/projects/proj-1/ask/sessions/sess-1');
+    expect(opts.method).toBe('DELETE');
+  });
+});
