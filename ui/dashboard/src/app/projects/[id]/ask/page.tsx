@@ -6,9 +6,10 @@ import { Loader, TextInput, ActionIcon } from '@mantine/core';
 import { IconMessageCircle, IconSend, IconBulb, IconStarFilled, IconHistory, IconClock, IconPlus, IconTrash } from '@tabler/icons-react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Shell from '@/components/layout/AppShell';
-import { SeverityBadge, AreaBadge } from '@/components/common/UIComponents';
-import { api, AskResponse, AskSession, AskSessionMessage, AskSessionSource, SearchResultItem } from '@/lib/api';
+import { SeverityBadge } from '@/components/common/UIComponents';
+import { api, AskSession, SearchResultItem } from '@/lib/api';
 
 interface DisplayMessage {
   question: string;
@@ -359,6 +360,7 @@ function AnswerContent({ answer, sources, projectId }: { answer: string; sources
   return (
     <div className="ask-answer">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           p: ({ children }) => <p style={{ margin: '0 0 12px', lineHeight: 1.7 }}>{processChildren(children, sources, projectId)}</p>,
           li: ({ children }) => <li style={{ marginBottom: 4, lineHeight: 1.6 }}>{processChildren(children, sources, projectId)}</li>,

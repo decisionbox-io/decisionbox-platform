@@ -444,7 +444,11 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, feedba
     }}>
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, flex: 1 }}>{rec.title}</div>
+        <Link href={`/projects/${projectId}/discoveries/${discoveryId}/recommendations/${rec.id || idx}`}
+          style={{ fontSize: 14, fontWeight: 500, flex: 1, color: 'var(--db-text-primary)', textDecoration: 'none' }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--db-text-link)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--db-text-primary)'; }}
+        >{rec.title}</Link>
         <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
           targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
       </div>

@@ -205,11 +205,18 @@ export default function InsightDetailPage() {
               <Title order={4} mb="sm">Related Recommendations</Title>
               <Stack gap="xs">
                 {relatedRecs.map((rec, i) => (
-                  <div key={i} style={{
+                  <Link key={i} href={`/projects/${id}/discoveries/${runId}/recommendations/${rec.id || i}`}
+                    style={{ textDecoration: 'none' }}>
+                  <div style={{
                     border: '1px solid var(--db-border-default)',
                     borderRadius: 'var(--db-radius)',
                     padding: '10px 14px',
-                  }}>
+                    cursor: 'pointer',
+                    transition: 'border-color 120ms ease',
+                  }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <Text size="sm" fw={500}>{rec.title}</Text>
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
@@ -238,6 +245,7 @@ export default function InsightDetailPage() {
                       </div>
                     )}
                   </div>
+                  </Link>
                 ))}
               </Stack>
             </Card>

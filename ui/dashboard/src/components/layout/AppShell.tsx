@@ -235,23 +235,28 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
           padding: '0 24px',
         }}>
           {/* Breadcrumb */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, flex: '1 1 0', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, flex: '1 1 0', minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
             {breadcrumb ? breadcrumb.map((item, i) => (
-              <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {i > 0 && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>/</span>}
+              <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: i === breadcrumb.length - 1 ? 1 : 0 }}>
+                {i > 0 && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', flexShrink: 0 }}>/</span>}
                 {item.href ? (
                   <Link href={item.href} style={{
                     color: 'var(--db-text-tertiary)',
                     textDecoration: 'none',
                     transition: 'color 120ms ease',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: 200,
                   }}
                   onMouseEnter={e => (e.currentTarget.style.color = 'var(--db-text-secondary)')}
                   onMouseLeave={e => (e.currentTarget.style.color = 'var(--db-text-tertiary)')}
+                  title={item.label}
                   >
                     {item.label}
                   </Link>
                 ) : (
-                  <span style={{ fontWeight: 500, color: 'var(--db-text-primary)' }}>{item.label}</span>
+                  <span style={{ fontWeight: 500, color: 'var(--db-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
                 )}
               </span>
             )) : (

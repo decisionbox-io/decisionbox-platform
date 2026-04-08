@@ -10,7 +10,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
-  SectionHeader, Pill, normalizeConfidence,
+  Pill, normalizeConfidence,
 } from '@/components/common/UIComponents';
 import { api, DiscoveryResult, Feedback, Insight, Recommendation, SearchResultItem } from '@/lib/api';
 

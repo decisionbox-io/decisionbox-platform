@@ -69,11 +69,11 @@ export default function RecommendationsListPage() {
 
   // Semantic search with debounce when embedding is configured
   useEffect(() => {
-    if (!hasEmbedding || !search.trim()) {
-      setSemanticResults(null);
-      return;
-    }
     const timer = setTimeout(() => {
+      if (!hasEmbedding || !search.trim()) {
+        setSemanticResults(null);
+        return;
+      }
       setSearching(true);
       api.searchInsights(id, {
         query: search.trim(),
@@ -83,7 +83,7 @@ export default function RecommendationsListPage() {
         .then(resp => setSemanticResults(resp.results))
         .catch(() => setSemanticResults(null))
         .finally(() => setSearching(false));
-    }, 400);
+    }, !hasEmbedding || !search.trim() ? 0 : 400);
     return () => clearTimeout(timer);
   }, [search, hasEmbedding, id]);
 
@@ -143,7 +143,7 @@ export default function RecommendationsListPage() {
       {semanticResults && semanticResults.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {semanticResults.map(r => (
-            <Link key={r.id} href={`/projects/${id}/discoveries/${r.discovery_id}`}
+            <Link key={r.id} href={`/projects/${id}/discoveries/${r.discovery_id}/recommendations/${r.id}`}
               style={{ textDecoration: 'none' }}>
               <div style={{
                 background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
@@ -195,7 +195,11 @@ export default function RecommendationsListPage() {
               }}>
                 {/* Title row */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                  <div style={{ fontSize: 14, fontWeight: 500, flex: 1 }}>{rec.title}</div>
+                  <Link href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}`}
+                    style={{ fontSize: 14, fontWeight: 500, flex: 1, color: 'var(--db-text-primary)', textDecoration: 'none' }}
+                    onMouseEnter={e => { e.currentTarget.style.color = 'var(--db-text-link)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--db-text-primary)'; }}
+                  >{rec.title}</Link>
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={String(idx)}
                     feedback={feedbackMap[`recommendation:${idx}:${rec.discoveryId}`]} />

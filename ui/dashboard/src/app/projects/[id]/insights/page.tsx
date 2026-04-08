@@ -73,11 +73,11 @@ export default function InsightsListPage() {
 
   // Semantic search with debounce when embedding is configured
   useEffect(() => {
-    if (!hasEmbedding || !search.trim()) {
-      setSemanticResults(null);
-      return;
-    }
     const timer = setTimeout(() => {
+      if (!hasEmbedding || !search.trim()) {
+        setSemanticResults(null);
+        return;
+      }
       setSearching(true);
       api.searchInsights(id, {
         query: search.trim(),
@@ -88,7 +88,7 @@ export default function InsightsListPage() {
         .then(resp => setSemanticResults(resp.results))
         .catch(() => setSemanticResults(null))
         .finally(() => setSearching(false));
-    }, 400);
+    }, !hasEmbedding || !search.trim() ? 0 : 400);
     return () => clearTimeout(timer);
   }, [search, hasEmbedding, id, severityFilter]);
 

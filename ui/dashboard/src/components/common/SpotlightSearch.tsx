@@ -30,7 +30,8 @@ export default function SpotlightSearch() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setIsMac(/Mac/.test(navigator.userAgent));
+    const timer = setTimeout(() => setIsMac(/Mac/.test(navigator.userAgent)), 0);
+    return () => clearTimeout(timer);
   }, []);
 
   // Load recent history when dropdown opens
@@ -41,17 +42,17 @@ export default function SpotlightSearch() {
 
   // Debounced semantic search
   useEffect(() => {
-    if (!projectId || !query.trim()) {
-      setResults([]);
-      return;
-    }
     const timer = setTimeout(() => {
+      if (!projectId || !query.trim()) {
+        setResults([]);
+        return;
+      }
       setLoading(true);
       api.searchInsights(projectId, { query: query.trim(), limit: 6 })
         .then(resp => { setResults(resp?.results || []); setSelectedIdx(-1); })
         .catch(() => setResults([]))
         .finally(() => setLoading(false));
-    }, 300);
+    }, !projectId || !query.trim() ? 0 : 300);
     return () => clearTimeout(timer);
   }, [query, projectId]);
 
@@ -170,6 +171,7 @@ export default function SpotlightSearch() {
           disabled={!projectId}
           role="combobox"
           aria-expanded={!!showDropdown}
+          aria-controls="spotlight-results"
           aria-haspopup="listbox"
           aria-autocomplete="list"
           style={{
@@ -211,7 +213,7 @@ export default function SpotlightSearch() {
 
       {/* Dropdown */}
       {showDropdown && (
-        <div role="listbox" style={{
+        <div id="spotlight-results" role="listbox" style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
           width: 460, marginTop: 6,
           background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',

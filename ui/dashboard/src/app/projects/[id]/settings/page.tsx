@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import {
   ActionIcon, Alert, Button, Checkbox, CloseButton, Group, Loader, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
@@ -49,7 +49,42 @@ export default function ProjectSettingsPage() {
   const [embModel, setEmbModel] = useState('');
   const [embApiKey, setEmbApiKey] = useState('');
   const [savingEmbKey, setSavingEmbKey] = useState(false);
-  const [embIndexedCount, setEmbIndexedCount] = useState(0);
+
+  // Warn on browser close/refresh with unsaved changes
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
+
+  // Intercept client-side navigation when dirty
+  const router = useRouter();
+  const guardedNavigate = useCallback((href: string) => {
+    if (!dirty || window.confirm('You have unsaved changes. Leave without saving?')) {
+      router.push(href);
+    }
+  }, [dirty, router]);
+
+  // Intercept sidebar/breadcrumb link clicks when dirty
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement).closest('a[href]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('http') || href.startsWith('#')) return;
+      // Allow clicks within the same settings page
+      if (href.includes('/settings')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      guardedNavigate(href);
+    };
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [dirty, guardedNavigate]);
 
   useEffect(() => {
     Promise.all([
@@ -80,10 +115,6 @@ export default function ProjectSettingsPage() {
         setLlmConfig(proj.llm.config || {});
         setEmbProvider(proj.embedding?.provider || '');
         setEmbModel(proj.embedding?.model || '');
-        // Count indexed insights for re-index warning
-        if (proj.embedding?.provider) {
-          api.listStandaloneInsights(proj.id || id, 1, 0).then(ins => setEmbIndexedCount(ins?.length || 0)).catch(() => {});
-        }
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -183,8 +214,8 @@ export default function ProjectSettingsPage() {
         {/* General */}
         <Tabs.Panel value="general">
           <SettingsSection>
-            <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} />
-            <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <TextInput label="Project Name" required value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} />
+            <Textarea label="Description" value={description} onChange={(e) => { setDescription(e.target.value); setDirty(true); }} />
             <Group>
               <TextInput label="Domain" value={project.domain} disabled style={{ flex: 1 }} />
               <TextInput label="Category" value={project.category} disabled style={{ flex: 1 }} />
@@ -465,13 +496,13 @@ export default function ProjectSettingsPage() {
         <Tabs.Panel value="schedule">
           <SettingsSection>
             <Switch label="Enable automatic discovery" checked={scheduleEnabled}
-              onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
+              onChange={(e) => { setScheduleEnabled(e.currentTarget.checked); setDirty(true); }} />
             {scheduleEnabled && (
               <TextInput label="Cron Expression" value={scheduleCron}
-                onChange={(e) => setScheduleCron(e.target.value)} description="e.g., 0 2 * * * (daily at 2 AM)" />
+                onChange={(e) => { setScheduleCron(e.target.value); setDirty(true); }} description="e.g., 0 2 * * * (daily at 2 AM)" />
             )}
             <NumberInput label="Max Exploration Steps" value={maxSteps}
-              onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
+              onChange={(v) => { setMaxSteps(Number(v) || 100); setDirty(true); }} min={10} max={500} />
           </SettingsSection>
         </Tabs.Panel>
 

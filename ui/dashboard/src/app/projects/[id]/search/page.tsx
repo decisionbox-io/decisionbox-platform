@@ -44,7 +44,7 @@ export default function SearchPage() {
       setEmbeddingModel(resp.embedding_model);
       // Refresh history
       api.listSearchHistory(id, 10).then(h => setHistory(h || [])).catch(() => {});
-    } catch (err) {
+    } catch {
       setResults([]);
       setEmbeddingModel('');
     } finally {
