@@ -529,7 +529,7 @@ func TestProjectsHandler_Create_SeedsFromDomainPack(t *testing.T) {
 	for id := range projectRepo.projects {
 		storedID = id
 	}
-	stored, _ := projectRepo.GetByID(nil, storedID)
+	stored, _ := projectRepo.GetByID(context.Background(), storedID)
 	if stored.Prompts == nil {
 		t.Fatal("prompts should be seeded from domain pack")
 	}

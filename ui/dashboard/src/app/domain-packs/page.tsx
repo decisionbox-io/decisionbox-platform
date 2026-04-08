@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Modal, SimpleGrid, Stack, Text, Textarea, Title } from '@mantine/core';
 import { IconAlertCircle, IconDownload, IconPackages, IconPlus, IconUpload } from '@tabler/icons-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import Shell from '@/components/layout/AppShell';
 import { api, DomainPack, PortableDomainPack } from '@/lib/api';
 

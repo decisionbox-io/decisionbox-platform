@@ -12,7 +12,7 @@ import {
   IconAlertCircle, IconArrowLeft, IconCheck, IconPlus, IconTrash,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, DomainPack, PackAnalysisArea, PackCategory } from '@/lib/api';
+import { api, DomainPack, PackAnalysisArea } from '@/lib/api';
 
 const MDEditor = dynamic(() => import('@uiw/react-md-editor'), { ssr: false });
 
