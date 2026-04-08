@@ -187,6 +187,13 @@ func (p *BigQueryProvider) ListTables(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bigquery: failed to list tables: %w", err)
 		}
+		md, err := table.Metadata(ctx)
+		if err != nil {
+			continue
+		}
+		if md.Type == bq.ViewTable || md.Type == bq.MaterializedView {
+			continue
+		}
 		tables = append(tables, table.TableID)
 	}
 	return tables, nil
@@ -229,6 +236,13 @@ func (p *BigQueryProvider) ListTablesInDataset(ctx context.Context, dataset stri
 		}
 		if err != nil {
 			return nil, fmt.Errorf("bigquery: failed to list tables in %s: %w", dataset, err)
+		}
+		md, err := table.Metadata(ctx)
+		if err != nil {
+			continue
+		}
+		if md.Type == bq.ViewTable || md.Type == bq.MaterializedView {
+			continue
 		}
 		tables = append(tables, table.TableID)
 	}
