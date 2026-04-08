@@ -105,23 +105,21 @@ func (h *EstimateHandler) Estimate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, estimate)
 }
 
-// extractJSONObject finds the first top-level JSON object in mixed output.
+// extractJSONObject finds the agent result JSON in mixed output.
+// K8s pod logs mix stdout (result) with stderr (structured log lines).
+// We scan from the end and return the first valid JSON object that is
+// not a log line (log lines always contain a "severity" key).
 func extractJSONObject(data []byte) []byte {
-	s := string(data)
-	start := strings.Index(s, "{")
-	if start == -1 {
-		return nil
-	}
-	// Find matching closing brace
-	depth := 0
-	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return []byte(s[start : i+1])
+	lines := strings.Split(string(data), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(line), &obj) == nil {
+			if _, ok := obj["severity"]; !ok {
+				return []byte(line)
 			}
 		}
 	}

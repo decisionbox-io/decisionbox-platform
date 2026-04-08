@@ -95,6 +95,33 @@ func TestExtractJSONObject_LeadingGarbage(t *testing.T) {
 	}
 }
 
+func TestExtractJSONObject_K8sMixedStdoutStderr(t *testing.T) {
+	// K8s pod logs mix stderr (structured log lines with "severity") and stdout (result).
+	input := []byte(`{"severity":"INFO","timestamp":"2026-04-08T21:33:10.123Z","caller":"log/compat.go:75","message":"Connected to MongoDB","service":"decisionbox-agent"}
+{"severity":"INFO","timestamp":"2026-04-08T21:33:10.456Z","caller":"log/compat.go:75","message":"Secret provider initialized","service":"decisionbox-agent","provider":"aws"}
+{"severity":"INFO","timestamp":"2026-04-08T21:33:10.789Z","caller":"log/compat.go:75","message":"Warehouse provider initialized","service":"decisionbox-agent","provider":"bigquery"}
+{"success":true,"provider":"bigquery","datasets":["analytics"]}`)
+
+	result := extractJSONObject(input)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if string(result) != `{"success":true,"provider":"bigquery","datasets":["analytics"]}` {
+		t.Errorf("got %q", string(result))
+	}
+}
+
+func TestExtractJSONObject_K8sLogLinesOnly(t *testing.T) {
+	// All lines are log lines — no agent result present.
+	input := []byte(`{"severity":"INFO","timestamp":"2026-04-08T21:33:10.123Z","message":"Starting"}
+{"severity":"ERROR","timestamp":"2026-04-08T21:33:10.456Z","message":"Failed"}`)
+
+	result := extractJSONObject(input)
+	if result != nil {
+		t.Errorf("expected nil for log-only output, got %q", string(result))
+	}
+}
+
 func TestNewEstimateHandler(t *testing.T) {
 	h := NewEstimateHandler(nil)
 	if h == nil {
