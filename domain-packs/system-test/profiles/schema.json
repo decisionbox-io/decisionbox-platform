@@ -1,13 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "System Test Profile",
-  "description": "Minimal profile for system validation runs. Provide optional notes about what you are testing.",
+  "description": "Profile for system validation runs. Provide context about what you are testing.",
   "type": "object",
   "properties": {
-    "test_notes": {
-      "type": "string",
-      "title": "Test Notes",
-      "description": "Optional context: what you are testing, known issues to watch for, specific tables or types to focus on"
+    "test_config": {
+      "type": "object",
+      "title": "Test Configuration",
+      "properties": {
+        "test_notes": {
+          "type": "string",
+          "title": "Test Notes",
+          "description": "What you are testing, known issues to watch for, specific tables or types to focus on"
+        },
+        "focus_areas": {
+          "type": "array",
+          "title": "Focus Areas",
+          "items": {
+            "type": "string",
+            "enum": ["connectivity", "schema_discovery", "type_mapping", "null_handling", "complex_queries", "edge_cases"]
+          }
+        },
+        "expected_tables": {
+          "type": "integer",
+          "title": "Expected Table Count",
+          "description": "How many tables you expect the warehouse to have (0 = unknown)"
+        }
+      }
     }
   }
 }
