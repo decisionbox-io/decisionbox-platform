@@ -21,15 +21,18 @@ Ingress
 API Service (Go, port 8080, ClusterIP)
   ├── spawns Agent as K8s Jobs
   ├── connects to MongoDB
+  ├── connects to Qdrant (optional, for vector search)
   ├── manages secrets (AES-256 or cloud provider)
   └── reads domain pack prompts from /app/domain-packs/
 
 Agent Jobs (Go, spawned per discovery run)
   ├── connects to MongoDB
+  ├── connects to Qdrant (optional, for indexing)
   ├── calls LLM provider
   └── queries data warehouse
 
 MongoDB (standalone or Atlas)
+Qdrant (optional, for vector search)
 ```
 
 The API is internal only (`ClusterIP`) — never exposed to the internet. The dashboard is the only public-facing service and proxies all API requests server-side.
@@ -184,6 +187,20 @@ env:
 ```
 
 The chart includes RBAC rules that grant the API service account permission to create and manage Jobs in its namespace.
+
+### Vector Search (Qdrant)
+
+DecisionBox uses Qdrant for semantic search and discovery. To enable it:
+
+```bash
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
+  --set qdrant.enabled=true \
+  --set qdrant.url="qdrant-service:6334" \
+  --set qdrant.apiKey="optional-secret-key" \
+  -n decisionbox
+```
+
+If `qdrant.apiKey` is provided, the chart automatically creates a K8s Secret and injects it as `QDRANT_API_KEY`. For production, it's recommended to leave `qdrant.apiKey` empty and instead store it in your `extraEnvFrom` secret.
 
 ### Ingress
 

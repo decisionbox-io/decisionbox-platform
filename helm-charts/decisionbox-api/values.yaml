@@ -151,3 +151,19 @@ mongodb:
     databases: []
   persistence:
     size: 1Gi
+
+# ---------------------------------------------------------------------------
+# Vector Search (Qdrant)
+# ---------------------------------------------------------------------------
+qdrant:
+  enabled: false
+  # If url is empty, it will be auto-computed based on the subchart service name.
+  url: ""
+  # If apiKey is provided, a Secret will be created.
+  apiKey: ""
+
+  # Subchart overrides (from qdrant-helm)
+  # We leave these minimal to avoid "duplicate field" errors in Qdrant config
+  persistence:
+    enabled: true
+    size: 2Gi

@@ -8,7 +8,7 @@ set -euo pipefail
 # Usage: ./setup.sh [--help] [--dry-run]
 # ══════════════════════════════════════════════════════════════════════════════
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_START=$(date +%s)
 DRY_RUN=false
@@ -16,7 +16,7 @@ RESUME=false
 DESTROY=false
 SPINNER_PID=""
 GO_BACK=false
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 INCLUDE_FILES=()
 
 # Multi-deployment support: project name, environment, and base directory
@@ -228,6 +228,20 @@ prompt() {
   fi
 }
 
+# Returns 0 on success. If empty, var is set to empty string.
+# Sets GO_BACK=true and returns 1 if user types "back"
+prompt_optional() {
+  local var_name="$1" prompt_text="$2" default="${3:-}"
+  GO_BACK=false
+  local back_hint="${DIM}(back)${NC}"
+  local display_default=""
+  [[ -n "$default" ]] && display_default=" ${DIM}[${default}]${NC}"
+
+  read -rp "$(echo -e "${CYAN}?${NC} ${prompt_text}${display_default} ${back_hint}: ")" value
+  if [[ "$value" == "back" ]]; then GO_BACK=true; return 1; fi
+  printf -v "$var_name" '%s' "${value:-$default}"
+}
+
 prompt_choice() {
   local var_name="$1" prompt_text="$2" default="${3:-}" options="$4"
   while true; do
@@ -433,28 +447,48 @@ resolve_deployment_dir() {
   fi
 
   if [[ -z "$CLOUD" ]]; then
+    # Try nested structure: {base}/{project}/{cloud}/{env}/
     local gcp_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/gcp/${ENVIRONMENT}/terraform.tfvars"
     local aws_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/aws/${ENVIRONMENT}/terraform.tfvars"
     local azure_tfvars="${DEPLOY_BASE}/${PROJECT_NAME}/azure/${ENVIRONMENT}/terraform.tfvars"
 
+    # Try flat structure: {base}/{cloud}/{env}/ (if project is empty or defaulted)
+    local gcp_tfvars_flat="${DEPLOY_BASE}/gcp/${ENVIRONMENT}/terraform.tfvars"
+    local aws_tfvars_flat="${DEPLOY_BASE}/aws/${ENVIRONMENT}/terraform.tfvars"
+    local azure_tfvars_flat="${DEPLOY_BASE}/azure/${ENVIRONMENT}/terraform.tfvars"
+
     local found_providers=()
-    [[ -f "$gcp_tfvars" ]] && found_providers+=("gcp")
-    [[ -f "$aws_tfvars" ]] && found_providers+=("aws")
-    [[ -f "$azure_tfvars" ]] && found_providers+=("azure")
+    local found_paths=()
+
+    # Check nested first
+    [[ -f "$gcp_tfvars" ]] && { found_providers+=("gcp"); found_paths+=("$gcp_tfvars"); }
+    [[ -f "$aws_tfvars" ]] && { found_providers+=("aws"); found_paths+=("$aws_tfvars"); }
+    [[ -f "$azure_tfvars" ]] && { found_providers+=("azure"); found_paths+=("$azure_tfvars"); }
+
+    # Check flat if none found nested
+    if [[ ${#found_providers[@]} -eq 0 ]]; then
+      [[ -f "$gcp_tfvars_flat" ]] && { found_providers+=("gcp"); found_paths+=("$gcp_tfvars_flat"); }
+      [[ -f "$aws_tfvars_flat" ]] && { found_providers+=("aws"); found_paths+=("$aws_tfvars_flat"); }
+      [[ -f "$azure_tfvars_flat" ]] && { found_providers+=("azure"); found_paths+=("$azure_tfvars_flat"); }
+    fi
 
     if [[ ${#found_providers[@]} -eq 0 ]]; then
-      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws,azure}/${ENVIRONMENT}/."
-      dim "Specify --project, --env, and --base if using a custom location."
+      err "No terraform.tfvars found at ${DEPLOY_BASE}/${PROJECT_NAME}/{gcp,aws,azure}/${ENVIRONMENT}/"
+      dim "or at ${DEPLOY_BASE}/{gcp,aws,azure}/${ENVIRONMENT}/"
       exit 1
     elif [[ ${#found_providers[@]} -eq 1 ]]; then
       CLOUD="${found_providers[0]}"
+      TFVARS_FILE="${found_paths[0]}"
+      TF_DIR=$(dirname "$TFVARS_FILE")
     else
       local idx=1
       local valid_choices=""
-      for p in "${found_providers[@]}"; do
+      for i in "${!found_providers[@]}"; do
+        local p="${found_providers[$i]}"
+        local path="${found_paths[$i]}"
         local p_upper
         p_upper=$(echo "$p" | tr '[:lower:]' '[:upper:]')
-        echo -e "  ${BOLD}${idx})${NC} ${p_upper}  — ${DEPLOY_BASE}/${PROJECT_NAME}/${p}/${ENVIRONMENT}/terraform.tfvars"
+        echo -e "  ${BOLD}${idx})${NC} ${p_upper}  — ${path}"
         valid_choices+="${idx} ${p} "
         idx=$((idx + 1))
       done
@@ -462,15 +496,35 @@ resolve_deployment_dir() {
       local cloud_choice
       prompt_choice cloud_choice "Which deployment to ${action_label}?" "1" "$valid_choices"
       if [[ "$cloud_choice" =~ ^[0-9]+$ ]]; then
-        CLOUD="${found_providers[$((cloud_choice - 1))]}"
+        local choice_idx=$((cloud_choice - 1))
+        CLOUD="${found_providers[$choice_idx]}"
+        TFVARS_FILE="${found_paths[$choice_idx]}"
+        TF_DIR=$(dirname "$TFVARS_FILE")
       else
         CLOUD="$cloud_choice"
+        # Find which one matched the name string
+        for i in "${!found_providers[@]}"; do
+          if [[ "${found_providers[$i]}" == "$CLOUD" ]]; then
+            TFVARS_FILE="${found_paths[$i]}"
+            TF_DIR=$(dirname "$TFVARS_FILE")
+            break
+          fi
+        done
       fi
     fi
   fi
 
-  TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
-  TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+  # If TF_DIR wasn't set by the logic above (e.g. if CLOUD was provided via CLI), set it now
+  if [[ -z "${TF_DIR:-}" ]]; then
+    # Try nested first
+    if [[ -f "${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}/terraform.tfvars" ]]; then
+      TF_DIR="${DEPLOY_BASE}/${PROJECT_NAME}/${CLOUD}/${ENVIRONMENT}"
+    else
+      # Fallback to flat
+      TF_DIR="${DEPLOY_BASE}/${CLOUD}/${ENVIRONMENT}"
+    fi
+    TFVARS_FILE="${TF_DIR}/terraform.tfvars"
+  fi
 
   if [[ ! -f "$TFVARS_FILE" ]]; then
     err "No terraform.tfvars found at ${TFVARS_FILE}"
@@ -725,7 +779,7 @@ do_step_5_provider_config() {
     prompt_ip_restriction || return 1
 
   elif [[ "$CLOUD" == "azure" ]]; then
-    step_header 4 "$TOTAL_STEPS" "Azure Configuration"
+    step_header 5 "$TOTAL_STEPS" "Azure Configuration"
 
     TF_DIR="${SCRIPT_DIR}/azure/prod"
 
@@ -754,9 +808,31 @@ do_step_5_provider_config() {
   fi
 }
 
-do_step_6_authentication() {
+do_step_6_vector_search() {
+  step_header 6 "$TOTAL_STEPS" "Vector Search (Qdrant)"
+
+  info "Vector Search enables semantic search and discovery across your data."
+  dim "This requires a Qdrant instance. You can skip this and enable it later."
+  echo ""
+
+  prompt_boolean ENABLE_QDRANT "Enable Vector Search (Qdrant)?" "${ENABLE_QDRANT:-false}" || return 1
+
+  if [[ "$ENABLE_QDRANT" == "true" ]]; then
+    # Default points to the likely Helm service name (release-api-qdrant)
+    local qdrant_default="decisionbox-api-qdrant:6334"
+    prompt QDRANT_URL "Qdrant gRPC URL" "${QDRANT_URL:-$qdrant_default}" || return 1
+    prompt_optional QDRANT_API_KEY "Qdrant API Key (optional)" "${QDRANT_API_KEY:-}" || return 1
+    ok "Qdrant configured: ${BOLD}${QDRANT_URL}${NC}"
+  else
+    QDRANT_URL=""
+    QDRANT_API_KEY=""
+    ok "Vector Search disabled"
+  fi
+}
+
+do_step_7_authentication() {
   if [[ "$CLOUD" == "azure" ]]; then
-    step_header 6 "$TOTAL_STEPS" "Azure Authentication"
+    step_header 7 "$TOTAL_STEPS" "Azure Authentication"
 
     info "Terraform needs Azure credentials. Choose how to authenticate:"
     echo ""
@@ -824,7 +900,7 @@ do_step_6_authentication() {
   fi
 
   if [[ "$CLOUD" == "aws" ]]; then
-    step_header 6 "$TOTAL_STEPS" "AWS Authentication"
+    step_header 7 "$TOTAL_STEPS" "AWS Authentication"
 
     info "Terraform needs AWS credentials. Choose how to authenticate:"
     echo ""
@@ -872,7 +948,7 @@ do_step_6_authentication() {
 
   if [[ "$CLOUD" != "gcp" ]]; then return 0; fi
 
-  step_header 6 "$TOTAL_STEPS" "GCP Authentication"
+  step_header 7 "$TOTAL_STEPS" "GCP Authentication"
 
   info "Terraform needs GCP credentials. Choose how to authenticate:"
   echo ""
@@ -954,8 +1030,8 @@ do_step_6_authentication() {
   fi
 }
 
-do_step_7_terraform_state() {
-  step_header 7 "$TOTAL_STEPS" "Terraform State"
+do_step_8_terraform_state() {
+  step_header 8 "$TOTAL_STEPS" "Terraform State"
 
   if [[ "$CLOUD" == "gcp" ]]; then
     info "Terraform state must be stored in a GCS bucket for persistence and team collaboration."
@@ -1065,8 +1141,8 @@ do_step_7_terraform_state() {
   fi
 }
 
-do_step_8_review() {
-  step_header 8 "$TOTAL_STEPS" "Review Configuration"
+do_step_9_review() {
+  step_header 9 "$TOTAL_STEPS" "Review Configuration"
 
   echo -e "  ${BOLD}Project:${NC}            ${PROJECT_NAME}"
   echo -e "  ${BOLD}Environment:${NC}        ${ENVIRONMENT}"
@@ -1074,6 +1150,11 @@ do_step_8_review() {
   echo -e "  ${BOLD}Cloud:${NC}              $(echo "$CLOUD" | tr '[:lower:]' '[:upper:]')"
   echo -e "  ${BOLD}Secret namespace:${NC}   ${SECRET_NS}"
   echo -e "  ${BOLD}Cloud secrets:${NC}      ${ENABLE_SECRETS}"
+  if [[ "${ENABLE_QDRANT:-false}" == "true" ]]; then
+    echo -e "  ${BOLD}Vector Search:${NC}      ${GREEN}enabled${NC} (${QDRANT_URL})"
+  else
+    echo -e "  ${BOLD}Vector Search:${NC}      ${DIM}disabled${NC}"
+  fi
   echo ""
 
   if [[ "$CLOUD" == "gcp" ]]; then
@@ -1134,8 +1215,8 @@ do_step_8_review() {
   fi
 }
 
-do_step_9_generate() {
-  step_header 9 "$TOTAL_STEPS" "Generate Config Files"
+do_step_10_generate() {
+  step_header 10 "$TOTAL_STEPS" "Generate Config Files"
 
   # ─── Scaffold deployment directory if it doesn't exist ───────────
   if [[ ! -d "$TF_DIR" ]]; then
@@ -1244,6 +1325,11 @@ env:
   SECRET_NAMESPACE: "${SECRET_NS}"
   SECRET_GCP_PROJECT_ID: "${PROJECT_ID}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     else
       cat > "$HELM_VALUES" <<EOF
@@ -1264,6 +1350,11 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     fi
 
@@ -1332,6 +1423,11 @@ env:
   SECRET_NAMESPACE: "${SECRET_NS}"
   SECRET_AWS_REGION: "${REGION}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     else
       cat > "$HELM_VALUES" <<EOF
@@ -1354,6 +1450,11 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     fi
 
@@ -1430,6 +1531,11 @@ env:
   SECRET_PROVIDER: "azure"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     else
       cat > "$HELM_VALUES" <<EOF
@@ -1450,6 +1556,11 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+
+qdrant:
+  enabled: ${ENABLE_QDRANT:-false}
+  url: "${QDRANT_URL:-}"
+  apiKey: "${QDRANT_API_KEY:-}"
 EOF
     fi
 
@@ -1494,16 +1605,23 @@ build_helm_deps() {
     spinner_stop
     ok "Added Bitnami Helm repo"
   fi
+  # Add Qdrant repo if not present
+  if ! helm repo list 2>/dev/null | grep -q qdrant; then
+    spinner_start "Adding Qdrant Helm repo..."
+    helm repo add qdrant https://qdrant.github.io/qdrant-helm > /dev/null 2>&1
+    spinner_stop
+    ok "Added Qdrant Helm repo"
+  fi
 
-  spinner_start "Building Helm chart dependencies..."
-  HELM_DEP_OUTPUT=$(helm dependency build "$chart_dir" 2>&1) && HELM_DEP_RC=0 || HELM_DEP_RC=$?
+  spinner_start "Updating Helm chart dependencies..."
+  HELM_DEP_OUTPUT=$(helm dependency update "$chart_dir" 2>&1) && HELM_DEP_RC=0 || HELM_DEP_RC=$?
   spinner_stop
   if [[ "$HELM_DEP_RC" -ne 0 ]]; then
-    err "Helm dependency build failed:"
+    err "Helm dependency update failed:"
     echo "$HELM_DEP_OUTPUT"
     exit 1
   fi
-  ok "Chart dependencies ready"
+  ok "Chart dependencies updated"
 }
 
 do_helm_deploy() {
@@ -1693,8 +1811,8 @@ wait_for_ingress_and_show_result() {
   fi
 }
 
-do_step_10_deploy() {
-  step_header 10 "$TOTAL_STEPS" "Terraform & Deploy"
+do_step_11_deploy() {
+  step_header 11 "$TOTAL_STEPS" "Terraform & Deploy"
 
   cd "$TF_DIR"
   dim "Working directory: ${TF_DIR}"
@@ -1804,8 +1922,15 @@ do_step_10_deploy() {
       if [[ "$ENABLE_KEY_VAULT" == "true" ]]; then
         KEY_VAULT_URI=$(terraform -chdir="$TF_DIR" output -raw key_vault_uri 2>/dev/null || echo "")
         if [[ -n "$KEY_VAULT_URI" ]]; then
-          echo "  SECRET_AZURE_VAULT_URL: \"${KEY_VAULT_URI}\"" >> "$HELM_VALUES"
-          ok "Added Key Vault URI to Helm values"
+          # Insert into the env: block (after SECRET_NAMESPACE)
+          sed -i.bak "/SECRET_NAMESPACE: \"${SECRET_NS}\"/a\\
+  SECRET_AZURE_VAULT_URL: \"${KEY_VAULT_URI}\"
+" "$HELM_VALUES" 2>/dev/null || \
+          sed -i '' "/SECRET_NAMESPACE: \"${SECRET_NS}\"/a\\
+  SECRET_AZURE_VAULT_URL: \"${KEY_VAULT_URI}\"
+" "$HELM_VALUES"
+          rm -f "${HELM_VALUES}.bak"
+          ok "Added Key Vault URI to Helm values env block"
         fi
       fi
     fi
@@ -2343,8 +2468,9 @@ NAV_STEPS=(
   do_step_3_cloud_provider
   do_step_4_secrets
   do_step_5_provider_config
-  do_step_6_authentication
-  do_step_7_terraform_state
+  do_step_6_vector_search
+  do_step_7_authentication
+  do_step_8_terraform_state
 )
 
 # Insert plugin steps before review
@@ -2352,7 +2478,7 @@ for i in ${!PLUGIN_STEPS[@]+"${!PLUGIN_STEPS[@]}"}; do
   NAV_STEPS+=("${PLUGIN_STEPS[$i]}")
 done
 
-NAV_STEPS+=(do_step_8_review)
+NAV_STEPS+=(do_step_9_review)
 
 CURRENT_STEP=0
 
@@ -2371,5 +2497,5 @@ while [[ "$CURRENT_STEP" -lt ${#NAV_STEPS[@]} ]]; do
   fi
 done
 
-do_step_9_generate
-do_step_10_deploy
+do_step_10_generate
+do_step_11_deploy

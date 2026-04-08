@@ -42,6 +42,15 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 |----------|---------|-------------|
 | `DOMAIN_PACK_PATH` | `/app/domain-packs` | Root directory containing domain pack files. In Docker: baked into image at `/app/domain-packs`. In development: `../../domain-packs` (relative to `services/agent/`). |
 
+### Vector Search (Qdrant)
+
+The agent uses Qdrant to store and index embeddings during the discovery process.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector indexing is disabled. |
+| `QDRANT_API_KEY` | *(empty)* | Optional API key for authenticated Qdrant instances. |
+
 ### Operational
 
 | Variable | Default | Description |
@@ -97,6 +106,15 @@ Same variables as the agent — the API reads secrets to display masked values i
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOMAIN_PACK_PATH` | `/app/domain-packs` | Same as agent. The API reads domain pack metadata (areas, categories, profile schemas) for the dashboard. |
+
+### Vector Search (Qdrant)
+
+The API uses Qdrant to perform semantic searches and retrieval of indexed data.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector search is disabled. |
+| `QDRANT_API_KEY` | *(empty)* | Optional API key. |
 
 ### Agent Runner
 

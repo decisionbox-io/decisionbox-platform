@@ -10,3 +10,7 @@ dependencies:
     version: "~18.6.0"
     repository: https://charts.bitnami.com/bitnami
     condition: mongodb.enabled
+  - name: qdrant
+    version: "1.17.1"
+    repository: https://qdrant.github.io/qdrant-helm
+    condition: qdrant.enabled
