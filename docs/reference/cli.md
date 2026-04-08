@@ -1,6 +1,6 @@
 # CLI Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 The DecisionBox agent (`decisionbox-agent`) is a standalone Go binary. It's typically spawned by the API, but can be run directly for testing and debugging.
 
@@ -32,7 +32,6 @@ decisionbox-agent [flags]
 MONGODB_URI=mongodb://localhost:27017 \
 MONGODB_DB=decisionbox \
 SECRET_PROVIDER=mongodb \
-DOMAIN_PACK_PATH=../../domain-packs \
   decisionbox-agent --project-id=507f1f77bcf86cd799439011
 ```
 
@@ -80,7 +79,6 @@ Minimum required:
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=decisionbox
 SECRET_PROVIDER=mongodb
-DOMAIN_PACK_PATH=../../domain-packs  # or /app/domain-packs in Docker
 ```
 
 ## Exit Codes

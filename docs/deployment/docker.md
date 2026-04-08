@@ -1,6 +1,6 @@
 # Docker Compose Deployment
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 This guide covers deploying DecisionBox with Docker Compose for single-server environments.
 
@@ -38,7 +38,6 @@ services:
       - MONGODB_DB=decisionbox
       - SECRET_PROVIDER=mongodb
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}  # openssl rand -base64 32
-      - DOMAIN_PACK_PATH=/app/domain-packs
       - RUNNER_MODE=subprocess
       - LOG_LEVEL=info
       - ENV=prod

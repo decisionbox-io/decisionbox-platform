@@ -66,7 +66,6 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 	envVars := []corev1.EnvVar{
 		{Name: "MONGODB_URI", Value: getEnv("MONGODB_URI", "mongodb://localhost:27017")},
 		{Name: "MONGODB_DB", Value: getEnv("MONGODB_DB", "decisionbox")},
-		{Name: "DOMAIN_PACK_PATH", Value: "/app/domain-packs"},
 	}
 	for _, kv := range []struct{ key, envKey string }{
 		{"SECRET_PROVIDER", "SECRET_PROVIDER"},

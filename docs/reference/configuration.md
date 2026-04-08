@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 All DecisionBox services are configured via environment variables. This page lists every variable, its default, and which service uses it.
 
@@ -35,12 +35,6 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | `LLM_MAX_RETRIES` | `3` | Number of retries on LLM API errors (rate limits, timeouts). Set to `0` for no retries. |
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Increased from 120s because large prompts on Opus-class models need more time. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
-
-### Domain Packs
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOMAIN_PACK_PATH` | `/app/domain-packs` | Root directory containing domain pack files. In Docker: baked into image at `/app/domain-packs`. In development: `../../domain-packs` (relative to `services/agent/`). |
 
 ### Operational
 
@@ -91,12 +85,6 @@ Same variables as the agent — the API reads secrets to display masked values i
 | `SECRET_GCP_PROJECT_ID` | *(empty)* | Same as agent. |
 | `SECRET_AWS_REGION` | `us-east-1` | Same as agent. |
 | `SECRET_AZURE_VAULT_URL` | *(empty)* | Same as agent. |
-
-### Domain Packs
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOMAIN_PACK_PATH` | `/app/domain-packs` | Same as agent. The API reads domain pack metadata (areas, categories, profile schemas) for the dashboard. |
 
 ### Agent Runner
 
@@ -164,7 +152,6 @@ services:
       - MONGODB_DB=decisionbox
       - SECRET_PROVIDER=mongodb
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-}
-      - DOMAIN_PACK_PATH=/app/domain-packs
       - RUNNER_MODE=subprocess
     depends_on:
       mongodb: { condition: service_healthy }

@@ -31,6 +31,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	pricingRepo := database.NewPricingRepository(db)
 	insightRepo := database.NewInsightRepository(db)
 	recommendationRepo := database.NewRecommendationRepository(db)
+	domainPackRepo := database.NewDomainPackRepository(db)
 
 	// Clean up stale runs from previous container lifecycle
 	cleaned, err := runRepo.CleanupStaleRuns(context.Background())
@@ -52,10 +53,14 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	// Seed pricing from registered providers (if not yet in MongoDB)
 	handler.SeedPricingFromProviders(context.Background(), pricingRepo)
 
+	// Seed built-in domain packs (if not yet in MongoDB)
+	handler.SeedBuiltInPacks(context.Background(), domainPackRepo)
+
 	// Handlers
 	providers := handler.NewProvidersHandler()
-	domains := handler.NewDomainsHandler()
-	projects := handler.NewProjectsHandler(projectRepo)
+	domains := handler.NewDomainsHandler(domainPackRepo)
+	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
+	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
@@ -94,7 +99,16 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 	mux.HandleFunc("GET /api/v1/providers/embedding", withRole(viewer, providers.ListEmbeddingProviders))
 
-	// Domains — viewer
+	// Domain packs — viewer for read, admin for write
+	mux.HandleFunc("GET /api/v1/domain-packs", withRole(viewer, domainPacks.List))
+	mux.HandleFunc("GET /api/v1/domain-packs/{slug}/export", withRole(viewer, domainPacks.Export))
+	mux.HandleFunc("GET /api/v1/domain-packs/{slug}", withRole(viewer, domainPacks.Get))
+	mux.HandleFunc("POST /api/v1/domain-packs/import", withRole(admin, domainPacks.Import))
+	mux.HandleFunc("POST /api/v1/domain-packs", withRole(admin, domainPacks.Create))
+	mux.HandleFunc("PUT /api/v1/domain-packs/{slug}", withRole(admin, domainPacks.Update))
+	mux.HandleFunc("DELETE /api/v1/domain-packs/{slug}", withRole(admin, domainPacks.Delete))
+
+	// Domains — viewer (backward-compatible endpoints for project creation flow)
 	mux.HandleFunc("GET /api/v1/domains", withRole(viewer, domains.ListDomains))
 	mux.HandleFunc("GET /api/v1/domains/{domain}/categories", withRole(viewer, domains.ListCategories))
 	mux.HandleFunc("GET /api/v1/domains/{domain}/categories/{category}/schema", withRole(viewer, domains.GetProfileSchema))
@@ -108,7 +122,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", withRole(admin, projects.Delete))
 
 	// Prompts — viewer for read, member for write
-	mux.HandleFunc("GET /api/v1/projects/{id}/prompts", withRole(viewer, handler.GetPrompts(projectRepo)))
+	mux.HandleFunc("GET /api/v1/projects/{id}/prompts", withRole(viewer, handler.GetPrompts(projectRepo, domainPackRepo)))
 	mux.HandleFunc("PUT /api/v1/projects/{id}/prompts", withRole(member, handler.UpdatePrompts(projectRepo)))
 
 	// Discoveries — member for trigger, viewer for read

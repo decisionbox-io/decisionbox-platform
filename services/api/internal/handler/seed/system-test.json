@@ -1,0 +1,268 @@
+{
+  "format": "decisionbox-domain-pack",
+  "format_version": 1,
+  "pack": {
+    "slug": "system-test",
+    "name": "System Test",
+    "description": "Diagnostic domain pack for testing warehouse connectivity, schema discovery, SQL dialect support, and data type mapping",
+    "version": "1.0.0",
+    "is_published": false,
+    "categories": [
+      {
+        "id": "quick",
+        "name": "Quick Validation",
+        "description": "Basic connectivity and schema enumeration \u2014 verifies the warehouse connection works and tables are accessible (~10 queries)"
+      },
+      {
+        "id": "standard",
+        "name": "Standard Validation",
+        "description": "Full data type mapping and data profiling \u2014 validates type conversion, NULL handling, and column statistics (~30-50 queries)"
+      },
+      {
+        "id": "thorough",
+        "name": "Thorough Validation",
+        "description": "Exhaustive SQL dialect and edge case testing \u2014 validates complex queries, window functions, CTEs, and boundary conditions (~80-100 queries)"
+      }
+    ],
+    "prompts": {
+      "base": {
+        "base_context": "## Test Configuration\n\n{{PROFILE}}\n\n**IMPORTANT**: This is a system validation run \u2014 not a business analytics discovery. Your goal is to systematically verify that the warehouse provider works correctly. Report factual results: what succeeded, what failed, and any anomalies. Do not generate business insights or recommendations.\n\n## Previous Discovery Context\n\n{{PREVIOUS_CONTEXT}}",
+        "exploration": "# Warehouse System Validation\n\nYou are a **database validation agent**. Your job is to systematically verify that DecisionBox can connect to, query, and correctly handle data from this warehouse. This is NOT a business analytics task \u2014 you are running structured diagnostics.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Tables Available**: {{SCHEMA_INFO}}\n{{FILTER_CONTEXT}}\n\n## Your Task\n\nSystematically validate the warehouse connection and data access across these areas:\n\n{{ANALYSIS_AREAS}}\n\n## How To Explore\n\nExecute SQL queries to validate the warehouse. For each query, respond with JSON:\n\n```json\n{\n  \"thinking\": \"What I am validating and what result I expect\",\n  \"query\": \"SELECT ... FROM `{{DATASET}}.table` {{FILTER}} ...\"\n}\n```\n\n### Critical Rules\n\n1. **ALWAYS use fully qualified table names**: `` `{{DATASET}}.table_name` `` with backticks\n2. {{FILTER_RULE}}\n3. **Report failures explicitly**: If a query fails, that IS the finding \u2014 record the error message and what it means for provider compatibility.\n4. **Test one thing at a time**: Each query should validate a specific capability. Don't combine multiple tests into one complex query.\n5. **Use deterministic queries**: Avoid random sampling or non-deterministic functions when possible. Results should be reproducible.\n6. **Always scope queries by date if date columns exist**: Include date filters to avoid scanning entire history.\n7. **Record both success and failure**: A successful query is a validation result too \u2014 it confirms the provider handles that case correctly.\n\n## Exploration Strategy\n\n### Phase A: Connectivity & Metadata (first 15-20% of budget)\n- Run a basic `SELECT 1` or equivalent to confirm connectivity\n- Query current timestamp, database version, or current user to verify metadata functions\n- List all accessible schemas and tables\n- Get row counts for each table\n- Verify table metadata is readable (column names, types)\n\n### Phase B: Schema Deep-Dive (30-40% of budget)\n- For each table, enumerate all columns with their data types\n- Identify which data types are present across the schema (VARCHAR, INTEGER, DECIMAL, TIMESTAMP, BOOLEAN, etc.)\n- Check for NULL vs NOT NULL columns\n- Verify column ordering matches metadata\n\n### Phase C: Data Sampling & Type Verification (30-40% of budget)\n- Query sample rows from each table\n- Verify that returned values match expected types (numbers come back as numbers, timestamps as timestamps, etc.)\n- Test specific data types: DECIMAL precision, TIMESTAMP formats, BOOLEAN values, large integers\n- Check NULL handling: query columns known to contain NULLs\n\n### Phase D: Summary (5-10% of budget)\n- Compile a summary of all schemas, tables, columns discovered\n- Note any errors, warnings, or unexpected behaviors\n\n## When You're Done\n\nAfter thorough validation, respond with:\n\n```json\n{\n  \"done\": true,\n  \"summary\": \"Brief overview of validation results: X schemas, Y tables, Z columns discovered. N queries succeeded, M failed. Key findings: ...\"\n}\n```\n\n## Example Queries\n\n**Basic Connectivity**:\n```sql\nSELECT 1 AS connectivity_test\n```\n\n**Database Metadata**:\n```sql\nSELECT CURRENT_TIMESTAMP AS server_time\n```\n\n**Table Enumeration**:\n```sql\nSELECT table_schema, table_name, table_type\nFROM INFORMATION_SCHEMA.TABLES\nWHERE table_schema = '{{DATASET}}'\nORDER BY table_name\n```\n\n**Column Metadata**:\n```sql\nSELECT column_name, data_type, is_nullable, ordinal_position\nFROM INFORMATION_SCHEMA.COLUMNS\nWHERE table_schema = '{{DATASET}}' AND table_name = 'example_table'\nORDER BY ordinal_position\n```\n\n**Row Count**:\n```sql\nSELECT COUNT(*) AS total_rows\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\n```\n\n**Data Type Sampling**:\n```sql\nSELECT *\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\nLIMIT 5\n```\n\nBegin by validating connectivity, then enumerate the schema, and finally sample data to verify type handling.",
+        "recommendations": "# Generate Validation Summary & Action Items\n\nYou are a database validation agent summarizing the results of a warehouse system test. Generate **action items** based on the validation findings \u2014 not business recommendations.\n\n## Context\n\n**Validation Date**: {{DISCOVERY_DATE}}\n**Findings**: {{INSIGHTS_SUMMARY}}\n\n## Your Task\n\nGenerate **specific action items** based on the validation results. Each action item should describe what was tested, what the result was, and what to do next (if anything).\n\n## Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"recommendations\": [\n    {\n      \"title\": \"Result \u2014 Context (e.g., 'All 24 Tables Queryable \u2014 Provider Fully Compatible')\",\n      \"description\": \"What was tested, what the result was, and what it means for warehouse provider compatibility.\",\n      \"category\": \"connectivity|schema_discovery|type_mapping|data_profiling|query_patterns|edge_cases\",\n      \"priority\": 1,\n      \"effort\": \"quick_win|moderate|major_initiative\",\n      \"target_segment\": \"Component or area this applies to (e.g., 'Warehouse provider DECIMAL handling')\",\n      \"segment_size\": 0,\n      \"expected_impact\": {\n        \"metric\": \"compatibility|coverage|reliability\",\n        \"estimated_improvement\": \"Description of what fixing/confirming this means\",\n        \"reasoning\": \"Why this matters for provider validation\"\n      },\n      \"actions\": [\n        \"Specific follow-up action 1\",\n        \"Specific follow-up action 2\"\n      ],\n      \"success_metrics\": [\n        \"How to verify this is resolved or confirmed\"\n      ],\n      \"related_insight_ids\": [\"insight-id-1\"],\n      \"confidence\": 0.95\n    }\n  ]\n}\n```\n\n**IMPORTANT:** Each action item MUST include `related_insight_ids` \u2014 an array of insight `id` values from the input data that this action item addresses.\n\n## Action Item Categories\n\n### Pass \u2014 No Action Needed\n- Provider handles this correctly\n- Priority 4-5 (informational)\n- Effort: quick_win (no work needed)\n\n### Warning \u2014 Investigate\n- Unexpected behavior but not a failure\n- Priority 2-3\n- Example: \"NUMERIC column returned as string instead of float64\"\n\n### Failure \u2014 Fix Required\n- Provider cannot handle this case\n- Priority 1 (critical)\n- Example: \"Query with 3+ parameters fails \u2014 driver parameter binding broken\"\n\n## Requirements\n\n### DO create action items that are:\n- **Specific**: Exact data types, column names, error messages\n- **Factual**: Based only on the validation data, not assumptions\n- **Actionable**: Clear next steps for the provider maintainer\n\n### DON'T create action items that are:\n- Generic (\"improve type handling\")\n- Speculative (\"this might cause issues in production\")\n- Business-oriented (\"optimize query performance for users\")\n\n## Validation Findings\n\n{{INSIGHTS_DATA}}\n\n---\n\nGenerate action items for each significant finding. Group by category. Prioritize failures over warnings over passes."
+      },
+      "categories": {
+        "quick": {
+          "exploration_context": "## Quick Validation Context\n\nThis is a **quick validation** run. Your query budget is very limited (~10 queries). Focus on:\n\n1. **Confirm connectivity**: Run `SELECT 1` or equivalent\n2. **Check metadata**: Query current timestamp and database version\n3. **List tables**: Enumerate all tables in the dataset with row counts\n4. **Sample one table**: Query a few rows from the largest or most representative table\n\nDo NOT deep-dive into data types, complex queries, or edge cases. The goal is a fast smoke test: \"Does the connection work? Can I see the data?\"\n\n### Quick Validation Queries\n\n**Smoke Test**:\n```sql\nSELECT 1 AS test, CURRENT_TIMESTAMP AS server_time\n```\n\n**Table List with Row Counts**:\n```sql\nSELECT table_name, table_type\nFROM INFORMATION_SCHEMA.TABLES\nWHERE table_schema = '{{DATASET}}'\nORDER BY table_name\n```\n\n**Quick Sample** (pick the first table you find):\n```sql\nSELECT *\nFROM `{{DATASET}}.first_table`\n{{FILTER}}\nLIMIT 5\n```"
+        },
+        "standard": {
+          "exploration_context": "## Standard Validation Context\n\nThis is a **standard validation** run. You have a moderate query budget (~30-50 queries). In addition to connectivity and schema discovery, focus on:\n\n1. **Data type coverage**: For every distinct data type found in the schema, query at least one column of that type and verify the returned value makes sense\n2. **NULL handling**: Find columns with NULL values and verify NULLs are returned correctly (not as empty strings or zeros)\n3. **Row counts**: Get exact row counts for every table\n4. **Column statistics**: For numeric columns, check MIN/MAX/AVG. For string columns, check MIN/MAX length. For date columns, check date range.\n5. **Data profiling**: Calculate NULL percentages and distinct value counts for key columns\n\n### Standard Validation Queries\n\n**Data Type Inventory**:\n```sql\nSELECT data_type, COUNT(*) AS column_count\nFROM INFORMATION_SCHEMA.COLUMNS\nWHERE table_schema = '{{DATASET}}'\nGROUP BY data_type\nORDER BY column_count DESC\n```\n\n**NULL Rate Check**:\n```sql\nSELECT\n  COUNT(*) AS total_rows,\n  COUNT(column_name) AS non_null_count,\n  COUNT(*) - COUNT(column_name) AS null_count,\n  ROUND((COUNT(*) - COUNT(column_name)) * 100.0 / NULLIF(COUNT(*), 0), 2) AS null_percentage\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\n```\n\n**Numeric Range Check**:\n```sql\nSELECT\n  MIN(numeric_column) AS min_val,\n  MAX(numeric_column) AS max_val,\n  AVG(numeric_column) AS avg_val,\n  COUNT(DISTINCT numeric_column) AS distinct_count\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\n```\n\n**Date Range Check**:\n```sql\nSELECT\n  MIN(date_column) AS earliest,\n  MAX(date_column) AS latest,\n  COUNT(DISTINCT date_column) AS distinct_dates\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\n```\n\n**Distinct Value Cardinality**:\n```sql\nSELECT\n  COUNT(DISTINCT string_column) AS distinct_values,\n  COUNT(*) AS total_rows\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\n```"
+        },
+        "thorough": {
+          "exploration_context": "## Thorough Validation Context\n\nThis is a **thorough validation** run. You have a large query budget (~80-100 queries). In addition to connectivity, schema discovery, type mapping, and data profiling, you must also:\n\n1. **Test complex SQL patterns**: JOINs between tables, CTEs (WITH clauses), subqueries, UNION/UNION ALL\n2. **Test window functions**: ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, SUM OVER, AVG OVER with PARTITION BY and ORDER BY\n3. **Test aggregations**: GROUP BY with HAVING, COUNT DISTINCT, multiple aggregation functions in one query\n4. **Test edge cases**: NULL in arithmetic (NULL + 1), NULL in comparisons (NULL = NULL), empty string vs NULL, COALESCE, CASE WHEN\n5. **Test precision**: Large integers (> 2^31), high-precision decimals, very long strings\n6. **Test date/time**: Date arithmetic, timestamp with timezone, date formatting functions, epoch conversion\n7. **Test LIMIT/OFFSET**: Pagination patterns, ORDER BY with LIMIT\n8. **Test aliasing**: Column aliases, table aliases, subquery aliases\n\n### Thorough Validation Queries\n\n**CTE (Common Table Expression)**:\n```sql\nWITH table_stats AS (\n  SELECT\n    COUNT(*) AS total_rows,\n    COUNT(DISTINCT column_name) AS distinct_values\n  FROM `{{DATASET}}.example_table`\n  {{FILTER}}\n)\nSELECT * FROM table_stats\n```\n\n**Window Function**:\n```sql\nSELECT\n  column_a,\n  column_b,\n  ROW_NUMBER() OVER (PARTITION BY column_a ORDER BY column_b) AS row_num,\n  RANK() OVER (ORDER BY column_b DESC) AS rank_val\nFROM `{{DATASET}}.example_table`\n{{FILTER}}\nLIMIT 20\n```\n\n**JOIN Between Tables**:\n```sql\nSELECT a.id, a.name, b.value\nFROM `{{DATASET}}.table_a` a\nJOIN `{{DATASET}}.table_b` b ON a.id = b.foreign_id\n{{FILTER}}\nLIMIT 10\n```\n\n**NULL Arithmetic**:\n```sql\nSELECT\n  NULL + 1 AS null_plus_one,\n  NULL = NULL AS null_eq_null,\n  COALESCE(NULL, 'fallback') AS coalesce_test,\n  CASE WHEN NULL IS NULL THEN 'yes' ELSE 'no' END AS case_null\n```\n\n**Subquery**:\n```sql\nSELECT *\nFROM `{{DATASET}}.example_table`\nWHERE column_name IN (\n  SELECT DISTINCT column_name\n  FROM `{{DATASET}}.another_table`\n  {{FILTER}}\n)\n{{FILTER}}\nLIMIT 10\n```\n\n**Large Number Precision**:\n```sql\nSELECT\n  2147483647 AS max_int32,\n  9223372036854775807 AS max_int64,\n  3.141592653589793 AS pi_double\n```\n\nExplore systematically \u2014 don't skip a category just because earlier tests passed. Each SQL pattern tests a different provider code path."
+        }
+      }
+    },
+    "analysis_areas": {
+      "base": [
+        {
+          "id": "connectivity",
+          "name": "Connectivity Validation",
+          "description": "Verify warehouse connection, authentication, basic query execution, and database metadata retrieval",
+          "keywords": [
+            "connection",
+            "ping",
+            "version",
+            "select",
+            "auth",
+            "database",
+            "current_date",
+            "current_timestamp",
+            "current_user"
+          ],
+          "priority": 1,
+          "prompt": "# Connectivity Validation Analysis\n\nYou are a database validation agent analyzing connectivity test results. Report whether the warehouse connection, authentication, and basic query execution work correctly.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for connectivity. Check each of the following:\n\n1. **Basic connectivity**: Did `SELECT 1` or equivalent succeed?\n2. **Metadata functions**: Do `CURRENT_TIMESTAMP`, `CURRENT_DATE`, database version queries work?\n3. **Authentication**: Was the connection established without auth errors?\n4. **Query execution**: Can the provider execute simple SELECT statements and return results?\n5. **Error handling**: Were any connection timeouts, permission errors, or protocol errors observed?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'Basic Connectivity: SELECT 1 Returns Successfully')\",\n      \"description\": \"What was tested, what the result was, and what this validates about the provider.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 1,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.95,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"connectivity\",\n        \"queries_tested\": 3,\n        \"queries_passed\": 3,\n        \"queries_failed\": 0\n      },\n      \"indicators\": [\n        \"SELECT 1 returned 1 (expected: 1)\",\n        \"CURRENT_TIMESTAMP returned valid RFC3339 timestamp\",\n        \"Connection established in <1s\"\n      ],\n      \"target_segment\": \"Warehouse provider connectivity\",\n      \"source_steps\": [1, 2, 3]\n    }\n  ]\n}\n```\n\n## Severity Mapping for Validation\n\n- **info**: Test passed \u2014 provider handles this correctly\n- **low**: Minor observation \u2014 non-standard but functional behavior\n- **medium**: Warning \u2014 unexpected behavior that may affect some use cases\n- **high**: Failure \u2014 provider cannot handle a common operation\n- **critical**: Blocker \u2014 provider cannot connect or execute basic queries\n\n## Quality Standards\n\n- **Name**: Include what was tested and the result (pass/warn/fail)\n- **Description**: Exact query used, exact result or error message\n- **affected_count**: Number of queries/operations tested for this finding\n- **indicators**: Specific data points \u2014 exact values returned, error codes, response times\n- **source_steps**: Step numbers from the query results that support this finding\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** \u2014 don't assume success without evidence\n2. **Report both successes and failures** \u2014 a pass is just as important as a fail for validation\n3. **If no connectivity queries were run**, return `{\"insights\": []}`\n4. **Include error messages verbatim** when a query fails\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "schema_discovery",
+          "name": "Schema Discovery",
+          "description": "Enumerate all accessible schemas, tables, columns, row counts, and table metadata",
+          "keywords": [
+            "schema",
+            "table",
+            "column",
+            "metadata",
+            "information_schema",
+            "row_count",
+            "table_type",
+            "ordinal",
+            "catalog",
+            "describe"
+          ],
+          "priority": 2,
+          "prompt": "# Schema Discovery Analysis\n\nYou are a database validation agent analyzing schema discovery results. Report what schemas, tables, and columns were found, and whether the provider correctly enumerates warehouse metadata.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for schema discovery. Check each of the following:\n\n1. **Schema enumeration**: Can the provider list all accessible schemas?\n2. **Table listing**: Can the provider list all tables within a schema, with correct table types (TABLE, VIEW, etc.)?\n3. **Column metadata**: Can the provider retrieve column names, data types, nullability, and ordinal position?\n4. **Row counts**: Can the provider retrieve accurate row counts for each table?\n5. **Metadata consistency**: Do column counts and types match between INFORMATION_SCHEMA and actual query results?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'Schema Discovery: 3 Schemas, 24 Tables Enumerated Successfully')\",\n      \"description\": \"Summary of what was discovered \u2014 number of schemas, tables, columns. Any tables that could not be read or returned unexpected metadata.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 24,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.95,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"schema_discovery\",\n        \"schemas_found\": 3,\n        \"tables_found\": 24,\n        \"columns_found\": 187,\n        \"tables_with_errors\": 0\n      },\n      \"indicators\": [\n        \"3 schemas accessible: public, analytics, staging\",\n        \"24 tables enumerated with correct types\",\n        \"187 columns across all tables with type metadata\",\n        \"Row counts retrieved for all tables (range: 0 to 1.2M)\"\n      ],\n      \"target_segment\": \"Warehouse provider schema discovery\",\n      \"source_steps\": [4, 5, 6, 7]\n    }\n  ]\n}\n```\n\n## Severity Mapping for Validation\n\n- **info**: All metadata retrieved correctly\n- **low**: Metadata retrieved but with minor inconsistencies (e.g., missing row count for one table)\n- **medium**: Some tables or columns could not be enumerated\n- **high**: Schema enumeration partially fails \u2014 missing tables or incorrect types\n- **critical**: Cannot enumerate schemas or tables at all\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** \u2014 don't invent schema contents\n2. **Count precisely**: Report exact numbers of schemas, tables, columns found\n3. **If no schema queries were run**, return `{\"insights\": []}`\n4. **Flag inconsistencies**: If INFORMATION_SCHEMA reports 24 tables but only 20 are queryable, that is a finding\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        }
+      ],
+      "categories": {
+        "standard": [
+          {
+            "id": "type_mapping",
+            "name": "Data Type Mapping",
+            "description": "Validate that every data type in the warehouse is correctly mapped and returned by the provider \u2014 INTEGER, DECIMAL, VARCHAR, BOOLEAN, TIMESTAMP, DATE, etc.",
+            "keywords": [
+              "type",
+              "cast",
+              "decimal",
+              "numeric",
+              "timestamp",
+              "boolean",
+              "varchar",
+              "integer",
+              "float",
+              "bigint",
+              "date",
+              "time",
+              "data_type",
+              "column_type"
+            ],
+            "priority": 3,
+            "prompt": "# Data Type Mapping Analysis\n\nYou are a database validation agent analyzing data type mapping results. Report whether each data type in the warehouse is correctly handled by the provider.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for data type mapping. For each data type found in the warehouse, verify:\n\n1. **Type returned**: What Go type does the provider return for this SQL type?\n2. **Value accuracy**: Do returned values match expected values (e.g., DECIMAL 3.14 returns as float64 3.14, not string \"3.14\")?\n3. **Precision**: For DECIMAL/NUMERIC, is precision preserved?\n4. **Timestamps**: Are timestamps returned in a consistent format (RFC3339)?\n5. **Booleans**: Are booleans returned as true/false?\n6. **NULLs per type**: Does each type handle NULL correctly (returns nil, not zero/empty)?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'DECIMAL Columns: All 12 Columns Return float64 Correctly')\",\n      \"description\": \"Which data types were tested, how many columns of each type, and whether the mapping is correct.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 12,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.90,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"type_mapping\",\n        \"data_type\": \"DECIMAL\",\n        \"columns_tested\": 12,\n        \"columns_correct\": 12,\n        \"columns_incorrect\": 0\n      },\n      \"indicators\": [\n        \"DECIMAL(10,2) column 'price' returned 29.99 as float64\",\n        \"DECIMAL(18,6) column 'rate' returned 0.001234 as float64\",\n        \"NULL DECIMAL returned as nil (not 0)\"\n      ],\n      \"target_segment\": \"Warehouse provider type mapping\",\n      \"source_steps\": [10, 11, 12]\n    }\n  ]\n}\n```\n\n## Severity Mapping\n\n- **info**: All columns of this type map correctly\n- **low**: Correct but non-standard (e.g., BOOLEAN returned as 0/1 int instead of true/false)\n- **medium**: Inconsistent mapping (e.g., DECIMAL sometimes returns float64, sometimes string)\n- **high**: Incorrect mapping (e.g., DECIMAL returns int64, losing fractional part)\n- **critical**: Type causes query failure or data corruption\n\n## Important Rules\n\n1. **Group findings by data type** \u2014 one finding per SQL type tested\n2. **Include specific column names and values** in indicators\n3. **If a type was not found in the schema**, do not report on it\n4. **Note any types the warehouse supports that were NOT tested**\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          },
+          {
+            "id": "data_profiling",
+            "name": "Data Profiling",
+            "description": "Profile data quality across tables \u2014 NULL rates, cardinality, value distributions, and data completeness",
+            "keywords": [
+              "null",
+              "distinct",
+              "cardinality",
+              "min",
+              "max",
+              "count",
+              "distribution",
+              "empty",
+              "missing",
+              "completeness",
+              "statistics"
+            ],
+            "priority": 4,
+            "prompt": "# Data Profiling Analysis\n\nYou are a database validation agent analyzing data profiling results. Report on data quality metrics: NULL rates, cardinality, value distributions, and data completeness across tables.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for data profiling. Report on:\n\n1. **NULL rates**: What percentage of values are NULL for each profiled column?\n2. **Cardinality**: How many distinct values exist relative to total rows? (high = unique-like, low = categorical)\n3. **Value ranges**: For numeric/date columns, what are the min/max/avg values?\n4. **Data completeness**: Are there tables with entirely empty columns or zero rows?\n5. **Anomalies**: Unexpected patterns \u2014 columns that are 100% NULL, tables with exactly 1 row, extreme skew\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'Data Completeness: 3 Columns Are 100% NULL Across All Rows')\",\n      \"description\": \"Summary of data profiling results \u2014 which tables/columns were profiled, key statistics, and any anomalies found.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 3,\n      \"risk_score\": 0.1,\n      \"confidence\": 0.95,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"data_profiling\",\n        \"tables_profiled\": 10,\n        \"columns_profiled\": 45,\n        \"columns_all_null\": 3,\n        \"avg_null_rate\": 0.12\n      },\n      \"indicators\": [\n        \"Column 'middle_name' in users table: 87% NULL\",\n        \"Column 'deleted_at' in orders table: 99.5% NULL\",\n        \"Column 'legacy_id' in products table: 100% NULL (unused column)\"\n      ],\n      \"target_segment\": \"Data quality across warehouse tables\",\n      \"source_steps\": [15, 16, 17, 18]\n    }\n  ]\n}\n```\n\n## Severity Mapping\n\n- **info**: Data quality is normal \u2014 expected NULL rates, reasonable cardinality\n- **low**: Minor quality note \u2014 a few columns with high NULL rates (expected for optional fields)\n- **medium**: Potential data issue \u2014 columns that should have data but are mostly NULL\n- **high**: Data quality concern \u2014 tables with zero rows, or required-looking columns that are 100% NULL\n- **critical**: Not applicable for profiling (profiling is observational, not a pass/fail test)\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** \u2014 don't assume data quality\n2. **Report aggregate statistics**, not individual row values\n3. **If no profiling queries were run**, return `{\"insights\": []}`\n4. **Context matters**: A column named `deleted_at` being 99% NULL is normal; a column named `user_id` being 50% NULL is a concern\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          }
+        ],
+        "thorough": [
+          {
+            "id": "type_mapping",
+            "name": "Data Type Mapping",
+            "description": "Exhaustive validation of every data type in the warehouse \u2014 test casting, precision, and edge cases for each type",
+            "keywords": [
+              "type",
+              "cast",
+              "decimal",
+              "numeric",
+              "timestamp",
+              "boolean",
+              "varchar",
+              "integer",
+              "float",
+              "bigint",
+              "date",
+              "time",
+              "data_type",
+              "column_type",
+              "precision",
+              "scale"
+            ],
+            "priority": 3,
+            "prompt": "# Data Type Mapping Analysis (Thorough)\n\nYou are a database validation agent performing exhaustive data type mapping analysis. Report on every data type found in the warehouse and whether the provider maps it correctly.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for data type mapping. This is a thorough run \u2014 go beyond basic checks:\n\n1. **Every SQL type**: INTEGER, BIGINT, SMALLINT, TINYINT, FLOAT, DOUBLE, DECIMAL/NUMERIC (with varying precision/scale), VARCHAR, CHAR, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP, TIMESTAMP_TZ, BINARY, JSON/JSONB, ARRAY, STRUCT/RECORD, etc.\n2. **Precision tests**: DECIMAL(10,2) vs DECIMAL(38,18) \u2014 is precision preserved?\n3. **Integer boundaries**: Small ints, large ints, int32 max, int64 max\n4. **Casting behavior**: Explicit CAST operations \u2014 do they work and return correct types?\n5. **Complex types**: JSON, ARRAY, STRUCT \u2014 do they return as strings?\n6. **Type NULL behavior**: NULL for each type \u2014 all should return nil regardless of type\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'DECIMAL Precision: DECIMAL(38,18) Preserves Full Precision')\",\n      \"description\": \"Detailed description of type mapping behavior with specific values tested.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 5,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.90,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"type_mapping\",\n        \"data_type\": \"DECIMAL\",\n        \"columns_tested\": 5,\n        \"columns_correct\": 5,\n        \"columns_incorrect\": 0\n      },\n      \"indicators\": [\n        \"DECIMAL(10,2): 29.99 returned as float64 29.99\",\n        \"DECIMAL(38,18): 1.123456789012345678 returned as float64 (precision truncated to float64 limit)\",\n        \"CAST(123 AS DECIMAL(5,2)): returned 123.00 as float64\"\n      ],\n      \"target_segment\": \"Warehouse provider type mapping\",\n      \"source_steps\": [10, 11, 12]\n    }\n  ]\n}\n```\n\n## Severity Mapping\n\n- **info**: Type maps correctly with expected Go type\n- **low**: Correct but with known precision limits (e.g., float64 precision for DECIMAL(38,18))\n- **medium**: Inconsistent mapping across columns of the same type\n- **high**: Incorrect mapping causing data loss (e.g., int64 for DECIMAL, truncating fractions)\n- **critical**: Type causes crash, panic, or query failure\n\n## Important Rules\n\n1. **One finding per data type family** (e.g., all DECIMAL variants together, all integer types together)\n2. **Include exact tested values** \u2014 input and output\n3. **Note any types NOT found in this warehouse** \u2014 \"ARRAY type not present in schema, not tested\"\n4. **Compare actual vs expected**: \"Expected float64, got string\"\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          },
+          {
+            "id": "data_profiling",
+            "name": "Data Profiling",
+            "description": "Comprehensive data quality profiling \u2014 NULL rates, cardinality, distributions, and completeness across all tables",
+            "keywords": [
+              "null",
+              "distinct",
+              "cardinality",
+              "min",
+              "max",
+              "count",
+              "distribution",
+              "empty",
+              "missing",
+              "completeness",
+              "statistics"
+            ],
+            "priority": 4,
+            "prompt": "# Data Profiling Analysis (Thorough)\n\nYou are a database validation agent performing comprehensive data profiling. Report on data quality across all tables in the warehouse.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and produce **structured validation findings** for data profiling. This is a thorough run \u2014 profile every table:\n\n1. **Per-table statistics**: Row count, column count, data freshness (latest timestamp)\n2. **Per-column statistics**: NULL rate, distinct count, min/max for numeric/date columns\n3. **Data completeness**: Tables with no data, columns that are entirely NULL\n4. **Distribution analysis**: High-cardinality vs low-cardinality columns, skewed distributions\n5. **Cross-table patterns**: Consistent column naming, shared key patterns\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding\",\n      \"description\": \"Summary of profiling results.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 10,\n      \"risk_score\": 0.1,\n      \"confidence\": 0.95,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"data_profiling\",\n        \"tables_profiled\": 10,\n        \"columns_profiled\": 80,\n        \"total_rows_across_tables\": 150000,\n        \"avg_null_rate\": 0.08\n      },\n      \"indicators\": [\n        \"Specific data point 1\",\n        \"Specific data point 2\"\n      ],\n      \"target_segment\": \"Data quality across warehouse tables\",\n      \"source_steps\": [20, 21, 22]\n    }\n  ]\n}\n```\n\n## Important Rules\n\n1. **Use ONLY data from the queries below**\n2. **Report aggregate statistics**, not individual row values\n3. **If no profiling queries were run**, return `{\"insights\": []}`\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          },
+          {
+            "id": "query_patterns",
+            "name": "SQL Query Patterns",
+            "description": "Validate complex SQL capabilities \u2014 JOINs, CTEs, window functions, subqueries, UNION, GROUP BY with HAVING, and nested aggregations",
+            "keywords": [
+              "join",
+              "cte",
+              "window",
+              "partition",
+              "rank",
+              "row_number",
+              "subquery",
+              "having",
+              "union",
+              "with",
+              "over",
+              "lag",
+              "lead",
+              "dense_rank"
+            ],
+            "priority": 5,
+            "prompt": "# SQL Query Patterns Analysis\n\nYou are a database validation agent analyzing SQL dialect compatibility. Report whether complex SQL patterns execute correctly on this warehouse.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for SQL query pattern support. Check each pattern:\n\n1. **JOINs**: INNER JOIN, LEFT JOIN, RIGHT JOIN, CROSS JOIN \u2014 do they produce correct results?\n2. **CTEs**: WITH clauses \u2014 single CTE, multiple CTEs, nested CTEs\n3. **Window functions**: ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, SUM/AVG/COUNT OVER with PARTITION BY\n4. **Subqueries**: IN (subquery), EXISTS (subquery), scalar subquery, correlated subquery\n5. **Aggregations**: GROUP BY with HAVING, COUNT DISTINCT, multiple aggregation functions\n6. **Set operations**: UNION, UNION ALL (if tested)\n7. **Ordering & pagination**: ORDER BY with LIMIT, OFFSET (if supported by warehouse)\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'Window Functions: ROW_NUMBER, RANK, LAG All Execute Correctly')\",\n      \"description\": \"Which SQL patterns were tested and whether they executed correctly. Include any error messages for failures.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 4,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.90,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"query_patterns\",\n        \"pattern\": \"window_functions\",\n        \"patterns_tested\": 4,\n        \"patterns_passed\": 4,\n        \"patterns_failed\": 0\n      },\n      \"indicators\": [\n        \"ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...): executed successfully, returned sequential numbers\",\n        \"RANK() OVER (ORDER BY ... DESC): executed successfully, tied values share rank\",\n        \"LAG(col, 1) OVER (ORDER BY ...): executed successfully, returned previous row value\",\n        \"SUM(col) OVER (PARTITION BY ...): executed successfully, returned partition totals\"\n      ],\n      \"target_segment\": \"Warehouse SQL dialect compatibility\",\n      \"source_steps\": [30, 31, 32, 33]\n    }\n  ]\n}\n```\n\n## Severity Mapping\n\n- **info**: Pattern executes correctly\n- **low**: Pattern works but with minor syntax differences from standard SQL\n- **medium**: Pattern partially works \u2014 some variants fail\n- **high**: Common SQL pattern fails entirely (e.g., CTEs not supported)\n- **critical**: Basic pattern fails (e.g., JOIN produces wrong results)\n\n## Important Rules\n\n1. **One finding per SQL pattern category** (JOINs, window functions, CTEs, etc.)\n2. **Include the actual SQL that was tested** or reference the step numbers\n3. **For failures, include the exact error message** from the warehouse\n4. **If a pattern was not tested**, note it explicitly\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          },
+          {
+            "id": "edge_cases",
+            "name": "Edge Cases",
+            "description": "Test boundary conditions \u2014 NULL arithmetic, empty strings, large numbers, timestamp precision, COALESCE, and CASE expressions",
+            "keywords": [
+              "null",
+              "empty",
+              "precision",
+              "overflow",
+              "timezone",
+              "boundary",
+              "coalesce",
+              "case",
+              "limit",
+              "offset",
+              "alias",
+              "epoch",
+              "large"
+            ],
+            "priority": 6,
+            "prompt": "# Edge Cases Analysis\n\nYou are a database validation agent analyzing edge case handling. Report whether the warehouse provider correctly handles boundary conditions and unusual inputs.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and produce **structured validation findings** for edge case handling. Check:\n\n1. **NULL arithmetic**: NULL + 1, NULL * 0, NULL / NULL \u2014 should all return NULL\n2. **NULL comparisons**: NULL = NULL, NULL != NULL, NULL IS NULL, NULL IS NOT NULL\n3. **COALESCE**: COALESCE(NULL, NULL, 'value'), COALESCE with different types\n4. **CASE expressions**: CASE WHEN NULL THEN ... , nested CASE, CASE with type mixing\n5. **Empty strings**: '' vs NULL \u2014 are they distinct? Does LENGTH('') return 0?\n6. **Large numbers**: Values near int32/int64 boundaries, very large DECIMAL values\n7. **Timestamp edge cases**: Epoch (1970-01-01), far-future dates, timezone conversions\n8. **String edge cases**: Very long strings, Unicode characters, special characters in identifiers\n9. **Division by zero**: Does it error or return NULL/Infinity?\n10. **LIMIT/OFFSET**: LIMIT 0, OFFSET beyond row count\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Descriptive finding (e.g., 'NULL Arithmetic: All NULL Operations Return NULL Correctly')\",\n      \"description\": \"What edge cases were tested and how the provider handled them.\",\n      \"severity\": \"info|low|medium|high|critical\",\n      \"affected_count\": 5,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.90,\n      \"metrics\": {\n        \"test_status\": \"pass|warn|fail\",\n        \"component\": \"edge_cases\",\n        \"edge_case_category\": \"null_arithmetic\",\n        \"cases_tested\": 5,\n        \"cases_passed\": 5,\n        \"cases_failed\": 0\n      },\n      \"indicators\": [\n        \"NULL + 1 = NULL (correct)\",\n        \"NULL * 0 = NULL (correct)\",\n        \"NULL = NULL returned NULL/false (correct \u2014 NULL is not equal to NULL)\",\n        \"NULL IS NULL returned true (correct)\"\n      ],\n      \"target_segment\": \"Warehouse provider edge case handling\",\n      \"source_steps\": [40, 41, 42]\n    }\n  ]\n}\n```\n\n## Severity Mapping\n\n- **info**: Edge case handled correctly per SQL standard\n- **low**: Non-standard but harmless behavior (e.g., empty string treated as NULL)\n- **medium**: Unexpected behavior that could cause subtle bugs\n- **high**: Incorrect behavior that causes wrong results (e.g., NULL + 1 = 1)\n- **critical**: Edge case causes crash, timeout, or data corruption\n\n## Important Rules\n\n1. **Group by edge case category** (NULL handling, large numbers, strings, etc.)\n2. **Include exact input and output** for each test\n3. **Compare to SQL standard** \u2014 note deviations\n4. **If an edge case was not tested**, do not report on it\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+          }
+        ]
+      }
+    },
+    "profile_schema": {
+      "base": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "System Test Profile",
+        "description": "Profile for system validation runs. Provide context about what you are testing.",
+        "type": "object",
+        "properties": {
+          "test_config": {
+            "type": "object",
+            "title": "Test Configuration",
+            "properties": {
+              "test_notes": {
+                "type": "string",
+                "title": "Test Notes",
+                "description": "What you are testing, known issues to watch for, specific tables or types to focus on"
+              },
+              "focus_areas": {
+                "type": "array",
+                "title": "Focus Areas",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "connectivity",
+                    "schema_discovery",
+                    "type_mapping",
+                    "null_handling",
+                    "complex_queries",
+                    "edge_cases"
+                  ]
+                }
+              },
+              "expected_tables": {
+                "type": "integer",
+                "title": "Expected Table Count",
+                "description": "How many tables you expect the warehouse to have (0 = unknown)"
+              }
+            }
+          }
+        }
+      },
+      "categories": {}
+    }
+  }
+}

@@ -13,12 +13,13 @@ import (
 
 // Compile-time checks: mocks satisfy interfaces.
 var (
-	_ database.ProjectRepo   = (*mockProjectRepo)(nil)
-	_ database.DiscoveryRepo = (*mockDiscoveryRepo)(nil)
-	_ database.RunRepo       = (*mockRunRepo)(nil)
-	_ database.FeedbackRepo  = (*mockFeedbackRepo)(nil)
-	_ database.PricingRepo   = (*mockPricingRepo)(nil)
-	_ runner.Runner          = (*mockRunner)(nil)
+	_ database.ProjectRepo    = (*mockProjectRepo)(nil)
+	_ database.DiscoveryRepo  = (*mockDiscoveryRepo)(nil)
+	_ database.RunRepo        = (*mockRunRepo)(nil)
+	_ database.FeedbackRepo   = (*mockFeedbackRepo)(nil)
+	_ database.PricingRepo    = (*mockPricingRepo)(nil)
+	_ database.DomainPackRepo = (*mockDomainPackRepo)(nil)
+	_ runner.Runner           = (*mockRunner)(nil)
 )
 
 // mockProjectRepo implements database.ProjectRepo using an in-memory map.
@@ -412,6 +413,161 @@ func (m *mockFeedbackRepo) Delete(_ context.Context, id string) error {
 		}
 	}
 	return fmt.Errorf("feedback not found: %s", id)
+}
+
+// mockDomainPackRepo implements database.DomainPackRepo using an in-memory map.
+type mockDomainPackRepo struct {
+	mu     sync.Mutex
+	packs  map[string]*models.DomainPack
+	nextID int
+
+	createErr error
+	getErr    error
+	listErr   error
+	updateErr error
+	deleteErr error
+}
+
+func newMockDomainPackRepo() *mockDomainPackRepo {
+	return &mockDomainPackRepo{packs: make(map[string]*models.DomainPack)}
+}
+
+func (m *mockDomainPackRepo) Create(_ context.Context, pack *models.DomainPack) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.packs[pack.Slug]; exists {
+		return fmt.Errorf("domain pack with slug %q already exists", pack.Slug)
+	}
+	m.nextID++
+	pack.ID = fmt.Sprintf("dp-%d", m.nextID)
+	pack.CreatedAt = time.Now()
+	pack.UpdatedAt = time.Now()
+	stored := *pack
+	m.packs[pack.Slug] = &stored
+	return nil
+}
+
+func (m *mockDomainPackRepo) GetBySlug(_ context.Context, slug string) (*models.DomainPack, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.packs[slug]
+	if !ok {
+		return nil, nil
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (m *mockDomainPackRepo) GetByID(_ context.Context, id string) (*models.DomainPack, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.packs {
+		if p.ID == id {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockDomainPackRepo) List(_ context.Context, publishedOnly bool) ([]*models.DomainPack, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]*models.DomainPack, 0)
+	for _, p := range m.packs {
+		if publishedOnly && !p.IsPublished {
+			continue
+		}
+		cp := *p
+		result = append(result, &cp)
+	}
+	return result, nil
+}
+
+func (m *mockDomainPackRepo) Update(_ context.Context, slug string, pack *models.DomainPack) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.packs[slug]; !ok {
+		return fmt.Errorf("domain pack not found: %s", slug)
+	}
+	pack.UpdatedAt = time.Now()
+	stored := *pack
+	m.packs[slug] = &stored
+	return nil
+}
+
+func (m *mockDomainPackRepo) Delete(_ context.Context, slug string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.packs[slug]; !ok {
+		return fmt.Errorf("domain pack not found: %s", slug)
+	}
+	delete(m.packs, slug)
+	return nil
+}
+
+func (m *mockDomainPackRepo) add(pack *models.DomainPack) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pack.ID == "" {
+		m.nextID++
+		pack.ID = fmt.Sprintf("dp-%d", m.nextID)
+	}
+	m.packs[pack.Slug] = pack
+}
+
+// testDomainPack returns a minimal domain pack for testing.
+func testDomainPack(slug, category string) *models.DomainPack {
+	return &models.DomainPack{
+		Slug:        slug,
+		Name:        slug,
+		IsPublished: true,
+		Categories: []models.PackCategory{
+			{ID: category, Name: category, Description: "test category"},
+		},
+		Prompts: models.PackPrompts{
+			Base: models.BasePrompts{
+				BaseContext:     "Context: {{PROFILE}}\n{{PREVIOUS_CONTEXT}}",
+				Exploration:     "Explore {{DATASET}} using {{SCHEMA_INFO}} with {{FILTER}} {{FILTER_CONTEXT}} {{FILTER_RULE}} areas: {{ANALYSIS_AREAS}}",
+				Recommendations: "Recommend based on {{INSIGHTS_DATA}} summary: {{INSIGHTS_SUMMARY}} date: {{DISCOVERY_DATE}}",
+			},
+			Categories: map[string]models.CategoryPrompts{
+				category: {ExplorationContext: "Category-specific context for " + category},
+			},
+		},
+		AnalysisAreas: models.PackAnalysisAreas{
+			Base: []models.PackAnalysisArea{
+				{
+					ID: "test_area", Name: "Test Area", Description: "Test analysis area",
+					Keywords: []string{"test"}, Priority: 1,
+					Prompt: "Analyze {{DATASET}} with {{TOTAL_QUERIES}} queries: {{QUERY_RESULTS}}",
+				},
+			},
+			Categories: map[string][]models.PackAnalysisArea{},
+		},
+		ProfileSchema: models.PackProfileSchema{
+			Base:       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Categories: map[string]map[string]interface{}{},
+		},
+	}
 }
 
 // mockPricingRepo implements database.PricingRepo using a single in-memory value.

@@ -1,0 +1,914 @@
+{
+  "format": "decisionbox-domain-pack",
+  "format_version": 1,
+  "pack": {
+    "slug": "gaming",
+    "name": "Gaming",
+    "description": "AI-powered analytics for mobile and casual games — player churn, engagement patterns, monetization opportunities, and genre-specific insights",
+    "version": "1.0.0",
+    "is_published": true,
+    "categories": [
+      {
+        "id": "match3",
+        "name": "Match-3",
+        "description": "Puzzle games with match-3 mechanics (e.g., Candy Crush, Homescapes)"
+      },
+      {
+        "id": "idle",
+        "name": "Idle / Incremental",
+        "description": "Games focused on resource accumulation, prestige cycles, and offline progression (e.g., Cookie Clicker, Idle Heroes)"
+      },
+      {
+        "id": "casual",
+        "name": "Casual / Hyper-Casual",
+        "description": "Simple, accessible games with short sessions and broad appeal, often ad-monetized (e.g., Flappy Bird, Helix Jump)"
+      }
+    ],
+    "prompts": {
+      "base": {
+        "base_context": "## Project Profile\n\n{{PROFILE}}\n\n**IMPORTANT**: Use the project profile above to understand this specific game — its mechanics, monetization model, target audience, and business goals. Tailor all analysis and recommendations to THIS game. When the profile includes KPI targets (e.g., D1 retention target of 40%), use them to calibrate severity — if a metric is below target, that is more severe than a metric that simply declined.\n\n## Previous Discovery Context\n\n{{PREVIOUS_CONTEXT}}",
+        "exploration": "# Gaming Analytics Discovery\n\nYou are an expert gaming analytics AI. Your job is to autonomously explore data warehouse tables and discover actionable insights about player behavior, retention, engagement, and monetization.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Tables Available**: {{SCHEMA_INFO}}\n{{FILTER_CONTEXT}}\n\n## Your Task\n\nExplore the data systematically to find insights across these areas:\n\n{{ANALYSIS_AREAS}}\n\n## How To Explore\n\nExecute SQL queries to analyze the data. For each query, respond with JSON:\n\n```json\n{\n  \"thinking\": \"What I'm trying to discover and why\",\n  \"query\": \"SELECT ... FROM `{{DATASET}}.table` {{FILTER}} ...\"\n}\n```\n\n### Critical Rules\n\n1. **ALWAYS use fully qualified table names**: `` `{{DATASET}}.table_name` `` with backticks\n2. {{FILTER_RULE}}\n3. **ALWAYS use COUNT(DISTINCT user_id) when counting players**: Never use COUNT(*) or COUNT(user_id) without DISTINCT when reporting player/user counts. This prevents inflated numbers from multiple events per player.\n4. **Focus on insights, not just numbers**: Look for patterns, anomalies, trends, and correlations.\n5. **Quantify impact**: How many players? What percentage of the total base? What's the business impact?\n6. **Validate segment sizes**: Ensure they're reasonable relative to the total user base.\n7. **Always scope queries by date**: Include date filters (e.g., last 30 days, last 7 days) to avoid scanning entire history. Never query without a date range.\n8. **Use the exploration budget wisely**: You have a limited number of queries. Start broad, then drill into the most promising patterns.\n\n## Exploration Strategy\n\nFollow this strategy for thorough data exploration:\n\n### Phase A: Understand the landscape (first 10-15% of budget)\n- Check **data freshness**: What is the most recent date in the data? How far back does it go?\n- Get **total player counts**: DAU, WAU, MAU for the most recent period\n- Understand **table relationships**: Which tables join on what keys?\n- Get **baseline metrics**: overall retention rates, average session duration, revenue per user\n\n### Phase B: Deep-dive into each analysis area (60-70% of budget)\n- For each analysis area, run 3-5 queries that progress from broad to specific\n- Look for **anomalies**: metrics that deviate significantly from the baseline\n- **Segment comparisons**: new vs returning, platform (iOS vs Android), payer vs non-payer, country/region\n- **Temporal trends**: compare last 7 days vs previous 7 days, last 30 days vs previous 30 days\n\n### Phase C: Cross-area correlations (15-20% of budget)\n- Do players who churn show specific engagement patterns beforehand?\n- Does monetization behavior correlate with retention?\n- Are there specific player segments that behave differently across all areas?\n- What leading indicators predict positive or negative outcomes?\n\n## When You're Done\n\nAfter thorough exploration, respond with:\n\n```json\n{\n  \"done\": true,\n  \"summary\": \"Brief overview of what you discovered across all areas\"\n}\n```\n\n## Tips\n\n- Start broad (overall metrics) then drill down (specific issues)\n- Compare segments: new vs returning, paying vs free, iOS vs Android, different cohorts\n- Look for changes over time: improving or declining trends\n- Connect patterns across different metrics — churn often correlates with engagement drops\n- Think about \"why\" not just \"what\" — root causes, not just symptoms\n- When you find something interesting, validate it with a follow-up query from a different angle\n- Pay attention to statistical significance — small player counts may not be meaningful\n\n## Example Queries\n\n**Data Freshness Check**:\n```sql\nSELECT MIN(event_date) as earliest_date, MAX(event_date) as latest_date,\n       COUNT(DISTINCT event_date) as total_days,\n       COUNT(DISTINCT user_id) as total_users\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n```\n\n**Retention Cohort Analysis**:\n```sql\nSELECT cohort_date, cohort_size, day_1_retention, day_7_retention, day_30_retention\nFROM `{{DATASET}}.app_retention_cohorts_summary`\n{{FILTER}}\nORDER BY cohort_date DESC\nLIMIT 30\n```\n\n**Engagement Segmentation**:\n```sql\nSELECT\n  CASE\n    WHEN total_sessions \u003e= 20 THEN 'power_user'\n    WHEN total_sessions \u003e= 5 THEN 'regular'\n    ELSE 'casual'\n  END as player_segment,\n  COUNT(DISTINCT user_id) as player_count,\n  AVG(avg_session_duration_minutes) as avg_session_min,\n  AVG(days_active) as avg_days_active\nFROM `{{DATASET}}.user_engagement_summary`\n{{FILTER}}\nGROUP BY player_segment\nORDER BY player_count DESC\n```\n\n**Monetization Overview**:\n```sql\nSELECT\n  COUNT(DISTINCT user_id) as total_payers,\n  SUM(total_revenue) as total_revenue,\n  AVG(total_revenue) as avg_revenue_per_payer,\n  AVG(first_purchase_day) as avg_days_to_first_purchase\nFROM `{{DATASET}}.user_revenue_summary`\n{{FILTER}}\n  AND total_revenue \u003e 0\n```\n\n**Week-over-Week Trend**:\n```sql\nSELECT\n  DATE_TRUNC(event_date, WEEK) as week,\n  COUNT(DISTINCT user_id) as wau,\n  AVG(session_duration_minutes) as avg_session_duration,\n  COUNT(*) / COUNT(DISTINCT user_id) as sessions_per_user\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 8 WEEK)\nGROUP BY week\nORDER BY week DESC\n```\n\n**Churn Risk Identification**:\n```sql\nSELECT user_id, last_active_date, total_sessions, avg_session_duration_minutes,\n       highest_level_reached, days_since_last_active\nFROM `{{DATASET}}.user_churn_features`\n{{FILTER}}\n  AND days_since_last_active BETWEEN 7 AND 30\n  AND total_sessions \u003e= 5\nORDER BY total_sessions DESC\nLIMIT 100\n```\n\nLet's begin! Start by understanding the data landscape — check data freshness, table structure, and baseline metrics before diving into specific analysis areas.",
+        "recommendations": "# Generate Actionable Recommendations\n\nYou are a gaming analytics expert creating **specific, actionable recommendations** based on discovered patterns. Every recommendation must be concrete enough that a game developer could implement it immediately.\n\n## Context\n\n**Discovery Date**: {{DISCOVERY_DATE}}\n**Insights Found**: {{INSIGHTS_SUMMARY}}\n\n## Your Task\n\nGenerate **specific, actionable recommendations** that can be immediately implemented. Each recommendation must include:\n\n1. **Clear action** — What exactly to do, with specific parameters\n2. **Target segment** — Who to target, with exact criteria that can be used for segmentation\n3. **Expected impact** — Quantified expected results based on the data\n4. **Implementation steps** — Concrete steps to implement this recommendation\n\n## Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"recommendations\": [\n    {\n      \"title\": \"Action — Context (e.g., 'Grant 3 Extra Lives After 3 Consecutive Failures on Level 42')\",\n      \"description\": \"Detailed explanation with numbers. What is the problem? How big is the impact? Why does this recommendation address it? What evidence supports it?\",\n      \"category\": \"churn|engagement|monetization|difficulty|growth\",\n      \"priority\": 1,\n      \"effort\": \"quick_win|moderate|major_initiative\",\n      \"target_segment\": \"Exact segment definition with measurable criteria (e.g., 'Players who failed level 42 three or more times and have not made a purchase')\",\n      \"segment_size\": 1234,\n      \"expected_impact\": {\n        \"metric\": \"retention_rate|revenue|engagement|completion_rate|conversion_rate\",\n        \"estimated_improvement\": \"15-20%\",\n        \"reasoning\": \"Why we expect this improvement, with supporting data points from the analysis\"\n      },\n      \"actions\": [\n        \"Specific implementation step 1 with parameters\",\n        \"Specific implementation step 2 with parameters\",\n        \"Specific implementation step 3 with parameters\"\n      ],\n      \"success_metrics\": [\n        \"Track completion rate for level 42 (target: increase from 22% to 35%)\",\n        \"Monitor D7 retention for this segment (target: improve by 15%)\"\n      ],\n      \"related_insight_ids\": [\"insight-id-1\", \"insight-id-2\"],\n      \"confidence\": 0.85\n    }\n  ]\n}\n```\n\n**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — an array of insight `id` values from the input data that this recommendation addresses. Copy the exact `id` values from the insights provided below.\n\n## Requirements\n\n### DO create recommendations that are:\n- **Specific**: Exact numbers, levels, timeframes, thresholds, parameter values\n- **Actionable**: A developer knows exactly what to implement after reading this\n- **Measurable**: Clear success metrics with baseline and target values\n- **Data-backed**: Every recommendation is grounded in the insights, not generic advice\n\n### DON'T create recommendations that are:\n- Generic (\"improve retention\", \"optimize monetization\")\n- Vague (\"monitor metrics\", \"A/B test something\", \"segment your users\")\n- Missing numbers or specifics\n- Not supported by the discovered insights\n- Duplicating another recommendation with different wording\n\n### Effort Scale:\n- **quick_win**: Can be implemented in hours to a day. Configuration change, targeted message, parameter adjustment.\n- **moderate**: Requires development work, typically 1-2 weeks. New feature, UI change, new event tracking.\n- **major_initiative**: Significant engineering effort, typically weeks to months. System redesign, new content, new game mechanic.\n\n### Priority Scale (P1 = highest):\n- **1 (Critical)**: Large player base affected AND high revenue/retention impact. Do this first.\n- **2 (High)**: Significant impact, implement soon. Strong evidence and clear path to implementation.\n- **3 (Medium)**: Moderate impact. Worth doing but not urgent.\n- **4 (Low)**: Nice to have. Small improvement or low-confidence opportunity.\n- **5 (Optional)**: Minor improvement. Consider if resources are available.\n\n## Recommendation Quality Checklist\n\nBefore including a recommendation, verify:\n- Does it reference specific insights from the data? (related_insight_ids)\n- Is the target segment precisely defined with measurable criteria?\n- Can a developer implement this without asking clarifying questions?\n- Are the success_metrics specific enough to measure impact?\n- Is the expected_impact realistic based on the data?\n\n## Discovered Insights\n\n{{INSIGHTS_DATA}}\n\n---\n\nGenerate 3-8 specific, actionable recommendations. Prioritize by impact and urgency. Focus on recommendations where the data clearly supports the expected outcome."
+      },
+      "categories": {
+        "casual": {
+          "exploration_context": "## Casual / Hyper-Casual Game Context\n\nThis is a **casual or hyper-casual game** characterized by simple mechanics, short sessions, and broad audience appeal. Key aspects to explore:\n\n- **Session brevity**: Sessions are typically very short (30 seconds to 5 minutes for hyper-casual, 3-10 minutes for casual). Analyze session duration distributions, sessions per day, and how session patterns predict retention.\n- **Onboarding \u0026 first session**: The first 30-60 seconds determine whether a player returns. Analyze first-session completion rates, tutorial skip rates, and first-session-to-second-session conversion.\n- **Core loop engagement**: Casual games have a tight core loop (play → result → reward → play again). Measure loops per session, loop completion rates, and at what point players break the loop to leave.\n- **Ad monetization**: Casual/hyper-casual games are heavily ad-dependent. Analyze ad frequency, format mix (interstitial vs rewarded vs banner), eCPM trends, and the critical balance between ad revenue and user retention.\n- **Ad tolerance**: Too many ads drive players away. Analyze the relationship between ad frequency and churn. Find the optimal ad frequency that maximizes revenue without destroying retention.\n- **Feature discovery**: Many casual players never discover secondary features (daily challenges, achievements, social features). Track what percentage of players encounter each feature and whether it correlates with retention.\n- **Viral \u0026 social mechanics**: If the game has sharing, challenges, or referrals, analyze their effectiveness as acquisition and retention drivers.\n- **Content freshness**: Casual players get bored quickly. If the game has levels/stages/content, analyze how quickly players exhaust content and whether new content drops correlate with re-engagement.\n\n### Casual Game Example Queries\n\n**First Session Funnel**:\n```sql\nSELECT\n  onboarding_step,\n  COUNT(DISTINCT user_id) as players_reached,\n  COUNT(DISTINCT CASE WHEN completed = true THEN user_id END) as players_completed\nFROM `{{DATASET}}.onboarding_events`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY onboarding_step\nORDER BY onboarding_step\n```\n\n**Session Duration Distribution**:\n```sql\nSELECT\n  CASE\n    WHEN session_duration_seconds \u003c 30 THEN 'under_30s'\n    WHEN session_duration_seconds \u003c 60 THEN '30s_to_1m'\n    WHEN session_duration_seconds \u003c 180 THEN '1m_to_3m'\n    WHEN session_duration_seconds \u003c 300 THEN '3m_to_5m'\n    ELSE 'over_5m'\n  END as duration_bucket,\n  COUNT(DISTINCT user_id) as unique_players,\n  COUNT(*) as total_sessions,\n  AVG(core_loops_completed) as avg_loops\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)\nGROUP BY duration_bucket\nORDER BY duration_bucket\n```\n\n**Ad Frequency vs Retention**:\n```sql\nSELECT\n  CASE\n    WHEN ads_shown_per_session \u003c 2 THEN 'low_ads'\n    WHEN ads_shown_per_session \u003c 5 THEN 'medium_ads'\n    ELSE 'high_ads'\n  END as ad_frequency,\n  COUNT(DISTINCT user_id) as players,\n  AVG(day_1_returned) as d1_retention,\n  AVG(day_7_returned) as d7_retention\nFROM `{{DATASET}}.user_ad_exposure`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY ad_frequency\n```\n\n**Core Loop Completion**:\n```sql\nSELECT\n  session_number,\n  AVG(core_loops_completed) as avg_loops,\n  AVG(session_duration_seconds) as avg_duration,\n  COUNT(DISTINCT user_id) as players\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\n  AND session_number \u003c= 10\nGROUP BY session_number\nORDER BY session_number\n```\n\n**Feature Discovery Rate**:\n```sql\nSELECT\n  feature_name,\n  COUNT(DISTINCT user_id) as users_discovered,\n  AVG(session_number_discovered) as avg_session_discovered,\n  AVG(CASE WHEN day_7_retained = true THEN 1.0 ELSE 0.0 END) as d7_retention_if_discovered\nFROM `{{DATASET}}.feature_discovery`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY feature_name\nORDER BY users_discovered DESC\n```"
+        },
+        "idle": {
+          "exploration_context": "## Idle / Incremental Game Context\n\nThis is an **idle/incremental game** where players progress by accumulating resources over time, both actively and passively. Key aspects to explore:\n\n- **Offline earnings**: Players earn resources while not playing. Analyze offline earning rates, return patterns, and whether offline rewards feel satisfying enough to drive re-engagement. If offline earnings are too low, players stop returning. If too high, active play feels unrewarding.\n- **Prestige/rebirth cycles**: Most idle games have a reset mechanic where players restart with permanent bonuses. Analyze prestige timing, how many cycles players complete before churning, and whether the prestige rewards feel worth the reset.\n- **Upgrade progression**: Players purchase upgrades (generators, multipliers, automation) that increase resource production. Look for pricing bottlenecks where progression stalls, and identify upgrade tiers that players skip or avoid.\n- **Session patterns**: Idle game sessions tend to be very short (check-ins of 1-3 minutes) but frequent (3-10+ times per day). Analyze session frequency, duration, and how they evolve as players progress through the game.\n- **Currency economy**: Most idle games have soft currency (earned through gameplay) and hard currency (earned through ads/IAP). Track inflation — is soft currency becoming worthless? Is the earn-to-spend ratio sustainable?\n- **Monetization**: Typically rewarded video ads (2x offline earnings, instant boosts) and IAP (premium currency, time skips, automation unlocks). Analyze ad watch frequency, tolerance, and conversion to IAP.\n- **Milestone pacing**: Key unlocks (new worlds, new generators, automation features) drive continued play. Are milestones spaced well? Do players quit between milestones?\n\n### Idle Game Example Queries\n\n**Prestige Cycle Analysis**:\n```sql\nSELECT\n  prestige_count,\n  COUNT(DISTINCT user_id) as players,\n  AVG(time_to_prestige_hours) as avg_hours_to_prestige,\n  AVG(prestige_multiplier_gained) as avg_multiplier\nFROM `{{DATASET}}.prestige_events`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY prestige_count\nORDER BY prestige_count\n```\n\n**Offline Earnings Effectiveness**:\n```sql\nSELECT\n  CASE\n    WHEN offline_duration_hours \u003c 1 THEN 'under_1h'\n    WHEN offline_duration_hours \u003c 4 THEN '1_to_4h'\n    WHEN offline_duration_hours \u003c 12 THEN '4_to_12h'\n    ELSE 'over_12h'\n  END as offline_bucket,\n  COUNT(DISTINCT user_id) as players,\n  AVG(offline_earnings_collected) as avg_earnings,\n  AVG(session_duration_seconds) as avg_session_after_return\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\n  AND offline_duration_hours \u003e 0\nGROUP BY offline_bucket\nORDER BY offline_bucket\n```\n\n**Upgrade Purchase Velocity**:\n```sql\nSELECT\n  upgrade_name,\n  upgrade_tier,\n  COUNT(DISTINCT user_id) as purchasers,\n  AVG(player_day) as avg_day_purchased,\n  AVG(cost) as avg_cost\nFROM `{{DATASET}}.upgrade_purchases`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY upgrade_name, upgrade_tier\nORDER BY upgrade_name, upgrade_tier\n```\n\n**Session Check-in Frequency**:\n```sql\nSELECT\n  user_id,\n  COUNT(*) as sessions_per_day,\n  AVG(session_duration_seconds) as avg_session_seconds,\n  MAX(highest_stage_reached) as max_stage\nFROM `{{DATASET}}.sessions`\n{{FILTER}}\n  AND event_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)\nGROUP BY user_id\nHAVING sessions_per_day \u003e= 2\nORDER BY sessions_per_day DESC\nLIMIT 100\n```"
+        },
+        "match3": {
+          "exploration_context": "## Match-3 Game Context\n\nThis is a **match-3 puzzle game**. Key aspects to explore:\n\n- **Level progression**: Players progress through sequential levels organized into chapters/episodes. Look for difficulty spikes, quit rates per level, progression bottlenecks, and chapter transition drop-offs. Identify levels where the largest cohort of players gets permanently stuck.\n- **Boosters/power-ups**: Items like Hint, Magnet, Extra Life, Hammer that help players pass levels. Analyze usage patterns, purchase vs earned ratios, depletion timing, and correlation with level completion and retention.\n- **Lives system**: Players have limited lives. Running out of lives creates churn risk. Analyze life depletion patterns, recovery times, and whether players wait, watch ads, or pay to refill.\n- **Star rating system**: Many match-3 games rate level completion (1-3 stars). Analyze star distribution, replay motivation, and perfectionist behavior.\n- **Session patterns**: Match-3 players tend to have short-to-medium sessions (3-15 minutes). Look for session duration trends, session frequency by day of week, and how sessions evolve as players progress.\n- **Monetization**: Typically freemium with IAP (booster packs, extra moves, no-ads) and rewarded video ads. Analyze conversion funnels, first-purchase triggers, and what in-game moments drive purchases.\n- **Economy balance**: Track the flow of in-game currencies — how fast do players earn vs spend coins/boosters? Is there inflation? Are players running out too early or hoarding?\n- **Social features**: If the game has teams, leaderboards, or gifting, analyze social engagement and its correlation with retention.\n\n### Match-3 Example Queries\n\n**Level Difficulty Analysis**:\n```sql\nSELECT level_number, quit_rate, success_rate, avg_attempts_per_player,\n       COUNT(DISTINCT user_id) as unique_players\nFROM `{{DATASET}}.level_performance_weekly_trends`\n{{FILTER}}\n  AND week_start_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY level_number, quit_rate, success_rate, avg_attempts_per_player\nHAVING quit_rate \u003e 0.3 OR success_rate \u003c 0.4\nORDER BY quit_rate DESC\nLIMIT 20\n```\n\n**Booster Usage Patterns**:\n```sql\nSELECT booster_name,\n       COUNT(DISTINCT user_id) as unique_users,\n       COUNT(*) as total_uses,\n       AVG(level_number) as avg_level_used\nFROM `{{DATASET}}.booster_usage`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY booster_name\nORDER BY total_uses DESC\n```\n\n**Chapter Transition Drop-off**:\n```sql\nSELECT\n  CAST(FLOOR((level_number - 1) / 20) + 1 AS INT64) as chapter,\n  COUNT(DISTINCT user_id) as players_reached,\n  MIN(level_number) as chapter_start_level\nFROM `{{DATASET}}.user_level_progress`\n{{FILTER}}\nGROUP BY chapter\nORDER BY chapter\n```\n\n**Economy Balance — Booster Earn vs Spend**:\n```sql\nSELECT\n  booster_name,\n  SUM(CASE WHEN transaction_type = 'earn' THEN quantity ELSE 0 END) as total_earned,\n  SUM(CASE WHEN transaction_type = 'spend' THEN quantity ELSE 0 END) as total_spent,\n  COUNT(DISTINCT user_id) as unique_users\nFROM `{{DATASET}}.economy_transactions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY booster_name\nORDER BY total_spent DESC\n```\n\n**Star Rating Distribution**:\n```sql\nSELECT level_number,\n       stars_earned,\n       COUNT(DISTINCT user_id) as player_count\nFROM `{{DATASET}}.level_completions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY level_number, stars_earned\nORDER BY level_number, stars_earned\n```"
+        }
+      }
+    },
+    "analysis_areas": {
+      "base": [
+        {
+          "id": "churn",
+          "name": "Churn Risks",
+          "description": "Players at risk of leaving the game — identify churn patterns across the player lifecycle (tutorial, early, mid, late-game)",
+          "keywords": [
+            "churn",
+            "retention",
+            "cohort",
+            "day_",
+            "d1_",
+            "d7_",
+            "d30_",
+            "inactive",
+            "lapsed",
+            "last_active",
+            "days_since",
+            "dropout",
+            "abandon"
+          ],
+          "priority": 1,
+          "prompt": "# Churn Pattern Analysis\n\nYou are a gaming analytics expert analyzing player churn patterns. Your goal is to identify specific, data-backed churn risks with actionable detail.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific churn patterns** with exact numbers and percentages. Look across the full player lifecycle — from first-session abandonment to late-game attrition.\n\n## Churn Lifecycle Stages\n\nPay attention to WHERE in the lifecycle churn occurs:\n\n- **Tutorial churn** (Session 1): Players who never complete onboarding. Often a UX/difficulty issue.\n- **Early churn** (Day 0-3): Players who tried the game but didn't form a habit. Often a content/hook issue.\n- **Mid-game churn** (Day 4-14): Players who engaged initially but lost interest. Often a progression/difficulty issue.\n- **Late-game churn** (Day 14+): Established players leaving. Often a content exhaustion or social/competitive issue.\n- **Reactivation potential**: Previously churned players who might return with the right trigger.\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Specific descriptive name (e.g., 'Day 1 Post-Tutorial Churn: 67% Never Return')\",\n      \"description\": \"Detailed description with exact percentages and player counts. Include the lifecycle stage, what behavior patterns precede the churn, and why this matters for the business.\",\n      \"severity\": \"critical|high|medium|low\",\n      \"affected_count\": 2847,\n      \"risk_score\": 0.68,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"churn_rate\": 0.68,\n        \"lifecycle_stage\": \"early|mid|late|tutorial\",\n        \"avg_sessions_before_churn\": 3.2,\n        \"avg_days_active\": 1.5,\n        \"avg_ltv\": 0.0,\n        \"reactivation_potential\": \"high|medium|low\"\n      },\n      \"indicators\": [\n        \"Session duration drop: 12.5min to 4.2min (-66%)\",\n        \"Only 32% return after Day 1\",\n        \"0% purchase rate in this segment\"\n      ],\n      \"target_segment\": \"New players who completed tutorial but churned within 72 hours\",\n      \"source_steps\": [1, 3, 5]\n    }\n  ]\n}\n```\n\n## Field Guidelines\n\n- **source_steps**: List the step numbers from the query results below that this insight is based on. Each query result has a \"step\" field — cite the specific steps you used to draw this conclusion. This is critical for transparency.\n- **lifecycle_stage**: Classify each churn pattern by when it occurs in the player lifecycle.\n- **reactivation_potential**: Estimate based on player investment. Players with more sessions/progress/spending are more likely to return with the right incentive.\n\n## Severity Calibration\n\nWhen the project profile includes KPI targets, calibrate severity against them:\n- **critical**: Churn rate 2x or more above acceptable threshold, OR affects \u003e20% of active players, OR directly impacts revenue\n- **high**: Churn rate significantly above target, affects 10-20% of players\n- **medium**: Churn rate moderately above target, affects 5-10% of players\n- **low**: Slightly elevated churn, affects \u003c5% of players, or affects a non-critical segment\n\n## Quality Standards\n\n- **Name**: Be VERY specific — include the lifecycle stage, time period, cohort, or segment in the name\n- **Description**: Must include exact percentages, player counts, specific behaviors, time periods, and WHY this pattern matters\n- **affected_count**: Actual count from data (COUNT(DISTINCT user_id)), not estimates\n- **risk_score**: 0.0-1.0 based on actual churn rate from the data\n- **indicators**: 3-5 specific data points with exact numbers that support this pattern\n- **Minimum affected**: Only include patterns affecting 50+ players\n- **Platform segmentation**: If data shows iOS vs Android differ by \u003e10%, report them separately\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **Be extremely specific** — exact percentages, counts, time periods\n3. **If no churn patterns found**, return `{\"insights\": []}`\n4. **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id), NOT total row counts or total event counts\n5. **Don't duplicate**: Each insight should describe a unique pattern, not the same data from different angles\n6. **Prioritize actionable patterns**: Patterns where the cause is identifiable and intervention is possible are more valuable\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "engagement",
+          "name": "Engagement Patterns",
+          "description": "Player behavior and session trends — frequency, depth, quality, and evolution of engagement over time and across segments",
+          "keywords": [
+            "session",
+            "engagement",
+            "duration",
+            "frequency",
+            "active",
+            "dau",
+            "mau",
+            "wau",
+            "playtime",
+            "login",
+            "daily_active",
+            "weekly_active",
+            "session_count"
+          ],
+          "priority": 2,
+          "prompt": "# Engagement Trends Analysis\n\nYou are a gaming analytics expert analyzing player engagement patterns and trends. Your goal is to identify meaningful shifts in how players interact with the game — both positive trends to amplify and negative trends to address.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **significant engagement trends** with exact metrics. Look beyond simple session counts — analyze engagement quality, depth, and evolution over time and across segments.\n\n## Engagement Dimensions to Analyze\n\n- **Session frequency**: How often players return (DAU/MAU ratio, sessions per week)\n- **Session depth**: How long and how deeply players engage per session (duration, actions per session, features used)\n- **Engagement evolution**: How engagement changes as players age (Day 1 vs Day 7 vs Day 30 behavior)\n- **Segment differences**: How engagement varies by player type (new vs returning, payer vs free, platform, region)\n- **Feature engagement**: Which game features drive the most engagement time\n- **Session timing**: When players play (time of day, day of week patterns)\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Power User Session Frequency Decline\",\n      \"description\": \"Players with 20+ sessions show declining engagement. Average sessions per week dropped from 5.2 to 3.8 over last 30 days (-27%). This segment represents 12% of DAU but 45% of revenue, making this a high-priority trend.\",\n      \"severity\": \"high\",\n      \"affected_count\": 1240,\n      \"risk_score\": 0.6,\n      \"confidence\": 0.8,\n      \"metrics\": {\n        \"primary_metric\": \"sessions_per_week\",\n        \"current_value\": 3.8,\n        \"previous_value\": 5.2,\n        \"change_percent\": -27.0,\n        \"trend_type\": \"decreasing\",\n        \"trend_duration_days\": 30,\n        \"segment_share_of_dau\": 0.12\n      },\n      \"indicators\": [\n        \"Sessions per week: 5.2 to 3.8 (-27%) over 30 days\",\n        \"Affects 1,240 high-value users (12% of DAU)\",\n        \"Average session duration also declined: 18min to 14min (-22%)\",\n        \"This segment generates 45% of total revenue\"\n      ],\n      \"target_segment\": \"Power users with 20+ lifetime sessions\",\n      \"source_steps\": [2, 4]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Trend Classification\n\n- **trend_type values**:\n  - `increasing`: Sustained growth \u003e+5% over the measurement period\n  - `decreasing`: Sustained decline \u003c-5% over the measurement period\n  - `stable`: Fluctuating within -5% to +5%\n  - `spike`: Sudden change \u003e20% in a single period (investigate cause)\n  - `seasonal`: Recurring pattern tied to day-of-week or time-of-year\n\n## Severity Calibration\n\n- **critical**: Core engagement metric (DAU, session frequency) declining \u003e15%, OR affects paying users disproportionately\n- **high**: Significant engagement shift (\u003e10%) in a meaningful segment, OR a positive trend worth amplifying\n- **medium**: Moderate change (5-10%), or affects a smaller segment\n- **low**: Minor fluctuation, or only affects edge-case players\n\nPositive trends (increasing engagement) should also be reported — they indicate what's working and should be amplified.\n\n## Quality Standards\n\n- **Significant changes only**: At least 5% change OR affecting 50+ players\n- **Calculate exact percentage changes**: ((current - previous) / previous) * 100\n- **Include trend duration**: How long has this trend been active? (7 days, 30 days, etc.)\n- **Context matters**: A 10% drop in a segment of 50 players is less important than a 5% drop across 5,000 players\n- **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id)\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **If no significant trends found**, return `{\"insights\": []}`\n3. **Compare time periods**: current vs previous week/month — don't report single-point metrics as \"trends\"\n4. **Report both positive and negative trends** — positive trends help identify what's working\n5. **Segment-level insights are valuable**: \"Android engagement dropped 15% while iOS remained stable\" is more useful than \"overall engagement dropped 8%\"\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "monetization",
+          "name": "Monetization Opportunities",
+          "description": "Revenue optimization and conversion opportunities — payer conversion, IAP analysis, ad monetization, LTV, and revenue-at-risk detection",
+          "keywords": [
+            "purchase",
+            "iap",
+            "revenue",
+            "payer",
+            "currency",
+            "spend",
+            "arpu",
+            "ltv",
+            "conversion",
+            "transaction",
+            "price",
+            "offer",
+            "ad_revenue",
+            "rewarded",
+            "whale"
+          ],
+          "priority": 3,
+          "prompt": "# Monetization Opportunities Analysis\n\nYou are a gaming analytics expert analyzing monetization patterns and revenue opportunities. Your goal is to identify specific, quantified opportunities to improve revenue — whether through better conversion, smarter pricing, ad optimization, or reducing revenue-at-risk from whale churn.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific monetization opportunities** with quantified potential value. Look across the entire monetization funnel — from first exposure to repeat purchasing, ad engagement, and LTV optimization.\n\n## Monetization Dimensions to Analyze\n\n- **Conversion funnel**: Where do potential payers drop off? What triggers the first purchase?\n- **Payer segmentation**: Minnows (\u003c$5), Dolphins ($5-50), Whales ($50+) — behavior differences\n- **First purchase triggers**: What in-game events or situations lead to the first IAP?\n- **Revenue concentration risk**: How concentrated is revenue in top spenders? (whale dependency)\n- **Ad monetization**: Rewarded video engagement, ad frequency tolerance, eCPM trends\n- **Purchase timing**: When in the player lifecycle do purchases happen? What events precede them?\n- **Bundle and offer effectiveness**: Which offers convert best? Price point analysis\n- **LTV by cohort**: How does lifetime value evolve across acquisition cohorts?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"High-Intent Non-Payers: 1,250 Players Ready to Convert\",\n      \"description\": \"1,250 players have 10+ sessions, reach level 15+, but never purchased. They show 85% engagement with optional content and 3.2 sessions/week. Based on similar segments, estimated 8-12% would convert with a targeted first-purchase offer at $1.99-$2.99.\",\n      \"severity\": \"high\",\n      \"affected_count\": 1250,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.8,\n      \"metrics\": {\n        \"opportunity_type\": \"conversion\",\n        \"segment_size\": 1250,\n        \"estimated_value_per_user\": 5.50,\n        \"total_potential\": 6875.00,\n        \"conversion_estimate\": 0.10,\n        \"current_conversion_rate\": 0.0,\n        \"benchmark_comparison\": \"Similar engaged segments convert at 8-12%\"\n      },\n      \"indicators\": [\n        \"10+ sessions average with 3.2 sessions/week\",\n        \"85% engagement with optional content\",\n        \"Zero purchases to date\",\n        \"Average session duration 14.5 minutes (above median)\"\n      ],\n      \"target_segment\": \"Engaged non-payers with 10+ sessions and level 15+\",\n      \"source_steps\": [3, 6]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Opportunity Types\n\n- **conversion**: Non-payers who show high engagement and could be converted with the right offer\n- **upsell**: Existing payers who could increase spend (e.g., upgrade from small to medium packs)\n- **retention_revenue**: Revenue at risk from churning payers (whale dependency, declining spender activity)\n- **pricing**: Price points that are suboptimal (too high for conversion, too low for revenue capture)\n- **ad_optimization**: Rewarded ad improvements (frequency, placement, reward value)\n- **first_purchase**: Opportunities to trigger first-ever purchases (starter packs, limited offers)\n- **bundle_optimization**: Offer/bundle composition improvements based on purchase patterns\n- **whale_risk**: Revenue concentration risk from top spender dependency\n\n## Severity Calibration\n\n- **critical**: Revenue declining or whale churn detected (revenue at risk), OR \u003e$10,000 monthly potential\n- **high**: Clear conversion opportunity with strong intent signals, OR $1,000-$10,000 monthly potential\n- **medium**: Moderate opportunity requiring more validation, OR $100-$1,000 monthly potential\n- **low**: Small optimization or long-term opportunity, OR \u003c$100 monthly potential\n\n## Quality Standards\n\n- **Realistic value estimates**: Base on actual player behavior and comparable segments, not optimistic projections\n- **Strong intent signals required**: Don't flag every non-payer — require evidence of engagement, progression, or ad interaction\n- **Minimum segment size**: 50+ players for any opportunity\n- **CRITICAL — Validate user counts**: segment sizes must be COUNT(DISTINCT user_id)\n- **Show your math**: When estimating potential value, explain the calculation (segment_size * conversion_estimate * avg_value)\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **If no clear opportunities found**, return `{\"insights\": []}`\n3. **Revenue at risk is as important as new revenue**: Declining whale activity or payer churn should be flagged\n4. **Consider the game's monetization model**: A freemium game has different opportunities than a premium or ad-supported game. Reference the project profile.\n5. **Don't report obvious facts as insights**: \"Most players don't pay\" is not an insight. \"Players who watch 3+ rewarded videos have 4x higher conversion rate\" IS an insight.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        }
+      ],
+      "categories": {
+        "casual": [
+          {
+            "id": "ad_performance",
+            "name": "Ad Performance",
+            "description": "Ad frequency impact, eCPM trends, user tolerance thresholds, rewarded vs interstitial effectiveness, and opt-in rates",
+            "keywords": [
+              "ad",
+              "interstitial",
+              "rewarded",
+              "banner",
+              "ecpm",
+              "impression",
+              "ad_revenue",
+              "frequency",
+              "opt_in",
+              "ad_watch",
+              "mediation"
+            ],
+            "priority": 4,
+            "prompt": "# Ad Performance Analysis\n\nYou are a gaming analytics expert analyzing ad monetization patterns in a casual or hyper-casual game. Your goal is to identify the optimal balance between ad revenue and user retention — the point where ad frequency maximizes total lifetime ad revenue without driving players away.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **ad performance patterns** — revenue opportunities, tolerance thresholds, format effectiveness, and retention impact.\n\n## What to Look For\n\n- **Ad tolerance threshold**: At what ad frequency does retention start dropping significantly? This is the most important metric for ad-supported games.\n- **Format effectiveness**: Rewarded ads vs interstitial vs banner — which generate the most revenue per impression? Which have the lowest churn impact?\n- **Rewarded ad opt-in rates**: What percentage of players voluntarily watch rewarded ads? What rewards drive the highest opt-in?\n- **eCPM trends**: Are eCPMs stable, rising, or declining? By platform (iOS vs Android), by country, by ad network?\n- **Ad fatigue**: Do players who see many ads gradually reduce engagement? At what point does fatigue set in?\n- **Session-level impact**: How do ads placed at different session points (beginning, mid-session, between core loops, end) affect session duration and return rate?\n- **Revenue per user segmentation**: How does ARPDAU (average revenue per daily active user) vary by player segment, platform, and geography?\n- **Non-ad-watchers**: What percentage of players never watch a rewarded ad? Are they being served too many interstitials to compensate?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Ad Tolerance Cliff at 6+ Interstitials Per Session\",\n      \"description\": \"Players shown 6+ interstitial ads per session have 42% lower D1 retention (18%) compared to players shown 3-5 ads (31%). Players shown 1-2 ads retain at 38%. The revenue gain from high-frequency ads (+$0.03 ARPDAU) is offset by a 45% drop in D7 retention, resulting in 28% lower lifetime ad revenue per user. 3,200 players are currently in the high-frequency group.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 3200,\n      \"risk_score\": 0.42,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"pattern_type\": \"tolerance_threshold\",\n        \"threshold_ads_per_session\": 6,\n        \"retention_below_threshold\": 0.31,\n        \"retention_above_threshold\": 0.18,\n        \"retention_drop_percent\": -42.0,\n        \"arpdau_below_threshold\": 0.08,\n        \"arpdau_above_threshold\": 0.11,\n        \"estimated_ltv_impact\": -0.28\n      },\n      \"indicators\": [\n        \"D1 retention drops from 31% (3-5 ads) to 18% (6+ ads) — a 42% decline\",\n        \"D7 retention drops from 14% to 7.7% — a 45% decline\",\n        \"ARPDAU increase from high-frequency ads: only +$0.03\",\n        \"Estimated lifetime revenue loss: -28% per user due to faster churn\",\n        \"3,200 players currently in high-frequency ad group\"\n      ],\n      \"target_segment\": \"Players shown 6 or more interstitial ads per session\",\n      \"source_steps\": [2, 5, 8]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **tolerance_threshold**: The ad frequency point where retention drops significantly (the most critical finding)\n- **format_mismatch**: Using the wrong ad format for the context (e.g., interstitials between core loops instead of rewarded)\n- **rewarded_opportunity**: High-value rewarded ad placements with low current opt-in rates\n- **ecpm_decline**: eCPM trends declining over time or for specific segments\n- **revenue_concentration**: Revenue overly dependent on a specific geo, platform, or ad network\n- **fatigue_pattern**: Gradual decline in ad engagement over player lifetime\n- **segment_gap**: Significant ARPDAU differences between player segments (platform, geo, etc.)\n\n## Severity Calibration\n\n- **critical**: Ad frequency directly causing measurable churn (\u003e20% retention drop), or eCPM declining \u003e15%\n- **high**: Significant revenue optimization opportunity (\u003e10% LTV improvement possible), or retention risk from ad format issues\n- **medium**: Moderate optimization in ad placement, timing, or format selection\n- **low**: Minor eCPM or opt-in rate optimization\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no ad patterns found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **Always consider BOTH sides**: Ad frequency increases short-term ARPDAU but may decrease LTV. Report the net impact.\n5. **Platform differences matter**: iOS and Android often have very different eCPMs and ad tolerance levels. Report separately if data shows \u003e15% difference.\n6. **Think in terms of LTV**: Short-term revenue per session matters less than lifetime revenue. A player who returns for 30 days with 3 ads/session generates more than a player who churns after 3 days with 8 ads/session.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          },
+          {
+            "id": "session_flow",
+            "name": "Session Flow",
+            "description": "Session depth, core loop completion, onboarding effectiveness, feature discovery, and drop-off points within sessions",
+            "keywords": [
+              "onboarding",
+              "tutorial",
+              "core_loop",
+              "feature",
+              "screen",
+              "flow",
+              "funnel",
+              "first_session",
+              "discovery",
+              "navigation"
+            ],
+            "priority": 5,
+            "prompt": "# Session Flow Analysis\n\nYou are a gaming analytics expert analyzing session flow patterns in a casual or hyper-casual game. Your goal is to identify how players move through the game experience within and across sessions — from onboarding to core loop mastery, feature discovery, and the moments that determine whether they return.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **session flow patterns** that reveal onboarding issues, core loop problems, feature discovery gaps, and drop-off points.\n\n## What to Look For\n\n- **First-session funnel**: What percentage of new players complete each onboarding step? Where is the biggest drop-off? How long does the first session last vs subsequent sessions?\n- **First-to-second session conversion**: This is the single most important metric for casual games. What percentage of players who finish session 1 ever start session 2? What predicts return?\n- **Core loop depth**: How many core loops (play → result → reward) do players complete per session? Does this change over time? What's the \"healthy\" number?\n- **Session depth progression**: Do sessions get longer, shorter, or stay the same as players mature? Shortening sessions may indicate declining interest.\n- **Feature discovery**: What percentage of players discover secondary features (daily challenges, achievements, customization, social)? Does discovery correlate with retention?\n- **Drop-off moments**: At what point within a session do players leave? After a loss? After collecting rewards? Mid-game?\n- **Re-engagement triggers**: What brings players back for their next session? Push notifications? Daily rewards? Content updates?\n- **Session frequency evolution**: How does sessions-per-day change from Day 1 to Day 7 to Day 30?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Onboarding Drop-off at Step 3 — 38% of New Players Never Reach Core Gameplay\",\n      \"description\": \"38% of new players abandon during the third onboarding step (account creation prompt). Steps 1-2 (gameplay tutorial) retain 89% of players, but the account creation prompt causes a 38% drop. Players who skip this step and proceed to gameplay have 2.1x higher D1 retention (44%) than those who see the prompt and leave (0%). 4,200 new players lost at this step in the last 30 days.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 4200,\n      \"risk_score\": 0.38,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"pattern_type\": \"onboarding_drop\",\n        \"funnel_step\": 3,\n        \"funnel_step_name\": \"account_creation\",\n        \"drop_off_rate\": 0.38,\n        \"previous_step_retention\": 0.89,\n        \"d1_retention_if_passed\": 0.44,\n        \"d1_retention_if_dropped\": 0.0\n      },\n      \"indicators\": [\n        \"Steps 1-2 retain 89% of new players\",\n        \"Step 3 (account creation) causes 38% drop-off\",\n        \"Players who skip/pass step 3: 44% D1 retention\",\n        \"4,200 new players lost at step 3 in last 30 days\",\n        \"Average time at step 3 before abandoning: 8 seconds\"\n      ],\n      \"target_segment\": \"New players who reach onboarding step 3 but do not proceed\",\n      \"source_steps\": [1, 4, 6]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **onboarding_drop**: Significant drop-off during the onboarding/tutorial flow\n- **session_1_to_2_gap**: Low first-to-second session conversion (the most critical casual game metric)\n- **core_loop_fatigue**: Players completing fewer core loops per session over time\n- **feature_blind_spot**: Important feature that most players never discover\n- **session_shortening**: Sessions getting progressively shorter — declining engagement\n- **dead_end_screen**: Screen or state from which players frequently exit the app\n- **re_engagement_failure**: Push notifications or daily rewards failing to bring players back\n\n## Severity Calibration\n\n- **critical**: Onboarding drop-off \u003e30%, or session-1-to-2 conversion \u003c40%, affecting 100+ players\n- **high**: Core loop completion declining, or important feature discovered by \u003c20% of players\n- **medium**: Session depth or frequency declining for a significant segment\n- **low**: Minor flow optimization or small-segment drop-off\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no session flow issues found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **First session is king**: In casual games, the first session determines everything. Prioritize first-session findings.\n5. **Compare session numbers**: Session 1, 2, 3 behavior is very different from session 10+ behavior. Don't average them.\n6. **Time within session matters**: A player who plays for 3 minutes then leaves is very different from one who plays for 30 seconds.\n7. **Correlation is not causation**: Feature discovery correlating with retention may mean the feature causes retention, or it may mean retained players eventually discover features. Note this distinction.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          }
+        ],
+        "idle": [
+          {
+            "id": "progression",
+            "name": "Progression \u0026 Prestige",
+            "description": "Prestige cycle timing, offline earning effectiveness, milestone pacing, and progression bottlenecks that stall player advancement",
+            "keywords": [
+              "prestige",
+              "reset",
+              "rebirth",
+              "ascend",
+              "offline",
+              "idle",
+              "milestone",
+              "upgrade",
+              "tier",
+              "unlock",
+              "progress",
+              "stage",
+              "world"
+            ],
+            "priority": 4,
+            "prompt": "# Progression \u0026 Prestige Analysis\n\nYou are a gaming analytics expert analyzing progression and prestige cycle patterns in an idle/incremental game. Your goal is to identify progression bottlenecks, prestige timing issues, and milestone pacing problems that affect player retention.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **progression patterns** that reveal bottlenecks, poor pacing, or prestige cycle issues.\n\n## What to Look For\n\n- **Prestige timing**: How long before first prestige? Are players prestiging too early (not enough progress) or too late (bored waiting)? What's the optimal prestige cadence?\n- **Prestige drop-off**: At which prestige number do most players quit? (e.g., \"80% of players never prestige a 3rd time\")\n- **Offline earning satisfaction**: Do players who return after long offline periods stay engaged? Or do they collect earnings and leave immediately?\n- **Milestone pacing**: Are key unlocks (new generators, new worlds, automation) spaced appropriately? Do players quit in \"dead zones\" between milestones?\n- **Upgrade walls**: Are there upgrade tiers where players get stuck because the cost is too high relative to their earning rate?\n- **Active vs idle balance**: Are players who play actively rewarded proportionally more than idle-only players? Too much idle reward reduces active engagement.\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Prestige 3 Wall — 72% of Players Never Reach Third Prestige\",\n      \"description\": \"While 85% of players complete their first prestige (avg 4.2 hours) and 58% complete a second (avg 8.1 hours), only 28% ever reach a third prestige. The time between prestige 2 and 3 averages 26 hours — over 3x the prestige 1-2 gap. The prestige multiplier gained at P3 (1.8x) doesn't feel proportional to the effort compared to P1 (2.5x) and P2 (2.1x). 1,820 players dropped off between prestige 2 and 3 in the last 30 days.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 1820,\n      \"risk_score\": 0.72,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"prestige_number\": 3,\n        \"completion_rate\": 0.28,\n        \"avg_time_to_reach_hours\": 26.0,\n        \"previous_prestige_time_hours\": 8.1,\n        \"time_increase_ratio\": 3.2,\n        \"reward_multiplier\": 1.8,\n        \"issue_type\": \"prestige_wall\"\n      },\n      \"indicators\": [\n        \"Only 28% of players reach prestige 3 (vs 85% for P1, 58% for P2)\",\n        \"Time to P3: 26 hours (3.2x the P2 gap of 8.1 hours)\",\n        \"P3 multiplier (1.8x) lower than P1 (2.5x) — diminishing returns\",\n        \"1,820 players stuck between P2 and P3 in last 30 days\",\n        \"D7 retention for P3 players is 62% vs 31% for P2-stuck players\"\n      ],\n      \"target_segment\": \"Players who completed prestige 2 but never reached prestige 3\",\n      \"source_steps\": [3, 7, 12]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Issue Types\n\n- **prestige_wall**: Prestige cycle that takes disproportionately longer than previous cycles with diminishing rewards\n- **milestone_gap**: Dead zone between key unlocks where players have nothing new to work toward\n- **upgrade_wall**: Upgrade tier where cost-to-benefit ratio becomes prohibitive\n- **offline_disconnect**: Offline earnings insufficient to keep players engaged upon return\n- **pacing_too_fast**: Players progressing too quickly, running out of content\n- **pacing_too_slow**: Players stuck for extended periods with no sense of progress\n\n## Severity Calibration\n\n- **critical**: Progression wall causing measurable churn (\u003e50% drop-off at that stage), affecting 100+ players\n- **high**: Significant pacing issue causing \u003e30% drop-off or noticeable engagement decline\n- **medium**: Moderate pacing imbalance affecting player satisfaction but not directly causing churn\n- **low**: Minor optimization opportunity in progression tuning\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no progression issues found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **Compare adjacent stages**: A bottleneck is only meaningful relative to what comes before and after it\n5. **Time matters**: Express durations in player-meaningful units (hours for short events, days for longer cycles)\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          },
+          {
+            "id": "economy",
+            "name": "Economy Balance",
+            "description": "Currency inflation detection, sink/source balance, upgrade pricing curves, and resource accumulation patterns",
+            "keywords": [
+              "currency",
+              "gold",
+              "gem",
+              "coin",
+              "earn",
+              "spend",
+              "sink",
+              "source",
+              "inflation",
+              "balance",
+              "upgrade_cost",
+              "multiplier",
+              "generator"
+            ],
+            "priority": 5,
+            "prompt": "# Economy Balance Analysis\n\nYou are a gaming analytics expert analyzing the in-game economy of an idle/incremental game. Your goal is to identify currency imbalances, inflation, broken sinks/sources, and pricing issues that affect player progression and monetization.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **economy balance patterns** — where currency flow, pricing, or resource distribution creates problems or opportunities.\n\n## What to Look For\n\n- **Currency inflation**: Is soft currency accumulating faster than it can be spent? Are late-game players sitting on massive hoards with nothing to buy?\n- **Sink/source imbalance**: Are there enough meaningful ways to spend currency? Or do players earn far more than they can use?\n- **Upgrade pricing curves**: Do upgrade costs scale appropriately? Look for tiers where the price jump is disproportionately large compared to the benefit increase.\n- **Hard currency scarcity**: Is premium currency too scarce for free players? Does earning hard currency through gameplay feel possible or is it purely pay-to-access?\n- **Ad economy**: How much of the economy relies on rewarded video ads? What's the conversion from ad-watch to meaningful progression?\n- **Resource accumulation by segment**: How do free players' economies compare to payers? Is the gap too large (demotivating) or too small (no incentive to pay)?\n- **Generator efficiency**: Which resource generators offer the best value? Are there \"meta\" choices that make other generators obsolete?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Soft Currency Inflation — Day 14+ Players Hoarding 10x Spend Rate\",\n      \"description\": \"Players active for 14+ days accumulate soft currency 10x faster than they can spend it. Average balance grows from 50K at day 7 to 2.3M at day 14, while the most expensive available upgrade costs 150K. This devalues soft currency and removes a key progression motivator. 890 players in this state. Payers are unaffected (they spend premium currency instead), widening the free-to-pay gap unnecessarily.\",\n      \"severity\": \"high\",\n      \"affected_count\": 890,\n      \"risk_score\": 0.55,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"currency_name\": \"gold\",\n        \"pattern_type\": \"inflation\",\n        \"avg_balance_day_7\": 50000,\n        \"avg_balance_day_14\": 2300000,\n        \"growth_ratio\": 46.0,\n        \"max_sink_cost\": 150000,\n        \"earn_to_spend_ratio\": 10.2,\n        \"payer_comparison\": \"Payers spend 5x more through premium sinks\"\n      },\n      \"indicators\": [\n        \"Average balance grows 46x from day 7 to day 14\",\n        \"Earn rate 10.2x higher than spend rate for day 14+ players\",\n        \"Most expensive upgrade (150K) affordable within 2 hours of earnings\",\n        \"890 players with over 1M balance and nothing meaningful to buy\",\n        \"Engagement drops 18% once players hit 1M+ balance\"\n      ],\n      \"target_segment\": \"Free players active for 14+ days with balance exceeding 1M\",\n      \"source_steps\": [5, 9, 14]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **inflation**: Currency accumulating faster than meaningful sinks can absorb it\n- **deflation**: Currency too scarce, players unable to afford necessary upgrades for progression\n- **pricing_spike**: Upgrade tier where cost jumps disproportionately relative to benefit\n- **dead_generator**: Generator/upgrade that no informed player would purchase (dominated by alternatives)\n- **sink_gap**: Insufficient spending opportunities at a specific progression stage\n- **ad_dependency**: Economy overly reliant on rewarded ad earnings — problematic for ad-free users\n- **pay_wall**: Progression point where free players effectively cannot advance without spending real money\n\n## Severity Calibration\n\n- **critical**: Economy imbalance directly causing churn or blocking progression for \u003e100 players\n- **high**: Significant imbalance affecting engagement or monetization potential\n- **medium**: Moderate imbalance that reduces game satisfaction but doesn't cause churn\n- **low**: Minor pricing optimization or small economy tuning opportunity\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no economy issues found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **Always compare segments**: Free vs payer economy health tells different stories\n5. **Ratios matter more than absolutes**: A 10:1 earn-to-spend ratio is problematic regardless of the absolute numbers\n6. **Time-based analysis**: Economy issues often emerge only at specific player ages — don't just look at averages\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          }
+        ],
+        "match3": [
+          {
+            "id": "levels",
+            "name": "Level Difficulty",
+            "description": "Difficulty spikes, frustration points, progression blockers, and chapter transition drop-offs in level progression",
+            "keywords": [
+              "level",
+              "quit",
+              "success",
+              "difficulty",
+              "fail",
+              "attempt",
+              "stage",
+              "star",
+              "chapter",
+              "episode",
+              "progression",
+              "completion"
+            ],
+            "priority": 4,
+            "prompt": "# Level Difficulty Analysis\n\nYou are a gaming analytics expert analyzing level difficulty and player frustration points in a match-3 puzzle game. Your goal is to identify specific levels and progression patterns that cause player frustration, abandonment, or bottlenecks.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **levels with difficulty issues** using exact metrics. Look beyond individual levels — identify patterns like difficulty spikes, chapter transitions, and progression blockers.\n\n## What to Look For\n\n- **Difficulty spikes**: Sudden jumps in quit rate compared to surrounding levels\n- **Progression blockers**: Levels where the largest player cohort gets permanently stuck (never advances)\n- **Chapter transition drops**: Players who complete a chapter's last level but never start the next chapter\n- **Frustration indicators**: High attempt counts combined with high quit rates\n- **Too-easy levels**: Levels that offer no challenge and may reduce engagement\n- **Star rating imbalance**: Levels where almost nobody gets 3 stars (may indicate unfair design)\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Level 42 Difficulty Spike — 68% Quit Rate (3x Average)\",\n      \"description\": \"Level 42 has a 68% quit rate compared to the 23% average for surrounding levels (38-46). 890 players attempted this level with an average of 12.5 tries before quitting. This is the single biggest progression blocker in the game — more players are stuck here than any other level. The level before (41) has only 18% quit rate, confirming this is a sudden spike rather than gradual difficulty increase.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 890,\n      \"risk_score\": 0.68,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"level_number\": 42,\n        \"quit_rate\": 0.68,\n        \"success_rate\": 0.22,\n        \"avg_attempts\": 12.5,\n        \"difficulty_label\": \"very_hard\",\n        \"issue_type\": \"difficulty_spike\",\n        \"surrounding_avg_quit_rate\": 0.23,\n        \"spike_ratio\": 2.96\n      },\n      \"indicators\": [\n        \"Quit rate 68% vs 23% average for levels 38-46\",\n        \"12.5 average attempts before quitting\",\n        \"Success rate only 22%\",\n        \"Previous level (41) quit rate is 18% — sudden spike\",\n        \"890 unique players attempted, 605 quit permanently\"\n      ],\n      \"target_segment\": \"Players reaching level 42\",\n      \"source_steps\": [2, 7]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Quality Standards\n\n### Include ONLY levels that meet these criteria:\n- **quit_rate \u003e 0.30** OR **success_rate \u003c 0.40**\n- **affected_count \u003e= 20** (sufficient sample for statistical significance)\n\n### difficulty_label:\n- **very_hard**: quit_rate \u003e 0.50\n- **hard**: quit_rate 0.30-0.50\n- **medium**: quit_rate 0.15-0.30\n- **easy**: quit_rate \u003c 0.15\n\n### issue_type:\n- **difficulty_spike**: Sudden jump from previous levels (quit rate \u003e2x surrounding average)\n- **frustrating**: High attempts (\u003e10) combined with high quit rate (\u003e30%)\n- **progression_blocker**: Level where the most players in the game are permanently stuck\n- **chapter_transition**: Drop-off between the last level of one chapter and first level of the next\n- **too_easy**: Very low quit rate (\u003c5%) AND very high success rate (\u003e95%) — may reduce engagement\n\n### spike_ratio:\n- Calculate as: level_quit_rate / surrounding_levels_average_quit_rate\n- A ratio \u003e2.0 indicates a significant spike\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **Filter aggressively** — only levels with CLEAR issues\n3. **No duplicates** — each level appears only once\n4. **If no problematic levels**, return `{\"insights\": []}`\n5. **CRITICAL**: affected_count = COUNT(DISTINCT user_id), NOT total attempts\n6. **Compare to surrounding levels**: A 40% quit rate is normal if surrounding levels are 35-45%, but problematic if surrounding levels are 15-20%\n7. **Group consecutive hard levels**: If levels 42-45 are all hard, report them as a cluster, not 4 separate insights\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON containing only problematic levels."
+          },
+          {
+            "id": "boosters",
+            "name": "Booster Usage",
+            "description": "Power-up usage patterns, depletion risks, economy balance, purchase opportunities, and ad-booster conversion",
+            "keywords": [
+              "booster",
+              "hint",
+              "magnet",
+              "power",
+              "extra_life",
+              "hammer",
+              "consumable",
+              "inventory",
+              "earn",
+              "deplete"
+            ],
+            "priority": 5,
+            "prompt": "# Booster Usage Analysis\n\nYou are a gaming analytics expert analyzing booster/power-up usage patterns in a match-3 puzzle game. Your goal is to identify patterns in how players earn, use, and purchase boosters — revealing both problems (depletion risks, economy imbalance) and opportunities (conversion triggers, underutilized items).\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **booster usage patterns** that reveal opportunities or problems.\n\n## What to Look For\n\n- **Depletion patterns**: When do players run out of each booster type? What level/day does depletion typically happen?\n- **Usage vs level difficulty**: Do booster usage spikes correlate with hard levels? Are boosters being used where they're most needed?\n- **Economy balance**: Is the earn rate sustainable? Are players earning enough boosters through gameplay, or forced to purchase?\n- **Purchase triggers**: What events lead to booster purchases? (Running out? Facing a hard level? Seeing an ad offer?)\n- **Free vs paid usage**: Ratio of earned boosters vs purchased. Is the balance healthy?\n- **Churn correlation**: Does booster depletion predict churn? What's the churn multiplier for depleted vs stocked players?\n- **Ad-earned boosters**: How many boosters come from rewarded ads? What's the ad-to-booster conversion rate?\n- **Underutilized boosters**: Are some boosters available but rarely used? (Awareness issue or design problem)\n- **Cross-booster patterns**: Do players who use one booster type tend to use others? Or do they specialize?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Hint Booster Depletion Before Level 15 — 2.3x Churn Risk\",\n      \"description\": \"78% of players exhaust their free Hint boosters before reaching level 15, receiving an average of 5 free hints from onboarding but using them all by level 12. Players who run out of hints have a 2.3x higher churn rate than those with remaining stock. Only 12% purchase hint packs after depletion — the rest either quit or struggle without. 1,500 players affected in last 30 days.\",\n      \"severity\": \"high\",\n      \"affected_count\": 1500,\n      \"risk_score\": 0.65,\n      \"confidence\": 0.8,\n      \"metrics\": {\n        \"booster_name\": \"Hint\",\n        \"pattern_type\": \"depletion_risk\",\n        \"depletion_level\": 15,\n        \"depletion_rate\": 0.78,\n        \"churn_multiplier\": 2.3,\n        \"avg_starting_amount\": 5,\n        \"avg_earned_per_day\": 0.3,\n        \"avg_used_per_day\": 0.8,\n        \"purchase_rate_after_depletion\": 0.12\n      },\n      \"indicators\": [\n        \"78% deplete hints before level 15\",\n        \"2.3x higher churn after depletion\",\n        \"Only 12% purchase hint packs after running out\",\n        \"Earn rate (0.3/day) far below usage rate (0.8/day)\",\n        \"5 free hints from onboarding exhausted by level 12\"\n      ],\n      \"target_segment\": \"Players who depleted hints before level 15\",\n      \"source_steps\": [4, 8]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **depletion_risk**: Players running out of boosters at critical moments, correlating with churn\n- **underutilized**: Boosters available but not used — awareness, UX, or design issue\n- **purchase_opportunity**: High usage of free boosters with low purchase rate — conversion opportunity\n- **effectiveness**: Booster usage strongly correlates with level completion or retention\n- **economy_imbalance**: Earn rate significantly mismatched with usage rate (too generous or too stingy)\n- **ad_conversion**: Rewarded ad viewing patterns — how many players earn boosters through ads\n\n## Severity Calibration\n\n- **critical**: Booster depletion directly causing measurable churn (churn_multiplier \u003e 2x), affecting 100+ players\n- **high**: Strong depletion-churn correlation or significant conversion opportunity, affecting 50+ players\n- **medium**: Moderate economy imbalance or underutilization pattern\n- **low**: Minor optimization opportunity or small segment affected\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no booster patterns found**, return `{\"insights\": []}`\n3. **Minimum 50 players** for a pattern to be significant\n4. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n5. **Compare earn vs spend rates**: If players earn 0.3 boosters/day but use 0.8/day, that's a sustainability problem\n6. **Look at the full chain**: Depletion → behavior change → churn (or purchase). Don't stop at depletion alone.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          }
+        ]
+      }
+    },
+    "profile_schema": {
+      "base": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Gaming Project Profile",
+        "description": "Profile schema for gaming domain projects. Provides context to the AI agent about the game's design, mechanics, and business model.",
+        "type": "object",
+        "properties": {
+          "basic_info": {
+            "type": "object",
+            "title": "Basic Information",
+            "properties": {
+              "genre": {
+                "type": "string",
+                "title": "Genre",
+                "enum": [
+                  "puzzle",
+                  "fps",
+                  "strategy",
+                  "rpg",
+                  "casual",
+                  "idle",
+                  "simulation",
+                  "sports",
+                  "racing",
+                  "adventure",
+                  "other"
+                ]
+              },
+              "sub_genre": {
+                "type": "string",
+                "title": "Sub-Genre",
+                "description": "E.g., Match-3, Hidden Object, Battle Royale, Incremental"
+              },
+              "platforms": {
+                "type": "array",
+                "title": "Platforms",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "iOS",
+                    "Android",
+                    "Web",
+                    "PC",
+                    "Console"
+                  ]
+                }
+              },
+              "target_audience": {
+                "type": "string",
+                "title": "Target Audience",
+                "description": "E.g., 'Adult Female 30-65+', 'Male 18-35'"
+              },
+              "description": {
+                "type": "string",
+                "title": "Game Description",
+                "description": "Brief description of the game"
+              }
+            }
+          },
+          "gameplay": {
+            "type": "object",
+            "title": "Gameplay",
+            "properties": {
+              "core_mechanic": {
+                "type": "string",
+                "title": "Core Mechanic",
+                "description": "E.g., match3, hidden_object, shooter, tower_defense, idle_clicker"
+              },
+              "game_type": {
+                "type": "string",
+                "title": "Game Type",
+                "enum": [
+                  "level_based",
+                  "open_world",
+                  "session_based",
+                  "endless",
+                  "story_driven",
+                  "idle"
+                ]
+              },
+              "session_type": {
+                "type": "string",
+                "title": "Session Type",
+                "enum": [
+                  "short",
+                  "medium",
+                  "long"
+                ],
+                "description": "short: \u003c5min, medium: 5-15min, long: 15min+"
+              },
+              "avg_session_duration_minutes": {
+                "type": "integer",
+                "title": "Avg Session Duration (minutes)"
+              },
+              "complexity": {
+                "type": "string",
+                "title": "Complexity",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "difficulty_curve": {
+                "type": "string",
+                "title": "Difficulty Curve",
+                "enum": [
+                  "gradual",
+                  "steep",
+                  "flat",
+                  "wave"
+                ]
+              }
+            }
+          },
+          "monetization": {
+            "type": "object",
+            "title": "Monetization",
+            "properties": {
+              "model": {
+                "type": "string",
+                "title": "Model",
+                "enum": [
+                  "freemium",
+                  "premium",
+                  "ad_supported",
+                  "subscription",
+                  "hybrid"
+                ]
+              },
+              "has_ads": {
+                "type": "boolean",
+                "title": "Has Ads"
+              },
+              "has_iap": {
+                "type": "boolean",
+                "title": "Has In-App Purchases"
+              },
+              "has_subscription": {
+                "type": "boolean",
+                "title": "Has Subscription"
+              },
+              "primary_revenue_source": {
+                "type": "string",
+                "title": "Primary Revenue Source",
+                "enum": [
+                  "iap",
+                  "ads",
+                  "subscription",
+                  "premium_purchase"
+                ],
+                "description": "Which revenue stream generates the most income"
+              }
+            }
+          },
+          "social_features": {
+            "type": "object",
+            "title": "Social Features",
+            "properties": {
+              "has_guilds_or_teams": {
+                "type": "boolean",
+                "title": "Has Guilds/Teams/Clans"
+              },
+              "has_leaderboards": {
+                "type": "boolean",
+                "title": "Has Leaderboards"
+              },
+              "has_pvp": {
+                "type": "boolean",
+                "title": "Has PvP"
+              },
+              "has_chat": {
+                "type": "boolean",
+                "title": "Has In-Game Chat"
+              },
+              "has_gifting": {
+                "type": "boolean",
+                "title": "Has Gifting/Sharing"
+              }
+            }
+          },
+          "live_ops": {
+            "type": "object",
+            "title": "Live Operations",
+            "properties": {
+              "has_daily_rewards": {
+                "type": "boolean",
+                "title": "Has Daily Login Rewards"
+              },
+              "has_seasonal_events": {
+                "type": "boolean",
+                "title": "Has Seasonal Events"
+              },
+              "has_battle_pass": {
+                "type": "boolean",
+                "title": "Has Battle Pass / Season Pass"
+              },
+              "content_update_frequency": {
+                "type": "string",
+                "title": "Content Update Frequency",
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "biweekly",
+                  "monthly",
+                  "quarterly"
+                ]
+              }
+            }
+          },
+          "kpis": {
+            "type": "object",
+            "title": "Target KPIs",
+            "properties": {
+              "retention_d1_target": {
+                "type": "number",
+                "title": "D1 Retention Target (%)"
+              },
+              "retention_d7_target": {
+                "type": "number",
+                "title": "D7 Retention Target (%)"
+              },
+              "retention_d30_target": {
+                "type": "number",
+                "title": "D30 Retention Target (%)"
+              },
+              "arpu_target": {
+                "type": "number",
+                "title": "ARPU Target ($)"
+              },
+              "dau_target": {
+                "type": "integer",
+                "title": "DAU Target"
+              },
+              "session_length_target": {
+                "type": "number",
+                "title": "Avg Session Length Target (min)"
+              }
+            }
+          }
+        }
+      },
+      "categories": {
+        "casual": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Casual / Hyper-Casual Game Profile Extensions",
+          "description": "Additional profile fields specific to casual and hyper-casual games.",
+          "type": "object",
+          "properties": {
+            "core_loop": {
+              "type": "object",
+              "title": "Core Loop",
+              "properties": {
+                "description": {
+                  "type": "string",
+                  "title": "Core Loop Description",
+                  "description": "Brief description of the core gameplay loop (e.g., 'Swipe to merge tiles, score points, restart')"
+                },
+                "avg_loop_duration_seconds": {
+                  "type": "integer",
+                  "title": "Average Core Loop Duration (seconds)",
+                  "description": "How long one play-result-reward cycle takes"
+                },
+                "loops_per_session_target": {
+                  "type": "integer",
+                  "title": "Target Loops Per Session",
+                  "description": "Desired number of core loops per session"
+                }
+              }
+            },
+            "onboarding": {
+              "type": "object",
+              "title": "Onboarding",
+              "properties": {
+                "steps": {
+                  "type": "integer",
+                  "title": "Number of Onboarding Steps"
+                },
+                "has_tutorial": {
+                  "type": "boolean",
+                  "title": "Has Interactive Tutorial"
+                },
+                "requires_account": {
+                  "type": "boolean",
+                  "title": "Requires Account Creation",
+                  "description": "Whether players must create an account before playing"
+                },
+                "time_to_first_play_seconds": {
+                  "type": "integer",
+                  "title": "Time to First Play (seconds)",
+                  "description": "Seconds from app open to first core gameplay"
+                }
+              }
+            },
+            "ad_setup": {
+              "type": "object",
+              "title": "Ad Configuration",
+              "properties": {
+                "has_interstitials": {
+                  "type": "boolean",
+                  "title": "Shows Interstitial Ads"
+                },
+                "has_rewarded": {
+                  "type": "boolean",
+                  "title": "Shows Rewarded Ads"
+                },
+                "has_banners": {
+                  "type": "boolean",
+                  "title": "Shows Banner Ads"
+                },
+                "interstitial_frequency": {
+                  "type": "string",
+                  "title": "Interstitial Frequency",
+                  "description": "E.g., 'every 3 games', 'every 2 minutes', 'after every loss'"
+                },
+                "rewarded_ad_rewards": {
+                  "type": "array",
+                  "title": "Rewarded Ad Rewards",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "What players get for watching rewarded ads (e.g., 'Extra life', '2x coins', 'Continue')"
+                },
+                "has_no_ads_iap": {
+                  "type": "boolean",
+                  "title": "Has Remove Ads IAP"
+                },
+                "no_ads_price_usd": {
+                  "type": "number",
+                  "title": "Remove Ads Price (USD)"
+                }
+              }
+            },
+            "content": {
+              "type": "object",
+              "title": "Content",
+              "properties": {
+                "has_levels": {
+                  "type": "boolean",
+                  "title": "Has Discrete Levels"
+                },
+                "total_content_items": {
+                  "type": "integer",
+                  "title": "Total Content Items",
+                  "description": "Total levels, stages, or distinct content pieces"
+                },
+                "content_update_frequency": {
+                  "type": "string",
+                  "title": "Content Update Frequency",
+                  "enum": [
+                    "daily",
+                    "weekly",
+                    "biweekly",
+                    "monthly",
+                    "rarely"
+                  ]
+                }
+              }
+            },
+            "secondary_features": {
+              "type": "array",
+              "title": "Secondary Features",
+              "description": "Features beyond the core loop (daily challenges, leaderboards, etc.)",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Feature Name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "title": "Description"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "idle": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Idle / Incremental Game Profile Extensions",
+          "description": "Additional profile fields specific to idle and incremental games.",
+          "type": "object",
+          "properties": {
+            "progression": {
+              "type": "object",
+              "title": "Progression System",
+              "properties": {
+                "prestige_system": {
+                  "type": "boolean",
+                  "title": "Has Prestige/Rebirth System"
+                },
+                "prestige_name": {
+                  "type": "string",
+                  "title": "Prestige Mechanic Name",
+                  "description": "E.g., Prestige, Rebirth, Ascend, Transcend"
+                },
+                "total_stages": {
+                  "type": "integer",
+                  "title": "Total Stages/Worlds"
+                },
+                "automation_unlocks": {
+                  "type": "boolean",
+                  "title": "Has Automation Unlocks",
+                  "description": "Whether players can unlock auto-play features"
+                },
+                "offline_earnings": {
+                  "type": "boolean",
+                  "title": "Has Offline Earnings"
+                },
+                "offline_earnings_cap_hours": {
+                  "type": "integer",
+                  "title": "Offline Earnings Cap (hours)",
+                  "description": "Maximum hours of offline earnings collected"
+                }
+              }
+            },
+            "currencies": {
+              "type": "array",
+              "title": "In-Game Currencies",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Currency Name"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Currency Type",
+                    "enum": [
+                      "soft",
+                      "hard",
+                      "prestige",
+                      "event"
+                    ]
+                  },
+                  "can_purchase": {
+                    "type": "boolean",
+                    "title": "Can Be Purchased with Real Money"
+                  },
+                  "can_earn_from_ads": {
+                    "type": "boolean",
+                    "title": "Can Be Earned from Rewarded Ads"
+                  }
+                }
+              }
+            },
+            "generators": {
+              "type": "array",
+              "title": "Resource Generators",
+              "description": "The main idle generators/buildings/units that produce resources",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Generator Name"
+                  },
+                  "max_tier": {
+                    "type": "integer",
+                    "title": "Max Upgrade Tier"
+                  },
+                  "unlock_stage": {
+                    "type": "integer",
+                    "title": "Stage Unlocked At"
+                  }
+                }
+              }
+            },
+            "ad_boosts": {
+              "type": "object",
+              "title": "Ad-Based Boosts",
+              "properties": {
+                "offline_multiplier_ad": {
+                  "type": "boolean",
+                  "title": "Ad to Multiply Offline Earnings"
+                },
+                "speed_boost_ad": {
+                  "type": "boolean",
+                  "title": "Ad for Temporary Speed Boost"
+                },
+                "max_ads_per_day": {
+                  "type": "integer",
+                  "title": "Maximum Ad Watches Per Day"
+                }
+              }
+            }
+          }
+        },
+        "match3": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Match-3 Game Profile Extensions",
+          "description": "Additional profile fields specific to match-3 puzzle games.",
+          "type": "object",
+          "properties": {
+            "progression": {
+              "type": "object",
+              "title": "Level Progression",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "title": "Progression Type",
+                  "enum": [
+                    "linear",
+                    "branching",
+                    "open"
+                  ]
+                },
+                "total_levels": {
+                  "type": "integer",
+                  "title": "Total Levels"
+                },
+                "levels_per_chapter": {
+                  "type": "integer",
+                  "title": "Levels Per Chapter"
+                },
+                "star_system": {
+                  "type": "boolean",
+                  "title": "Has Star Rating"
+                },
+                "max_stars_per_level": {
+                  "type": "integer",
+                  "title": "Max Stars Per Level"
+                }
+              }
+            },
+            "boosters": {
+              "type": "array",
+              "title": "Boosters / Power-ups",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Booster Name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "title": "Description"
+                  },
+                  "usage": {
+                    "type": "string",
+                    "title": "Usage Type",
+                    "enum": [
+                      "consumable",
+                      "permanent",
+                      "timed"
+                    ]
+                  },
+                  "starting_amount": {
+                    "type": "integer",
+                    "title": "Starting Amount"
+                  },
+                  "can_purchase": {
+                    "type": "boolean",
+                    "title": "Can Be Purchased"
+                  },
+                  "can_earn": {
+                    "type": "boolean",
+                    "title": "Can Be Earned"
+                  }
+                }
+              }
+            },
+            "iap_packages": {
+              "type": "array",
+              "title": "IAP Packages",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Package Name"
+                  },
+                  "sku": {
+                    "type": "string",
+                    "title": "SKU"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Type",
+                    "enum": [
+                      "consumable",
+                      "non_consumable",
+                      "subscription"
+                    ]
+                  },
+                  "price_usd": {
+                    "type": "number",
+                    "title": "Price (USD)"
+                  },
+                  "contents": {
+                    "type": "array",
+                    "title": "Contents",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "item": {
+                          "type": "string",
+                          "title": "Item"
+                        },
+                        "count": {
+                          "type": "integer",
+                          "title": "Count"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "lootboxes": {
+              "type": "array",
+              "title": "Lootboxes / Reward Chests",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Name"
+                  },
+                  "rarity": {
+                    "type": "string",
+                    "title": "Rarity",
+                    "enum": [
+                      "common",
+                      "rare",
+                      "epic",
+                      "legendary"
+                    ]
+                  },
+                  "possible_rewards": {
+                    "type": "array",
+                    "title": "Possible Rewards",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "retention_features": {
+              "type": "object",
+              "title": "Retention Features",
+              "properties": {
+                "daily_rewards": {
+                  "type": "boolean",
+                  "title": "Has Daily Rewards"
+                },
+                "streak_bonus": {
+                  "type": "boolean",
+                  "title": "Has Streak Bonus"
+                },
+                "max_streak_days": {
+                  "type": "integer",
+                  "title": "Max Streak Days"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

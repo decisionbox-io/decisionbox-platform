@@ -1,6 +1,6 @@
 # Development Setup
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 This guide covers setting up a local development environment for contributing to DecisionBox.
 
@@ -34,7 +34,7 @@ cd ui/dashboard && npm install && cd ../..
 # Start MongoDB
 docker compose up -d mongodb
 
-# Terminal 1: API (auto-configures DOMAIN_PACK_PATH)
+# Terminal 1: API
 make dev-api
 
 # Terminal 2: Dashboard (hot-reloads)
@@ -52,7 +52,7 @@ decisionbox-platform/
 │   ├── llm/                # LLM provider implementations
 │   ├── warehouse/          # Warehouse provider implementations
 │   └── secrets/            # Secret provider implementations
-├── domain-packs/gaming/    # Gaming domain pack (prompts, profiles, Go code)
+├── domain-packs/gaming/    # Gaming domain pack (prompts, profiles — seed data)
 ├── services/
 │   ├── agent/              # Discovery agent (Go binary)
 │   └── api/                # REST API (Go binary)
@@ -72,8 +72,9 @@ providers/llm/claude/go.mod              # Claude provider
 providers/warehouse/bigquery/go.mod      # BigQuery provider
 services/agent/go.mod                    # Agent (imports all providers)
 services/api/go.mod                      # API (imports all providers)
-domain-packs/gaming/go/go.mod           # Gaming domain pack
 ```
+
+Domain packs no longer have Go modules -- they are stored in MongoDB and managed via the dashboard/API.
 
 When adding a new provider, create a new `go.mod` and add `replace` directives to the service go.mod files.
 
@@ -84,7 +85,7 @@ When adding a new provider, create a new `go.mod` and add `replace` directives t
 1. **Read existing code** — Understand the patterns before changing them
 2. **Follow the plugin pattern** — For new providers, use `Register()` in `init()`
 3. **Write tests first** — Unit tests for logic, integration tests for external services
-4. **No hardcoded values** — Use config, environment variables, or domain pack files
+4. **No hardcoded values** — Use config or environment variables
 
 ### Important Files to Know
 
@@ -118,7 +119,6 @@ The `make dev-api` command sets these automatically:
 ```bash
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=decisionbox
-DOMAIN_PACK_PATH=../../domain-packs
 ```
 
 For the agent, set `SECRET_PROVIDER=mongodb` and optionally `SECRET_ENCRYPTION_KEY`.
@@ -133,7 +133,6 @@ curl -X POST http://localhost:8080/api/v1/projects/{id}/discover
 MONGODB_URI=mongodb://localhost:27017 \
 MONGODB_DB=decisionbox \
 SECRET_PROVIDER=mongodb \
-DOMAIN_PACK_PATH=../../domain-packs \
   decisionbox-agent --project-id={id} --max-steps=10
 ```
 

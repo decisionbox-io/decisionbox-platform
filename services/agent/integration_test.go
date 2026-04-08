@@ -30,8 +30,6 @@ import (
 
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
 )
 
 var (

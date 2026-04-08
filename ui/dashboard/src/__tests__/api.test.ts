@@ -56,6 +56,125 @@ describe('api.listWarehouseProviders', () => {
   });
 });
 
+// --- Domain Packs (CRUD) ---
+
+describe('api.listDomainPacks', () => {
+  it('returns all domain packs', async () => {
+    const packs = [
+      { id: 'dp-1', slug: 'gaming', name: 'Gaming', is_published: true, categories: [] },
+      { id: 'dp-2', slug: 'ecommerce', name: 'E-Commerce', is_published: true, categories: [] },
+    ];
+    mockSuccess(packs);
+
+    const result = await api.listDomainPacks();
+    expect(result).toHaveLength(2);
+    expect(result[0].slug).toBe('gaming');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/domain-packs'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.getDomainPack', () => {
+  it('includes slug in URL', async () => {
+    mockSuccess({ id: 'dp-1', slug: 'gaming', name: 'Gaming' });
+    const result = await api.getDomainPack('gaming');
+    expect(result.slug).toBe('gaming');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/domain-packs/gaming'),
+      expect.any(Object)
+    );
+  });
+
+  it('throws on not found', async () => {
+    mockError(404, 'domain pack not found: nonexistent');
+    await expect(api.getDomainPack('nonexistent')).rejects.toThrow('domain pack not found');
+  });
+});
+
+describe('api.createDomainPack', () => {
+  it('sends POST with pack data', async () => {
+    const pack = { slug: 'fintech', name: 'FinTech', is_published: true };
+    mockSuccess({ id: 'dp-3', ...pack });
+
+    const result = await api.createDomainPack(pack);
+    expect(result.slug).toBe('fintech');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/domain-packs');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ slug: 'fintech', name: 'FinTech' });
+  });
+
+  it('throws on duplicate slug', async () => {
+    mockError(409, 'domain pack with slug "gaming" already exists');
+    await expect(api.createDomainPack({ slug: 'gaming' })).rejects.toThrow('already exists');
+  });
+});
+
+describe('api.updateDomainPack', () => {
+  it('sends PUT with slug in URL', async () => {
+    mockSuccess({ id: 'dp-1', slug: 'gaming', name: 'Updated Gaming' });
+    await api.updateDomainPack('gaming', { name: 'Updated Gaming' });
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/domain-packs/gaming');
+    expect(opts.method).toBe('PUT');
+  });
+});
+
+describe('api.deleteDomainPack', () => {
+  it('sends DELETE', async () => {
+    mockSuccess({ deleted: 'gaming' });
+    const result = await api.deleteDomainPack('gaming');
+    expect(result.deleted).toBe('gaming');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/domain-packs/gaming');
+    expect(opts.method).toBe('DELETE');
+  });
+});
+
+describe('api.importDomainPack', () => {
+  it('sends POST with portable format', async () => {
+    const portable = {
+      format: 'decisionbox-domain-pack',
+      format_version: 1,
+      pack: { slug: 'fintech', name: 'FinTech' },
+    };
+    mockSuccess({ id: 'dp-3', slug: 'fintech', name: 'FinTech' });
+
+    const result = await api.importDomainPack(portable as never);
+    expect(result.slug).toBe('fintech');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/domain-packs/import');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ format: 'decisionbox-domain-pack' });
+  });
+});
+
+describe('api.exportDomainPack', () => {
+  it('returns portable format', async () => {
+    const portable = {
+      format: 'decisionbox-domain-pack',
+      format_version: 1,
+      pack: { slug: 'gaming', name: 'Gaming' },
+    };
+    mockSuccess(portable);
+
+    const result = await api.exportDomainPack('gaming');
+    expect(result.format).toBe('decisionbox-domain-pack');
+    expect(result.pack.slug).toBe('gaming');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/domain-packs/gaming/export'),
+      expect.any(Object)
+    );
+  });
+});
+
 // --- Domains ---
 
 describe('api.listDomains', () => {

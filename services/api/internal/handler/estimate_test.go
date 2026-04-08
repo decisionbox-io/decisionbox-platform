@@ -103,7 +103,7 @@ func TestNewEstimateHandler(t *testing.T) {
 }
 
 func TestNewProjectsHandler(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 	if h == nil {
 		t.Fatal("NewProjectsHandler returned nil")
 	}
@@ -124,9 +124,16 @@ func TestNewFeedbackHandler(t *testing.T) {
 }
 
 func TestNewDomainsHandler(t *testing.T) {
-	h := NewDomainsHandler()
+	h := NewDomainsHandler(nil)
 	if h == nil {
 		t.Fatal("NewDomainsHandler returned nil")
+	}
+}
+
+func TestNewDomainPacksHandler(t *testing.T) {
+	h := NewDomainPacksHandler(nil)
+	if h == nil {
+		t.Fatal("NewDomainPacksHandler returned nil")
 	}
 }
 

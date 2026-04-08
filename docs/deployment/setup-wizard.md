@@ -1,6 +1,6 @@
 # Setup Wizard
 
-> **Version**: 0.2.0
+> **Version**: 0.3.0
 
 The setup wizard (`terraform/setup.sh`) is an interactive script that provisions cloud infrastructure and deploys DecisionBox in one flow. It handles Terraform configuration, cloud authentication, Kubernetes setup, and Helm deployment.
 

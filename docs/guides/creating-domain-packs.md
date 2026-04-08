@@ -1,53 +1,23 @@
 # Creating Domain Packs
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
-A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one from scratch.
+A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one.
 
-Two complete reference implementations are available:
-- **Gaming** (`domain-packs/gaming/`) — 3 categories (match-3, idle, casual), 3 base + 2 category areas each
-- **Social Network** (`domain-packs/social/`) — 1 category (content sharing), 3 base + 2 category areas
+Domain packs are JSON documents stored in MongoDB. No Go code is needed. You can create domain packs in two ways:
+
+1. **Dashboard** -- Navigate to `/domain-packs` and use the visual editor
+2. **JSON import** -- Prepare a portable JSON file and import via the API
+
+Three complete reference packs ship as built-ins: Gaming, Social Network, and Ecommerce.
 
 ## What You'll Build
 
 A domain pack provides:
-1. **Categories** — Sub-types within your domain (e.g., B2C vs marketplace for e-commerce)
-2. **Analysis areas** — What patterns to find (defined in `areas.json`)
-3. **Prompts** — How the AI reasons about your data (markdown files)
-4. **Profile schema** — What context users provide about their product (JSON Schema)
-
-## File Structure
-
-Create your domain pack under `domain-packs/`:
-
-```
-domain-packs/ecommerce/              # Your domain
-├── go/
-│   ├── pack.go                      # Go implementation (registers the pack)
-│   ├── discovery.go                 # Categories, area loading, prompt loading
-│   ├── go.mod                       # Go module
-│   └── pack_test.go                 # Tests
-│
-├── prompts/
-│   ├── base/                        # Shared across all categories
-│   │   ├── areas.json               # Base analysis areas
-│   │   ├── base_context.md          # Profile + previous context template
-│   │   ├── exploration.md           # Main exploration system prompt
-│   │   ├── analysis_conversion.md   # Conversion analysis prompt
-│   │   ├── analysis_retention.md    # Customer retention prompt
-│   │   ├── analysis_revenue.md      # Revenue analysis prompt
-│   │   └── recommendations.md       # Recommendation generation prompt
-│   └── categories/
-│       └── b2c/                     # Category-specific
-│           ├── areas.json           # Additional areas for B2C
-│           ├── exploration_context.md
-│           └── analysis_cart.md     # Cart abandonment analysis
-│
-└── profiles/
-    ├── schema.json                  # Base profile schema
-    └── categories/
-        └── b2c.json                 # B2C-specific profile extensions
-```
+1. **Categories** -- Sub-types within your domain (e.g., B2C vs marketplace for e-commerce)
+2. **Analysis areas** -- What patterns to find (id, name, keywords, priority, prompt)
+3. **Prompts** -- How the AI reasons about your data (markdown content)
+4. **Profile schema** -- What context users provide about their product (JSON Schema)
 
 ## Step 1: Define Analysis Areas
 
@@ -391,325 +361,98 @@ Add fields specific to B2C:
 }
 ```
 
-## Step 4: Write Go Code
+## Step 4: Create via Dashboard
 
-### Module Setup
+The simplest way to add a domain pack is through the dashboard:
+
+1. Navigate to `/domain-packs` in the dashboard
+2. Click **Create Domain Pack**
+3. Fill in the pack name, slug, description, and categories
+4. Add analysis areas with their prompt content using the markdown editor
+5. Define the profile schema (JSON Schema)
+6. Click **Publish** to make it available for new projects
+
+## Step 5: Import via API (Alternative)
+
+You can also prepare a portable JSON file and import it via the API.
+
+### Export Format
+
+The `decisionbox-domain-pack` format is a self-contained JSON document:
+
+```json
+{
+  "format": "decisionbox-domain-pack",
+  "version": 1,
+  "domain_pack": {
+    "name": "E-Commerce",
+    "slug": "ecommerce",
+    "description": "Purchase funnel, revenue, and retention analytics for online stores",
+    "categories": [
+      {
+        "id": "b2c",
+        "name": "B2C Retail",
+        "description": "Direct-to-consumer e-commerce"
+      }
+    ],
+    "prompts": {
+      "base": {
+        "areas": [...],
+        "exploration": "# E-Commerce Analytics Discovery Agent\n...",
+        "base_context": "## Project Profile\n\n{{PROFILE}}\n...",
+        "recommendations": "# Generate Actionable Recommendations\n...",
+        "analysis": {
+          "conversion": "# Conversion Funnel Analysis\n...",
+          "retention": "# Customer Retention Analysis\n..."
+        }
+      },
+      "categories": {
+        "b2c": {
+          "areas": [...],
+          "exploration_context": "## E-Commerce B2C Context\n...",
+          "analysis": {
+            "cart_abandonment": "# Cart Abandonment Analysis\n..."
+          }
+        }
+      }
+    },
+    "profiles": {
+      "base": { ... },
+      "categories": {
+        "b2c": { ... }
+      }
+    }
+  }
+}
+```
+
+### Import
 
 ```bash
-cd domain-packs/ecommerce/go
-go mod init github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go
+curl -X POST http://localhost:8080/api/v1/domain-packs/import \
+  -H "Content-Type: application/json" \
+  -d @my-domain-pack.json
 ```
 
-Add the go-common dependency in `go.mod`:
-
-```
-require github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
-
-replace github.com/decisionbox-io/decisionbox/libs/go-common => ../../../libs/go-common
-```
-
-### Pack Registration (`pack.go`)
-
-```go
-package ecommerce
-
-import (
-    "github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
-)
-
-func init() {
-    domainpack.Register("ecommerce", NewPack())
-}
-
-type EcommercePack struct{}
-
-func NewPack() *EcommercePack {
-    return &EcommercePack{}
-}
-
-func (p *EcommercePack) Name() string {
-    return "ecommerce"
-}
-```
-
-### Discovery Implementation (`discovery.go`)
-
-```go
-package ecommerce
-
-import (
-    "encoding/json"
-    "os"
-    "path/filepath"
-
-    "github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
-)
-
-// Compile-time check
-var _ domainpack.DiscoveryPack = (*EcommercePack)(nil)
-
-func (p *EcommercePack) DomainCategories() []domainpack.DomainCategory {
-    return []domainpack.DomainCategory{
-        {
-            ID:          "b2c",
-            Name:        "B2C Retail",
-            Description: "Direct-to-consumer e-commerce",
-        },
-    }
-}
-
-func (p *EcommercePack) AnalysisAreas(categoryID string) []domainpack.AnalysisArea {
-    var areas []domainpack.AnalysisArea
-
-    // Load base areas
-    baseAreas := loadAreas(filepath.Join(getPromptsPath(), "base", "areas.json"))
-    for _, a := range baseAreas {
-        areas = append(areas, domainpack.AnalysisArea{
-            ID: a.ID, Name: a.Name, Description: a.Description,
-            Keywords: a.Keywords, IsBase: true, Priority: a.Priority,
-        })
-    }
-
-    // Load category-specific areas
-    if categoryID != "" {
-        catAreas := loadAreas(filepath.Join(getPromptsPath(), "categories", categoryID, "areas.json"))
-        for _, a := range catAreas {
-            areas = append(areas, domainpack.AnalysisArea{
-                ID: a.ID, Name: a.Name, Description: a.Description,
-                Keywords: a.Keywords, IsBase: false, Priority: a.Priority,
-            })
-        }
-    }
-
-    return areas
-}
-
-func (p *EcommercePack) Prompts(categoryID string) domainpack.PromptTemplates {
-    basePath := filepath.Join(getPromptsPath(), "base")
-    templates := domainpack.PromptTemplates{
-        Exploration:     readFile(filepath.Join(basePath, "exploration.md")),
-        Recommendations: readFile(filepath.Join(basePath, "recommendations.md")),
-        BaseContext:     readFile(filepath.Join(basePath, "base_context.md")),
-        AnalysisAreas:   make(map[string]string),
-    }
-
-    // Load base analysis prompts
-    for _, area := range loadAreas(filepath.Join(basePath, "areas.json")) {
-        templates.AnalysisAreas[area.ID] = readFile(filepath.Join(basePath, area.PromptFile))
-    }
-
-    // Append category context to exploration prompt
-    if categoryID != "" {
-        catPath := filepath.Join(getPromptsPath(), "categories", categoryID)
-        catContext := readFile(filepath.Join(catPath, "exploration_context.md"))
-        if catContext != "" {
-            templates.Exploration += "\n\n" + catContext
-        }
-
-        // Load category-specific analysis prompts
-        for _, area := range loadAreas(filepath.Join(catPath, "areas.json")) {
-            templates.AnalysisAreas[area.ID] = readFile(filepath.Join(catPath, area.PromptFile))
-        }
-    }
-
-    return templates
-}
-
-func (p *EcommercePack) ProfileSchema(categoryID string) map[string]interface{} {
-    profilesPath := getProfilesPath()
-    base := readJSON(filepath.Join(profilesPath, "schema.json"))
-
-    if categoryID != "" {
-        catSchema := readJSON(filepath.Join(profilesPath, "categories", categoryID+".json"))
-        if catSchema != nil {
-            // Merge category properties into base
-            if baseProps, ok := base["properties"].(map[string]interface{}); ok {
-                if catProps, ok := catSchema["properties"].(map[string]interface{}); ok {
-                    for k, v := range catProps {
-                        baseProps[k] = v
-                    }
-                }
-            }
-        }
-    }
-
-    return base
-}
-
-// --- Helpers ---
-
-func getPromptsPath() string {
-    if p := os.Getenv("DOMAIN_PACK_PATH"); p != "" {
-        return filepath.Join(p, "ecommerce", "prompts")
-    }
-    return "domain-packs/ecommerce/prompts"
-}
-
-func getProfilesPath() string {
-    if p := os.Getenv("DOMAIN_PACK_PATH"); p != "" {
-        return filepath.Join(p, "ecommerce", "profiles")
-    }
-    return "domain-packs/ecommerce/profiles"
-}
-
-type areaFile struct {
-    ID          string   `json:"id"`
-    Name        string   `json:"name"`
-    Description string   `json:"description"`
-    Keywords    []string `json:"keywords"`
-    Priority    int      `json:"priority"`
-    PromptFile  string   `json:"prompt_file"`
-}
-
-func loadAreas(path string) []areaFile {
-    data, err := os.ReadFile(path)
-    if err != nil {
-        return nil
-    }
-    var areas []areaFile
-    json.Unmarshal(data, &areas)
-    return areas
-}
-
-func readFile(path string) string {
-    data, err := os.ReadFile(path)
-    if err != nil {
-        return ""
-    }
-    return string(data)
-}
-
-func readJSON(path string) map[string]interface{} {
-    data, err := os.ReadFile(path)
-    if err != nil {
-        return make(map[string]interface{})
-    }
-    var result map[string]interface{}
-    json.Unmarshal(data, &result)
-    return result
-}
-```
-
-## Step 5: Register in Services
-
-Add your domain pack import to both the agent and API:
-
-```go
-// services/agent/main.go
-import _ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"
-
-// services/api/main.go
-import _ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"
-```
-
-Add the `replace` directive in both `services/agent/go.mod` and `services/api/go.mod`:
-
-```
-require github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go v0.0.0
-
-replace github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go => ../../domain-packs/ecommerce/go
-```
-
-## Step 6: Write Tests
-
-```go
-// domain-packs/ecommerce/go/pack_test.go
-package ecommerce
-
-import (
-    "os"
-    "testing"
-
-    "github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
-)
-
-func TestMain(m *testing.M) {
-    os.Setenv("DOMAIN_PACK_PATH", "../..")
-    os.Exit(m.Run())
-}
-
-func TestImplementsDiscoveryPack(t *testing.T) {
-    pack := NewPack()
-    _, ok := domainpack.AsDiscoveryPack(pack)
-    if !ok {
-        t.Fatal("EcommercePack does not implement DiscoveryPack")
-    }
-}
-
-func TestCategories(t *testing.T) {
-    pack := NewPack()
-    cats := pack.DomainCategories()
-    if len(cats) == 0 {
-        t.Fatal("no categories")
-    }
-    if cats[0].ID != "b2c" {
-        t.Errorf("first category = %q, want b2c", cats[0].ID)
-    }
-}
-
-func TestAnalysisAreas(t *testing.T) {
-    pack := NewPack()
-
-    // Base areas
-    areas := pack.AnalysisAreas("")
-    if len(areas) < 3 {
-        t.Errorf("base areas = %d, want at least 3", len(areas))
-    }
-
-    // B2C areas (base + category)
-    b2cAreas := pack.AnalysisAreas("b2c")
-    if len(b2cAreas) <= len(areas) {
-        t.Error("B2C should have more areas than base")
-    }
-}
-
-func TestPrompts(t *testing.T) {
-    pack := NewPack()
-    prompts := pack.Prompts("b2c")
-
-    if prompts.Exploration == "" {
-        t.Error("exploration prompt is empty")
-    }
-    if prompts.Recommendations == "" {
-        t.Error("recommendations prompt is empty")
-    }
-    if prompts.BaseContext == "" {
-        t.Error("base context is empty")
-    }
-    if len(prompts.AnalysisAreas) == 0 {
-        t.Error("no analysis area prompts")
-    }
-}
-
-func TestProfileSchema(t *testing.T) {
-    pack := NewPack()
-    schema := pack.ProfileSchema("b2c")
-
-    if schema == nil {
-        t.Fatal("schema is nil")
-    }
-    props, ok := schema["properties"].(map[string]interface{})
-    if !ok {
-        t.Fatal("no properties in schema")
-    }
-    if _, ok := props["business_info"]; !ok {
-        t.Error("missing business_info in schema")
-    }
-}
-```
-
-## Step 7: Test End-to-End
+### Export an Existing Pack
 
 ```bash
-# Build with your domain pack
-make build
+curl http://localhost:8080/api/v1/domain-packs/ecommerce/export -o ecommerce-pack.json
+```
 
-# Create a project with domain=ecommerce, category=b2c via the dashboard
-# The new domain appears automatically in the "New Project" form
+## Step 6: Test
 
-# Run a discovery
+Create a project using your new domain pack via the dashboard, then run a discovery to verify the prompts produce good results:
+
+```bash
+# Via API
+curl -X POST http://localhost:8080/api/v1/projects/{id}/discover
+
+# Or via make
 make agent-run PROJECT_ID=your-project-id
 ```
+
+No Go compilation is needed -- domain packs are loaded from MongoDB at project creation time.
 
 ## Prompt Writing Tips
 

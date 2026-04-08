@@ -101,7 +101,7 @@ chmod +x decisionbox-api decisionbox-agent
 sudo mv decisionbox-agent /usr/local/bin/
 
 # Run the API
-MONGODB_URI=mongodb://localhost:27017 MONGODB_DB=decisionbox DOMAIN_PACK_PATH=./domain-packs ./decisionbox-api
+MONGODB_URI=mongodb://localhost:27017 MONGODB_DB=decisionbox ./decisionbox-api
 ```
 
 For the dashboard, you'll need to build from source or use the Docker image:

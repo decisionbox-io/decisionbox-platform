@@ -1,6 +1,6 @@
 # Terraform — GCP
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 Provision a production-ready GKE cluster for DecisionBox using the included Terraform module.
 

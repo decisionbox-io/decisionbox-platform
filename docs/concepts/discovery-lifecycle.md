@@ -1,6 +1,6 @@
 # Discovery Lifecycle
 
-> **Version**: 0.1.0
+> **Version**: 0.3.0
 
 A discovery run is the core operation of DecisionBox. The agent autonomously explores your data warehouse, finds patterns, validates them, and generates recommendations. This page explains each phase in detail.
 

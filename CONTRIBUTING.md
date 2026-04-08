@@ -179,13 +179,13 @@ All providers follow the same pattern: implement an interface, register via `ini
 
 #### New Domain Packs
 
-Domain packs teach the AI agent how to analyze specific types of data. The gaming and social network domain packs ship as complete references. A domain pack includes:
+Domain packs teach the AI agent how to analyze specific types of data. Domain packs are JSON documents stored in MongoDB -- no Go code required. A domain pack includes:
 
-- Analysis area definitions (`areas.json`)
-- LLM prompts for exploration, analysis, and recommendations (Markdown files)
+- Analysis area definitions (what patterns to look for)
+- LLM prompts for exploration, analysis, and recommendations (markdown content)
 - Project profile schema (JSON Schema for domain-specific configuration)
 
-See [Creating Domain Packs](docs/guides/creating-domain-packs.md) for a full tutorial with an e-commerce example.
+You can create domain packs from the dashboard's Domain Packs page, or import a portable JSON file via the API. See [Creating Domain Packs](docs/guides/creating-domain-packs.md) for details.
 
 #### Core Improvements
 
@@ -210,7 +210,7 @@ Your Data Warehouse          DecisionBox Agent          Dashboard
 | Dashboard | `ui/dashboard/` | Next.js -- web UI, proxies `/api/*` to API backend |
 | Shared libs | `libs/go-common/` | Go -- interfaces for LLM, warehouse, secrets, health |
 | Providers | `providers/` | Go -- LLM, warehouse, secret implementations |
-| Domain packs | `domain-packs/` | Markdown + JSON -- prompts, areas, profile schemas |
+| Domain packs | MongoDB `domain_packs` collection | JSON documents -- prompts, areas, profile schemas (managed via dashboard/API) |
 
 The project uses Go workspaces. Each provider and service has its own `go.mod` with `replace` directives pointing to local modules. For the full architecture, see [docs/concepts/architecture.md](docs/concepts/architecture.md).
 
@@ -237,7 +237,7 @@ The project uses Go workspaces. Each provider and service has its own `go.mod` w
 - Structured logging with `apilog` or `applog` -- never `fmt.Println` or `log.Println`
 - Context passed as first argument
 - Follow the plugin pattern (`Register()` in `init()`) for providers
-- No hardcoded values -- use config, env vars, or domain pack files
+- No hardcoded values -- use config or env vars
 
 ### TypeScript
 
@@ -294,7 +294,7 @@ For the full testing guide including how to write tests and test patterns, see [
 - [ ] Go tests pass: `make test-go`
 - [ ] Lint passes: `make lint`
 - [ ] Dashboard tests pass: `make test-ui` (if UI changes)
-- [ ] No hardcoded values (use config, env vars, or domain pack files)
+- [ ] No hardcoded values (use config or env vars)
 - [ ] No secrets or credentials in the code
 - [ ] Documentation updated if the change is user-facing
 - [ ] Commit messages follow conventional commits format
@@ -313,14 +313,15 @@ For the full testing guide including how to write tests and test patterns, see [
 
 ### Domain Pack PR Checklist
 
-- [ ] `areas.json` with proper structure (id, name, keywords, priority, prompt_file)
-- [ ] All prompt files referenced in `areas.json` exist
-- [ ] `base_context.md` includes `{{PROFILE}}` and `{{PREVIOUS_CONTEXT}}`
+Domain packs are JSON documents stored in MongoDB. If contributing a new built-in domain pack (seeded on startup):
+
+- [ ] Embedded JSON added to `services/api/internal/seed/` with valid structure
+- [ ] Analysis areas have proper structure (id, name, keywords, priority, prompt_file)
+- [ ] `base_context.md` prompt content includes `{{PROFILE}}` and `{{PREVIOUS_CONTEXT}}`
 - [ ] Analysis prompts include `{{QUERY_RESULTS}}`
 - [ ] Recommendations prompt includes `related_insight_ids` instruction
 - [ ] Profile schema is valid JSON Schema
-- [ ] Go implementation registered via `init()` with tests
-- [ ] Registered in both `services/agent/main.go` and `services/api/main.go`
+- [ ] Seed tests verify the pack loads correctly
 
 ### Review Process
 

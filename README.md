@@ -155,6 +155,8 @@ Domain packs define how the AI analyzes data for a specific industry. A domain p
 - Prompt templates (how the AI reasons)
 - Profile schemas (what context users provide)
 
+Domain packs are stored in MongoDB and managed from the dashboard. Built-in packs (gaming, ecommerce, social) are seeded on first startup. Create your own from the dashboard or import a portable JSON file -- no code changes needed.
+
 See [Creating Domain Packs](https://decisionbox.io/docs/guides/creating-domain-packs).
 
 ### LLM Providers
@@ -187,7 +189,6 @@ Key environment variables:
 | `MONGODB_DB` | `decisionbox` | Database name |
 | `SECRET_PROVIDER` | `mongodb` | Secret storage: `mongodb`, `gcp`, `aws` |
 | `RUNNER_MODE` | `subprocess` | Agent runner: `subprocess`, `kubernetes` |
-| `DOMAIN_PACK_PATH` | `/app/domain-packs` | Path to domain pack files |
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call |
 
 Full reference: [Configuration](https://decisionbox.io/docs/reference/configuration).

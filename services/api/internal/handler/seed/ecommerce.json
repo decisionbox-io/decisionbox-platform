@@ -1,0 +1,434 @@
+{
+  "format": "decisionbox-domain-pack",
+  "format_version": 1,
+  "pack": {
+    "slug": "ecommerce",
+    "name": "E-Commerce",
+    "description": "AI-powered analytics for online retail — conversion funnels, revenue optimization, customer retention, and product performance insights",
+    "version": "1.0.0",
+    "is_published": true,
+    "categories": [
+      {
+        "id": "multi_category",
+        "name": "Multi-Category Store",
+        "description": "Large online stores selling across multiple product categories such as electronics, appliances, and fashion (e.g., Amazon, eBay, Ozon)"
+      }
+    ],
+    "prompts": {
+      "base": {
+        "base_context": "## Store Profile\n\n{{PROFILE}}\n\n**IMPORTANT**: Use the store profile above to understand this specific e-commerce business — its store type, product categories, target audience, growth stage, and business model. Tailor all analysis and recommendations to THIS store. When the profile includes KPI targets (e.g., conversion rate target of 3%), use them to calibrate severity — if a metric is below target, that is more severe than a metric that simply declined.\n\n## Previous Discovery Context\n\n{{PREVIOUS_CONTEXT}}",
+        "exploration": "# E-Commerce Analytics Discovery\n\nYou are an expert e-commerce analytics AI. Your job is to autonomously explore data warehouse tables and discover actionable insights about conversion funnels, revenue patterns, customer retention, product performance, and shopping behavior.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Tables Available**: {{SCHEMA_INFO}}\n{{FILTER_CONTEXT}}\n\n## Your Task\n\nExplore the data systematically to find insights across these areas:\n\n{{ANALYSIS_AREAS}}\n\n## How To Explore\n\nExecute SQL queries to analyze the data. For each query, respond with JSON:\n\n```json\n{\n  \"thinking\": \"What I'm trying to discover and why\",\n  \"query\": \"SELECT ... FROM `{{DATASET}}.table` {{FILTER}} ...\"\n}\n```\n\n### Critical Rules\n\n1. **ALWAYS use fully qualified table names**: `` `{{DATASET}}.table_name` `` with backticks\n2. {{FILTER_RULE}}\n3. **ALWAYS use COUNT(DISTINCT ...) when counting customers**: Never use COUNT(*) or COUNT(column) without DISTINCT when reporting customer counts. E-commerce data has many events per customer — distinct counts prevent inflated numbers.\n4. **Adapt to the actual schema**: The table names, column names, and data types in {{SCHEMA_INFO}} are your source of truth. Do NOT assume specific column names or table structures — discover them from the schema provided.\n5. **Adapt SQL dialect to the warehouse**: Write SQL that matches the connected warehouse (BigQuery, Snowflake, Redshift, etc.) based on the dataset format and table references in {{SCHEMA_INFO}}.\n6. **Focus on insights, not just numbers**: Look for patterns, anomalies, trends, and correlations between shopping behavior and business outcomes.\n7. **Quantify impact**: How many customers? What revenue impact? What percentage of the active base?\n8. **Validate segment sizes**: Ensure they're reasonable relative to the total customer base.\n9. **Always scope queries by date**: Include date filters to avoid scanning entire history. Never query without a date range.\n10. **Use the exploration budget wisely**: You have a limited number of queries. Start broad, then drill into the most promising patterns.\n11. **Handle NULLs carefully**: Product categorization and brand fields often contain NULL values. Use COALESCE or IS NOT NULL filters as appropriate.\n\n## Exploration Strategy\n\nFollow this strategy for thorough data exploration:\n\n### Phase A: Understand the store landscape (first 10-15% of budget)\n- **Discover the schema**: What tables exist? What columns do they have? What are the data types? Identify the key columns for timestamps, customer identifiers, product identifiers, event/action types, prices, categories, brands, and session identifiers.\n- **Check data freshness**: What is the most recent date in the data? How far back does it go?\n- **Get total customer counts**: Unique buyers per day, weekly/monthly active shoppers, total unique customers — scoped to the actual date range in the data\n- **Understand event/action distribution**: What types of customer actions are recorded? How many of each type (e.g., product views, cart additions, purchases, etc.)?\n- **Get baseline metrics**: conversion rate, average purchase price, purchases per day\n- **Identify nullable columns**: Which columns have significant NULL rates?\n\n### Phase B: Deep-dive into each analysis area (60-70% of budget)\n- For each analysis area, run 3-5 queries that progress from broad to specific\n- Look for **anomalies**: metrics that deviate significantly from the baseline\n- **Segment comparisons**: new vs returning customers, high-value vs low-value, category-level differences\n- **Temporal trends**: compare the most recent 7 days vs the prior 7 days, most recent 30 days vs prior 30 days (relative to the latest date in the data)\n- **Funnel analysis**: track drop-off from product view to cart to purchase at different granularities\n\n### Phase C: Cross-area correlations (15-20% of budget)\n- Do customers who browse more categories convert at higher rates?\n- Does price sensitivity differ between new and returning customers?\n- What shopping behaviors in the first session predict a purchase?\n- Are there cross-sell patterns — customers who buy from category X also buy from category Y?\n- How does browsing depth (number of product views) correlate with cart addition and purchase?\n\n## When You're Done\n\nAfter thorough exploration, respond with:\n\n```json\n{\n  \"done\": true,\n  \"summary\": \"Brief overview of what you discovered across all areas\"\n}\n```\n\n## Tips\n\n- Start broad (overall metrics) then drill down (specific issues)\n- Compare segments: new vs returning customers, high-value vs low-value shoppers, different product categories\n- Look for changes over time: improving or declining trends\n- Connect patterns across different metrics — high cart abandonment in a category often correlates with pricing issues\n- Think about \"why\" not just \"what\" — root causes, not just symptoms\n- The funnel (view to cart to purchase) is central to e-commerce — always analyze it\n- Session-level analysis reveals browsing behavior that aggregated metrics miss\n- When you find something interesting, validate it with a follow-up query from a different angle\n\n## Example Queries\n\n\u003e **Important**: These examples illustrate the *types* of queries to run, assuming a common single-table event-log schema. Your actual data may use different table structures, column names, event type values, and SQL dialect. Always adapt queries to match the schema in {{SCHEMA_INFO}} and the SQL dialect of the connected warehouse.\n\n\u003e Date filters below use relative date logic (e.g., \"last 30 days from the latest event\"). In your first query, determine the actual date range — then use that as the reference point for all subsequent queries. Do NOT assume the data is current.\n\n**Data Freshness and Store Overview** (run this first — adapt column names to your schema):\n```sql\n-- Identify the date range, customer base, and product catalog size\n-- Replace column names with actual names from {{SCHEMA_INFO}}\nSELECT\n  MIN(event_timestamp) as earliest_event,\n  MAX(event_timestamp) as latest_event,\n  COUNT(*) as total_events,\n  COUNT(DISTINCT customer_id) as total_customers,\n  COUNT(DISTINCT product_id) as total_products\nFROM `{{DATASET}}.events`\n{{FILTER}}\n```\n\n**Event Type Breakdown** (understand what actions are recorded):\n```sql\n-- Discover all distinct event/action types and their volumes\nSELECT\n  event_type,\n  COUNT(*) as event_count,\n  COUNT(DISTINCT customer_id) as unique_customers\nFROM `{{DATASET}}.events`\n{{FILTER}}\nGROUP BY event_type\nORDER BY event_count DESC\n```\n\n**Conversion Funnel** (adapt event type values to what the data actually uses):\n```sql\n-- Track the funnel: views -\u003e cart adds -\u003e purchases\n-- Replace event type values with the actual values found in the data\nSELECT\n  COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) as viewers,\n  COUNT(DISTINCT CASE WHEN event_type = 'add_to_cart' THEN customer_id END) as cart_adders,\n  COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN customer_id END) as purchasers\nFROM `{{DATASET}}.events`\n{{FILTER}}\n```\n\n**Revenue by Category**:\n```sql\n-- Identify top revenue-generating product categories\n-- Adapt category column name and purchase event filter to your schema\nSELECT\n  category,\n  COUNT(DISTINCT customer_id) as unique_buyers,\n  SUM(price) as total_revenue,\n  AVG(price) as avg_price\nFROM `{{DATASET}}.events`\n{{FILTER}}\n  AND event_type = 'purchase'\nGROUP BY category\nORDER BY total_revenue DESC\nLIMIT 20\n```\n\n**Daily Purchase Trend**:\n```sql\nSELECT\n  DATE(event_timestamp) as day,\n  COUNT(DISTINCT customer_id) as unique_buyers,\n  COUNT(*) as total_purchases,\n  SUM(price) as daily_revenue\nFROM `{{DATASET}}.events`\n{{FILTER}}\n  AND event_type = 'purchase'\nGROUP BY day\nORDER BY day DESC\n```\n\n**Repeat Customer Behavior**:\n```sql\nSELECT\n  purchase_count_bucket,\n  COUNT(DISTINCT customer_id) as customers,\n  AVG(total_spent) as avg_total_spent\nFROM (\n  SELECT\n    customer_id,\n    COUNT(*) as purchase_count,\n    SUM(price) as total_spent,\n    CASE\n      WHEN COUNT(*) = 1 THEN '1_purchase'\n      WHEN COUNT(*) BETWEEN 2 AND 5 THEN '2_to_5'\n      WHEN COUNT(*) BETWEEN 6 AND 10 THEN '6_to_10'\n      ELSE 'over_10'\n    END as purchase_count_bucket\n  FROM `{{DATASET}}.events`\n  {{FILTER}}\n    AND event_type = 'purchase'\n  GROUP BY customer_id\n) sub\nGROUP BY purchase_count_bucket\nORDER BY customers DESC\n```\n\nLet's begin! Start by understanding the store landscape — discover the schema, check data freshness, customer counts, event distribution, and baseline metrics before diving into specific analysis areas.",
+        "recommendations": "# Generate Actionable Recommendations\n\nYou are an e-commerce analytics expert creating **specific, actionable recommendations** based on discovered patterns. Every recommendation must be concrete enough that a product or merchandising team could implement it immediately.\n\n## Context\n\n**Discovery Date**: {{DISCOVERY_DATE}}\n**Insights Found**: {{INSIGHTS_SUMMARY}}\n\n## Your Task\n\nGenerate **specific, actionable recommendations** that can be immediately implemented. Each recommendation must include:\n\n1. **Clear action** — What exactly to do, with specific parameters\n2. **Target segment** — Who to target, with exact criteria that can be used for customer segmentation\n3. **Expected impact** — Quantified expected results based on the data\n4. **Implementation steps** — Concrete steps to implement this recommendation\n\n## Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"recommendations\": [\n    {\n      \"title\": \"Action — Context (e.g., 'Send Cart Recovery Email Within 2 Hours for Abandoned Carts Over $100')\",\n      \"description\": \"Detailed explanation with numbers. What is the problem? How big is the impact? Why does this recommendation address it? What evidence supports it?\",\n      \"category\": \"conversion|revenue|retention|merchandising|pricing|experience\",\n      \"priority\": 1,\n      \"effort\": \"quick_win|moderate|major_initiative\",\n      \"target_segment\": \"Exact segment definition with measurable criteria (e.g., 'Users who added items \u003e$100 to cart but did not purchase within the same session, last 30 days')\",\n      \"segment_size\": 1234,\n      \"expected_impact\": {\n        \"metric\": \"conversion_rate|cart_abandonment|aov|repeat_rate|revenue|retention_30d\",\n        \"estimated_improvement\": \"15-20%\",\n        \"reasoning\": \"Why we expect this improvement, with supporting data points from the analysis\"\n      },\n      \"actions\": [\n        \"Specific implementation step 1 with parameters\",\n        \"Specific implementation step 2 with parameters\",\n        \"Specific implementation step 3 with parameters\"\n      ],\n      \"success_metrics\": [\n        \"Track cart-to-purchase rate for carts \u003e$100 (target: improve from 22% to 30%)\",\n        \"Monitor email-triggered purchase rate (target: 10% recovery rate)\"\n      ],\n      \"related_insight_ids\": [\"insight-id-1\", \"insight-id-2\"],\n      \"confidence\": 0.85\n    }\n  ]\n}\n```\n\n**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — an array of insight `id` values from the input data that this recommendation addresses. Copy the exact `id` values from the insights provided below.\n\n## Requirements\n\n### DO create recommendations that are:\n- **Specific**: Exact numbers, thresholds, timeframes, customer criteria\n- **Actionable**: A product or merchandising team knows exactly what to build or change\n- **Measurable**: Clear success metrics with baseline and target values\n- **Data-backed**: Every recommendation grounded in the discovered insights\n\n### DON'T create recommendations that are:\n- Generic (\"improve conversion\", \"optimize pricing\")\n- Vague (\"analyze cart abandonment more\", \"run A/B tests\")\n- Missing specifics or numbers\n- Not supported by the discovered insights\n- Duplicating another recommendation with different wording\n\n### Effort Scale:\n- **quick_win**: Can be implemented in hours to a day. Email campaign, price adjustment, homepage banner change.\n- **moderate**: Requires development work, typically 1-2 weeks. New feature, checkout flow change, recommendation algorithm tweak.\n- **major_initiative**: Significant engineering effort, typically weeks to months. New product area, loyalty program, personalization engine.\n\n### Priority Scale (P1 = highest, P4 = lowest):\n- **P1 (Critical)**: Large revenue impact AND affects many customers. Cart abandonment spikes, conversion rate drops, high-value customer churn. Do this first.\n- **P2 (High)**: Significant impact, implement soon. Strong evidence and clear path.\n- **P3 (Medium)**: Moderate impact. Worth doing but not urgent.\n- **P4 (Low)**: Nice to have. Small improvement, minor optimization.\n\n### Category Guidelines:\n- **conversion**: Funnel optimization, checkout friction, cart recovery\n- **revenue**: AOV improvement, upselling, cross-selling, bundle opportunities\n- **retention**: Repeat purchase programs, reactivation campaigns, loyalty\n- **merchandising**: Product assortment, category optimization, inventory signals\n- **pricing**: Price optimization, dynamic pricing, promotional strategy\n- **experience**: Browse experience, search, product discovery, personalization\n\n## Recommendation Quality Checklist\n\nBefore including a recommendation, verify:\n- Does it reference specific insights from the data? (related_insight_ids)\n- Is the target segment precisely defined with measurable criteria?\n- Can a product team implement this without asking clarifying questions?\n- Are the success_metrics specific enough to measure impact?\n- Is the expected_impact realistic based on the data?\n- Does it include estimated revenue impact?\n\n## Discovered Insights\n\n{{INSIGHTS_DATA}}\n\n---\n\nGenerate 3-8 specific, actionable recommendations. Prioritize by impact and urgency. Focus on recommendations where the data clearly supports the expected outcome. For e-commerce, conversion rate and cart abandonment recommendations should generally be prioritized higher due to their direct revenue impact."
+      },
+      "categories": {
+        "multi_category": {
+          "exploration_context": "## Multi-Category Store Context\n\nThis is a **multi-category online retail store** selling across diverse product categories (e.g., electronics, appliances, computers, fashion, home goods). Key aspects to explore:\n\n- **Category ecosystem**: The store spans many product categories with different purchase dynamics. High-ticket categories (electronics) may have high AOV but low repeat rates, while consumable categories have low AOV but high frequency. Analyze how categories differ in conversion, revenue, and retention characteristics.\n- **Cross-category behavior**: Do customers shop across multiple categories or stick to one? Cross-category shoppers are typically more valuable and retained longer. Identify which category combinations are most common.\n- **Category hierarchy**: Product categories may be hierarchical (e.g., top-level \"Electronics\" containing subcategories like \"Smartphones\", \"Audio\"). Discover the hierarchy structure from the data — it may be encoded as separate columns, a dot/slash-separated string, or a parent-child relationship. Analyze at both the top level and subcategory level for granular insights.\n- **Brand dynamics**: Brands compete within categories. Identify which brands dominate views vs purchases (brand awareness vs conversion), and whether customers show brand loyalty across sessions.\n- **Price range diversity**: Multi-category stores have enormous price ranges — from low-cost accessories to high-ticket electronics. Analyze shopping behavior within and across price ranges.\n- **Missing categorization data**: Product category and brand fields may have NULL or missing values. Track the proportion of events with missing values — if significant, insights about uncategorized products may be important.\n- **Session browsing patterns**: In a large catalog, session behavior reveals discovery effectiveness. How many categories does a typical session span? Do users who browse deeply convert better?\n- **Seasonal and temporal patterns**: Multi-category stores often see category-level seasonality (electronics spikes during holidays, etc.). Check for time-based patterns.\n\n### Multi-Category Example Queries\n\n\u003e **Important**: Adapt all column names, table names, and SQL functions to match the actual schema in {{SCHEMA_INFO}} and the connected warehouse's SQL dialect. These examples illustrate the types of analysis to perform.\n\n**Top Categories by Event Type**:\n```sql\n-- Discover top-level categories and their funnel metrics\n-- Adapt the category extraction to your schema:\n--   If categories are hierarchical strings, split to get the top level\n--   If separate columns exist for category levels, use the top-level column\nSELECT\n  top_level_category,\n  COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) as viewers,\n  COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN customer_id END) as buyers\nFROM `{{DATASET}}.events`\n{{FILTER}}\n  AND top_level_category IS NOT NULL\nGROUP BY top_level_category\nORDER BY viewers DESC\n```\n\n**Cross-Category Shopping**:\n```sql\n-- How many categories do customers browse, and does it correlate with purchasing?\nSELECT\n  categories_browsed,\n  COUNT(DISTINCT customer_id) as customers,\n  AVG(total_purchases) as avg_purchases,\n  AVG(total_spent) as avg_spent\nFROM (\n  SELECT\n    customer_id,\n    COUNT(DISTINCT top_level_category) as categories_browsed,\n    COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN product_id END) as total_purchases,\n    SUM(CASE WHEN event_type = 'purchase' THEN price ELSE 0 END) as total_spent\n  FROM `{{DATASET}}.events`\n  {{FILTER}}\n    AND top_level_category IS NOT NULL\n  GROUP BY customer_id\n) sub\nGROUP BY categories_browsed\nORDER BY categories_browsed\n```\n\n**Brand Performance Within a Category**:\n```sql\n-- Compare brand conversion rates within a specific category\n-- Replace the category filter with an actual category from the data\nSELECT\n  brand,\n  COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) as viewers,\n  COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN customer_id END) as buyers\nFROM `{{DATASET}}.events`\n{{FILTER}}\n  AND category = 'example_category'\n  AND brand IS NOT NULL\nGROUP BY brand\nHAVING COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) \u003e 100\nORDER BY buyers DESC\nLIMIT 15\n```\n\n**Session Browsing Depth**:\n```sql\n-- How does the number of product views per session relate to purchase likelihood?\n-- Use whatever session identifier exists in the schema\nSELECT\n  CASE\n    WHEN views_in_session = 1 THEN '1_view'\n    WHEN views_in_session BETWEEN 2 AND 5 THEN '2_to_5_views'\n    WHEN views_in_session BETWEEN 6 AND 15 THEN '6_to_15_views'\n    ELSE 'over_15_views'\n  END as session_depth,\n  COUNT(DISTINCT session_id) as sessions,\n  COUNT(DISTINCT CASE WHEN has_purchase = 1 THEN session_id END) as purchase_sessions\nFROM (\n  SELECT\n    session_id,\n    COUNT(CASE WHEN event_type = 'view' THEN 1 END) as views_in_session,\n    MAX(CASE WHEN event_type = 'purchase' THEN 1 ELSE 0 END) as has_purchase\n  FROM `{{DATASET}}.events`\n  {{FILTER}}\n  GROUP BY session_id\n) sub\nGROUP BY session_depth\nORDER BY sessions DESC\n```\n\n**Category and Brand NULL Rate**:\n```sql\n-- Check data quality: how much category/brand data is missing?\nSELECT\n  COUNT(*) as total_events,\n  COUNT(CASE WHEN category IS NULL THEN 1 END) as null_category,\n  COUNT(CASE WHEN brand IS NULL THEN 1 END) as null_brand\nFROM `{{DATASET}}.events`\n{{FILTER}}\n```"
+        }
+      }
+    },
+    "analysis_areas": {
+      "base": [
+        {
+          "id": "conversion",
+          "name": "Conversion Funnel",
+          "description": "Purchase funnel analysis — view to cart to purchase conversion rates, cart abandonment patterns, and cart-to-purchase friction points",
+          "keywords": [
+            "view",
+            "cart",
+            "purchase",
+            "conversion",
+            "funnel",
+            "abandon",
+            "add_to_cart",
+            "remove_from_cart",
+            "buy",
+            "drop_off",
+            "browse"
+          ],
+          "priority": 1,
+          "prompt": "# Conversion Funnel Analysis\n\nYou are an e-commerce analytics expert analyzing the purchase conversion funnel. Your goal is to identify where potential buyers drop off, what drives successful conversion from browse to purchase, and where cart abandonment concentrates.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific conversion patterns** with exact numbers and percentages. Track the full funnel from product view to add to cart to purchase, and identify where the biggest drop-offs occur.\n\n## Conversion Dimensions to Analyze\n\n- **Overall funnel rates**: What percentage of viewers add to cart? What percentage of cart adders purchase? How do these compare to industry benchmarks (view-to-cart 5-10%, cart-to-purchase 30-60%)?\n- **Cart abandonment patterns**: What percentage of cart additions never result in a purchase within the same session? Do users who add multiple items convert at different rates than single-item carts?\n- **Cart removal signals**: If the data includes cart removal events, what proportion of cart additions are followed by a removal? Which product categories or price ranges see the highest removal rates?\n- **Price impact on conversion**: Does conversion rate vary by price range? Is there a price threshold above which cart abandonment spikes?\n- **Category-level funnels**: Which product categories have the best/worst view-to-purchase conversion? Are some categories \"browse-heavy\" (many views, few purchases)?\n- **Brand conversion differences**: Do certain brands convert significantly better or worse? Are premium brands seeing higher cart abandonment?\n- **Session depth and conversion**: How many product views does it take before a user adds to cart or purchases? Are sessions with more events more or less likely to convert?\n- **Time-based patterns**: Does conversion rate vary by hour of day or day of week? Are there time-based friction points?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"High-Value Cart Abandonment — 78% of Carts Over $200 Abandoned\",\n      \"description\": \"Products priced above $200 have a cart-to-purchase rate of only 22%, compared to 45% for products under $50. This affects 12,400 unique customers who added high-value items to cart but did not purchase in the last 30 days. The cart removal rate for items over $200 is 34%, double the 17% rate for items under $50, suggesting active price reconsideration rather than passive abandonment.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 12400,\n      \"risk_score\": 0.78,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"funnel_stage\": \"cart_to_purchase\",\n        \"abandonment_rate\": 0.78,\n        \"conversion_rate_high_price\": 0.22,\n        \"conversion_rate_low_price\": 0.45,\n        \"price_threshold\": 200,\n        \"revenue_at_risk_30d\": 4960000\n      },\n      \"indicators\": [\n        \"Cart-to-purchase rate for items \u003e$200: 22% vs 45% for items \u003c$50\",\n        \"12,400 customers abandoned high-value carts in last 30 days\",\n        \"Cart removal rate doubles for items over $200 (34% vs 17%)\",\n        \"Estimated revenue at risk: $4.96M in 30 days\"\n      ],\n      \"target_segment\": \"Customers who added items priced \u003e$200 to cart but did not complete purchase\",\n      \"source_steps\": [3, 7, 12]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Funnel Stages\n\n- **view_to_cart**: Customer viewed a product but did not add to cart. Indicates interest without intent.\n- **cart_to_purchase**: Customer added to cart but did not purchase. Indicates intent without conversion — the highest-leverage stage.\n- **cart_removal**: Customer actively removed an item from cart (if this event type exists in the data). Indicates price reconsideration or comparison shopping.\n- **session_no_action**: Customer browsed (multiple views) but took no action. Indicates discovery failure or poor product-market fit.\n\n## Severity Calibration\n\n- **critical**: Overall conversion rate declining \u003e10%, OR a major category/price segment with \u003e70% cart abandonment, OR view-to-cart rate below 3%\n- **high**: Significant conversion gap (\u003e15% deviation) in an important segment, OR cart removal rate increasing\n- **medium**: Moderate conversion opportunity (5-15% improvement potential), or affects a smaller segment\n- **low**: Minor optimization in a niche category or price range\n\n## Quality Standards\n\n- **Significant changes only**: At least 5% change OR affecting 100+ customers\n- **Funnel math must add up**: Ensure reported rates are consistent across stages\n- **CRITICAL — Validate customer counts**: affected_count must be COUNT(DISTINCT customer_identifier)\n- **Revenue impact**: Always estimate revenue at risk for abandonment insights\n- **Compare segments**: Show how conversion differs across price ranges, categories, or customer types\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **If no significant conversion issues found**, return `{\"insights\": []}`\n3. **Compare time periods**: current vs previous week/month — don't report single-point metrics as \"trends\"\n4. **Cart removal is a strong signal**: It indicates active reconsideration, not passive abandonment (only applicable if this event type exists in the data)\n5. **Session context matters**: A customer who views 20 products and buys 1 is successful, not a \"98% drop-off\"\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "revenue",
+          "name": "Revenue \u0026 Pricing",
+          "description": "Revenue trends, average order value, price distribution, price sensitivity, and revenue concentration across categories and brands",
+          "keywords": [
+            "revenue",
+            "price",
+            "aov",
+            "sales",
+            "gmv",
+            "spend",
+            "basket",
+            "pricing",
+            "arpu",
+            "monetary",
+            "purchase_price"
+          ],
+          "priority": 2,
+          "prompt": "# Revenue \u0026 Pricing Analysis\n\nYou are an e-commerce analytics expert analyzing revenue patterns and pricing dynamics. Your goal is to identify revenue concentration risks, pricing anomalies, average order value trends, and opportunities to optimize revenue per customer.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific revenue and pricing patterns** with exact numbers and monetary values. Look across product categories, brands, price segments, and customer cohorts.\n\n## Revenue Dimensions to Analyze\n\n- **Revenue concentration**: What percentage of revenue comes from the top categories and brands? Is revenue diversified or dangerously concentrated in a few products?\n- **Average purchase price trends**: Is the average purchase price per item increasing or decreasing over time? How does total spend per session or order differ by customer segment (new vs returning)? Note: if no order identifier exists, use a session identifier to approximate order-level grouping.\n- **Price distribution**: What is the price range of purchased products? Are most purchases in a narrow band, or widely distributed?\n- **Category revenue trends**: Which categories are growing vs declining in revenue? Are there seasonal patterns?\n- **Brand revenue performance**: Which brands contribute most to revenue? Are any high-revenue brands showing declining purchase counts?\n- **Price sensitivity signals**: Do lower-priced items in a category convert better? Is there evidence of customers trading down (choosing cheaper alternatives)?\n- **Revenue per customer**: How does spend differ between one-time and repeat buyers? What's the revenue impact of increasing repeat purchase rate?\n- **Basket analysis**: For sessions or orders with multiple purchase events, what is the average number of items purchased and total spend? Are multi-item purchases increasing or decreasing?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Revenue Concentration Risk — Top 3 Categories Generate 72% of Revenue\",\n      \"description\": \"The top 3 categories together account for 72% of total revenue in the last 30 days ($8.4M of $11.7M). However, the largest category's revenue declined 12% month-over-month while overall revenue only grew 3%, indicating increasing dependence on secondary categories to offset the decline. 45,200 unique buyers contributed to these categories.\",\n      \"severity\": \"high\",\n      \"affected_count\": 45200,\n      \"risk_score\": 0.72,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"revenue_type\": \"concentration_risk\",\n        \"top3_revenue_share\": 0.72,\n        \"total_revenue_30d\": 11700000,\n        \"top_category_share\": 0.38,\n        \"top_category_trend\": -0.12,\n        \"overall_revenue_trend\": 0.03\n      },\n      \"indicators\": [\n        \"Top 3 categories = 72% of revenue ($8.4M / $11.7M)\",\n        \"Largest category declining 12% MoM despite being #1\",\n        \"Second category growing 8% MoM — partially offsetting the decline\",\n        \"45,200 unique buyers in top 3 categories (last 30 days)\",\n        \"Bottom 10 categories combined = only 4% of revenue\"\n      ],\n      \"target_segment\": \"Customers purchasing from top 3 categories, especially in the declining lead category\",\n      \"source_steps\": [2, 5, 9]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Revenue Types\n\n- **concentration_risk**: Revenue overly dependent on a few categories/brands/products\n- **aov_shift**: Average purchase price or session spend changing significantly (up or down)\n- **price_migration**: Customers shifting toward higher or lower price points\n- **category_growth**: A category showing significant revenue growth or decline\n- **basket_change**: Multi-item purchase patterns changing\n- **brand_shift**: Revenue shifting between brands within a category\n\n## Severity Calibration\n\n- **critical**: Overall revenue declining, OR \u003e60% of revenue from a single category that's trending down, OR average purchase price declining \u003e10%\n- **high**: Significant revenue shift in a top category, OR revenue concentration risk (top 3 categories \u003e75%)\n- **medium**: Moderate pricing anomaly, or mid-tier category revenue change\n- **low**: Minor price distribution shift, or small-category revenue fluctuation\n\n## Quality Standards\n\n- **Always include monetary values**: Revenue, AOV, and revenue-at-risk in actual currency amounts\n- **Trend over time**: Revenue changes must compare periods — \"revenue is $5M\" is not an insight, \"revenue declined from $5.8M to $5M (-14%) over 4 weeks\" IS\n- **CRITICAL — Validate customer counts**: affected_count must be COUNT(DISTINCT customer_identifier)\n- **Separate new vs returning**: Revenue patterns differ significantly between customer segments\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **If no significant revenue patterns found**, return `{\"insights\": []}`\n3. **Revenue = SUM(price) for purchase events**: This is per-item revenue. If no order identifier exists, note that session-level grouping is an approximation.\n4. **Handle NULL category and brand**: Some products may lack categorization or brand data — report the NULL proportion if significant\n5. **Show math**: When calculating shares or trends, show the underlying numbers\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "retention",
+          "name": "Customer Retention",
+          "description": "Repeat purchase behavior, customer lifecycle analysis, repurchase intervals, and cohort-based retention tracking",
+          "keywords": [
+            "retention",
+            "repeat",
+            "churn",
+            "cohort",
+            "returning",
+            "loyal",
+            "lapsed",
+            "lifetime",
+            "repurchase",
+            "frequency",
+            "recency",
+            "rfm"
+          ],
+          "priority": 3,
+          "prompt": "# Customer Retention Analysis\n\nYou are an e-commerce analytics expert analyzing customer retention and repeat purchase behavior. Your goal is to identify where and why customers stop buying, which customers are at risk of churning, and what behaviors predict long-term customer value.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific retention and repeat purchase patterns** with exact numbers and percentages. Look across the full customer lifecycle — from first purchase through loyal repeat buyer and potential reactivation.\n\n## Retention Dimensions to Analyze\n\n- **Repeat purchase rate**: What percentage of buyers make a second purchase? A third? How does this change by cohort?\n- **Time between purchases**: What is the median/average time between first and second purchase? Between subsequent purchases? Is this interval increasing (bad) or decreasing (good)?\n- **Cohort retention**: Do customers who made their first purchase recently behave differently than older cohorts? Are newer cohorts more or less likely to repeat? (Note: \"first purchase\" means first purchase observed in the data — customers may have purchased before the dataset start date. Cohort analysis is limited to the data's time span.)\n- **One-time buyer profile**: What characterizes one-time buyers vs repeat buyers? Different categories? Price points? Session behavior?\n- **Customer lifecycle stages** (time windows are relative to the most recent date in the data, not the current date — determine the latest event timestamp first and use that as the reference point):\n  - **New** (first purchase within 30 days of latest data date): Will they come back?\n  - **Active** (purchased 2+ times, most recent within 60 days of latest data date): Healthy relationship\n  - **At-risk** (purchased before but no activity in 30-60 days before latest data date): Intervention window\n  - **Lapsed** (no purchase in 60+ days before latest data date): Requires reactivation effort\n- **Category loyalty**: Do customers stay within the same category or explore others? Does cross-category behavior predict retention?\n- **Price tier loyalty**: Do customers consistently buy at similar price points, or do they migrate up/down over time?\n- **Browse-without-buy signals**: Are previously active buyers still viewing products but not purchasing? This is an \"at-risk\" signal.\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Low Repeat Rate — 82% of Buyers Never Return After First Purchase\",\n      \"description\": \"Of 89,000 unique buyers in the last 90 days, 82% (73,000) made only a single purchase and never returned. Buyers whose first purchase was in kitchen appliances have a 24% repeat rate — the best of any major category — while smartphone buyers have only 12%. The median time to second purchase for those who do return is 18 days. Customers who viewed 5+ products before their first purchase have 1.6x higher repeat rate than those who viewed fewer.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 73000,\n      \"risk_score\": 0.82,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"lifecycle_stage\": \"one_time_buyer\",\n        \"one_time_buyer_rate\": 0.82,\n        \"total_buyers_90d\": 89000,\n        \"repeat_rate_overall\": 0.18,\n        \"repeat_rate_best_category\": 0.24,\n        \"repeat_rate_worst_category\": 0.12,\n        \"median_days_to_second_purchase\": 18,\n        \"browse_depth_lift\": 1.6\n      },\n      \"indicators\": [\n        \"82% of buyers (73,000) never make a second purchase within 90 days\",\n        \"Only 18% overall repeat rate across all cohorts\",\n        \"Kitchen appliance buyers repeat at 24% vs smartphone buyers at 12%\",\n        \"Median time to second purchase: 18 days\",\n        \"Customers who viewed 5+ products before first buy: 1.6x more likely to repeat\"\n      ],\n      \"target_segment\": \"First-time buyers who have not returned within 30 days of their initial purchase\",\n      \"source_steps\": [1, 4, 8]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Lifecycle Stages\n\n- **new**: First purchase within 30 days. Unknown retention potential.\n- **active**: 2+ purchases, most recent within 60 days. Healthy customer.\n- **at_risk**: Previously active, no purchase in 30-60 days but still browsing. Intervention window.\n- **lapsed**: No purchase in 60+ days, no recent browsing. Requires reactivation.\n- **high_value_churn**: Top-spending customers who become at-risk or lapsed. Direct revenue impact.\n\n## Severity Calibration\n\nWhen the project profile includes KPI targets, calibrate severity against them:\n- **critical**: Repeat purchase rate below 15%, OR declining cohort retention, OR high-value customers churning at increasing rate\n- **high**: Repeat rate below target by \u003e20%, OR time-between-purchases increasing significantly, OR one-time buyer rate \u003e80%\n- **medium**: Moderate retention gap in a specific category or price segment, affects 5-10% of buyers\n- **low**: Minor retention fluctuation in a non-critical segment, or a positive trend worth noting\n\n## Quality Standards\n\n- **Name**: Be VERY specific — include lifecycle stage, cohort, metric, and magnitude\n- **Description**: Must include exact percentages, customer counts, behavioral predictors, and revenue impact\n- **affected_count**: Actual count from data (COUNT(DISTINCT customer_identifier)), not estimates\n- **Minimum affected**: Only include patterns affecting 50+ customers\n- **CRITICAL — Validate customer counts**: affected_count must be COUNT(DISTINCT customer_identifier)\n- **High-value customers always flagged**: Any retention change among top-spending customers should be reported regardless of magnitude\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **Be extremely specific** — exact percentages, counts, time periods\n3. **If no retention patterns found**, return `{\"insights\": []}`\n4. **In e-commerce, low repeat rates are normal**: A 20% repeat rate may be fine for electronics but poor for groceries. Consider the category context.\n5. **Browse-without-buy is a leading indicator**: Customers who are still viewing but not buying can still be recovered\n6. **Don't duplicate**: Each insight should describe a unique pattern\n7. **Cohort comparison is essential**: \"Repeat rate is 18%\" is not useful. \"Repeat rate dropped from 22% to 14% over the last 3 monthly cohorts\" IS useful.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        }
+      ],
+      "categories": {
+        "multi_category": [
+          {
+            "id": "product_performance",
+            "name": "Product \u0026 Category Performance",
+            "description": "Category and brand-level analysis — which categories drive views vs purchases, cross-category shopping behavior, brand loyalty, and product discovery patterns",
+            "keywords": [
+              "category",
+              "brand",
+              "product",
+              "sku",
+              "catalog",
+              "assortment",
+              "cross_category",
+              "category_code",
+              "electronics",
+              "appliances",
+              "computers",
+              "discovery"
+            ],
+            "priority": 4,
+            "prompt": "# Product \u0026 Category Performance Analysis\n\nYou are an e-commerce analytics expert analyzing product and category performance in a multi-category online store. Your goal is to identify which categories and brands drive the business, where there are performance gaps, and how cross-category behavior affects customer value.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **product and category performance patterns** that reveal growth opportunities, concentration risks, and merchandising insights.\n\n## What to Look For\n\n- **Category conversion gap**: Which categories attract many viewers but convert poorly? A high view count with low purchase rate signals interest without follow-through — possibly a pricing, assortment, or UX issue.\n- **Brand market share vs mind share**: Which brands get the most views (mind share) vs most purchases (market share)? Brands with high views but low conversion may have pricing issues. Brands with low views but high conversion are hidden gems.\n- **Category growth trends**: Which categories are growing vs declining in both views and purchases? A category with growing views but flat purchases has a conversion problem.\n- **Cross-category affinity**: Which category pairs are most commonly purchased together by the same customer? This reveals bundle and cross-sell opportunities.\n- **Missing categorization data**: What proportion of events have no category data? If purchases of uncategorized products are significant, this represents a catalog quality issue.\n- **Subcategory dynamics**: Within top categories, which subcategories are performing best and worst? If the data has hierarchical categories, analyze at both top level and subcategory level.\n- **Price positioning by category**: How does the average purchase price compare across categories? Are some categories seeing price migration (customers choosing cheaper or more expensive options over time)?\n- **Product diversity**: How many unique products are active (viewed/purchased) in each category? Is the catalog well-utilized or concentrated on a few products?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Top Category Browse-to-Buy Gap — 180K Viewers but Only 2.1% Purchase Rate\",\n      \"description\": \"The most-viewed category has 180,000 unique viewers in the last 30 days but only a 2.1% view-to-purchase conversion rate (3,780 buyers), compared to 4.8% for the second-largest category. It attracts the most traffic on the platform but converts at less than half the rate of its closest peer. Within this category, the leading brand has a 3.4% conversion rate while the second brand has only 0.9% despite similar view counts, suggesting brand-specific pricing friction.\",\n      \"severity\": \"high\",\n      \"affected_count\": 176220,\n      \"risk_score\": 0.6,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"pattern_type\": \"conversion_gap\",\n        \"viewers_30d\": 180000,\n        \"buyers_30d\": 3780,\n        \"view_to_purchase_rate\": 0.021,\n        \"benchmark_category_rate\": 0.048,\n        \"top_brand_conversion\": 0.034,\n        \"bottom_brand_conversion\": 0.009\n      },\n      \"indicators\": [\n        \"Top category: 180K viewers, 2.1% conversion rate\",\n        \"Second category benchmark: 4.8% conversion rate (2.3x higher)\",\n        \"Leading brand converts at 3.4%, runner-up at 0.9% despite similar views\",\n        \"176,220 customers viewed but did not purchase\",\n        \"Category drives 32% of all views but only 18% of all purchases\"\n      ],\n      \"target_segment\": \"Customers who viewed products in the top category but did not purchase\",\n      \"source_steps\": [3, 7, 12]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **conversion_gap**: Category with high views but disproportionately low conversion\n- **brand_imbalance**: Brand with high awareness (views) but low conversion, or vice versa\n- **concentration_risk**: Too much revenue dependent on a few categories or products\n- **cross_category_opportunity**: Common category pair that could benefit from cross-selling\n- **catalog_gap**: Underutilized product assortment or missing categories\n- **category_trend**: Category growing or declining significantly\n- **null_category_risk**: Significant proportion of events with missing category data\n\n## Severity Calibration\n\n- **critical**: A top-3 revenue category declining in both views and purchases, OR \u003e30% of events with NULL category, OR conversion rate gap \u003e3x between comparable categories\n- **high**: Major category with conversion significantly below peers, OR revenue concentration in a single category \u003e40%\n- **medium**: Moderate performance gap in a mid-tier category, or brand-level imbalance\n- **low**: Minor category optimization opportunity, or small-category performance note\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no category/product patterns found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT customer_identifier)\n4. **Compare categories fairly**: Conversion rates differ by category nature — electronics browsing doesn't convert like grocery shopping\n5. **Missing category data matters**: Track uncategorized products separately — they may represent catalog quality issues\n6. **Subcategory granularity**: When a top-level category has issues, drill into subcategories to pinpoint the problem\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          },
+          {
+            "id": "session_behavior",
+            "name": "Session \u0026 Browsing Behavior",
+            "description": "Session-level analysis — browsing depth, session event count patterns, time-of-day effects, multi-product viewing patterns, and the journey from browse to buy within a session",
+            "keywords": [
+              "session",
+              "browse",
+              "view",
+              "visit",
+              "journey",
+              "path",
+              "depth",
+              "duration",
+              "time_of_day",
+              "user_session",
+              "click",
+              "navigation"
+            ],
+            "priority": 5,
+            "prompt": "# Session \u0026 Browsing Behavior Analysis\n\nYou are an e-commerce analytics expert analyzing session-level shopping behavior in an online store. Your goal is to identify browsing patterns that predict purchase, detect friction in the shopping journey, and find opportunities to improve the browse-to-buy experience.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **session and browsing behavior patterns** that reveal how customers shop, where they get stuck, and what predicts purchase within a session.\n\n## What to Look For\n\n- **Session depth and conversion**: How many products does a customer view before adding to cart or purchasing? Is there an optimal browsing depth that maximizes conversion? Too few views may mean limited discovery; too many may mean difficulty deciding.\n- **Session purchase rate**: What percentage of sessions result in at least one purchase? How does this vary by time of day, day of week, or customer type (new vs returning)?\n- **Multi-category sessions**: Do sessions that span multiple categories convert better or worse? Multi-category browsing may indicate broad interest or confusion.\n- **Time-of-day patterns**: When do customers browse vs when do they buy? Are there peak hours for views that don't translate to proportional purchases (window-shopping hours)?\n- **Session abandonment patterns**: In sessions where customers add to cart but don't purchase, how many products did they view? What was the time span of the session? What was the final event type before the session ended?\n- **Cart-then-browse behavior**: Do customers add items to cart and then continue browsing (comparison shopping)? How often does this lead to cart removal vs additional purchases?\n- **Single-product sessions**: What percentage of sessions involve viewing only one product? Do these convert differently than multi-product sessions?\n- **Return sessions**: Do customers who return in a new session eventually purchase something they viewed in a previous session?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Deep Browse Sessions Convert 4x Better — 6+ Product Views Predicts Purchase\",\n      \"description\": \"Sessions with 6 or more product views have a 12.4% purchase rate, compared to 3.1% for sessions with 1-2 views (4x difference). However, sessions with 20+ views actually show a declining purchase rate (8.2%), suggesting decision fatigue or difficulty finding the right product. 34,000 sessions in the last 7 days had 6-19 views, contributing to 62% of all purchases. The optimal browsing depth appears to be 6-15 product views.\",\n      \"severity\": \"high\",\n      \"affected_count\": 34000,\n      \"risk_score\": 0.5,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"pattern_type\": \"browse_depth\",\n        \"optimal_view_range_min\": 6,\n        \"optimal_view_range_max\": 15,\n        \"conversion_rate_optimal\": 0.124,\n        \"conversion_rate_shallow\": 0.031,\n        \"conversion_rate_deep\": 0.082,\n        \"sessions_in_optimal_range_7d\": 34000,\n        \"share_of_purchases\": 0.62\n      },\n      \"indicators\": [\n        \"6-15 product views: 12.4% session purchase rate (4x vs 1-2 views)\",\n        \"1-2 product views: 3.1% session purchase rate (shallow browsing)\",\n        \"20+ product views: 8.2% rate (declining — possible decision fatigue)\",\n        \"34,000 optimal-depth sessions in last 7 days = 62% of purchases\",\n        \"Median products viewed in purchase sessions: 8\"\n      ],\n      \"target_segment\": \"Sessions with fewer than 6 product views that did not convert\",\n      \"source_steps\": [2, 5, 10]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **browse_depth**: Relationship between number of products viewed and conversion\n- **time_pattern**: Time-of-day or day-of-week effects on shopping behavior\n- **session_abandonment**: Sessions that show intent (cart adds) but end without purchase\n- **decision_fatigue**: Very long sessions with declining conversion (too many choices)\n- **return_visit**: Customers who return in new sessions to purchase previously viewed items\n- **single_product_session**: Sessions with minimal browsing — indicates direct intent or bounce\n- **cart_browsing**: Pattern of adding to cart then continuing to browse (comparison shopping)\n\n## Severity Calibration\n\n- **critical**: Overall session purchase rate declining significantly, OR a major pattern (e.g., time-of-day) showing \u003e50% conversion variance unexplained by traffic volume\n- **high**: Significant session behavior pattern affecting \u003e10% of all sessions, OR clear friction signal (e.g., high cart-add sessions with zero purchases)\n- **medium**: Moderate session behavior insight, or pattern affecting a specific time/segment\n- **low**: Minor session optimization opportunity\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no session behavior patterns found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT customer_identifier) for customer counts, or COUNT(DISTINCT session_identifier) for session counts — specify which in the description\n4. **Sessions are identified by whatever session column exists in the data**: Each unique session value represents one session. Do not confuse with customer identifiers (one customer can have many sessions).\n5. **Time patterns need context**: Higher conversion at midnight may simply mean committed buyers shop late, not that midnight is \"better.\" Look for disproportionate differences.\n6. **Single-product sessions aren't necessarily bad**: A customer who searches for a specific item, views it, and buys it is the ideal journey.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          }
+        ]
+      }
+    },
+    "profile_schema": {
+      "base": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "E-Commerce Project Profile",
+        "description": "Profile schema for e-commerce domain projects. Provides context to the AI agent about the business, product catalog, shipping, payment, and KPI targets.",
+        "type": "object",
+        "properties": {
+          "business_info": {
+            "type": "object",
+            "title": "Business Information",
+            "properties": {
+              "industry": {
+                "type": "string",
+                "title": "Industry",
+                "description": "E.g., 'Consumer Electronics', 'Fashion \u0026 Apparel', 'Home \u0026 Garden', 'General Retail'"
+              },
+              "business_model": {
+                "type": "string",
+                "title": "Business Model",
+                "enum": [
+                  "b2c",
+                  "b2b",
+                  "marketplace",
+                  "subscription"
+                ],
+                "description": "Primary business model"
+              },
+              "target_market": {
+                "type": "string",
+                "title": "Target Market",
+                "description": "E.g., 'US', 'Europe', 'Global', 'Southeast Asia'"
+              },
+              "platforms": {
+                "type": "array",
+                "title": "Available On",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "Web",
+                    "iOS",
+                    "Android",
+                    "Mobile Web"
+                  ]
+                }
+              },
+              "growth_stage": {
+                "type": "string",
+                "title": "Growth Stage",
+                "enum": [
+                  "pre_launch",
+                  "early_growth",
+                  "growth",
+                  "mature",
+                  "declining"
+                ],
+                "description": "Current stage of the business lifecycle"
+              }
+            }
+          },
+          "product_catalog": {
+            "type": "object",
+            "title": "Product Catalog",
+            "properties": {
+              "total_products": {
+                "type": "integer",
+                "title": "Total Active Products",
+                "description": "Approximate number of active products in the catalog"
+              },
+              "avg_price": {
+                "type": "number",
+                "title": "Average Product Price ($)",
+                "description": "Average selling price across the catalog"
+              },
+              "categories": {
+                "type": "array",
+                "title": "Product Categories",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Main categories sold (e.g., 'Electronics', 'Appliances', 'Fashion')"
+              },
+              "inventory_model": {
+                "type": "string",
+                "title": "Inventory Model",
+                "enum": [
+                  "owned",
+                  "dropship",
+                  "marketplace",
+                  "hybrid"
+                ],
+                "description": "How inventory is managed"
+              }
+            }
+          },
+          "shipping": {
+            "type": "object",
+            "title": "Shipping",
+            "properties": {
+              "free_shipping_threshold": {
+                "type": "number",
+                "title": "Free Shipping Threshold ($)",
+                "description": "Minimum order value for free shipping (0 = always free)"
+              },
+              "avg_delivery_days": {
+                "type": "integer",
+                "title": "Average Delivery Time (days)"
+              },
+              "return_rate": {
+                "type": "number",
+                "title": "Return Rate (%)",
+                "description": "Percentage of orders returned (industry avg: 15-30%)"
+              },
+              "has_express_shipping": {
+                "type": "boolean",
+                "title": "Has Express Shipping"
+              },
+              "has_in_store_pickup": {
+                "type": "boolean",
+                "title": "Has In-Store Pickup"
+              }
+            }
+          },
+          "payment": {
+            "type": "object",
+            "title": "Payment",
+            "properties": {
+              "payment_methods": {
+                "type": "array",
+                "title": "Accepted Payment Methods",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "credit_card",
+                    "debit_card",
+                    "paypal",
+                    "apple_pay",
+                    "google_pay",
+                    "bank_transfer",
+                    "buy_now_pay_later",
+                    "crypto",
+                    "cash_on_delivery"
+                  ]
+                },
+                "description": "Payment methods accepted at checkout"
+              },
+              "currencies": {
+                "type": "array",
+                "title": "Supported Currencies",
+                "items": {
+                  "type": "string"
+                },
+                "description": "E.g., 'USD', 'EUR', 'GBP'"
+              }
+            }
+          },
+          "kpis": {
+            "type": "object",
+            "title": "Target KPIs",
+            "properties": {
+              "conversion_rate": {
+                "type": "number",
+                "title": "Conversion Rate Target (%)",
+                "description": "Target view-to-purchase conversion rate (industry avg: 2-3%)"
+              },
+              "aov": {
+                "type": "number",
+                "title": "Average Order Value Target ($)"
+              },
+              "retention_30d": {
+                "type": "number",
+                "title": "30-Day Retention Target (%)",
+                "description": "Target % of buyers who purchase again within 30 days"
+              },
+              "cac": {
+                "type": "number",
+                "title": "Customer Acquisition Cost Target ($)",
+                "description": "Target cost to acquire a new customer"
+              },
+              "ltv": {
+                "type": "number",
+                "title": "Customer Lifetime Value Target ($)",
+                "description": "Target revenue per customer over their lifetime"
+              }
+            }
+          }
+        }
+      },
+      "categories": {
+        "multi_category": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Multi-Category Store Profile Extensions",
+          "description": "Additional profile fields specific to multi-category online retail stores.",
+          "type": "object",
+          "properties": {
+            "catalog": {
+              "type": "object",
+              "title": "Catalog",
+              "properties": {
+                "total_categories": {
+                  "type": "integer",
+                  "title": "Total Categories",
+                  "description": "Number of top-level product categories"
+                },
+                "top_categories": {
+                  "type": "array",
+                  "title": "Top Revenue Categories",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Top 3-5 categories by revenue (e.g., 'Electronics', 'Appliances', 'Computers')"
+                },
+                "has_private_label": {
+                  "type": "boolean",
+                  "title": "Has Private Label/Store Brand"
+                },
+                "catalog_refresh_frequency": {
+                  "type": "string",
+                  "title": "Catalog Refresh Frequency",
+                  "enum": [
+                    "daily",
+                    "weekly",
+                    "monthly",
+                    "quarterly"
+                  ],
+                  "description": "How often new products are added to the catalog"
+                }
+              }
+            },
+            "search_discovery": {
+              "type": "object",
+              "title": "Search \u0026 Discovery",
+              "properties": {
+                "has_search": {
+                  "type": "boolean",
+                  "title": "Has Product Search"
+                },
+                "has_filters": {
+                  "type": "boolean",
+                  "title": "Has Category/Brand Filters"
+                },
+                "has_recommendations": {
+                  "type": "boolean",
+                  "title": "Has Product Recommendations"
+                },
+                "recommendation_type": {
+                  "type": "string",
+                  "title": "Recommendation Type",
+                  "enum": [
+                    "collaborative_filtering",
+                    "content_based",
+                    "manual_curation",
+                    "hybrid",
+                    "none"
+                  ]
+                },
+                "has_recently_viewed": {
+                  "type": "boolean",
+                  "title": "Has Recently Viewed Section"
+                },
+                "has_wishlists": {
+                  "type": "boolean",
+                  "title": "Has Wishlists/Favorites"
+                }
+              }
+            },
+            "cross_sell": {
+              "type": "object",
+              "title": "Cross-Sell \u0026 Bundling",
+              "properties": {
+                "has_cross_sell": {
+                  "type": "boolean",
+                  "title": "Has Cross-Sell Recommendations",
+                  "description": "'Frequently bought together', 'Customers also bought'"
+                },
+                "has_bundles": {
+                  "type": "boolean",
+                  "title": "Has Product Bundles"
+                },
+                "has_upsell": {
+                  "type": "boolean",
+                  "title": "Has Upsell Prompts",
+                  "description": "'Upgrade to premium version', 'Add warranty'"
+                },
+                "has_comparison": {
+                  "type": "boolean",
+                  "title": "Has Product Comparison Feature"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

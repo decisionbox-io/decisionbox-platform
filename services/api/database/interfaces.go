@@ -89,6 +89,16 @@ type AskSessionRepo interface {
 	Delete(ctx context.Context, sessionID string) error
 }
 
+// DomainPackRepo abstracts domain pack CRUD operations for handler unit testing.
+type DomainPackRepo interface {
+	Create(ctx context.Context, pack *models.DomainPack) error
+	GetBySlug(ctx context.Context, slug string) (*models.DomainPack, error)
+	GetByID(ctx context.Context, id string) (*models.DomainPack, error)
+	List(ctx context.Context, publishedOnly bool) ([]*models.DomainPack, error)
+	Update(ctx context.Context, slug string, pack *models.DomainPack) error
+	Delete(ctx context.Context, slug string) error
+}
+
 // Compile-time checks: concrete repos satisfy interfaces.
 var (
 	_ ProjectRepo        = (*ProjectRepository)(nil)
@@ -100,4 +110,5 @@ var (
 	_ RecommendationRepo = (*RecommendationRepository)(nil)
 	_ SearchHistoryRepo  = (*SearchHistoryRepository)(nil)
 	_ AskSessionRepo     = (*AskSessionRepository)(nil)
+	_ DomainPackRepo     = (*DomainPackRepository)(nil)
 )

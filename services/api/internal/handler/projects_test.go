@@ -13,7 +13,7 @@ import (
 )
 
 func TestProjectsHandler_Create_InvalidJSON(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects",
 		strings.NewReader(`not json`))
@@ -34,7 +34,7 @@ func TestProjectsHandler_Create_InvalidJSON(t *testing.T) {
 }
 
 func TestProjectsHandler_Create_MissingName(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects",
 		strings.NewReader(`{"domain": "gaming", "category": "match3"}`))
@@ -55,7 +55,7 @@ func TestProjectsHandler_Create_MissingName(t *testing.T) {
 }
 
 func TestProjectsHandler_Create_MissingDomain(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects",
 		strings.NewReader(`{"name": "Test Project", "category": "match3"}`))
@@ -76,7 +76,7 @@ func TestProjectsHandler_Create_MissingDomain(t *testing.T) {
 }
 
 func TestProjectsHandler_Create_MissingCategory(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects",
 		strings.NewReader(`{"name": "Test Project", "domain": "gaming"}`))
@@ -97,7 +97,7 @@ func TestProjectsHandler_Create_MissingCategory(t *testing.T) {
 }
 
 func TestProjectsHandler_Create_EmptyBody(t *testing.T) {
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects",
 		strings.NewReader(`{}`))
@@ -113,7 +113,7 @@ func TestProjectsHandler_Create_EmptyBody(t *testing.T) {
 
 func TestProjectsHandler_Create_ValidationOrder(t *testing.T) {
 	// Verify that name is checked first, then domain, then category
-	h := NewProjectsHandler(nil)
+	h := NewProjectsHandler(nil, nil)
 
 	// All missing: name should be reported first
 	req := httptest.NewRequest("POST", "/api/v1/projects",
@@ -154,7 +154,7 @@ func TestProjectsHandler_Create_ValidationOrder(t *testing.T) {
 
 func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	body := `{"name":"Test Project","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
@@ -195,7 +195,7 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.createErr = fmt.Errorf("database connection failed")
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	body := `{"name":"Test","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
@@ -217,7 +217,7 @@ func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_List_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Seed two projects
 	for i := 0; i < 2; i++ {
@@ -251,7 +251,7 @@ func TestProjectsHandler_List_Success_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_List_Empty_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
 	w := httptest.NewRecorder()
@@ -276,7 +276,7 @@ func TestProjectsHandler_List_Empty_MockRepo(t *testing.T) {
 func TestProjectsHandler_List_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.listErr = fmt.Errorf("database timeout")
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
 	w := httptest.NewRecorder()
@@ -290,7 +290,7 @@ func TestProjectsHandler_List_RepoError_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Get_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project
 	p := &models.Project{Name: "My Project", Domain: "gaming", Category: "match3"}
@@ -319,7 +319,7 @@ func TestProjectsHandler_Get_Success_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Get_NotFound_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -341,7 +341,7 @@ func TestProjectsHandler_Get_NotFound_MockRepo(t *testing.T) {
 func TestProjectsHandler_Get_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.getErr = fmt.Errorf("connection refused")
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/some-id", nil)
 	req.SetPathValue("id", "some-id")
@@ -356,7 +356,7 @@ func TestProjectsHandler_Get_RepoError_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project first
 	p := &models.Project{
@@ -402,7 +402,7 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Update_NotFound_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	body := `{"name":"Updated"}`
 	req := httptest.NewRequest("PUT", "/api/v1/projects/nonexistent", strings.NewReader(body))
@@ -419,7 +419,7 @@ func TestProjectsHandler_Update_NotFound_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Update_InvalidJSON_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project so GetByID succeeds
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
@@ -439,7 +439,7 @@ func TestProjectsHandler_Update_InvalidJSON_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Update_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project, then inject an update error
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
@@ -461,7 +461,7 @@ func TestProjectsHandler_Update_RepoError_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Delete_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project
 	p := &models.Project{Name: "To Delete", Domain: "gaming", Category: "match3"}
@@ -493,7 +493,7 @@ func TestProjectsHandler_Delete_Success_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Delete_NotFound_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -510,7 +510,7 @@ func TestProjectsHandler_Delete_NotFound_MockRepo(t *testing.T) {
 func TestProjectsHandler_Delete_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.deleteErr = fmt.Errorf("permission denied")
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project — the deleteErr will override
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
@@ -529,7 +529,7 @@ func TestProjectsHandler_Delete_RepoError_MockRepo(t *testing.T) {
 
 func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	// Create a project with LLM and warehouse config
 	p := &models.Project{
@@ -563,9 +563,9 @@ func TestProjectsHandler_Update_MergeFields_MockRepo(t *testing.T) {
 	}
 }
 
-func TestProjectsHandler_Create_SeedsPrompts_MockRepo(t *testing.T) {
+func TestProjectsHandler_Create_WithoutDomainPackRepo_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo)
+	h := NewProjectsHandler(repo, nil)
 
 	body := `{"name":"Prompt Test","domain":"gaming","category":"match3"}`
 	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
@@ -578,13 +578,13 @@ func TestProjectsHandler_Create_SeedsPrompts_MockRepo(t *testing.T) {
 		t.Fatalf("status = %d, want 201", w.Code)
 	}
 
-	// Check that the project stored in repo has prompts seeded
+	// Without domainPackRepo, prompts are not seeded (graceful degradation)
 	var storedID string
 	for id := range repo.projects {
 		storedID = id
 	}
 	stored, _ := repo.GetByID(context.Background(), storedID)
-	if stored.Prompts == nil {
-		t.Error("prompts should be seeded on create for gaming domain")
+	if stored.Prompts != nil {
+		t.Error("prompts should be nil when domainPackRepo is nil")
 	}
 }

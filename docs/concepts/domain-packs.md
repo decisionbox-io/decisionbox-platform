@@ -1,6 +1,6 @@
 # Domain Packs
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 
@@ -20,12 +20,12 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 
 A domain pack provides four things:
 
-| Component | What it does | File type |
-|-----------|-------------|-----------|
-| **Categories** | Sub-types within a domain | Go code |
-| **Analysis Areas** | What patterns to find | JSON + Markdown |
-| **Prompts** | How the AI reasons | Markdown files |
-| **Profile Schema** | What context users provide | JSON Schema |
+| Component | What it does | Format |
+|-----------|-------------|--------|
+| **Categories** | Sub-types within a domain | JSON (stored in MongoDB) |
+| **Analysis Areas** | What patterns to find | JSON (stored in MongoDB) |
+| **Prompts** | How the AI reasons | Markdown content (stored in MongoDB) |
+| **Profile Schema** | What context users provide | JSON Schema (stored in MongoDB) |
 
 ## Three-Level Hierarchy
 
@@ -71,53 +71,13 @@ Domain: Ecommerce
 
 **Base areas** are shared across all categories in a domain. **Category-specific areas** add specialized analysis. When you select "Gaming / Match-3", you get all base gaming areas PLUS match-3 specific areas.
 
-## File Structure
+## Storage
 
-Each domain pack follows the same structure:
+Domain packs are stored as JSON documents in the MongoDB `domain_packs` collection.
+Each document contains all categories, analysis areas, prompt content, and profile schemas for the domain.
+There is no Go code per pack and no filesystem dependency.
 
-```
-domain-packs/gaming/
-├── go/
-│   ├── pack.go                    # Registers the pack, implements interfaces
-│   ├── discovery.go               # Categories, analysis areas, prompts loading
-│   └── *_test.go                  # Tests
-│
-├── prompts/
-│   ├── base/                      # Shared across ALL gaming categories
-│   │   ├── areas.json             # Base analysis area definitions
-│   │   ├── base_context.md        # Shared context (profile, previous results)
-│   │   ├── exploration.md         # Main exploration system prompt
-│   │   ├── analysis_churn.md      # Churn pattern analysis prompt
-│   │   ├── analysis_engagement.md # Engagement pattern analysis prompt
-│   │   ├── analysis_monetization.md # Monetization analysis prompt
-│   │   └── recommendations.md     # Recommendation generation prompt
-│   │
-│   └── categories/
-│       ├── match3/                # Match-3 specific
-│       │   ├── areas.json         # Additional areas (levels, boosters)
-│       │   ├── exploration_context.md  # Appended to base exploration
-│       │   ├── analysis_levels.md     # Level difficulty analysis
-│       │   └── analysis_boosters.md   # Booster usage analysis
-│       ├── idle/                  # Idle/Incremental specific
-│       │   ├── areas.json         # Additional areas (progression, economy)
-│       │   ├── exploration_context.md
-│       │   ├── analysis_progression.md
-│       │   └── analysis_economy.md
-│       └── casual/                # Casual/Hyper-Casual specific
-│           ├── areas.json         # Additional areas (ads, session flow)
-│           ├── exploration_context.md
-│           ├── analysis_ad_performance.md
-│           └── analysis_session_flow.md
-│
-└── profiles/
-    ├── schema.json                # Base gaming profile (JSON Schema)
-    └── categories/
-        ├── match3.json            # Match-3 extensions
-        ├── idle.json              # Idle extensions
-        └── casual.json            # Casual extensions
-```
-
-The social network and ecommerce domain packs follow the same structure under `domain-packs/social/` and `domain-packs/ecommerce/`.
+The `domain-packs/` directory in the repository still contains the raw prompt and profile data files used to build the embedded seed JSON, but these files are not read at runtime.
 
 ## Areas Definition (areas.json)
 
@@ -241,27 +201,31 @@ The schemas are merged at runtime (base + category). The resulting form lets use
 ## How Domain Packs Are Loaded
 
 ```
-DOMAIN_PACK_PATH environment variable (default: /app/domain-packs)
+API startup
   ↓
-domain-packs/
-  gaming/                    ← domain pack directory
-    go/pack.go               ← registers via domainpack.Register("gaming", ...)
-    prompts/                 ← read at runtime via DOMAIN_PACK_PATH
-    profiles/                ← read at runtime via DOMAIN_PACK_PATH
-  social/                    ← domain pack directory
-    go/pack.go               ← registers via domainpack.Register("social", ...)
-    prompts/                 ← read at runtime via DOMAIN_PACK_PATH
-    profiles/                ← read at runtime via DOMAIN_PACK_PATH
-  ecommerce/                 ← domain pack directory
-    go/pack.go               ← registers via domainpack.Register("ecommerce", ...)
-    prompts/                 ← read at runtime via DOMAIN_PACK_PATH
-    profiles/                ← read at runtime via DOMAIN_PACK_PATH
+Check MongoDB `domain_packs` collection
+  ↓
+If empty → seed built-in packs from embedded JSON
+  ↓
+domain_packs collection
+  ├── gaming      (published, built-in)
+  ├── social      (published, built-in)
+  ├── ecommerce   (published, built-in)
+  ├── system-test (unpublished, built-in)
+  └── ...         (user-created packs)
 ```
 
-The Go code reads prompt and profile files from the filesystem at runtime (not embedded at compile time). This means:
-- You can edit prompts without recompiling
-- Docker images bake prompts into `/app/domain-packs/`
-- In development, `DOMAIN_PACK_PATH` points to the repo's `domain-packs/` directory
+On first startup, the API seeds the `domain_packs` collection with built-in packs (gaming, ecommerce, social) from embedded JSON.
+The system-test pack is also seeded but marked as unpublished by default.
+
+Domain packs are managed entirely through the dashboard or API:
+- **Dashboard**: Navigate to `/domain-packs` to create, edit, duplicate, or delete packs
+- **API**: CRUD endpoints at `/api/v1/domain-packs`
+- **Import/Export**: `POST /api/v1/domain-packs/import` and `GET /api/v1/domain-packs/{slug}/export` use a portable JSON format (`decisionbox-domain-pack`)
+
+The agent does not read domain packs directly.
+When a project is created, the selected domain pack's prompts, areas, and profile schema are copied into the project configuration.
+The agent reads only from `project.prompts` at runtime.
 
 ## Creating Your Own
 
