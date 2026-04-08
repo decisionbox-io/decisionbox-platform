@@ -5,7 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
-  IconBook2, IconSearch, IconSettings, IconStack2, IconTool,
+  IconBook2, IconPackages, IconSearch, IconSettings, IconStack2, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 
@@ -181,6 +181,12 @@ export default function Shell({ children, breadcrumb, actions }: ShellProps) {
               icon={<IconSearch size={16} />}
               label="Projects"
               active={isActive('/')}
+            />
+            <NavItem
+              href="/domain-packs"
+              icon={<IconPackages size={16} />}
+              label="Domain Packs"
+              active={pathname?.startsWith('/domain-packs') ?? false}
             />
           </nav>
         )}

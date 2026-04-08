@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -64,7 +63,7 @@ func TestBuildFilterRule(t *testing.T) {
 
 func TestBuildAnalysisAreasDescription(t *testing.T) {
 	o := &Orchestrator{}
-	areas := []domainpack.AnalysisArea{
+	areas := []AnalysisArea{
 		{ID: "churn", Name: "Churn Risks", Description: "Players leaving"},
 		{ID: "levels", Name: "Level Difficulty", Description: "Hard levels"},
 	}
@@ -431,9 +430,9 @@ func TestCleanJSONResponse_JSONArray(t *testing.T) {
 	}
 }
 
-// --- resolvePrompts: base context override ---
+// --- resolvePrompts: base context ---
 
-func TestResolvePrompts_ProjectOverridesBaseContext(t *testing.T) {
+func TestResolvePrompts_ProjectBaseContext(t *testing.T) {
 	o := &Orchestrator{
 		projectPrompts: &models.ProjectPrompts{
 			BaseContext:   "custom base context",
@@ -441,11 +440,7 @@ func TestResolvePrompts_ProjectOverridesBaseContext(t *testing.T) {
 		},
 	}
 
-	dpPrompts := domainpack.PromptTemplates{
-		BaseContext: "default base context",
-	}
-
-	prompts, _ := o.resolvePrompts(dpPrompts, nil)
+	prompts, _ := o.resolvePrompts()
 
 	if prompts.BaseContext != "custom base context" {
 		t.Errorf("BaseContext = %q, want custom", prompts.BaseContext)

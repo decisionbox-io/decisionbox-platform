@@ -203,10 +203,6 @@ func TestKubernetesRunner_Run_CreatesJob(t *testing.T) {
 	for _, e := range c.Env {
 		envMap[e.Name] = e.Value
 	}
-	if envMap["DOMAIN_PACK_PATH"] != "/app/domain-packs" {
-		t.Errorf("DOMAIN_PACK_PATH = %q", envMap["DOMAIN_PACK_PATH"])
-	}
-
 	// Check restart policy
 	if job.Spec.Template.Spec.RestartPolicy != "Never" {
 		t.Errorf("restart policy = %q, want Never", job.Spec.Template.Spec.RestartPolicy)

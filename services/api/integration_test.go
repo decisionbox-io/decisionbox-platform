@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,9 +20,6 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
-
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
 )
 
 var testServer *httptest.Server
@@ -31,10 +27,6 @@ var testDB *database.DB
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
-
-	// Set domain pack path for prompt seeding (relative to repo root)
-	wd, _ := os.Getwd()
-	os.Setenv("DOMAIN_PACK_PATH", filepath.Join(wd, "../../domain-packs"))
 
 	container, err := tcmongo.Run(ctx, "mongo:7.0")
 	if err != nil {

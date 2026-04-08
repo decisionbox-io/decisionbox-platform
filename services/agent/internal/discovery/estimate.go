@@ -63,10 +63,8 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	}
 	applog.WithField("tables", len(schemas)).Info("Estimation: schemas discovered")
 
-	// Resolve prompts and areas
-	dpPrompts := o.discoveryPack.Prompts(o.category)
-	analysisAreas := o.discoveryPack.AnalysisAreas(o.category)
-	prompts, analysisAreas := o.resolvePrompts(dpPrompts, analysisAreas)
+	// Resolve prompts and areas from project configuration
+	prompts, analysisAreas := o.resolvePrompts()
 
 	// Filter areas if selective
 	numAreas := len(analysisAreas)

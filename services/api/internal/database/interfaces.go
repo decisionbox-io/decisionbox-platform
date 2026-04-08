@@ -47,11 +47,22 @@ type PricingRepo interface {
 	Save(ctx context.Context, pricing *models.Pricing) error
 }
 
+// DomainPackRepo abstracts domain pack CRUD operations for handler unit testing.
+type DomainPackRepo interface {
+	Create(ctx context.Context, pack *models.DomainPack) error
+	GetBySlug(ctx context.Context, slug string) (*models.DomainPack, error)
+	GetByID(ctx context.Context, id string) (*models.DomainPack, error)
+	List(ctx context.Context, publishedOnly bool) ([]*models.DomainPack, error)
+	Update(ctx context.Context, slug string, pack *models.DomainPack) error
+	Delete(ctx context.Context, slug string) error
+}
+
 // Compile-time checks: concrete repos satisfy interfaces.
 var (
-	_ ProjectRepo   = (*ProjectRepository)(nil)
-	_ DiscoveryRepo = (*DiscoveryRepository)(nil)
-	_ RunRepo       = (*RunRepository)(nil)
-	_ FeedbackRepo  = (*FeedbackRepository)(nil)
-	_ PricingRepo   = (*PricingRepository)(nil)
+	_ ProjectRepo    = (*ProjectRepository)(nil)
+	_ DiscoveryRepo  = (*DiscoveryRepository)(nil)
+	_ RunRepo        = (*RunRepository)(nil)
+	_ FeedbackRepo   = (*FeedbackRepository)(nil)
+	_ PricingRepo    = (*PricingRepository)(nil)
+	_ DomainPackRepo = (*DomainPackRepository)(nil)
 )

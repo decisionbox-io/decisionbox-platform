@@ -26,12 +26,6 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 
-	// Domain pack registrations
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // env-gated
-
 	// LLM provider registrations (for /api/v1/providers/llm listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"

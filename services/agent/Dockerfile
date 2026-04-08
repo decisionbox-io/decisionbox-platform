@@ -21,10 +21,6 @@ COPY providers/secrets/mongodb/go.mod providers/secrets/mongodb/go.sum providers
 COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets/gcp/
 COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
 COPY providers/secrets/azure/go.mod providers/secrets/azure/go.sum providers/secrets/azure/
-COPY domain-packs/ecommerce/go/go.mod domain-packs/ecommerce/go/
-COPY domain-packs/gaming/go/go.mod domain-packs/gaming/go/
-COPY domain-packs/social/go/go.mod domain-packs/social/go/
-COPY domain-packs/system-test/go/go.mod domain-packs/system-test/go/
 COPY services/agent/go.mod services/agent/go.sum services/agent/
 
 WORKDIR /workspace/services/agent
@@ -34,7 +30,6 @@ RUN go mod download
 WORKDIR /workspace
 COPY libs/ libs/
 COPY providers/ providers/
-COPY domain-packs/ domain-packs/
 COPY services/agent/ services/agent/
 
 WORKDIR /workspace/services/agent
@@ -48,11 +43,6 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=builder /decisionbox-agent /usr/local/bin/decisionbox-agent
-
-# Include domain pack prompts and profiles (read at runtime)
-COPY --from=builder /workspace/domain-packs/ /app/domain-packs/
-
-ENV DOMAIN_PACK_PATH=/app/domain-packs
 
 USER app
 ENTRYPOINT ["decisionbox-agent"]

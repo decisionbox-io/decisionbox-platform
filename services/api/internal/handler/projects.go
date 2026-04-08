@@ -11,11 +11,12 @@ import (
 
 // ProjectsHandler handles project CRUD endpoints.
 type ProjectsHandler struct {
-	repo database.ProjectRepo
+	repo           database.ProjectRepo
+	domainPackRepo database.DomainPackRepo
 }
 
-func NewProjectsHandler(repo database.ProjectRepo) *ProjectsHandler {
-	return &ProjectsHandler{repo: repo}
+func NewProjectsHandler(repo database.ProjectRepo, domainPackRepo database.DomainPackRepo) *ProjectsHandler {
+	return &ProjectsHandler{repo: repo, domainPackRepo: domainPackRepo}
 }
 
 // Create creates a new project.
@@ -41,8 +42,17 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Seed default prompts from domain pack
-	if p.Prompts == nil {
-		SeedProjectPrompts(&p)
+	if p.Prompts == nil && h.domainPackRepo != nil {
+		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
+			return
+		}
+		if pack == nil {
+			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
+			return
+		}
+		SeedProjectPrompts(&p, pack)
 	}
 
 	if err := h.repo.Create(r.Context(), &p); err != nil {

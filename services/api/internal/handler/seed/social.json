@@ -1,0 +1,537 @@
+{
+  "format": "decisionbox-domain-pack",
+  "format_version": 1,
+  "pack": {
+    "slug": "social",
+    "name": "Social Network",
+    "description": "AI-powered analytics for social platforms — user growth, engagement patterns, content performance, and community health insights",
+    "version": "1.0.0",
+    "is_published": true,
+    "categories": [
+      {
+        "id": "content_sharing",
+        "name": "Content Sharing",
+        "description": "Platforms focused on creating and sharing content — photos, videos, stories (e.g., Instagram, TikTok, YouTube)"
+      }
+    ],
+    "prompts": {
+      "base": {
+        "base_context": "## Platform Profile\n\n{{PROFILE}}\n\n**IMPORTANT**: Use the platform profile above to understand this specific social network — its content format, target audience, growth stage, and business model. Tailor all analysis and recommendations to THIS platform. When the profile includes KPI targets (e.g., DAU/MAU ratio target of 50%), use them to calibrate severity — if a metric is below target, that is more severe than a metric that simply declined.\n\n## Previous Discovery Context\n\n{{PREVIOUS_CONTEXT}}",
+        "exploration": "# Social Network Analytics Discovery\n\nYou are an expert social network analytics AI. Your job is to autonomously explore data warehouse tables and discover actionable insights about user growth, engagement, retention, content performance, and community health.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Tables Available**: {{SCHEMA_INFO}}\n{{FILTER_CONTEXT}}\n\n## Your Task\n\nExplore the data systematically to find insights across these areas:\n\n{{ANALYSIS_AREAS}}\n\n## How To Explore\n\nExecute SQL queries to analyze the data. For each query, respond with JSON:\n\n```json\n{\n  \"thinking\": \"What I'm trying to discover and why\",\n  \"query\": \"SELECT ... FROM `{{DATASET}}.table` {{FILTER}} ...\"\n}\n```\n\n### Critical Rules\n\n1. **ALWAYS use fully qualified table names**: `` `{{DATASET}}.table_name` `` with backticks\n2. {{FILTER_RULE}}\n3. **ALWAYS use COUNT(DISTINCT user_id) when counting users**: Never use COUNT(*) or COUNT(user_id) without DISTINCT when reporting user counts. Social platforms can have many events per user — distinct counts prevent inflated numbers.\n4. **Focus on insights, not just numbers**: Look for patterns, anomalies, trends, and correlations between user behavior and platform health metrics.\n5. **Quantify impact**: How many users? What percentage of the active base? What's the growth or revenue impact?\n6. **Validate segment sizes**: Ensure they're reasonable relative to the total user base.\n7. **Always scope queries by date**: Include date filters (e.g., last 30 days, last 7 days) to avoid scanning entire history. Never query without a date range.\n8. **Use the exploration budget wisely**: You have a limited number of queries. Start broad, then drill into the most promising patterns.\n\n## Exploration Strategy\n\nFollow this strategy for thorough data exploration:\n\n### Phase A: Understand the platform landscape (first 10-15% of budget)\n- Check **data freshness**: What is the most recent date in the data? How far back does it go?\n- Get **total user counts**: DAU, WAU, MAU, total registered users\n- Understand **DAU/MAU ratio** (stickiness) — this is the North Star for social platforms\n- Get **baseline metrics**: new users per day, content created per day, interactions per user\n- Understand **table relationships**: Which tables join on what keys?\n\n### Phase B: Deep-dive into each analysis area (60-70% of budget)\n- For each analysis area, run 3-5 queries that progress from broad to specific\n- Look for **anomalies**: metrics that deviate significantly from the baseline\n- **Segment comparisons**: new users vs power users, creators vs consumers, mobile vs web, geographic differences\n- **Temporal trends**: compare last 7 days vs previous 7 days, last 30 days vs previous 30 days\n- **Cohort analysis**: how do recent signups behave vs older cohorts?\n\n### Phase C: Cross-area correlations (15-20% of budget)\n- Do users who create content retain better than pure consumers?\n- Does social interaction (follows, comments, messages) predict retention?\n- What behaviors during the first 24 hours predict long-term engagement?\n- Are there network effects — do users with more connections engage more?\n- What content types drive the most growth vs the most engagement?\n\n## When You're Done\n\nAfter thorough exploration, respond with:\n\n```json\n{\n  \"done\": true,\n  \"summary\": \"Brief overview of what you discovered across all areas\"\n}\n```\n\n## Tips\n\n- Start broad (overall metrics) then drill down (specific issues)\n- Compare segments: creators vs consumers, new vs established, mobile vs web, different regions\n- Look for changes over time: improving or declining trends\n- Connect patterns across different metrics — creator churn often correlates with consumer engagement drops\n- Think about \"why\" not just \"what\" — root causes, not just symptoms\n- Pay attention to the creator-consumer ratio — platforms live and die by creator health\n- Network density matters — isolated users churn, connected users retain\n- When you find something interesting, validate it with a follow-up query from a different angle\n\n## Example Queries\n\n**Data Freshness and Platform Overview**:\n```sql\nSELECT\n  MIN(event_date) as earliest_date,\n  MAX(event_date) as latest_date,\n  COUNT(DISTINCT user_id) as total_users,\n  COUNT(DISTINCT CASE WHEN event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) THEN user_id END) as dau,\n  COUNT(DISTINCT CASE WHEN event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN user_id END) as wau,\n  COUNT(DISTINCT CASE WHEN event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) THEN user_id END) as mau\nFROM `{{DATASET}}.user_activity`\n{{FILTER}}\n```\n\n**DAU/MAU Stickiness Trend**:\n```sql\nSELECT\n  DATE_TRUNC(event_date, WEEK) as week,\n  COUNT(DISTINCT CASE WHEN daily_active = true THEN user_id END) as avg_dau,\n  COUNT(DISTINCT user_id) as mau_for_period,\n  SAFE_DIVIDE(\n    COUNT(DISTINCT CASE WHEN daily_active = true THEN user_id END),\n    COUNT(DISTINCT user_id)\n  ) as stickiness_ratio\nFROM `{{DATASET}}.user_activity`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 12 WEEK)\nGROUP BY week\nORDER BY week DESC\n```\n\n**Creator vs Consumer Segmentation**:\n```sql\nSELECT\n  CASE\n    WHEN posts_last_30d \u003e= 10 THEN 'power_creator'\n    WHEN posts_last_30d \u003e= 1 THEN 'casual_creator'\n    ELSE 'consumer'\n  END as user_type,\n  COUNT(DISTINCT user_id) as user_count,\n  AVG(sessions_last_30d) as avg_sessions,\n  AVG(time_spent_minutes_last_30d) as avg_time_spent,\n  AVG(days_active_last_30d) as avg_days_active\nFROM `{{DATASET}}.user_engagement_summary`\n{{FILTER}}\nGROUP BY user_type\nORDER BY user_count DESC\n```\n\n**New User Activation Funnel**:\n```sql\nSELECT\n  activation_step,\n  COUNT(DISTINCT user_id) as users_reached,\n  COUNT(DISTINCT CASE WHEN step_completed = true THEN user_id END) as users_completed\nFROM `{{DATASET}}.onboarding_events`\n{{FILTER}}\n  AND signup_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY activation_step\nORDER BY activation_step\n```\n\n**Content Interaction Distribution**:\n```sql\nSELECT\n  content_type,\n  COUNT(*) as total_posts,\n  COUNT(DISTINCT author_id) as unique_creators,\n  AVG(likes_count) as avg_likes,\n  AVG(comments_count) as avg_comments,\n  AVG(shares_count) as avg_shares\nFROM `{{DATASET}}.content_posts`\n{{FILTER}}\n  AND created_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY content_type\nORDER BY total_posts DESC\n```\n\n**Week-over-Week Growth**:\n```sql\nSELECT\n  DATE_TRUNC(signup_date, WEEK) as week,\n  COUNT(DISTINCT user_id) as new_signups,\n  COUNT(DISTINCT CASE WHEN day_1_active = true THEN user_id END) as d1_retained,\n  COUNT(DISTINCT CASE WHEN day_7_active = true THEN user_id END) as d7_retained\nFROM `{{DATASET}}.user_signups`\n{{FILTER}}\n  AND signup_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 12 WEEK)\nGROUP BY week\nORDER BY week DESC\n```\n\nLet's begin! Start by understanding the platform landscape — check data freshness, user counts, stickiness ratio, and baseline metrics before diving into specific analysis areas.",
+        "recommendations": "# Generate Actionable Recommendations\n\nYou are a social network analytics expert creating **specific, actionable recommendations** based on discovered patterns. Every recommendation must be concrete enough that a product team could implement it immediately.\n\n## Context\n\n**Discovery Date**: {{DISCOVERY_DATE}}\n**Insights Found**: {{INSIGHTS_SUMMARY}}\n\n## Your Task\n\nGenerate **specific, actionable recommendations** that can be immediately implemented. Each recommendation must include:\n\n1. **Clear action** — What exactly to do, with specific parameters\n2. **Target segment** — Who to target, with exact criteria that can be used for user segmentation\n3. **Expected impact** — Quantified expected results based on the data\n4. **Implementation steps** — Concrete steps to implement this recommendation\n\n## Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"recommendations\": [\n    {\n      \"title\": \"Action — Context (e.g., 'Prompt 3 Follow Suggestions During First Session for Unconnected Users')\",\n      \"description\": \"Detailed explanation with numbers. What is the problem? How big is the impact? Why does this recommendation address it? What evidence supports it?\",\n      \"category\": \"growth|engagement|retention|monetization|content|community\",\n      \"priority\": 1,\n      \"effort\": \"quick_win|moderate|major_initiative\",\n      \"target_segment\": \"Exact segment definition with measurable criteria (e.g., 'Users who completed signup but followed fewer than 3 accounts and have not returned after day 0')\",\n      \"segment_size\": 1234,\n      \"expected_impact\": {\n        \"metric\": \"retention_d1|retention_d7|dau_mau_ratio|activation_rate|creator_ratio|premium_conversion|revenue\",\n        \"estimated_improvement\": \"15-20%\",\n        \"reasoning\": \"Why we expect this improvement, with supporting data points from the analysis\"\n      },\n      \"actions\": [\n        \"Specific implementation step 1 with parameters\",\n        \"Specific implementation step 2 with parameters\",\n        \"Specific implementation step 3 with parameters\"\n      ],\n      \"success_metrics\": [\n        \"Track D1 retention for new signups (target: improve from 48% to 60%)\",\n        \"Monitor first-session follow rate (target: 70% follow at least 3 accounts)\"\n      ],\n      \"related_insight_ids\": [\"insight-id-1\", \"insight-id-2\"],\n      \"confidence\": 0.85\n    }\n  ]\n}\n```\n\n**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — an array of insight `id` values from the input data that this recommendation addresses. Copy the exact `id` values from the insights provided below.\n\n## Requirements\n\n### DO create recommendations that are:\n- **Specific**: Exact numbers, thresholds, timeframes, user criteria\n- **Actionable**: A product team knows exactly what to build or change\n- **Measurable**: Clear success metrics with baseline and target values\n- **Data-backed**: Every recommendation grounded in the discovered insights\n\n### DON'T create recommendations that are:\n- Generic (\"improve engagement\", \"optimize onboarding\")\n- Vague (\"analyze user behavior more\", \"run A/B tests\")\n- Missing specifics or numbers\n- Not supported by the discovered insights\n- Duplicating another recommendation with different wording\n\n### Effort Scale:\n- **quick_win**: Can be implemented in hours to a day. Configuration change, notification adjustment, UI tweak.\n- **moderate**: Requires development work, typically 1-2 weeks. New feature, algorithm change, flow redesign.\n- **major_initiative**: Significant engineering effort, typically weeks to months. New product area, infrastructure change.\n\n### Priority Scale (P1 = highest):\n- **1 (Critical)**: Large user base affected AND high retention/revenue impact. Creator health or premium user churn issues. Do this first.\n- **2 (High)**: Significant impact, implement soon. Strong evidence and clear path.\n- **3 (Medium)**: Moderate impact. Worth doing but not urgent.\n- **4 (Low)**: Nice to have. Small improvement.\n- **5 (Optional)**: Minor improvement. Consider if resources are available.\n\n### Category Guidelines:\n- **growth**: User acquisition, signup funnel, activation, viral loops\n- **engagement**: Session depth, interaction rates, feature adoption, time spent\n- **retention**: Churn prevention, reactivation, lifecycle management\n- **monetization**: Premium conversion, subscription retention, IAP opportunities, ad optimization\n- **content**: Content supply, quality, discovery, creator tools\n- **community**: Social graph health, moderation, trust \u0026 safety, network effects\n\n## Recommendation Quality Checklist\n\nBefore including a recommendation, verify:\n- Does it reference specific insights from the data? (related_insight_ids)\n- Is the target segment precisely defined with measurable criteria?\n- Can a product team implement this without asking clarifying questions?\n- Are the success_metrics specific enough to measure impact?\n- Is the expected_impact realistic based on the data?\n\n## Discovered Insights\n\n{{INSIGHTS_DATA}}\n\n---\n\nGenerate 3-8 specific, actionable recommendations. Prioritize by impact and urgency. Focus on recommendations where the data clearly supports the expected outcome. For social networks, creator health and premium user retention recommendations should generally be prioritized higher."
+      },
+      "categories": {
+        "content_sharing": {
+          "exploration_context": "## Content Sharing Platform Context\n\nThis is a **content sharing social network** where users create and consume content — photos, videos, stories, or short-form posts. Key aspects to explore:\n\n- **Creator-consumer ecosystem**: The platform depends on a healthy creator base producing content for consumers. Analyze the creator-to-consumer ratio, creator retention vs consumer retention, and whether the content supply is growing or shrinking. A 90/9/1 pattern is common (90% lurkers, 9% occasional contributors, 1% power creators).\n- **Content lifecycle**: How content is created, discovered (feed algorithm, explore, search, hashtags), consumed (views, watch time, completion rate), and interacted with (likes, comments, shares, saves). Identify which content types perform best and where content discovery fails.\n- **Feed and discovery**: How effectively does the feed surface relevant content? Are users scrolling past content without engaging? Is there content that gets zero impressions despite being high quality?\n- **Social graph**: Following/follower dynamics, network density, reciprocal vs one-directional relationships. Identify isolated users (few connections) vs well-connected users and their retention differences.\n- **Premium features and IAP**: Many social platforms monetize through premium subscriptions (VIP badges, enhanced profiles, priority matching), paid interactions (super likes, paid messaging, content boosts), virtual currencies (coins, tokens for tipping creators), and gated content (pay-to-view posts, exclusive content). Analyze conversion funnels, purchase triggers, and premium user retention.\n- **Creator monetization**: If the platform shares revenue with creators (creator fund, ad revenue share, tips, paid subscriptions to individual creators), analyze creator earnings, earnings distribution, and how earnings affect creator retention.\n- **Messaging and direct interactions**: DMs, comments, and replies drive deep engagement. Analyze messaging adoption, conversation depth, and the impact on retention. Note paid messaging features (pay-to-DM, priority inbox).\n- **Content moderation and safety**: Report rates, content removal, user blocking patterns. High moderation activity may indicate community health issues.\n- **Cross-platform sharing**: Content shared to external platforms (WhatsApp, Twitter, etc.) drives organic growth. Track external share rates and resulting signups.\n\n### Content Sharing Example Queries\n\n**Creator-Consumer Ratio Trend**:\n```sql\nSELECT\n  DATE_TRUNC(event_date, WEEK) as week,\n  COUNT(DISTINCT CASE WHEN posts_this_week \u003e 0 THEN user_id END) as creators,\n  COUNT(DISTINCT CASE WHEN posts_this_week = 0 AND sessions_this_week \u003e 0 THEN user_id END) as consumers,\n  SAFE_DIVIDE(\n    COUNT(DISTINCT CASE WHEN posts_this_week \u003e 0 THEN user_id END),\n    COUNT(DISTINCT user_id)\n  ) as creator_ratio\nFROM `{{DATASET}}.weekly_user_activity`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 12 WEEK)\nGROUP BY week\nORDER BY week DESC\n```\n\n**Content Performance by Type**:\n```sql\nSELECT\n  content_type,\n  COUNT(*) as total_posts,\n  AVG(views_count) as avg_views,\n  AVG(likes_count) as avg_likes,\n  AVG(comments_count) as avg_comments,\n  AVG(shares_count) as avg_shares,\n  AVG(SAFE_DIVIDE(likes_count + comments_count + shares_count, views_count)) as avg_engagement_rate\nFROM `{{DATASET}}.content_posts`\n{{FILTER}}\n  AND created_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY content_type\nORDER BY total_posts DESC\n```\n\n**Premium Feature Adoption**:\n```sql\nSELECT\n  feature_name,\n  COUNT(DISTINCT user_id) as unique_purchasers,\n  SUM(revenue_usd) as total_revenue,\n  AVG(revenue_usd) as avg_transaction,\n  COUNT(*) as total_transactions\nFROM `{{DATASET}}.iap_transactions`\n{{FILTER}}\n  AND purchase_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY feature_name\nORDER BY total_revenue DESC\n```\n\n**Social Graph Health**:\n```sql\nSELECT\n  CASE\n    WHEN following_count = 0 THEN 'isolated'\n    WHEN following_count \u003c 5 THEN 'low_connections'\n    WHEN following_count \u003c 20 THEN 'moderate_connections'\n    ELSE 'well_connected'\n  END as connection_segment,\n  COUNT(DISTINCT user_id) as users,\n  AVG(days_active_last_30d) as avg_days_active,\n  AVG(sessions_last_30d) as avg_sessions\nFROM `{{DATASET}}.user_social_graph`\n{{FILTER}}\nGROUP BY connection_segment\nORDER BY users DESC\n```\n\n**Virtual Currency Economy**:\n```sql\nSELECT\n  transaction_type,\n  COUNT(DISTINCT user_id) as unique_users,\n  SUM(coin_amount) as total_coins,\n  AVG(coin_amount) as avg_per_transaction\nFROM `{{DATASET}}.virtual_currency_transactions`\n{{FILTER}}\n  AND event_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY transaction_type\nORDER BY total_coins DESC\n```\n\n**Creator Earnings Distribution**:\n```sql\nSELECT\n  CASE\n    WHEN total_earnings_usd = 0 THEN 'zero_earnings'\n    WHEN total_earnings_usd \u003c 10 THEN 'micro_earner'\n    WHEN total_earnings_usd \u003c 100 THEN 'small_earner'\n    WHEN total_earnings_usd \u003c 1000 THEN 'medium_earner'\n    ELSE 'top_earner'\n  END as earnings_tier,\n  COUNT(DISTINCT user_id) as creators,\n  SUM(total_earnings_usd) as total_earnings,\n  AVG(posts_last_30d) as avg_posts\nFROM `{{DATASET}}.creator_earnings`\n{{FILTER}}\n  AND period_date \u003e= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)\nGROUP BY earnings_tier\nORDER BY total_earnings DESC\n```"
+        }
+      }
+    },
+    "analysis_areas": {
+      "base": [
+        {
+          "id": "growth",
+          "name": "Growth \u0026 Activation",
+          "description": "User acquisition funnel, signup conversion, onboarding completion, activation milestones, and viral growth loops",
+          "keywords": [
+            "signup",
+            "registration",
+            "onboarding",
+            "activation",
+            "invite",
+            "referral",
+            "viral",
+            "install",
+            "first_action",
+            "conversion",
+            "acquisition",
+            "new_user"
+          ],
+          "priority": 1,
+          "prompt": "# Growth \u0026 Activation Analysis\n\nYou are a social network analytics expert analyzing user growth, acquisition, and activation patterns. Your goal is to identify where potential users drop off, what drives successful activation, and how viral growth loops are performing.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific growth and activation patterns** with exact numbers and percentages. Look across the entire user acquisition funnel — from first visit to fully activated user.\n\n## Growth Dimensions to Analyze\n\n- **Signup funnel**: Where do potential users drop off between landing and completing registration? What's the visit-to-signup conversion rate?\n- **Onboarding completion**: What percentage of new signups complete each onboarding step? Where's the biggest drop-off? How long does onboarding take?\n- **Activation milestones**: When does a user become \"activated\"? (First post, first follow, first interaction, profile completion) What percentage reach each milestone?\n- **Time to activation**: How quickly do users reach key milestones? Users who activate faster tend to retain better — is there a critical window?\n- **Viral loops**: Referral effectiveness, invite conversion rates, viral coefficient (k-factor). Are existing users bringing in new users?\n- **Channel quality**: Which acquisition channels produce users with the best activation and retention? Are some channels bringing low-quality traffic?\n- **Registration friction**: What registration methods are available (email, social auth, phone)? Which have the highest completion rate?\n- **Signup intent vs action gap**: How many users start registration but never complete it? What step causes the most abandonment?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Profile Photo Activation Gap — 68% of Signups Never Upload a Photo\",\n      \"description\": \"68% of new users who complete registration never upload a profile photo within their first 7 days. Users with profile photos have 2.4x higher D7 retention (38%) vs users without (16%). This represents the single largest activation gap. 5,400 new users in the last 30 days signed up but never added a photo.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 5400,\n      \"risk_score\": 0.68,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"milestone\": \"profile_photo_upload\",\n        \"completion_rate\": 0.32,\n        \"non_completion_rate\": 0.68,\n        \"retention_with_milestone\": 0.38,\n        \"retention_without_milestone\": 0.16,\n        \"retention_lift\": 2.4,\n        \"median_time_to_milestone_hours\": 1.5\n      },\n      \"indicators\": [\n        \"68% of new signups never upload a profile photo in first 7 days\",\n        \"D7 retention with photo: 38% vs without: 16% (2.4x lift)\",\n        \"5,400 users affected in last 30 days\",\n        \"Users who upload within first session retain at 45% D7\",\n        \"Profile completion prompt shown to only 52% of new users\"\n      ],\n      \"target_segment\": \"New signups (last 30 days) who completed registration but have no profile photo\",\n      \"source_steps\": [3, 5, 9]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Severity Calibration\n\n- **critical**: Activation rate below target by \u003e20%, or a single funnel step losing \u003e40% of users, or viral coefficient declining significantly\n- **high**: Activation gap affecting a major segment, or channel producing consistently low-quality users\n- **medium**: Moderate activation improvement opportunity, or onboarding step with 15-30% drop-off\n- **low**: Minor optimization in signup flow or activation sequence\n\n## Quality Standards\n\n- **Name**: Be VERY specific — include the milestone, metric, and impact in the name\n- **Description**: Must include exact percentages, user counts, and WHY this matters for the platform's growth\n- **affected_count**: Actual count from data (COUNT(DISTINCT user_id)), not estimates\n- **Minimum affected**: Only include patterns affecting 50+ users\n- **Always compare**: Users who hit a milestone vs those who didn't — the retention delta tells the story\n- **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id)\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **Be extremely specific** — exact percentages, counts, time periods\n3. **If no growth patterns found**, return `{\"insights\": []}`\n4. **Correlation caveat**: Users who activate may retain better because they're inherently more interested, not because activation caused retention. Note this when the causal direction is unclear.\n5. **Don't report obvious facts**: \"Most signups don't become daily users\" is not an insight. \"Users who follow 5+ accounts in their first session have 3x D7 retention\" IS an insight.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "engagement",
+          "name": "Engagement Patterns",
+          "description": "User activity patterns — DAU/MAU ratios, session behavior, feature usage, interaction depth, and engagement evolution over time",
+          "keywords": [
+            "session",
+            "active",
+            "dau",
+            "mau",
+            "wau",
+            "login",
+            "visit",
+            "interaction",
+            "engagement",
+            "time_spent",
+            "frequency",
+            "stickiness"
+          ],
+          "priority": 2,
+          "prompt": "# Engagement Patterns Analysis\n\nYou are a social network analytics expert analyzing user engagement patterns. Your goal is to identify meaningful shifts in how users interact with the platform — who's engaging deeply, who's disengaging, and what behaviors predict long-term platform health.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **significant engagement trends** with exact metrics. For social platforms, engagement depth matters more than raw session counts — a user who scrolls for 30 minutes but never interacts is very different from one who posts, comments, and messages.\n\n## Engagement Dimensions to Analyze\n\n- **DAU/MAU stickiness**: The ratio of daily to monthly active users — the North Star metric for social platforms. A healthy social network typically has 40-60%+ stickiness.\n- **Session behavior**: Session frequency, duration, depth (actions per session). Are sessions getting longer or shorter?\n- **Interaction depth**: Passive consumption (scrolling, viewing) vs active engagement (posting, commenting, liking, sharing, messaging). What's the ratio and how is it trending?\n- **Creator vs consumer health**: What percentage of users create content vs only consume? Is the creator base growing, stable, or shrinking?\n- **Feature usage**: Which platform features drive the most engagement time? Are users discovering and using key features?\n- **Social graph activity**: Following, unfollowing, connecting, messaging patterns. Are users building networks?\n- **Premium feature engagement**: VIP status usage, paid messaging, premium content views, boosted content — how engaged are paying users? Are they more sticky than free users?\n- **Segment differences**: Mobile vs web, geographic regions, user age (days since signup), user type (creator/consumer/lurker)\n- **Content consumption patterns**: What content types, formats, or topics drive the most engagement? How does the feed algorithm affect engagement?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Creator Engagement Decline — Power Creators Posting 25% Less\",\n      \"description\": \"Users who created 10+ posts/month (power creators, 2,100 users, 3% of MAU) have reduced posting frequency by 25% over the last 30 days — from 14.2 to 10.6 posts/month. This segment drives 38% of all platform content. Their followers' session duration has also dropped 12%, suggesting a content supply impact. VIP creators (paid subscribers) show a smaller decline (15%) compared to free power creators (30%).\",\n      \"severity\": \"critical\",\n      \"affected_count\": 2100,\n      \"risk_score\": 0.7,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"primary_metric\": \"posts_per_month\",\n        \"current_value\": 10.6,\n        \"previous_value\": 14.2,\n        \"change_percent\": -25.4,\n        \"trend_type\": \"decreasing\",\n        \"trend_duration_days\": 30,\n        \"segment_share_of_mau\": 0.03,\n        \"content_share\": 0.38\n      },\n      \"indicators\": [\n        \"Power creator posting frequency: 14.2 to 10.6 posts/month (-25%)\",\n        \"This segment creates 38% of all platform content\",\n        \"Follower session duration dropped 12% in the same period\",\n        \"2,100 power creators affected (3% of MAU)\",\n        \"VIP creators declining less (-15%) than free creators (-30%)\"\n      ],\n      \"target_segment\": \"Power creators with 10+ posts/month historically\",\n      \"source_steps\": [2, 6, 11]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Trend Classification\n\n- **trend_type values**:\n  - `increasing`: Sustained growth \u003e+5% over the measurement period\n  - `decreasing`: Sustained decline \u003c-5% over the measurement period\n  - `stable`: Fluctuating within -5% to +5%\n  - `spike`: Sudden change \u003e20% in a single period (investigate cause)\n  - `seasonal`: Recurring pattern tied to day-of-week or time-of-year\n\n## Severity Calibration\n\n- **critical**: DAU/MAU declining \u003e5%, OR creator engagement dropping significantly (creators are the lifeblood of social platforms), OR premium user engagement declining\n- **high**: Significant engagement shift (\u003e10%) in an important segment, OR a positive trend worth amplifying\n- **medium**: Moderate change (5-10%), or affects a smaller segment\n- **low**: Minor fluctuation, or only affects a niche user group\n\nReport both positive AND negative trends — positive trends indicate what's working and should be amplified.\n\n## Quality Standards\n\n- **Significant changes only**: At least 5% change OR affecting 50+ users\n- **Creators are critical**: Any negative trend among content creators should be flagged with higher severity than a similar trend among consumers\n- **Premium users matter**: Paying users (VIP, subscribers) should be analyzed separately — their engagement directly impacts revenue\n- **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id)\n- **Include trend duration**: How long has this trend been active?\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **If no significant trends found**, return `{\"insights\": []}`\n3. **Compare time periods**: current vs previous week/month — don't report single-point metrics as \"trends\"\n4. **Report both positive and negative trends**\n5. **Differentiate passive vs active engagement**: Scrolling time increasing while interactions decrease is a RED FLAG, not good engagement\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        },
+        {
+          "id": "retention",
+          "name": "Retention \u0026 Churn",
+          "description": "User retention cohorts, churn patterns, reactivation potential, and lifecycle-stage analysis from onboarding through maturity",
+          "keywords": [
+            "retention",
+            "churn",
+            "cohort",
+            "returning",
+            "lapsed",
+            "inactive",
+            "d1_",
+            "d7_",
+            "d30_",
+            "reactivation",
+            "dormant",
+            "lifecycle"
+          ],
+          "priority": 3,
+          "prompt": "# Retention \u0026 Churn Analysis\n\nYou are a social network analytics expert analyzing user retention and churn patterns. Your goal is to identify where and why users leave the platform, which users are at risk, and what behaviors predict long-term retention vs abandonment.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results below and identify **specific retention and churn patterns** with exact numbers and percentages. Look across the full user lifecycle — from first-day retention through long-term loyalty and potential reactivation.\n\n## Retention Dimensions to Analyze\n\n- **Cohort retention curves**: D1, D7, D14, D30, D60, D90 retention by signup cohort. Are newer cohorts retaining better or worse than older ones?\n- **Lifecycle-stage churn**: Where in the user lifecycle does churn concentrate?\n  - **Immediate abandonment** (Day 0): Users who sign up but never return\n  - **Early churn** (Day 1-7): Users who tried the platform but didn't form a habit\n  - **Mid-term churn** (Day 7-30): Users who engaged initially but lost interest\n  - **Late churn** (Day 30+): Established users leaving — the most damaging type\n- **Churn predictors**: What behaviors in the first 24/48/72 hours predict 30-day retention? (e.g., following 5+ users, posting once, joining a group)\n- **Segment-level retention**: Creators vs consumers, premium vs free users, mobile vs web, geographic differences\n- **Premium user retention**: Paying users (VIP, subscribers) who churn represent direct revenue loss. Analyze subscription churn separately.\n- **Reactivation patterns**: Do churned users ever come back? What triggers reactivation? (Push notifications, email campaigns, content from connections)\n- **Social graph impact on retention**: Do users with more connections retain better? Is there a \"magic number\" of connections that predicts retention?\n- **Content correlation**: Does seeing high-quality content in the first session predict retention? Does content freshness affect retention?\n\n## Required Output Format\n\nRespond with ONLY valid JSON (no markdown, no explanations):\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Day 0 Abandonment — 52% of New Users Never Return After Signup\",\n      \"description\": \"52% of users who complete registration never log in a second time. These users complete signup (avg 2.1 minutes) but the median first session is only 45 seconds — they sign up, look around briefly, and leave permanently. Users who follow at least 3 accounts in their first session have 3.1x higher D1 retention (68%) vs those who follow 0 (22%). This represents 7,800 lost users in the last 30 days.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 7800,\n      \"risk_score\": 0.52,\n      \"confidence\": 0.9,\n      \"metrics\": {\n        \"churn_rate\": 0.52,\n        \"lifecycle_stage\": \"immediate\",\n        \"median_first_session_seconds\": 45,\n        \"retention_with_follows\": 0.68,\n        \"retention_without_follows\": 0.22,\n        \"follows_threshold\": 3,\n        \"reactivation_potential\": \"low\"\n      },\n      \"indicators\": [\n        \"52% of signups never return after first session\",\n        \"Median first session: 45 seconds (insufficient to discover value)\",\n        \"Users who follow 3+ accounts: 68% D1 retention\",\n        \"Users who follow 0 accounts: 22% D1 retention (3.1x gap)\",\n        \"7,800 users lost to immediate abandonment in 30 days\"\n      ],\n      \"target_segment\": \"Users who completed registration but have 0 second-day logins\",\n      \"source_steps\": [1, 4, 8]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Lifecycle Stages\n\n- **immediate** (Day 0): Signed up but never returned. Low reactivation potential.\n- **early** (Day 1-7): Tried the platform briefly. Moderate reactivation potential if triggered quickly.\n- **mid** (Day 7-30): Showed initial engagement but lost interest. Good reactivation potential with the right hook.\n- **late** (Day 30+): Established users leaving. High concern — they represent invested users. Best reactivation potential.\n- **premium_churn**: Paying users who cancel or stop paying. Direct revenue impact.\n\n## Severity Calibration\n\nWhen the project profile includes KPI targets, calibrate severity against them:\n- **critical**: Retention below target by \u003e20%, or a lifecycle stage losing \u003e40% of users, or premium user churn increasing, or D1 retention \u003c30%\n- **high**: Retention significantly below target, or creator churn \u003e consumer churn (platform health risk)\n- **medium**: Retention moderately below target, affects 5-10% of active users\n- **low**: Slightly elevated churn in a non-critical segment, or a positive reactivation trend\n\n## Quality Standards\n\n- **Name**: Be VERY specific — include lifecycle stage, cohort, metric, and magnitude\n- **Description**: Must include exact percentages, user counts, behavioral predictors, and business impact\n- **affected_count**: Actual count from data (COUNT(DISTINCT user_id)), not estimates\n- **reactivation_potential**: Estimate based on user investment level (connections, content, premium status)\n- **Minimum affected**: Only include patterns affecting 50+ users\n- **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id)\n- **Premium users always flagged**: Any premium/VIP user churn should be reported regardless of magnitude\n\n## Important Rules\n\n1. **Use ONLY data from the queries below** — don't make up numbers\n2. **Be extremely specific** — exact percentages, counts, time periods\n3. **If no retention patterns found**, return `{\"insights\": []}`\n4. **Creator churn \u003e consumer churn in severity**: Losing a creator has cascading effects on their followers\n5. **Premium churn = revenue loss**: Always calculate the revenue impact of premium user churn\n6. **Don't duplicate**: Each insight should describe a unique pattern\n7. **Cohort comparison is essential**: \"D7 retention is 25%\" is not useful. \"D7 retention dropped from 32% to 25% over the last 4 cohorts\" IS useful.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze the data above and respond with valid JSON."
+        }
+      ],
+      "categories": {
+        "content_sharing": [
+          {
+            "id": "content_creation",
+            "name": "Content Creation Health",
+            "description": "Creator activity trends, content supply and diversity, posting patterns, creator retention, and the creator-consumer balance that sustains the platform",
+            "keywords": [
+              "post",
+              "create",
+              "publish",
+              "upload",
+              "content",
+              "creator",
+              "author",
+              "photo",
+              "video",
+              "story",
+              "reel",
+              "caption",
+              "hashtag",
+              "draft"
+            ],
+            "priority": 4,
+            "prompt": "# Content Creation Health Analysis\n\nYou are a social network analytics expert analyzing the health of the content creation ecosystem. On a content sharing platform, creators are the lifeblood — without a steady supply of quality content, consumers disengage and the platform declines. Your goal is to identify threats to creator health, content supply issues, and opportunities to boost the creator ecosystem.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **content creation patterns** that reveal health indicators, supply risks, and ecosystem opportunities.\n\n## What to Look For\n\n- **Creator supply trend**: Is the number of active creators growing, stable, or declining? What about posting frequency?\n- **Creator retention vs consumer retention**: Do creators churn at different rates than consumers? This gap is critical — a 5% creator churn matters more than a 10% consumer churn.\n- **Content supply concentration**: What percentage of content comes from the top 1%/10% of creators? High concentration means platform health depends on a small group.\n- **Creator lifecycle**: How do new creators evolve? Do they ramp up posting or flame out after their first few posts? What separates creators who sustain from those who stop?\n- **Content type distribution**: Is there healthy diversity in content types (photos, videos, stories, text)? Is one type dominating while others decline?\n- **Content quality signals**: Average engagement rate per post, zero-engagement posts (posts that receive no likes/comments at all), and creator satisfaction indicators.\n- **First-time creator experience**: How many users attempt to create content for the first time? What percentage of first-time creators post a second time? What's the \"creator activation\" rate?\n- **Creator-to-earned engagement ratio**: Are creators getting enough feedback (likes, comments) to stay motivated? Creators who get zero engagement on their posts are likely to stop creating.\n- **Creator earnings correlation**: If the platform has a creator fund or tipping, does earning money predict creator retention?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"First-Time Creator Drop-off — 72% Never Post a Second Time\",\n      \"description\": \"Of 3,400 users who created their first post in the last 30 days, 72% (2,448) never posted again. First-time creators whose first post receives at least 5 likes have a 58% chance of posting again, while those receiving 0 likes have only 14% chance. The platform currently shows first-time creator posts to an average of 23 followers, but 40% of first-time creators have fewer than 10 followers, meaning their content gets minimal visibility.\",\n      \"severity\": \"critical\",\n      \"affected_count\": 2448,\n      \"risk_score\": 0.72,\n      \"confidence\": 0.85,\n      \"metrics\": {\n        \"pattern_type\": \"creator_activation\",\n        \"first_time_creators\": 3400,\n        \"repeat_rate\": 0.28,\n        \"drop_off_rate\": 0.72,\n        \"repeat_rate_with_engagement\": 0.58,\n        \"repeat_rate_without_engagement\": 0.14,\n        \"avg_first_post_reach\": 23,\n        \"creators_with_low_reach\": 0.40\n      },\n      \"indicators\": [\n        \"72% of first-time creators never post a second time\",\n        \"First post with 5+ likes: 58% chance of second post\",\n        \"First post with 0 likes: only 14% chance of second post\",\n        \"40% of first-time creators have \u003c10 followers (low reach)\",\n        \"3,400 first-time creators in last 30 days, only 952 posted again\"\n      ],\n      \"target_segment\": \"Users who created their first post but never posted a second time\",\n      \"source_steps\": [3, 7, 12]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Pattern Types\n\n- **creator_decline**: Overall decline in active creators or posting frequency\n- **creator_activation**: First-time creators failing to become repeat creators\n- **concentration_risk**: Too much content coming from too few creators\n- **content_diversity_gap**: One content type dominating while others starve\n- **engagement_starvation**: Creators posting but receiving zero or minimal engagement\n- **creator_burnout**: Power creators reducing activity after sustained high output\n- **creator_earnings_gap**: Creator monetization not reaching creators who need it most\n\n## Severity Calibration\n\n- **critical**: Active creator count declining, OR \u003e60% of first-time creators never post again, OR content supply dropping\n- **high**: Significant creator segment reducing activity, OR content concentration risk (top 5% making \u003e70% of content)\n- **medium**: Moderate creator engagement issues, or content diversity declining\n- **low**: Minor optimization in creator experience or content distribution\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no content creation issues found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **Creator ≠ consumer**: Never average creators and consumers together. Always analyze them separately.\n5. **Engagement begets creation**: Track the feedback loop — creators who get engagement create more. Creators who don't, stop.\n6. **Quality over quantity**: A declining number of creators who each post more quality content may be healthier than a growing creator base producing spam.\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          },
+          {
+            "id": "monetization",
+            "name": "Monetization \u0026 Premium Features",
+            "description": "Premium subscriptions (VIP), paid features (messaging, content access, profile boosts), in-app purchases, tipping/gifting, and ad revenue optimization",
+            "keywords": [
+              "premium",
+              "vip",
+              "subscription",
+              "purchase",
+              "iap",
+              "revenue",
+              "paid",
+              "boost",
+              "promote",
+              "tip",
+              "gift",
+              "coin",
+              "token",
+              "super_like",
+              "ad_revenue",
+              "creator_fund"
+            ],
+            "priority": 5,
+            "prompt": "# Monetization \u0026 Premium Features Analysis\n\nYou are a social network analytics expert analyzing monetization patterns — premium subscriptions, in-app purchases, virtual currencies, creator monetization, and paid feature adoption. Your goal is to identify revenue opportunities, conversion triggers, premium user health, and monetization friction points.\n\n## Context\n\n**Dataset**: {{DATASET}}\n**Exploration Queries**: {{TOTAL_QUERIES}}\n\n## Your Task\n\nAnalyze the query results and identify **monetization patterns** that reveal conversion opportunities, revenue risks, pricing issues, and premium feature effectiveness.\n\n## Monetization Channels to Analyze\n\nSocial networks monetize through multiple channels — analyze each that's present in the data:\n\n### Premium Subscriptions (VIP / Plus / Pro)\n- **Conversion funnel**: What percentage of users ever see premium offerings? What percentage convert? What triggers the first subscription?\n- **Subscription retention**: Monthly/annual renewal rates. When in the subscription lifecycle do users cancel? What's the average subscriber lifespan?\n- **VIP engagement**: Do premium users engage more than free users? Do they retain better? Is the premium offering delivering enough value to justify continued payment?\n- **Trial effectiveness**: If there's a free trial, what's the trial-to-paid conversion rate?\n\n### Paid Features \u0026 In-App Purchases\n- **Feature-level revenue**: Which paid features generate the most revenue? (profile boosts, super likes, paid messaging, content promotion, virtual gifts)\n- **Purchase triggers**: What in-app events precede a purchase? (viewing a profile, hitting a limit, seeing premium content)\n- **Repeat purchases**: What percentage of purchasers buy again? What's the average time between purchases?\n- **Price sensitivity**: If multiple price points exist, which convert best? Is there a dominant price tier?\n\n### Virtual Currency \u0026 Tipping\n- **Economy health**: Coin/token earn-to-spend ratio. Are users buying virtual currency? What do they spend it on?\n- **Tipping patterns**: If users can tip creators — average tip amount, tipping frequency, tip concentration (do tips go to many creators or just a few?)\n- **Currency sinks**: Are there enough ways to spend virtual currency? Do users accumulate more than they can use?\n\n### Creator Monetization\n- **Creator earnings distribution**: How concentrated are earnings? Do most earning creators receive meaningful amounts?\n- **Earnings impact on retention**: Do earning creators retain better? Is there a threshold where earnings significantly improve retention?\n- **Creator fund sustainability**: If there's a creator fund, is payout scaling with the creator base, or is per-creator payout declining?\n\n### Ad Revenue (if applicable)\n- **ARPDAU trends**: Is ad revenue per daily active user stable, growing, or declining?\n- **Ad load tolerance**: Are users sensitive to ad frequency? What's the optimal ad load?\n\n## Required Output Format\n\nRespond with ONLY valid JSON:\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"Profile Boost IAP — 68% of Purchasers Never Buy a Second Boost\",\n      \"description\": \"Profile Boost is the highest-revenue IAP ($4.99/boost), generating $12,400 in the last 30 days from 2,480 unique purchasers. However, 68% of purchasers never buy a second boost. First-time boost buyers who receive \u003e50 profile views during their boost period have a 45% repeat purchase rate, while those receiving \u003c20 views have only 12% repeat rate. The average boost generates 34 profile views, but there's high variance (std dev: 42). Users who boost on weekends get 2.1x more views than weekday boosters.\",\n      \"severity\": \"high\",\n      \"affected_count\": 1686,\n      \"risk_score\": 0.0,\n      \"confidence\": 0.8,\n      \"metrics\": {\n        \"feature_name\": \"profile_boost\",\n        \"opportunity_type\": \"repeat_purchase\",\n        \"total_revenue_30d\": 12400,\n        \"unique_purchasers_30d\": 2480,\n        \"repeat_purchase_rate\": 0.32,\n        \"one_time_buyer_rate\": 0.68,\n        \"avg_views_per_boost\": 34,\n        \"repeat_rate_high_views\": 0.45,\n        \"repeat_rate_low_views\": 0.12,\n        \"price_usd\": 4.99\n      },\n      \"indicators\": [\n        \"68% of profile boost buyers never buy a second boost\",\n        \"High-views boosters (\u003e50 views): 45% repeat rate\",\n        \"Low-views boosters (\u003c20 views): 12% repeat rate\",\n        \"Weekend boosters get 2.1x more views than weekday\",\n        \"$12,400 revenue in 30 days from 2,480 purchasers\"\n      ],\n      \"target_segment\": \"One-time profile boost purchasers who received fewer than 20 views\",\n      \"source_steps\": [4, 8, 13]\n    }\n  ]\n}\n```\n\n- **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a \"step\" field — cite the exact steps.\n\n## Opportunity Types\n\n- **conversion**: Free users with high engagement who could be converted to premium\n- **subscription_churn**: Premium subscribers at risk of canceling\n- **repeat_purchase**: One-time buyers who could become repeat purchasers\n- **pricing**: Price points that are suboptimal (too high for conversion, too low for revenue)\n- **feature_underused**: Premium feature with low awareness or poor discoverability\n- **creator_earnings**: Creator monetization opportunity (tips, paid content, creator subscriptions)\n- **currency_imbalance**: Virtual currency economy with unhealthy earn/spend ratios\n- **trial_conversion**: Free trial users not converting to paid\n\n## Severity Calibration\n\n- **critical**: Premium subscriber churn increasing, or total revenue declining, or a major monetization channel underperforming by \u003e20%\n- **high**: Clear conversion opportunity with strong intent signals, or premium feature with high revenue potential but low adoption\n- **medium**: Moderate pricing optimization, or repeat purchase opportunity\n- **low**: Minor monetization tuning, or small-segment opportunity\n\n## Important Rules\n\n1. **Use ONLY data from the queries** — don't make up numbers\n2. **If no monetization patterns found**, return `{\"insights\": []}`\n3. **CRITICAL**: affected_count = COUNT(DISTINCT user_id)\n4. **Revenue at risk is as important as new revenue**: Subscriber churn, declining ARPDAU, or whale concentration risk should all be flagged\n5. **Don't report obvious facts**: \"Most users don't pay\" is not an insight. \"Users who send 5+ messages per day have 4x higher premium conversion\" IS an insight.\n6. **Show your math**: When estimating revenue potential, explain the calculation (segment_size * conversion_estimate * avg_revenue)\n7. **Premium user retention ≠ free user retention**: Always analyze paying users separately — their behavior and value are fundamentally different\n\n## Query Results\n\n{{QUERY_RESULTS}}\n\nNow analyze and respond with valid JSON."
+          }
+        ]
+      }
+    },
+    "profile_schema": {
+      "base": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Social Network Project Profile",
+        "description": "Profile schema for social network domain projects. Provides context to the AI agent about the platform's purpose, audience, monetization, and growth stage.",
+        "type": "object",
+        "properties": {
+          "platform_info": {
+            "type": "object",
+            "title": "Platform Information",
+            "properties": {
+              "platform_type": {
+                "type": "string",
+                "title": "Platform Type",
+                "enum": [
+                  "content_sharing",
+                  "messaging",
+                  "community",
+                  "professional",
+                  "dating",
+                  "interest_based",
+                  "other"
+                ]
+              },
+              "primary_content_format": {
+                "type": "string",
+                "title": "Primary Content Format",
+                "enum": [
+                  "photo",
+                  "video",
+                  "short_video",
+                  "text",
+                  "audio",
+                  "mixed"
+                ]
+              },
+              "platforms": {
+                "type": "array",
+                "title": "Available On",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "iOS",
+                    "Android",
+                    "Web",
+                    "Desktop"
+                  ]
+                }
+              },
+              "target_audience": {
+                "type": "string",
+                "title": "Target Audience",
+                "description": "E.g., 'Gen Z 16-24', 'Professionals 25-45', 'Parents 30-50'"
+              },
+              "description": {
+                "type": "string",
+                "title": "Platform Description",
+                "description": "Brief description of the platform and its unique value proposition"
+              },
+              "growth_stage": {
+                "type": "string",
+                "title": "Growth Stage",
+                "enum": [
+                  "pre_launch",
+                  "early_growth",
+                  "growth",
+                  "mature",
+                  "declining"
+                ],
+                "description": "Current stage of the platform lifecycle"
+              }
+            }
+          },
+          "engagement_model": {
+            "type": "object",
+            "title": "Engagement Model",
+            "properties": {
+              "feed_type": {
+                "type": "string",
+                "title": "Feed Type",
+                "enum": [
+                  "algorithmic",
+                  "chronological",
+                  "hybrid"
+                ],
+                "description": "How content is surfaced to users"
+              },
+              "has_stories": {
+                "type": "boolean",
+                "title": "Has Stories/Ephemeral Content"
+              },
+              "has_direct_messaging": {
+                "type": "boolean",
+                "title": "Has Direct Messaging"
+              },
+              "has_groups": {
+                "type": "boolean",
+                "title": "Has Groups/Communities"
+              },
+              "has_live_streaming": {
+                "type": "boolean",
+                "title": "Has Live Streaming"
+              },
+              "has_search_discovery": {
+                "type": "boolean",
+                "title": "Has Explore/Discover Section"
+              },
+              "connection_model": {
+                "type": "string",
+                "title": "Connection Model",
+                "enum": [
+                  "follow",
+                  "friend",
+                  "both"
+                ],
+                "description": "follow = one-directional (Twitter/Instagram), friend = bidirectional (Facebook)"
+              }
+            }
+          },
+          "monetization": {
+            "type": "object",
+            "title": "Monetization",
+            "properties": {
+              "has_premium_subscription": {
+                "type": "boolean",
+                "title": "Has Premium Subscription (VIP/Plus/Pro)"
+              },
+              "premium_price_monthly_usd": {
+                "type": "number",
+                "title": "Premium Monthly Price (USD)"
+              },
+              "has_iap": {
+                "type": "boolean",
+                "title": "Has In-App Purchases"
+              },
+              "iap_features": {
+                "type": "array",
+                "title": "IAP Features",
+                "items": {
+                  "type": "string"
+                },
+                "description": "List of purchasable features (e.g., 'Profile Boost', 'Super Like', 'Read Receipts', 'Priority Inbox')"
+              },
+              "has_virtual_currency": {
+                "type": "boolean",
+                "title": "Has Virtual Currency (Coins/Tokens)"
+              },
+              "virtual_currency_uses": {
+                "type": "array",
+                "title": "Virtual Currency Uses",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What virtual currency is spent on (e.g., 'Tip creators', 'Send gifts', 'Unlock content')"
+              },
+              "has_ads": {
+                "type": "boolean",
+                "title": "Has Advertising"
+              },
+              "has_creator_monetization": {
+                "type": "boolean",
+                "title": "Has Creator Monetization"
+              },
+              "creator_monetization_types": {
+                "type": "array",
+                "title": "Creator Monetization Types",
+                "items": {
+                  "type": "string"
+                },
+                "description": "How creators earn (e.g., 'Ad revenue share', 'Tips', 'Paid subscriptions', 'Creator fund')"
+              },
+              "has_paid_messaging": {
+                "type": "boolean",
+                "title": "Has Paid Messaging",
+                "description": "Whether users must pay to message certain users (common in dating/professional networks)"
+              },
+              "has_paid_content": {
+                "type": "boolean",
+                "title": "Has Paid/Gated Content",
+                "description": "Whether creators can gate content behind a paywall"
+              }
+            }
+          },
+          "growth_features": {
+            "type": "object",
+            "title": "Growth Features",
+            "properties": {
+              "has_referral_program": {
+                "type": "boolean",
+                "title": "Has Referral Program"
+              },
+              "has_contact_sync": {
+                "type": "boolean",
+                "title": "Has Contact Sync / Find Friends"
+              },
+              "has_cross_platform_sharing": {
+                "type": "boolean",
+                "title": "Has Cross-Platform Sharing"
+              },
+              "has_push_notifications": {
+                "type": "boolean",
+                "title": "Has Push Notifications"
+              },
+              "has_email_digests": {
+                "type": "boolean",
+                "title": "Has Email Digest / Re-engagement"
+              }
+            }
+          },
+          "kpis": {
+            "type": "object",
+            "title": "Target KPIs",
+            "properties": {
+              "dau_mau_ratio_target": {
+                "type": "number",
+                "title": "DAU/MAU Ratio Target (%)",
+                "description": "Target stickiness ratio (healthy social networks: 40-60%+)"
+              },
+              "retention_d1_target": {
+                "type": "number",
+                "title": "D1 Retention Target (%)"
+              },
+              "retention_d7_target": {
+                "type": "number",
+                "title": "D7 Retention Target (%)"
+              },
+              "retention_d30_target": {
+                "type": "number",
+                "title": "D30 Retention Target (%)"
+              },
+              "creator_ratio_target": {
+                "type": "number",
+                "title": "Creator Ratio Target (%)",
+                "description": "Target % of MAU who create content"
+              },
+              "mau_target": {
+                "type": "integer",
+                "title": "MAU Target"
+              },
+              "premium_conversion_target": {
+                "type": "number",
+                "title": "Premium Conversion Target (%)",
+                "description": "Target % of MAU who subscribe to premium"
+              },
+              "arpu_target": {
+                "type": "number",
+                "title": "ARPU Target ($)"
+              }
+            }
+          }
+        }
+      },
+      "categories": {
+        "content_sharing": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Content Sharing Platform Profile Extensions",
+          "description": "Additional profile fields specific to content sharing social networks.",
+          "type": "object",
+          "properties": {
+            "content_types": {
+              "type": "array",
+              "title": "Supported Content Types",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Content Type Name",
+                    "description": "E.g., 'Photo Post', 'Short Video', 'Story', 'Reel', 'Text Post', 'Poll'"
+                  },
+                  "max_duration_seconds": {
+                    "type": "integer",
+                    "title": "Max Duration (seconds)",
+                    "description": "For video content types"
+                  },
+                  "is_ephemeral": {
+                    "type": "boolean",
+                    "title": "Ephemeral (auto-deletes)",
+                    "description": "E.g., Stories that disappear after 24 hours"
+                  }
+                }
+              }
+            },
+            "discovery_features": {
+              "type": "object",
+              "title": "Content Discovery",
+              "properties": {
+                "has_hashtags": {
+                  "type": "boolean",
+                  "title": "Has Hashtags"
+                },
+                "has_explore_page": {
+                  "type": "boolean",
+                  "title": "Has Explore/For You Page"
+                },
+                "has_trending": {
+                  "type": "boolean",
+                  "title": "Has Trending Section"
+                },
+                "has_recommendations": {
+                  "type": "boolean",
+                  "title": "Has Content Recommendations"
+                },
+                "recommendation_type": {
+                  "type": "string",
+                  "title": "Recommendation Type",
+                  "enum": [
+                    "collaborative_filtering",
+                    "content_based",
+                    "social_graph",
+                    "hybrid"
+                  ]
+                }
+              }
+            },
+            "interaction_types": {
+              "type": "array",
+              "title": "Available Interactions",
+              "description": "Types of interactions users can have with content",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Interaction Name",
+                    "description": "E.g., 'Like', 'Comment', 'Share', 'Save', 'Repost', 'Duet', 'Super Like'"
+                  },
+                  "is_paid": {
+                    "type": "boolean",
+                    "title": "Is Paid Feature",
+                    "description": "Whether this interaction costs money or virtual currency"
+                  },
+                  "cost_description": {
+                    "type": "string",
+                    "title": "Cost",
+                    "description": "E.g., '1 coin', '$0.99', 'Free for VIP'"
+                  }
+                }
+              }
+            },
+            "creator_tools": {
+              "type": "object",
+              "title": "Creator Tools",
+              "properties": {
+                "has_analytics_dashboard": {
+                  "type": "boolean",
+                  "title": "Creator Analytics Dashboard"
+                },
+                "has_scheduling": {
+                  "type": "boolean",
+                  "title": "Content Scheduling"
+                },
+                "has_editing_tools": {
+                  "type": "boolean",
+                  "title": "Built-in Editing Tools"
+                },
+                "has_collab_features": {
+                  "type": "boolean",
+                  "title": "Collaboration Features"
+                },
+                "verification_program": {
+                  "type": "boolean",
+                  "title": "Has Verification / Badge Program"
+                }
+              }
+            },
+            "moderation": {
+              "type": "object",
+              "title": "Content Moderation",
+              "properties": {
+                "has_ai_moderation": {
+                  "type": "boolean",
+                  "title": "Has AI Content Moderation"
+                },
+                "has_user_reporting": {
+                  "type": "boolean",
+                  "title": "Has User Reporting"
+                },
+                "has_content_guidelines": {
+                  "type": "boolean",
+                  "title": "Has Community Guidelines"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

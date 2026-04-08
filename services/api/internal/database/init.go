@@ -71,6 +71,17 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "domain_packs",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys:    bson.D{{Key: "slug", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "is_published", Value: 1}}},
+			{Keys: bson.D{{Key: "created_at", Value: -1}}},
+		},
+	},
+	{
 		Name: "discovery_debug_logs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "timestamp", Value: -1}}},

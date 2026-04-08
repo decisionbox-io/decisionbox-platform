@@ -56,6 +56,65 @@ export interface AnalysisArea {
   priority: number;
 }
 
+// --- Domain Pack Types ---
+
+export interface DomainPack {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  source_url: string;
+  is_published: boolean;
+  categories: PackCategory[];
+  prompts: PackPrompts;
+  analysis_areas: PackAnalysisAreas;
+  profile_schema: PackProfileSchema;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PackCategory {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface PackPrompts {
+  base: {
+    base_context: string;
+    exploration: string;
+    recommendations: string;
+  };
+  categories: Record<string, { exploration_context?: string }>;
+}
+
+export interface PackAnalysisArea {
+  id: string;
+  name: string;
+  description: string;
+  keywords: string[];
+  priority: number;
+  prompt: string;
+}
+
+export interface PackAnalysisAreas {
+  base: PackAnalysisArea[];
+  categories: Record<string, PackAnalysisArea[]>;
+}
+
+export interface PackProfileSchema {
+  base: Record<string, unknown>;
+  categories: Record<string, Record<string, unknown>>;
+}
+
+export interface PortableDomainPack {
+  format: string;
+  format_version: number;
+  pack: DomainPack;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -331,6 +390,20 @@ export const api = {
   // Providers (dynamic — registered in Go via init())
   listLLMProviders: () => request<ProviderMeta[]>('/api/v1/providers/llm'),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
+
+  // Domain Packs (CRUD)
+  listDomainPacks: () => request<DomainPack[]>('/api/v1/domain-packs'),
+  getDomainPack: (slug: string) => request<DomainPack>(`/api/v1/domain-packs/${slug}`),
+  createDomainPack: (pack: Partial<DomainPack>) =>
+    request<DomainPack>('/api/v1/domain-packs', { method: 'POST', body: JSON.stringify(pack) }),
+  updateDomainPack: (slug: string, pack: Partial<DomainPack>) =>
+    request<DomainPack>(`/api/v1/domain-packs/${slug}`, { method: 'PUT', body: JSON.stringify(pack) }),
+  deleteDomainPack: (slug: string) =>
+    request<{ deleted: string }>(`/api/v1/domain-packs/${slug}`, { method: 'DELETE' }),
+  importDomainPack: (data: PortableDomainPack) =>
+    request<DomainPack>('/api/v1/domain-packs/import', { method: 'POST', body: JSON.stringify(data) }),
+  exportDomainPack: (slug: string) =>
+    request<PortableDomainPack>(`/api/v1/domain-packs/${slug}/export`),
 
   // Domains
   listDomains: () => request<Domain[]>('/api/v1/domains'),

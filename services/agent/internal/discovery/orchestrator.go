@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -19,11 +18,28 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation"
 )
 
+// AnalysisArea defines an analysis area resolved from project prompts.
+type AnalysisArea struct {
+	ID          string
+	Name        string
+	Description string
+	Keywords    []string
+	IsBase      bool
+	Priority    int
+}
+
+// ResolvedPrompts holds all prompts resolved from project configuration.
+type ResolvedPrompts struct {
+	Exploration     string
+	Recommendations string
+	BaseContext     string
+	AnalysisAreas   map[string]string
+}
+
 // Orchestrator coordinates the entire discovery process.
 type Orchestrator struct {
 	aiClient      *ai.Client
 	warehouse     gowarehouse.Provider
-	discoveryPack domainpack.DiscoveryPack
 
 	contextRepo   *database.ContextRepository
 	discoveryRepo *database.DiscoveryRepository
@@ -54,7 +70,6 @@ type Orchestrator struct {
 type OrchestratorOptions struct {
 	AIClient      *ai.Client
 	Warehouse     gowarehouse.Provider
-	DiscoveryPack domainpack.DiscoveryPack
 
 	ContextRepo   *database.ContextRepository
 	DiscoveryRepo *database.DiscoveryRepository
@@ -116,7 +131,6 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
-		discoveryPack:      opts.DiscoveryPack,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
 		feedbackRepo:       opts.FeedbackRepo,
@@ -162,11 +176,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	startTime := time.Now()
 
-	// Get prompts: project config takes priority, fallback to domain pack defaults
-	dpPrompts := o.discoveryPack.Prompts(o.category)
-	dpAreas := o.discoveryPack.AnalysisAreas(o.category)
-
-	prompts, analysisAreas := o.resolvePrompts(dpPrompts, dpAreas)
+	// Get prompts from project configuration (fully seeded at project creation)
+	prompts, analysisAreas := o.resolvePrompts()
 
 	// Build filter clause
 	filterClause := o.buildFilterClause()
@@ -301,7 +312,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		for _, a := range opts.SelectedAreas {
 			selected[a] = true
 		}
-		var filtered []domainpack.AnalysisArea
+		var filtered []AnalysisArea
 		for _, a := range analysisAreas {
 			if selected[a.ID] {
 				filtered = append(filtered, a)
@@ -617,76 +628,37 @@ func (o *Orchestrator) generateRecommendations(
 
 // --- Helper methods ---
 
-// resolvePrompts merges project-level prompts with domain pack defaults.
-// Project prompts override domain pack. Custom areas are added.
-func (o *Orchestrator) resolvePrompts(dpPrompts domainpack.PromptTemplates, dpAreas []domainpack.AnalysisArea) (domainpack.PromptTemplates, []domainpack.AnalysisArea) {
+// resolvePrompts extracts prompts and analysis areas from project configuration.
+// All prompts are fully seeded at project creation from the domain pack.
+func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 	if o.projectPrompts == nil {
-		return dpPrompts, dpAreas
+		return ResolvedPrompts{}, nil
 	}
 
-	resolved := dpPrompts
-
-	// Override exploration prompt if project has one
-	if o.projectPrompts.Exploration != "" {
-		resolved.Exploration = o.projectPrompts.Exploration
+	resolved := ResolvedPrompts{
+		Exploration:     o.projectPrompts.Exploration,
+		Recommendations: o.projectPrompts.Recommendations,
+		BaseContext:     o.projectPrompts.BaseContext,
+		AnalysisAreas:   make(map[string]string),
 	}
 
-	// Override recommendations prompt
-	if o.projectPrompts.Recommendations != "" {
-		resolved.Recommendations = o.projectPrompts.Recommendations
-	}
-
-	// Override base context
-	if o.projectPrompts.BaseContext != "" {
-		resolved.BaseContext = o.projectPrompts.BaseContext
-	}
-
-	// Merge analysis areas: project overrides domain pack, custom areas added
-	if len(o.projectPrompts.AnalysisAreas) > 0 {
-		resolved.AnalysisAreas = make(map[string]string)
-
-		// Start with domain pack defaults
-		for id, prompt := range dpPrompts.AnalysisAreas {
-			resolved.AnalysisAreas[id] = prompt
+	var areas []AnalysisArea
+	for id, cfg := range o.projectPrompts.AnalysisAreas {
+		if !cfg.Enabled {
+			continue
 		}
-
-		// Override/add from project
-		var areas []domainpack.AnalysisArea
-		for id, cfg := range o.projectPrompts.AnalysisAreas {
-			if !cfg.Enabled {
-				// User disabled this area — remove from domain pack
-				delete(resolved.AnalysisAreas, id)
-				continue
-			}
-			if cfg.Prompt != "" {
-				resolved.AnalysisAreas[id] = cfg.Prompt
-			}
-			areas = append(areas, domainpack.AnalysisArea{
-				ID:          id,
-				Name:        cfg.Name,
-				Description: cfg.Description,
-				Keywords:    cfg.Keywords,
-				IsBase:      cfg.IsBase,
-				Priority:    cfg.Priority,
-			})
-		}
-
-		// Add domain pack areas that aren't handled by project (backward compat).
-		// Areas explicitly in the project (enabled or disabled) are NOT added back.
-		handledByProject := make(map[string]bool)
-		for id := range o.projectPrompts.AnalysisAreas {
-			handledByProject[id] = true
-		}
-		for _, a := range dpAreas {
-			if !handledByProject[a.ID] {
-				areas = append(areas, a)
-			}
-		}
-
-		return resolved, areas
+		resolved.AnalysisAreas[id] = cfg.Prompt
+		areas = append(areas, AnalysisArea{
+			ID:          id,
+			Name:        cfg.Name,
+			Description: cfg.Description,
+			Keywords:    cfg.Keywords,
+			IsBase:      cfg.IsBase,
+			Priority:    cfg.Priority,
+		})
 	}
 
-	return resolved, dpAreas
+	return resolved, areas
 }
 
 func (o *Orchestrator) buildFilterClause() string {
@@ -710,7 +682,7 @@ func (o *Orchestrator) buildFilterRule() string {
 	return fmt.Sprintf("**ALWAYS filter by %s**: `WHERE %s = '%s'`", o.filterField, o.filterField, o.filterValue)
 }
 
-func (o *Orchestrator) buildAnalysisAreasDescription(areas []domainpack.AnalysisArea) string {
+func (o *Orchestrator) buildAnalysisAreasDescription(areas []AnalysisArea) string {
 	var sb strings.Builder
 	for i, area := range areas {
 		fmt.Fprintf(&sb, "%d. **%s** - %s\n", i+1, area.Name, area.Description)

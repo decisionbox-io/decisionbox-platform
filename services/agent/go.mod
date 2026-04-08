@@ -4,10 +4,6 @@ go 1.25.0
 
 require (
 	cloud.google.com/go/bigquery v1.74.0
-	github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go v0.0.0
-	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go v0.0.0
-	github.com/decisionbox-io/decisionbox/domain-packs/social/go v0.0.0
-	github.com/decisionbox-io/decisionbox/domain-packs/system-test/go v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
@@ -198,10 +194,6 @@ require (
 )
 
 replace (
-	github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go => ../../domain-packs/ecommerce/go
-	github.com/decisionbox-io/decisionbox/domain-packs/gaming/go => ../../domain-packs/gaming/go
-	github.com/decisionbox-io/decisionbox/domain-packs/social/go => ../../domain-packs/social/go
-	github.com/decisionbox-io/decisionbox/domain-packs/system-test/go => ../../domain-packs/system-test/go
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry => ../../providers/llm/azure-foundry
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock

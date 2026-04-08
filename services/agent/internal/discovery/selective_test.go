@@ -3,87 +3,35 @@ package discovery
 import (
 	"testing"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// --- Selective Discovery (area filtering) ---
+// --- resolvePrompts (reads from project prompts only) ---
 
-func TestResolvePrompts_NoProjectPrompts(t *testing.T) {
+func TestResolvePrompts_NilProjectPrompts(t *testing.T) {
 	o := &Orchestrator{projectPrompts: nil}
 
-	dpPrompts := domainpack.PromptTemplates{
-		Exploration:     "explore",
-		Recommendations: "recommend",
-		AnalysisAreas:   map[string]string{"churn": "analyze churn"},
-	}
-	dpAreas := []domainpack.AnalysisArea{
-		{ID: "churn", Name: "Churn", IsBase: true},
-	}
+	prompts, areas := o.resolvePrompts()
 
-	prompts, areas := o.resolvePrompts(dpPrompts, dpAreas)
-
-	if prompts.Exploration != "explore" {
-		t.Error("should return domain pack prompts when no project prompts")
+	if prompts.Exploration != "" {
+		t.Error("should return empty prompts when projectPrompts is nil")
 	}
-	if len(areas) != 1 || areas[0].ID != "churn" {
-		t.Error("should return domain pack areas")
+	if len(areas) != 0 {
+		t.Error("should return no areas when projectPrompts is nil")
 	}
 }
 
-func TestResolvePrompts_ProjectOverridesExploration(t *testing.T) {
+func TestResolvePrompts_BasicExtraction(t *testing.T) {
 	o := &Orchestrator{
 		projectPrompts: &models.ProjectPrompts{
-			Exploration:   "custom exploration",
-			AnalysisAreas: map[string]models.AnalysisAreaConfig{},
-		},
-	}
-
-	dpPrompts := domainpack.PromptTemplates{
-		Exploration:     "default exploration",
-		Recommendations: "default recs",
-		AnalysisAreas:   map[string]string{"churn": "default churn"},
-	}
-
-	prompts, _ := o.resolvePrompts(dpPrompts, nil)
-
-	if prompts.Exploration != "custom exploration" {
-		t.Errorf("exploration = %q, want custom", prompts.Exploration)
-	}
-	if prompts.Recommendations != "default recs" {
-		t.Error("recommendations should keep default when project doesn't override")
-	}
-}
-
-func TestResolvePrompts_ProjectOverridesRecommendations(t *testing.T) {
-	o := &Orchestrator{
-		projectPrompts: &models.ProjectPrompts{
-			Recommendations: "custom recs",
-			AnalysisAreas:   map[string]models.AnalysisAreaConfig{},
-		},
-	}
-
-	dpPrompts := domainpack.PromptTemplates{
-		Exploration:     "default exploration",
-		Recommendations: "default recs",
-		AnalysisAreas:   map[string]string{},
-	}
-
-	prompts, _ := o.resolvePrompts(dpPrompts, nil)
-
-	if prompts.Recommendations != "custom recs" {
-		t.Errorf("recommendations = %q, want custom", prompts.Recommendations)
-	}
-}
-
-func TestResolvePrompts_ProjectOverridesAreaPrompt(t *testing.T) {
-	o := &Orchestrator{
-		projectPrompts: &models.ProjectPrompts{
+			Exploration:     "explore prompt",
+			Recommendations: "recommend prompt",
+			BaseContext:     "base context",
 			AnalysisAreas: map[string]models.AnalysisAreaConfig{
 				"churn": {
-					Name:     "Custom Churn",
-					Keywords: []string{"churn"},
-					Prompt:   "my custom churn prompt",
+					Name:     "Churn Risks",
+					Keywords: []string{"churn", "retention"},
+					Prompt:   "analyze churn",
 					IsBase:   true,
 					Enabled:  true,
 					Priority: 1,
@@ -92,20 +40,22 @@ func TestResolvePrompts_ProjectOverridesAreaPrompt(t *testing.T) {
 		},
 	}
 
-	dpPrompts := domainpack.PromptTemplates{
-		AnalysisAreas: map[string]string{"churn": "default churn prompt"},
-	}
-	dpAreas := []domainpack.AnalysisArea{
-		{ID: "churn", Name: "Churn Risks", IsBase: true, Priority: 1},
-	}
+	prompts, areas := o.resolvePrompts()
 
-	prompts, areas := o.resolvePrompts(dpPrompts, dpAreas)
-
-	if prompts.AnalysisAreas["churn"] != "my custom churn prompt" {
-		t.Errorf("churn prompt = %q, want custom", prompts.AnalysisAreas["churn"])
+	if prompts.Exploration != "explore prompt" {
+		t.Errorf("exploration = %q", prompts.Exploration)
 	}
-	if len(areas) != 1 || areas[0].Name != "Custom Churn" {
-		t.Error("should use project area name")
+	if prompts.Recommendations != "recommend prompt" {
+		t.Errorf("recommendations = %q", prompts.Recommendations)
+	}
+	if prompts.BaseContext != "base context" {
+		t.Errorf("base_context = %q", prompts.BaseContext)
+	}
+	if prompts.AnalysisAreas["churn"] != "analyze churn" {
+		t.Errorf("churn prompt = %q", prompts.AnalysisAreas["churn"])
+	}
+	if len(areas) != 1 || areas[0].ID != "churn" {
+		t.Errorf("areas = %v, want [churn]", areas)
 	}
 }
 
@@ -113,23 +63,16 @@ func TestResolvePrompts_DisabledArea(t *testing.T) {
 	o := &Orchestrator{
 		projectPrompts: &models.ProjectPrompts{
 			AnalysisAreas: map[string]models.AnalysisAreaConfig{
-				"churn": {Name: "Churn", Enabled: true, Prompt: "x", Priority: 1},
-				"engagement": {Name: "Engagement", Enabled: false, Prompt: "x", Priority: 2},
+				"churn":      {Name: "Churn", Enabled: true, Prompt: "c", Priority: 1},
+				"engagement": {Name: "Engagement", Enabled: false, Prompt: "e", Priority: 2},
 			},
 		},
 	}
 
-	dpPrompts := domainpack.PromptTemplates{
-		AnalysisAreas: map[string]string{"churn": "c", "engagement": "e"},
-	}
-	dpAreas := []domainpack.AnalysisArea{
-		{ID: "churn"}, {ID: "engagement"},
-	}
-
-	prompts, areas := o.resolvePrompts(dpPrompts, dpAreas)
+	prompts, areas := o.resolvePrompts()
 
 	if _, ok := prompts.AnalysisAreas["engagement"]; ok {
-		t.Error("disabled area should be removed from prompts")
+		t.Error("disabled area should be excluded from prompts")
 	}
 	if len(areas) != 1 || areas[0].ID != "churn" {
 		t.Errorf("areas = %v, want only churn", areas)
@@ -140,24 +83,16 @@ func TestResolvePrompts_CustomArea(t *testing.T) {
 	o := &Orchestrator{
 		projectPrompts: &models.ProjectPrompts{
 			AnalysisAreas: map[string]models.AnalysisAreaConfig{
-				"churn": {Name: "Churn", Enabled: true, Prompt: "c", IsBase: true, Priority: 1},
-				"whales": {Name: "Whale Analysis", Enabled: true, Prompt: "find whales",
-					IsCustom: true, Keywords: []string{"whale", "spend"}, Priority: 10},
+				"churn":  {Name: "Churn", Enabled: true, Prompt: "c", IsBase: true, Priority: 1},
+				"whales": {Name: "Whale Analysis", Enabled: true, Prompt: "find whales", IsCustom: true, Keywords: []string{"whale"}, Priority: 10},
 			},
 		},
 	}
 
-	dpPrompts := domainpack.PromptTemplates{
-		AnalysisAreas: map[string]string{"churn": "c"},
-	}
-	dpAreas := []domainpack.AnalysisArea{
-		{ID: "churn", IsBase: true},
-	}
-
-	prompts, areas := o.resolvePrompts(dpPrompts, dpAreas)
+	prompts, areas := o.resolvePrompts()
 
 	if prompts.AnalysisAreas["whales"] != "find whales" {
-		t.Error("custom area prompt should be added")
+		t.Error("custom area prompt should be included")
 	}
 	found := false
 	for _, a := range areas {
@@ -170,32 +105,25 @@ func TestResolvePrompts_CustomArea(t *testing.T) {
 	}
 }
 
-func TestResolvePrompts_DomainPackAreasPreservedIfNotInProject(t *testing.T) {
+func TestResolvePrompts_MultipleAreas(t *testing.T) {
 	o := &Orchestrator{
 		projectPrompts: &models.ProjectPrompts{
 			AnalysisAreas: map[string]models.AnalysisAreaConfig{
-				"churn": {Name: "Churn", Enabled: true, Prompt: "c", Priority: 1},
-				// engagement is NOT in project — should come from domain pack
+				"churn":        {Name: "Churn", Enabled: true, Prompt: "c", IsBase: true, Priority: 1},
+				"engagement":   {Name: "Engagement", Enabled: true, Prompt: "e", IsBase: true, Priority: 2},
+				"monetization": {Name: "Monetization", Enabled: true, Prompt: "m", IsBase: true, Priority: 3},
+				"levels":       {Name: "Levels", Enabled: true, Prompt: "l", IsBase: false, Priority: 4},
 			},
 		},
 	}
 
-	dpPrompts := domainpack.PromptTemplates{
-		AnalysisAreas: map[string]string{"churn": "c", "engagement": "e"},
-	}
-	dpAreas := []domainpack.AnalysisArea{
-		{ID: "churn", IsBase: true},
-		{ID: "engagement", IsBase: true},
-	}
+	prompts, areas := o.resolvePrompts()
 
-	_, areas := o.resolvePrompts(dpPrompts, dpAreas)
-
-	ids := map[string]bool{}
-	for _, a := range areas {
-		ids[a.ID] = true
+	if len(prompts.AnalysisAreas) != 4 {
+		t.Errorf("prompt areas = %d, want 4", len(prompts.AnalysisAreas))
 	}
-	if !ids["engagement"] {
-		t.Error("domain pack areas not in project should be preserved")
+	if len(areas) != 4 {
+		t.Errorf("areas = %d, want 4", len(areas))
 	}
 }
 

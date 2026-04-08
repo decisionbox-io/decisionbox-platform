@@ -93,16 +93,6 @@ services:
       # - SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/
 
       # ============================================================
-      # DOMAIN PACKS — Prompt & schema files
-      # ============================================================
-
-      # Root directory containing domain packs (gaming/, ecommerce/, etc.)
-      # Values: absolute path to domain-packs directory
-      # Default in Docker: /app/domain-packs (baked into image)
-      # Default in dev: domain-packs/gaming/prompts (relative to working dir)
-      - DOMAIN_PACK_PATH=/app/domain-packs
-
-      # ============================================================
       # AGENT RUNNER — How the API spawns discovery agents
       # ============================================================
 
@@ -203,14 +193,6 @@ services:
       # - SECRET_GCP_PROJECT_ID=my-gcp-project
       # - SECRET_AWS_REGION=us-east-1
       # - SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/
-
-      # ============================================================
-      # DOMAIN PACKS — Prompt & schema files
-      # ============================================================
-
-      # Root directory containing domain packs
-      # Values: absolute path
-      - DOMAIN_PACK_PATH=/app/domain-packs
 
       # ============================================================
       # SERVICE — Operational

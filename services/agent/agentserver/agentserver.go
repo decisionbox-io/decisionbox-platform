@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/domainpack"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
@@ -44,11 +43,6 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"   // registers "redshift"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"  // registers "snowflake"
 
-	// Domain pack registrations
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/ecommerce/go"   // registers "ecommerce"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/gaming/go"      // registers "gaming"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/social/go"      // registers "social"
-	_ "github.com/decisionbox-io/decisionbox/domain-packs/system-test/go" // registers "system-test" (env-gated)
 )
 
 // Run starts the DecisionBox discovery agent.
@@ -372,14 +366,9 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		"category": project.Category,
 	}).Info("Project loaded")
 
-	// Load domain pack
-	pack, err := domainpack.Get(project.Domain)
-	if err != nil {
-		return fmt.Errorf("domain pack not found for %q: %w", project.Domain, err)
-	}
-	dp, ok := domainpack.AsDiscoveryPack(pack)
-	if !ok {
-		return fmt.Errorf("domain pack %q does not support discovery", project.Domain)
+	// Validate project has seeded prompts
+	if project.Prompts == nil {
+		return fmt.Errorf("project %q has no seeded prompts — re-create the project or seed prompts via the API", projectID)
 	}
 
 	secretProvider, err := initSecretProvider(mongoClient)
@@ -433,7 +422,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:        aiClient,
 		Warehouse:       warehouseProvider,
-		DiscoveryPack:   dp,
 		ContextRepo:     contextRepo,
 		DiscoveryRepo:   discoveryRepo,
 		FeedbackRepo:    database.NewFeedbackRepository(db),
