@@ -48,16 +48,17 @@ DecisionBox has three services, one database, and a plugin system for extensibil
 │   - Domain pack      │              │  - pricing       │
 │   - Secret provider  │              │  - project_ctx   │
 │   - Prompts          │              │  - debug_logs    │
+│   - Vector store     │              │                  │
 └──────────┬───────────┘              └──────────────────┘
-           │ SQL queries
-           ▼
-┌──────────────────────┐
-│   Data Warehouse     │
-│                      │
-│   BigQuery           │
-│   Amazon Redshift    │
-│   (read-only access) │
-└──────────────────────┘
+           │ SQL queries                    ▲
+           ▼                                │ search
+┌──────────────────────┐              ┌──────────────────┐
+│   Data Warehouse     │              │   Qdrant         │
+│                      │              │   (Vector Store)  │
+│   BigQuery           │              │                  │
+│   Amazon Redshift    │◀─────search──│   Collections:   │
+│   (read-only access) │              │   - insights     │
+└──────────────────────┘              └──────────────────┘
 ```
 
 ## Components
@@ -121,6 +122,16 @@ The only infrastructure dependency. Stores:
 | `discovery_debug_logs` | Detailed debug logs (TTL: 30 days) |
 
 All collections and indexes are created automatically on API startup (idempotent).
+
+### Qdrant (Vector Store)
+
+An optional infrastructure dependency for semantic search and discovery. Stores high-dimensional vector embeddings generated from your data.
+
+- **Storage** — Collection of points (vector + metadata)
+- **Search** — Similarity search (HNSW index)
+- **API** — Both API and Agent connect to Qdrant via gRPC (port 6334)
+
+When `QDRANT_URL` is set, the Agent automatically embeds and indexes insights, allowing the API to perform similarity searches for recommendations and related patterns.
 
 ## Plugin Architecture
 

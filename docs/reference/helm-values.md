@@ -56,6 +56,8 @@ Source code for the charts is in `helm-charts/`.
 | `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |
 | `env.AGENT_SERVICE_ACCOUNT` | string | `decisionbox-agent` | K8s service account for agent Jobs (Workload Identity) |
 | `env.AGENT_JOB_TIMEOUT_HOURS` | string | `6` | Max time to watch agent Jobs |
+| `env.QDRANT_URL` | string | — | Qdrant gRPC URL (e.g., `qdrant:6334`) |
+| `env.QDRANT_API_KEY` | string | — | Qdrant API key (injected via Secret if `qdrant.enabled=true`) |
 | `extraEnv` | list | `[]` | Additional env vars as `{name, value}` pairs |
 | `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`) |
 
@@ -128,6 +130,21 @@ Source code for the charts is in `helm-charts/`.
 When `mongodb.enabled=true`, the deployment includes an init container that waits for MongoDB to be ready. The MongoDB URI is auto-computed from the chart values.
 
 For production, set `mongodb.enabled=false` and provide `env.MONGODB_URI` pointing to your MongoDB instance (Atlas or self-hosted).
+
+### Vector Search (Qdrant)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `qdrant.enabled` | bool | `false` | Enable vector search support (deploys Qdrant subchart) |
+| `qdrant.url` | string | `""` | Qdrant gRPC endpoint (auto-computed if empty) |
+| `qdrant.apiKey` | string | `""` | Optional API key (created as a K8s Secret) |
+
+When `qdrant.enabled=true`, the chart includes the [qdrant-helm](https://qdrant.github.io/qdrant-helm) subchart. If `url` is empty, it is automatically set to `${releaseName}-qdrant:6334`.
+
+#### Qdrant Subchart Config
+You can pass any values to the Qdrant subchart via the `qdrant` key. Common overrides:
+- `qdrant.persistence.size`: Default `2Gi`
+- `qdrant.service.type`: Default `ClusterIP`
 
 ---
 

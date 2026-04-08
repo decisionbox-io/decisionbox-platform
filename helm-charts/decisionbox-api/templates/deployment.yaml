@@ -89,6 +89,17 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if .Values.qdrant.enabled }}
+            - name: QDRANT_URL
+              value: {{ .Values.qdrant.url | default (printf "%s-qdrant:6334" (include "decisionbox-api.fullname" .)) | quote }}
+            {{- if .Values.qdrant.apiKey }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "decisionbox-api.fullname" . }}-qdrant
+                  key: api-key
+            {{- end }}
+            {{- end }}
             {{- if index .Values "mongodb" "enabled" }}
             - name: MONGODB_URI
               {{- if index .Values "mongodb" "auth" "enabled" }}

@@ -1,6 +1,6 @@
 # Setup Wizard
 
-> **Version**: 0.3.0
+> **Version**: 0.4.0
 
 The setup wizard (`terraform/setup.sh`) is an interactive script that provisions cloud infrastructure and deploys DecisionBox in one flow. It handles Terraform configuration, cloud authentication, Kubernetes setup, and Helm deployment.
 
@@ -57,7 +57,7 @@ Each deployment gets its own isolated directory with independent `.terraform/`, 
 ./setup.sh --destroy --project acme-corp --env prod --provider aws
 ```
 
-## 10-Step Flow
+## 11-Step Flow
 
 ### Step 1: Prerequisites
 
@@ -124,7 +124,14 @@ Choose between:
 - Key Vault (optional — for secret storage)
 - IP restriction (optional — restricts HTTP/HTTPS to specified CIDR blocks via NSG rules)
 
-### Step 6: Authentication
+### Step 6: Vector Search (Qdrant)
+
+Configure optional vector search support:
+- **Enable Vector Search** (true/false) — enables semantic discovery and recommendations
+- **Qdrant URL** — gRPC endpoint (e.g., `qdrant-service:6334`)
+- **Qdrant API Key** (optional) — for secured Qdrant instances
+
+### Step 7: Authentication
 
 **GCP** — choose how Terraform authenticates:
 
@@ -144,7 +151,7 @@ Choose between:
 - **Service principal:** Provide tenant ID, client ID, and client secret. Sets `ARM_*` environment variables.
 - Verifies identity via `az account show`.
 
-### Step 7: Terraform State
+### Step 8: Terraform State
 
 **GCP:** Configure a GCS bucket for remote state:
 - Bucket name (default: `{project-id}-terraform-state`)
@@ -164,11 +171,11 @@ Choose between:
 - State key (default: `prod.terraform.tfstate`)
 - Auto-creates the resource group, storage account, and container if they don't exist
 
-### Step 8: Review
+### Step 9: Review
 
 Displays all collected configuration for review before proceeding, including project name, environment, deployment directory, and IP allowlist (if configured). Type `back` to change any value.
 
-### Step 9: Generate Config Files
+### Step 10: Generate Config Files
 
 Creates the deployment directory (if new) by copying template files from `terraform/{cloud}/prod/` and rewriting the module source path. Then generates:
 
@@ -188,7 +195,7 @@ allowed_ip_ranges   = ["203.0.113.0/24"]
 
 **`{base}/{project}/{cloud}/{env}/values-secrets.yaml`** — Helm values with secret provider config.
 
-### Step 10: Terraform & Deploy
+### Step 11: Terraform & Deploy
 
 1. **Terraform init** — initializes with remote backend (spinner + elapsed time)
 2. **Terraform plan** — shows changes, prompts for approval
@@ -200,7 +207,7 @@ allowed_ip_ranges   = ["203.0.113.0/24"]
 
 ## Navigation
 
-Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-8 support back navigation. Steps 9-10 are sequential.
+Type `back` at any prompt to return to the previous step. The `(back)` hint is shown on every prompt. Steps 2-9 support back navigation. Steps 10-11 are sequential.
 
 ## Resume Mode
 
@@ -217,7 +224,7 @@ Resume mode:
 3. Validates the cluster is reachable
 4. Checks if Helm releases already exist (asks before re-deploying)
 5. Automatically adds Bitnami Helm repo if missing
-6. Runs `helm dependency build` before deploying
+6. Runs `helm dependency update` before deploying
 7. On failure, suggests `./setup.sh --resume` again
 
 ## Dry Run

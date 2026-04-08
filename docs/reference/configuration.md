@@ -36,6 +36,15 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Increased from 120s because large prompts on Opus-class models need more time. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
+### Vector Search (Qdrant)
+
+The agent uses Qdrant to store and index embeddings during the discovery process.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector indexing is disabled. |
+| `QDRANT_API_KEY` | *(empty)* | Optional API key for authenticated Qdrant instances. |
+
 ### Operational
 
 | Variable | Default | Description |
@@ -85,6 +94,15 @@ Same variables as the agent — the API reads secrets to display masked values i
 | `SECRET_GCP_PROJECT_ID` | *(empty)* | Same as agent. |
 | `SECRET_AWS_REGION` | `us-east-1` | Same as agent. |
 | `SECRET_AZURE_VAULT_URL` | *(empty)* | Same as agent. |
+
+### Vector Search (Qdrant)
+
+The API uses Qdrant to perform semantic searches and retrieval of indexed data.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector search is disabled. |
+| `QDRANT_API_KEY` | *(empty)* | Optional API key. |
 
 ### Agent Runner
 

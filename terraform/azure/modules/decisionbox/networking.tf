@@ -80,7 +80,7 @@ resource "azurerm_network_security_rule" "allow_lb_probes" {
 # Allow HTTP/HTTPS ingress — unrestricted (when allowed_ip_ranges is empty)
 resource "azurerm_network_security_rule" "allow_http" {
   count                       = var.create_vnet && var.enable_nsg && length(var.allowed_ip_ranges) == 0 ? 1 : 0
-  name                        = "allow-http-https"
+  name                        = "allow-http-https-any"
   priority                    = 200
   direction                   = "Inbound"
   access                      = "Allow"
@@ -96,7 +96,7 @@ resource "azurerm_network_security_rule" "allow_http" {
 # Allow HTTP/HTTPS ingress — restricted to specified CIDRs
 resource "azurerm_network_security_rule" "allow_http_restricted" {
   count                       = var.create_vnet && var.enable_nsg && length(var.allowed_ip_ranges) > 0 ? 1 : 0
-  name                        = "allow-http-https"
+  name                        = "allow-http-https-restricted"
   priority                    = 200
   direction                   = "Inbound"
   access                      = "Allow"
