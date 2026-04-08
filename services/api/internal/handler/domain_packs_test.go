@@ -298,13 +298,16 @@ func TestDomainPacksHandler_Export_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	// Verify portable format
-	var portable struct {
-		Format        string          `json:"format"`
-		FormatVersion int             `json:"format_version"`
-		Pack          models.DomainPack `json:"pack"`
+	// Response is wrapped in {"data": ...} by writeJSON
+	var resp struct {
+		Data struct {
+			Format        string            `json:"format"`
+			FormatVersion int               `json:"format_version"`
+			Pack          models.DomainPack `json:"pack"`
+		} `json:"data"`
 	}
-	json.NewDecoder(w.Body).Decode(&portable)
+	json.NewDecoder(w.Body).Decode(&resp)
+	portable := resp.Data
 
 	if portable.Format != "decisionbox-domain-pack" {
 		t.Errorf("format = %q", portable.Format)

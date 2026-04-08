@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
@@ -176,9 +175,5 @@ func (h *DomainPacksHandler) Export(w http.ResponseWriter, r *http.Request) {
 		Pack:          exportPack,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename="+slug+".json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	enc.Encode(portable) //nolint:errcheck // response writer
+	writeJSON(w, http.StatusOK, portable)
 }
