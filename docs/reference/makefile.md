@@ -1,6 +1,6 @@
 # Makefile Targets Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 All common commands are available via `make`. Run `make help` to see the full list.
 
@@ -72,7 +72,7 @@ Tests skip gracefully when credentials are not set.
 # Start MongoDB
 docker compose up -d mongodb
 
-# Terminal 1: API (auto-sets DOMAIN_PACK_PATH)
+# Terminal 1: API
 make dev-api
 
 # Terminal 2: Dashboard

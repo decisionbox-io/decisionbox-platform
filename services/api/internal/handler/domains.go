@@ -138,10 +138,11 @@ func (h *DomainsHandler) GetAnalysisAreas(w http.ResponseWriter, r *http.Request
 }
 
 // mergeProfileSchema merges base + category profile schemas.
+// Returns a shallow copy to avoid mutating the pack's stored data.
 func mergeProfileSchema(pack *models.DomainPack, category string) map[string]interface{} {
 	base := pack.ProfileSchema.Base
 	if base == nil {
-		base = map[string]interface{}{}
+		return map[string]interface{}{}
 	}
 
 	if category == "" {
@@ -153,14 +154,25 @@ func mergeProfileSchema(pack *models.DomainPack, category string) map[string]int
 		return base
 	}
 
-	// Merge category properties into base
 	baseProps, _ := base["properties"].(map[string]interface{})
 	catProps, _ := catSchema["properties"].(map[string]interface{})
-	if baseProps != nil && catProps != nil {
-		for k, v := range catProps {
-			baseProps[k] = v
-		}
+	if baseProps == nil || catProps == nil {
+		return base
 	}
 
-	return base
+	// Copy base to avoid mutating the stored pack
+	merged := make(map[string]interface{}, len(base))
+	for k, v := range base {
+		merged[k] = v
+	}
+	mergedProps := make(map[string]interface{}, len(baseProps)+len(catProps))
+	for k, v := range baseProps {
+		mergedProps[k] = v
+	}
+	for k, v := range catProps {
+		mergedProps[k] = v
+	}
+	merged["properties"] = mergedProps
+
+	return merged
 }

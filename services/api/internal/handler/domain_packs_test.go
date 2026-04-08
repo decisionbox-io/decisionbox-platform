@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -122,7 +123,7 @@ func TestDomainPacksHandler_Create_Success(t *testing.T) {
 	}
 
 	// Verify stored
-	stored, _ := repo.GetBySlug(nil, "fintech")
+	stored, _ := repo.GetBySlug(context.Background(), "fintech")
 	if stored == nil {
 		t.Fatal("pack should be stored")
 	}
@@ -227,7 +228,7 @@ func TestDomainPacksHandler_Delete_Success(t *testing.T) {
 	}
 
 	// Verify deleted
-	stored, _ := repo.GetBySlug(nil, "gaming")
+	stored, _ := repo.GetBySlug(context.Background(), "gaming")
 	if stored != nil {
 		t.Error("pack should be deleted")
 	}
@@ -789,15 +790,15 @@ func TestDomainsHandler_GetAnalysisAreas_EmptyCategory(t *testing.T) {
 
 func TestSeedBuiltInPacks_SeedsFromEmbed(t *testing.T) {
 	repo := newMockDomainPackRepo()
-	SeedBuiltInPacks(nil, repo)
+	SeedBuiltInPacks(context.Background(), repo)
 
-	packs, _ := repo.List(nil, false)
+	packs, _ := repo.List(context.Background(), false)
 	if len(packs) == 0 {
 		t.Fatal("should have seeded at least one pack from embedded JSON")
 	}
 
 	// Check that gaming pack was seeded
-	gaming, _ := repo.GetBySlug(nil, "gaming")
+	gaming, _ := repo.GetBySlug(context.Background(), "gaming")
 	if gaming == nil {
 		t.Fatal("gaming pack should be seeded")
 	}
@@ -817,10 +818,10 @@ func TestSeedBuiltInPacks_SkipsExisting(t *testing.T) {
 	customGaming.Name = "My Custom Gaming"
 	repo.add(customGaming)
 
-	SeedBuiltInPacks(nil, repo)
+	SeedBuiltInPacks(context.Background(), repo)
 
 	// The custom pack should NOT be overwritten
-	gaming, _ := repo.GetBySlug(nil, "gaming")
+	gaming, _ := repo.GetBySlug(context.Background(), "gaming")
 	if gaming.Name != "My Custom Gaming" {
 		t.Errorf("name = %q, want 'My Custom Gaming' (should not overwrite)", gaming.Name)
 	}

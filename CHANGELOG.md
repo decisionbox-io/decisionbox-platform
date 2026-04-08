@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Domain packs are now dynamic** -- stored in MongoDB instead of compiled Go code. Create, edit, import, and export domain packs from the dashboard without code changes.
+- Removed `DOMAIN_PACK_PATH` environment variable -- domain packs no longer read from filesystem.
+- Agent no longer depends on domain pack code -- reads prompts entirely from project configuration.
+- New API endpoints: CRUD at `/api/v1/domain-packs`, import/export with portable JSON format.
+- Dashboard: Domain Packs management page with markdown prompt editor.
+- Built-in packs (gaming, ecommerce, social) seeded from embedded JSON on first startup.
+
+### Removed
+
+- Removed all Go code from `domain-packs/*/go/` directories.
+- Removed `libs/go-common/domainpack` package (registry, interfaces).
+- Removed domain pack blank imports from agent and API server.
+
 ## [0.3.0] - 2026-04-06
 
 ### Added

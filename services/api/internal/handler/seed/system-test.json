@@ -6,7 +6,7 @@
     "name": "System Test",
     "description": "Diagnostic domain pack for testing warehouse connectivity, schema discovery, SQL dialect support, and data type mapping",
     "version": "1.0.0",
-    "is_published": true,
+    "is_published": false,
     "categories": [
       {
         "id": "quick",

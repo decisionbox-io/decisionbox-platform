@@ -2,11 +2,15 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 )
+
+// maxDomainPackBodySize limits request body for domain pack create/update/import (2MB).
+const maxDomainPackBodySize = 2 * 1024 * 1024
 
 // DomainPacksHandler handles domain pack CRUD endpoints.
 type DomainPacksHandler struct {
@@ -49,6 +53,8 @@ func (h *DomainPacksHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Create creates a new domain pack.
 // POST /api/v1/domain-packs
 func (h *DomainPacksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDomainPackBodySize)
+
 	var pack models.DomainPack
 	if err := decodeJSON(r, &pack); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -61,7 +67,11 @@ func (h *DomainPacksHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.repo.Create(r.Context(), &pack); err != nil {
-		writeError(w, http.StatusConflict, "failed to create domain pack: "+err.Error())
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to create domain pack: "+err.Error())
+		}
 		return
 	}
 
@@ -72,10 +82,15 @@ func (h *DomainPacksHandler) Create(w http.ResponseWriter, r *http.Request) {
 // Update updates a domain pack by slug.
 // PUT /api/v1/domain-packs/{slug}
 func (h *DomainPacksHandler) Update(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDomainPackBodySize)
 	slug := r.PathValue("slug")
 
 	existing, err := h.repo.GetBySlug(r.Context(), slug)
-	if err != nil || existing == nil {
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get domain pack: "+err.Error())
+		return
+	}
+	if existing == nil {
 		writeError(w, http.StatusNotFound, "domain pack not found: "+slug)
 		return
 	}
@@ -99,6 +114,10 @@ func (h *DomainPacksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return the complete pack with preserved fields
+	pack.ID = existing.ID
+	pack.CreatedAt = existing.CreatedAt
+
 	apilog.WithFields(apilog.Fields{"slug": slug}).Info("Domain pack updated")
 	writeJSON(w, http.StatusOK, pack)
 }
@@ -109,7 +128,11 @@ func (h *DomainPacksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 
 	if err := h.repo.Delete(r.Context(), slug); err != nil {
-		writeError(w, http.StatusNotFound, "domain pack not found: "+slug)
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "domain pack not found: "+slug)
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to delete domain pack: "+err.Error())
+		}
 		return
 	}
 
@@ -120,6 +143,8 @@ func (h *DomainPacksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // Import imports a domain pack from portable JSON format.
 // POST /api/v1/domain-packs/import
 func (h *DomainPacksHandler) Import(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxDomainPackBodySize)
+
 	var portable portableFormat
 	if err := decodeJSON(r, &portable); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -138,7 +163,11 @@ func (h *DomainPacksHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.repo.Create(r.Context(), pack); err != nil {
-		writeError(w, http.StatusConflict, "failed to import domain pack: "+err.Error())
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to import domain pack: "+err.Error())
+		}
 		return
 	}
 

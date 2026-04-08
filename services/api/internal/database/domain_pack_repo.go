@@ -112,21 +112,3 @@ func (r *DomainPackRepository) Delete(ctx context.Context, slug string) error {
 	return nil
 }
 
-// Upsert creates or updates a domain pack by slug. Used for seeding built-in packs.
-func (r *DomainPackRepository) Upsert(ctx context.Context, pack *models.DomainPack) error {
-	now := time.Now()
-	pack.UpdatedAt = now
-
-	filter := bson.M{"slug": pack.Slug}
-	update := bson.M{
-		"$set":         pack,
-		"$setOnInsert": bson.M{"created_at": now},
-	}
-	opts := options.Update().SetUpsert(true)
-
-	_, err := r.col.UpdateOne(ctx, filter, update, opts)
-	if err != nil {
-		return fmt.Errorf("upsert domain pack %q: %w", pack.Slug, err)
-	}
-	return nil
-}

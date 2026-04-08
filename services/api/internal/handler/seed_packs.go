@@ -5,12 +5,16 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/models"
 )
+
+var slugRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 
 //go:embed seed/*.json
 var seedFS embed.FS
@@ -25,6 +29,10 @@ type portableFormat struct {
 // SeedBuiltInPacks loads built-in domain packs from embedded JSON files
 // into MongoDB if they don't already exist. Safe to call on every startup.
 func SeedBuiltInPacks(ctx context.Context, repo database.DomainPackRepo) {
+	seedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ctx = seedCtx
+
 	entries, err := seedFS.ReadDir("seed")
 	if err != nil {
 		apilog.WithError(err).Warn("Failed to read seed directory")
@@ -78,6 +86,9 @@ func SeedBuiltInPacks(ctx context.Context, repo database.DomainPackRepo) {
 func ValidateDomainPack(pack *models.DomainPack) error {
 	if pack.Slug == "" {
 		return fmt.Errorf("slug is required")
+	}
+	if len(pack.Slug) < 2 || !slugRegexp.MatchString(pack.Slug) {
+		return fmt.Errorf("slug must be lowercase alphanumeric with hyphens (e.g. 'gaming', 'e-commerce')")
 	}
 	if pack.Name == "" {
 		return fmt.Errorf("name is required")
