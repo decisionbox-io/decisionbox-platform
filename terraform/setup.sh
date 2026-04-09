@@ -1664,12 +1664,26 @@ do_helm_deploy() {
   # Deploy Dashboard
   spinner_start "Deploying Dashboard..."
   DASH_ARGS=(helm upgrade --install decisionbox-dashboard "$DASH_DIR" -n "$K8S_NS" --create-namespace -f "${DASH_DIR}/values.yaml" --set "namespace=${K8S_NS}")
-  if [[ "$CLOUD" == "aws" ]]; then
+  if [[ "$CLOUD" == "gcp" ]]; then
+    # Attach Cloud Armor security policy via BackendConfig if IP restriction is configured
+    ARMOR_POLICY=$(terraform -chdir="$TF_DIR" output -raw security_policy_name 2>/dev/null || echo "")
+    if [[ -n "$ARMOR_POLICY" ]]; then
+      DASH_ARGS+=(
+        --set "cloudArmor.enabled=true"
+        --set "cloudArmor.securityPolicy=${ARMOR_POLICY}"
+      )
+    fi
+  elif [[ "$CLOUD" == "aws" ]]; then
     DASH_ARGS+=(
       --set "ingress.ingressClassName=alb"
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
     )
+    # Attach IP allowlist security group to ALB if IP restriction is configured
+    ALB_SG_ID=$(terraform -chdir="$TF_DIR" output -raw ip_allowlist_security_group_id 2>/dev/null || echo "")
+    if [[ -n "$ALB_SG_ID" ]]; then
+      DASH_ARGS+=(--set "ingress.annotations.alb\.ingress\.kubernetes\.io/security-groups=${ALB_SG_ID}")
+    fi
   elif [[ "$CLOUD" == "azure" ]]; then
     DASH_ARGS+=(
       --set "ingress.ingressClassName=webapprouting.kubernetes.azure.com"

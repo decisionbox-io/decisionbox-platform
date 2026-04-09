@@ -93,3 +93,10 @@ ingress:
   tlsSecretName: ""
   pathType: Prefix
   path: /
+
+# GCP Cloud Armor — attaches a security policy to the GCE backend service
+# via BackendConfig. Set securityPolicy to the Cloud Armor policy name from
+# Terraform output (security_policy_name).
+cloudArmor:
+  enabled: false
+  securityPolicy: ""

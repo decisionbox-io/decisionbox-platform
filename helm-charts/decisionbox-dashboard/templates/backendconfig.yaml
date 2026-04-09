@@ -1,0 +1,12 @@
+{{- if .Values.cloudArmor.enabled }}
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "decisionbox-dashboard.fullname" . }}-ip-allowlist
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "decisionbox-dashboard.labels" . | nindent 4 }}
+spec:
+  securityPolicy:
+    name: {{ .Values.cloudArmor.securityPolicy }}
+{{- end }}
