@@ -1679,10 +1679,11 @@ do_helm_deploy() {
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing"
       --set "ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip"
     )
-    # Attach IP allowlist security group to ALB if IP restriction is configured
-    ALB_SG_ID=$(terraform -chdir="$TF_DIR" output -raw ip_allowlist_security_group_id 2>/dev/null || echo "")
-    if [[ -n "$ALB_SG_ID" ]]; then
-      DASH_ARGS+=(--set "ingress.annotations.alb\.ingress\.kubernetes\.io/security-groups=${ALB_SG_ID}")
+    # Restrict ALB inbound traffic to allowed CIDRs if IP restriction is configured.
+    # Uses inbound-cidrs (not security-groups) so the controller keeps managing
+    # its own backend SG rules for ALB-to-pod connectivity.
+    if [[ -n "${ALLOWED_IP_RANGES:-}" ]]; then
+      DASH_ARGS+=(--set "ingress.annotations.alb\.ingress\.kubernetes\.io/inbound-cidrs=${ALLOWED_IP_RANGES}")
     fi
   elif [[ "$CLOUD" == "azure" ]]; then
     DASH_ARGS+=(
