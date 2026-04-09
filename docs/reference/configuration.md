@@ -45,6 +45,14 @@ The agent uses Qdrant to store and index embeddings during the discovery process
 | `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector indexing is disabled. |
 | `QDRANT_API_KEY` | *(empty)* | Optional API key for authenticated Qdrant instances. |
 
+### Telemetry
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEMETRY_ENABLED` | `true` | Enable anonymous usage telemetry. Set to `false` to disable. See [Telemetry](telemetry.md) for details. |
+| `DO_NOT_TRACK` | *(empty)* | Set to `1` to disable telemetry. Follows the [Console Do Not Track](https://consoledonottrack.com/) standard. |
+| `TELEMETRY_ENDPOINT` | `https://telemetry.decisionbox.io/v1/events` | Telemetry collection endpoint. Override for self-hosted collection. |
+
 ### Operational
 
 | Variable | Default | Description |
@@ -126,6 +134,10 @@ The API spawns the agent for each discovery run. Two modes:
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
 | `AGENT_MEMORY_LIMIT` | `1Gi` | Memory limit for agent containers. |
 | `AGENT_JOB_TIMEOUT_HOURS` | `6` | Maximum time (hours) to watch a K8s Job before giving up. Increase for very large datasets. |
+
+### Telemetry
+
+Same variables as the agent — see the [Agent Telemetry](#telemetry) section above.
 
 ### Operational
 

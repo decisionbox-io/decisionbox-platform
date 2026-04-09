@@ -582,6 +582,19 @@ do_step_1_prerequisites() {
 
   echo ""
   ok "All prerequisites met"
+
+  # Telemetry notice
+  echo ""
+  info "DecisionBox collects anonymous usage telemetry to help improve the product."
+  dim "What is collected: version, OS, provider types, event counts (no PII, no query data)."
+  dim "Details: https://github.com/decisionbox-io/decisionbox-platform/blob/main/TELEMETRY.md"
+  echo ""
+  prompt_boolean TELEMETRY_ENABLED "Enable anonymous telemetry?" "${TELEMETRY_ENABLED:-true}"
+  if [[ "$TELEMETRY_ENABLED" == "true" ]]; then
+    ok "Telemetry enabled"
+  else
+    ok "Telemetry disabled"
+  fi
 }
 
 do_step_2_deployment() {
@@ -1166,6 +1179,9 @@ do_step_9_review() {
     display_ip_restriction
   fi
 
+  # Telemetry
+  echo -e "  ${BOLD}Telemetry:${NC}          ${TELEMETRY_ENABLED:-true}"
+
   # Vector search
   echo ""
   do_step_6_vector_search_review
@@ -1303,6 +1319,7 @@ env:
   SECRET_NAMESPACE: "${SECRET_NS}"
   SECRET_GCP_PROJECT_ID: "${PROJECT_ID}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}
@@ -1328,6 +1345,7 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}
@@ -1401,6 +1419,7 @@ env:
   SECRET_NAMESPACE: "${SECRET_NS}"
   SECRET_AWS_REGION: "${REGION}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}
@@ -1428,6 +1447,7 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}
@@ -1509,6 +1529,7 @@ env:
   SECRET_PROVIDER: "azure"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}
@@ -1534,6 +1555,7 @@ env:
   SECRET_PROVIDER: "mongodb"
   SECRET_NAMESPACE: "${SECRET_NS}"
   AGENT_SERVICE_ACCOUNT: "${K8S_AGENT_SA}"
+  TELEMETRY_ENABLED: "${TELEMETRY_ENABLED}"
 
 qdrant:
   enabled: ${ENABLE_QDRANT:-false}

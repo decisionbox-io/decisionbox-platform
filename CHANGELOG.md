@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymous usage telemetry** -- Collects anonymous, privacy-respecting usage metrics (version, OS, provider types, event counts). Enabled by default, disable with `TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. No PII, no query content, no credentials. See [TELEMETRY.md](TELEMETRY.md) for full details.
+
 ### Changed
 
 - **Domain packs are now dynamic** -- stored in MongoDB instead of compiled Go code. Create, edit, import, and export domain packs from the dashboard without code changes.

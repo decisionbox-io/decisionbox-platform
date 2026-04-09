@@ -149,6 +149,15 @@ services:
       - AGENT_JOB_TIMEOUT_HOURS=6
 
       # ============================================================
+      # TELEMETRY — Anonymous usage metrics
+      # ============================================================
+
+      # Enable anonymous telemetry (see TELEMETRY.md for details)
+      # Values: true | false
+      # Also respects DO_NOT_TRACK=1 (https://consoledonottrack.com/)
+      - TELEMETRY_ENABLED=true
+
+      # ============================================================
       # SERVICE — Operational
       # ============================================================
 
@@ -220,6 +229,13 @@ services:
       # - SECRET_GCP_PROJECT_ID=my-gcp-project
       # - SECRET_AWS_REGION=us-east-1
       # - SECRET_AZURE_VAULT_URL=https://my-vault.vault.azure.net/
+
+      # ============================================================
+      # TELEMETRY — Anonymous usage metrics
+      # ============================================================
+
+      # Same as API — agent shares the install ID
+      - TELEMETRY_ENABLED=true
 
       # ============================================================
       # SERVICE — Operational

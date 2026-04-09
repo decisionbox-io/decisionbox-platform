@@ -190,8 +190,13 @@ Key environment variables:
 | `SECRET_PROVIDER` | `mongodb` | Secret storage: `mongodb`, `gcp`, `aws` |
 | `RUNNER_MODE` | `subprocess` | Agent runner: `subprocess`, `kubernetes` |
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call |
+| `TELEMETRY_ENABLED` | `true` | Anonymous usage telemetry ([details](TELEMETRY.md)) |
 
 Full reference: [Configuration](https://decisionbox.io/docs/reference/configuration).
+
+## Telemetry
+
+DecisionBox collects anonymous usage telemetry to help improve the product. No PII, query content, or credentials are ever collected. Disable with `TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. See [TELEMETRY.md](TELEMETRY.md) for full details.
 
 ## Documentation
 

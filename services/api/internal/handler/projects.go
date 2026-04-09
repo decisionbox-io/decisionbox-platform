@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
@@ -69,6 +70,8 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		"llm":        p.LLM.Provider,
 		"warehouse":  p.Warehouse.Provider,
 	}).Info("Project created")
+
+	telemetry.TrackProjectCreated(p.Warehouse.Provider, p.LLM.Provider, p.Domain)
 
 	writeJSON(w, http.StatusCreated, p)
 }

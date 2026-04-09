@@ -18,6 +18,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
@@ -54,6 +55,9 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"
 )
+
+// Version is the current DecisionBox version. Set at build time or updated on release.
+var Version = "0.4.0-dev"
 
 // Run starts the DecisionBox API server.
 // Plugins (auth providers, etc.) can register via init() in their
@@ -96,6 +100,14 @@ func Run() {
 		os.Exit(1) //nolint:gocritic // startup failure, explicit disconnect above
 	}
 	apilog.Info("Database initialized")
+
+	// Telemetry (anonymous usage metrics — disable with TELEMETRY_ENABLED=false)
+	installID := telemetry.GetOrCreateInstallID(ctx, mongoClient.Database())
+	telemetry.Init(installID, Version, "api")
+	defer telemetry.Shutdown()
+	if telemetry.IsEnabled() {
+		apilog.Info("Anonymous telemetry enabled (disable: TELEMETRY_ENABLED=false)")
+	}
 
 	// Health checker with MongoDB dependency
 	healthHandler := health.NewHandler(database.NewMongoHealthChecker(db))
@@ -175,8 +187,16 @@ func Run() {
 		}
 	}()
 
+	_, isNoAuth := authProvider.(*auth.NoAuthProvider)
+	telemetry.TrackServerStarted(map[string]any{
+		"deployment_method": deploymentMethod(),
+		"auth_enabled":      !isNoAuth,
+		"vector_search":     qdrantProvider != nil,
+	})
+
 	<-done
 	apilog.Info("Shutdown signal received, gracefully stopping")
+	telemetry.TrackServerStopped()
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -218,4 +238,16 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 			apilog.WithError(err).Warn("Failed to close Qdrant client")
 		}
 	}, nil
+}
+
+// deploymentMethod infers the deployment method from environment signals.
+func deploymentMethod() string {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return "kubernetes"
+	}
+	// Docker Compose sets hostname to the service name
+	if os.Getenv("HOSTNAME") != "" && os.Getenv("MONGODB_URI") == "mongodb://mongodb:27017" {
+		return "docker-compose"
+	}
+	return "binary"
 }
