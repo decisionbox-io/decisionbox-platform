@@ -268,6 +268,183 @@ func TestShutdown_NilClientIsNoop(t *testing.T) {
 	Shutdown() // Should not panic
 }
 
+func TestShutdown_FlushesAndStops(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+
+	var received Batch
+	var mu sync.Mutex
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	t.Setenv("TELEMETRY_ENDPOINT", ts.URL)
+
+	Init("shutdown-test", "0.1.0", "test")
+
+	Track("before_shutdown", nil)
+	Shutdown()
+
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received.Events) != 1 {
+		t.Fatalf("expected 1 event flushed on shutdown, got %d", len(received.Events))
+	}
+	if received.Events[0].Name != "before_shutdown" {
+		t.Errorf("expected event 'before_shutdown', got %q", received.Events[0].Name)
+	}
+}
+
+func TestIsEnabled_ReturnsTrueWhenEnabled(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	t.Setenv("TELEMETRY_ENDPOINT", ts.URL)
+
+	Init("test-id", "0.1.0", "test")
+
+	if !IsEnabled() {
+		t.Error("IsEnabled should return true after Init with TELEMETRY_ENABLED=true")
+	}
+}
+
+func TestTrack_AutoFlushOnMaxBatchSize(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+
+	var mu sync.Mutex
+	received := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch Batch
+		_ = json.NewDecoder(r.Body).Decode(&batch)
+		mu.Lock()
+		received += len(batch.Events)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	t.Setenv("TELEMETRY_ENDPOINT", ts.URL)
+
+	Init("batch-test", "0.1.0", "test")
+
+	// Track exactly maxBatchSize events to trigger auto-flush
+	for i := 0; i < maxBatchSize; i++ {
+		Track("batch_event", map[string]any{"i": i})
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if received != maxBatchSize {
+		t.Errorf("expected %d events auto-flushed, got %d", maxBatchSize, received)
+	}
+
+	// Buffer should be empty after auto-flush
+	globalClient.mu.Lock()
+	remaining := len(globalClient.events)
+	globalClient.mu.Unlock()
+
+	if remaining != 0 {
+		t.Errorf("expected 0 events remaining after auto-flush, got %d", remaining)
+	}
+}
+
+func TestFlushLoop_TickerFlushesPeriodically(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+	t.Setenv("TELEMETRY_FLUSH_INTERVAL", "100ms")
+
+	var mu sync.Mutex
+	received := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch Batch
+		_ = json.NewDecoder(r.Body).Decode(&batch)
+		mu.Lock()
+		received += len(batch.Events)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	t.Setenv("TELEMETRY_ENDPOINT", ts.URL)
+
+	Init("ticker-test", "0.1.0", "test")
+
+	Track("tick_event", nil)
+
+	// Wait for the ticker to fire (interval is 100ms)
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if received != 1 {
+		t.Errorf("expected 1 event flushed by ticker, got %d", received)
+	}
+}
+
+func TestSend_NetworkErrorSilentlyIgnored(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+	// Point to an unreachable endpoint
+	t.Setenv("TELEMETRY_ENDPOINT", "http://127.0.0.1:1")
+
+	Init("net-err-test", "0.1.0", "test")
+
+	Track("should_not_crash", nil)
+	globalClient.flush()
+
+	// Wait for the async send to complete (or fail silently)
+	time.Sleep(200 * time.Millisecond)
+
+	// No panic, no error — test passes if we get here
+}
+
+func TestSend_InvalidEndpointSilentlyIgnored(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+	t.Setenv("TELEMETRY_ENDPOINT", "://invalid-url")
+
+	Init("bad-url-test", "0.1.0", "test")
+
+	Track("should_not_crash", nil)
+	globalClient.flush()
+
+	time.Sleep(200 * time.Millisecond)
+}
+
 func TestTrackHelpers(t *testing.T) {
 	resetGlobal()
 	defer resetGlobal()
