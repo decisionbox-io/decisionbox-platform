@@ -54,15 +54,16 @@ type Batch struct {
 
 // Client manages telemetry event collection and transmission.
 type Client struct {
-	mu        sync.Mutex
-	enabled   bool
-	installID string
-	version   string
-	service   string
-	endpoint  string
-	events    []Event
-	done      chan struct{}
-	httpClient *http.Client
+	mu            sync.Mutex
+	enabled       bool
+	installID     string
+	version       string
+	service       string
+	endpoint      string
+	flushInterval time.Duration
+	events        []Event
+	done          chan struct{}
+	httpClient    *http.Client
 }
 
 var (
@@ -79,15 +80,18 @@ func Init(installID, version, service string) {
 		enabled := isEnabled()
 		endpoint := config.GetEnvOrDefault("TELEMETRY_ENDPOINT", defaultEndpoint)
 
+		interval := config.GetEnvAsDuration("TELEMETRY_FLUSH_INTERVAL", flushInterval)
+
 		globalClient = &Client{
-			enabled:   enabled,
-			installID: installID,
-			version:   version,
-			service:   service,
-			endpoint:  endpoint,
-			events:    make([]Event, 0, maxBatchSize),
-			done:      make(chan struct{}),
-			httpClient: &http.Client{Timeout: sendTimeout},
+			enabled:       enabled,
+			installID:     installID,
+			version:       version,
+			service:       service,
+			endpoint:      endpoint,
+			flushInterval: interval,
+			events:        make([]Event, 0, maxBatchSize),
+			done:          make(chan struct{}),
+			httpClient:    &http.Client{Timeout: sendTimeout},
 		}
 
 		if enabled {
@@ -137,7 +141,7 @@ func (c *Client) track(name string, properties map[string]any) {
 }
 
 func (c *Client) flushLoop() {
-	ticker := time.NewTicker(flushInterval)
+	ticker := time.NewTicker(c.flushInterval)
 	defer ticker.Stop()
 
 	for {
