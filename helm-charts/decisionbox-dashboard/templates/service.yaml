@@ -5,6 +5,10 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "decisionbox-dashboard.labels" . | nindent 4 }}
+  {{- if .Values.cloudArmor.enabled }}
+  annotations:
+    cloud.google.com/backend-config: '{"default":"{{ include "decisionbox-dashboard.fullname" . }}-ip-allowlist"}'
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   ports:
