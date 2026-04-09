@@ -7,6 +7,7 @@ COPY . .
 RUN npm run build
 
 FROM node:22-alpine
+RUN apk upgrade --no-cache
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
