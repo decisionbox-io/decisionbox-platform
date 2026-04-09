@@ -31,7 +31,7 @@ const (
 	// publicAPIKey is a non-secret key that identifies requests as coming from
 	// a DecisionBox instance. It filters out non-DecisionBox traffic and casual
 	// abuse. This is intentionally public — it's in the source code.
-	publicAPIKey = "dbox_tel_pub_v1_a8f3e2d1c4b5"
+	publicAPIKey = "dbox_tel_pub_v1_a8f3e2d1c4b5" //nolint:gosec // G101: not a credential — intentionally public API key
 )
 
 // Event represents a single telemetry event.
