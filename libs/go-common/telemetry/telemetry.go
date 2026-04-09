@@ -27,6 +27,11 @@ const (
 	flushInterval    = 1 * time.Hour
 	maxBatchSize     = 50
 	sendTimeout      = 10 * time.Second
+
+	// publicAPIKey is a non-secret key that identifies requests as coming from
+	// a DecisionBox instance. It filters out non-DecisionBox traffic and casual
+	// abuse. This is intentionally public — it's in the source code.
+	publicAPIKey = "dbox_tel_pub_v1_a8f3e2d1c4b5"
 )
 
 // Event represents a single telemetry event.
@@ -187,6 +192,7 @@ func (c *Client) send(batch Batch) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", publicAPIKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

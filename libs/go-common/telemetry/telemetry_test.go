@@ -119,10 +119,12 @@ func TestFlush_SendsBatch(t *testing.T) {
 	os.Unsetenv("DO_NOT_TRACK")
 
 	var received Batch
+	var receivedAPIKey string
 	var mu sync.Mutex
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		receivedAPIKey = r.Header.Get("X-API-Key")
 		_ = json.NewDecoder(r.Body).Decode(&received)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -142,6 +144,9 @@ func TestFlush_SendsBatch(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if receivedAPIKey != "dbox_tel_pub_v1_a8f3e2d1c4b5" {
+		t.Errorf("expected X-API-Key header, got %q", receivedAPIKey)
+	}
 	if received.InstallID != "test-install-id" {
 		t.Errorf("expected install_id 'test-install-id', got %q", received.InstallID)
 	}
