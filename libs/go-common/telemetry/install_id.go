@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -44,7 +43,7 @@ func GetOrCreateInstallID(ctx context.Context, db *mongo.Database) string {
 	opts := options.Update().SetUpsert(true)
 	_, err = coll.UpdateOne(ctx, bson.M{"_id": "install"}, bson.M{"$setOnInsert": doc}, opts)
 	if err != nil {
-		log.Printf("[telemetry] failed to persist install ID: %v", err)
+		// Silently return the generated ID — persistence failed but telemetry can still work
 		return id
 	}
 

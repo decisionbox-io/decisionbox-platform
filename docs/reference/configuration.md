@@ -52,6 +52,7 @@ The agent uses Qdrant to store and index embeddings during the discovery process
 | `TELEMETRY_ENABLED` | `true` | Enable anonymous usage telemetry. Set to `false` to disable. See [Telemetry](telemetry.md) for details. |
 | `DO_NOT_TRACK` | *(empty)* | Set to `1` to disable telemetry. Follows the [Console Do Not Track](https://consoledonottrack.com/) standard. |
 | `TELEMETRY_ENDPOINT` | `https://telemetry.decisionbox.io/v1/events` | Telemetry collection endpoint. Override for self-hosted collection. |
+| `TELEMETRY_FLUSH_INTERVAL` | `5m` | How often to send batched telemetry events. Go duration format: `30s`, `5m`, `1h`. |
 
 ### Operational
 

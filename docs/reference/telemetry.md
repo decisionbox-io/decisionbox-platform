@@ -90,7 +90,7 @@ The telemetry code is fully open source:
 - Client library: `libs/go-common/telemetry/`
 - Endpoint: [decisionbox-telemetry-worker](https://github.com/decisionbox-io/decisionbox-telemetry-worker) (Cloudflare Worker + D1)
 
-Events are batched hourly and sent via HTTPS.
+Events are batched every 5 minutes and sent via HTTPS.
 The endpoint URL is configurable via `TELEMETRY_ENDPOINT` (default: `https://telemetry.decisionbox.io/v1/events`).
 
 ## See Also

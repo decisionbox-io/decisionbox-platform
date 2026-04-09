@@ -162,7 +162,8 @@ The telemetry implementation is fully open source:
 - **API integration**: [`services/api/apiserver/apiserver.go`](services/api/apiserver/apiserver.go) -- init, server events
 - **Agent integration**: [`services/agent/agentserver/agentserver.go`](services/agent/agentserver/agentserver.go) -- discovery events
 
-Events are batched in memory and sent every hour (or on shutdown).
+Events are batched in memory and sent every 5 minutes (or on shutdown).
+The flush interval is configurable via `TELEMETRY_FLUSH_INTERVAL` (default: `5m`, Go duration format).
 Network errors are silently ignored -- telemetry never affects application behavior.
 
 ## Install ID

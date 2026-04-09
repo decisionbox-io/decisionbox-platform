@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"runtime"
 	"sync"
@@ -24,7 +23,7 @@ import (
 
 const (
 	defaultEndpoint  = "https://telemetry.decisionbox.io/v1/events"
-	flushInterval    = 1 * time.Hour
+	flushInterval    = 5 * time.Minute
 	maxBatchSize     = 50
 	sendTimeout      = 10 * time.Second
 
@@ -55,6 +54,7 @@ type Batch struct {
 // Client manages telemetry event collection and transmission.
 type Client struct {
 	mu            sync.Mutex
+	wg            sync.WaitGroup
 	enabled       bool
 	installID     string
 	version       string
@@ -177,13 +177,16 @@ func (c *Client) flushLocked() {
 
 	c.events = make([]Event, 0, maxBatchSize)
 
-	go c.send(batch)
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.send(batch)
+	}()
 }
 
 func (c *Client) send(batch Batch) {
 	body, err := json.Marshal(batch)
 	if err != nil {
-		log.Printf("[telemetry] marshal error: %v", err)
 		return
 	}
 
@@ -192,7 +195,6 @@ func (c *Client) send(batch Batch) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[telemetry] request error: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -208,6 +210,7 @@ func (c *Client) send(batch Batch) {
 
 func (c *Client) shutdown() {
 	c.flush()
+	c.wg.Wait()
 	close(c.done)
 }
 

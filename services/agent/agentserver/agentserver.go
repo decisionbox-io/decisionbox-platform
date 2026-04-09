@@ -19,6 +19,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
+	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -56,9 +57,6 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"    // registers "vertex-ai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"       // registers "voyage"
 )
-
-// Version is the current DecisionBox version. Set at build time or updated on release.
-var Version = "0.4.0-dev"
 
 // Run starts the DecisionBox discovery agent.
 // Plugins (warehouse middleware, etc.) can register via init() in their
@@ -444,7 +442,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Initialize telemetry (reuses the same install ID as the API)
 	installID := telemetry.GetOrCreateInstallID(ctx, mongoClient.Database())
-	telemetry.Init(installID, Version, "agent")
+	telemetry.Init(installID, goversion.Version, "agent")
 	defer telemetry.Shutdown()
 
 	// Load project config from MongoDB

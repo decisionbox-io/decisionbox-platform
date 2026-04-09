@@ -20,6 +20,7 @@ import (
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -55,9 +56,6 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"
 )
-
-// Version is the current DecisionBox version. Set at build time or updated on release.
-var Version = "0.4.0-dev"
 
 // Run starts the DecisionBox API server.
 // Plugins (auth providers, etc.) can register via init() in their
@@ -103,7 +101,7 @@ func Run() {
 
 	// Telemetry (anonymous usage metrics — disable with TELEMETRY_ENABLED=false)
 	installID := telemetry.GetOrCreateInstallID(ctx, mongoClient.Database())
-	telemetry.Init(installID, Version, "api")
+	telemetry.Init(installID, goversion.Version, "api")
 	defer telemetry.Shutdown()
 	if telemetry.IsEnabled() {
 		apilog.Info("Anonymous telemetry enabled (disable: TELEMETRY_ENABLED=false)")
@@ -245,9 +243,8 @@ func deploymentMethod() string {
 	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 		return "kubernetes"
 	}
-	// Docker Compose sets hostname to the service name
-	if os.Getenv("HOSTNAME") != "" && os.Getenv("MONGODB_URI") == "mongodb://mongodb:27017" {
-		return "docker-compose"
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "docker"
 	}
 	return "binary"
 }
