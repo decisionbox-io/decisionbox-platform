@@ -59,8 +59,3 @@ output "redshift_iam_enabled" {
   description = "Whether Redshift IAM was enabled"
   value       = var.enable_redshift_iam
 }
-
-output "ip_allowlist_security_group_id" {
-  description = "Security group ID for IP allowlisting (empty if no IP restriction). Attach to ALBs via alb.ingress.kubernetes.io/security-groups annotation."
-  value       = length(var.allowed_ip_ranges) > 0 && var.create_vpc ? aws_security_group.ip_allowlist[0].id : ""
-}
