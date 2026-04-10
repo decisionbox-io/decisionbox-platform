@@ -18,6 +18,8 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
+	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -438,6 +440,11 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	db := database.New(mongoClient)
 
+	// Initialize telemetry (reuses the same install ID as the API)
+	installID := telemetry.GetOrCreateInstallID(ctx, mongoClient.Database())
+	telemetry.Init(installID, goversion.Version, "agent")
+	defer telemetry.Shutdown()
+
 	// Load project config from MongoDB
 	projectRepo := database.NewProjectRepository(db)
 	project, err := projectRepo.GetByID(ctx, projectID)
@@ -584,6 +591,12 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 			Error:       err.Error(),
 			Timestamp:   time.Now(),
 		})
+		telemetry.TrackDiscoveryFailed(
+			project.Warehouse.Provider,
+			project.LLM.Provider,
+			project.Domain,
+			classifyError(err),
+		)
 		return fmt.Errorf("discovery run failed: %w", err)
 	}
 
@@ -607,6 +620,17 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		TopRecommendations: topRecommendationBriefs(result.Recommendations, 3),
 		Timestamp:          time.Now(),
 	})
+
+	telemetry.TrackDiscoveryCompleted(
+		project.Warehouse.Provider,
+		project.LLM.Provider,
+		project.Domain,
+		project.Category,
+		result.Duration.Seconds(),
+		len(result.Insights),
+		len(result.Recommendations),
+		result.TotalSteps,
+	)
 
 	applog.WithFields(applog.Fields{
 		"project_id":      projectID,
@@ -672,4 +696,22 @@ func topRecommendationBriefs(recs []models.Recommendation, limit int) []notify.R
 		}
 	}
 	return briefs
+}
+
+// classifyError returns a coarse error class for telemetry.
+// Never sends the actual error message — only a category.
+func classifyError(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "warehouse") || strings.Contains(msg, "query"):
+		return "warehouse_error"
+	case strings.Contains(msg, "LLM") || strings.Contains(msg, "llm") || strings.Contains(msg, "rate limit"):
+		return "llm_error"
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
+		return "timeout"
+	case strings.Contains(msg, "MongoDB") || strings.Contains(msg, "mongo"):
+		return "database_error"
+	default:
+		return "unknown"
+	}
 }
