@@ -44,8 +44,3 @@ output "redshift_iam_enabled" {
   description = "Whether Redshift IAM was enabled"
   value       = module.decisionbox.redshift_iam_enabled
 }
-
-output "ip_allowlist_security_group_id" {
-  description = "Security group ID for IP allowlisting (empty if not configured)"
-  value       = module.decisionbox.ip_allowlist_security_group_id
-}

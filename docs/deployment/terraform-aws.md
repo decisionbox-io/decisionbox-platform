@@ -226,7 +226,7 @@ Set `region` and `cluster_name` to match your environment.
 | `secret_namespace` | string | `decisionbox` | Secret name prefix for IAM scoping |
 | `enable_bedrock_iam` | bool | `false` | Grant Bedrock InvokeModel access (Agent) |
 | `enable_redshift_iam` | bool | `false` | Grant Redshift Data API read access (Agent) |
-| `allowed_ip_ranges` | list(string) | `[]` | CIDR blocks allowed for HTTP/HTTPS. Empty = unrestricted. Creates a security group for ALB attachment. |
+| `allowed_ip_ranges` | list(string) | `[]` | CIDR blocks allowed for HTTP/HTTPS. Empty = unrestricted. Applied via the `alb.ingress.kubernetes.io/inbound-cidrs` annotation. |
 
 ### Tags
 
