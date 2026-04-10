@@ -19,6 +19,16 @@ entries:
   decisionbox-dashboard:
   - apiVersion: v2
     appVersion: 1.0.0
+    created: "2026-04-10T14:48:35.251992987Z"
+    description: DecisionBox Dashboard
+    digest: a85b7919a769b8317d3d8cdd47bde53f1e286008c5b34781a6cc384825d74070
+    name: decisionbox-dashboard
+    type: application
+    urls:
+    - https://github.com/decisionbox-io/decisionbox-platform/releases/download/helm-decisionbox-dashboard-0.1.1/decisionbox-dashboard-0.1.1.tgz
+    version: 0.1.1
+  - apiVersion: v2
+    appVersion: 1.0.0
     created: "2026-03-19T14:50:17.467967125Z"
     description: DecisionBox Dashboard
     digest: 07c6ef6aaf950e13d2ded603d27ae2832e55f21cd1e040346854b1949b42d86e
@@ -27,4 +37,4 @@ entries:
     urls:
     - https://github.com/decisionbox-io/decisionbox-platform/releases/download/decisionbox-dashboard-0.1.0/decisionbox-dashboard-0.1.0.tgz
     version: 0.1.0
-generated: "2026-03-19T14:50:17.467973164Z"
+generated: "2026-04-10T14:48:35.25200125Z"
