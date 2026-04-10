@@ -20,6 +20,21 @@ containerPort: 3000
 env:
   API_URL: "http://decisionbox-api-service:8080"
 
+# Additional env vars merged with `env` above. Exists so that overlays
+# (e.g., the enterprise auth overlay) can add values without restating the
+# community defaults. Values must be strings — use `extraEnvFrom` for secrets.
+extraEnv: {}
+
+# Mount K8s Secret or ConfigMap references as env vars. Recommended for
+# AUTH_CLIENT_SECRET, NEXTAUTH_SECRET, and any other sensitive dashboard
+# configuration. Each entry is a standard envFrom source.
+#
+# Example:
+#   extraEnvFrom:
+#     - secretRef:
+#         name: decisionbox-dashboard-auth
+extraEnvFrom: []
+
 securityContext:
   runAsNonRoot: true
   runAsUser: 1000
