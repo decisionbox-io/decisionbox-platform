@@ -14,10 +14,6 @@
   <a href="https://decisionbox.io/docs"><img src="https://img.shields.io/badge/docs-decisionbox.io-blue" alt="Docs" /></a>
 </p>
 
-<p align="center">
-  <a href="https://www.producthunt.com/products/decisionbox?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-decisionbox" target="_blank" rel="noopener noreferrer"><img alt="DecisionBox - Autonomous AI Discovery For Your Data — Open Source | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1102341&amp;theme=light&amp;t=1774002189886"></a>
-</p>
-
 **AI-powered data discovery platform.** Connect your data warehouse, run AI agents that explore your data autonomously, and get actionable insights — no pipelines, no SDKs, no setup complexity.
 
 DecisionBox is designed for product managers, analysts, and developers who want to understand their data without writing SQL or building dashboards. Point it at your warehouse, tell it about your product, and let the AI find what matters.
