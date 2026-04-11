@@ -73,12 +73,9 @@ import (
 // When a subcommand is invoked, Run() routes to it and returns without
 // starting the HTTP server.
 func Run() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "backfill-embeddings":
-			backfill.RunBackfillEmbeddings(os.Args[2:])
-			return
-		}
+	if len(os.Args) > 1 && os.Args[1] == "backfill-embeddings" {
+		backfill.RunBackfillEmbeddings(os.Args[2:])
+		return
 	}
 
 	cfg, err := config.Load()
