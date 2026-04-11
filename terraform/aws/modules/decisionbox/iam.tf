@@ -319,15 +319,13 @@ resource "aws_iam_role" "irsa_agent" {
   tags = local.common_tags
 }
 
-# ─── Bedrock IAM (Agent) ──────────────────────────────────────────────────
+# ─── Bedrock IAM (API + Agent) ────────────────────────────────────────────
+# Both roles need Bedrock when the deployment uses the bedrock LLM provider:
+#   - Agent calls Bedrock during discovery runs (SQL generation, analysis).
+#   - API calls Bedrock for /ask synthesis and any other LLM-powered endpoints.
 
-resource "aws_iam_role_policy" "bedrock" {
-  count = var.enable_bedrock_iam ? 1 : 0
-
-  name = "bedrock-invoke"
-  role = aws_iam_role.irsa_agent.id
-
-  policy = jsonencode({
+locals {
+  bedrock_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Sid    = "BedrockInvoke"
@@ -342,4 +340,20 @@ resource "aws_iam_role_policy" "bedrock" {
       ]
     }]
   })
+}
+
+resource "aws_iam_role_policy" "bedrock_api" {
+  count = var.enable_bedrock_iam ? 1 : 0
+
+  name   = "bedrock-invoke"
+  role   = aws_iam_role.irsa_api.id
+  policy = local.bedrock_policy
+}
+
+resource "aws_iam_role_policy" "bedrock_agent" {
+  count = var.enable_bedrock_iam ? 1 : 0
+
+  name   = "bedrock-invoke"
+  role   = aws_iam_role.irsa_agent.id
+  policy = local.bedrock_policy
 }

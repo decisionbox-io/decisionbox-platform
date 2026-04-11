@@ -203,7 +203,7 @@ variable "secret_namespace" {
 
 # Optional: Bedrock IAM
 variable "enable_bedrock_iam" {
-  description = "Grant Bedrock InvokeModel access to the agent IRSA role"
+  description = "Grant Bedrock InvokeModel access to the API and agent IRSA roles. The agent uses Bedrock during discovery runs; the API uses it for /ask synthesis and other LLM-powered endpoints. Both need the policy when the deployment's LLM provider is bedrock."
   type        = bool
   default     = false
 }

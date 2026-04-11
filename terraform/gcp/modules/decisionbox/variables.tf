@@ -359,7 +359,7 @@ variable "enable_bigquery_iam" {
 
 # Optional: Vertex AI IAM
 variable "enable_vertex_ai_iam" {
-  description = "Grant Vertex AI access to the agent SA for LLM calls (Claude via Vertex, Gemini)"
+  description = "Grant Vertex AI access (roles/aiplatform.user) to BOTH the API and agent Workload Identity SAs. The agent uses Vertex during discovery runs; the API uses it for /ask synthesis and other LLM-powered endpoints. Both need the role when the deployment's LLM provider is vertex-ai."
   type        = bool
   default     = false
 }
