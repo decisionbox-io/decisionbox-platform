@@ -22,6 +22,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -57,10 +58,26 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/voyage"
 )
 
-// Run starts the DecisionBox API server.
+// Run starts the DecisionBox API server, OR dispatches a CLI subcommand
+// if one is provided as the first argument.
+//
 // Plugins (auth providers, etc.) can register via init() in their
 // packages — import them with blank imports before calling Run().
+//
+// Subcommands handled here so any caller of Run() (community main.go,
+// enterprise cmd/api/main.go, future custom builds) inherits CLI tooling
+// without per-binary main.go drift:
+//
+//	decisionbox-api backfill-embeddings [flags]
+//
+// When a subcommand is invoked, Run() routes to it and returns without
+// starting the HTTP server.
 func Run() {
+	if len(os.Args) > 1 && os.Args[1] == "backfill-embeddings" {
+		backfill.RunBackfillEmbeddings(os.Args[2:])
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		apilog.WithError(err).Error("Failed to load config")
