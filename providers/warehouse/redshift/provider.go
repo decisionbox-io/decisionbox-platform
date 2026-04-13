@@ -14,6 +14,7 @@ package redshift
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"strconv"
 	"strings"
@@ -28,6 +29,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
+
+//go:embed prompts/sql_fix.md
+var sqlFixPrompt string
 
 func init() {
 	gowarehouse.RegisterWithMeta("redshift", func(cfg gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
@@ -371,7 +375,7 @@ func (p *RedshiftProvider) SQLDialect() string {
 }
 
 func (p *RedshiftProvider) SQLFixPrompt() string {
-	return ""
+	return sqlFixPrompt
 }
 
 func (p *RedshiftProvider) ValidateReadOnly(ctx context.Context) error {

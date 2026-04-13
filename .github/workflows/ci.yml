@@ -149,6 +149,12 @@ jobs:
           version: v2.11.3
           working-directory: providers/warehouse/postgres
 
+      - name: Lint Redshift warehouse provider
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: providers/warehouse/redshift
+
       - name: Lint Snowflake warehouse provider
         uses: golangci/golangci-lint-action@v7
         with:

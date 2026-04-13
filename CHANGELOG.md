@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Anonymous usage telemetry** -- Collects anonymous, privacy-respecting usage metrics (version, OS, provider types, event counts). Enabled by default, disable with `TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. No PII, no query content, no credentials. See [TELEMETRY.md](TELEMETRY.md) for full details.
 
+### Fixed
+
+- **Redshift SQL fix prompt** -- The Redshift warehouse provider now returns a Redshift-specific self-healing prompt from `SQLFixPrompt()` (previously returned an empty string, so the agent's self-heal loop had no guidance for Redshift failures). Prompt covers the PostgreSQL features Redshift does not support (`DISTINCT ON`, `FILTER (WHERE ...)`, `LATERAL`, `generate_series`, `string_agg`, `array_agg`, `regexp_matches`, `FORMAT`), Redshift-native alternatives (`QUALIFY`, `LISTAGG`, `SUPER` + `json_extract_path_text`, `DATEADD`/`DATEDIFF`/`GETDATE`, `CONVERT_TIMEZONE`), and 17 common Redshift error patterns.
+- **`make lint-go` now includes the Redshift provider** and CI has a matching `Lint Redshift warehouse provider` step.
+
 ### Changed
 
 - **Domain packs are now dynamic** -- stored in MongoDB instead of compiled Go code. Create, edit, import, and export domain packs from the dashboard without code changes.

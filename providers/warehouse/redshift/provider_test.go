@@ -3,6 +3,7 @@ package redshift
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,9 +348,27 @@ func TestMock_EmptyResult(t *testing.T) {
 func TestRedshiftProvider_SQLFixPrompt(t *testing.T) {
 	p := &RedshiftProvider{}
 	prompt := p.SQLFixPrompt()
-	// Currently returns empty string (Redshift-specific SQL fix prompt not yet implemented)
-	if prompt != "" {
-		t.Errorf("SQLFixPrompt() = %q, want empty string", prompt)
+	if prompt == "" {
+		t.Fatal("expected non-empty SQL fix prompt")
+	}
+	// Template variables consumed by services/agent/internal/ai/sql_fixer.go.
+	for _, v := range []string{
+		"{{DATASET}}", "{{FILTER}}", "{{SCHEMA_INFO}}",
+		"{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{CONVERSATION_HISTORY}}",
+	} {
+		if !strings.Contains(prompt, v) {
+			t.Errorf("SQL fix prompt should contain template variable %s", v)
+		}
+	}
+	// Redshift-specific guidance — these are the highest-impact divergences from PostgreSQL.
+	for _, keyword := range []string{
+		"Redshift", "LISTAGG", "QUALIFY", "DATEADD", "DATEDIFF", "DATE_TRUNC",
+		"GETDATE", "CONVERT_TIMEZONE", "SUPER", "json_extract_path_text",
+		"APPROXIMATE", "VARCHAR", "NOT EXISTS", "NULLIF", "HAVING",
+	} {
+		if !strings.Contains(prompt, keyword) {
+			t.Errorf("SQL fix prompt should mention %q", keyword)
+		}
 	}
 }
 
