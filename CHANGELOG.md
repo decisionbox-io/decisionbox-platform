@@ -7,27 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-14
+
 ### Added
 
-- **Anonymous usage telemetry** -- Collects anonymous, privacy-respecting usage metrics (version, OS, provider types, event counts). Enabled by default, disable with `TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. No PII, no query content, no credentials. See [TELEMETRY.md](TELEMETRY.md) for full details.
-
-### Fixed
-
-- **Redshift SQL fix prompt** -- The Redshift warehouse provider now returns a Redshift-specific self-healing prompt from `SQLFixPrompt()` (previously returned an empty string, so the agent's self-heal loop had no guidance for Redshift failures). Prompt covers the PostgreSQL features Redshift does not support (`DISTINCT ON`, `FILTER (WHERE ...)`, `LATERAL`, `generate_series`, `string_agg`, `array_agg`, `regexp_matches`, `FORMAT`), Redshift-native alternatives (`QUALIFY`, `LISTAGG`, `SUPER` + `json_extract_path_text`, `DATEADD`/`DATEDIFF`/`GETDATE`, `CONVERT_TIMEZONE`), and 17 common Redshift error patterns.
-- **`make lint-go` now includes the Redshift provider** and CI has a matching `Lint Redshift warehouse provider` step.
+- **Vector search stack** — Full semantic search and RAG-powered insight Q&A built on Qdrant. Includes 6 embedding providers (OpenAI, Vertex AI, Bedrock, Azure OpenAI, Voyage AI, Ollama), a Qdrant vector store provider with HNSW search, and an embedding-settings tab in the dashboard. Agent Phase 9 denormalizes insights and recommendations into standalone collections, generates embeddings, and upserts them into Qdrant. New API endpoints: `POST /search` (semantic search with filters), cross-project search, `POST /ask` (RAG-powered Ask Insights), multi-turn ask sessions, search history with 90-day TTL, and standalone insights/recommendations CRUD. Dashboard adds a Search page, an Ask Insights chat page with citations and session history, Spotlight search (Cmd+K), and a recommendation detail page. Infrastructure: Qdrant subchart in Helm (auto-compute URL, API key secret), setup wizard Step 6 (vector search config), and a `qdrant` service in `docker-compose.yml`.
+- **Dynamic domain packs** — Domain packs are now stored in MongoDB instead of compiled Go code. Create, edit, import, and export packs from the dashboard without code changes. New CRUD endpoints at `/api/v1/domain-packs` with a portable JSON import/export format. Dashboard adds a Domain Packs management page with a markdown prompt editor. Built-in packs (gaming, ecommerce, social) are seeded from embedded JSON on first startup. Removed `DOMAIN_PACK_PATH` environment variable — packs no longer read from the filesystem. Agent no longer depends on domain pack code and reads prompts entirely from project configuration.
+- **Webhook notifications** — Notify external systems when discoveries complete via Slack, generic HTTP, or email webhooks. Configurable per-project with templated payloads.
+- **Anonymous usage telemetry** — Collects anonymous, privacy-respecting usage metrics (version, OS, provider types, event counts). Enabled by default, disable with `TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. No PII, no query content, no credentials. See [TELEMETRY.md](TELEMETRY.md) for full details.
+- **Helm dashboard `extraEnv` / `extraEnvFrom`** — `decisionbox-dashboard` chart now supports `extraEnv` and `extraEnvFrom` values, bringing it to parity with the API chart. Enables overlays (e.g., enterprise auth) to inject env vars and secrets without modifying the chart. Chart version bumped `0.1.0 → 0.1.1`.
 
 ### Changed
 
-- **Domain packs are now dynamic** -- stored in MongoDB instead of compiled Go code. Create, edit, import, and export domain packs from the dashboard without code changes.
-- Removed `DOMAIN_PACK_PATH` environment variable -- domain packs no longer read from filesystem.
-- Agent no longer depends on domain pack code -- reads prompts entirely from project configuration.
-- New API endpoints: CRUD at `/api/v1/domain-packs`, import/export with portable JSON format.
-- Dashboard: Domain Packs management page with markdown prompt editor.
-- Built-in packs (gaming, ecommerce, social) seeded from embedded JSON on first startup.
+- **`apiserver.Run()` now owns subcommand routing** — The `backfill-embeddings` subcommand is dispatched inside `apiserver.Run()` instead of from `services/api/main.go`. Custom API binaries (e.g., enterprise) that call `apiserver.Run()` automatically get all subcommands wired up, closing a gap where subcommands were unreachable from non-community entry points.
+
+### Fixed
+
+- **Go dependency security upgrades** — Resolved 18 Dependabot alerts (1 critical, 2 high, 15 medium) across 10 Go modules: `google.golang.org/grpc` (authorization bypass), `github.com/go-jose/go-jose/v3` (JWE decryption panic), `golang.org/x/oauth2` (input validation), and the AWS SDK v2 `bedrockruntime` / `eventstream` / `s3` packages (EventStream DoS). Dashboard Dockerfile now runs `apk upgrade --no-cache` to pick up Alpine security patches on rebuild.
+- **IP allowlist wiring on AWS and GCP** — `setup.sh` was creating IP restriction resources in Terraform but never passing them to Helm, leaving the ALB / GCE ingress open to `0.0.0.0/0`. AWS now uses the `alb.ingress.kubernetes.io/inbound-cidrs` annotation (keeping the controller's backend SG management intact), and GCP now creates a `BackendConfig` CRD and annotates the dashboard Service with `cloud.google.com/backend-config` to attach the Cloud Armor policy.
+- **Orphaned AWS `ip_allowlist` security group removed** — `aws_security_group.ip_allowlist` and its three supporting rules were no longer attached to anything after the switch to `inbound-cidrs`. Removed from the `terraform/aws` module along with the proxied output.
+- **Terraform LLM IAM now granted to the API role, not just the agent** — `enable_bedrock_iam` / `enable_vertex_ai_iam` on AWS and GCP now also attach to the API's IRSA / Workload Identity SA. Previously the `/ask` endpoint (and any future API-side LLM call) returned 500 on EKS/GKE deployments with LLM IAM enabled because the API role had no `bedrock:*` or `aiplatform.user` permissions.
+- **K8s test connection response parsing** — `extractJSONObject` now scans pod logs from the end and skips structured log lines (identified by the `"severity"` key). K8s pods mix stdout (result) with stderr (log lines), so the previous implementation picked up the first JSON line — a structured log, not the agent result — and the dashboard showed "Unknown error". Also adds `pods/log` to the `agent-job-manager` RBAC Role so the API can read agent pod logs.
+- **Redshift SQL fix prompt** — The Redshift warehouse provider now returns a Redshift-specific self-healing prompt from `SQLFixPrompt()` (previously returned an empty string, so the agent's self-heal loop had no guidance for Redshift failures). Prompt covers the PostgreSQL features Redshift does not support (`DISTINCT ON`, `FILTER (WHERE ...)`, `LATERAL`, `generate_series`, `string_agg`, `array_agg`, `regexp_matches`, `FORMAT`), Redshift-native alternatives (`QUALIFY`, `LISTAGG`, `SUPER` + `json_extract_path_text`, `DATEADD`/`DATEDIFF`/`GETDATE`, `CONVERT_TIMEZONE`), and 17 common Redshift error patterns. `make lint-go` now includes the Redshift provider and CI has a matching `Lint Redshift warehouse provider` step.
 
 ### Removed
 
-- Removed all Go code from `domain-packs/*/go/` directories.
+- Removed all Go code from `domain-packs/*/go/` directories (dynamic domain packs).
 - Removed `libs/go-common/domainpack` package (registry, interfaces).
 - Removed domain pack blank imports from agent and API server.
 
@@ -131,7 +136,8 @@ Initial public release.
 - 85%+ unit test coverage across all modules
 - Comprehensive documentation (28 files across 6 sections)
 
-[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/decisionbox-io/decisionbox-platform/releases/tag/v0.1.0
