@@ -3,6 +3,25 @@ entries:
   decisionbox-api:
   - apiVersion: v2
     appVersion: 1.0.0
+    created: "2026-04-15T16:40:54.819387559Z"
+    dependencies:
+    - condition: mongodb.enabled
+      name: mongodb
+      repository: https://charts.bitnami.com/bitnami
+      version: ~18.6.0
+    - condition: qdrant.enabled
+      name: qdrant
+      repository: https://qdrant.github.io/qdrant-helm
+      version: 1.17.1
+    description: DecisionBox API
+    digest: 5c83b915b44c517540d544de07e2722f09536208349338f1fa93c91277c3dc98
+    name: decisionbox-api
+    type: application
+    urls:
+    - https://github.com/decisionbox-io/decisionbox-platform/releases/download/helm-decisionbox-api-0.1.1/decisionbox-api-0.1.1.tgz
+    version: 0.1.1
+  - apiVersion: v2
+    appVersion: 1.0.0
     created: "2026-03-19T14:50:17.244291621Z"
     dependencies:
     - condition: mongodb.enabled
@@ -37,4 +56,4 @@ entries:
     urls:
     - https://github.com/decisionbox-io/decisionbox-platform/releases/download/decisionbox-dashboard-0.1.0/decisionbox-dashboard-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-10T14:48:35.25200125Z"
+generated: "2026-04-15T16:40:54.81939848Z"
