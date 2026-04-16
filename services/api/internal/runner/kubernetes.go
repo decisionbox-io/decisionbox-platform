@@ -72,6 +72,8 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		{"SECRET_NAMESPACE", "SECRET_NAMESPACE"},
 		{"SECRET_ENCRYPTION_KEY", "SECRET_ENCRYPTION_KEY"},
 		{"SECRET_GCP_PROJECT_ID", "SECRET_GCP_PROJECT_ID"},
+		{"QDRANT_URL", "QDRANT_URL"},
+		{"QDRANT_API_KEY", "QDRANT_API_KEY"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})

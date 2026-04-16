@@ -284,6 +284,67 @@ func TestKubernetesRunner_Cancel_NotFound(t *testing.T) {
 	}
 }
 
+// TestKubernetesRunner_Run_PropagatesQdrantEnv verifies that QDRANT_URL and
+// QDRANT_API_KEY set on the API process are forwarded to agent Job containers.
+// Without these, the agent treats Qdrant as unconfigured and silently skips the
+// embed_index phase, leaving insights un-indexed for search/ask.
+func TestKubernetesRunner_Run_PropagatesQdrantEnv(t *testing.T) {
+	os.Setenv("QDRANT_URL", "qdrant.svc:6334")
+	os.Setenv("QDRANT_API_KEY", "test-qdrant-key")
+	defer os.Unsetenv("QDRANT_URL")
+	defer os.Unsetenv("QDRANT_API_KEY")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-qdrant", RunID: "run-qdrant-env-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	envMap := make(map[string]string)
+	for _, e := range c.Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["QDRANT_URL"] != "qdrant.svc:6334" {
+		t.Errorf("QDRANT_URL = %q, want qdrant.svc:6334", envMap["QDRANT_URL"])
+	}
+	if envMap["QDRANT_API_KEY"] != "test-qdrant-key" {
+		t.Errorf("QDRANT_API_KEY = %q, want test-qdrant-key", envMap["QDRANT_API_KEY"])
+	}
+}
+
+// TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset verifies we do NOT inject
+// empty QDRANT_URL / QDRANT_API_KEY vars when they are unset on the API
+// process. Keeps the Job spec clean and avoids masking real values.
+func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
+	os.Unsetenv("QDRANT_URL")
+	os.Unsetenv("QDRANT_API_KEY")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-no-qdrant", RunID: "run-no-qdrant-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	for _, e := range c.Env {
+		if e.Name == "QDRANT_URL" || e.Name == "QDRANT_API_KEY" {
+			t.Errorf("expected %s to be absent from Job env, got value %q", e.Name, e.Value)
+		}
+	}
+}
+
 func TestKubernetesRunner_MultipleRuns(t *testing.T) {
 	r := newFakeK8sRunner()
 	ctx := context.Background()
