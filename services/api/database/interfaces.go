@@ -89,6 +89,30 @@ type AskSessionRepo interface {
 	Delete(ctx context.Context, sessionID string) error
 }
 
+// BookmarkListRepo abstracts bookmark list operations for handler unit testing.
+type BookmarkListRepo interface {
+	Create(ctx context.Context, list *models.BookmarkList) error
+	GetByID(ctx context.Context, projectID, userID, listID string) (*models.BookmarkList, error)
+	List(ctx context.Context, projectID, userID string) ([]*models.BookmarkList, error)
+	Update(ctx context.Context, projectID, userID, listID string, patch UpdateFields) (*models.BookmarkList, error)
+	Delete(ctx context.Context, projectID, userID, listID string) error
+}
+
+// BookmarkRepo abstracts bookmark operations for handler unit testing.
+type BookmarkRepo interface {
+	Add(ctx context.Context, bm *models.Bookmark) (*models.Bookmark, error)
+	ListByList(ctx context.Context, listID string) ([]*models.Bookmark, error)
+	Delete(ctx context.Context, projectID, userID, listID, bookmarkID string) error
+	ListsContaining(ctx context.Context, projectID, userID, targetType, targetID string) ([]string, error)
+}
+
+// ReadMarkRepo abstracts read-state operations for handler unit testing.
+type ReadMarkRepo interface {
+	Upsert(ctx context.Context, mark *models.ReadMark) error
+	Delete(ctx context.Context, projectID, userID, targetType, targetID string) error
+	ListReadIDs(ctx context.Context, projectID, userID, targetType string) ([]string, error)
+}
+
 // DomainPackRepo abstracts domain pack CRUD operations for handler unit testing.
 type DomainPackRepo interface {
 	Create(ctx context.Context, pack *models.DomainPack) error
@@ -111,4 +135,7 @@ var (
 	_ SearchHistoryRepo  = (*SearchHistoryRepository)(nil)
 	_ AskSessionRepo     = (*AskSessionRepository)(nil)
 	_ DomainPackRepo     = (*DomainPackRepository)(nil)
+	_ BookmarkListRepo   = (*BookmarkListRepository)(nil)
+	_ BookmarkRepo       = (*BookmarkRepository)(nil)
+	_ ReadMarkRepo       = (*ReadMarkRepository)(nil)
 )
