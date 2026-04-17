@@ -49,6 +49,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
 - **Insight validation** — AI claims are verified against your actual data
 - **Feedback loop** — Like/dislike insights, agent learns from feedback on next run
+- **Reader UX** — Bookmark insights and recommendations into named lists, read-state tracking with greyed-out rows, collapsible "technical details" for non-technical users, sticky sidebar of related items on detail pages
 - **Cost estimation** — Estimate LLM + warehouse costs before running
 - **Live progress** — Watch the agent explore in real-time with step-by-step updates
 - **Editable prompts** — Customize all AI prompts per-project from the dashboard

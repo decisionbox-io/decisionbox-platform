@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bookmark lists** — Create named lists and save insights or recommendations to them for later review. Add-to-list menu on every insight and recommendation detail page with inline list creation; new Lists nav entry with a grid of lists per project; list detail page shows items grouped by type with per-bookmark notes and a "remove" action. Deleting a list cascades to its bookmarks; the underlying insights and recommendations are unaffected. Orphan bookmarks (source deleted) render as "[removed]" rather than crashing.
+- **Read tracking** — Opening an insight or recommendation now marks it read for the current user. List pages render read items with reduced opacity and a muted color, with a "Mark unread" action per row. State lives on the server (new `read_marks` collection) and is shared across devices in enterprise mode; in community mode all viewers share the single `"anonymous"` identity.
+- **Technical details toggle** — The insight detail page's "How This Insight Was Found" section (SQL queries, exploration steps, token counts, validation queries) is now collapsed by default behind a "Show technical details" button. Non-technical readers get a clean narrative; power users click once to reveal the engine internals. No persistence — defaults to collapsed on every page visit.
+- **Related items promoted + right sidebar TOC** — Related recommendations (on insight pages) and related insights (on recommendation pages) now appear in a sticky right-column TOC at the top of the viewport, alongside semantic-search similar items. On narrow screens the TOC collapses to a horizontally-scrollable chip strip above the main content. The inline mid-page "Related" cards and bottom "Similar" blocks were removed — everything lives in the sidebar now.
+- **API endpoints** for the above: `POST/GET/PATCH/DELETE /api/v1/projects/{id}/lists`, `POST/DELETE /api/v1/projects/{id}/lists/{listId}/items`, `GET /api/v1/projects/{id}/bookmarks`, `POST/DELETE/GET /api/v1/projects/{id}/reads`. Every record carries a `user_id` field sourced from `auth.UserFromContext(ctx).Sub` — `"anonymous"` under NoAuth, the OIDC sub claim under enterprise. Same schema, same handlers in both modes; enterprise deployments get per-user scoping without schema migration.
+
 ## [0.4.0] - 2026-04-14
 
 ### Added
