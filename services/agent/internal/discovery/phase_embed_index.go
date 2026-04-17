@@ -44,14 +44,25 @@ func (o *Orchestrator) runPhaseEmbedIndex(ctx context.Context, result *models.Di
 	}
 }
 
-// denormalizeInsights converts discovery result insights to standalone documents with UUIDs.
+// denormalizeInsights converts discovery result insights to standalone documents.
+// The standalone `_id` is the same UUID the agent assigned to the embedded
+// insight during analysis (see generateInsights). Reusing that id means the
+// discovery document, the standalone collection, and the Qdrant point all
+// share one key — no lookup-by-index fallback is needed anywhere downstream.
 func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*commonmodels.StandaloneInsight {
 	insights := make([]*commonmodels.StandaloneInsight, 0, len(result.Insights))
 	now := time.Now()
 
 	for _, ins := range result.Insights {
+		// Defensive default: if the embedded id is empty (older data flowing
+		// through this path, or a bug upstream), mint a UUID so we don't
+		// insert empty _ids. The normal path has ins.ID already populated.
+		id := ins.ID
+		if id == "" {
+			id = uuid.New().String()
+		}
 		insights = append(insights, &commonmodels.StandaloneInsight{
-			ID:            uuid.New().String(),
+			ID:            id,
 			ProjectID:     result.ProjectID,
 			DiscoveryID:   result.ID,
 			Domain:        result.Domain,
@@ -76,14 +87,20 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 	return insights
 }
 
-// denormalizeRecommendations converts discovery result recommendations to standalone documents with UUIDs.
+// denormalizeRecommendations converts discovery result recommendations to
+// standalone documents. The standalone `_id` matches the embedded
+// recommendation's id — same reasoning as denormalizeInsights.
 func (o *Orchestrator) denormalizeRecommendations(result *models.DiscoveryResult) []*commonmodels.StandaloneRecommendation {
 	recs := make([]*commonmodels.StandaloneRecommendation, 0, len(result.Recommendations))
 	now := time.Now()
 
 	for _, rec := range result.Recommendations {
+		id := rec.ID
+		if id == "" {
+			id = uuid.New().String()
+		}
 		recs = append(recs, &commonmodels.StandaloneRecommendation{
-			ID:                     uuid.New().String(),
+			ID:                     id,
 			ProjectID:              result.ProjectID,
 			DiscoveryID:            result.ID,
 			Domain:                 result.Domain,

@@ -39,8 +39,11 @@ export default function RecommendationDetailPage() {
     Promise.all([
       api.getDiscoveryById(runId).then((disc) => {
         setDiscovery(disc);
+        // Strict id match only. See the twin comment in the insight detail
+        // page: UUIDs can masquerade as small integers via parseInt and
+        // silently open the wrong recommendation.
         const recs = disc?.recommendations || [];
-        const found = recs.find((r) => r.id === recommendationId) || recs[parseInt(recommendationId)] || null;
+        const found = recs.find((r) => r.id === recommendationId) || null;
         setRecommendation(found);
       }),
       api.listFeedback(runId).then((fb) => {

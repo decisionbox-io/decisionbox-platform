@@ -33,8 +33,13 @@ export default function InsightDetailPage() {
     Promise.all([
       api.getDiscoveryById(runId).then((disc) => {
         setDiscovery(disc);
+        // Match strictly by id. Do NOT fall back to insights[parseInt(insightId)]
+        // — UUIDs like "67be9dfd-..." happen to parse to small integers and
+        // silently return the wrong insight. The agent now assigns UUIDs that
+        // match the standalone collection + Qdrant point id, so the exact-id
+        // lookup always resolves for data written after this commit.
         const insights = disc?.insights || [];
-        const found = insights.find((i) => i.id === insightId) || insights[parseInt(insightId)] || null;
+        const found = insights.find((i) => i.id === insightId) || null;
         setInsight(found);
       }),
       api.listFeedback(runId).then((fb) => {
