@@ -553,6 +553,45 @@ export interface SearchHistoryEntry {
   created_at: string;
 }
 
+// --- Bookmark List / Bookmark / Read Mark types ---
+
+export interface BookmarkList {
+  id: string;
+  project_id: string;
+  user_id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  created_at: string;
+  updated_at: string;
+  item_count: number;
+}
+
+export interface Bookmark {
+  id: string;
+  list_id: string;
+  project_id: string;
+  user_id: string;
+  discovery_id: string;
+  target_type: 'insight' | 'recommendation';
+  target_id: string;
+  note?: string;
+  created_at: string;
+}
+
+// BookmarkItem is a bookmark joined with its resolved target. When the source
+// insight or recommendation has been deleted, `deleted` is true and `target` is
+// undefined — the UI should render a "[removed]" placeholder.
+export interface BookmarkItem {
+  bookmark: Bookmark;
+  target?: StandaloneInsight | StandaloneRecommendation;
+  deleted?: boolean;
+}
+
+export interface BookmarkListWithItems extends BookmarkList {
+  items: BookmarkItem[];
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -684,6 +723,53 @@ export const api = {
     request<AskSession>(`/api/v1/projects/${projectId}/ask/sessions/${sessionId}`),
   deleteAskSession: (projectId: string, sessionId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/ask/sessions/${sessionId}`, { method: 'DELETE' }),
+
+  // Bookmark lists
+  listBookmarkLists: (projectId: string) =>
+    request<BookmarkList[]>(`/api/v1/projects/${projectId}/lists`),
+  createBookmarkList: (projectId: string, data: { name: string; description?: string; color?: string }) =>
+    request<BookmarkList>(`/api/v1/projects/${projectId}/lists`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getBookmarkList: (projectId: string, listId: string) =>
+    request<BookmarkListWithItems>(`/api/v1/projects/${projectId}/lists/${listId}`),
+  updateBookmarkList: (projectId: string, listId: string, data: Partial<Pick<BookmarkList, 'name' | 'description' | 'color'>>) =>
+    request<BookmarkList>(`/api/v1/projects/${projectId}/lists/${listId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteBookmarkList: (projectId: string, listId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/lists/${listId}`, { method: 'DELETE' }),
+
+  // Bookmarks within a list
+  addBookmark: (projectId: string, listId: string, data: { discovery_id?: string; target_type: 'insight' | 'recommendation'; target_id: string; note?: string }) =>
+    request<Bookmark>(`/api/v1/projects/${projectId}/lists/${listId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  removeBookmark: (projectId: string, listId: string, bookmarkId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/lists/${listId}/items/${bookmarkId}`, {
+      method: 'DELETE',
+    }),
+  // Which of this user's lists contain a given target? Powers the
+  // "Add to list" menu's checkmark state and the bookmark icon's fill state.
+  listsContaining: (projectId: string, targetType: 'insight' | 'recommendation', targetId: string) =>
+    request<string[]>(`/api/v1/projects/${projectId}/bookmarks?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
+
+  // Read state
+  markRead: (projectId: string, targetType: 'insight' | 'recommendation', targetId: string) =>
+    request<{ target_id: string; read_at: string }>(`/api/v1/projects/${projectId}/reads`, {
+      method: 'POST',
+      body: JSON.stringify({ target_type: targetType, target_id: targetId }),
+    }),
+  markUnread: (projectId: string, targetType: 'insight' | 'recommendation', targetId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/reads`, {
+      method: 'DELETE',
+      body: JSON.stringify({ target_type: targetType, target_id: targetId }),
+    }),
+  listReadIDs: (projectId: string, targetType: 'insight' | 'recommendation') =>
+    request<string[]>(`/api/v1/projects/${projectId}/reads?target_type=${encodeURIComponent(targetType)}`),
 };
 // build trigger 20260319111744
 // coverage trigger

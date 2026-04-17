@@ -80,7 +80,7 @@ func (h *ReadsHandler) MarkUnread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to mark unread: "+err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unread"})
 }
 
 // ListReadIDs — GET /api/v1/projects/{id}/reads?target_type=insight

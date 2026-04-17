@@ -97,8 +97,8 @@ func TestReads_MarkUnread_IdempotentWhenMissing(t *testing.T) {
 	req.SetPathValue("id", "p1")
 	h.MarkUnread(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want 204 (idempotent)", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (idempotent)", w.Code)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestReads_MarkUnread_RemovesMark(t *testing.T) {
 	req.SetPathValue("id", "p1")
 	h.MarkUnread(w, req)
 
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK {
 		t.Errorf("status = %d", w.Code)
 	}
 	if len(repo.items) != 0 {

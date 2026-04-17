@@ -374,8 +374,8 @@ func TestLists_Delete_CascadesBookmarks(t *testing.T) {
 	req.SetPathValue("listId", list.ID)
 	h.Delete(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	if _, ok := lists.lists[list.ID]; ok {
 		t.Error("list should be deleted")
@@ -553,8 +553,8 @@ func TestLists_RemoveBookmark_Success(t *testing.T) {
 	req.SetPathValue("bookmarkId", bm.ID)
 	h.RemoveBookmark(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
 	}
 }
 

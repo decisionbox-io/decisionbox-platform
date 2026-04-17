@@ -351,9 +351,9 @@ describe('api.getDiscoveryByDate', () => {
 
 describe('api.getProjectStatus', () => {
   it('returns status', async () => {
-    mockSuccess({ project_id: 'proj-1', status: 'active', last_run_at: null });
+    mockSuccess({ project_id: 'proj-1' });
     const result = await api.getProjectStatus('proj-1');
-    expect(result.status).toBe('active');
+    expect(result.project_id).toBe('proj-1');
   });
 });
 
@@ -454,9 +454,9 @@ describe('api.deleteFeedback', () => {
 
 describe('api.estimateCost', () => {
   it('sends POST to estimate endpoint', async () => {
-    mockSuccess({ total_cost: 1.5, llm_cost: 1.0, warehouse_cost: 0.5 });
+    mockSuccess({ total_cost_usd: 1.5, llm_cost: 1.0, warehouse_cost: 0.5 });
     const result = await api.estimateCost('proj-1', { areas: ['churn'], max_steps: 10 });
-    expect(result.total_cost).toBe(1.5);
+    expect(result.total_cost_usd).toBe(1.5);
 
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/api/v1/projects/proj-1/discover/estimate');
@@ -653,7 +653,7 @@ describe('api.crossProjectSearch', () => {
   it('sends POST to global search endpoint', async () => {
     mockSuccess({ results: [], embedding_model: 'text-embedding-3-small' });
 
-    await api.crossProjectSearch({ query: 'retention', limit: 10 });
+    await api.crossProjectSearch({ query: 'retention', embedding_model: 'text-embedding-3-small', limit: 10 });
 
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/api/v1/search');
@@ -821,5 +821,124 @@ describe('api.deleteAskSession', () => {
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/api/v1/projects/proj-1/ask/sessions/sess-1');
     expect(opts.method).toBe('DELETE');
+  });
+});
+
+// --- Bookmark lists / bookmarks / reads ---
+
+describe('api.listBookmarkLists', () => {
+  it('GETs project-scoped lists', async () => {
+    mockSuccess([{ id: 'l1', name: 'Retention', project_id: 'proj-1', user_id: 'anonymous', item_count: 0, created_at: '', updated_at: '' }]);
+    const result = await api.listBookmarkLists('proj-1');
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('Retention');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/projects/proj-1/lists'),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('api.createBookmarkList', () => {
+  it('POSTs name, description, color', async () => {
+    mockSuccess({ id: 'l1', name: 'R', project_id: 'proj-1', user_id: 'anonymous', item_count: 0, created_at: '', updated_at: '' });
+    await api.createBookmarkList('proj-1', { name: 'R', color: '#2b7' });
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ name: 'R', color: '#2b7' });
+  });
+});
+
+describe('api.getBookmarkList', () => {
+  it('returns list with resolved items', async () => {
+    mockSuccess({
+      id: 'l1', name: 'R', project_id: 'proj-1', user_id: 'anonymous', item_count: 1,
+      created_at: '', updated_at: '',
+      items: [{ bookmark: { id: 'b1', list_id: 'l1', project_id: 'proj-1', user_id: 'anonymous', discovery_id: 'd1', target_type: 'insight', target_id: 'i1', created_at: '' }, target: { id: 'i1', name: 'X' } }],
+    });
+    const result = await api.getBookmarkList('proj-1', 'l1');
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].bookmark.target_type).toBe('insight');
+  });
+});
+
+describe('api.updateBookmarkList', () => {
+  it('PATCHes partial fields', async () => {
+    mockSuccess({ id: 'l1', name: 'New', project_id: 'proj-1', user_id: 'anonymous', item_count: 0, created_at: '', updated_at: '' });
+    await api.updateBookmarkList('proj-1', 'l1', { name: 'New' });
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(opts.method).toBe('PATCH');
+    expect(JSON.parse(opts.body)).toEqual({ name: 'New' });
+  });
+});
+
+describe('api.deleteBookmarkList', () => {
+  it('sends DELETE', async () => {
+    mockSuccess({ status: 'deleted' });
+    await api.deleteBookmarkList('proj-1', 'l1');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(opts.method).toBe('DELETE');
+    expect(url).toContain('/api/v1/projects/proj-1/lists/l1');
+  });
+});
+
+describe('api.addBookmark', () => {
+  it('POSTs target to list items', async () => {
+    mockSuccess({ id: 'b1', list_id: 'l1', project_id: 'proj-1', user_id: 'anonymous', discovery_id: 'd1', target_type: 'insight', target_id: 'i1', created_at: '' });
+    await api.addBookmark('proj-1', 'l1', { target_type: 'insight', target_id: 'i1', discovery_id: 'd1' });
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/projects/proj-1/lists/l1/items');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toMatchObject({ target_type: 'insight', target_id: 'i1' });
+  });
+});
+
+describe('api.removeBookmark', () => {
+  it('DELETEs by bookmark id', async () => {
+    mockSuccess({ status: 'deleted' });
+    await api.removeBookmark('proj-1', 'l1', 'b1');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(opts.method).toBe('DELETE');
+    expect(url).toContain('/api/v1/projects/proj-1/lists/l1/items/b1');
+  });
+});
+
+describe('api.listsContaining', () => {
+  it('URL-encodes query params', async () => {
+    mockSuccess(['l1', 'l2']);
+    const ids = await api.listsContaining('proj-1', 'insight', 'i space/1');
+    expect(ids).toEqual(['l1', 'l2']);
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('target_type=insight');
+    expect(url).toContain('target_id=i%20space%2F1');
+  });
+});
+
+describe('api.markRead', () => {
+  it('POSTs target to reads endpoint', async () => {
+    mockSuccess({ target_id: 'i1', read_at: '2026-04-17T00:00:00Z' });
+    await api.markRead('proj-1', 'insight', 'i1');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/projects/proj-1/reads');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toEqual({ target_type: 'insight', target_id: 'i1' });
+  });
+});
+
+describe('api.markUnread', () => {
+  it('DELETEs with body (not 204) to stay compatible with request()', async () => {
+    mockSuccess({ status: 'unread' });
+    await api.markUnread('proj-1', 'insight', 'i1');
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(opts.method).toBe('DELETE');
+    expect(JSON.parse(opts.body)).toEqual({ target_type: 'insight', target_id: 'i1' });
+  });
+});
+
+describe('api.listReadIDs', () => {
+  it('returns array of target ids', async () => {
+    mockSuccess(['i1', 'i2']);
+    const result = await api.listReadIDs('proj-1', 'insight');
+    expect(result).toEqual(['i1', 'i2']);
   });
 });

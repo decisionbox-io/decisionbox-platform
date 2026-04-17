@@ -230,7 +230,7 @@ func (h *ListsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete list: "+err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // AddBookmark — POST /api/v1/projects/{id}/lists/{listId}/items
@@ -327,7 +327,7 @@ func (h *ListsHandler) RemoveBookmark(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete bookmark: "+err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ListsContaining — GET /api/v1/projects/{id}/bookmarks?target_type=...&target_id=...
