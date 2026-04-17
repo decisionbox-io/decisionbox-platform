@@ -249,7 +249,7 @@ export default function InsightsListPage() {
                 >
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <Link
-                      href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}?from=insights`}
+                      href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}`}
                       style={{
                         fontSize: 13, fontWeight: 500,
                         color: 'var(--db-text-link)',

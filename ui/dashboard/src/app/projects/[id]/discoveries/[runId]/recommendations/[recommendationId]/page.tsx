@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Badge, Box, Button, Card, Grid, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
-import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
@@ -27,23 +26,17 @@ const effortColors: Record<string, { bg: string; color: string }> = {
   high: { bg: '#FAECE7', color: '#993C1D' },
 };
 
-// backDestination picks the target + label for the header "Back" button based
-// on the `?from=` query param set by the page that linked here. See the twin
-// helper on the insight detail page for the rationale.
-function backDestination(projectId: string, runId: string, from: string | null): { href: string; label: string } {
-  switch (from) {
-    case 'insights':
-      return { href: `/projects/${projectId}/insights`, label: 'Back to Insights' };
-    case 'recommendations':
-      return { href: `/projects/${projectId}/recommendations`, label: 'Back to Recommendations' };
-    default:
-      return { href: `/projects/${projectId}/discoveries/${runId}`, label: 'Back to Discovery' };
-  }
-}
-
 export default function RecommendationDetailPage() {
   const { id, runId, recommendationId } = useParams<{ id: string; runId: string; recommendationId: string }>();
-  const back = backDestination(id, runId, useSearchParams().get('from'));
+  const router = useRouter();
+  // See the twin goBack on the insight detail page for the rationale.
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(`/projects/${id}/discoveries/${runId}`);
+    }
+  };
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -118,10 +111,9 @@ export default function RecommendationDetailPage() {
 
   return (
     <Shell>
-      <Button variant="subtle" component={Link}
-        href={back.href}
+      <Button variant="subtle" onClick={goBack}
         leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
-        {back.label}
+        Back
       </Button>
 
       {/* Header */}

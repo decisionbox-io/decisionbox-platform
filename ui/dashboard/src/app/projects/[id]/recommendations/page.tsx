@@ -201,7 +201,7 @@ export default function RecommendationsListPage() {
                 {/* Title row */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
                   <Link
-                    href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}?from=recommendations`}
+                    href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}`}
                     style={{
                       fontSize: 14, fontWeight: 500, flex: 1,
                       color: 'var(--db-text-primary)',

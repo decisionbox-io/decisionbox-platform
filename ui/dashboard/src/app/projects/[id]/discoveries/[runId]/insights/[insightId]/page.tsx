@@ -1,14 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Accordion, Badge, Box, Button, Card, Code, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
   IconAlertTriangle, IconArrowLeft, IconCheck, IconDatabase, IconSearch, IconX,
 } from '@tabler/icons-react';
-import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
@@ -21,26 +20,22 @@ const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
 
-// backDestination picks the target + label for the header "Back" button based
-// on the `?from=` query param set by the page that linked here. This keeps
-// navigation predictable: users who came from the Insights list go back to
-// that list, users who came from a discovery detail page go back to that
-// discovery. No browser-history heuristics — they break on reload and when
-// the detail page is opened from an external link.
-function backDestination(projectId: string, runId: string, from: string | null): { href: string; label: string } {
-  switch (from) {
-    case 'insights':
-      return { href: `/projects/${projectId}/insights`, label: 'Back to Insights' };
-    case 'recommendations':
-      return { href: `/projects/${projectId}/recommendations`, label: 'Back to Recommendations' };
-    default:
-      return { href: `/projects/${projectId}/discoveries/${runId}`, label: 'Back to Discovery' };
-  }
-}
-
 export default function InsightDetailPage() {
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
-  const back = backDestination(id, runId, useSearchParams().get('from'));
+  const router = useRouter();
+  // goBack relies on browser history whenever possible — that's the only
+  // way we scale across every entry point (similar insights, Ask sources,
+  // related sidebar, bookmark lists, insights list, discovery detail, ...)
+  // without having to wire a `?from=` hint at every call site. The
+  // history-length guard handles the fresh-tab case where router.back()
+  // would otherwise navigate out of the app to nothing.
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(`/projects/${id}/discoveries/${runId}`);
+    }
+  };
   const [insight, setInsight] = useState<Insight | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -132,10 +127,9 @@ export default function InsightDetailPage() {
 
   return (
     <Shell>
-      <Button variant="subtle" component={Link}
-        href={back.href}
+      <Button variant="subtle" onClick={goBack}
         leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
-        {back.label}
+        Back
       </Button>
 
       {/* Header — full width so title can breathe, no sidebar beside it. */}
