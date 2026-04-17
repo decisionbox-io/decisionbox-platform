@@ -10,7 +10,8 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
-import { useReadSet, markUnread } from '@/lib/readState';
+import UnreadDot from '@/components/common/UnreadDot';
+import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
@@ -242,35 +243,26 @@ export default function InsightsListPage() {
                 return (
                 <tr key={idx} style={{
                   borderBottom: '1px solid var(--db-border-default)',
-                  opacity: isRead ? 0.55 : 1,
                 }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <Link href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}`}
+                    <Link
+                      href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}?from=insights`}
                       style={{
-                        fontSize: 13, fontWeight: isRead ? 400 : 500,
-                        color: isRead ? 'var(--db-text-tertiary)' : 'var(--db-text-link)',
-                        textDecoration: 'none', display: 'block', maxWidth: 300,
+                        fontSize: 13, fontWeight: 500,
+                        color: 'var(--db-text-link)',
+                        textDecoration: 'none',
+                        display: 'flex', alignItems: 'center',
+                        maxWidth: 300,
                       }}
                       onMouseEnter={e => { e.currentTarget.style.textDecoration = 'underline'; }}
                       onMouseLeave={e => { e.currentTarget.style.textDecoration = 'none'; }}
                     >
-                      {insight.name}
+                      <UnreadDot unread={!isRead} />
+                      <span>{insight.name}</span>
                     </Link>
-                    {isRead && (
-                      <button
-                        onClick={(e) => { e.preventDefault(); markUnread(id, 'insight', targetId); }}
-                        style={{
-                          marginTop: 4, fontSize: 10, color: 'var(--db-text-tertiary)',
-                          background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline',
-                        }}
-                        aria-label="Mark unread"
-                      >
-                        Mark unread
-                      </button>
-                    )}
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <SeverityBadge severity={insight.severity} type="severity" />

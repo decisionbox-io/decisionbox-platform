@@ -11,7 +11,8 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
 } from '@/components/common/UIComponents';
-import { useReadSet, markUnread } from '@/lib/readState';
+import UnreadDot from '@/components/common/UnreadDot';
+import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -196,31 +197,23 @@ export default function RecommendationsListPage() {
                 border: '1px solid var(--db-border-default)',
                 borderRadius: 'var(--db-radius-lg)',
                 padding: '16px 20px',
-                opacity: isRead ? 0.55 : 1,
               }}>
                 {/* Title row */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                  <Link href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}`}
+                  <Link
+                    href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}?from=recommendations`}
                     style={{
-                      fontSize: 14, fontWeight: isRead ? 400 : 500, flex: 1,
-                      color: isRead ? 'var(--db-text-tertiary)' : 'var(--db-text-primary)',
+                      fontSize: 14, fontWeight: 500, flex: 1,
+                      color: 'var(--db-text-primary)',
                       textDecoration: 'none',
+                      display: 'flex', alignItems: 'center',
                     }}
                     onMouseEnter={e => { e.currentTarget.style.color = 'var(--db-text-link)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.color = isRead ? 'var(--db-text-tertiary)' : 'var(--db-text-primary)'; }}
-                  >{rec.title}</Link>
-                  {isRead && (
-                    <button
-                      onClick={() => markUnread(id, 'recommendation', targetId)}
-                      style={{
-                        fontSize: 10, color: 'var(--db-text-tertiary)', background: 'none',
-                        border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline',
-                      }}
-                      aria-label="Mark unread"
-                    >
-                      Mark unread
-                    </button>
-                  )}
+                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--db-text-primary)'; }}
+                  >
+                    <UnreadDot unread={!isRead} />
+                    <span>{rec.title}</span>
+                  </Link>
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={String(idx)}
                     feedback={feedbackMap[`recommendation:${idx}:${rec.discoveryId}`]} />
