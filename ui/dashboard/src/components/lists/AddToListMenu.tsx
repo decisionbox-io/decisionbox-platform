@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Popover, Button, Stack, TextInput, Checkbox, Loader, ScrollArea, Text, Divider,
+  Popover, Button, Stack, Checkbox, Loader, ScrollArea, Text, Divider,
 } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
 import { api, BookmarkList } from '@/lib/api';
+import CreateListModal from './CreateListModal';
 
 interface Props {
   projectId: string;
@@ -34,8 +35,6 @@ export default function AddToListMenu({
   const [busy, setBusy] = useState<Set<string>>(new Set());
 
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [submittingNew, setSubmittingNew] = useState(false);
 
   async function load() {
     try {
@@ -95,20 +94,14 @@ export default function AddToListMenu({
     }
   }
 
-  async function createAndAdd() {
-    const name = newName.trim();
-    if (!name) return;
-    setSubmittingNew(true);
-    try {
-      const created = await api.createBookmarkList(projectId, { name });
-      await api.addBookmark(projectId, created.id, { discovery_id: discoveryId, target_type: targetType, target_id: targetId });
-      setNewName('');
-      setCreating(false);
-      // Refresh to pick up the new list with membership.
-      await load();
-    } finally {
-      setSubmittingNew(false);
-    }
+  // When the create modal emits onCreated, add the current target to the
+  // brand-new list so the full create → bookmark flow happens in one step.
+  async function handleListCreated(list: BookmarkList) {
+    await api.addBookmark(projectId, list.id, {
+      discovery_id: discoveryId, target_type: targetType, target_id: targetId,
+    });
+    // Refresh so the new list shows up with its checkbox already checked.
+    await load();
   }
 
   return (
@@ -150,44 +143,29 @@ export default function AddToListMenu({
               </ScrollArea.Autosize>
             )}
             {lists.length > 0 && <Divider my={4} />}
-            {creating ? (
-              <Stack gap={6}>
-                <TextInput
-                  size="xs"
-                  placeholder="List name"
-                  value={newName}
-                  onChange={e => setNewName(e.currentTarget.value)}
-                  maxLength={200}
-                  data-autofocus
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') createAndAdd();
-                    if (e.key === 'Escape') { setCreating(false); setNewName(''); }
-                  }}
-                />
-                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                  <Button size="xs" variant="default" onClick={() => { setCreating(false); setNewName(''); }} disabled={submittingNew}>
-                    Cancel
-                  </Button>
-                  <Button size="xs" onClick={createAndAdd} loading={submittingNew} disabled={!newName.trim()}>
-                    Create
-                  </Button>
-                </div>
-              </Stack>
-            ) : (
-              <Button
-                size="xs"
-                variant="subtle"
-                leftSection={<IconPlus size={14} />}
-                onClick={() => setCreating(true)}
-                justify="flex-start"
-                fullWidth
-              >
-                New list…
-              </Button>
-            )}
+            <Button
+              size="xs"
+              variant="subtle"
+              leftSection={<IconPlus size={14} />}
+              onClick={() => { setOpened(false); setCreating(true); }}
+              justify="flex-start"
+              fullWidth
+            >
+              New list…
+            </Button>
           </Stack>
         )}
       </Popover.Dropdown>
+
+      {/* Shared create-list modal — same form as the /lists page. Opens when
+          the user clicks "New list…" inside the popover. onCreated fires after
+          the list is saved, adding the current target in one flow. */}
+      <CreateListModal
+        projectId={projectId}
+        opened={creating}
+        onClose={() => setCreating(false)}
+        onCreated={handleListCreated}
+      />
     </Popover>
   );
 }

@@ -3,10 +3,11 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { Button, Loader, Modal, TextInput, Textarea, ColorInput, Stack, Group, Text } from '@mantine/core';
-import { IconBookmark, IconPlus } from '@tabler/icons-react';
+import { Button, Loader, Menu, ActionIcon, Modal, Text, Group } from '@mantine/core';
+import { IconBookmark, IconPlus, IconDots, IconTrash } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { EmptyState, SectionHeader } from '@/components/common/UIComponents';
+import CreateListModal from '@/components/lists/CreateListModal';
 import { api, BookmarkList } from '@/lib/api';
 
 export default function ListsPage() {
@@ -15,10 +16,8 @@ export default function ListsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newDescription, setNewDescription] = useState('');
-  const [newColor, setNewColor] = useState('#2563eb');
-  const [submitting, setSubmitting] = useState(false);
+  // Deleting-from-card-menu state. Shared confirm dialog, one list at a time.
+  const [deleteTarget, setDeleteTarget] = useState<BookmarkList | null>(null);
 
   async function load() {
     try {
@@ -32,27 +31,18 @@ export default function ListsPage() {
 
   useEffect(() => {
     load();
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
-  async function handleCreate() {
-    const name = newName.trim();
-    if (!name) return;
-    setSubmitting(true);
+  async function confirmDelete() {
+    if (!deleteTarget) return;
     try {
-      await api.createBookmarkList(id, {
-        name,
-        description: newDescription.trim() || undefined,
-        color: newColor || undefined,
-      });
-      setCreating(false);
-      setNewName('');
-      setNewDescription('');
-      setNewColor('#2563eb');
+      await api.deleteBookmarkList(id, deleteTarget.id);
+      setDeleteTarget(null);
       await load();
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setSubmitting(false);
+      setDeleteTarget(null);
     }
   }
 
@@ -114,13 +104,57 @@ export default function ListsPage() {
                   borderLeft: `3px solid ${list.color || 'var(--db-border-strong)'}`,
                   height: '100%',
                 }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
+                // Only touch the three non-coloured borders on hover; setting
+                // shorthand borderColor would wipe out the accent left border.
+                onMouseEnter={e => {
+                  e.currentTarget.style.borderTopColor = 'var(--db-border-strong)';
+                  e.currentTarget.style.borderRightColor = 'var(--db-border-strong)';
+                  e.currentTarget.style.borderBottomColor = 'var(--db-border-strong)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.borderTopColor = 'var(--db-border-default)';
+                  e.currentTarget.style.borderRightColor = 'var(--db-border-default)';
+                  e.currentTarget.style.borderBottomColor = 'var(--db-border-default)';
+                }}
               >
                 <div style={{
-                  fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)',
-                  marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>{list.name}</div>
+                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8,
+                  marginBottom: 4,
+                }}>
+                  <div style={{
+                    fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    flex: 1, minWidth: 0,
+                  }}>{list.name}</div>
+                  {/* Per-card menu. Must stopPropagation so clicks don't
+                      navigate into the list detail page (the card is wrapped
+                      in a Link). */}
+                  <Menu position="bottom-end" width={140} withinPortal>
+                    <Menu.Target>
+                      <ActionIcon
+                        variant="subtle"
+                        size="sm"
+                        aria-label="List actions"
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+                      >
+                        <IconDots size={14} />
+                      </ActionIcon>
+                    </Menu.Target>
+                    <Menu.Dropdown>
+                      <Menu.Item
+                        color="red"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={e => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDeleteTarget(list);
+                        }}
+                      >
+                        Delete
+                      </Menu.Item>
+                    </Menu.Dropdown>
+                  </Menu>
+                </div>
                 {list.description && (
                   <div style={{
                     fontSize: 12, color: 'var(--db-text-tertiary)', marginBottom: 8,
@@ -140,38 +174,32 @@ export default function ListsPage() {
         </div>
       )}
 
-      <Modal opened={creating} onClose={() => setCreating(false)} title="New list" centered>
-        <Stack gap="sm">
-          <TextInput
-            label="Name"
-            placeholder="Retention ideas"
-            value={newName}
-            onChange={e => setNewName(e.currentTarget.value)}
-            required
-            maxLength={200}
-            data-autofocus
-          />
-          <Textarea
-            label="Description"
-            placeholder="Optional — what kind of items will you collect here?"
-            value={newDescription}
-            onChange={e => setNewDescription(e.currentTarget.value)}
-            autosize
-            minRows={2}
-          />
-          <ColorInput
-            label="Color"
-            value={newColor}
-            onChange={setNewColor}
-            format="hex"
-            swatches={['#2563eb', '#16a34a', '#dc2626', '#ea580c', '#9333ea', '#0891b2']}
-          />
-          <Group justify="flex-end" mt="sm">
-            <Button variant="default" onClick={() => setCreating(false)} disabled={submitting}>Cancel</Button>
-            <Button onClick={handleCreate} loading={submitting} disabled={!newName.trim()}>Create</Button>
-          </Group>
-          {error && <Text size="xs" c="red">{error}</Text>}
-        </Stack>
+      <CreateListModal
+        projectId={id}
+        opened={creating}
+        onClose={() => setCreating(false)}
+        onCreated={() => load()}
+      />
+
+      <Modal
+        opened={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete this list?"
+        centered
+      >
+        {deleteTarget && (
+          <>
+            <Text size="sm" mb="md">
+              This will permanently remove &quot;{deleteTarget.name}&quot; and all
+              {' '}{deleteTarget.item_count} bookmark{deleteTarget.item_count === 1 ? '' : 's'} in it.
+              The underlying insights and recommendations are not affected.
+            </Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+              <Button color="red" onClick={confirmDelete}>Delete</Button>
+            </Group>
+          </>
+        )}
       </Modal>
     </Shell>
   );

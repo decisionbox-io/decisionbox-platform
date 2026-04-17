@@ -80,7 +80,10 @@ describe('AddToListMenu', () => {
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(['l1']));
   });
 
-  it('creating a new list via the inline form adds the item in one flow', async () => {
+  it('creating a new list via the shared modal adds the item in one flow', async () => {
+    // "New list…" in the popover opens CreateListModal (same component used
+    // by /lists page). On submit the modal fires onCreated, which in
+    // AddToListMenu bookmarks the current target into the new list.
     mockedApi.listBookmarkLists.mockResolvedValue([]);
     mockedApi.listsContaining.mockResolvedValue([]);
     mockedApi.createBookmarkList.mockResolvedValue({
@@ -94,18 +97,19 @@ describe('AddToListMenu', () => {
 
     mountMenu();
     fireEvent.click(screen.getByText('trigger'));
-
-    // First render after open fetches (empty list case). Click "New list…".
     fireEvent.click(await screen.findByRole('button', { name: /New list/i }));
 
-    const input = await screen.findByPlaceholderText('List name');
+    // Modal's name field shares the same placeholder as the /lists page.
+    const input = await screen.findByPlaceholderText('Retention ideas');
     fireEvent.change(input, { target: { value: 'My ideas' } });
-    // Mantine Button's accessible name is computed from the nested label span,
-    // which jsdom's role resolver sometimes misses — fall back to text match.
+    // Mantine Button's accessible name is computed from a nested label span
+    // that jsdom's role resolver sometimes misses — fall back to text match.
     fireEvent.click((await screen.findByText('Create')).closest('button')!);
 
     await waitFor(() => {
-      expect(mockedApi.createBookmarkList).toHaveBeenCalledWith('p1', { name: 'My ideas' });
+      expect(mockedApi.createBookmarkList).toHaveBeenCalledWith('p1', {
+        name: 'My ideas', description: undefined, color: '#2563eb',
+      });
       expect(mockedApi.addBookmark).toHaveBeenCalledWith('p1', 'new-list', {
         discovery_id: 'd1', target_type: 'insight', target_id: 'i1',
       });
@@ -119,6 +123,7 @@ describe('AddToListMenu', () => {
     mountMenu();
     fireEvent.click(screen.getByText('trigger'));
     fireEvent.click(await screen.findByRole('button', { name: /New list/i }));
+    // Modal opens — Create button starts disabled because the name is empty.
     const createBtn = (await screen.findByText('Create')).closest('button')!;
     expect(createBtn).toBeDisabled();
   });

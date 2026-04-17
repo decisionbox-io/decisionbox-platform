@@ -72,7 +72,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
 	insights := handler.NewInsightsHandler(insightRepo)
 	recommendations := handler.NewRecommendationsHandler(recommendationRepo)
-	lists := handler.NewListsHandler(bookmarkListRepo, bookmarkRepo, insightRepo, recommendationRepo)
+	lists := handler.NewListsHandler(bookmarkListRepo, bookmarkRepo, insightRepo, recommendationRepo, discoveryRepo)
 	reads := handler.NewReadsHandler(readMarkRepo)
 	searchHistoryRepo := database.NewSearchHistoryRepository(db)
 	askSessionRepo := database.NewAskSessionRepository(db)

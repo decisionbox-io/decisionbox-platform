@@ -115,7 +115,7 @@ export default function InsightsListPage() {
     switch (sortBy) {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
       case 'Confidence': return (b.confidence || 0) - (a.confidence || 0);
-      case 'Players affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Date': return new Date(b.discoveryDate).getTime() - new Date(a.discoveryDate).getTime();
       default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
@@ -155,7 +155,7 @@ export default function InsightsListPage() {
         ))}
         <span style={{ flex: 1 }} />
         <SortDropdown value={sortBy} onChange={setSortBy}
-          options={['Severity', 'Confidence', 'Players affected', 'Date']} />
+          options={['Severity', 'Confidence', 'Users affected', 'Date']} />
       </div>
 
       {/* Semantic search results */}

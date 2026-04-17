@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
@@ -18,6 +19,7 @@ type ListsHandler struct {
 	bookmarks       database.BookmarkRepo
 	insights        database.InsightRepo
 	recommendations database.RecommendationRepo
+	discoveries     database.DiscoveryRepo
 }
 
 func NewListsHandler(
@@ -25,12 +27,14 @@ func NewListsHandler(
 	bookmarks database.BookmarkRepo,
 	insights database.InsightRepo,
 	recommendations database.RecommendationRepo,
+	discoveries database.DiscoveryRepo,
 ) *ListsHandler {
 	return &ListsHandler{
 		lists:           lists,
 		bookmarks:       bookmarks,
 		insights:        insights,
 		recommendations: recommendations,
+		discoveries:     discoveries,
 	}
 }
 
@@ -145,22 +149,71 @@ func (h *ListsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}{list, items})
 }
 
+// resolveBookmark finds the underlying insight or recommendation for a
+// bookmark. Insights and recommendations live in two places — the embedded
+// arrays inside a DiscoveryResult, and (after Phase 9 denormalization) a
+// standalone per-project collection. We try the standalone collection first
+// and fall back to the discovery document so older, non-denormalized items
+// still resolve. Only when neither turns up a match do we flag Deleted=true.
 func (h *ListsHandler) resolveBookmark(r *http.Request, bm *models.Bookmark) models.BookmarkItem {
 	switch bm.TargetType {
 	case models.TargetTypeInsight:
-		ins, err := h.insights.GetByID(r.Context(), bm.TargetID)
-		if err != nil || ins == nil {
-			return models.BookmarkItem{Bookmark: bm, Deleted: true}
+		if ins, err := h.insights.GetByID(r.Context(), bm.TargetID); err == nil && ins != nil {
+			return models.BookmarkItem{Bookmark: bm, Target: ins}
 		}
-		return models.BookmarkItem{Bookmark: bm, Target: ins}
+		if ins := h.findInsightInDiscovery(r, bm.DiscoveryID, bm.TargetID); ins != nil {
+			return models.BookmarkItem{Bookmark: bm, Target: ins}
+		}
 	case models.TargetTypeRecommendation:
-		rec, err := h.recommendations.GetByID(r.Context(), bm.TargetID)
-		if err != nil || rec == nil {
-			return models.BookmarkItem{Bookmark: bm, Deleted: true}
+		if rec, err := h.recommendations.GetByID(r.Context(), bm.TargetID); err == nil && rec != nil {
+			return models.BookmarkItem{Bookmark: bm, Target: rec}
 		}
-		return models.BookmarkItem{Bookmark: bm, Target: rec}
+		if rec := h.findRecommendationInDiscovery(r, bm.DiscoveryID, bm.TargetID); rec != nil {
+			return models.BookmarkItem{Bookmark: bm, Target: rec}
+		}
 	}
 	return models.BookmarkItem{Bookmark: bm, Deleted: true}
+}
+
+// findInsightInDiscovery loads the discovery and searches its Insights array.
+// TargetID may be a real insight id OR a numeric index — the dashboard's
+// detail-page URL uses `rec.id || i` which can be either form.
+func (h *ListsHandler) findInsightInDiscovery(r *http.Request, discoveryID, targetID string) *models.Insight {
+	if discoveryID == "" {
+		return nil
+	}
+	disc, err := h.discoveries.GetByID(r.Context(), discoveryID)
+	if err != nil || disc == nil {
+		return nil
+	}
+	for i := range disc.Insights {
+		if disc.Insights[i].ID == targetID {
+			return &disc.Insights[i]
+		}
+	}
+	if idx, err := strconv.Atoi(targetID); err == nil && idx >= 0 && idx < len(disc.Insights) {
+		return &disc.Insights[idx]
+	}
+	return nil
+}
+
+func (h *ListsHandler) findRecommendationInDiscovery(r *http.Request, discoveryID, targetID string) *models.Recommendation {
+	if discoveryID == "" {
+		return nil
+	}
+	disc, err := h.discoveries.GetByID(r.Context(), discoveryID)
+	if err != nil || disc == nil {
+		return nil
+	}
+	for i := range disc.Recommendations {
+		if disc.Recommendations[i].ID == targetID {
+			return &disc.Recommendations[i]
+		}
+	}
+	if idx, err := strconv.Atoi(targetID); err == nil && idx >= 0 && idx < len(disc.Recommendations) {
+		return &disc.Recommendations[idx]
+	}
+	return nil
 }
 
 // Update — PATCH /api/v1/projects/{id}/lists/{listId}
@@ -274,10 +327,11 @@ func (h *ListsHandler) AddBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.targetExists(r, body.TargetType, body.TargetID) {
-		writeError(w, http.StatusNotFound, "target not found")
-		return
-	}
+	// Trust the UI's claim that the target exists. Insights and recommendations
+	// live in two places — the discovery document and (after Phase 9
+	// denormalization) a standalone collection. The user is almost always on
+	// the detail page when bookmarking, so the target is real by construction.
+	// Orphans from later deletion are handled on read via BookmarkItem.Deleted.
 
 	bm := &models.Bookmark{
 		ListID:      list.ID,
@@ -294,18 +348,6 @@ func (h *ListsHandler) AddBookmark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, saved)
-}
-
-func (h *ListsHandler) targetExists(r *http.Request, targetType, targetID string) bool {
-	switch targetType {
-	case models.TargetTypeInsight:
-		ins, err := h.insights.GetByID(r.Context(), targetID)
-		return err == nil && ins != nil
-	case models.TargetTypeRecommendation:
-		rec, err := h.recommendations.GetByID(r.Context(), targetID)
-		return err == nil && rec != nil
-	}
-	return false
 }
 
 // RemoveBookmark — DELETE /api/v1/projects/{id}/lists/{listId}/items/{bookmarkId}

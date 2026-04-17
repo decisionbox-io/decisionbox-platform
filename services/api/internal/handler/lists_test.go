@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -34,7 +35,29 @@ func newAuthedRequest(method, url, body, userSub string) (*http.Request, *httpte
 func newListsHandler(lists *mockBookmarkListRepo, bookmarks *mockBookmarkRepo) (*ListsHandler, *mockInsightRepo, *mockRecommendationRepo) {
 	ins := &mockInsightRepo{}
 	rec := &mockRecommendationRepo{}
-	return NewListsHandler(lists, bookmarks, ins, rec), ins, rec
+	// Tests that exercise the discovery-fallback path (e.g. bookmarking an
+	// insight that only exists in a discovery document) should provide a
+	// non-nil DiscoveryRepo; the orphan tests below pass nil and exercise the
+	// "everything is missing → Deleted" path.
+	return NewListsHandler(lists, bookmarks, ins, rec, &mockDiscoveryRepoForLists{}), ins, rec
+}
+
+// mockDiscoveryRepoForLists is a tiny stub that returns (nil, nil) for every
+// discovery — the resolveBookmark fallback should gracefully treat that as
+// "not found" and continue to the orphan path.
+type mockDiscoveryRepoForLists struct{}
+
+func (m *mockDiscoveryRepoForLists) GetByID(_ context.Context, _ string) (*models.DiscoveryResult, error) {
+	return nil, nil
+}
+func (m *mockDiscoveryRepoForLists) GetLatest(_ context.Context, _ string) (*models.DiscoveryResult, error) {
+	return nil, nil
+}
+func (m *mockDiscoveryRepoForLists) GetByDate(_ context.Context, _ string, _ time.Time) (*models.DiscoveryResult, error) {
+	return nil, nil
+}
+func (m *mockDiscoveryRepoForLists) List(_ context.Context, _ string, _ int) ([]*models.DiscoveryResult, error) {
+	return nil, nil
 }
 
 // --- Create ---
@@ -516,7 +539,11 @@ func TestLists_AddBookmark_ListWrongUser_404(t *testing.T) {
 	}
 }
 
-func TestLists_AddBookmark_TargetNotFound_404(t *testing.T) {
+func TestLists_AddBookmark_UnknownTargetSucceeds(t *testing.T) {
+	// The handler no longer validates target existence on insert — insights
+	// and recommendations live in two places (discovery doc + standalone
+	// collection after denormalization), and the UI is already on the detail
+	// page when bookmarking. Orphans are surfaced on read via Deleted=true.
 	lists := newMockBookmarkListRepo()
 	bms := newMockBookmarkRepo()
 	h, _, _ := newListsHandler(lists, bms)
@@ -530,8 +557,8 @@ func TestLists_AddBookmark_TargetNotFound_404(t *testing.T) {
 	req.SetPathValue("listId", list.ID)
 	h.AddBookmark(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 for missing target", w.Code)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201", w.Code)
 	}
 }
 

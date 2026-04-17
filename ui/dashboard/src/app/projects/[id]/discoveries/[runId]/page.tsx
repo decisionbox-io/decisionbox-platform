@@ -70,7 +70,7 @@ export default function DiscoveryDetailPage() {
     switch (sortBy) {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
       case 'Confidence': return b.confidence - a.confidence;
-      case 'Players affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Area': return a.analysis_area.localeCompare(b.analysis_area);
       default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
@@ -190,7 +190,7 @@ export default function DiscoveryDetailPage() {
                   <Th width="35%">Insight</Th>
                   <Th>Severity</Th>
                   <Th>Area</Th>
-                  <Th align="right">Players affected</Th>
+                  <Th align="right">Users affected</Th>
                   <Th>Confidence</Th>
                   <Th width="70px">Feedback</Th>
                 </tr>
@@ -550,7 +550,7 @@ function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'r
 
 function SortDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, { toggle, close }] = useDisclosure(false);
-  const options = ['Severity', 'Confidence', 'Players affected', 'Area'];
+  const options = ['Severity', 'Confidence', 'Users affected', 'Area'];
   return (
     <div style={{ position: 'relative' }}>
       <button onClick={toggle} style={{
