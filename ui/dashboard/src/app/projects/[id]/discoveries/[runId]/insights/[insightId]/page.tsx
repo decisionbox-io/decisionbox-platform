@@ -3,23 +3,62 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  Accordion, Badge, Box, Button, Card, Code, Grid, Group, Loader, Stack, Table, Text, Title,
+  Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
-  IconAlertTriangle, IconArrowLeft, IconCheck, IconDatabase, IconSearch, IconX,
+  IconAlertTriangle, IconArrowLeft, IconCheck, IconCode, IconDatabase, IconSearch, IconX,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
-import TechnicalDetails from '@/components/common/TechnicalDetails';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
+
+// CompactValidationCard is sized for the right sidebar (and the narrow-screen
+// fallback that lives at the bottom of the main column). Trades the big
+// padding + wide Group layout of the old inline Validation card for a tighter
+// presentation — status badge, counts on one row, reasoning clipped — so it
+// sits next to the related-items sidebar without dominating.
+function CompactValidationCard({ validation }: { validation: NonNullable<Insight['validation']> }) {
+  const statusColor = validation.status === 'confirmed' ? 'green'
+    : validation.status === 'adjusted' ? 'yellow'
+    : validation.status === 'rejected' ? 'red' : 'gray';
+  const statusIcon = validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />;
+  return (
+    <Card withBorder p="md">
+      <Group justify="space-between" mb={6}>
+        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.5px' }}>
+          Validation
+        </Text>
+        <Badge size="sm" color={statusColor} leftSection={statusIcon} variant="light">
+          {validation.status}
+        </Badge>
+      </Group>
+      {(validation.original_count != null || validation.verified_count != null) && (
+        <Group gap={4} mb={6}>
+          {validation.original_count != null && (
+            <Text size="xs" c="dimmed">{validation.original_count.toLocaleString()}</Text>
+          )}
+          {validation.verified_count != null && (
+            <>
+              <Text size="xs" c="dimmed">→</Text>
+              <Text size="xs" fw={600}>{validation.verified_count.toLocaleString()} verified</Text>
+            </>
+          )}
+        </Group>
+      )}
+      {validation.reasoning && (
+        <Text size="xs" c="dimmed" lineClamp={3}>{validation.reasoning}</Text>
+      )}
+    </Card>
+  );
+}
 
 export default function InsightDetailPage() {
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
@@ -42,6 +81,10 @@ export default function InsightDetailPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
+  // Technical details (SQL queries, exploration steps, token counts) are
+  // opened explicitly via a button in the sidebar. The Drawer gets the full
+  // viewport width, so code blocks don't have to squeeze into the sidebar.
+  const [techOpen, setTechOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -159,47 +202,14 @@ export default function InsightDetailPage() {
       <Grid gutter="lg">
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        {/* Description */}
+        {/* Description — the narrative "what". */}
         <Card withBorder p="lg">
           <Text size="sm">{insight.description}</Text>
         </Card>
 
-        {/* Indicators */}
-        {insight.indicators && insight.indicators.length > 0 && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="sm">Key Indicators</Title>
-            <Stack gap={6}>
-              {insight.indicators.map((ind, i) => (
-                <Text key={i} size="sm">- {ind}</Text>
-              ))}
-            </Stack>
-          </Card>
-        )}
-
-        {/* Metrics */}
-        {insight.metrics && Object.keys(insight.metrics).length > 0 && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="sm">Metrics</Title>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Metric</Table.Th>
-                  <Table.Th>Value</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {Object.entries(insight.metrics).map(([key, value]) => (
-                  <Table.Tr key={key}>
-                    <Table.Td><Text size="sm">{key.replace(/_/g, ' ')}</Text></Table.Td>
-                    <Table.Td><Text size="sm" fw={600}>{String(value)}</Text></Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Card>
-        )}
-
-        {/* Assessment */}
+        {/* Assessment — risk, confidence, target segment. Promoted above
+            Indicators/Metrics so skimming readers see the decision-ready
+            numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
           <Group gap="xl">
@@ -222,54 +232,111 @@ export default function InsightDetailPage() {
           </Group>
         </Card>
 
-        {/* Validation */}
-        {insight.validation && (
+        {/* Key Indicators — plain-language bullets supporting the claim. */}
+        {insight.indicators && insight.indicators.length > 0 && (
           <Card withBorder p="lg">
-            <Group mb="sm">
-              <Title order={4}>Validation</Title>
-              <Badge
-                color={insight.validation.status === 'confirmed' ? 'green' :
-                       insight.validation.status === 'adjusted' ? 'yellow' :
-                       insight.validation.status === 'rejected' ? 'red' : 'gray'}
-                leftSection={insight.validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />}>
-                {insight.validation.status}
-              </Badge>
-            </Group>
-            {(insight.validation.original_count || insight.validation.verified_count) && (
-              <Group gap="xl" mb="sm">
-                {insight.validation.original_count != null && (
-                  <div>
-                    <Text size="xs" c="dimmed">Claimed Count</Text>
-                    <Text size="sm" fw={600}>{insight.validation.original_count.toLocaleString()}</Text>
-                  </div>
-                )}
-                {insight.validation.verified_count != null && (
-                  <div>
-                    <Text size="xs" c="dimmed">Verified Count</Text>
-                    <Text size="sm" fw={600}>{insight.validation.verified_count.toLocaleString()}</Text>
-                  </div>
-                )}
-              </Group>
-            )}
-            {insight.validation.reasoning && (
-              <Text size="xs" c="dimmed">{insight.validation.reasoning}</Text>
-            )}
+            <Title order={4} mb="sm">Key Indicators</Title>
+            <Stack gap={6}>
+              {insight.indicators.map((ind, i) => (
+                <Text key={i} size="sm">- {ind}</Text>
+              ))}
+            </Stack>
           </Card>
         )}
 
-        {/* Related recommendations and similar insights are rendered in the
-            right sidebar (or top chip strip on narrow screens). The inline
-            cards that used to live here were removed to avoid double-rendering. */}
+        {/* Metrics — raw numbers for readers who want to dig in. */}
+        {insight.metrics && Object.keys(insight.metrics).length > 0 && (
+          <Card withBorder p="lg">
+            <Title order={4} mb="sm">Metrics</Title>
+            <Table>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Metric</Table.Th>
+                  <Table.Th>Value</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {Object.entries(insight.metrics).map(([key, value]) => (
+                  <Table.Tr key={key}>
+                    <Table.Td><Text size="sm">{key.replace(/_/g, ' ')}</Text></Table.Td>
+                    <Table.Td><Text size="sm" fw={600}>{String(value)}</Text></Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Card>
+        )}
 
-        {/* How This Insight Was Found — SQL queries, exploration steps,
-            token counts. Collapsed by default so non-technical users see a
-            clean narrative; power users click to reveal. */}
-        <TechnicalDetails label="technical details">
-        <Title order={3}>
-          <IconSearch size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-          How This Insight Was Found
-        </Title>
+        {/* Narrow-screen fallback: Validation + Technical Details trigger.
+            On ≥ lg the sidebar hosts both; below that we render them inline
+            at the bottom of the main column so they're still accessible. */}
+        <Box hiddenFrom="lg">
+          <Stack gap="md">
+            {insight.validation && (
+              <CompactValidationCard validation={insight.validation} />
+            )}
+            <Button
+              variant="subtle"
+              size="sm"
+              leftSection={<IconCode size={14} />}
+              onClick={() => setTechOpen(true)}
+              w="fit-content"
+            >
+              Show technical details
+            </Button>
+          </Stack>
+        </Box>
 
+        {insight.discovered_at && (
+          <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
+        )}
+      </Stack>
+        </Grid.Col>
+
+        {/* Right sidebar — navigation (related) + supporting content
+            (validation + tech-details trigger). Sticky so it stays in view
+            as the user scrolls the main narrative. */}
+        <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
+          <Box style={{ position: 'sticky', top: 16 }}>
+            <Stack gap="md">
+              <RelatedSidebar
+                relatedLabel="Related Recommendations"
+                related={relatedItems}
+              />
+              {insight.validation && (
+                <CompactValidationCard validation={insight.validation} />
+              )}
+              <Button
+                variant="subtle"
+                size="sm"
+                leftSection={<IconCode size={14} />}
+                onClick={() => setTechOpen(true)}
+                justify="flex-start"
+                fullWidth
+              >
+                Show technical details
+              </Button>
+            </Stack>
+          </Box>
+        </Grid.Col>
+      </Grid>
+
+      {/* Technical Details Drawer — full-viewport height on the right. The
+          SQL code blocks inside need width they wouldn't get in a 240px
+          sidebar, and wrapping them in a Drawer keeps the reader's main
+          scroll position intact when they close it. */}
+      <Drawer
+        opened={techOpen}
+        onClose={() => setTechOpen(false)}
+        position="right"
+        size="lg"
+        title={
+          <Group gap="xs">
+            <IconSearch size={18} />
+            <Text fw={600}>How This Insight Was Found</Text>
+          </Group>
+        }
+      >
         <Accordion variant="separated" defaultValue="exploration">
           {/* Source exploration queries (cited by the LLM) */}
           {sourceSteps.length > 0 && (
@@ -382,28 +449,7 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
         </Accordion>
-        </TechnicalDetails>
-
-        {insight.discovered_at && (
-          <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
-        )}
-      </Stack>
-        </Grid.Col>
-
-        {/* Right sidebar — sticky TOC of related recommendations. Similar
-            insights are NOT here: they render as rich cards below the grid
-            so the user gets a description preview before clicking through.
-            Hidden below lg; the RelatedChipStrip above the content column
-            takes its place on narrow viewports. */}
-        <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
-          <Box style={{ position: 'sticky', top: 16 }}>
-            <RelatedSidebar
-              relatedLabel="Related Recommendations"
-              related={relatedItems}
-            />
-          </Box>
-        </Grid.Col>
-      </Grid>
+      </Drawer>
 
       {/* Similar Insights — full-width exploration section. The content
           column is capped at ~720px (9/12 of the Grid), so this sits below
