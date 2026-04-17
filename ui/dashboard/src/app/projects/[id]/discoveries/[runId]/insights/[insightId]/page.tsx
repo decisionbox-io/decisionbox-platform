@@ -12,6 +12,7 @@ import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
+import SimilarItems from '@/components/lists/SimilarItems';
 import TechnicalDetails from '@/components/common/TechnicalDetails';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
@@ -104,7 +105,11 @@ export default function InsightDetailPage() {
     (r) => r.related_insight_ids?.includes(insight.id)
   );
 
-  // Shape related + similar for the sidebar / chip strip.
+  // Shape related items for the right sidebar / mobile chip strip. Similar
+  // (semantic-search) items are rendered separately below the main content
+  // as rich cards — they're exploration, not direct navigation, so they
+  // deserve the space to show a description snippet instead of being
+  // crammed into a sticky column.
   const relatedItems: RelatedItem[] = relatedRecs.map((rec, i) => ({
     id: String(rec.id || i),
     title: rec.title,
@@ -114,15 +119,6 @@ export default function InsightDetailPage() {
       color: rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue',
     },
     subtitle: rec.expected_impact?.estimated_improvement,
-  }));
-  const similarItems: RelatedItem[] = similarInsights.map(sim => ({
-    id: sim.id,
-    title: sim.name,
-    href: `/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`,
-    badge: sim.severity
-      ? { label: sim.severity, color: severityColor[sim.severity] || 'gray' }
-      : undefined,
-    subtitle: sim.analysis_area,
   }));
 
   return (
@@ -157,7 +153,6 @@ export default function InsightDetailPage() {
         <RelatedChipStrip
           relatedLabel="Related Recommendations"
           related={relatedItems}
-          similar={similarItems}
         />
       </Box>
 
@@ -395,20 +390,31 @@ export default function InsightDetailPage() {
       </Stack>
         </Grid.Col>
 
-        {/* Right sidebar — sticky TOC of related recommendations and similar
-            insights. Hidden below lg; the RelatedChipStrip above the content
-            column takes its place on narrow viewports. */}
+        {/* Right sidebar — sticky TOC of related recommendations. Similar
+            insights are NOT here: they render as rich cards below the grid
+            so the user gets a description preview before clicking through.
+            Hidden below lg; the RelatedChipStrip above the content column
+            takes its place on narrow viewports. */}
         <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
           <Box style={{ position: 'sticky', top: 16 }}>
             <RelatedSidebar
               relatedLabel="Related Recommendations"
               related={relatedItems}
-              similarLabel="Similar Insights"
-              similar={similarItems}
             />
           </Box>
         </Grid.Col>
       </Grid>
+
+      {/* Similar Insights — full-width exploration section. The content
+          column is capped at ~720px (9/12 of the Grid), so this sits below
+          that width and visually complements rather than sprawls. */}
+      <div style={{ maxWidth: 800 }}>
+        <SimilarItems
+          label="Similar Insights"
+          items={similarInsights}
+          hrefFor={(sim) => `/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
+        />
+      </div>
     </Shell>
   );
 }

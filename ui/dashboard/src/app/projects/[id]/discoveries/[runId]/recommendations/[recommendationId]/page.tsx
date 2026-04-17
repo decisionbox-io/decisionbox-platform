@@ -10,6 +10,7 @@ import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
+import SimilarItems from '@/components/lists/SimilarItems';
 import { markRead } from '@/lib/readState';
 import {
   Pill, normalizeConfidence,
@@ -90,7 +91,9 @@ export default function RecommendationDetailPage() {
     .map(rid => (discovery?.insights || []).find(i => i.id === rid))
     .filter(Boolean) as Insight[];
 
-  // Shape related insights and similar recommendations for the sidebar.
+  // Shape related insights for the sticky right sidebar. Similar
+  // recommendations render separately below the grid as rich cards — see
+  // the twin comment on the insight detail page.
   const relatedItems: RelatedItem[] = relatedInsights.map(insight => ({
     id: insight.id,
     title: insight.name,
@@ -101,12 +104,6 @@ export default function RecommendationDetailPage() {
     subtitle: insight.affected_count > 0
       ? `${insight.affected_count.toLocaleString()} affected`
       : undefined,
-  }));
-  const similarItems: RelatedItem[] = similarRecs.map(sim => ({
-    id: sim.id,
-    title: sim.name,
-    href: `/projects/${id}/discoveries/${sim.discovery_id}/recommendations/${sim.id}`,
-    subtitle: sim.analysis_area,
   }));
 
   return (
@@ -140,7 +137,6 @@ export default function RecommendationDetailPage() {
         <RelatedChipStrip
           relatedLabel="Related Insights"
           related={relatedItems}
-          similar={similarItems}
         />
       </Box>
 
@@ -226,12 +222,20 @@ export default function RecommendationDetailPage() {
             <RelatedSidebar
               relatedLabel="Related Insights"
               related={relatedItems}
-              similarLabel="Similar Recommendations"
-              similar={similarItems}
             />
           </Box>
         </Grid.Col>
       </Grid>
+
+      {/* Similar Recommendations — full-width exploration section below
+          the grid. Twin of the same block on the insight detail page. */}
+      <div style={{ maxWidth: 800 }}>
+        <SimilarItems
+          label="Similar Recommendations"
+          items={similarRecs}
+          hrefFor={(sim) => `/projects/${id}/discoveries/${sim.discovery_id}/recommendations/${sim.id}`}
+        />
+      </div>
     </Shell>
   );
 }
