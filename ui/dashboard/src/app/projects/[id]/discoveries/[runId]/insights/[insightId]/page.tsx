@@ -11,6 +11,7 @@ import {
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import BookmarkButton from '@/components/lists/BookmarkButton';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
@@ -93,6 +94,7 @@ export default function InsightDetailPage() {
             )}
             <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
               feedback={feedback} onUpdate={setFeedback} />
+            <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
           </Group>
         </div>
 

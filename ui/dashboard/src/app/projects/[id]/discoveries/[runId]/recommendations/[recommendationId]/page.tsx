@@ -9,6 +9,7 @@ import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import BookmarkButton from '@/components/lists/BookmarkButton';
 import {
   Pill, normalizeConfidence,
 } from '@/components/common/UIComponents';
@@ -94,6 +95,7 @@ export default function RecommendationDetailPage() {
             {recommendation.category && <Badge variant="outline">{recommendation.category}</Badge>}
             <FeedbackButtons projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId}
               feedback={feedback} onUpdate={setFeedback} />
+            <BookmarkButton projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId} />
           </Group>
         </div>
 
