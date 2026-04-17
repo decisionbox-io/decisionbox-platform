@@ -12,6 +12,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
+import TechnicalDetails from '@/components/common/TechnicalDetails';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
@@ -263,7 +264,10 @@ export default function InsightDetailPage() {
           );
         })()}
 
-        {/* How This Insight Was Found */}
+        {/* How This Insight Was Found — SQL queries, exploration steps,
+            token counts. Collapsed by default so non-technical users see a
+            clean narrative; power users click to reveal. */}
+        <TechnicalDetails label="technical details">
         <Title order={3}>
           <IconSearch size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
           How This Insight Was Found
@@ -381,6 +385,7 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
         </Accordion>
+        </TechnicalDetails>
 
         {insight.discovered_at && (
           <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
