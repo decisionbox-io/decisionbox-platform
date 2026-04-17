@@ -10,6 +10,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
+import { useReadSet, markUnread } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
@@ -35,6 +36,7 @@ export default function InsightsListPage() {
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
+  const readSet = useReadSet(id, 'insight');
 
   useEffect(() => {
     Promise.all([
@@ -234,15 +236,22 @@ export default function InsightsListPage() {
               </tr>
             </thead>
             <tbody>
-              {paged.map((insight, idx) => (
-                <tr key={idx} style={{ borderBottom: '1px solid var(--db-border-default)' }}
+              {paged.map((insight, idx) => {
+                const targetId = String(insight.id || idx);
+                const isRead = readSet.has(targetId);
+                return (
+                <tr key={idx} style={{
+                  borderBottom: '1px solid var(--db-border-default)',
+                  opacity: isRead ? 0.55 : 1,
+                }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <Link href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}`}
                       style={{
-                        fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)',
+                        fontSize: 13, fontWeight: isRead ? 400 : 500,
+                        color: isRead ? 'var(--db-text-tertiary)' : 'var(--db-text-link)',
                         textDecoration: 'none', display: 'block', maxWidth: 300,
                       }}
                       onMouseEnter={e => { e.currentTarget.style.textDecoration = 'underline'; }}
@@ -250,6 +259,18 @@ export default function InsightsListPage() {
                     >
                       {insight.name}
                     </Link>
+                    {isRead && (
+                      <button
+                        onClick={(e) => { e.preventDefault(); markUnread(id, 'insight', targetId); }}
+                        style={{
+                          marginTop: 4, fontSize: 10, color: 'var(--db-text-tertiary)',
+                          background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline',
+                        }}
+                        aria-label="Mark unread"
+                      >
+                        Mark unread
+                      </button>
+                    )}
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <SeverityBadge severity={insight.severity} type="severity" />
@@ -278,7 +299,8 @@ export default function InsightsListPage() {
                       feedback={feedbackMap[`insight:${insight.id || idx}:${insight.discoveryId}`]} />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

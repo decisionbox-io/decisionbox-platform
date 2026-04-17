@@ -10,6 +10,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
+import { markRead } from '@/lib/readState';
 import {
   Pill, normalizeConfidence,
 } from '@/components/common/UIComponents';
@@ -49,6 +50,13 @@ export default function RecommendationDetailPage() {
       .catch(() => null)
       .finally(() => setLoading(false));
   }, [runId, recommendationId]);
+
+  // Record that the user has opened this recommendation. See insight detail
+  // page for the rationale — fire-and-forget, server-side dedupe.
+  useEffect(() => {
+    if (!recommendation || !recommendationId) return;
+    markRead(id, 'recommendation', recommendationId).catch(() => {});
+  }, [id, recommendationId, recommendation]);
 
   // Fetch similar recommendations via semantic search (non-blocking)
   useEffect(() => {

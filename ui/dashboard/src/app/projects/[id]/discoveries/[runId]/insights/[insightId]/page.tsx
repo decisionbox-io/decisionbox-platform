@@ -12,6 +12,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
+import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
@@ -42,6 +43,14 @@ export default function InsightDetailPage() {
       .catch(() => null)
       .finally(() => setLoading(false));
   }, [runId, insightId]);
+
+  // Record that the user has opened this insight. Fire-and-forget —
+  // markRead dedupes at the server layer (unique index) and optimistically
+  // updates the shared read set, so listing pages can apply greyed styling.
+  useEffect(() => {
+    if (!insight || !insightId) return;
+    markRead(id, 'insight', insightId).catch(() => {});
+  }, [id, insightId, insight]);
 
   // Fetch similar insights via semantic search (non-blocking)
   useEffect(() => {
