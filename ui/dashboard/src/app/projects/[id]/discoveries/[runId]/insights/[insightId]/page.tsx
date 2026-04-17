@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Accordion, Badge, Button, Card, Code, Group, Loader, Stack, Table, Text, Title,
+  Accordion, Badge, Box, Button, Card, Code, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
   IconAlertTriangle, IconArrowLeft, IconCheck, IconDatabase, IconSearch, IconX,
@@ -12,6 +12,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
+import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import TechnicalDetails from '@/components/common/TechnicalDetails';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
@@ -80,34 +81,72 @@ export default function InsightDetailPage() {
     (v) => v.analysis_area === insight.analysis_area
   );
 
+  // Related recommendations — recs in this discovery that cite this insight id.
+  const relatedRecs = (discovery?.recommendations || []).filter(
+    (r) => r.related_insight_ids?.includes(insight.id)
+  );
+
+  // Shape related + similar for the sidebar / chip strip.
+  const relatedItems: RelatedItem[] = relatedRecs.map((rec, i) => ({
+    id: String(rec.id || i),
+    title: rec.title,
+    href: `/projects/${id}/discoveries/${runId}/recommendations/${rec.id || i}`,
+    badge: {
+      label: `P${rec.priority}`,
+      color: rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue',
+    },
+    subtitle: rec.expected_impact?.estimated_improvement,
+  }));
+  const similarItems: RelatedItem[] = similarInsights.map(sim => ({
+    id: sim.id,
+    title: sim.name,
+    href: `/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`,
+    badge: sim.severity
+      ? { label: sim.severity, color: severityColor[sim.severity] || 'gray' }
+      : undefined,
+    subtitle: sim.analysis_area,
+  }));
+
   return (
     <Shell>
+      <Button variant="subtle" component={Link}
+        href={`/projects/${id}/discoveries/${runId}`}
+        leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
+        Back to Discovery
+      </Button>
+
+      {/* Header — full width so title can breathe, no sidebar beside it. */}
+      <div style={{ maxWidth: 800, marginBottom: 16 }}>
+        <Group gap="sm" mb={4}>
+          <IconAlertTriangle size={20}
+            color={`var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)`} />
+          <Title order={2}>{insight.name}</Title>
+        </Group>
+        <Group gap="xs">
+          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
+          <Badge variant="outline">{insight.analysis_area}</Badge>
+          {insight.affected_count > 0 && (
+            <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
+          )}
+          <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
+            feedback={feedback} onUpdate={setFeedback} />
+          <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
+        </Group>
+      </div>
+
+      {/* Mobile chip strip — related + similar items collapsed into a
+          horizontally-scrollable strip. Hidden once the right sidebar shows. */}
+      <Box hiddenFrom="lg" mb="md">
+        <RelatedChipStrip
+          relatedLabel="Related Recommendations"
+          related={relatedItems}
+          similar={similarItems}
+        />
+      </Box>
+
+      <Grid gutter="lg">
+        <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        <Button variant="subtle" component={Link}
-          href={`/projects/${id}/discoveries/${runId}`}
-          leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content">
-          Back to Discovery
-        </Button>
-
-        {/* Header */}
-        <div>
-          <Group gap="sm" mb={4}>
-            <IconAlertTriangle size={20}
-              color={`var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)`} />
-            <Title order={2}>{insight.name}</Title>
-          </Group>
-          <Group gap="xs">
-            <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
-            <Badge variant="outline">{insight.analysis_area}</Badge>
-            {insight.affected_count > 0 && (
-              <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
-            )}
-            <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
-              feedback={feedback} onUpdate={setFeedback} />
-            <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
-          </Group>
-        </div>
-
         {/* Description */}
         <Card withBorder p="lg">
           <Text size="sm">{insight.description}</Text>
@@ -206,63 +245,9 @@ export default function InsightDetailPage() {
           </Card>
         )}
 
-        {/* Related Recommendations */}
-        {(() => {
-          const relatedRecs = (discovery?.recommendations || []).filter(
-            (r) => r.related_insight_ids?.includes(insight.id)
-          );
-          if (relatedRecs.length === 0) return null;
-          return (
-            <Card withBorder p="lg">
-              <Title order={4} mb="sm">Related Recommendations</Title>
-              <Stack gap="xs">
-                {relatedRecs.map((rec, i) => (
-                  <Link key={i} href={`/projects/${id}/discoveries/${runId}/recommendations/${rec.id || i}`}
-                    style={{ textDecoration: 'none' }}>
-                  <div style={{
-                    border: '1px solid var(--db-border-default)',
-                    borderRadius: 'var(--db-radius)',
-                    padding: '10px 14px',
-                    cursor: 'pointer',
-                    transition: 'border-color 120ms ease',
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                      <Text size="sm" fw={500}>{rec.title}</Text>
-                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                        <Badge size="xs" color={rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue'}>
-                          P{rec.priority}
-                        </Badge>
-                        {rec.expected_impact?.estimated_improvement && (
-                          <Badge size="xs" color="green" variant="light">
-                            {rec.expected_impact.estimated_improvement}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    {rec.description && (
-                      <Text size="xs" c="dimmed" mt={4} lineClamp={2}>{rec.description}</Text>
-                    )}
-                    {rec.actions && rec.actions.length > 0 && (
-                      <div style={{ marginTop: 6 }}>
-                        <Text size="xs" c="dimmed" fw={500}>Actions:</Text>
-                        {rec.actions.slice(0, 2).map((a, j) => (
-                          <Text key={j} size="xs" c="dimmed">  {j + 1}. {a}</Text>
-                        ))}
-                        {rec.actions.length > 2 && (
-                          <Text size="xs" c="dimmed">  ... +{rec.actions.length - 2} more</Text>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  </Link>
-                ))}
-              </Stack>
-            </Card>
-          );
-        })()}
+        {/* Related recommendations and similar insights are rendered in the
+            right sidebar (or top chip strip on narrow screens). The inline
+            cards that used to live here were removed to avoid double-rendering. */}
 
         {/* How This Insight Was Found — SQL queries, exploration steps,
             token counts. Collapsed by default so non-technical users see a
@@ -390,52 +375,23 @@ export default function InsightDetailPage() {
         {insight.discovered_at && (
           <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
         )}
-
-        {/* Similar Insights (semantic search) */}
-        {similarInsights.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <Text size="sm" fw={600} mb="xs">Similar Insights</Text>
-            <Stack gap="xs">
-              {similarInsights.map(sim => {
-                const isDuplicate = sim.score > 0.95;
-                return (
-                  <Link
-                    key={sim.id}
-                    href={`/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
-                    style={{ textDecoration: 'none' }}
-                  >
-                    <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>
-                      <Group justify="space-between" wrap="nowrap">
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Text size="sm" truncate>{sim.name}</Text>
-                          <Text size="xs" c="dimmed">
-                            {sim.discovered_at ? new Date(sim.discovered_at).toLocaleDateString() : ''}
-                            {sim.analysis_area ? ` · ${sim.analysis_area}` : ''}
-                          </Text>
-                        </div>
-                        <Group gap={6} wrap="nowrap">
-                          {sim.severity && (
-                            <Badge size="xs" color={severityColor[sim.severity] || 'gray'} variant="light">
-                              {sim.severity}
-                            </Badge>
-                          )}
-                          <Badge
-                            size="xs"
-                            variant="light"
-                            color={isDuplicate ? 'orange' : 'blue'}
-                          >
-                            {Math.round(sim.score * 100)}% {isDuplicate ? 'duplicate' : 'related'}
-                          </Badge>
-                        </Group>
-                      </Group>
-                    </Card>
-                  </Link>
-                );
-              })}
-            </Stack>
-          </div>
-        )}
       </Stack>
+        </Grid.Col>
+
+        {/* Right sidebar — sticky TOC of related recommendations and similar
+            insights. Hidden below lg; the RelatedChipStrip above the content
+            column takes its place on narrow viewports. */}
+        <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
+          <Box style={{ position: 'sticky', top: 16 }}>
+            <RelatedSidebar
+              relatedLabel="Related Recommendations"
+              related={relatedItems}
+              similarLabel="Similar Insights"
+              similar={similarItems}
+            />
+          </Box>
+        </Grid.Col>
+      </Grid>
     </Shell>
   );
 }

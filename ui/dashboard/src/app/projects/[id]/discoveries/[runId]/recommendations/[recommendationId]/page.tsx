@@ -3,13 +3,14 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Badge, Button, Card, Group, Loader, Stack, Text, Title,
+  Badge, Box, Button, Card, Grid, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
+import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import { markRead } from '@/lib/readState';
 import {
   Pill, normalizeConfidence,
@@ -78,35 +79,64 @@ export default function RecommendationDetailPage() {
     .map(rid => (discovery?.insights || []).find(i => i.id === rid))
     .filter(Boolean) as Insight[];
 
+  // Shape related insights and similar recommendations for the sidebar.
+  const relatedItems: RelatedItem[] = relatedInsights.map(insight => ({
+    id: insight.id,
+    title: insight.name,
+    href: `/projects/${id}/discoveries/${runId}/insights/${insight.id}`,
+    badge: insight.severity
+      ? { label: insight.severity, color: severityColor[insight.severity] || 'gray' }
+      : undefined,
+    subtitle: insight.affected_count > 0
+      ? `${insight.affected_count.toLocaleString()} affected`
+      : undefined,
+  }));
+  const similarItems: RelatedItem[] = similarRecs.map(sim => ({
+    id: sim.id,
+    title: sim.name,
+    href: `/projects/${id}/discoveries/${sim.discovery_id}/recommendations/${sim.id}`,
+    subtitle: sim.analysis_area,
+  }));
+
   return (
     <Shell>
+      <Button variant="subtle" component={Link}
+        href={`/projects/${id}/discoveries/${runId}`}
+        leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
+        Back to Discovery
+      </Button>
+
+      {/* Header */}
+      <div style={{ maxWidth: 800, marginBottom: 16 }}>
+        <Group gap="sm" mb={4}>
+          <IconStarFilled size={20} color="var(--db-purple-text)" />
+          <Title order={2}>{recommendation.title}</Title>
+        </Group>
+        <Group gap="xs">
+          <Badge color={recommendation.priority <= 1 ? 'red' : recommendation.priority <= 2 ? 'orange' : 'blue'} variant="light">
+            P{recommendation.priority}
+          </Badge>
+          <Pill bg={effortStyle.bg} color={effortStyle.color}>
+            {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+          </Pill>
+          {recommendation.category && <Badge variant="outline">{recommendation.category}</Badge>}
+          <FeedbackButtons projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId}
+            feedback={feedback} onUpdate={setFeedback} />
+          <BookmarkButton projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId} />
+        </Group>
+      </div>
+
+      <Box hiddenFrom="lg" mb="md">
+        <RelatedChipStrip
+          relatedLabel="Related Insights"
+          related={relatedItems}
+          similar={similarItems}
+        />
+      </Box>
+
+      <Grid gutter="lg">
+        <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        <Button variant="subtle" component={Link}
-          href={`/projects/${id}/discoveries/${runId}`}
-          leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content">
-          Back to Discovery
-        </Button>
-
-        {/* Header */}
-        <div>
-          <Group gap="sm" mb={4}>
-            <IconStarFilled size={20} color="var(--db-purple-text)" />
-            <Title order={2}>{recommendation.title}</Title>
-          </Group>
-          <Group gap="xs">
-            <Badge color={recommendation.priority <= 1 ? 'red' : recommendation.priority <= 2 ? 'orange' : 'blue'} variant="light">
-              P{recommendation.priority}
-            </Badge>
-            <Pill bg={effortStyle.bg} color={effortStyle.color}>
-              {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
-            </Pill>
-            {recommendation.category && <Badge variant="outline">{recommendation.category}</Badge>}
-            <FeedbackButtons projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId}
-              feedback={feedback} onUpdate={setFeedback} />
-            <BookmarkButton projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId} />
-          </Group>
-        </div>
-
         {/* Description */}
         <Card withBorder p="lg">
           <Text size="sm">{recommendation.description}</Text>
@@ -176,70 +206,22 @@ export default function RecommendationDetailPage() {
           </Card>
         )}
 
-        {/* Related Insights */}
-        {relatedInsights.length > 0 && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="sm">Related Insights</Title>
-            <Stack gap="xs">
-              {relatedInsights.map((insight) => (
-                <Link key={insight.id} href={`/projects/${id}/discoveries/${runId}/insights/${insight.id}`}
-                  style={{ textDecoration: 'none' }}>
-                  <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>
-                    <Group justify="space-between" wrap="nowrap">
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <Text size="sm" truncate>{insight.name}</Text>
-                        {insight.description && (
-                          <Text size="xs" c="dimmed" lineClamp={1}>{insight.description}</Text>
-                        )}
-                      </div>
-                      <Group gap={6} wrap="nowrap">
-                        {insight.severity && (
-                          <Badge size="xs" color={severityColor[insight.severity] || 'gray'} variant="light">
-                            {insight.severity}
-                          </Badge>
-                        )}
-                        {insight.affected_count > 0 && (
-                          <Badge size="xs" variant="outline">
-                            {insight.affected_count.toLocaleString()} affected
-                          </Badge>
-                        )}
-                      </Group>
-                    </Group>
-                  </Card>
-                </Link>
-              ))}
-            </Stack>
-          </Card>
-        )}
-
-        {/* Similar Recommendations (semantic search) */}
-        {similarRecs.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <Text size="sm" fw={600} mb="xs">Similar Recommendations</Text>
-            <Stack gap="xs">
-              {similarRecs.map(sim => (
-                <Link key={sim.id} href={`/projects/${id}/discoveries/${sim.discovery_id}/recommendations/${sim.id}`}
-                  style={{ textDecoration: 'none' }}>
-                  <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>
-                    <Group justify="space-between" wrap="nowrap">
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <Text size="sm" truncate>{sim.name}</Text>
-                        <Text size="xs" c="dimmed">
-                          {sim.discovered_at ? new Date(sim.discovered_at).toLocaleDateString() : ''}
-                          {sim.analysis_area ? ` · ${sim.analysis_area}` : ''}
-                        </Text>
-                      </div>
-                      <Badge size="xs" variant="light" color="blue">
-                        {Math.round(sim.score * 100)}% related
-                      </Badge>
-                    </Group>
-                  </Card>
-                </Link>
-              ))}
-            </Stack>
-          </div>
-        )}
+        {/* Related insights and similar recommendations moved to the right
+            sidebar (or top chip strip on narrow screens). */}
       </Stack>
+        </Grid.Col>
+
+        <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
+          <Box style={{ position: 'sticky', top: 16 }}>
+            <RelatedSidebar
+              relatedLabel="Related Insights"
+              related={relatedItems}
+              similarLabel="Similar Recommendations"
+              similar={similarItems}
+            />
+          </Box>
+        </Grid.Col>
+      </Grid>
     </Shell>
   );
 }
