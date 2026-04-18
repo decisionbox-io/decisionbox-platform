@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
@@ -567,9 +569,14 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		if result.Insights[i].DiscoveredAt.IsZero() {
 			result.Insights[i].DiscoveredAt = time.Now()
 		}
-		// Generate deterministic ID if LLM didn't provide one
+		// Assign a UUID if the LLM didn't give one. The same UUID is later
+		// reused as the standalone `insights._id` and the Qdrant point id, so
+		// every link built from a search hit (Ask sources, related cards) can
+		// use the existing /discoveries/{did}/insights/{id} route without any
+		// client-side fallback. Qdrant only accepts UUID / uint64 point ids,
+		// which is why the embedded id itself has to be a UUID.
 		if result.Insights[i].ID == "" {
-			result.Insights[i].ID = fmt.Sprintf("%s-%d", areaID, i+1)
+			result.Insights[i].ID = uuid.New().String()
 		}
 	}
 
@@ -640,6 +647,15 @@ func (o *Orchestrator) generateRecommendations(
 	for i := range result.Recommendations {
 		if result.Recommendations[i].CreatedAt.IsZero() {
 			result.Recommendations[i].CreatedAt = time.Now()
+		}
+		// Assign a UUID if the LLM didn't give one. Same rationale as for
+		// insights: the UUID is reused as the standalone `recommendations._id`
+		// and Qdrant point id, so URLs that hit the embedded array match
+		// without a fallback. Prior to this, the embedded `id` was "", which
+		// meant list → detail navigation was silently falling back to the
+		// array index and Ask source links to recommendations never worked.
+		if result.Recommendations[i].ID == "" {
+			result.Recommendations[i].ID = uuid.New().String()
 		}
 	}
 

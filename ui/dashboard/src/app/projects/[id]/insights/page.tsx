@@ -10,6 +10,8 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
+import UnreadDot from '@/components/common/UnreadDot';
+import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
@@ -35,6 +37,7 @@ export default function InsightsListPage() {
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
+  const readSet = useReadSet(id, 'insight');
 
   useEffect(() => {
     Promise.all([
@@ -113,7 +116,7 @@ export default function InsightsListPage() {
     switch (sortBy) {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
       case 'Confidence': return (b.confidence || 0) - (a.confidence || 0);
-      case 'Players affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Date': return new Date(b.discoveryDate).getTime() - new Date(a.discoveryDate).getTime();
       default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
@@ -153,7 +156,7 @@ export default function InsightsListPage() {
         ))}
         <span style={{ flex: 1 }} />
         <SortDropdown value={sortBy} onChange={setSortBy}
-          options={['Severity', 'Confidence', 'Players affected', 'Date']} />
+          options={['Severity', 'Confidence', 'Users affected', 'Date']} />
       </div>
 
       {/* Semantic search results */}
@@ -234,21 +237,31 @@ export default function InsightsListPage() {
               </tr>
             </thead>
             <tbody>
-              {paged.map((insight, idx) => (
-                <tr key={idx} style={{ borderBottom: '1px solid var(--db-border-default)' }}
+              {paged.map((insight, idx) => {
+                const targetId = String(insight.id || idx);
+                const isRead = readSet.has(targetId);
+                return (
+                <tr key={idx} style={{
+                  borderBottom: '1px solid var(--db-border-default)',
+                }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <Link href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}`}
+                    <Link
+                      href={`/projects/${id}/discoveries/${insight.discoveryId}/insights/${insight.id || idx}`}
                       style={{
-                        fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)',
-                        textDecoration: 'none', display: 'block', maxWidth: 300,
+                        fontSize: 13, fontWeight: 500,
+                        color: 'var(--db-text-link)',
+                        textDecoration: 'none',
+                        display: 'flex', alignItems: 'center',
+                        maxWidth: 300,
                       }}
                       onMouseEnter={e => { e.currentTarget.style.textDecoration = 'underline'; }}
                       onMouseLeave={e => { e.currentTarget.style.textDecoration = 'none'; }}
                     >
-                      {insight.name}
+                      <UnreadDot unread={!isRead} />
+                      <span>{insight.name}</span>
                     </Link>
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
@@ -278,7 +291,8 @@ export default function InsightsListPage() {
                       feedback={feedbackMap[`insight:${insight.id || idx}:${insight.discoveryId}`]} />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -119,6 +119,33 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "bookmark_lists",
+		Indexes: []mongo.IndexModel{
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}},
+		},
+	},
+	{
+		Name: "bookmarks",
+		Indexes: []mongo.IndexModel{
+			{Keys: bson.D{{Key: "list_id", Value: 1}, {Key: "created_at", Value: -1}}},
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "target_type", Value: 1}, {Key: "target_id", Value: 1}}},
+			{
+				Keys:    bson.D{{Key: "list_id", Value: 1}, {Key: "target_type", Value: 1}, {Key: "target_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+	},
+	{
+		Name: "read_marks",
+		Indexes: []mongo.IndexModel{
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "target_type", Value: 1}}},
+			{
+				Keys:    bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "target_type", Value: 1}, {Key: "target_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+	},
+	{
 		Name: "discovery_debug_logs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "timestamp", Value: -1}}},

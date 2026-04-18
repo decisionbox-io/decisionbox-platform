@@ -677,6 +677,119 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets
 
 ---
 
+## Bookmark Lists
+
+Named collections of insights and recommendations.
+Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` in community (NoAuth) mode, the OIDC `sub` claim in enterprise mode.
+
+### POST /api/v1/projects/{id}/lists
+
+Create a bookmark list.
+
+**Request body:**
+
+```json
+{"name": "Retention ideas", "description": "optional", "color": "#2b7"}
+```
+
+**Response 201:**
+
+```json
+{
+  "id": "...",
+  "project_id": "...",
+  "user_id": "anonymous",
+  "name": "Retention ideas",
+  "description": "optional",
+  "color": "#2b7",
+  "item_count": 0,
+  "created_at": "2026-04-17T…",
+  "updated_at": "2026-04-17T…"
+}
+```
+
+Returns `400` if `name` is empty or longer than 200 characters.
+
+### GET /api/v1/projects/{id}/lists
+
+List the caller's lists for this project, newest-updated first.
+Each entry includes `item_count`.
+
+### GET /api/v1/projects/{id}/lists/{listId}
+
+List detail. Response includes an `items` array where each entry is:
+
+```json
+{
+  "bookmark": {"id": "...", "target_type": "insight", "target_id": "...", ...},
+  "target": { /* full insight or recommendation document */ }
+}
+```
+
+If a bookmarked target has been deleted from the source collection, `target` is omitted and `deleted: true` is set — the dashboard renders these as "[removed]" placeholders.
+
+Returns `404` if the list does not exist or is not owned by the caller.
+
+### PATCH /api/v1/projects/{id}/lists/{listId}
+
+Partial update. Only provided fields change; `created_at` is never touched.
+
+```json
+{"name": "New name"}
+```
+
+Returns `400` on empty `name`, `404` on wrong owner.
+
+### DELETE /api/v1/projects/{id}/lists/{listId}
+
+Deletes the list and cascades to every bookmark in it. The underlying insights and recommendations are untouched. Returns `404` on wrong owner.
+
+### POST /api/v1/projects/{id}/lists/{listId}/items
+
+Add a bookmark. **Idempotent** — calling with the same `(target_type, target_id)` that already exists in the list returns the existing bookmark.
+
+```json
+{"target_type": "insight", "target_id": "...", "discovery_id": "...", "note": "optional"}
+```
+
+`target_type` must be `"insight"` or `"recommendation"`. Returns `404` if the list is not owned by the caller or if the target does not exist in its source collection.
+
+### DELETE /api/v1/projects/{id}/lists/{listId}/items/{bookmarkId}
+
+Remove a bookmark. Returns `404` if the bookmark is in a different list or not owned by the caller.
+
+### GET /api/v1/projects/{id}/bookmarks?target_type=insight&target_id=...
+
+Reverse lookup used by the dashboard's Add-to-list menu. Returns an array of list IDs (scoped to the caller) that currently contain the given target. Empty array when the target is not bookmarked.
+
+---
+
+## Read Marks
+
+Per-user state for which insights and recommendations the caller has already opened.
+
+### POST /api/v1/projects/{id}/reads
+
+Mark a target read. Idempotent — repeated calls refresh `read_at` without creating duplicates, enforced by a unique compound index on `(project_id, user_id, target_type, target_id)`.
+
+```json
+{"target_type": "insight", "target_id": "..."}
+```
+
+### DELETE /api/v1/projects/{id}/reads
+
+Mark a target unread. Same body shape as above. Idempotent: returns `200` whether or not a mark existed.
+
+### GET /api/v1/projects/{id}/reads?target_type=insight
+
+Returns the target_ids the caller has read, as a flat array of strings. List pages use this to apply greyed-out styling to read rows without fetching full mark documents.
+
+```json
+["ins-1", "ins-2", "ins-5"]
+```
+
+---
+
 ## Error Responses
 
 All error responses follow the same format:

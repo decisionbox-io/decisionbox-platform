@@ -11,6 +11,8 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
 } from '@/components/common/UIComponents';
+import UnreadDot from '@/components/common/UnreadDot';
+import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -32,6 +34,7 @@ export default function RecommendationsListPage() {
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
+  const readSet = useReadSet(id, 'recommendation');
 
   useEffect(() => {
     Promise.all([
@@ -185,6 +188,8 @@ export default function RecommendationsListPage() {
             const relatedInsights = (rec.related_insight_ids || [])
               .map(rid => rec.discoveryInsights.find(i => i.id === rid))
               .filter(Boolean) as Insight[];
+            const targetId = String(rec.id || idx);
+            const isRead = readSet.has(targetId);
 
             return (
               <div key={idx} style={{
@@ -195,11 +200,20 @@ export default function RecommendationsListPage() {
               }}>
                 {/* Title row */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                  <Link href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}`}
-                    style={{ fontSize: 14, fontWeight: 500, flex: 1, color: 'var(--db-text-primary)', textDecoration: 'none' }}
+                  <Link
+                    href={`/projects/${id}/discoveries/${rec.discoveryId}/recommendations/${rec.id || idx}`}
+                    style={{
+                      fontSize: 14, fontWeight: 500, flex: 1,
+                      color: 'var(--db-text-primary)',
+                      textDecoration: 'none',
+                      display: 'flex', alignItems: 'center',
+                    }}
                     onMouseEnter={e => { e.currentTarget.style.color = 'var(--db-text-link)'; }}
                     onMouseLeave={e => { e.currentTarget.style.color = 'var(--db-text-primary)'; }}
-                  >{rec.title}</Link>
+                  >
+                    <UnreadDot unread={!isRead} />
+                    <span>{rec.title}</span>
+                  </Link>
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={String(idx)}
                     feedback={feedbackMap[`recommendation:${idx}:${rec.discoveryId}`]} />

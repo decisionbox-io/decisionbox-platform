@@ -32,6 +32,9 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	insightRepo := database.NewInsightRepository(db)
 	recommendationRepo := database.NewRecommendationRepository(db)
 	domainPackRepo := database.NewDomainPackRepository(db)
+	bookmarkListRepo := database.NewBookmarkListRepository(db)
+	bookmarkRepo := database.NewBookmarkRepository(db)
+	readMarkRepo := database.NewReadMarkRepository(db)
 
 	// Clean up stale runs from previous container lifecycle
 	cleaned, err := runRepo.CleanupStaleRuns(context.Background())
@@ -69,6 +72,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
 	insights := handler.NewInsightsHandler(insightRepo)
 	recommendations := handler.NewRecommendationsHandler(recommendationRepo)
+	lists := handler.NewListsHandler(bookmarkListRepo, bookmarkRepo, insightRepo, recommendationRepo, discoveryRepo)
+	reads := handler.NewReadsHandler(readMarkRepo)
 	searchHistoryRepo := database.NewSearchHistoryRepository(db)
 	askSessionRepo := database.NewAskSessionRepository(db)
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
@@ -158,6 +163,21 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("GET /api/v1/projects/{id}/insights/{insightId}", withRole(viewer, insights.Get))
 	mux.HandleFunc("GET /api/v1/projects/{id}/recommendations", withRole(viewer, recommendations.List))
 	mux.HandleFunc("GET /api/v1/projects/{id}/recommendations/{recId}", withRole(viewer, recommendations.Get))
+
+	// Bookmark lists — viewer for read, member for write
+	mux.HandleFunc("POST /api/v1/projects/{id}/lists", withRole(member, lists.Create))
+	mux.HandleFunc("GET /api/v1/projects/{id}/lists", withRole(viewer, lists.List))
+	mux.HandleFunc("GET /api/v1/projects/{id}/lists/{listId}", withRole(viewer, lists.Get))
+	mux.HandleFunc("PATCH /api/v1/projects/{id}/lists/{listId}", withRole(member, lists.Update))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/lists/{listId}", withRole(member, lists.Delete))
+	mux.HandleFunc("POST /api/v1/projects/{id}/lists/{listId}/items", withRole(member, lists.AddBookmark))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/lists/{listId}/items/{bookmarkId}", withRole(member, lists.RemoveBookmark))
+	mux.HandleFunc("GET /api/v1/projects/{id}/bookmarks", withRole(viewer, lists.ListsContaining))
+
+	// Read marks — viewer for read, member for write
+	mux.HandleFunc("POST /api/v1/projects/{id}/reads", withRole(member, reads.MarkRead))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/reads", withRole(member, reads.MarkUnread))
+	mux.HandleFunc("GET /api/v1/projects/{id}/reads", withRole(viewer, reads.ListReadIDs))
 
 	// Pricing — viewer for read, admin for update
 	mux.HandleFunc("GET /api/v1/pricing", withRole(viewer, pricing.Get))

@@ -15,6 +15,8 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
+import UnreadDot from '@/components/common/UnreadDot';
+import { useReadSet } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, Recommendation } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
@@ -30,6 +32,8 @@ export default function DiscoveryDetailPage() {
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('Severity');
   const [showAllRecs, setShowAllRecs] = useState(false);
+  const readInsights = useReadSet(id, 'insight');
+  const readRecs = useReadSet(id, 'recommendation');
 
   useEffect(() => {
     Promise.all([
@@ -70,7 +74,7 @@ export default function DiscoveryDetailPage() {
     switch (sortBy) {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
       case 'Confidence': return b.confidence - a.confidence;
-      case 'Players affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Area': return a.analysis_area.localeCompare(b.analysis_area);
       default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
@@ -190,7 +194,7 @@ export default function DiscoveryDetailPage() {
                   <Th width="35%">Insight</Th>
                   <Th>Severity</Th>
                   <Th>Area</Th>
-                  <Th align="right">Players affected</Th>
+                  <Th align="right">Users affected</Th>
                   <Th>Confidence</Th>
                   <Th width="70px">Feedback</Th>
                 </tr>
@@ -198,6 +202,7 @@ export default function DiscoveryDetailPage() {
               <tbody>
                 {filtered.map((insight, idx) => (
                   <InsightRow key={idx} insight={insight} projectId={id} runId={runId} idx={idx}
+                    isRead={readInsights.has(String(insight.id || idx))}
                     feedback={feedbackMap[`insight:${insight.id || idx}`]}
                     onFeedbackUpdate={(fb) => handleFeedbackUpdate('insight', String(insight.id || idx), fb)} />
                 ))}
@@ -220,6 +225,7 @@ export default function DiscoveryDetailPage() {
           {visibleRecs.map((rec, idx) => (
             <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
               insights={insights}
+              isRead={readRecs.has(String(rec.id || idx))}
               feedback={feedbackMap[`recommendation:${idx}`]}
               onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(idx), fb)} />
           ))}
@@ -376,8 +382,9 @@ export default function DiscoveryDetailPage() {
 
 /* ========== Insight Table Row ========== */
 
-function InsightRow({ insight, projectId, runId, idx, feedback, onFeedbackUpdate }: {
+function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedbackUpdate }: {
   insight: Insight; projectId: string; runId: string; idx: number;
+  isRead: boolean;
   feedback?: Feedback; onFeedbackUpdate: (fb: Feedback | null) => void;
 }) {
   return (
@@ -389,12 +396,14 @@ function InsightRow({ insight, projectId, runId, idx, feedback, onFeedbackUpdate
         <Link href={`/projects/${projectId}/discoveries/${runId}/insights/${insight.id || idx}`}
           style={{
             fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)',
-            textDecoration: 'none', cursor: 'pointer', maxWidth: 320, display: 'block',
+            textDecoration: 'none', cursor: 'pointer', maxWidth: 320,
+            display: 'flex', alignItems: 'center',
           }}
           onMouseEnter={e => { e.currentTarget.style.textDecoration = 'underline'; }}
           onMouseLeave={e => { e.currentTarget.style.textDecoration = 'none'; }}
         >
-          {insight.name}
+          <UnreadDot unread={!isRead} />
+          <span>{insight.name}</span>
         </Link>
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
@@ -420,9 +429,10 @@ function InsightRow({ insight, projectId, runId, idx, feedback, onFeedbackUpdate
 
 /* ========== Recommendation Card ========== */
 
-function RecommendationCard({ rec, projectId, discoveryId, idx, insights, feedback, onFeedbackUpdate }: {
+function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead, feedback, onFeedbackUpdate }: {
   rec: Recommendation; projectId: string; discoveryId: string; idx: number;
   insights: Insight[];
+  isRead: boolean;
   feedback?: Feedback | null; onFeedbackUpdate?: (fb: Feedback | null) => void;
 }) {
   const effortColors: Record<string, { bg: string; color: string }> = {
@@ -445,10 +455,17 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, feedba
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
         <Link href={`/projects/${projectId}/discoveries/${discoveryId}/recommendations/${rec.id || idx}`}
-          style={{ fontSize: 14, fontWeight: 500, flex: 1, color: 'var(--db-text-primary)', textDecoration: 'none' }}
+          style={{
+            fontSize: 14, fontWeight: 500, flex: 1,
+            color: 'var(--db-text-primary)', textDecoration: 'none',
+            display: 'flex', alignItems: 'center',
+          }}
           onMouseEnter={e => { e.currentTarget.style.color = 'var(--db-text-link)'; }}
           onMouseLeave={e => { e.currentTarget.style.color = 'var(--db-text-primary)'; }}
-        >{rec.title}</Link>
+        >
+          <UnreadDot unread={!isRead} />
+          <span>{rec.title}</span>
+        </Link>
         <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
           targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
       </div>
@@ -550,7 +567,7 @@ function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'r
 
 function SortDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, { toggle, close }] = useDisclosure(false);
-  const options = ['Severity', 'Confidence', 'Players affected', 'Area'];
+  const options = ['Severity', 'Confidence', 'Users affected', 'Area'];
   return (
     <div style={{ position: 'relative' }}>
       <button onClick={toggle} style={{

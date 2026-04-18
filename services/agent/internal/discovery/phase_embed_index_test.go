@@ -110,14 +110,16 @@ func TestDenormalizeInsights(t *testing.T) {
 		t.Fatalf("expected 2 insights, got %d", len(insights))
 	}
 
-	// Verify UUID format (36 chars with dashes)
-	if len(insights[0].ID) != 36 {
-		t.Errorf("expected UUID format ID, got %q", insights[0].ID)
+	// The standalone `_id` must equal the embedded `id`. Reusing the same id
+	// (assigned by the orchestrator during analysis) across discovery doc,
+	// standalone collection, and Qdrant point is the whole point of this
+	// denormalization shape — any new UUID here would reintroduce the
+	// id-mismatch bug that broke Ask source links in prod.
+	if insights[0].ID != "orig-1" {
+		t.Errorf("expected ID to match embedded id 'orig-1', got %q", insights[0].ID)
 	}
-
-	// Verify IDs are unique
-	if insights[0].ID == insights[1].ID {
-		t.Error("expected unique IDs for each insight")
+	if insights[1].ID != "orig-2" {
+		t.Errorf("expected ID to match embedded id 'orig-2', got %q", insights[1].ID)
 	}
 
 	// Verify fields are copied correctly
@@ -172,8 +174,8 @@ func TestDenormalizeRecommendations(t *testing.T) {
 		t.Fatalf("expected 1 recommendation, got %d", len(recs))
 	}
 
-	if len(recs[0].ID) != 36 {
-		t.Errorf("expected UUID format ID, got %q", recs[0].ID)
+	if recs[0].ID != "rec-orig-1" {
+		t.Errorf("expected ID to match embedded id 'rec-orig-1', got %q", recs[0].ID)
 	}
 	if recs[0].RecommendationCategory != "engagement" {
 		t.Errorf("expected category=engagement, got %s", recs[0].RecommendationCategory)

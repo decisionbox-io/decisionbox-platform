@@ -1,36 +1,102 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
-  Accordion, Badge, Button, Card, Code, Group, Loader, Stack, Table, Text, Title,
+  Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
-  IconAlertTriangle, IconArrowLeft, IconCheck, IconDatabase, IconSearch, IconX,
+  IconAlertTriangle, IconArrowLeft, IconCheck, IconCode, IconDatabase, IconSearch, IconX,
 } from '@tabler/icons-react';
-import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import BookmarkButton from '@/components/lists/BookmarkButton';
+import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
+import SimilarItems from '@/components/lists/SimilarItems';
+import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
 
+// CompactValidationCard is sized for the right sidebar (and the narrow-screen
+// fallback that lives at the bottom of the main column). Trades the big
+// padding + wide Group layout of the old inline Validation card for a tighter
+// presentation — status badge, counts on one row, reasoning clipped — so it
+// sits next to the related-items sidebar without dominating.
+function CompactValidationCard({ validation }: { validation: NonNullable<Insight['validation']> }) {
+  const statusColor = validation.status === 'confirmed' ? 'green'
+    : validation.status === 'adjusted' ? 'yellow'
+    : validation.status === 'rejected' ? 'red' : 'gray';
+  const statusIcon = validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />;
+  return (
+    <Card withBorder p="md">
+      <Group justify="space-between" mb={6}>
+        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.5px' }}>
+          Validation
+        </Text>
+        <Badge size="sm" color={statusColor} leftSection={statusIcon} variant="light">
+          {validation.status}
+        </Badge>
+      </Group>
+      {(validation.original_count != null || validation.verified_count != null) && (
+        <Group gap={4} mb={6}>
+          {validation.original_count != null && (
+            <Text size="xs" c="dimmed">{validation.original_count.toLocaleString()}</Text>
+          )}
+          {validation.verified_count != null && (
+            <>
+              <Text size="xs" c="dimmed">→</Text>
+              <Text size="xs" fw={600}>{validation.verified_count.toLocaleString()} verified</Text>
+            </>
+          )}
+        </Group>
+      )}
+      {validation.reasoning && (
+        <Text size="xs" c="dimmed" lineClamp={3}>{validation.reasoning}</Text>
+      )}
+    </Card>
+  );
+}
+
 export default function InsightDetailPage() {
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
+  const router = useRouter();
+  // goBack relies on browser history whenever possible — that's the only
+  // way we scale across every entry point (similar insights, Ask sources,
+  // related sidebar, bookmark lists, insights list, discovery detail, ...)
+  // without having to wire a `?from=` hint at every call site. The
+  // history-length guard handles the fresh-tab case where router.back()
+  // would otherwise navigate out of the app to nothing.
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(`/projects/${id}/discoveries/${runId}`);
+    }
+  };
   const [insight, setInsight] = useState<Insight | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
+  // Technical details (SQL queries, exploration steps, token counts) are
+  // opened explicitly via a button in the sidebar. The Drawer gets the full
+  // viewport width, so code blocks don't have to squeeze into the sidebar.
+  const [techOpen, setTechOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
       api.getDiscoveryById(runId).then((disc) => {
         setDiscovery(disc);
+        // Match strictly by id. Do NOT fall back to insights[parseInt(insightId)]
+        // — UUIDs like "67be9dfd-..." happen to parse to small integers and
+        // silently return the wrong insight. The agent now assigns UUIDs that
+        // match the standalone collection + Qdrant point id, so the exact-id
+        // lookup always resolves for data written after this commit.
         const insights = disc?.insights || [];
-        const found = insights.find((i) => i.id === insightId) || insights[parseInt(insightId)] || null;
+        const found = insights.find((i) => i.id === insightId) || null;
         setInsight(found);
       }),
       api.listFeedback(runId).then((fb) => {
@@ -41,6 +107,14 @@ export default function InsightDetailPage() {
       .catch(() => null)
       .finally(() => setLoading(false));
   }, [runId, insightId]);
+
+  // Record that the user has opened this insight. Fire-and-forget —
+  // markRead dedupes at the server layer (unique index) and optimistically
+  // updates the shared read set, so listing pages can apply greyed styling.
+  useEffect(() => {
+    if (!insight || !insightId) return;
+    markRead(id, 'insight', insightId).catch(() => {});
+  }, [id, insightId, insight]);
 
   // Fetch similar insights via semantic search (non-blocking)
   useEffect(() => {
@@ -69,74 +143,73 @@ export default function InsightDetailPage() {
     (v) => v.analysis_area === insight.analysis_area
   );
 
+  // Related recommendations — recs in this discovery that cite this insight id.
+  const relatedRecs = (discovery?.recommendations || []).filter(
+    (r) => r.related_insight_ids?.includes(insight.id)
+  );
+
+  // Shape related items for the right sidebar / mobile chip strip. Similar
+  // (semantic-search) items are rendered separately below the main content
+  // as rich cards — they're exploration, not direct navigation, so they
+  // deserve the space to show a description snippet instead of being
+  // crammed into a sticky column.
+  const relatedItems: RelatedItem[] = relatedRecs.map((rec, i) => ({
+    id: String(rec.id || i),
+    title: rec.title,
+    href: `/projects/${id}/discoveries/${runId}/recommendations/${rec.id || i}`,
+    badge: {
+      label: `P${rec.priority}`,
+      color: rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue',
+    },
+    subtitle: rec.expected_impact?.estimated_improvement,
+  }));
+
   return (
     <Shell>
+      <Button variant="subtle" onClick={goBack}
+        leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
+        Back
+      </Button>
+
+      {/* Header — full width so title can breathe, no sidebar beside it. */}
+      <div style={{ maxWidth: 800, marginBottom: 16 }}>
+        <Group gap="sm" mb={4}>
+          <IconAlertTriangle size={20}
+            color={`var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)`} />
+          <Title order={2}>{insight.name}</Title>
+        </Group>
+        <Group gap="xs">
+          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
+          <Badge variant="outline">{insight.analysis_area}</Badge>
+          {insight.affected_count > 0 && (
+            <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
+          )}
+          <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
+            feedback={feedback} onUpdate={setFeedback} />
+          <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
+        </Group>
+      </div>
+
+      {/* Mobile chip strip — related + similar items collapsed into a
+          horizontally-scrollable strip. Hidden once the right sidebar shows. */}
+      <Box hiddenFrom="lg" mb="md">
+        <RelatedChipStrip
+          relatedLabel="Related Recommendations"
+          related={relatedItems}
+        />
+      </Box>
+
+      <Grid gutter="lg">
+        <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        <Button variant="subtle" component={Link}
-          href={`/projects/${id}/discoveries/${runId}`}
-          leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content">
-          Back to Discovery
-        </Button>
-
-        {/* Header */}
-        <div>
-          <Group gap="sm" mb={4}>
-            <IconAlertTriangle size={20}
-              color={`var(--mantine-color-${severityColor[insight.severity] || 'gray'}-6)`} />
-            <Title order={2}>{insight.name}</Title>
-          </Group>
-          <Group gap="xs">
-            <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
-            <Badge variant="outline">{insight.analysis_area}</Badge>
-            {insight.affected_count > 0 && (
-              <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
-            )}
-            <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
-              feedback={feedback} onUpdate={setFeedback} />
-          </Group>
-        </div>
-
-        {/* Description */}
+        {/* Description — the narrative "what". */}
         <Card withBorder p="lg">
           <Text size="sm">{insight.description}</Text>
         </Card>
 
-        {/* Indicators */}
-        {insight.indicators && insight.indicators.length > 0 && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="sm">Key Indicators</Title>
-            <Stack gap={6}>
-              {insight.indicators.map((ind, i) => (
-                <Text key={i} size="sm">- {ind}</Text>
-              ))}
-            </Stack>
-          </Card>
-        )}
-
-        {/* Metrics */}
-        {insight.metrics && Object.keys(insight.metrics).length > 0 && (
-          <Card withBorder p="lg">
-            <Title order={4} mb="sm">Metrics</Title>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Metric</Table.Th>
-                  <Table.Th>Value</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {Object.entries(insight.metrics).map(([key, value]) => (
-                  <Table.Tr key={key}>
-                    <Table.Td><Text size="sm">{key.replace(/_/g, ' ')}</Text></Table.Td>
-                    <Table.Td><Text size="sm" fw={600}>{String(value)}</Text></Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Card>
-        )}
-
-        {/* Assessment */}
+        {/* Assessment — risk, confidence, target segment. Promoted above
+            Indicators/Metrics so skimming readers see the decision-ready
+            numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
           <Group gap="xl">
@@ -159,105 +232,111 @@ export default function InsightDetailPage() {
           </Group>
         </Card>
 
-        {/* Validation */}
-        {insight.validation && (
+        {/* Key Indicators — plain-language bullets supporting the claim. */}
+        {insight.indicators && insight.indicators.length > 0 && (
           <Card withBorder p="lg">
-            <Group mb="sm">
-              <Title order={4}>Validation</Title>
-              <Badge
-                color={insight.validation.status === 'confirmed' ? 'green' :
-                       insight.validation.status === 'adjusted' ? 'yellow' :
-                       insight.validation.status === 'rejected' ? 'red' : 'gray'}
-                leftSection={insight.validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />}>
-                {insight.validation.status}
-              </Badge>
-            </Group>
-            {(insight.validation.original_count || insight.validation.verified_count) && (
-              <Group gap="xl" mb="sm">
-                {insight.validation.original_count != null && (
-                  <div>
-                    <Text size="xs" c="dimmed">Claimed Count</Text>
-                    <Text size="sm" fw={600}>{insight.validation.original_count.toLocaleString()}</Text>
-                  </div>
-                )}
-                {insight.validation.verified_count != null && (
-                  <div>
-                    <Text size="xs" c="dimmed">Verified Count</Text>
-                    <Text size="sm" fw={600}>{insight.validation.verified_count.toLocaleString()}</Text>
-                  </div>
-                )}
-              </Group>
-            )}
-            {insight.validation.reasoning && (
-              <Text size="xs" c="dimmed">{insight.validation.reasoning}</Text>
-            )}
+            <Title order={4} mb="sm">Key Indicators</Title>
+            <Stack gap={6}>
+              {insight.indicators.map((ind, i) => (
+                <Text key={i} size="sm">- {ind}</Text>
+              ))}
+            </Stack>
           </Card>
         )}
 
-        {/* Related Recommendations */}
-        {(() => {
-          const relatedRecs = (discovery?.recommendations || []).filter(
-            (r) => r.related_insight_ids?.includes(insight.id)
-          );
-          if (relatedRecs.length === 0) return null;
-          return (
-            <Card withBorder p="lg">
-              <Title order={4} mb="sm">Related Recommendations</Title>
-              <Stack gap="xs">
-                {relatedRecs.map((rec, i) => (
-                  <Link key={i} href={`/projects/${id}/discoveries/${runId}/recommendations/${rec.id || i}`}
-                    style={{ textDecoration: 'none' }}>
-                  <div style={{
-                    border: '1px solid var(--db-border-default)',
-                    borderRadius: 'var(--db-radius)',
-                    padding: '10px 14px',
-                    cursor: 'pointer',
-                    transition: 'border-color 120ms ease',
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                      <Text size="sm" fw={500}>{rec.title}</Text>
-                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                        <Badge size="xs" color={rec.priority <= 1 ? 'red' : rec.priority <= 2 ? 'orange' : 'blue'}>
-                          P{rec.priority}
-                        </Badge>
-                        {rec.expected_impact?.estimated_improvement && (
-                          <Badge size="xs" color="green" variant="light">
-                            {rec.expected_impact.estimated_improvement}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    {rec.description && (
-                      <Text size="xs" c="dimmed" mt={4} lineClamp={2}>{rec.description}</Text>
-                    )}
-                    {rec.actions && rec.actions.length > 0 && (
-                      <div style={{ marginTop: 6 }}>
-                        <Text size="xs" c="dimmed" fw={500}>Actions:</Text>
-                        {rec.actions.slice(0, 2).map((a, j) => (
-                          <Text key={j} size="xs" c="dimmed">  {j + 1}. {a}</Text>
-                        ))}
-                        {rec.actions.length > 2 && (
-                          <Text size="xs" c="dimmed">  ... +{rec.actions.length - 2} more</Text>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  </Link>
+        {/* Metrics — raw numbers for readers who want to dig in. */}
+        {insight.metrics && Object.keys(insight.metrics).length > 0 && (
+          <Card withBorder p="lg">
+            <Title order={4} mb="sm">Metrics</Title>
+            <Table>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Metric</Table.Th>
+                  <Table.Th>Value</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {Object.entries(insight.metrics).map(([key, value]) => (
+                  <Table.Tr key={key}>
+                    <Table.Td><Text size="sm">{key.replace(/_/g, ' ')}</Text></Table.Td>
+                    <Table.Td><Text size="sm" fw={600}>{String(value)}</Text></Table.Td>
+                  </Table.Tr>
                 ))}
-              </Stack>
-            </Card>
-          );
-        })()}
+              </Table.Tbody>
+            </Table>
+          </Card>
+        )}
 
-        {/* How This Insight Was Found */}
-        <Title order={3}>
-          <IconSearch size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-          How This Insight Was Found
-        </Title>
+        {/* Narrow-screen fallback: Validation + Technical Details trigger.
+            On ≥ lg the sidebar hosts both; below that we render them inline
+            at the bottom of the main column so they're still accessible. */}
+        <Box hiddenFrom="lg">
+          <Stack gap="md">
+            {insight.validation && (
+              <CompactValidationCard validation={insight.validation} />
+            )}
+            <Button
+              variant="subtle"
+              size="sm"
+              leftSection={<IconCode size={14} />}
+              onClick={() => setTechOpen(true)}
+              w="fit-content"
+            >
+              Show technical details
+            </Button>
+          </Stack>
+        </Box>
 
+        {insight.discovered_at && (
+          <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
+        )}
+      </Stack>
+        </Grid.Col>
+
+        {/* Right sidebar — navigation (related) + supporting content
+            (validation + tech-details trigger). Sticky so it stays in view
+            as the user scrolls the main narrative. */}
+        <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
+          <Box style={{ position: 'sticky', top: 16 }}>
+            <Stack gap="md">
+              <RelatedSidebar
+                relatedLabel="Related Recommendations"
+                related={relatedItems}
+              />
+              {insight.validation && (
+                <CompactValidationCard validation={insight.validation} />
+              )}
+              <Button
+                variant="subtle"
+                size="sm"
+                leftSection={<IconCode size={14} />}
+                onClick={() => setTechOpen(true)}
+                justify="flex-start"
+                fullWidth
+              >
+                Show technical details
+              </Button>
+            </Stack>
+          </Box>
+        </Grid.Col>
+      </Grid>
+
+      {/* Technical Details Drawer — full-viewport height on the right. The
+          SQL code blocks inside need width they wouldn't get in a 240px
+          sidebar, and wrapping them in a Drawer keeps the reader's main
+          scroll position intact when they close it. */}
+      <Drawer
+        opened={techOpen}
+        onClose={() => setTechOpen(false)}
+        position="right"
+        size="lg"
+        title={
+          <Group gap="xs">
+            <IconSearch size={18} />
+            <Text fw={600}>How This Insight Was Found</Text>
+          </Group>
+        }
+      >
         <Accordion variant="separated" defaultValue="exploration">
           {/* Source exploration queries (cited by the LLM) */}
           {sourceSteps.length > 0 && (
@@ -370,56 +449,18 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
         </Accordion>
+      </Drawer>
 
-        {insight.discovered_at && (
-          <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
-        )}
-
-        {/* Similar Insights (semantic search) */}
-        {similarInsights.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <Text size="sm" fw={600} mb="xs">Similar Insights</Text>
-            <Stack gap="xs">
-              {similarInsights.map(sim => {
-                const isDuplicate = sim.score > 0.95;
-                return (
-                  <Link
-                    key={sim.id}
-                    href={`/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
-                    style={{ textDecoration: 'none' }}
-                  >
-                    <Card padding="xs" withBorder style={{ cursor: 'pointer' }}>
-                      <Group justify="space-between" wrap="nowrap">
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <Text size="sm" truncate>{sim.name}</Text>
-                          <Text size="xs" c="dimmed">
-                            {sim.discovered_at ? new Date(sim.discovered_at).toLocaleDateString() : ''}
-                            {sim.analysis_area ? ` · ${sim.analysis_area}` : ''}
-                          </Text>
-                        </div>
-                        <Group gap={6} wrap="nowrap">
-                          {sim.severity && (
-                            <Badge size="xs" color={severityColor[sim.severity] || 'gray'} variant="light">
-                              {sim.severity}
-                            </Badge>
-                          )}
-                          <Badge
-                            size="xs"
-                            variant="light"
-                            color={isDuplicate ? 'orange' : 'blue'}
-                          >
-                            {Math.round(sim.score * 100)}% {isDuplicate ? 'duplicate' : 'related'}
-                          </Badge>
-                        </Group>
-                      </Group>
-                    </Card>
-                  </Link>
-                );
-              })}
-            </Stack>
-          </div>
-        )}
-      </Stack>
+      {/* Similar Insights — full-width exploration section. The content
+          column is capped at ~720px (9/12 of the Grid), so this sits below
+          that width and visually complements rather than sprawls. */}
+      <div style={{ maxWidth: 800 }}>
+        <SimilarItems
+          label="Similar Insights"
+          items={similarInsights}
+          hrefFor={(sim) => `/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
+        />
+      </div>
     </Shell>
   );
 }

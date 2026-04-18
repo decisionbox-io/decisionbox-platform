@@ -249,6 +249,28 @@ func contains(s, substr string) bool {
 	return false
 }
 
+// isUUIDLike returns true when s matches the standard 8-4-4-4-12 UUID shape.
+// Used by tests that need to assert "a UUID was assigned" without pinning the
+// exact value.
+func isUUIDLike(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // --- parseInsights ---
 
 func TestParseInsights_ValidJSON(t *testing.T) {
@@ -286,9 +308,10 @@ func TestParseInsights_ValidJSON(t *testing.T) {
 		t.Fatalf("insights = %d, want 2", len(insights))
 	}
 
-	// First insight: auto-generated ID
-	if insights[0].ID != "churn-1" {
-		t.Errorf("insights[0].ID = %q, want churn-1", insights[0].ID)
+	// First insight: auto-assigned UUID (format check, not exact value —
+	// the same UUID will later become the standalone `_id` and Qdrant point id).
+	if !isUUIDLike(insights[0].ID) {
+		t.Errorf("insights[0].ID = %q, want a UUID", insights[0].ID)
 	}
 	if insights[0].AnalysisArea != "churn" {
 		t.Errorf("insights[0].AnalysisArea = %q, want churn", insights[0].AnalysisArea)
