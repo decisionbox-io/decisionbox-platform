@@ -11,6 +11,7 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -297,6 +298,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 
+	// Inject project knowledge sources (no-op if no enterprise plugin loaded
+	// or no sources indexed). Query phrased to surface broad domain context
+	// useful for any exploration step.
+	knowledgeQuery := fmt.Sprintf("data exploration for %s; analysis areas: %s", datasetsStr, o.areaNamesCSV(analysisAreas))
+	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration)
+
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
 	o.statusReporter.SetPhase(ctx, models.PhaseExploration, "Starting autonomous data exploration...", 10)
@@ -373,6 +380,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantQueries)))
 		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", string(queryResultsJSON))
+
+		// Inject project knowledge sources relevant to this analysis area.
+		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
+		prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis)
 
 		// Create analysis step to capture full dialog
 		step := models.AnalysisStep{
@@ -617,6 +628,12 @@ func (o *Orchestrator) generateRecommendations(
 	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", summary)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", string(insightsJSON))
+
+	// Inject project knowledge sources relevant to the discovered insights.
+	// Recommendations often need broader business context (constraints, prior
+	// initiatives, tone) so we use a higher top-K than analysis prompts.
+	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
+	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations)
 
 	step.Prompt = prompt
 
@@ -1014,4 +1031,83 @@ func cleanJSONResponse(response string) string {
 	}
 
 	return response
+}
+
+// --- Knowledge sources injection ---
+
+// Top-K values per phase. Tuned based on prompt size:
+//   - Exploration prompts already include schema + analysis areas → keep small.
+//   - Analysis prompts add query results → moderate.
+//   - Recommendation prompts often need broader business context → larger.
+const (
+	knowledgeTopKExploration       = 3
+	knowledgeTopKAnalysis          = 5
+	knowledgeTopKRecommendations   = 8
+	knowledgeMinScore              = 0.4
+	knowledgeMaxRetrievalPerPhase  = 3 * time.Second
+)
+
+// injectKnowledgeSources retrieves relevant chunks from project knowledge
+// sources and prepends them as a "## Project Knowledge" section to the prompt.
+//
+// The hook is always called; without an enterprise plugin loaded the registered
+// provider is a no-op and the prompt is returned unchanged. Errors are logged
+// but never returned — failure to retrieve knowledge must not abort discovery.
+func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int) string {
+	if query == "" || topK <= 0 {
+		return prompt
+	}
+
+	// Apply a tight per-call timeout so a slow embedding call cannot stall a phase.
+	retrieveCtx, cancel := context.WithTimeout(ctx, knowledgeMaxRetrievalPerPhase)
+	defer cancel()
+
+	chunks, err := gosources.GetProvider().RetrieveContext(retrieveCtx, o.projectID, query, gosources.RetrieveOpts{
+		Limit:    topK,
+		MinScore: knowledgeMinScore,
+	})
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"project_id": o.projectID,
+			"error":      err.Error(),
+		}).Warn("Knowledge source retrieval failed; continuing without project knowledge")
+		return prompt
+	}
+
+	section := gosources.FormatPromptSection(chunks)
+	if section == "" {
+		return prompt
+	}
+
+	return section + "\n" + prompt
+}
+
+// areaNamesCSV returns a comma-separated list of analysis area names for use
+// in knowledge retrieval queries.
+func (o *Orchestrator) areaNamesCSV(areas []AnalysisArea) string {
+	names := make([]string, 0, len(areas))
+	for _, a := range areas {
+		names = append(names, a.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// recommendationsKnowledgeQuery builds the retrieval query string for the
+// recommendations prompt by joining insight names. Capped at 200 chars to
+// stay within typical embedding model input limits.
+func (o *Orchestrator) recommendationsKnowledgeQuery(insights []models.Insight) string {
+	if len(insights) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(insights))
+	for _, i := range insights {
+		if i.Name != "" {
+			names = append(names, i.Name)
+		}
+	}
+	q := "recommendations for: " + strings.Join(names, ", ")
+	if len(q) > 200 {
+		q = q[:200]
+	}
+	return q
 }

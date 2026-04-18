@@ -20,6 +20,7 @@ import (
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
+	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -486,6 +487,16 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		qdrantProvider = nil
 	}
 	defer closeQdrant()
+
+	// Activate the knowledge sources provider if an enterprise plugin
+	// registered a factory. No-op when only the community build is loaded.
+	if err := gosources.Configure(ctx, gosources.Dependencies{
+		Mongo:          mongoClient.Database(),
+		Vectorstore:    qdrantProvider,
+		SecretProvider: secretProvider,
+	}); err != nil {
+		applog.WithError(err).Warn("Knowledge sources provider configuration failed; sources disabled for this run")
+	}
 
 	// Initialize embedding provider (optional — nil if not configured)
 	embeddingProvider, err := initEmbeddingProvider(ctx, project, secretProvider, projectID)

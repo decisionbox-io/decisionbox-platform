@@ -18,6 +18,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
@@ -179,6 +180,16 @@ func Run() {
 		SecretProvider: secretProvider,
 		VectorStore:    qdrantProvider,
 	})
+
+	// Activate the knowledge sources provider if an enterprise plugin
+	// registered a factory. No-op when only the community build is loaded.
+	if err := gosources.Configure(ctx, gosources.Dependencies{
+		Mongo:          mongoClient.Database(),
+		Vectorstore:    qdrantProvider,
+		SecretProvider: secretProvider,
+	}); err != nil {
+		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
+	}
 
 	// HTTP server
 	handler := server.New(db, healthHandler, secretProvider, authProvider, qdrantProvider)
