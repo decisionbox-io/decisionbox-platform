@@ -327,6 +327,85 @@ Databricks SQL extends ANSI SQL with:
 Databricks SQL warehouses charge per DBU (Databricks Unit) based on cluster size and runtime.
 There is no per-query cost estimation API, so the cost estimation feature is not available.
 
+## Microsoft SQL Server
+
+### Prerequisites
+
+- A SQL Server instance (SQL Server 2016 or later) reachable from the agent, or an Azure SQL Database
+- A SQL login (or Azure SQL user) with read access to the target database and schema
+- A firewall rule or VPC path that allows the agent's egress IP to reach port 1433
+
+### Dashboard Setup
+
+1. Select **Microsoft SQL Server** as warehouse provider
+2. Fill in:
+   - **Host**: Server hostname (e.g., `mssql.example.com` or `my-server.database.windows.net`)
+   - **Port**: Usually `1433`; leave blank for the default
+   - **Database**: Target database name (hyphens allowed — Azure SQL DB names commonly contain them)
+   - **Username**: SQL login name
+   - **Schema**: SQL Server schema to explore (default: `dbo`)
+3. Optionally set:
+   - **Encrypt** — TDS encryption mode: `true` (default, TLS required), `false` (no TLS), `strict` (TDS 8.0 strict TLS), or `disable`
+   - **Trust Server Certificate** — `true` skips TLS certificate validation; leave `false` in production
+
+### Authentication
+
+**SQL Login (Username / Password)** — Most common.
+1. In SQL Server: `CREATE LOGIN decisionbox WITH PASSWORD = '...'` then `CREATE USER` and `GRANT SELECT` on the target schema
+2. Grant `VIEW DATABASE STATE` if you want `GetTableSchema` to return accurate row counts (`sys.dm_db_partition_stats`)
+3. In the project creation form, select **SQL Login** and enter the password
+
+**Connection String** — For advanced configurations (Kerberos, Azure AD access token, custom TLS).
+Paste a full `sqlserver://` URL DSN (see the [go-mssqldb connection string format](https://github.com/microsoft/go-mssqldb#connection-parameters-and-dsn)):
+
+```
+sqlserver://user:password@host:1433?database=mydb&encrypt=true&TrustServerCertificate=false
+```
+
+Special characters in the password (`@`, `:`, `?`, `&`, `#`, `/`, space) must be URL-encoded.
+
+### Azure SQL Database Notes
+
+- Use the fully qualified server name: `myserver.database.windows.net`
+- `encrypt=true` is required; Azure SQL rejects unencrypted TDS
+- Managed Identity / Azure AD token auth is reachable via the Connection String auth method by passing `fedauth=ActiveDirectoryManagedIdentity` (or similar) in the DSN query string
+
+### Data Type Handling
+
+SQL Server types are automatically normalized:
+- `TINYINT`, `SMALLINT`, `INT`, `BIGINT` → `INT64`
+- `REAL`, `FLOAT` → `FLOAT64`
+- `DECIMAL`, `NUMERIC`, `MONEY`, `SMALLMONEY` → `FLOAT64` (parsed from driver's string representation)
+- `BIT` → `BOOL`
+- `DATE` → `DATE`
+- `DATETIME`, `DATETIME2`, `SMALLDATETIME`, `DATETIMEOFFSET` → `TIMESTAMP` (RFC3339 string)
+- `TIME` → `STRING`
+- `CHAR`, `NCHAR`, `VARCHAR`, `NVARCHAR`, `TEXT`, `NTEXT` → `STRING`
+- `BINARY`, `VARBINARY`, `IMAGE` → `BYTES` (in schema) / `STRING` (in query results)
+- `UNIQUEIDENTIFIER` → `STRING` (canonical `8-4-4-4-12` hex form)
+- `XML` → `STRING`
+
+SQL Server has no dedicated JSON type; JSON is stored in `NVARCHAR(MAX)` and returned as `STRING`.
+
+### SQL Dialect
+
+T-SQL supports most ANSI SQL plus SQL-Server-specific syntax:
+- **TOP n / TOP PERCENT** — Row limiting without `ORDER BY` (when a natural order isn't needed)
+- **OFFSET/FETCH** — Standard paging; requires `ORDER BY`. Cannot be combined with `TOP`
+- **CROSS APPLY / OUTER APPLY** — SQL Server's equivalent of `LATERAL` joins
+- **PIVOT / UNPIVOT** — Rotate rows to columns and vice versa
+- **STRING_AGG / STRING_SPLIT** — String aggregation and splitting (2017+)
+- **JSON_VALUE / JSON_QUERY / OPENJSON / ISJSON** — JSON parsing (2016+)
+- **TRY_CAST / TRY_CONVERT / TRY_PARSE** — Safe type conversions that return `NULL` on failure
+- **SYSUTCDATETIME() / DATEADD / DATEDIFF** — Date arithmetic
+
+No `QUALIFY` clause — filter window-function results via CTE or subquery.
+
+### Cost
+
+SQL Server and Azure SQL Database have multiple pricing models (DTU, vCore, per-second serverless).
+There is no per-query cost estimation API, so the cost estimation feature is not available.
+
 ## Cross-Cloud Authentication
 
 DecisionBox supports accessing warehouses from a different cloud:
@@ -340,6 +419,7 @@ DecisionBox supports accessing warehouses from a different cloud:
 | Snowflake from any cloud | Password or Key Pair | Paste password or PEM private key |
 | PostgreSQL from any cloud | Password or Connection String | Enter credentials or full DSN |
 | Databricks from any cloud | PAT or OAuth M2M | Paste token or client_id:client_secret |
+| Microsoft SQL Server / Azure SQL | SQL Login or Connection String | Enter password or full `sqlserver://` DSN |
 | Any from local dev | ADC / IAM Role | Configure cloud CLI (`gcloud auth`, `aws configure`) |
 
 The key concept: warehouse credentials are stored encrypted via the **secret provider**. When creating a project, select the appropriate auth method and enter credentials inline. The agent reads credentials from the secret provider before initializing the warehouse provider.

@@ -114,6 +114,7 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | Snowflake | `snowflake` | Password, Key Pair (JWT) | Snowflake SQL |
 | PostgreSQL | `postgres` | Password, Connection String | PostgreSQL |
 | Databricks | `databricks` | PAT, OAuth M2M | Databricks SQL |
+| Microsoft SQL Server | `mssql` | SQL Login, Connection String | T-SQL (SQL Server 2016+, Azure SQL) |
 
 **Location:** `providers/warehouse/{provider-name}/`
 
