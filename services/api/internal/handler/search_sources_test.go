@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -112,8 +113,8 @@ func TestAsk_KnowledgeSourcesIncluded(t *testing.T) {
 			if s["name"] != "handbook.pdf" {
 				t.Errorf("source name = %v, want handbook.pdf", s["name"])
 			}
-			if s["id"] != "src-1" {
-				t.Errorf("source id = %v, want src-1", s["id"])
+			if s["id"] != "src-1#0" {
+				t.Errorf("source id = %v, want src-1#0", s["id"])
 			}
 		}
 	}
@@ -232,5 +233,19 @@ func TestTruncateForSession(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, strings.Repeat("a", 400)) {
 		t.Errorf("truncateForSession(long) should preserve first 400 chars")
+	}
+
+	// Multi-byte runes (Portuguese, CJK): truncation must not split a rune.
+	// Each "ç" is 2 bytes, so a 500-rune input is 1000 bytes but only 500 runes.
+	multibyte := strings.Repeat("ç", 500)
+	mb := truncateForSession(multibyte)
+	if !utf8.ValidString(mb) {
+		t.Errorf("truncateForSession returned invalid UTF-8 for multi-byte input")
+	}
+	if mbRunes := []rune(mb); len(mbRunes) != 401 { // 400 runes + "…"
+		t.Errorf("truncateForSession multi-byte rune count = %d, want 401", len(mbRunes))
+	}
+	if !strings.HasSuffix(mb, "…") {
+		t.Errorf("truncateForSession(multibyte) should end with ellipsis")
 	}
 }

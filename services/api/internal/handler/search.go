@@ -26,6 +26,10 @@ import (
 const (
 	askKnowledgeTopK     = 8
 	askKnowledgeMinScore = 0.4
+	// askKnowledgeTimeout caps knowledge-source retrieval (embedding + vector
+	// search) so a slow provider cannot stall the /ask handler indefinitely.
+	// Mirrors the agent's knowledgeMaxRetrievalPerPhase.
+	askKnowledgeTimeout = 3 * time.Second
 )
 
 // SearchHandler handles semantic search endpoints.
@@ -490,12 +494,15 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 	// Retrieve project knowledge source chunks (no-op without enterprise plugin
 	// or when no sources are indexed). Use top-K=8 to give the LLM broad context.
-	knowledgeChunks, knowledgeErr := gosources.GetProvider().RetrieveContext(ctx, projectID, req.Question, gosources.RetrieveOpts{
+	retrieveCtx, cancelRetrieve := context.WithTimeout(ctx, askKnowledgeTimeout)
+	knowledgeChunks, knowledgeErr := gosources.GetProvider().RetrieveContext(retrieveCtx, projectID, req.Question, gosources.RetrieveOpts{
 		Limit:    askKnowledgeTopK,
 		MinScore: askKnowledgeMinScore,
 	})
+	cancelRetrieve()
 	if knowledgeErr != nil {
 		apilog.WithError(knowledgeErr).Warn("Knowledge source retrieval failed for /ask; continuing without source context")
+		knowledgeChunks = nil
 	}
 
 	if len(insights) == 0 && len(knowledgeChunks) == 0 {
@@ -578,7 +585,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range knowledgeChunks {
 		sessionSources = append(sessionSources, commonmodels.AskSessionSource{
-			ID:          c.SourceID,
+			ID:          chunkCitationID(c),
 			Type:        "source_chunk",
 			Name:        c.SourceName,
 			Score:       c.Score,
@@ -620,7 +627,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	respSources = append(respSources, insights...)
 	for _, c := range knowledgeChunks {
 		respSources = append(respSources, searchResultItem{
-			ID:          c.SourceID,
+			ID:          chunkCitationID(c),
 			Type:        "source_chunk",
 			Score:       c.Score,
 			Name:        c.SourceName,
@@ -638,13 +645,22 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 
 // truncateForSession trims chunk text to a reasonable size for storage and
 // for display in citation lists. Full chunk text is not stored on the session
-// record — the source itself is the authoritative copy.
+// record — the source itself is the authoritative copy. Truncation is by
+// rune count to avoid splitting multi-byte UTF-8 runes (Portuguese, CJK, etc.).
 func truncateForSession(s string) string {
 	const max = 400
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	return string(runes[:max]) + "…"
+}
+
+// chunkCitationID builds a stable, chunk-unique identifier for session storage
+// and API responses. Multiple chunks from the same source would otherwise
+// collide on SourceID when top-K retrieval returns more than one per document.
+func chunkCitationID(c gosources.Chunk) string {
+	return fmt.Sprintf("%s#%d", c.SourceID, c.Position)
 }
 
 // createLLMProvider creates an LLM provider for a project's RAG answer synthesis.
