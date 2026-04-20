@@ -46,6 +46,7 @@ import (
 	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"   // registers "bigquery"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/databricks" // registers "databricks"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/mssql"      // registers "mssql"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/postgres"   // registers "postgres"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/redshift"   // registers "redshift"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake"  // registers "snowflake"

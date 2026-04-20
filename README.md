@@ -28,13 +28,13 @@ DecisionBox is designed for product managers, analysts, and developers who want 
 Your Data Warehouse             DecisionBox Agent            Dashboard
 (BigQuery, Redshift,      →    (AI explores your data)  →   (Insights & Recommendations)
  Snowflake, PostgreSQL,
- Databricks)
+ Databricks, MSSQL)
                                  writes SQL, validates
                                  findings, generates
                                  actionable advice
 ```
 
-1. **Connect** your data warehouse (BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, and more)
+1. **Connect** your data warehouse (BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server, and more)
 2. **Configure** your project (domain, game profile, LLM provider)
 3. **Run discovery** — the AI agent autonomously explores your data
 4. **Review insights** — severity-ranked findings with confidence scores
@@ -45,7 +45,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Autonomous data exploration** — AI writes and executes SQL queries, iterates based on results
 - **Domain-aware analysis** — Pluggable domain packs (gaming, social network, ecommerce shipped — bring your own)
 - **Multiple LLM providers** — Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry
-- **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned), Snowflake, PostgreSQL, Databricks
+- **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned), Snowflake, PostgreSQL, Databricks, Microsoft SQL Server (incl. Azure SQL Database)
 - **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
 - **Insight validation** — AI claims are verified against your actual data
 - **Feedback loop** — Like/dislike insights, agent learns from feedback on next run
