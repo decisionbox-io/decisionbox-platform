@@ -23,6 +23,13 @@ import "context"
 // are safe to call concurrently. A typed *PolicyError is returned on
 // denial; any other error is infrastructural (the caller should surface
 // 500 or retry per its own policy).
+//
+// The deploymentID parameter is the deployment whose policy applies.
+// Community handlers generally do not know a deployment ID (there is no
+// deployment concept in OSS) and should pass "". The cloud plugin
+// substitutes its configured DEPLOYMENT_ID env var in that case.
+// Control-plane-side library callers (e.g., portal memberships.Add)
+// pass an explicit deployment ID because they already resolve one.
 type Checker interface {
 	// CheckCreateProject reserves a slot against projects_per_deployment.
 	// Returns the reservation on success; the caller must Release it if

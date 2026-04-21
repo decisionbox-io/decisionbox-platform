@@ -336,6 +336,17 @@ func (m *mockRunRepo) Cancel(_ context.Context, runID string) error {
 	return nil
 }
 
+func (m *mockRunRepo) SetPolicyReservationID(_ context.Context, runID, reservationID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	r.PolicyReservationID = reservationID
+	return nil
+}
+
 // addRun inserts a run directly for testing.
 func (m *mockRunRepo) addRun(run *models.DiscoveryRun) {
 	m.mu.Lock()

@@ -33,6 +33,7 @@ type RunRepo interface {
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	Fail(ctx context.Context, runID string, errMsg string) error
 	Cancel(ctx context.Context, runID string) error
+	SetPolicyReservationID(ctx context.Context, runID, reservationID string) error
 }
 
 // FeedbackRepo abstracts feedback operations for handler unit testing.

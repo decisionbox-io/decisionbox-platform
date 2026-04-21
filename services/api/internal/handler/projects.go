@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -56,8 +57,64 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SeedProjectPrompts(&p, pack)
 	}
 
+	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
+	ck := policy.GetChecker()
+	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {
+		if writePolicyError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+		return
+	}
+
+	// Plan-gate: projects-per-deployment. Reservation is consumed on a
+	// successful repo insert and released on failure.
+	res, err := ck.CheckCreateProject(r.Context(), "", policy.ProjectIntent{
+		ProjectID:   p.ID,
+		Name:        p.Name,
+		LLMProvider: p.LLM.Provider,
+	})
+	if err != nil {
+		if writePolicyError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+		return
+	}
+
+	// Plan-gate: data-sources-per-deployment. A project today carries
+	// exactly one warehouse (the data-source unit), so adding a project
+	// that configures a warehouse is also adding a data source.
+	// Self-hosted Noop is a no-op.
+	var dsRes *policy.Reservation
+	if p.Warehouse.Provider != "" {
+		dsRes, err = ck.CheckAddDataSource(r.Context(), "")
+		if err != nil {
+			if res != nil {
+				if relErr := ck.Release(r.Context(), res.ID); relErr != nil {
+					apilog.WithError(relErr).Warn("failed to release project-create reservation after data-source denial")
+				}
+			}
+			if writePolicyError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+			return
+		}
+	}
+
 	if err := h.repo.Create(r.Context(), &p); err != nil {
 		apilog.WithError(err).Error("Failed to create project")
+		if res != nil {
+			if relErr := ck.Release(r.Context(), res.ID); relErr != nil {
+				apilog.WithError(relErr).Warn("failed to release project-create reservation after insert failure")
+			}
+		}
+		if dsRes != nil {
+			if relErr := ck.Release(r.Context(), dsRes.ID); relErr != nil {
+				apilog.WithError(relErr).Warn("failed to release data-source reservation after insert failure")
+			}
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create project: "+err.Error())
 		return
 	}
@@ -130,6 +187,18 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &incoming); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
+	}
+
+	// Plan-gate: if the request changes the LLM provider, validate the
+	// new provider against the plan's allow-list before persisting.
+	if incoming.LLM.Provider != "" && incoming.LLM.Provider != existing.LLM.Provider {
+		if err := policy.GetChecker().CheckLLMProviderAllowed(r.Context(), "", incoming.LLM.Provider); err != nil {
+			if writePolicyError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+			return
+		}
 	}
 
 	// Merge: update only fields that are present in the request

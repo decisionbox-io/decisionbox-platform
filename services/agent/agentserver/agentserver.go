@@ -6,6 +6,7 @@ package agentserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -259,34 +260,51 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 }
 
 func initEmbeddingProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (goembedding.Provider, error) {
-	if project.Embedding.Provider == "" {
-		applog.Info("Embedding provider not configured — Phase 9 will skip embedding")
-		return nil, nil
+	// When BYOK_EMBEDDING_ENABLED is false, EMBEDDING_PROVIDER_API_KEY
+	// from the environment wins over project-supplied credentials.
+	// Setting the flag to true flips the priority so project credentials
+	// take precedence.
+	byok := os.Getenv("BYOK_EMBEDDING_ENABLED") == "true"
+
+	// Fill project.Credentials from the secret provider when the project
+	// does not already carry a UI-supplied key (the UI writes credentials
+	// directly into project.Embedding.Credentials; older deployments
+	// stored the key in the secret provider under "embedding-api-key").
+	if project.Embedding.Credentials == "" {
+		key, err := secretProvider.Get(ctx, projectID, "embedding-api-key")
+		if err == nil && key != "" {
+			project.Embedding.Credentials = key
+			applog.Info("Embedding API key loaded from secret provider")
+		} else if err != nil && err != gosecrets.ErrNotFound {
+			applog.WithError(err).Warn("Failed to read embedding API key from secret provider")
+		}
 	}
 
-	apiKey := ""
-	key, err := secretProvider.Get(ctx, projectID, "embedding-api-key")
-	if err == nil && key != "" {
-		apiKey = key
-		applog.Info("Embedding API key loaded from secret provider")
-	} else if err != nil && err != gosecrets.ErrNotFound {
-		applog.WithError(err).Warn("Failed to read embedding API key from secret provider")
+	resolved, err := goembedding.ResolveConfig(project.Embedding, byok)
+	if err != nil {
+		if errors.Is(err, goembedding.ErrNoProvider) {
+			applog.Info("Embedding provider not configured — Phase 9 will skip embedding")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to resolve embedding config: %w", err)
 	}
 
 	embCfg := goembedding.ProviderConfig{
-		"api_key": apiKey,
-		"model":   project.Embedding.Model,
+		"api_key": resolved.APIKey,
+		"model":   resolved.Model,
 	}
 
-	provider, err := goembedding.NewProvider(project.Embedding.Provider, embCfg)
+	provider, err := goembedding.NewProvider(resolved.Provider, embCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create embedding provider (%s): %w", project.Embedding.Provider, err)
+		return nil, fmt.Errorf("failed to create embedding provider (%s): %w", resolved.Provider, err)
 	}
 
 	applog.WithFields(applog.Fields{
-		"provider": project.Embedding.Provider,
-		"model":    project.Embedding.Model,
-		"dims":     provider.Dimensions(),
+		"provider":        resolved.Provider,
+		"model":           resolved.Model,
+		"dims":            provider.Dimensions(),
+		"credential_src":  resolved.Source,
+		"byok_enabled":    byok,
 	}).Info("Embedding provider initialized")
 
 	return provider, nil
@@ -511,6 +529,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err != nil {
 		return fmt.Errorf("failed to create AI client: %w", err)
 	}
+	aiClient.SetProvenance(projectID, runID, project.LLM.Provider)
 	if testMode {
 		aiClient.SetTestMode(true)
 	}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
@@ -125,17 +126,6 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Check if there's already a running discovery
-	running, _ := h.runRepo.GetRunningByProject(r.Context(), projectID)
-	if running != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"status":  "already_running",
-			"run_id":  running.ID,
-			"message": "A discovery is already running for this project",
-		})
-		return
-	}
-
 	// Parse optional request body
 	var body struct {
 		Areas    []string `json:"areas"`     // optional: run only these areas
@@ -143,11 +133,58 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	}
 	_ = decodeJSON(r, &body) // body is optional
 
-	// Create a run record
+	// Create a run record first — we need a stable runID for the policy
+	// reservation and the repo-level "already running" invariant is
+	// re-enforced here (Create only returns an ID; race is closed by
+	// the policy reservation on cloud and by the runRepo uniqueness on
+	// self-hosted).
 	runID, err := h.runRepo.Create(r.Context(), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create run: "+err.Error())
 		return
+	}
+
+	// Plan-gate: concurrent-runs-per-project AND runs-per-period. The
+	// self-hosted NoopChecker allows everything; the cloud plugin
+	// atomically reserves both counters in a single round-trip. On
+	// self-hosted we also keep the repo-level "already running" check
+	// below so the OSS UX does not regress.
+	ck := policy.GetChecker()
+	if _, isNoop := ck.(policy.NoopChecker); isNoop {
+		running, _ := h.runRepo.GetRunningByProject(r.Context(), projectID)
+		if running != nil && running.ID != runID {
+			if err := h.runRepo.Cancel(r.Context(), runID); err != nil {
+				apilog.WithError(err).Warn("failed to clean up runID reserved before already-running check")
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"status":  "already_running",
+				"run_id":  running.ID,
+				"message": "A discovery is already running for this project",
+			})
+			return
+		}
+	}
+
+	res, err := ck.CheckStartDiscoveryRun(r.Context(), "", projectID, runID)
+	if err != nil {
+		if failErr := h.runRepo.Fail(r.Context(), runID, "plan denied: "+err.Error()); failErr != nil {
+			apilog.WithError(failErr).Warn("failed to mark policy-denied run as failed")
+		}
+		if writePolicyError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+		return
+	}
+
+	reservationID := ""
+	if res != nil {
+		reservationID = res.ID
+	}
+	if reservationID != "" {
+		if err := h.runRepo.SetPolicyReservationID(r.Context(), runID, reservationID); err != nil {
+			apilog.WithError(err).Warn("failed to persist policy reservation id on run; cancel/crash recovery will fall through to sweeper")
+		}
 	}
 
 	// Spawn the agent via the configured runner (subprocess or K8s Job)
@@ -163,11 +200,25 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 			if err := h.runRepo.Fail(context.Background(), failedRunID, errMsg); err != nil {
 				apilog.WithError(err).Error("failed to mark run as failed")
 			}
+			if reservationID != "" {
+				if err := policy.GetChecker().ConfirmDiscoveryRunEnded(context.Background(), reservationID, policy.RunOutcome{
+					Status:  "failure",
+					EndedAt: time.Now().UTC(),
+					Error:   errMsg,
+				}); err != nil {
+					apilog.WithError(err).Warn("failed to confirm run ended to policy checker")
+				}
+			}
 		},
 	})
 	if runErr != nil {
 		if err := h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed")
+		}
+		if reservationID != "" {
+			if relErr := ck.Release(r.Context(), reservationID); relErr != nil {
+				apilog.WithError(relErr).Warn("failed to release discovery-run reservation after agent spawn failed")
+			}
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", runErr.Error()))
 		return
@@ -261,6 +312,19 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	// Mark as cancelled in MongoDB
 	if err := h.runRepo.Cancel(r.Context(), runID); err != nil {
 		apilog.WithError(err).Warn("failed to cancel run in database")
+	}
+
+	// Confirm the policy reservation ended. We call Confirm rather than
+	// Release so the period counter (already incremented when the run
+	// started) stays consumed — cancellation does not refund the run
+	// budget. The concurrent-runs counter decrements. Noop is a no-op.
+	if run.PolicyReservationID != "" {
+		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(r.Context(), run.PolicyReservationID, policy.RunOutcome{
+			Status:  "cancelled",
+			EndedAt: time.Now().UTC(),
+		}); err != nil {
+			apilog.WithError(err).Warn("failed to confirm cancelled run to policy checker")
+		}
 	}
 
 	apilog.WithField("run_id", runID).Info("Discovery run cancelled")

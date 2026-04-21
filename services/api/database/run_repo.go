@@ -76,6 +76,22 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
+// SetPolicyReservationID stores the opaque reservation handle returned
+// by the policy Checker when the run was triggered. Persisted so exit
+// paths outside the trigger request (cancel, crash sweeper, agent
+// completion callback) can resolve the reservation back to the control
+// plane without keeping request-scoped state.
+func (r *RunRepository) SetPolicyReservationID(ctx context.Context, runID, reservationID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"policy_reservation_id": reservationID, "updated_at": time.Now()},
+	})
+	return err
+}
+
 // Fail marks a run as failed.
 func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
@@ -15,7 +16,10 @@ import (
 // Client provides LLM operations for the discovery agent.
 type Client struct {
 	provider     gollm.Provider
+	providerName string
 	model        string
+	projectID    string
+	runID        string
 	debugLogger  *debug.Logger
 	testMode     bool
 	promptCount  int
@@ -31,6 +35,16 @@ func New(provider gollm.Provider, model string) (*Client, error) {
 		provider: provider,
 		model:    model,
 	}, nil
+}
+
+// SetProvenance records the project/run/provider that will be attached
+// to each LLM observability event emitted from this client. Callers
+// that do not set this still get structured logs but the control-plane
+// attribution falls back to empty values.
+func (c *Client) SetProvenance(projectID, runID, providerName string) {
+	c.projectID = projectID
+	c.runID = runID
+	c.providerName = providerName
 }
 
 // ChatResult holds the full result of an LLM call (for storage/fine-tuning).
@@ -83,6 +97,7 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 	}).Debug("Sending LLM request")
 
 	resp, err := c.provider.Chat(ctx, req)
+	latencyMs := time.Since(startTime).Milliseconds()
 
 	promptContent := ""
 	for _, msg := range messages {
@@ -90,10 +105,13 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 	}
 
 	if err != nil {
+		// Observability: record the failed call. Provider may have
+		// returned partial usage even on error; report what we have.
+		c.emitLLMUsage(ctx, 0, 0, latencyMs, err)
 		if c.debugLogger != nil {
 			c.debugLogger.LogClaude(ctx, c.currentStep, c.currentPhase, c.model,
 				systemPrompt, promptContent, "", 0, 0,
-				time.Since(startTime).Milliseconds(), err)
+				latencyMs, err)
 		}
 		return nil, err
 	}
@@ -104,14 +122,52 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 		"stop_reason":   resp.StopReason,
 	}).Debug("LLM response received")
 
+	c.emitLLMUsage(ctx, resp.Usage.InputTokens, resp.Usage.OutputTokens, latencyMs, nil)
+
 	if c.debugLogger != nil {
 		c.debugLogger.LogClaude(ctx, c.currentStep, c.currentPhase, c.model,
 			systemPrompt, promptContent, resp.Content,
 			resp.Usage.InputTokens, resp.Usage.OutputTokens,
-			time.Since(startTime).Milliseconds(), nil)
+			latencyMs, nil)
 	}
 
 	return resp, nil
+}
+
+// emitLLMUsage is the single observability sink for every LLM call.
+// Writes a structured log event (always, self-hosted and cloud alike)
+// and fires the policy ObserveLLMTokens hook (a no-op on self-hosted
+// via the Noop checker; on cloud, the policy plugin batches events
+// and flushes to the control plane).
+func (c *Client) emitLLMUsage(ctx context.Context, inTok, outTok int, latencyMs int64, callErr error) {
+	fields := logger.Fields{
+		"provider":      c.providerName,
+		"model":         c.model,
+		"project_id":    c.projectID,
+		"run_id":        c.runID,
+		"input_tokens":  inTok,
+		"output_tokens": outTok,
+		"latency_ms":    latencyMs,
+		"phase":         c.currentPhase,
+		"step":          c.currentStep,
+	}
+	if callErr != nil {
+		fields["error"] = callErr.Error()
+		logger.WithFields(fields).Warn("LLM call failed")
+	} else {
+		logger.WithFields(fields).Info("LLM call usage")
+	}
+
+	policy.GetChecker().ObserveLLMTokens(ctx, "", policy.LLMUsageEvent{
+		ProjectID:    c.projectID,
+		RunID:        c.runID,
+		Provider:     c.providerName,
+		Model:        c.model,
+		InputTokens:  inTok,
+		OutputTokens: outTok,
+		LatencyMs:    int(latencyMs),
+		OccurredAt:   time.Now().UTC(),
+	})
 }
 
 // ExtractText returns the text content from a response.

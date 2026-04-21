@@ -23,6 +23,15 @@ type DiscoveryRun struct {
 	SuccessfulQueries int `bson:"successful_queries" json:"successful_queries"`
 	FailedQueries     int `bson:"failed_queries" json:"failed_queries"`
 	InsightsFound     int `bson:"insights_found" json:"insights_found"`
+
+	// PolicyReservationID is the reservation the API opened when the run
+	// was triggered (plan-gated concurrent-runs-per-project and
+	// runs-per-period counters). Empty when the policy Checker is Noop
+	// (self-hosted) or when the reservation has already been confirmed
+	// or released. Persisted so exit handlers outside the trigger
+	// request scope (cancel, agent-completion callback, crash sweeper)
+	// can resolve it back to the control plane.
+	PolicyReservationID string `bson:"policy_reservation_id,omitempty" json:"-"`
 }
 
 type RunStep struct {
