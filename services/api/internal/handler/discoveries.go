@@ -218,6 +218,8 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		if reservationID != "" {
 			if relErr := ck.Release(r.Context(), reservationID); relErr != nil {
 				apilog.WithError(relErr).Warn("failed to release discovery-run reservation after agent spawn failed")
+			} else if err := h.runRepo.ClearPolicyReservationID(r.Context(), runID); err != nil {
+				apilog.WithError(err).Warn("released discovery-run reservation after agent spawn failed, but failed to clear persisted reservation id on run (post-completion confirmer will retry Confirm on an already-Released reservation until the doc TTLs)")
 			}
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", runErr.Error()))

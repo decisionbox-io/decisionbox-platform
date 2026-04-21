@@ -26,3 +26,13 @@ func GetChecker() Checker {
 	}
 	return NoopChecker{}
 }
+
+// HasRegisteredChecker reports whether a non-default Checker has been
+// registered. Server bootstrap uses this to skip background goroutines
+// (counter reconciliation, post-completion confirmer) on self-hosted
+// deployments where the Noop drops every call anyway.
+func HasRegisteredChecker() bool {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return registeredChecker != nil
+}

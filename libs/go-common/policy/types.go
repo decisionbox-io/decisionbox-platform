@@ -22,6 +22,12 @@ type Reservation struct {
 // ProjectIntent is the policy-relevant subset of a project at create time.
 // It is decoupled from the full project model so the policy hook does not
 // depend on the community project schema.
+//
+// ProjectID may be empty: the community ProjectsHandler calls the Checker
+// before the repo assigns a Mongo ObjectID, so plugins must not rely on
+// ProjectID as a stable identifier at create time (it is provided when
+// the client supplies one, and as a human-readable label otherwise).
+// Idempotency should key on the Reservation id the Checker returns.
 type ProjectIntent struct {
 	ProjectID   string
 	Name        string

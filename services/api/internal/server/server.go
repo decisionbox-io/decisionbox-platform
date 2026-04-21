@@ -55,20 +55,14 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		agentRunner = runner.NewSubprocessRunner()
 	}
 
-	// Policy-plugin reconciliation: periodically report the tenant's
-	// ground-truth project and data-source counts to the control plane
-	// so any drift (manual Mongo import, lost reservation, etc.)
-	// eventually converges. Noop on self-hosted because the default
-	// Checker drops the call.
-	startCounterReconciliation(projectRepo)
-
-	// Post-completion confirmer: the agent writes a run as completed
-	// directly to Mongo, so the API never gets a request-scoped hook
-	// to call ConfirmDiscoveryRunEnded. This goroutine scans for
-	// terminal runs that still carry a reservation id, confirms them
-	// (which decrements concurrent_runs_by_project on cloud), and
-	// clears the field. Noop on self-hosted.
-	startRunConfirmer(runRepo)
+	// Policy-plugin reconciliation + post-completion confirmer only
+	// run when a non-default Checker is registered. On self-hosted the
+	// Noop drops every call, so the background Mongo queries would be
+	// pure waste.
+	if policy.HasRegisteredChecker() {
+		startCounterReconciliation(projectRepo)
+		startRunConfirmer(runRepo)
+	}
 
 	// Seed pricing from registered providers (if not yet in MongoDB)
 	handler.SeedPricingFromProviders(context.Background(), pricingRepo)
@@ -290,6 +284,24 @@ func startRunConfirmer(runRepo database.RunRepo) {
 	}()
 }
 
+// policyStatusFromDB maps a DiscoveryRun.Status ("completed", "failed",
+// "cancelled") to the policy.RunOutcome vocabulary ("success",
+// "failure", "cancelled") used by the handler-side confirm paths, so
+// the control plane receives a consistent value regardless of which
+// code path closed the reservation.
+func policyStatusFromDB(dbStatus string) string {
+	switch dbStatus {
+	case "completed":
+		return "success"
+	case "failed":
+		return "failure"
+	case "cancelled":
+		return "cancelled"
+	default:
+		return dbStatus
+	}
+}
+
 func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 	runs, err := runRepo.ListTerminalWithReservation(ctx, 50)
 	if err != nil {
@@ -301,7 +313,7 @@ func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 	}
 	checker := policy.GetChecker()
 	for _, run := range runs {
-		outcome := policy.RunOutcome{Status: run.Status}
+		outcome := policy.RunOutcome{Status: policyStatusFromDB(run.Status)}
 		if run.CompletedAt != nil {
 			outcome.EndedAt = *run.CompletedAt
 		}

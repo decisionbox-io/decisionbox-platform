@@ -26,7 +26,7 @@ type ResolvedConfig struct {
 	Provider    string
 	Model       string
 	APIKey      string
-	Source      string // "env" | "project" | "mixed"
+	Source      string // "env" | "project" | "project-byok"
 }
 
 var ErrNoProvider = errors.New("embedding: no provider configured (neither project nor env)")
