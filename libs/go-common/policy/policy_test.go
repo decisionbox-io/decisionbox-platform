@@ -95,6 +95,13 @@ func TestNoopChecker_FeatureEnabled_True(t *testing.T) {
 	}
 }
 
+func TestNoopChecker_SyncCounters_IsNoOp(t *testing.T) {
+	resetRegistry()
+	c := GetChecker()
+	// Must not panic; must return immediately; must not block.
+	c.SyncCounters(context.Background(), "dep1", CounterSnapshot{ProjectsCurrent: 5, DataSourcesCurrent: 3})
+}
+
 func TestNoopChecker_ObserveLLMTokens_IsNoOp(t *testing.T) {
 	resetRegistry()
 	c := GetChecker()

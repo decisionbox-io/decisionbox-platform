@@ -70,6 +70,23 @@ type Checker interface {
 	// affects the caller — errors are logged by the plugin. In v1 this
 	// is observe-only; a future fair-use cap will make it enforced.
 	ObserveLLMTokens(ctx context.Context, deploymentID string, event LLMUsageEvent)
+
+	// SyncCounters reconciles the tenant's persistent counters (current
+	// project count, current data-source count) with the control-plane
+	// deployment_usage document. Called periodically by a background
+	// goroutine on the community API side so drift introduced outside
+	// the reserve path (e.g., a manual Mongo import, a bug, a crash
+	// that lost a reservation) eventually converges. Non-blocking for
+	// the caller: errors are logged by the plugin, never propagated.
+	SyncCounters(ctx context.Context, deploymentID string, counts CounterSnapshot)
+}
+
+// CounterSnapshot is the ground-truth count the tenant reports to the
+// control plane during periodic reconciliation. Extended over time as
+// more persistent counters are added.
+type CounterSnapshot struct {
+	ProjectsCurrent    int
+	DataSourcesCurrent int
 }
 
 // Feature flag names used across the platform. Plugins must accept these

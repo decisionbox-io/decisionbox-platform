@@ -140,6 +140,29 @@ func (r *ProjectRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// Count returns the number of projects in the collection. Used by the
+// cloud policy plugin's reconciliation loop to report ground-truth
+// tenant counts to the control plane.
+func (r *ProjectRepository) Count(ctx context.Context) (int, error) {
+	n, err := r.col.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return 0, fmt.Errorf("count projects: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountWithWarehouse returns the number of projects that have a
+// configured warehouse — the data-source unit used by reconciliation.
+func (r *ProjectRepository) CountWithWarehouse(ctx context.Context) (int, error) {
+	n, err := r.col.CountDocuments(ctx, bson.M{
+		"warehouse.provider": bson.M{"$nin": []any{"", nil}},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count projects with warehouse: %w", err)
+	}
+	return int(n), nil
+}
+
 func (r *ProjectRepository) EnsureIndexes(ctx context.Context) error {
 	_, err := r.col.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "created_at", Value: -1}}},

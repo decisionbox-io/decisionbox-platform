@@ -15,6 +15,8 @@ type ProjectRepo interface {
 	List(ctx context.Context, limit, offset int) ([]*models.Project, error)
 	Update(ctx context.Context, id string, p *models.Project) error
 	Delete(ctx context.Context, id string) error
+	Count(ctx context.Context) (int, error)
+	CountWithWarehouse(ctx context.Context) (int, error)
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.

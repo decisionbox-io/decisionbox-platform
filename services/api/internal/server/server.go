@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -52,6 +54,13 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		// Fall back to subprocess mode
 		agentRunner = runner.NewSubprocessRunner()
 	}
+
+	// Policy-plugin reconciliation: periodically report the tenant's
+	// ground-truth project and data-source counts to the control plane
+	// so any drift (manual Mongo import, lost reservation, etc.)
+	// eventually converges. Noop on self-hosted because the default
+	// Checker drops the call.
+	startCounterReconciliation(projectRepo)
 
 	// Seed pricing from registered providers (if not yet in MongoDB)
 	handler.SeedPricingFromProviders(context.Background(), pricingRepo)
@@ -205,6 +214,50 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 
 	// Middleware chain: CORS → Logging → Auth → RBAC → Router
 	return corsMiddleware(handler.LoggingMiddleware(root))
+}
+
+// counterReconcileInterval is how often the reconciliation goroutine
+// counts projects + data sources and reports them to the policy
+// Checker. Five minutes is comfortably longer than any reserve/confirm
+// round-trip, so steady-state drift is bounded by one tick.
+const counterReconcileInterval = 5 * time.Minute
+
+// startCounterReconciliation launches a goroutine that periodically
+// counts the tenant's persistent resources and forwards them to the
+// registered policy Checker for reconciliation. Does nothing visible
+// on self-hosted because the Noop Checker drops the call.
+//
+// The goroutine runs for the process lifetime; a context leak here is
+// acceptable because the community API exits via os.Interrupt at
+// which point the HTTP server shuts down and the process exits.
+func startCounterReconciliation(projectRepo database.ProjectRepo) {
+	go func() {
+		ctx := context.Background()
+		ticker := time.NewTicker(counterReconcileInterval)
+		defer ticker.Stop()
+		// Fire once on startup so the counter is warm before the first tick.
+		reconcileOnce(ctx, projectRepo)
+		for range ticker.C {
+			reconcileOnce(ctx, projectRepo)
+		}
+	}()
+}
+
+func reconcileOnce(ctx context.Context, projectRepo database.ProjectRepo) {
+	projects, err := projectRepo.Count(ctx)
+	if err != nil {
+		apilog.WithError(err).Warn("counter reconciliation: project count failed")
+		return
+	}
+	dataSources, err := projectRepo.CountWithWarehouse(ctx)
+	if err != nil {
+		apilog.WithError(err).Warn("counter reconciliation: data-source count failed")
+		return
+	}
+	policy.GetChecker().SyncCounters(ctx, "", policy.CounterSnapshot{
+		ProjectsCurrent:    projects,
+		DataSourcesCurrent: dataSources,
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

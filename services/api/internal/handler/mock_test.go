@@ -122,6 +122,24 @@ func (m *mockProjectRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+func (m *mockProjectRepo) Count(_ context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.projects), nil
+}
+
+func (m *mockProjectRepo) CountWithWarehouse(_ context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, p := range m.projects {
+		if p.Warehouse.Provider != "" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // mockDiscoveryRepo implements database.DiscoveryRepo using an in-memory slice.
 type mockDiscoveryRepo struct {
 	mu          sync.Mutex

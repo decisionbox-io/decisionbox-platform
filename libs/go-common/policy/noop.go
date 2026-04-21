@@ -50,3 +50,7 @@ func (NoopChecker) Release(_ context.Context, _ string) error {
 func (NoopChecker) ObserveLLMTokens(_ context.Context, _ string, _ LLMUsageEvent) {
 	// drop
 }
+
+func (NoopChecker) SyncCounters(_ context.Context, _ string, _ CounterSnapshot) {
+	// drop
+}
