@@ -235,9 +235,13 @@ const counterReconcileInterval = 5 * time.Minute
 // registered policy Checker for reconciliation. Does nothing visible
 // on self-hosted because the Noop Checker drops the call.
 //
-// The goroutine runs for the process lifetime; a context leak here is
-// acceptable because the community API exits via os.Interrupt at
-// which point the HTTP server shuts down and the process exits.
+// Shutdown: the goroutine runs on context.Background() for the
+// process lifetime. The community API exits by SIGTERM / SIGINT which
+// terminates the whole process — no graceful-shutdown path is
+// wired because there is no in-flight state worth preserving (the
+// next process's startup tick re-reports ground truth). If finer-
+// grained shutdown becomes necessary, thread a shared context from
+// apiserver.Run() through this function.
 func startCounterReconciliation(projectRepo database.ProjectRepo) {
 	go func() {
 		ctx := context.Background()

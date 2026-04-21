@@ -61,14 +61,16 @@ func ResolveConfig(project ProjectConfig, byokEmbeddingEnabled bool) (*ResolvedC
 		}, nil
 	}
 
-	// Step 2: BYOK path — use project credentials if present.
+	// Step 2: BYOK path — use project credentials if present. Distinguish
+	// "env override was there but BYOK told us to ignore it" from
+	// "no env override at all" so observability can spot when a plan
+	// flipped to BYOK but the provisioner still leaked the env var.
 	if project.Provider == "" {
 		return nil, ErrNoProvider
 	}
 	source := "project"
 	if envKey != "" && byokEmbeddingEnabled {
-		// BYOK enabled: ignore the env key. Record intent in source.
-		source = "project"
+		source = "project-byok"
 	}
 	return &ResolvedConfig{
 		Provider: project.Provider,

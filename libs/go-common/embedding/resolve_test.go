@@ -69,8 +69,8 @@ func TestResolveConfig_BYOKEnabled_UsesProjectCreds(t *testing.T) {
 	if r.Provider != "voyage" {
 		t.Errorf("Provider = %q", r.Provider)
 	}
-	if r.Source != "project" {
-		t.Errorf("Source = %q, want project", r.Source)
+	if r.Source != "project-byok" {
+		t.Errorf("Source = %q, want project-byok (env ignored because BYOK was on)", r.Source)
 	}
 }
 

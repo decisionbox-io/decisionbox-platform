@@ -89,18 +89,36 @@ type CounterSnapshot struct {
 	DataSourcesCurrent int
 }
 
-// Feature flag names used across the platform. Plugins must accept these
-// exact strings in FeatureEnabled.
+// Feature flag names used across the platform. These are the ONLY
+// valid wire strings for FeatureEnabled, /internal/.../features/{flag},
+// and any matching control-plane lookup. The control-plane handler
+// must accept every constant here and nothing else — any drift is
+// caught by AllFeatures below, which both sides import.
 const (
-	FeatureAudit           = "audit_enabled"
-	FeatureGovernance      = "governance_enabled"
-	FeatureCustomDomain    = "custom_domain_enabled"
-	FeatureSSOCustomerIdP  = "sso_customer_idp_enabled"
-	FeatureModelTraining   = "model_training_enabled"
-	FeatureRunScheduling   = "run_scheduling_enabled"
-	FeatureAPIAccess       = "api_access_enabled"
-	FeatureBYOKEmbedding   = "byok_embedding_enabled"
+	FeatureAudit          = "audit_enabled"
+	FeatureGovernance     = "governance_enabled"
+	FeatureCustomDomain   = "custom_domain_enabled"
+	FeatureSSOCustomerIdP = "sso_customer_idp_enabled"
+	FeatureModelTraining  = "model_training_enabled"
+	FeatureRunScheduling  = "run_scheduling_enabled"
+	FeatureAPIAccess      = "api_access_enabled"
+	FeatureBYOKEmbedding  = "byok_embedding_enabled"
 )
+
+// AllFeatures is the canonical, ordered list of wire flag names.
+// The control-plane handler asserts every entry maps to a plan-flag
+// field so a rename here without a matching handler update fails at
+// compile time on the control-plane side.
+var AllFeatures = []string{
+	FeatureAudit,
+	FeatureGovernance,
+	FeatureCustomDomain,
+	FeatureSSOCustomerIdP,
+	FeatureModelTraining,
+	FeatureRunScheduling,
+	FeatureAPIAccess,
+	FeatureBYOKEmbedding,
+}
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}
 // URL path. The control plane dispatches on this string to the right

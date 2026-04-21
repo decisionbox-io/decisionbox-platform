@@ -25,6 +25,13 @@ type Client struct {
 	promptCount  int
 	currentStep  int
 	currentPhase string
+
+	// policyChecker is captured once per Client so the hot LLM path
+	// does not re-acquire the policy registry RWMutex on every call.
+	// Nil until the first emitLLMUsage call — lazy init avoids a
+	// package-init ordering problem with the cloud policy plugin
+	// which registers itself in its own init().
+	policyChecker policy.Checker
 }
 
 // New creates a new AI client backed by an llm.Provider.
@@ -41,10 +48,14 @@ func New(provider gollm.Provider, model string) (*Client, error) {
 // to each LLM observability event emitted from this client. Callers
 // that do not set this still get structured logs but the control-plane
 // attribution falls back to empty values.
+//
+// SetProvenance also primes the policy checker cache so the first
+// LLM call doesn't pay the registry lookup cost.
 func (c *Client) SetProvenance(projectID, runID, providerName string) {
 	c.projectID = projectID
 	c.runID = runID
 	c.providerName = providerName
+	c.policyChecker = policy.GetChecker()
 }
 
 // ChatResult holds the full result of an LLM call (for storage/fine-tuning).
@@ -158,7 +169,11 @@ func (c *Client) emitLLMUsage(ctx context.Context, inTok, outTok int, latencyMs 
 		logger.WithFields(fields).Info("LLM call usage")
 	}
 
-	policy.GetChecker().ObserveLLMTokens(ctx, "", policy.LLMUsageEvent{
+	checker := c.policyChecker
+	if checker == nil {
+		checker = policy.GetChecker()
+	}
+	checker.ObserveLLMTokens(ctx, "", policy.LLMUsageEvent{
 		ProjectID:    c.projectID,
 		RunID:        c.runID,
 		Provider:     c.providerName,
