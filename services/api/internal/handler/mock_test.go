@@ -365,6 +365,34 @@ func (m *mockRunRepo) SetPolicyReservationID(_ context.Context, runID, reservati
 	return nil
 }
 
+func (m *mockRunRepo) ListTerminalWithReservation(_ context.Context, limit int) ([]*models.DiscoveryRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*models.DiscoveryRun, 0, len(m.runs))
+	for _, r := range m.runs {
+		terminal := r.Status == "completed" || r.Status == "failed" || r.Status == "cancelled"
+		if terminal && r.PolicyReservationID != "" {
+			cp := *r
+			out = append(out, &cp)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (m *mockRunRepo) ClearPolicyReservationID(_ context.Context, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	r.PolicyReservationID = ""
+	return nil
+}
+
 // addRun inserts a run directly for testing.
 func (m *mockRunRepo) addRun(run *models.DiscoveryRun) {
 	m.mu.Lock()

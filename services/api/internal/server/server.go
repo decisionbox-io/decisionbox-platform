@@ -62,6 +62,14 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	// Checker drops the call.
 	startCounterReconciliation(projectRepo)
 
+	// Post-completion confirmer: the agent writes a run as completed
+	// directly to Mongo, so the API never gets a request-scoped hook
+	// to call ConfirmDiscoveryRunEnded. This goroutine scans for
+	// terminal runs that still carry a reservation id, confirms them
+	// (which decrements concurrent_runs_by_project on cloud), and
+	// clears the field. Noop on self-hosted.
+	startRunConfirmer(runRepo)
+
 	// Seed pricing from registered providers (if not yet in MongoDB)
 	handler.SeedPricingFromProviders(context.Background(), pricingRepo)
 
@@ -258,6 +266,54 @@ func reconcileOnce(ctx context.Context, projectRepo database.ProjectRepo) {
 		ProjectsCurrent:    projects,
 		DataSourcesCurrent: dataSources,
 	})
+}
+
+// runConfirmerInterval is how often the confirmer scans for terminal
+// runs carrying a reservation. A short tick keeps the concurrent-runs
+// counter accurate between a run completing and the cap freeing up
+// on the dashboard; the sweeper TTL (minutes) is the slower backstop.
+const runConfirmerInterval = 15 * time.Second
+
+func startRunConfirmer(runRepo database.RunRepo) {
+	go func() {
+		ctx := context.Background()
+		ticker := time.NewTicker(runConfirmerInterval)
+		defer ticker.Stop()
+		confirmTerminalRuns(ctx, runRepo)
+		for range ticker.C {
+			confirmTerminalRuns(ctx, runRepo)
+		}
+	}()
+}
+
+func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
+	runs, err := runRepo.ListTerminalWithReservation(ctx, 50)
+	if err != nil {
+		apilog.WithError(err).Warn("run confirmer: list terminal runs failed")
+		return
+	}
+	if len(runs) == 0 {
+		return
+	}
+	checker := policy.GetChecker()
+	for _, run := range runs {
+		outcome := policy.RunOutcome{Status: run.Status}
+		if run.CompletedAt != nil {
+			outcome.EndedAt = *run.CompletedAt
+		}
+		if run.Error != "" {
+			outcome.Error = run.Error
+		}
+		if err := checker.ConfirmDiscoveryRunEnded(ctx, run.PolicyReservationID, outcome); err != nil {
+			apilog.WithFields(apilog.Fields{"run_id": run.ID, "error": err.Error()}).
+				Warn("run confirmer: policy confirm failed; will retry on next tick")
+			continue
+		}
+		if err := runRepo.ClearPolicyReservationID(ctx, run.ID); err != nil {
+			apilog.WithFields(apilog.Fields{"run_id": run.ID, "error": err.Error()}).
+				Warn("run confirmer: clearing reservation id failed; may double-confirm on next tick")
+		}
+	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
