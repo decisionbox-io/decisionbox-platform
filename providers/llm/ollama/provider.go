@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +37,12 @@ func init() {
 			return nil, fmt.Errorf("ollama: model is required")
 		}
 
-		return NewOllamaProvider(host, model)
+		timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
+		if timeoutSec == 0 {
+			timeoutSec = 300
+		}
+
+		return NewOllamaProvider(host, model, time.Duration(timeoutSec)*time.Second)
 	}, gollm.ProviderMeta{
 		Name:        "Ollama (Local)",
 		Description: "Run open-source models locally via Ollama",
@@ -60,13 +66,14 @@ type OllamaProvider struct {
 }
 
 // NewOllamaProvider creates a new Ollama LLM provider.
-func NewOllamaProvider(host, model string) (*OllamaProvider, error) {
+// timeout is the per-request HTTP client timeout; ctx cancellation still applies.
+func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvider, error) {
 	parsedURL, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: invalid host URL: %w", err)
 	}
 
-	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: 5 * time.Minute})
+	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: timeout})
 
 	return &OllamaProvider{
 		client: client,
