@@ -47,8 +47,80 @@ func init() {
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"_default": {InputPerMillion: 0, OutputPerMillion: 0},
 		},
+		// Max output tokens per Ollama model tag. GetMaxOutputTokens does exact match
+		// then falls back to "_default". Values come from each model family's
+		// documented generation limits. Coverage is scoped to the biggest / most
+		// common Qwen, Gemma, DeepSeek, and Meta (Llama) models — everything else
+		// picks up the 16384 default. Both bare names (qwen3) and ":latest"
+		// aliases are listed because user configs can contain either form.
 		MaxOutputTokens: map[string]int{
-			"_default": 8192,
+			// Qwen 3.6 / 3.5 — model card lists max_tokens=81920; 64K matches the
+			// hosted Qwen-Plus tier and leaves headroom without overcommitting.
+			"qwen3.6":         65536,
+			"qwen3.6:latest":  65536,
+			"qwen3.6:35b-a3b": 65536,
+			"qwen3.5":         65536,
+			"qwen3.5:latest":  65536,
+			"qwen3.5:122b":    65536,
+
+			// DeepSeek R1 — reasoning chains need the long tail
+			// (R1 default 32K, max 64K with reasoner).
+			"deepseek-r1":        32768,
+			"deepseek-r1:latest": 32768,
+			"deepseek-r1:14b":    32768,
+			"deepseek-r1:32b":    32768,
+			"deepseek-r1:70b":    32768,
+			"deepseek-r1:671b":   32768,
+
+			// Qwen 3 — tech report recommends 32768 for standard output.
+			"qwen3":           32768,
+			"qwen3:latest":    32768,
+			"qwen3:30b-a3b":   32768,
+			"qwen3:32b":       32768,
+			"qwen3:235b":      32768,
+			"qwen3:235b-a22b": 32768,
+
+			// DeepSeek V3.
+			"deepseek-v3":        16384,
+			"deepseek-v3:latest": 16384,
+			"deepseek-v3.2":      16384,
+
+			// Qwen 2.5 — model card sets max_new_tokens=16384.
+			"qwen2.5":            16384,
+			"qwen2.5:latest":     16384,
+			"qwen2.5:32b":        16384,
+			"qwen2.5:72b":        16384,
+			"qwen2.5-coder":      16384,
+			"qwen2.5-coder:32b":  16384,
+
+			// Gemma 3 — paid-tier providers expose 16384 output.
+			"gemma3":        16384,
+			"gemma3:latest": 16384,
+			"gemma3:27b":    16384,
+
+			// Llama 4 — huge context window but practical output is 8K.
+			"llama4":          8192,
+			"llama4:latest":   8192,
+			"llama4:scout":    8192,
+			"llama4:maverick": 8192,
+
+			// Llama 3.x — 128K context, 8K is the common practical generation cap.
+			"llama3.3":        8192,
+			"llama3.3:latest": 8192,
+			"llama3.3:70b":    8192,
+			"llama3.1":        8192,
+			"llama3.1:latest": 8192,
+			"llama3.1:70b":    8192,
+			"llama3.1:405b":   8192,
+
+			// Gemma 2 — 8K context, so output caps at 8K.
+			"gemma2":        8192,
+			"gemma2:latest": 8192,
+			"gemma2:27b":    8192,
+
+			// Modern floor for any Ollama model not listed above. Raised from 8192
+			// because the old cap truncated long analyses on capable models.
+			"_default": 16384,
 		},
 	})
 }
