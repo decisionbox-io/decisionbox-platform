@@ -243,6 +243,81 @@ func TestResolveWire_MissWithOverride(t *testing.T) {
 	}
 }
 
+func TestInferWire_NoInferrerReturnsUnknown(t *testing.T) {
+	// "cloud-without-inferrer" has no registered WireInferrer.
+	if got := InferWire("cloud-without-inferrer", "whatever"); got != Unknown {
+		t.Errorf("InferWire without inferrer = %q, want Unknown", got)
+	}
+}
+
+func TestInferWire_RegisteredInferrerHit(t *testing.T) {
+	SetWireInferrer("test-inferrer-cloud", func(id string) Wire {
+		if id == "abc" {
+			return Anthropic
+		}
+		return Unknown
+	})
+	if got := InferWire("test-inferrer-cloud", "abc"); got != Anthropic {
+		t.Errorf("got = %q, want Anthropic", got)
+	}
+	if got := InferWire("test-inferrer-cloud", "xyz"); got != Unknown {
+		t.Errorf("got = %q, want Unknown", got)
+	}
+}
+
+func TestSetWireInferrer_Panics(t *testing.T) {
+	cases := []struct {
+		name, cloud string
+		fn          WireInferrer
+		want        string
+	}{
+		{"empty cloud", "", func(string) Wire { return Anthropic }, "empty cloud"},
+		{"nil fn", "any", nil, "nil fn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			SetWireInferrer(tc.cloud, tc.fn)
+		})
+	}
+}
+
+func TestResolveWire_InfererHitUsedWhenCatalogMissesAndNoOverride(t *testing.T) {
+	SetWireInferrer("test-resolve-inferrer", func(id string) Wire {
+		if len(id) > 0 && id[0] == 'a' {
+			return Anthropic
+		}
+		return Unknown
+	})
+
+	w, err := ResolveWire("test-resolve-inferrer", "anything", Unknown)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != Anthropic {
+		t.Errorf("got = %q, want Anthropic", w)
+	}
+}
+
+func TestResolveWire_WireOverrideStillBeatsInferrer(t *testing.T) {
+	// Even if the inferrer says Anthropic, the user's wire_override
+	// should win because the user is explicit.
+	SetWireInferrer("test-override-beats-inferrer", func(string) Wire { return Anthropic })
+
+	w, err := ResolveWire("test-override-beats-inferrer", "a-model", OpenAICompat)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != OpenAICompat {
+		t.Errorf("wire_override should beat inferrer; got %q", w)
+	}
+}
+
 func TestResolveWire_MissNoOverrideReturnsActionableError(t *testing.T) {
 	_, err := ResolveWire("bedrock", "does-not-exist", Unknown)
 	if err == nil {

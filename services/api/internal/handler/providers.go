@@ -71,6 +71,12 @@ type liveModelsResponse struct {
 	// back from the upstream, "catalog" means it was in our shipped
 	// catalog but not in the live list, "both" means both.
 	Source string `json:"source"`
+	// Dispatchable is true when DecisionBox knows how to talk to this
+	// model — either because it is in the catalog, or because the
+	// cloud's wire inferrer recognised its family. False for rows the
+	// live endpoint returned but whose wire format we haven't
+	// implemented (e.g. Amazon Nova / Titan, Cohere, AI21 on Bedrock).
+	Dispatchable bool `json:"dispatchable"`
 	gollm.ModelInfo
 }
 
@@ -202,6 +208,14 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 
 // writeLiveModelsResponse is the shared merge+emit tail for both
 // live-list endpoints. Keeps the merge logic in one place.
+//
+// For each row we compute two derived fields:
+//   - Wire (if empty) — inferred from the cloud's prefix table so
+//     known-family live-only rows surface with the right wire badge.
+//   - Dispatchable — true iff we ended up with a non-empty wire, i.e.
+//     DecisionBox can actually call this model. Live rows whose
+//     family we don't implement (Nova, Titan, Cohere, …) go out with
+//     dispatchable=false so the UI can grey them out.
 func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, live []gollm.RemoteModel, liveErr error) {
 	catalog := make(map[string]gollm.ModelInfo, len(meta.Models))
 	for _, m := range meta.Models {
@@ -210,7 +224,11 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 
 	merged := make(map[string]liveModelsResponse, len(catalog)+len(live))
 	for id, m := range catalog {
-		merged[id] = liveModelsResponse{Source: "catalog", ModelInfo: m}
+		merged[id] = liveModelsResponse{
+			Source:       "catalog",
+			Dispatchable: m.Wire != "" && m.Wire != string(modelcatalog.Unknown),
+			ModelInfo:    m,
+		}
 	}
 	for _, lm := range live {
 		row, ok := merged[lm.ID]
@@ -221,12 +239,14 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			}
 			merged[lm.ID] = row
 		} else {
+			inferred := string(modelcatalog.InferWire(meta.ID, lm.ID))
 			merged[lm.ID] = liveModelsResponse{
-				Source: "live",
+				Source:       "live",
+				Dispatchable: inferred != "" && inferred != string(modelcatalog.Unknown),
 				ModelInfo: gollm.ModelInfo{
 					ID:          lm.ID,
 					DisplayName: displayOr(lm.DisplayName, lm.ID),
-					Wire:        string(modelcatalog.Unknown),
+					Wire:        inferred,
 				},
 			}
 		}

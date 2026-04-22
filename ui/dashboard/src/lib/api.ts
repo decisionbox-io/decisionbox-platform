@@ -309,11 +309,17 @@ export interface ModelInfo {
   output_price_per_million?: number;
 }
 
-// LiveModel extends ModelInfo with a source tag describing where the
-// row came from — "catalog" (only in our shipped catalog), "live" (only
-// in the upstream), "both" (matched).
+// LiveModel extends ModelInfo with two derived fields:
+//   source       — where the row came from: "catalog" (only in our
+//                  shipped catalog), "live" (only in the upstream),
+//                  "both" (matched).
+//   dispatchable — true iff DecisionBox has a wire implementation
+//                  for this model. Live rows whose family we don't
+//                  implement (Nova, Titan, Cohere, …) come back with
+//                  dispatchable=false so the UI can grey them out.
 export interface LiveModel extends ModelInfo {
   source: 'catalog' | 'live' | 'both';
+  dispatchable: boolean;
 }
 
 export interface LiveModelsResponse {

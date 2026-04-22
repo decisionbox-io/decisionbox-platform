@@ -227,15 +227,40 @@ func TestBedrockProvider_ConfigFields(t *testing.T) {
 	}
 }
 
-func TestBedrockProvider_Validate_UncataloguedModel(t *testing.T) {
-	// With no mock client and an uncatalogued model, Validate hits the
-	// "model not in catalog" error before ever touching AWS.
+func TestBedrockProvider_Validate_UncataloguedUninferableModel(t *testing.T) {
+	// Use a model ID whose prefix doesn't match any entry in the
+	// bedrockWireByPrefix table (amazon.nova-* and cohere.* are in the
+	// live-returned list but no wire implementation exists for them).
+	// Validate must hit the "not in catalog" error before any AWS call.
 	p := &BedrockProvider{
-		model:      "meta.unlisted-experimental",
+		model:      "amazon.nova-2-lite-v1:0",
 		httpClient: &http.Client{},
 	}
 	if err := p.Validate(context.Background()); err == nil {
-		t.Error("Validate should fail for uncatalogued model with no wire_override")
+		t.Error("Validate should fail for uncatalogued, uninferable model with no wire_override")
+	}
+}
+
+func TestBedrockProvider_Dispatch_InferredWireForUncataloguedClaude(t *testing.T) {
+	// A never-seen Claude variant with the canonical "anthropic." prefix
+	// should be inferred as Anthropic wire and dispatch successfully,
+	// even without a catalog entry or wire_override.
+	mock := &mockBedrockClient{
+		responseBody: buildAnthropicResponse("ok", "anthropic.claude-99-new-v1:0", "end_turn", 1, 1),
+	}
+	p := &BedrockProvider{
+		client:     mock,
+		model:      "anthropic.claude-99-new-v1:0",
+		httpClient: &http.Client{},
+	}
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("inferred wire should allow dispatch, got %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Errorf("content = %q", resp.Content)
 	}
 }
 

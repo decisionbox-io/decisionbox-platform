@@ -117,6 +117,19 @@ export default function ProjectSettingsPage() {
         setLlmProvider(proj.llm.provider);
         setLlmModel(proj.llm.model);
         setLlmConfig(proj.llm.config || {});
+
+        // Auto-refresh the model list on page load so the settings
+        // picker is immediately populated. We swallow any error here —
+        // the refresh button is visible for retry and the user can
+        // still type a model ID by hand.
+        if (proj.llm.provider) {
+          api.listLiveLLMModelsForProject(proj.id)
+            .then((resp) => {
+              setLiveModels(resp.models);
+              if (resp.live_error) setLiveError(resp.live_error);
+            })
+            .catch((e) => setLiveError((e as Error).message));
+        }
         setEmbProvider(proj.embedding?.provider || '');
         setEmbModel(proj.embedding?.model || '');
         setScheduleEnabled(proj.schedule?.enabled || false);

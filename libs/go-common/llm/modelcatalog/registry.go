@@ -123,9 +123,53 @@ func (e Entry) Key() string {
 }
 
 var (
-	mu      sync.RWMutex
-	entries = make(map[string]Entry)
+	mu         sync.RWMutex
+	entries    = make(map[string]Entry)
+	inferrers  = make(map[string]WireInferrer)
 )
+
+// WireInferrer is a cloud-specific function that maps a model ID to a
+// wire based on naming conventions (typically a prefix table). Used for
+// models that are not explicitly registered in the catalog but follow a
+// known family pattern — for example a newly-released Claude variant on
+// Bedrock that still starts with "anthropic." speaks the Anthropic wire
+// even if we haven't seen it before.
+//
+// Return Unknown when the ID does not match any known family; callers
+// fall through to the user-supplied wire_override or return an
+// actionable error.
+type WireInferrer func(model string) Wire
+
+// SetWireInferrer registers a wire-inference function for a cloud.
+// Providers call this from their init() after RegisterWithMeta so the
+// catalog package is the single entry point for dispatch resolution.
+// Panics on empty cloud or nil fn to catch programmer errors at startup
+// rather than at request time. Replacing an existing inferrer is
+// allowed — the last registration wins.
+func SetWireInferrer(cloud string, fn WireInferrer) {
+	if cloud == "" {
+		panic("modelcatalog: SetWireInferrer with empty cloud")
+	}
+	if fn == nil {
+		panic("modelcatalog: SetWireInferrer with nil fn")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	inferrers[cloud] = fn
+}
+
+// InferWire returns the wire a (cloud, model) pair speaks based on the
+// registered prefix table, or Unknown if the cloud has no inferrer or
+// the model does not match a known family.
+func InferWire(cloud, model string) Wire {
+	mu.RLock()
+	fn, ok := inferrers[cloud]
+	mu.RUnlock()
+	if !ok {
+		return Unknown
+	}
+	return fn(model)
+}
 
 // Register adds or replaces a catalog entry. Panics on invalid input
 // (empty Cloud/ID, or an unknown Wire) because seed registrations happen
@@ -219,21 +263,30 @@ func All() []Entry {
 }
 
 // resolveWire is the shared dispatch helper used by every provider's
-// Chat() method. It consults the catalog first; if there is no match, it
-// falls back to wireOverride. If neither resolves, it returns Unknown and
-// a descriptive error that names the cloud and tells the caller exactly
-// which config key to set.
+// Chat() method.
 //
-// This function is small but intentionally exported through a single
-// helper so every provider formats the "model not in catalog" error the
-// same way — consistent error text is what makes the override hint
-// discoverable.
+// Resolution order:
+//  1. Catalog entry for (cloud, model) — authoritative.
+//  2. wireOverride from project config — user explicit, trumps inference.
+//  3. Cloud-specific wire inferrer (prefix tables registered via
+//     SetWireInferrer) — lets new models in a known family dispatch
+//     without any per-model config. For example an unseen
+//     "anthropic.claude-6-foo-v1:0" on Bedrock still matches the
+//     "anthropic." prefix → Anthropic wire.
+//  4. Unknown + actionable error naming the cloud, model, and valid
+//     wire_override values.
+//
+// Keeping the error format in one place is what makes the
+// wire_override hint discoverable.
 func resolveWire(cloud, model string, wireOverride Wire) (Wire, error) {
 	if w := LookupWire(cloud, model); w != Unknown {
 		return w, nil
 	}
 	if wireOverride != Unknown {
 		return wireOverride, nil
+	}
+	if w := InferWire(cloud, model); w != Unknown {
+		return w, nil
 	}
 	return Unknown, fmt.Errorf(
 		"%s: model %q not in catalog and no llm.wire_override set; "+

@@ -1,6 +1,7 @@
 'use client';
 
-import { Autocomplete, Badge, Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
+import { useState } from 'react';
+import { Autocomplete, Badge, Group, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core';
 import type { ConfigField, ConfigOption, LiveModel, ModelInfo, ProviderMeta } from '@/lib/api';
 
 // DynamicField renders one ConfigField from the backend provider meta.
@@ -138,12 +139,23 @@ function ModelCombobox({
   );
 }
 
-// LiveModelCombobox is the model picker shown in phase 2 of the
-// project-create AI step and in the settings AI tab after a refresh.
-// When liveModels is non-null we render the merged live + catalog list
-// (each row tagged by source). When it's null we fall back to the
-// catalog-only list from ProviderMeta.models. Free text is always
-// accepted so users can type an uncatalogued / unlisted model ID.
+// LiveModelCombobox is the model picker shown after a live model list
+// has been loaded from the upstream (phase 2 of project-create AI step;
+// settings AI tab after auto-refresh or manual refresh).
+//
+// Design:
+//   - liveModels === null → hasn't been loaded yet. Render a stub
+//     TextInput that accepts free text but prompts the user to load
+//     the live list first. This is the pre-load state in settings
+//     before auto-refresh kicks in.
+//   - liveModels !== null → render the picker from the upstream rows
+//     only. Rows that exist only in our shipped catalog (i.e. no live
+//     match) are filtered out to keep the UX simple — the catalog
+//     still drives wire dispatch and pricing enrichment, but we do
+//     not show models the provider didn't advertise to the user.
+//
+// Free text is always accepted so users can type an ID the upstream
+// didn't return (new model, preview access, typo tolerance).
 export function LiveModelCombobox({
   providerMeta,
   liveModels,
@@ -155,15 +167,45 @@ export function LiveModelCombobox({
   value: string;
   onChange: (v: string) => void;
 }) {
-  // Build the picker rows from either the live list (which already
-  // includes catalog enrichment via the backend merge) or the
-  // provider's shipped catalog.
-  const rows: LiveModel[] =
-    liveModels !== null
-      ? liveModels
-      : (providerMeta?.models ?? []).map((m) => ({ ...m, source: 'catalog' as const }));
+  // Default view hides models the agent can't dispatch today — the
+  // upstream advertises them but we have no wire implementation that
+  // speaks their schema (Nova / Titan on Bedrock, Cohere Command, AI21,
+  // etc.). Users can flip the switch to see them anyway; picking one
+  // still works if they set wire_override manually.
+  // Hook must come before any early returns.
+  const [showAll, setShowAll] = useState(false);
 
-  const match = rows.find((m) => m.id === value) ?? null;
+  // Not loaded yet → free-text input with a hint.
+  if (liveModels === null) {
+    return (
+      <TextInput
+        label="Model"
+        required
+        placeholder="Load models to pick from the list"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        description="Enter credentials and load the model list to see everything available to this key. Free text also works."
+      />
+    );
+  }
+
+  // Show only rows that came from the upstream — 'live' or 'both'.
+  // Catalog-only entries are dropped from the picker.
+  const allUpstreamRows = liveModels.filter((m) => m.source === 'live' || m.source === 'both');
+  const rows = showAll ? allUpstreamRows : allUpstreamRows.filter((m) => m.dispatchable);
+  const hiddenCount = allUpstreamRows.length - rows.length;
+  const match = allUpstreamRows.find((m) => m.id === value) ?? null;
+
+  // Enrichment (wire, max tokens, pricing) for the currently-typed
+  // value that isn't in the live list — pull from the shipped catalog
+  // when possible. This still matters because a user could paste a
+  // valid model ID that the upstream's list endpoint doesn't return
+  // (e.g. because it's an inference-profile ID).
+  let enrichmentOnly: LiveModel | null = null;
+  if (!match && value) {
+    const cat = providerMeta?.models?.find((m) => m.id === value);
+    if (cat) enrichmentOnly = { ...cat, source: 'catalog', dispatchable: !!cat.wire };
+  }
 
   if (rows.length === 0) {
     return (
@@ -173,44 +215,77 @@ export function LiveModelCombobox({
         placeholder="Enter model ID"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        description="No catalog entries for this provider — type any model ID the upstream accepts."
+        description="Upstream returned no models — type any model ID the provider accepts."
       />
     );
   }
+
+  const data = rows.map((m) => ({ value: m.id, label: formatLiveRowLabel(m) }));
 
   return (
     <Stack gap={4}>
       <Autocomplete
         label="Model"
         required
-        description="Pick a model from the list or type any model ID."
+        description={
+          hiddenCount > 0 && !showAll
+            ? `${rows.length} dispatchable model${rows.length === 1 ? '' : 's'} loaded · ${hiddenCount} hidden (unsupported wire). Type to filter; free text also works.`
+            : `${rows.length} model${rows.length === 1 ? '' : 's'} loaded — clear the box to browse, or type to filter. Free text also works.`
+        }
         placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro"
         value={value}
         onChange={onChange}
-        limit={50}
-        data={rows.map((m) => ({
-          value: m.id,
-          label: formatRowLabel(m),
-        }))}
+        limit={100}
+        data={data}
+        // Custom filter: when the current value exactly matches one of
+        // the options, show the whole list (the user already picked
+        // something and likely wants to browse alternatives); otherwise
+        // case-insensitive substring match on id + label.
+        filter={({ options, search }) => {
+          const exact = data.some((o) => o.value === search);
+          if (exact) return options;
+          if (!search) return options;
+          const s = search.toLowerCase();
+          return (options as { value: string; label: string }[]).filter((o) =>
+            o.value.toLowerCase().includes(s) || o.label.toLowerCase().includes(s)
+          );
+        }}
       />
-      <LiveModelDetails match={match} typedValue={value} />
+      {hiddenCount > 0 && (
+        <Switch
+          size="xs"
+          checked={showAll}
+          onChange={(e) => setShowAll(e.currentTarget.checked)}
+          label={`Show ${hiddenCount} unsupported model${hiddenCount === 1 ? '' : 's'} (Nova, Titan, Cohere, …)`}
+        />
+      )}
+      <LiveModelDetails match={match ?? enrichmentOnly} typedValue={value} matched={!!match} />
     </Stack>
   );
 }
 
-function formatRowLabel(m: LiveModel): string {
-  const display = m.display_name && m.display_name !== m.id ? `${m.display_name} — ` : '';
-  const sourceTag = m.source === 'live' ? '  [live-only]' : m.source === 'catalog' ? '  [catalog-only]' : '';
-  return `${display}${m.id}${sourceTag}`;
+function formatLiveRowLabel(m: LiveModel): string {
+  if (m.display_name && m.display_name !== m.id) {
+    return `${m.display_name} — ${m.id}`;
+  }
+  return m.id;
 }
 
-function LiveModelDetails({ match, typedValue }: { match: LiveModel | null; typedValue: string }) {
+function LiveModelDetails({
+  match,
+  typedValue,
+  matched,
+}: {
+  match: LiveModel | null;
+  typedValue: string;
+  matched: boolean;
+}) {
   if (!typedValue) return null;
   if (!match) {
     return (
       <Text size="xs" c="dimmed">
-        <Text span fw={500} c="orange">Not in catalog or live list.</Text>{' '}
-        DecisionBox will try to dispatch but you may need to set <Text span fw={500}>Wire override</Text>.
+        <Text span fw={500} c="orange">Not in the loaded list.</Text>{' '}
+        DecisionBox will still try to dispatch — you may need to set <Text span fw={500}>Wire override</Text>.
       </Text>
     );
   }
@@ -219,28 +294,38 @@ function LiveModelDetails({ match, typedValue }: { match: LiveModel | null; type
       ? `$${match.input_price_per_million ?? 0}/M in · $${match.output_price_per_million ?? 0}/M out`
       : null;
   return (
-    <Group gap="xs" wrap="wrap">
-      <Badge size="xs" variant="light" color={match.source === 'live' ? 'green' : match.source === 'both' ? 'blue' : 'gray'}>
-        {match.source}
-      </Badge>
-      {match.wire ? (
-        <Badge size="xs" variant="light" color="blue">
-          wire: {match.wire}
-        </Badge>
-      ) : (
-        <Badge size="xs" variant="light" color="orange">
-          wire: unknown — set Wire override
-        </Badge>
+    <Stack gap={4}>
+      {!match.dispatchable && (
+        <Text size="xs" c="orange" fw={500}>
+          Not supported yet: DecisionBox doesn&apos;t have a wire implementation for this model&apos;s family.
+          Pick another model, or set Wire override if you know a compatible wire.
+        </Text>
       )}
-      {match.max_output_tokens ? (
-        <Badge size="xs" variant="light" color="gray">
-          max out: {match.max_output_tokens.toLocaleString()}
-        </Badge>
-      ) : null}
-      {pricing ? (
-        <Badge size="xs" variant="light" color="gray">{pricing}</Badge>
-      ) : null}
-    </Group>
+      <Group gap="xs" wrap="wrap">
+        {!matched && (
+          <Badge size="xs" variant="light" color="gray">
+            not in live list — using catalog enrichment
+          </Badge>
+        )}
+        {match.wire ? (
+          <Badge size="xs" variant="light" color={match.dispatchable ? 'blue' : 'orange'}>
+            wire: {match.wire}
+          </Badge>
+        ) : (
+          <Badge size="xs" variant="light" color="orange">
+            wire: unknown — set Wire override
+          </Badge>
+        )}
+        {match.max_output_tokens ? (
+          <Badge size="xs" variant="light" color="gray">
+            max out: {match.max_output_tokens.toLocaleString()}
+          </Badge>
+        ) : null}
+        {pricing ? (
+          <Badge size="xs" variant="light" color="gray">{pricing}</Badge>
+        ) : null}
+      </Group>
+    </Stack>
   );
 }
 
