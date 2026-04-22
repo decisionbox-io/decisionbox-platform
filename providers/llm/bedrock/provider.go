@@ -80,8 +80,28 @@ func init() {
 		Description: "AWS-managed AI platform — Claude, Qwen, DeepSeek, Mistral, Llama with IAM auth",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "region", Label: "AWS Region", Type: "string", Default: "us-east-1"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "anthropic.claude-sonnet-4-20250514-v1:0", Placeholder: "anthropic.claude-sonnet-4-20250514-v1:0"},
-			{Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog. One of: anthropic, openai-compat."},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "anthropic.claude-sonnet-4-20250514-v1:0",
+				Placeholder: "anthropic.claude-sonnet-4-20250514-v1:0",
+				Description: "Pick a catalogued model or type any Bedrock model ID.",
+			},
+			{
+				Key:   "wire_override",
+				Label: "Wire override",
+				Type:  "string",
+				Description: "Leave on auto unless your model is not yet in the catalog. " +
+					"Bedrock supports Anthropic (Claude) and OpenAI Chat Completions (Qwen/DeepSeek/Mistral/Llama).",
+				Options: []gollm.ConfigOption{
+					{Value: "", Label: "Auto — use model catalog"},
+					{Value: "anthropic", Label: "Anthropic Messages (Claude)"},
+					{Value: "openai-compat", Label: "OpenAI Chat Completions"},
+				},
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},

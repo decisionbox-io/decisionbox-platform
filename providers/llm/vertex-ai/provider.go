@@ -88,8 +88,29 @@ func init() {
 		ConfigFields: []gollm.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-east5", Description: "GCP region (us-east5 for Claude, us-central1 for Gemini)"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "gemini-2.5-pro", Placeholder: "gemini-2.5-pro or claude-opus-4-6@20251101"},
-			{Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog. One of: google-native, anthropic, openai-compat."},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "gemini-2.5-pro",
+				Placeholder: "gemini-2.5-pro or claude-opus-4-6@20251101",
+				Description: "Pick a catalogued model or type any Vertex model ID.",
+			},
+			{
+				Key:   "wire_override",
+				Label: "Wire override",
+				Type:  "string",
+				Description: "Leave on auto unless your model is not yet in the catalog. " +
+					"Vertex AI supports Google-native (Gemini), Anthropic (Claude), and OpenAI Chat Completions (Model-Garden MaaS).",
+				Options: []gollm.ConfigOption{
+					{Value: "", Label: "Auto — use model catalog"},
+					{Value: "google-native", Label: "Google Gemini (native)"},
+					{Value: "anthropic", Label: "Anthropic Messages (Claude)"},
+					{Value: "openai-compat", Label: "OpenAI Chat Completions"},
+				},
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},

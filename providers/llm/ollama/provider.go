@@ -42,7 +42,16 @@ func init() {
 		Description: "Run open-source models locally via Ollama",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "host", Label: "Ollama Host", Type: "string", Default: "http://localhost:11434", Placeholder: "http://localhost:11434"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "qwen2.5:7b", Placeholder: "qwen2.5:7b"},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "qwen2.5:7b",
+				Placeholder: "qwen2.5:7b",
+				Description: "Any Ollama model you have pulled (run 'ollama list' to see local models).",
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"_default": {InputPerMillion: 0, OutputPerMillion: 0},

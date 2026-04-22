@@ -8,6 +8,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
 import { api, Domain, Category, ProviderMeta, ConfigField } from '@/lib/api';
 
 export default function NewProjectPage() {
@@ -256,9 +257,13 @@ export default function NewProjectPage() {
                     {selectedLLM?.config_fields
                       .filter((f) => f.key !== 'api_key')
                       .map((field) => (
-                        <DynamicField key={field.key} field={field}
+                        <CatalogAwareField
+                          key={field.key}
+                          field={field}
+                          providerMeta={selectedLLM}
                           value={llmConfig[field.key] || ''}
-                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
+                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))}
+                        />
                       ))}
 
                     {llmNeedsApiKey && (

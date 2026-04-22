@@ -297,6 +297,16 @@ export interface ProviderMeta {
   description: string;
   config_fields: ConfigField[];
   auth_methods?: AuthMethod[];
+  models?: ModelInfo[];
+}
+
+export interface ModelInfo {
+  id: string;
+  display_name: string;
+  wire: string; // "anthropic" | "openai-compat" | "google-native"
+  max_output_tokens?: number;
+  input_price_per_million?: number;
+  output_price_per_million?: number;
 }
 
 export interface AuthMethod {
@@ -314,6 +324,14 @@ export interface ConfigField {
   type: string;
   default: string;
   placeholder: string;
+  options?: ConfigOption[];
+  free_text?: boolean;
+}
+
+export interface ConfigOption {
+  value: string;
+  label: string;
+  description?: string;
 }
 
 export interface DiscoveryRunStatus {

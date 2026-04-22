@@ -9,6 +9,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
 import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
@@ -347,15 +348,25 @@ export default function ProjectSettingsPage() {
               }} />
             {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
 
-            <TextInput label="Model" value={llmModel} onChange={(e) => { setLlmModel(e.target.value); setDirty(true); }}
-              placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro" />
+            {selectedLlm?.config_fields.find((f) => f.key === 'model') && (
+              <CatalogAwareField
+                field={selectedLlm.config_fields.find((f) => f.key === 'model')!}
+                providerMeta={selectedLlm}
+                value={llmModel}
+                onChange={(val) => { setLlmModel(val); setDirty(true); }}
+              />
+            )}
 
             {selectedLlm?.config_fields
               .filter((f) => f.key !== 'model' && f.key !== 'api_key')
               .map((field) => (
-                <DynamicField key={field.key} field={field}
+                <CatalogAwareField
+                  key={field.key}
+                  field={field}
+                  providerMeta={selectedLlm}
                   value={llmConfig[field.key] || ''}
-                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
+                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
+                />
               ))}
 
             {selectedLlm?.config_fields.some((f) => f.key === 'api_key') && (

@@ -50,7 +50,15 @@ func init() {
 		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-..."},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "gpt-4o"},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "gpt-4o",
+				Description: "Pick a catalogued model or type any OpenAI model ID.",
+			},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{

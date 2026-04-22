@@ -92,8 +92,28 @@ func init() {
 		ConfigFields: []gollm.ConfigField{
 			{Key: "endpoint", Label: "Endpoint URL", Required: true, Type: "string", Placeholder: "https://my-resource.services.ai.azure.com"},
 			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "your-azure-api-key"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-6", Placeholder: "claude-sonnet-4-6 or gpt-4o"},
-			{Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog. One of: anthropic, openai-compat."},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "claude-sonnet-4-6",
+				Placeholder: "claude-sonnet-4-6 or gpt-4o",
+				Description: "Pick a catalogued model or type any Azure deployment name.",
+			},
+			{
+				Key:   "wire_override",
+				Label: "Wire override",
+				Type:  "string",
+				Description: "Leave on auto unless your deployment is not yet in the catalog. " +
+					"Azure Foundry supports Anthropic (Claude) and OpenAI Chat Completions (GPT, Mistral).",
+				Options: []gollm.ConfigOption{
+					{Value: "", Label: "Auto — use model catalog"},
+					{Value: "anthropic", Label: "Anthropic Messages (Claude)"},
+					{Value: "openai-compat", Label: "OpenAI Chat Completions"},
+				},
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			// Claude models — Anthropic standard pricing via Azure Marketplace

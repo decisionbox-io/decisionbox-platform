@@ -61,6 +61,30 @@ func init() {
 		}
 		return e.MaxOutputTokens, true
 	})
+
+	// Lazy lookup from the registry into the catalog so the
+	// /api/v1/providers/llm endpoint carries each provider's model list
+	// for the dashboard combobox. We wire the lookup here (rather than
+	// pre-snapshotting) because provider init() and catalog init() can
+	// run in either order — reading at meta-fetch time avoids the race.
+	gollm.SetProviderModelsLookup(func(provider string) []gollm.ModelInfo {
+		entries := ListByCloud(provider)
+		if len(entries) == 0 {
+			return nil
+		}
+		models := make([]gollm.ModelInfo, 0, len(entries))
+		for _, e := range entries {
+			models = append(models, gollm.ModelInfo{
+				ID:                    e.ID,
+				DisplayName:           e.DisplayName,
+				Wire:                  string(e.Wire),
+				MaxOutputTokens:       e.MaxOutputTokens,
+				InputPricePerMillion:  e.InputPricePerMillion,
+				OutputPricePerMillion: e.OutputPricePerMillion,
+			})
+		}
+		return models
+	})
 }
 
 func seedBedrock() {
