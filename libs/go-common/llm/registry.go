@@ -134,9 +134,37 @@ func GetProviderMeta(name string) (ProviderMeta, bool) {
 	return m, ok
 }
 
-// GetMaxOutputTokens returns the max output tokens for a provider+model combination.
-// Falls back to "_default" key, then to 8192 if not configured.
+// maxTokensCatalogLookup, when non-nil, is consulted first by
+// GetMaxOutputTokens. libs/go-common/llm/modelcatalog wires itself here in
+// init() so the catalog becomes the single source of truth for model
+// ceilings while keeping the llm package free of circular imports.
+//
+// Set this only once at init time. The helper is not safe for
+// concurrent swapping at runtime.
+var maxTokensCatalogLookup func(cloud, model string) (int, bool)
+
+// SetMaxTokensCatalogLookup wires a catalog lookup into GetMaxOutputTokens.
+// Intended to be called from the modelcatalog package's init(); external
+// callers should not use it.
+func SetMaxTokensCatalogLookup(fn func(cloud, model string) (int, bool)) {
+	maxTokensCatalogLookup = fn
+}
+
+// GetMaxOutputTokens returns the max output tokens for a provider+model
+// combination. The resolution order is:
+//  1. Catalog entry for (provider, model), if present and non-zero —
+//     single source of truth for shipped models.
+//  2. ProviderMeta.MaxOutputTokens map for the exact model — historical
+//     per-provider override, kept for backwards compatibility and for
+//     provider-local models (e.g. Ollama's user-chosen GGUFs).
+//  3. ProviderMeta.MaxOutputTokens["_default"] — per-provider fallback.
+//  4. Global fallback of 8192.
 func GetMaxOutputTokens(providerName, model string) int {
+	if lookup := maxTokensCatalogLookup; lookup != nil {
+		if limit, ok := lookup(providerName, model); ok && limit > 0 {
+			return limit
+		}
+	}
 	providersMu.RLock()
 	defer providersMu.RUnlock()
 	meta, ok := providerMeta[providerName]

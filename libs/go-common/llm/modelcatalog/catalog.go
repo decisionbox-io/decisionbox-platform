@@ -1,5 +1,7 @@
 package modelcatalog
 
+import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+
 // The seed catalog. Every model shipped as officially supported is listed
 // here with its wire, output-token ceiling, and list price. Each row is the
 // authoritative source for what the dashboard shows and how the providers
@@ -48,6 +50,17 @@ func init() {
 	seedAzure()
 	seedOpenAI()
 	seedClaude()
+
+	// Make the catalog the source of truth for MaxOutputTokens when the
+	// agent asks (llm.GetMaxOutputTokens). Registered here rather than in
+	// registry.go so the seed is populated before any lookup fires.
+	gollm.SetMaxTokensCatalogLookup(func(cloud, model string) (int, bool) {
+		e, ok := Lookup(cloud, model)
+		if !ok {
+			return 0, false
+		}
+		return e.MaxOutputTokens, true
+	})
 }
 
 func seedBedrock() {

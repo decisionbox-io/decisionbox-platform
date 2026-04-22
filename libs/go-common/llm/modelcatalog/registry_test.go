@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
 func TestWire_Valid(t *testing.T) {
@@ -488,5 +490,45 @@ func TestSeed_EntriesHavePositiveMaxTokens(t *testing.T) {
 			t.Errorf("entry %s/%s has non-positive max_output_tokens = %d",
 				e.Cloud, e.ID, e.MaxOutputTokens)
 		}
+	}
+}
+
+// --- catalog → gollm.GetMaxOutputTokens hookup ---
+
+func TestGetMaxOutputTokens_CatalogWins(t *testing.T) {
+	// The seeded catalog row for gemini-2.5-pro declares 65536; even if
+	// no provider is registered on "vertex-ai" in this test binary,
+	// GetMaxOutputTokens should return the catalog value.
+	if got := gollm.GetMaxOutputTokens("vertex-ai", "gemini-2.5-pro"); got != 65536 {
+		t.Errorf("GetMaxOutputTokens(vertex-ai, gemini-2.5-pro) = %d, want 65536 (from catalog)", got)
+	}
+	// Bedrock Opus-4-6 in the catalog: 128000.
+	if got := gollm.GetMaxOutputTokens("bedrock", "global.anthropic.claude-opus-4-6-v1"); got != 128000 {
+		t.Errorf("GetMaxOutputTokens(bedrock, opus-4-6-global) = %d, want 128000", got)
+	}
+}
+
+func TestGetMaxOutputTokens_CatalogMissFallsThroughToMeta(t *testing.T) {
+	// Register a temporary ProviderMeta with a _default so the fallback is
+	// observable — the catalog has no entry for "nonexistent-cloud".
+	gollm.RegisterWithMeta("catalog-miss-cloud", func(_ gollm.ProviderConfig) (gollm.Provider, error) {
+		return nil, nil //nolint:nilnil // test-only factory; unused
+	}, gollm.ProviderMeta{
+		Name:            "Catalog-miss test",
+		MaxOutputTokens: map[string]int{"exact": 4321, "_default": 1234},
+	})
+
+	if got := gollm.GetMaxOutputTokens("catalog-miss-cloud", "exact"); got != 4321 {
+		t.Errorf("GetMaxOutputTokens exact = %d, want 4321", got)
+	}
+	if got := gollm.GetMaxOutputTokens("catalog-miss-cloud", "anything-else"); got != 1234 {
+		t.Errorf("GetMaxOutputTokens default = %d, want 1234", got)
+	}
+}
+
+func TestGetMaxOutputTokens_UltimateFallback(t *testing.T) {
+	// Provider not registered at all, and catalog has no entry.
+	if got := gollm.GetMaxOutputTokens("really-not-a-cloud", "nothing"); got != 8192 {
+		t.Errorf("GetMaxOutputTokens unknown/unknown = %d, want 8192", got)
 	}
 }
