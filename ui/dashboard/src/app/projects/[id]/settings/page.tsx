@@ -371,6 +371,10 @@ export default function ProjectSettingsPage() {
                 setLlmModel('');
                 setLlmConfig({});
                 // Previous provider's live list no longer applies.
+                // Bumping liveReqIdRef cancels any auto-refresh in
+                // flight so its late-landing response can't overwrite
+                // the cleared state with the old provider's models.
+                liveReqIdRef.current++;
                 setLiveModels(null);
                 setLiveError(null);
                 setDirty(true);
@@ -454,6 +458,7 @@ export default function ProjectSettingsPage() {
                   size="xs"
                   variant="subtle"
                   loading={liveLoading}
+                  disabled={dirty}
                   onClick={async () => {
                     const reqId = ++liveReqIdRef.current;
                     setLiveLoading(true);
@@ -479,11 +484,13 @@ export default function ProjectSettingsPage() {
                 >
                   Refresh model list
                 </Button>
-                {liveModels !== null && (
+                {dirty ? (
+                  <Text size="xs" c="dimmed">Save changes to refresh for the new settings.</Text>
+                ) : liveModels !== null ? (
                   <Text size="xs" c="dimmed">
                     {liveModels.length} model{liveModels.length === 1 ? '' : 's'} · refreshed from provider
                   </Text>
-                )}
+                ) : null}
               </Group>
             )}
             {liveError && (
