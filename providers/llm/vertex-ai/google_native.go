@@ -11,9 +11,9 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
-// geminiChat sends a request to Gemini on Vertex AI.
-// Uses the Vertex AI generateContent REST API.
-func (p *VertexAIProvider) geminiChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+// chatGoogleNative sends a request to a Google-native model (Gemini) on
+// Vertex AI using the generateContent REST API.
+func (p *VertexAIProvider) chatGoogleNative(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	// Build Gemini request
 	contents := make([]geminiContent, 0, len(req.Messages)+1)
 
@@ -59,7 +59,7 @@ func (p *VertexAIProvider) geminiChat(ctx context.Context, req gollm.ChatRequest
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/gemini: failed to marshal request: %w", err)
+		return nil, fmt.Errorf("vertex-ai/google-native: failed to marshal request: %w", err)
 	}
 
 	// Vertex AI endpoint for Gemini
@@ -78,7 +78,7 @@ func (p *VertexAIProvider) geminiChat(ctx context.Context, req gollm.ChatRequest
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/gemini: failed to create request: %w", err)
+		return nil, fmt.Errorf("vertex-ai/google-native: failed to create request: %w", err)
 	}
 
 	token, err := p.auth.token(ctx)
@@ -91,22 +91,22 @@ func (p *VertexAIProvider) geminiChat(ctx context.Context, req gollm.ChatRequest
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/gemini: request failed: %w", err)
+		return nil, fmt.Errorf("vertex-ai/google-native: request failed: %w", err)
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/gemini: failed to read response: %w", err)
+		return nil, fmt.Errorf("vertex-ai/google-native: failed to read response: %w", err)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vertex-ai/gemini: API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("vertex-ai/google-native: API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 
 	var geminiResp geminiResponse
 	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
-		return nil, fmt.Errorf("vertex-ai/gemini: failed to parse response: %w", err)
+		return nil, fmt.Errorf("vertex-ai/google-native: failed to parse response: %w", err)
 	}
 
 	// Extract text from response

@@ -1,13 +1,22 @@
 // Package vertexai provides an llm.Provider for Google Vertex AI.
-// Supports Claude (via Anthropic partnership) and Gemini (Google's own models)
-// with GCP-native authentication (Application Default Credentials).
+// Vertex hosts three families of models, each speaking a different wire:
+//
+//   - Gemini via generateContent (GoogleNative wire)
+//   - Claude via rawPredict publishers/anthropic/… (Anthropic wire)
+//   - Llama / Qwen / DeepSeek / Mistral on MaaS and Gemini's OpenAI surface
+//     via /v1beta1/.../endpoints/openapi/chat/completions (OpenAICompat)
+//
+// Dispatch is catalog-driven: each model's wire is looked up in
+// libs/go-common/llm/modelcatalog at request time. Uncatalogued models
+// can be routed explicitly via the optional wire_override config key.
 //
 // Configuration:
 //
 //	LLM_PROVIDER=vertex-ai
-//	LLM_MODEL=claude-sonnet-4-20250514  (or gemini-2.5-pro, gemini-2.5-flash)
+//	LLM_MODEL=gemini-2.5-pro  (or claude-opus-4-6@…, or meta/llama-3.3-70b-instruct-maas)
 //	VERTEX_PROJECT_ID=my-gcp-project
-//	VERTEX_LOCATION=us-east5
+//	VERTEX_LOCATION=us-east5  (us-east5 for Claude, us-central1 for Gemini)
+//	wire_override=google-native|anthropic|openai-compat  (optional)
 //
 // Authentication:
 //
@@ -20,10 +29,10 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
 func init() {
@@ -41,9 +50,21 @@ func init() {
 			return nil, fmt.Errorf("vertex-ai: model is required")
 		}
 
+		wireOverride := modelcatalog.Unknown
+		if raw := cfg["wire_override"]; raw != "" {
+			parsed := modelcatalog.ParseWire(raw)
+			if !parsed.Valid() {
+				return nil, fmt.Errorf(
+					"vertex-ai: invalid wire_override %q; use one of: %s, %s, %s",
+					raw, modelcatalog.GoogleNative, modelcatalog.Anthropic, modelcatalog.OpenAICompat,
+				)
+			}
+			wireOverride = parsed
+		}
+
 		timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
 		if timeoutSec == 0 {
-			timeoutSec = 300 // 5 minutes default — Opus needs more time for large prompts
+			timeoutSec = 300 // Opus + large contexts can exceed the 60s default
 		}
 		ctx := context.Background()
 
@@ -54,19 +75,21 @@ func init() {
 		}
 
 		return &VertexAIProvider{
-			projectID:  projectID,
-			location:   location,
-			model:      model,
-			auth:       auth,
-			httpClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			projectID:    projectID,
+			location:     location,
+			model:        model,
+			wireOverride: wireOverride,
+			auth:         auth,
+			httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		}, nil
 	}, gollm.ProviderMeta{
 		Name:        "Google Vertex AI",
-		Description: "GCP-managed AI platform — Claude & Gemini models with GCP auth",
+		Description: "GCP-managed AI platform — Gemini, Claude, Llama, Qwen, DeepSeek, Mistral with GCP auth",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-east5", Description: "GCP region (us-east5 for Claude, us-central1 for Gemini)"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-20250514", Placeholder: "claude-sonnet-4-20250514 or gemini-2.5-pro"},
+			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "gemini-2.5-pro", Placeholder: "gemini-2.5-pro or claude-opus-4-6@20251101"},
+			{Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog. One of: google-native, anthropic, openai-compat."},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
@@ -97,17 +120,19 @@ func init() {
 }
 
 // VertexAIProvider implements llm.Provider for Google Vertex AI.
-// Routes to Claude or Gemini backend based on model name.
+// Routes per wire resolved from the model catalog.
 type VertexAIProvider struct {
-	projectID  string
-	location   string
-	model      string
-	auth       *gcpAuth
-	httpClient *http.Client
+	projectID    string
+	location     string
+	model        string
+	wireOverride modelcatalog.Wire
+	auth         *gcpAuth
+	httpClient   *http.Client
 }
 
-// Validate checks that GCP credentials are valid and the model endpoint is accessible.
-// Makes a minimal request (max_tokens=1) to verify auth and model access.
+// Validate checks that GCP credentials are valid and the model endpoint is
+// reachable. Makes a minimal request (max_tokens=1) to exercise the same
+// dispatch path as a real call.
 func (p *VertexAIProvider) Validate(ctx context.Context) error {
 	_, err := p.Chat(ctx, gollm.ChatRequest{
 		Model:     p.model,
@@ -120,29 +145,11 @@ func (p *VertexAIProvider) Validate(ctx context.Context) error {
 	return nil
 }
 
-// Chat sends a conversation to Vertex AI.
-// Routes to Claude or Gemini based on the model name.
+// Chat sends a conversation to Vertex AI, dispatching on the wire format
+// resolved from the model catalog (or the configured wire_override).
 func (p *VertexAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = p.model
 	}
-
-	if isClaude(req.Model) {
-		return p.claudeChat(ctx, req)
-	}
-	if isGemini(req.Model) {
-		return p.geminiChat(ctx, req)
-	}
-
-	return nil, fmt.Errorf("vertex-ai: unsupported model %q — use claude-* or gemini-* models", req.Model)
-}
-
-// isClaude returns true if the model name is a Claude model.
-func isClaude(model string) bool {
-	return strings.HasPrefix(model, "claude-") || strings.Contains(model, "claude")
-}
-
-// isGemini returns true if the model name is a Gemini model.
-func isGemini(model string) bool {
-	return strings.HasPrefix(model, "gemini-") || strings.Contains(model, "gemini")
+	return p.dispatch(ctx, req)
 }

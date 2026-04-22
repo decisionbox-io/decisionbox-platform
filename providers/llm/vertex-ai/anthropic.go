@@ -11,9 +11,9 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
-// claudeChat sends a request to Claude on Vertex AI.
+// chatAnthropic sends a request to a Claude model on Vertex AI.
 // Uses the Anthropic Messages API format via Vertex AI's rawPredict endpoint.
-func (p *VertexAIProvider) claudeChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+func (p *VertexAIProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	// Build Anthropic Messages API request body
 	messages := make([]map[string]string, 0, len(req.Messages))
 	for _, msg := range req.Messages {
@@ -44,7 +44,7 @@ func (p *VertexAIProvider) claudeChat(ctx context.Context, req gollm.ChatRequest
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/claude: failed to marshal request: %w", err)
+		return nil, fmt.Errorf("vertex-ai/anthropic: failed to marshal request: %w", err)
 	}
 
 	// Vertex AI endpoint for Claude
@@ -63,7 +63,7 @@ func (p *VertexAIProvider) claudeChat(ctx context.Context, req gollm.ChatRequest
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/claude: failed to create request: %w", err)
+		return nil, fmt.Errorf("vertex-ai/anthropic: failed to create request: %w", err)
 	}
 
 	// GCP auth token
@@ -77,17 +77,17 @@ func (p *VertexAIProvider) claudeChat(ctx context.Context, req gollm.ChatRequest
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/claude: request failed: %w", err)
+		return nil, fmt.Errorf("vertex-ai/anthropic: request failed: %w", err)
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai/claude: failed to read response: %w", err)
+		return nil, fmt.Errorf("vertex-ai/anthropic: failed to read response: %w", err)
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vertex-ai/claude: API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("vertex-ai/anthropic: API error (status %d): %s", httpResp.StatusCode, string(respBody))
 	}
 
 	// Parse Anthropic Messages API response (same format as direct Claude)
@@ -105,7 +105,7 @@ func (p *VertexAIProvider) claudeChat(ctx context.Context, req gollm.ChatRequest
 	}
 
 	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
-		return nil, fmt.Errorf("vertex-ai/claude: failed to parse response: %w", err)
+		return nil, fmt.Errorf("vertex-ai/anthropic: failed to parse response: %w", err)
 	}
 
 	content := ""
