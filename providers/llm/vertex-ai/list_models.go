@@ -27,17 +27,15 @@ func (p *VertexAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel,
 		return nil, fmt.Errorf("vertex-ai: list models: auth: %w", err)
 	}
 
-	// Vertex's publisher-list endpoint is region-scoped and each region
-	// advertises only a subset of each publisher's catalog — for example
-	// us-east5 only surfaces claude-3-opus and claude-sonnet-4-5 even
-	// though claude-opus-4-6 is available there via rawPredict. The
-	// `global` host returns the complete publisher catalog, so we
-	// always query it. If the user's configured location is something
-	// other than global we additionally query that regional host and
-	// merge, so region-only model IDs (rare) still appear.
-	hosts := []string{"aiplatform.googleapis.com"}
+	// Vertex's publisher-list endpoint is region-scoped — a user who
+	// selected location=us-east5 expects the picker to show what that
+	// region advertises, not a superset from global. If us-east5's list
+	// is thin, they can set location=global to see the full catalog;
+	// this matches their explicit configuration and avoids offering
+	// model IDs that aren't actually deployed in their region.
+	host := "aiplatform.googleapis.com"
 	if p.location != "" && p.location != "global" {
-		hosts = append(hosts, fmt.Sprintf("%s-aiplatform.googleapis.com", p.location))
+		host = fmt.Sprintf("%s-aiplatform.googleapis.com", p.location)
 	}
 
 	publishers := []struct {
@@ -52,34 +50,25 @@ func (p *VertexAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel,
 		{name: "deepseek-ai", idFmt: func(id string) string { return "deepseek-ai/" + id }},
 	}
 
-	// Dedup by model ID across (host × publisher) — the same model can
-	// appear in both global and regional lists.
-	seen := make(map[string]struct{}, 256)
 	out := make([]gollm.RemoteModel, 0, 64)
 	var firstErr error
-	for _, host := range hosts {
-		for _, pub := range publishers {
-			models, err := p.listPublisherModels(ctx, host, pub.name, token)
-			if err != nil {
-				// Non-fatal individually, but track the first failure
-				// so we can surface it when every call fails.
-				if firstErr == nil {
-					firstErr = fmt.Errorf("publisher %s@%s: %w", pub.name, host, err)
-				}
-				continue
+	for _, pub := range publishers {
+		models, err := p.listPublisherModels(ctx, host, pub.name, token)
+		if err != nil {
+			// Non-fatal individually, but track the first failure so
+			// we can surface it when every call fails.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("publisher %s: %w", pub.name, err)
 			}
-			for _, m := range models {
-				id := pub.idFmt(m.ID)
-				if _, dup := seen[id]; dup {
-					continue
-				}
-				seen[id] = struct{}{}
-				name := m.DisplayName
-				if name == "" {
-					name = id
-				}
-				out = append(out, gollm.RemoteModel{ID: id, DisplayName: name})
+			continue
+		}
+		for _, m := range models {
+			id := pub.idFmt(m.ID)
+			name := m.DisplayName
+			if name == "" {
+				name = id
 			}
+			out = append(out, gollm.RemoteModel{ID: id, DisplayName: name})
 		}
 	}
 	if len(out) == 0 && firstErr != nil {
