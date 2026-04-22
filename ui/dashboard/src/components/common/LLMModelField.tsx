@@ -37,6 +37,13 @@ export function DynamicField({
   // Generic dropdown / combobox from ConfigField.options.
   if (field.options && field.options.length > 0) {
     if (field.free_text) {
+      const opts = field.options.map((o: ConfigOption) => ({ value: o.value, label: o.label || o.value }));
+      const handle = (next: string) => {
+        // Normalise the label Mantine Autocomplete writes on selection
+        // back to the ConfigOption.value the backend expects.
+        const hit = opts.find((o) => o.label === next);
+        onChange(hit ? hit.value : next);
+      };
       return (
         <Autocomplete
           label={field.label}
@@ -44,8 +51,8 @@ export function DynamicField({
           description={field.description}
           placeholder={field.placeholder || field.default}
           value={value}
-          onChange={onChange}
-          data={field.options.map((o: ConfigOption) => ({ value: o.value, label: o.label || o.value }))}
+          onChange={handle}
+          data={opts}
         />
       );
     }
@@ -122,6 +129,14 @@ function ModelCombobox({
     );
   }
 
+  const data = models.map((m) => ({ value: m.id, label: `${m.display_name} — ${m.id}` }));
+  // See comment in LiveModelCombobox — normalise the Autocomplete's
+  // label-valued input back to the raw model id.
+  const handleChange = (next: string) => {
+    const hit = data.find((o) => o.label === next);
+    onChange(hit ? hit.value : next);
+  };
+
   return (
     <Stack gap={4}>
       <Autocomplete
@@ -130,9 +145,9 @@ function ModelCombobox({
         description={field.description}
         placeholder={field.placeholder || field.default}
         value={value}
-        onChange={onChange}
+        onChange={handleChange}
         limit={50}
-        data={models.map((m) => ({ value: m.id, label: `${m.display_name} — ${m.id}` }))}
+        data={data}
       />
       <ModelDetailsPanel match={match ?? null} typedValue={value} />
     </Stack>
@@ -222,6 +237,17 @@ export function LiveModelCombobox({
 
   const data = rows.map((m) => ({ value: m.id, label: formatLiveRowLabel(m) }));
 
+  // Mantine Autocomplete quirk: when the user picks an option whose
+  // data shape is {value, label}, the input *text* becomes the label
+  // ("Claude Sonnet 4.6 — anthropic.claude-sonnet-4-6"), not the
+  // value. We normalise back to the model id in onChange so the
+  // rest of the app — state, API payload, match lookup — always
+  // sees the raw model id. Free text still flows through as-is.
+  const handleChange = (next: string) => {
+    const hit = data.find((o) => o.label === next);
+    onChange(hit ? hit.value : next);
+  };
+
   return (
     <Stack gap={4}>
       <Autocomplete
@@ -234,15 +260,15 @@ export function LiveModelCombobox({
         }
         placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro"
         value={value}
-        onChange={onChange}
+        onChange={handleChange}
         limit={100}
         data={data}
         // Custom filter: when the current value exactly matches one of
-        // the options, show the whole list (the user already picked
-        // something and likely wants to browse alternatives); otherwise
-        // case-insensitive substring match on id + label.
+        // the options (by id), show the whole list (the user already
+        // picked something and likely wants to browse alternatives);
+        // otherwise case-insensitive substring match on id + label.
         filter={({ options, search }) => {
-          const exact = data.some((o) => o.value === search);
+          const exact = data.some((o) => o.value === search || o.label === search);
           if (exact) return options;
           if (!search) return options;
           const s = search.toLowerCase();

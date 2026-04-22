@@ -79,13 +79,22 @@ type vertexPublisherModel struct {
 }
 
 func (p *VertexAIProvider) listPublisherModels(ctx context.Context, host, publisher, token string) ([]vertexPublisherModel, error) {
-	url := fmt.Sprintf("https://%s/v1/publishers/%s/models", host, publisher)
+	// The publisher-models list endpoint is only available under
+	// v1beta1 on Vertex AI. The v1 surface returns Google's generic
+	// 404 HTML page because the REST path simply doesn't exist.
+	url := fmt.Sprintf("https://%s/v1beta1/publishers/%s/models", host, publisher)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	// Required when ADC is a user account: aiplatform.googleapis.com
+	// needs a quota project, which the bearer token alone doesn't
+	// carry. Send the project as the quota project so a gcloud-login
+	// user with no `gcloud auth application-default set-quota-project`
+	// doesn't get a 403. Harmless for service-account tokens.
+	req.Header.Set("X-Goog-User-Project", p.projectID)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
