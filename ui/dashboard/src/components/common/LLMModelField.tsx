@@ -290,6 +290,31 @@ export function LiveModelCombobox({
   );
 }
 
+// modelWireIsKnown returns true when DecisionBox knows how to dispatch
+// the given model id — either because it appears in the live+catalog
+// list with a non-empty wire, or because it is in the provider's
+// shipped catalog with a wire. Used by the project-create and settings
+// pages to decide whether wire_override belongs front-and-centre or
+// tucked into an "Advanced" disclosure.
+//
+// Returns false for free-text model ids that match neither list (the
+// user deserves to see the escape hatch) and for rows the upstream
+// returned without a usable wire (dispatchable=false).
+export function modelWireIsKnown(
+  liveModels: LiveModel[] | null,
+  providerMeta: ProviderMeta | null,
+  modelID: string,
+): boolean {
+  if (!modelID) return false;
+  if (liveModels) {
+    const hit = liveModels.find((m) => m.id === modelID);
+    if (hit) return !!hit.dispatchable && !!hit.wire;
+  }
+  const cat = providerMeta?.models?.find((m) => m.id === modelID);
+  if (cat) return !!cat.wire;
+  return false;
+}
+
 function formatLiveRowLabel(m: LiveModel): string {
   if (m.display_name && m.display_name !== m.id) {
     return `${m.display_name} — ${m.id}`;

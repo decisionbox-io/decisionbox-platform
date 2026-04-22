@@ -3,12 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Collapse, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { DynamicField as CatalogAwareField, LiveModelCombobox } from '@/components/common/LLMModelField';
+import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { api, Domain, Category, ProviderMeta, ConfigField, LiveModel } from '@/lib/api';
 
 export default function NewProjectPage() {
@@ -48,6 +48,10 @@ export default function NewProjectPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  // Advanced disclosure is opened when the selected model's wire is
+  // unknown (so the user can set wire_override) and stays whatever the
+  // user toggles it to once they've opened it.
+  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -360,18 +364,36 @@ export default function NewProjectPage() {
                           onChange={(val) => setLlmConfig((prev) => ({ ...prev, model: val }))}
                         />
 
-                        {/* Phase 2 also exposes wire_override when the user needs it. */}
-                        {selectedLLM?.config_fields
-                          .filter((f) => f.key === 'wire_override')
-                          .map((field) => (
+                        {/* wire_override: shown inline when the model's
+                            wire is unknown (user needs the escape hatch),
+                            otherwise tucked behind "Advanced settings". */}
+                        {(() => {
+                          const wireField = selectedLLM?.config_fields.find((f) => f.key === 'wire_override');
+                          if (!wireField) return null;
+                          const wireKnown = modelWireIsKnown(liveModels, selectedLLM ?? null, llmConfig['model'] || '');
+                          const renderField = (
                             <CatalogAwareField
-                              key={field.key}
-                              field={field}
+                              field={wireField}
                               providerMeta={selectedLLM}
-                              value={llmConfig[field.key] || ''}
-                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))}
+                              value={llmConfig[wireField.key] || ''}
+                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [wireField.key]: val }))}
                             />
-                          ))}
+                          );
+                          if (!wireKnown) return renderField;
+                          return (
+                            <>
+                              <Button
+                                variant="subtle"
+                                size="xs"
+                                onClick={() => setShowAdvancedLLM((v) => !v)}
+                                style={{ alignSelf: 'flex-start' }}
+                              >
+                                {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
+                              </Button>
+                              <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                            </>
+                          );
+                        })()}
 
                         <Group>
                           <Button variant="default" onClick={resetAiPhase}>Back to credentials</Button>

@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Group, Loader, MultiSelect,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Group, Loader, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { DynamicField as CatalogAwareField, LiveModelCombobox } from '@/components/common/LLMModelField';
+import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
@@ -36,6 +36,7 @@ export default function ProjectSettingsPage() {
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
+  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
   // Monotonic id guards against out-of-order responses if the user
   // triggers multiple refreshes or the auto-refresh-on-mount overlaps
   // with a manual click.
@@ -429,8 +430,9 @@ export default function ProjectSettingsPage() {
               </Alert>
             )}
 
+            {/* Non-model, non-api_key, non-wire_override fields render inline. */}
             {selectedLlm?.config_fields
-              .filter((f) => f.key !== 'model' && f.key !== 'api_key')
+              .filter((f) => f.key !== 'model' && f.key !== 'api_key' && f.key !== 'wire_override')
               .map((field) => (
                 <CatalogAwareField
                   key={field.key}
@@ -440,6 +442,37 @@ export default function ProjectSettingsPage() {
                   onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
                 />
               ))}
+
+            {/* wire_override: inline when the model's wire is unknown
+                (user needs the escape hatch), otherwise behind
+                "Advanced settings". */}
+            {(() => {
+              const wireField = selectedLlm?.config_fields.find((f) => f.key === 'wire_override');
+              if (!wireField) return null;
+              const wireKnown = modelWireIsKnown(liveModels, selectedLlm ?? null, llmModel);
+              const renderField = (
+                <CatalogAwareField
+                  field={wireField}
+                  providerMeta={selectedLlm}
+                  value={llmConfig[wireField.key] || ''}
+                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [wireField.key]: val })); setDirty(true); }}
+                />
+              );
+              if (!wireKnown) return renderField;
+              return (
+                <>
+                  <Button
+                    variant="subtle"
+                    size="xs"
+                    onClick={() => setShowAdvancedLLM((v) => !v)}
+                    style={{ alignSelf: 'flex-start' }}
+                  >
+                    {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
+                  </Button>
+                  <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                </>
+              );
+            })()}
 
             {selectedLlm?.config_fields.some((f) => f.key === 'api_key') && (
               <>
