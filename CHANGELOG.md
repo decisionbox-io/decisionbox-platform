@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ollama output tokens cap too low on large modern models** — The Ollama provider previously set a single `MaxOutputTokens["_default"] = 8192` for every model, which truncated long analyses on large reasoning and 2025/2026-generation models. Raised the default floor to 16384 and added documented per-model caps for the biggest Qwen, Gemma, DeepSeek, and Meta (Llama) families actually available in the Ollama library: 65536 for Qwen 3.5 / 3.6 (`qwen3.6:35b-a3b` tops out at 81920 per the model card), 32768 for DeepSeek R1 reasoning variants and Qwen 3 (32B / 235B), 16384 for Qwen 2.5 72B, DeepSeek V3, and Gemma 3 27B, and 8192 for Llama 4 Scout / Maverick, Llama 3.x, and Gemma 2. Bare model names (`qwen3`) and `:latest` aliases are both mapped so the lookup works regardless of how the user stores the model string.
 - **Docker Compose Quick Start: `decisionbox-agent` missing from API image** — The API container's default `RUNNER_MODE=subprocess` spawns the agent via `exec.Command("decisionbox-agent", ...)`, but `services/api/Dockerfile` only shipped the `decisionbox-api` binary. Starting a discovery failed with `exec: "decisionbox-agent": executable file not found in $PATH`. The API image now also builds and installs `decisionbox-agent` into `/usr/local/bin`, so `docker compose up -d` works end-to-end out of the box. Kubernetes deployments are unaffected — they use `RUNNER_MODE=kubernetes` and run the agent as a Job from its own image.
 
 ## [0.4.0] - 2026-04-14
