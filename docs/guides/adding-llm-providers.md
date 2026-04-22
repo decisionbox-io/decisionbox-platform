@@ -1,8 +1,39 @@
 # Adding LLM Providers
 
-> **Version**: 0.3.0
+> **Version**: 0.4.0
 
-This guide shows how to add support for a new LLM service. You'll implement one Go interface method, register with metadata, and import in two files.
+There are two kinds of "adding": adding a **new model** to an existing cloud, which is one line in the catalog; and adding a **new cloud**, which is a full Go package. Pick the right one.
+
+## Adding a new model to an existing cloud
+
+If the new model speaks a wire format the cloud provider already implements (Anthropic, OpenAI-compat, or Google-native), you do not touch provider code at all.
+
+Add one `Register` call in `libs/go-common/llm/modelcatalog/catalog.go`:
+
+```go
+// Bedrock newly released a model that speaks the OpenAI chat-completions wire.
+Register(Entry{
+    Cloud:                 "bedrock",
+    ID:                    "vendor.new-model-2027-v1:0",
+    Wire:                  OpenAICompat,
+    DisplayName:           "New Model 2027 (Bedrock)",
+    MaxOutputTokens:       32768,
+    InputPricePerMillion:  0.50,
+    OutputPricePerMillion: 1.50,
+})
+```
+
+Then add a test in `registry_test.go` to pin the row, and you are done — the dashboard picks it up automatically.
+
+If you do not want to wait for the catalog to be updated, users can set `llm.config.wire_override` on their project to route uncatalogued models at their own risk. See [Configuring LLM Providers](configuring-llm.md#wire_override--for-uncatalogued-models).
+
+## Adding a new wire format
+
+If the new cloud speaks a wire that no existing provider implements (say, a native Cohere wire or AI21), add a value to the `Wire` enum in `libs/go-common/llm/modelcatalog/registry.go` (including `Valid()`, `ParseWire()`) and implement a handler in every provider that will host models on that wire. This is rare.
+
+## Adding a whole new cloud
+
+This guide shows the common case: a new cloud that speaks an OpenAI-compatible wire (most do today). For a non-compatible wire you follow the same skeleton but build the request/response by hand.
 
 ## Interface
 
@@ -54,18 +85,25 @@ replace github.com/decisionbox-io/decisionbox/libs/go-common => ../../../libs/go
 
 ## Step 2: Implement the Provider
 
+Below is the skeleton for an **OpenAI-compatible** cloud. Your Chat() is almost entirely delegation — the `openaicompat` package handles request body, response parse, and typed error extraction.
+
 ```go
 // providers/llm/myprovider/provider.go
 package myprovider
 
 import (
+    "bytes"
     "context"
+    "encoding/json"
     "fmt"
+    "io"
     "net/http"
     "strconv"
     "time"
 
     gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+    "github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
+    "github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
 func init() {
@@ -76,86 +114,120 @@ func init() {
         }
         model := cfg["model"]
         if model == "" {
-            model = "default-model"
+            return nil, fmt.Errorf("myprovider: model is required")
         }
+
+        // If the provider hosts models of different wires, parse wire_override here.
+        wireOverride := modelcatalog.Unknown
+        if raw := cfg["wire_override"]; raw != "" {
+            parsed := modelcatalog.ParseWire(raw)
+            if !parsed.Valid() {
+                return nil, fmt.Errorf("myprovider: invalid wire_override %q", raw)
+            }
+            wireOverride = parsed
+        }
+
         timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
         if timeoutSec == 0 {
             timeoutSec = 300
         }
 
         return &MyProvider{
-            apiKey:     apiKey,
-            model:      model,
-            httpClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+            apiKey:       apiKey,
+            model:        model,
+            wireOverride: wireOverride,
+            httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
         }, nil
     }, gollm.ProviderMeta{
         Name:        "My LLM Provider",
         Description: "Description shown in the dashboard",
         ConfigFields: []gollm.ConfigField{
             {Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "your-key-here"},
-            {Key: "model", Label: "Model", Required: true, Type: "string", Default: "default-model"},
-        },
-        DefaultPricing: map[string]gollm.TokenPricing{
-            "default-model": {InputPerMillion: 1.0, OutputPerMillion: 2.0},
-        },
-        MaxOutputTokens: map[string]int{
-            "default-model": 4096,
-            "_default":      4096,
+            {Key: "model", Label: "Model", Required: true, Type: "string"},
+            {Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog."},
         },
     })
 }
 
 type MyProvider struct {
-    apiKey     string
-    model      string
-    httpClient *http.Client
+    apiKey       string
+    model        string
+    wireOverride modelcatalog.Wire
+    httpClient   *http.Client
+}
+
+func (p *MyProvider) Validate(ctx context.Context) error {
+    _, err := p.Chat(ctx, gollm.ChatRequest{
+        Model: p.model, Messages: []gollm.Message{{Role: "user", Content: "hi"}}, MaxTokens: 1,
+    })
+    return err
 }
 
 func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
-    model := req.Model
-    if model == "" {
-        model = p.model
-    }
-    maxTokens := req.MaxTokens
-    if maxTokens == 0 {
-        maxTokens = 4096
+    if req.Model == "" {
+        req.Model = p.model
     }
 
-    // TODO: Call your LLM API here
-    // 1. Build request body from req.Messages, req.SystemPrompt, maxTokens
-    // 2. Send HTTP request with p.apiKey
-    // 3. Parse response
-    // 4. Return ChatResponse
+    // If you support multiple wires, resolve and dispatch:
+    wire, err := modelcatalog.ResolveWire("myprovider", req.Model, p.wireOverride)
+    if err != nil {
+        return nil, err
+    }
+    if wire != modelcatalog.OpenAICompat {
+        return nil, fmt.Errorf("myprovider: wire %q not implemented", wire)
+    }
 
-    return &gollm.ChatResponse{
-        Content:    "response text",
-        Model:      model,
-        StopReason: "end_turn",
-        Usage: gollm.Usage{
-            InputTokens:  100,
-            OutputTokens: 50,
-        },
-    }, nil
+    body := openaicompat.BuildRequestBody(req.Model, req)
+    buf, err := json.Marshal(body)
+    if err != nil {
+        return nil, fmt.Errorf("myprovider: marshal request: %w", err)
+    }
+
+    httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.myprovider.com/v1/chat/completions", bytes.NewReader(buf))
+    if err != nil {
+        return nil, fmt.Errorf("myprovider: build request: %w", err)
+    }
+    httpReq.Header.Set("Content-Type", "application/json")
+    httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+    httpResp, err := p.httpClient.Do(httpReq)
+    if err != nil {
+        return nil, fmt.Errorf("myprovider: request failed: %w", err)
+    }
+    defer httpResp.Body.Close()
+
+    raw, err := io.ReadAll(httpResp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("myprovider: read response: %w", err)
+    }
+
+    if httpResp.StatusCode != http.StatusOK {
+        if apiErr := openaicompat.ExtractAPIError(raw); apiErr != nil {
+            return nil, fmt.Errorf("myprovider: API error (%d): %s - %s", httpResp.StatusCode, apiErr.Type, apiErr.Message)
+        }
+        return nil, fmt.Errorf("myprovider: API error (%d): %s", httpResp.StatusCode, string(raw))
+    }
+    return openaicompat.ParseResponseBody(raw)
 }
 ```
 
 ### Key Implementation Notes
 
-- **Read `timeout_seconds` from config** — The agent passes this from the `LLM_TIMEOUT` env var
-- **Support model override** — `req.Model` may differ from the provider default (per-request override)
-- **Return accurate token counts** — Used for cost estimation and context tracking
+- **Read `timeout_seconds` from config** — The agent passes this from the `LLM_TIMEOUT` env var.
+- **Support model override** — `req.Model` may differ from the provider default (per-request override).
+- **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object.
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
-- **Set `MaxOutputTokens` accurately** — Check each model's API documentation for max output token limits. The agent calls `gollm.GetMaxOutputTokens(providerName, model)` to request the model's full output capacity during phases like recommendation generation. Use the `_default` key for a fallback when the exact model name is not listed.
+- **Register models in the catalog** — For every model the provider supports, add a row in `libs/go-common/llm/modelcatalog/catalog.go` with `Wire`, `MaxOutputTokens` and pricing. The agent uses `MaxOutputTokens` to cap completions during phases that need long output (recommendation generation).
 
 ## Step 3: Register in Services
 
 Add blank imports to both services:
 
 ```go
-// services/agent/main.go
+// services/agent/agentserver/agentserver.go
 import _ "github.com/decisionbox-io/decisionbox/providers/llm/myprovider"
 
-// services/api/main.go
+// services/api/apiserver/apiserver.go
 import _ "github.com/decisionbox-io/decisionbox/providers/llm/myprovider"
 ```
 
@@ -269,16 +341,15 @@ cd providers/llm/myprovider && go test -tags=integration -count=1 -timeout=2m -v
 ## Checklist
 
 - [ ] `init()` registers with `RegisterWithMeta` (name, factory, metadata)
-- [ ] `ConfigFields` includes all user-configurable fields
-- [ ] `DefaultPricing` includes token pricing for common models
-- [ ] `MaxOutputTokens` includes per-model max output token limits (with `_default` fallback)
+- [ ] `ConfigFields` includes all user-configurable fields (including `wire_override` if multi-wire)
+- [ ] Every supported model is registered in `libs/go-common/llm/modelcatalog/catalog.go` with Wire and MaxOutputTokens
 - [ ] `timeout_seconds` read from config (not hardcoded)
 - [ ] Model override supported (`req.Model` takes priority)
-- [ ] Token usage returned accurately
-- [ ] Imported in agent + API `main.go`
+- [ ] Token usage returned accurately (via `openaicompat.ParseResponseBody` if OpenAI-compat)
+- [ ] Imported in agent + API (blank imports in `agentserver.go` and `apiserver.go`)
 - [ ] `replace` directive in both go.mod files
 - [ ] Dockerfile COPY line for go.mod
-- [ ] Unit tests (registration, factory, config validation)
+- [ ] Unit tests (registration, factory, config validation, wire dispatch)
 - [ ] Integration tests (skip without credentials)
 - [ ] Added to Makefile test targets
 

@@ -1,6 +1,6 @@
 # Providers
 
-> **Version**: 0.3.0
+> **Version**: 0.4.0
 
 Providers are DecisionBox's plugin system for external services. Instead of hardcoding support for specific LLMs, warehouses, or secret managers, DecisionBox defines interfaces and lets provider packages implement them.
 
@@ -84,12 +84,26 @@ Used by the "Test Connection" button in the dashboard.
 
 | Provider | ID | Auth | Models |
 |----------|----|------|--------|
-| Anthropic Claude | `claude` | API key | claude-sonnet-4, claude-opus-4, claude-haiku-4-5 |
-| OpenAI | `openai` | API key | gpt-4o, gpt-4o-mini |
+| Anthropic Claude | `claude` | API key | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 |
+| OpenAI | `openai` | API key | gpt-5, gpt-4.1, gpt-4o, o3, o4-mini |
 | Ollama | `ollama` | None (local) | Any model: llama3.1, qwen2.5, mistral, etc. |
-| Google Vertex AI | `vertex-ai` | GCP ADC | Claude + Gemini (via Google) |
-| AWS Bedrock | `bedrock` | AWS credentials | Claude + Llama + Mistral (via AWS) |
-| Azure AI Foundry | `azure-foundry` | API key | Claude + OpenAI GPT (via Azure) |
+| Google Vertex AI | `vertex-ai` | GCP ADC | Gemini, Claude, Llama/Qwen/DeepSeek/Mistral MaaS |
+| AWS Bedrock | `bedrock` | AWS credentials | Claude, Qwen, DeepSeek, Mistral, Llama |
+| Azure AI Foundry | `azure-foundry` | API key | Claude, GPT-5/4.1/4o, Mistral |
+
+### Model catalog and wire dispatch
+
+Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) serve many models behind a single endpoint — but different model families speak different wire formats. DecisionBox centralises this in `libs/go-common/llm/modelcatalog`:
+
+- Every shipped model is registered with its **wire** (`anthropic`, `openai-compat`, or `google-native`), max output tokens, and list pricing.
+- Provider `Chat()` looks up the model and dispatches to the matching internal path — no pattern matching on model names.
+- Models not in the catalog return a clear error. Users can override at project level via `llm.config.wire_override`.
+
+Shared helpers live alongside the catalog:
+
+- `libs/go-common/llm/openaicompat` — request/response types + typed `APIError` for any provider speaking the OpenAI `/chat/completions` wire. Used by `openai`, `azure-foundry` (OpenAI path), `bedrock` (non-Anthropic path), and `vertex-ai` (MaaS path).
+
+Adding a new model to an existing cloud is one `Register` call in `catalog.go` — no provider code change. See [Adding LLM Providers](../guides/adding-llm-providers.md#adding-a-new-model-to-an-existing-cloud).
 
 **Location:** `providers/llm/{provider-name}/`
 
