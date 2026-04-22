@@ -22,8 +22,8 @@ func TestNewClaudeProvider_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	if p.model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", p.model)
+	if p.model != "claude-sonnet-4-6" {
+		t.Errorf("model = %q, want claude-sonnet-4-6", p.model)
 	}
 	if p.maxRetries != 3 {
 		t.Errorf("maxRetries = %d, want 3", p.maxRetries)

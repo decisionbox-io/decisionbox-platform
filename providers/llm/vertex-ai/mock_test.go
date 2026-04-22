@@ -583,7 +583,7 @@ func TestVertexAI_ClaudeChat_Success(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "Hello from Claude on Vertex!"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage": map[string]int{
 				"input_tokens":  15,
@@ -596,10 +596,10 @@ func TestVertexAI_ClaudeChat_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err != nil {
@@ -608,8 +608,8 @@ func TestVertexAI_ClaudeChat_Success(t *testing.T) {
 	if resp.Content != "Hello from Claude on Vertex!" {
 		t.Errorf("content = %q, want %q", resp.Content, "Hello from Claude on Vertex!")
 	}
-	if resp.Model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", resp.Model)
+	if resp.Model != "claude-sonnet-4@20250514" {
+		t.Errorf("model = %q, want claude-sonnet-4@20250514", resp.Model)
 	}
 	if resp.StopReason != "end_turn" {
 		t.Errorf("stop_reason = %q, want end_turn", resp.StopReason)
@@ -653,10 +653,10 @@ func TestVertexAI_ClaudeChat_APIError(t *testing.T) {
 			}))
 			defer server.Close()
 
-			p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+			p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 			_, err := p.Chat(context.Background(), gollm.ChatRequest{
-				Model:    "claude-sonnet-4-20250514",
+				Model:    "claude-sonnet-4@20250514",
 				Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 			})
 			if err == nil {
@@ -679,7 +679,7 @@ func TestVertexAI_ClaudeChat_SystemPrompt(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "4"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage": map[string]int{
 				"input_tokens":  20,
@@ -692,10 +692,10 @@ func TestVertexAI_ClaudeChat_SystemPrompt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:        "claude-sonnet-4-20250514",
+		Model:        "claude-sonnet-4@20250514",
 		SystemPrompt: "You are a calculator. Only respond with numbers.",
 		Messages:     []gollm.Message{{Role: "user", Content: "What is 2+2?"}},
 		MaxTokens:    10,
@@ -736,7 +736,7 @@ func TestVertexAI_ClaudeChat_TokenCounting(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "A long response..."},
 			},
-			"model":       "claude-opus-4-20250514",
+			"model":       "claude-opus-4@20250514",
 			"stop_reason": "max_tokens",
 			"usage": map[string]int{
 				"input_tokens":  300,
@@ -749,10 +749,10 @@ func TestVertexAI_ClaudeChat_TokenCounting(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-opus-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-opus-4@20250514")
 
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:     "claude-opus-4-20250514",
+		Model:     "claude-opus-4@20250514",
 		Messages:  []gollm.Message{{Role: "user", Content: "Tell me a long story"}},
 		MaxTokens: 150,
 	})
@@ -780,7 +780,7 @@ func TestVertexAI_ClaudeChat_DefaultMaxTokens(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "response"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 5, "output_tokens": 1},
 		}
@@ -790,11 +790,11 @@ func TestVertexAI_ClaudeChat_DefaultMaxTokens(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	// Send request with MaxTokens=0 (should default to 4096)
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err != nil {
@@ -825,7 +825,7 @@ func TestVertexAI_ClaudeChat_Temperature(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "creative response"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 5, "output_tokens": 3},
 		}
@@ -835,10 +835,10 @@ func TestVertexAI_ClaudeChat_Temperature(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:       "claude-sonnet-4-20250514",
+		Model:       "claude-sonnet-4@20250514",
 		Messages:    []gollm.Message{{Role: "user", Content: "Be creative"}},
 		Temperature: 0.9,
 	})
@@ -869,7 +869,7 @@ func TestVertexAI_ClaudeChat_NoSystemPrompt(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "response"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 5, "output_tokens": 1},
 		}
@@ -879,10 +879,10 @@ func TestVertexAI_ClaudeChat_NoSystemPrompt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err != nil {
@@ -909,7 +909,7 @@ func TestVertexAI_ClaudeChat_NoTemperature(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "response"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 5, "output_tokens": 1},
 		}
@@ -919,10 +919,10 @@ func TestVertexAI_ClaudeChat_NoTemperature(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err != nil {
@@ -947,7 +947,7 @@ func TestVertexAI_ClaudeChat_MultipleContentBlocks(t *testing.T) {
 				{"type": "text", "text": "First part. "},
 				{"type": "text", "text": "Second part."},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 10, "output_tokens": 8},
 		}
@@ -957,10 +957,10 @@ func TestVertexAI_ClaudeChat_MultipleContentBlocks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err != nil {
@@ -978,7 +978,7 @@ func TestVertexAI_AuthTokenError(t *testing.T) {
 	p := &VertexAIProvider{
 		projectID: "test-project",
 		location:  "us-central1",
-		model:     "claude-sonnet-4-20250514",
+		model:     "claude-sonnet-4@20250514",
 		auth: &gcpAuth{
 			tokenSource: &mockTokenSource{
 				err: context.DeadlineExceeded,
@@ -988,7 +988,7 @@ func TestVertexAI_AuthTokenError(t *testing.T) {
 	}
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},
 	})
 	if err == nil {
@@ -1032,7 +1032,7 @@ func TestVertexAI_Validate_Success(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "hi"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 5, "output_tokens": 1},
 		}
@@ -1042,7 +1042,7 @@ func TestVertexAI_Validate_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	err := p.Validate(context.Background())
 	if err != nil {
@@ -1057,7 +1057,7 @@ func TestVertexAI_Validate_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	err := p.Validate(context.Background())
 	if err == nil {
@@ -1114,7 +1114,7 @@ func TestVertexAI_Validate_GeminiSuccess(t *testing.T) {
 func TestVertexAI_Factory_MissingProjectID(t *testing.T) {
 	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
 		"location": "us-east5",
-		"model":    "claude-sonnet-4-20250514",
+		"model":    "claude-sonnet-4@20250514",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing project_id")
@@ -1142,7 +1142,7 @@ func TestVertexAI_Factory_DefaultLocation(t *testing.T) {
 	// that missing location does NOT cause an error itself
 	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
 		"project_id": "my-project",
-		"model":      "claude-sonnet-4-20250514",
+		"model":      "claude-sonnet-4@20250514",
 	})
 	// Should fail on GCP auth, not on location validation
 	if err != nil && contains(err.Error(), "location") {
@@ -1213,7 +1213,7 @@ func TestVertexAI_ClaudeEndpointURL(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "ok"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 3, "output_tokens": 1},
 		}
@@ -1223,17 +1223,17 @@ func TestVertexAI_ClaudeEndpointURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedPath := "/v1/projects/test-project/locations/us-central1/publishers/anthropic/models/claude-sonnet-4-20250514:rawPredict"
+	expectedPath := "/v1/projects/test-project/locations/us-central1/publishers/anthropic/models/claude-sonnet-4@20250514:rawPredict"
 	if capturedPath != expectedPath {
 		t.Errorf("path = %q, want %q", capturedPath, expectedPath)
 	}
@@ -1251,7 +1251,7 @@ func TestVertexAI_ClaudeChat_RequestBodyMessages(t *testing.T) {
 			"content": []map[string]string{
 				{"type": "text", "text": "ok"},
 			},
-			"model":       "claude-sonnet-4-20250514",
+			"model":       "claude-sonnet-4@20250514",
 			"stop_reason": "end_turn",
 			"usage":       map[string]int{"input_tokens": 10, "output_tokens": 1},
 		}
@@ -1261,10 +1261,10 @@ func TestVertexAI_ClaudeChat_RequestBodyMessages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := newTestProviderWithURL(server.URL, "claude-sonnet-4-20250514")
+	p := newTestProviderWithURL(server.URL, "claude-sonnet-4@20250514")
 
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model: "claude-sonnet-4-20250514",
+		Model: "claude-sonnet-4@20250514",
 		Messages: []gollm.Message{
 			{Role: "user", Content: "Hello"},
 			{Role: "assistant", Content: "Hi there!"},
@@ -1419,5 +1419,127 @@ func TestVertexAI_GeminiChat_NoTemperature(t *testing.T) {
 
 	if reqBody.GenerationConfig.Temperature != nil {
 		t.Error("temperature should not be set when Temperature is 0")
+	}
+}
+
+// newMockAnthropicServer returns a server that responds to any POST with a
+// canned Anthropic-format response body. Used by wire_override tests that
+// don't care about the path.
+func newMockAnthropicServer(t *testing.T, content, model string, inputTokens, outputTokens int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"content":     []map[string]string{{"type": "text", "text": content}},
+			"model":       model,
+			"stop_reason": "end_turn",
+			"usage": map[string]int{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// --- OpenAI-compat wire on Vertex tests ---
+
+func TestVertexAI_OpenAICompatChat_RoutesToMaasEndpoint(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+
+		body, _ := io.ReadAll(r.Body)
+		_ = body
+		resp := `{"model":"meta/llama-3.3-70b-instruct-maas",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"llama says hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	p := newTestProviderWithURL(server.URL, "meta/llama-3.3-70b-instruct-maas")
+
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "meta/llama-3.3-70b-instruct-maas",
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "llama says hi" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	if !strings.Contains(capturedPath, "/endpoints/openapi/chat/completions") {
+		t.Errorf("path = %q, expected openapi chat/completions endpoint", capturedPath)
+	}
+	if resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 4 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestVertexAI_OpenAICompatChat_APIErrorTyped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid model","type":"invalid_request_error","code":"model_not_found"}}`))
+	}))
+	defer server.Close()
+
+	p := newTestProviderWithURL(server.URL, "meta/llama-3.3-70b-instruct-maas")
+
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "meta/llama-3.3-70b-instruct-maas",
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid_request_error") {
+		t.Errorf("error = %q, should preserve typed error", err.Error())
+	}
+}
+
+func TestVertexAI_OpenAICompatChat_APIErrorRawBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>502 from GFE</html>"))
+	}))
+	defer server.Close()
+
+	p := newTestProviderWithURL(server.URL, "meta/llama-3.3-70b-instruct-maas")
+
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "meta/llama-3.3-70b-instruct-maas",
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error = %q, should mention status 502", err.Error())
+	}
+	if !strings.Contains(err.Error(), "502 from GFE") {
+		t.Errorf("error = %q, should include raw body snippet", err.Error())
+	}
+}
+
+func TestVertexAI_OpenAICompatChat_AuthTokenError(t *testing.T) {
+	p := &VertexAIProvider{
+		projectID: "test-project",
+		location:  "us-central1",
+		model:     "meta/llama-3.3-70b-instruct-maas",
+		auth:      &gcpAuth{tokenSource: &mockTokenSource{err: context.DeadlineExceeded}},
+		httpClient: &http.Client{},
+	}
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "meta/llama-3.3-70b-instruct-maas",
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when auth token fails")
+	}
+	if !contains(err.Error(), "access token") {
+		t.Errorf("error = %q, should mention access token", err.Error())
 	}
 }

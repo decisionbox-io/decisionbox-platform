@@ -297,6 +297,38 @@ export interface ProviderMeta {
   description: string;
   config_fields: ConfigField[];
   auth_methods?: AuthMethod[];
+  models?: ModelInfo[];
+}
+
+export interface ModelInfo {
+  id: string;
+  display_name: string;
+  wire: string; // "anthropic" | "openai-compat" | "google-native" | "" (unknown)
+  max_output_tokens?: number;
+  input_price_per_million?: number;
+  output_price_per_million?: number;
+  // Lifecycle from the upstream list endpoint when available —
+  // e.g. "ACTIVE" / "LEGACY" on Bedrock. Empty when the upstream
+  // does not expose it or the row came from our shipped catalog.
+  lifecycle?: string;
+}
+
+// LiveModel extends ModelInfo with two derived fields:
+//   source       — where the row came from: "catalog" (only in our
+//                  shipped catalog), "live" (only in the upstream),
+//                  "both" (matched).
+//   dispatchable — true iff DecisionBox has a wire implementation
+//                  for this model. Live rows whose family we don't
+//                  implement (Nova, Titan, Cohere, …) come back with
+//                  dispatchable=false so the UI can grey them out.
+export interface LiveModel extends ModelInfo {
+  source: 'catalog' | 'live' | 'both';
+  dispatchable: boolean;
+}
+
+export interface LiveModelsResponse {
+  models: LiveModel[];
+  live_error?: string;
 }
 
 export interface AuthMethod {
@@ -314,6 +346,13 @@ export interface ConfigField {
   type: string;
   default: string;
   placeholder: string;
+  options?: ConfigOption[];
+  free_text?: boolean;
+}
+
+export interface ConfigOption {
+  value: string;
+  label: string;
 }
 
 export interface DiscoveryRunStatus {
@@ -597,6 +636,16 @@ export interface BookmarkListWithItems extends BookmarkList {
 export const api = {
   // Providers (dynamic — registered in Go via init())
   listLLMProviders: () => request<ProviderMeta[]>('/api/v1/providers/llm'),
+  listLiveLLMModels: (providerID: string, config: Record<string, string>) =>
+    request<LiveModelsResponse>(`/api/v1/providers/llm/${encodeURIComponent(providerID)}/models/live`, {
+      method: 'POST',
+      body: JSON.stringify({ config }),
+    }),
+  listLiveLLMModelsForProject: (projectID: string) =>
+    request<LiveModelsResponse>(`/api/v1/projects/${encodeURIComponent(projectID)}/providers/llm/models/live`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
 
   // Domain Packs (CRUD)

@@ -45,7 +45,15 @@ func init() {
 		Description: "Anthropic Claude API - direct access",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-ant-..."},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-20250514"},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "claude-sonnet-4-6",
+				Description: "Pick a catalogued Claude model or type any Anthropic model ID.",
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
@@ -95,7 +103,7 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 		return nil, fmt.Errorf("claude: API key is required")
 	}
 	if cfg.Model == "" {
-		cfg.Model = "claude-sonnet-4-20250514"
+		cfg.Model = "claude-sonnet-4-6"
 	}
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 3

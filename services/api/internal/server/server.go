@@ -71,7 +71,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	handler.SeedBuiltInPacks(context.Background(), domainPackRepo)
 
 	// Handlers
-	providers := handler.NewProvidersHandler()
+	providers := handler.NewProvidersHandlerWithProject(projectRepo, secretProvider)
 	domains := handler.NewDomainsHandler(domainPackRepo)
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo)
@@ -112,6 +112,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 
 	// Providers — viewer
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
+	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))
+	mux.HandleFunc("POST /api/v1/projects/{id}/providers/llm/models/live", withRole(viewer, providers.ListLiveLLMModelsForProject))
 	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 	mux.HandleFunc("GET /api/v1/providers/embedding", withRole(viewer, providers.ListEmbeddingProviders))
 

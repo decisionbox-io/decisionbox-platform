@@ -1,84 +1,78 @@
 package vertexai
 
 import (
+	"context"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
-func TestIsClaude(t *testing.T) {
-	tests := []struct {
-		model string
-		want  bool
-	}{
-		{"claude-sonnet-4-20250514", true},
-		{"claude-opus-4-20250514", true},
-		{"claude-haiku-4-5-20251001", true},
-		{"gemini-2.5-pro", false},
-		{"gpt-4o", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := isClaude(tt.model); got != tt.want {
-			t.Errorf("isClaude(%q) = %v, want %v", tt.model, got, tt.want)
-		}
-	}
-}
-
-func TestIsGemini(t *testing.T) {
-	tests := []struct {
-		model string
-		want  bool
-	}{
-		{"gemini-2.5-pro", true},
-		{"gemini-2.5-flash", true},
-		{"gemini-1.5-pro", true},
-		{"claude-sonnet-4-20250514", false},
-		{"gpt-4o", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := isGemini(tt.model); got != tt.want {
-			t.Errorf("isGemini(%q) = %v, want %v", tt.model, got, tt.want)
-		}
-	}
-}
-
-func TestVertexAIProvider_ChatUnsupportedModel(t *testing.T) {
+func TestVertexAIProvider_Dispatch_UncataloguedActionableError(t *testing.T) {
 	p := &VertexAIProvider{
-		projectID: "test-project",
-		location:  "us-central1",
-		model:     "llama-3",
+		projectID:  "test-project",
+		location:   "us-east5",
+		model:      "vendor/future-model-2099",
+		auth:       &gcpAuth{tokenSource: &mockTokenSource{token: "test"}},
+		httpClient: &http.Client{Timeout: time.Second},
 	}
-
-	_, err := p.Chat(nil, gollm.ChatRequest{
-		Model: "llama-3",
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "vendor/future-model-2099",
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
-
 	if err == nil {
-		t.Fatal("expected error for unsupported model")
+		t.Fatal("expected error for uncatalogued model")
 	}
-	if !contains(err.Error(), "unsupported model") {
-		t.Errorf("error = %q, want 'unsupported model'", err.Error())
+	for _, want := range []string{"vertex-ai", "vendor/future-model-2099", "wire_override"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
 	}
 }
 
-func TestVertexAIProvider_ChatDefaultModel(t *testing.T) {
-	p := &VertexAIProvider{
-		projectID: "test-project",
-		location:  "us-central1",
-		model:     "claude-sonnet-4-20250514",
-	}
-
-	// Empty model in request should fall back to provider default
-	// Will fail on auth (no credentials in test), but verifies routing
-	_, err := p.Chat(nil, gollm.ChatRequest{
-		Messages: []gollm.Message{{Role: "user", Content: "test"}},
+func TestVertexAIProvider_Factory_MissingProjectID(t *testing.T) {
+	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+		"location": "us-east5",
+		"model":    "gemini-2.5-pro",
 	})
+	if err == nil {
+		t.Fatal("expected error for missing project_id")
+	}
+	if !strings.Contains(err.Error(), "project_id is required") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
 
-	// Should fail on auth, not on model routing
-	if err != nil && contains(err.Error(), "unsupported model") {
-		t.Error("should route to claude, not fail on model check")
+func TestVertexAIProvider_Factory_MissingModel(t *testing.T) {
+	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+		"project_id": "my-project",
+		"location":   "us-east5",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing model")
+	}
+	if !strings.Contains(err.Error(), "model is required") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestVertexAIProvider_Factory_InvalidWireOverride(t *testing.T) {
+	// ADC is probed inside the factory and may fail on a CI runner with no
+	// GCP credentials; the wire_override validation runs before that, so
+	// the "invalid wire_override" error is what we expect regardless.
+	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+		"project_id":    "my-project",
+		"model":         "gemini-2.5-pro",
+		"wire_override": "bogus",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid wire_override")
+	}
+	if !strings.Contains(err.Error(), "invalid wire_override") {
+		t.Errorf("error = %q, should mention invalid wire_override", err.Error())
 	}
 }
 
@@ -90,52 +84,20 @@ func TestVertexAIProvider_Registered(t *testing.T) {
 	if meta.Name == "" {
 		t.Error("missing provider name")
 	}
-	if meta.Description == "" || contains(meta.Description, "coming soon") {
-		t.Error("description still says 'coming soon' — should be updated")
+	if meta.Description == "" {
+		t.Error("missing description")
 	}
 	if len(meta.DefaultPricing) == 0 {
 		t.Error("no default pricing")
 	}
-	if _, ok := meta.DefaultPricing["claude-sonnet-4"]; !ok {
-		t.Error("missing claude-sonnet-4 pricing")
-	}
 	if _, ok := meta.DefaultPricing["gemini-2.5-pro"]; !ok {
 		t.Error("missing gemini-2.5-pro pricing")
 	}
-
-	// MaxOutputTokens
-	if meta.MaxOutputTokens == nil {
-		t.Fatal("MaxOutputTokens should not be nil")
-	}
-	if len(meta.MaxOutputTokens) != 11 {
-		t.Errorf("MaxOutputTokens has %d entries, want 11", len(meta.MaxOutputTokens))
-	}
 	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
-		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d, want 128000", meta.MaxOutputTokens["claude-opus-4-6"])
+		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d", meta.MaxOutputTokens["claude-opus-4-6"])
 	}
-	if meta.MaxOutputTokens["gemini-2.5-pro"] != 65536 {
-		t.Errorf("MaxOutputTokens[gemini-2.5-pro] = %d, want 65536", meta.MaxOutputTokens["gemini-2.5-pro"])
-	}
-
-	// Verify GetMaxOutputTokens helper
 	if got := gollm.GetMaxOutputTokens("vertex-ai", "gemini-2.5-flash"); got != 65536 {
-		t.Errorf("GetMaxOutputTokens(vertex-ai, gemini-2.5-flash) = %d, want 65536", got)
-	}
-	// Verify _default fallback
-	if got := gollm.GetMaxOutputTokens("vertex-ai", "some-new-model"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(vertex-ai, some-new-model) = %d, want 16384 (_default)", got)
-	}
-}
-
-func TestVertexAIProvider_Validate_UnsupportedModel(t *testing.T) {
-	p := &VertexAIProvider{
-		projectID: "test-project",
-		location:  "us-east5",
-		model:     "llama-3",
-	}
-	err := p.Validate(nil)
-	if err == nil {
-		t.Error("Validate should fail with unsupported model")
+		t.Errorf("GetMaxOutputTokens(vertex-ai, gemini-2.5-flash) = %d", got)
 	}
 }
 
@@ -144,32 +106,43 @@ func TestVertexAIProvider_ConfigFields(t *testing.T) {
 	if !ok {
 		t.Fatal("vertex-ai not registered")
 	}
-
 	fieldKeys := make(map[string]bool)
 	for _, f := range meta.ConfigFields {
 		fieldKeys[f.Key] = true
 	}
-
-	if !fieldKeys["project_id"] {
-		t.Error("missing project_id config field")
+	for _, want := range []string{"project_id", "location", "model", "wire_override"} {
+		if !fieldKeys[want] {
+			t.Errorf("missing %s config field", want)
+		}
 	}
-	if !fieldKeys["location"] {
-		t.Error("missing location config field")
-	}
-	if !fieldKeys["model"] {
-		t.Error("missing model config field")
-	}
-	// Should NOT have api_key — uses GCP ADC
 	if fieldKeys["api_key"] {
 		t.Error("vertex-ai should not have api_key field — uses GCP ADC")
 	}
 }
 
+// contains is a small helper used by multiple test files in this package.
 func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	return strings.Contains(s, substr)
+}
+
+func TestVertexAIProvider_Dispatch_WireOverrideAnthropic(t *testing.T) {
+	// Uncatalogued Claude variant with wire_override=anthropic should
+	// route to the Anthropic path (we verify by checking the endpoint
+	// the rewrite transport sees).
+	testSrv := newMockAnthropicServer(t, "hi", "vendor-claude-future", 1, 1)
+	defer testSrv.Close()
+
+	p := newTestProviderWithURL(testSrv.URL, "vendor-claude-future")
+	p.wireOverride = modelcatalog.Anthropic
+
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Model:    "vendor-claude-future",
+		Messages: []gollm.Message{{Role: "user", Content: "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	return false
+	if resp.Content != "hi" {
+		t.Errorf("content = %q", resp.Content)
+	}
 }

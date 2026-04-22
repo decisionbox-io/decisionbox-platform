@@ -11,9 +11,12 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
-// claudeChat sends a request to Claude on Bedrock using InvokeModel.
-// Uses the Anthropic Messages API format with bedrock-specific anthropic_version.
-func (p *BedrockProvider) claudeChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+// chatAnthropic sends a request to a Claude model on Bedrock using
+// InvokeModel. Uses the Anthropic Messages API format with the
+// bedrock-specific anthropic_version string baked into the JSON body
+// (Bedrock does not accept the anthropic-version HTTP header that
+// api.anthropic.com expects).
+func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	messages := make([]map[string]string, 0, len(req.Messages))
 	for _, msg := range req.Messages {
 		messages = append(messages, map[string]string{
@@ -43,7 +46,7 @@ func (p *BedrockProvider) claudeChat(ctx context.Context, req gollm.ChatRequest)
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("bedrock/claude: failed to marshal request: %w", err)
+		return nil, fmt.Errorf("bedrock/anthropic: failed to marshal request: %w", err)
 	}
 
 	output, err := p.client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
@@ -53,10 +56,9 @@ func (p *BedrockProvider) claudeChat(ctx context.Context, req gollm.ChatRequest)
 		Body:        reqBody,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock/claude: InvokeModel failed: %w", err)
+		return nil, fmt.Errorf("bedrock/anthropic: InvokeModel failed: %w", err)
 	}
 
-	// Parse Anthropic Messages API response
 	var anthropicResp struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -71,7 +73,7 @@ func (p *BedrockProvider) claudeChat(ctx context.Context, req gollm.ChatRequest)
 	}
 
 	if err := json.NewDecoder(bytes.NewReader(output.Body)).Decode(&anthropicResp); err != nil {
-		return nil, fmt.Errorf("bedrock/claude: failed to parse response: %w", err)
+		return nil, fmt.Errorf("bedrock/anthropic: failed to parse response: %w", err)
 	}
 
 	content := ""

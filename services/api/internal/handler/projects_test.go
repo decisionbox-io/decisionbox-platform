@@ -588,3 +588,118 @@ func TestProjectsHandler_Create_WithoutDomainPackRepo_MockRepo(t *testing.T) {
 		t.Error("prompts should be nil when domainPackRepo is nil")
 	}
 }
+
+// --- wire_override validation ---
+
+func TestProjectsHandler_Create_InvalidWireOverride(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{
+		"name":"WireTest","domain":"gaming","category":"match3",
+		"llm":{"provider":"bedrock","model":"anthropic.claude-sonnet-4-20250514-v1:0",
+		       "config":{"wire_override":"antropik"}}
+	}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if !strings.Contains(resp.Error, "wire_override") {
+		t.Errorf("error = %q, should mention wire_override", resp.Error)
+	}
+	// Must not persist the project.
+	if len(repo.projects) != 0 {
+		t.Errorf("project should not be persisted on validation failure")
+	}
+}
+
+func TestProjectsHandler_Create_ValidWireOverride(t *testing.T) {
+	// Bedrock supports anthropic + openai-compat only — google-native is
+	// rejected at the handler now that validation is provider-scoped.
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	for _, wo := range []string{"anthropic", "openai-compat"} {
+		body := fmt.Sprintf(`{
+			"name":"WO %s","domain":"gaming","category":"match3",
+			"llm":{"provider":"bedrock","model":"vendor.future",
+			       "config":{"wire_override":%q}}
+		}`, wo, wo)
+		req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.Create(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("wire_override=%q: status = %d, want 201: %s", wo, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestProjectsHandler_Create_WireOverrideNotSupportedByProvider(t *testing.T) {
+	// google-native is a valid wire syntax but bedrock doesn't implement it.
+	// The provider-scoped validator must reject it at the handler.
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{
+		"name":"bad","domain":"gaming","category":"match3",
+		"llm":{"provider":"bedrock","model":"anthropic.claude-sonnet-4-20250514-v1:0",
+		       "config":{"wire_override":"google-native"}}
+	}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if !strings.Contains(resp.Error, "not supported by provider") {
+		t.Errorf("error = %q, should mention 'not supported by provider'", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "bedrock") {
+		t.Errorf("error = %q, should name the provider", resp.Error)
+	}
+	if len(repo.projects) != 0 {
+		t.Errorf("project should not be persisted on validation failure")
+	}
+}
+
+func TestProjectsHandler_Update_InvalidWireOverride(t *testing.T) {
+	repo := newMockProjectRepo()
+	// Preload directly — Create() rewrites the ID so we can't use it here.
+	repo.projects["proj-seed"] = &models.Project{
+		ID:       "proj-seed",
+		Name:     "pre",
+		Domain:   "gaming",
+		Category: "match3",
+		LLM:      models.LLMConfig{Provider: "bedrock", Model: "anthropic.claude-sonnet-4-20250514-v1:0"},
+	}
+
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"llm":{"provider":"bedrock","model":"anthropic.claude-sonnet-4-20250514-v1:0",
+	       "config":{"wire_override":"not-a-wire"}}}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/proj-seed", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "proj-seed")
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if !strings.Contains(resp.Error, "wire_override") {
+		t.Errorf("error = %q, should mention wire_override", resp.Error)
+	}
+}

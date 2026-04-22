@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Collapse, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Domain, Category, ProviderMeta, ConfigField } from '@/lib/api';
+import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
+import { api, Domain, Category, ProviderMeta, ConfigField, LiveModel } from '@/lib/api';
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -36,6 +37,21 @@ export default function NewProjectPage() {
   const [llmProvider, setLlmProvider] = useState('');
   const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
   const [llmApiKey, setLlmApiKey] = useState('');
+
+  // AI step is split in two phases:
+  //   'credentials' — pick provider + fill API key / cloud creds
+  //   'model'       — pick model from the live-loaded list
+  // Advancing from 'credentials' to 'model' runs the live-list call; if
+  // the upstream fails the user still gets the catalog as a fallback
+  // and an inline error.
+  const [aiPhase, setAiPhase] = useState<'credentials' | 'model'>('credentials');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  // Advanced disclosure is opened when the selected model's wire is
+  // unknown (so the user can set wire_override) and stays whatever the
+  // user toggles it to once they've opened it.
+  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -86,9 +102,50 @@ export default function NewProjectPage() {
   const canProceed = [
     () => name && domain && category,
     () => warehouseProvider && warehouseConfig['dataset'] && (whAuthMethods.length === 0 || warehouseAuthMethod) && (!authNeedsCredential || warehouseCredential),
-    () => llmProvider && llmConfig['model'] && (!llmNeedsApiKey || llmApiKey),
+    // AI step: must be in the "model" phase (models loaded) and have a
+    // model selected. The credentials phase uses its own "Load models"
+    // button instead of Next.
+    () => aiPhase === 'model' && llmProvider && llmConfig['model'],
     () => true,
   ];
+
+  // Monotonic request id so a stale response from an in-flight fetch
+  // (e.g. user clicked Load models twice, or switched provider mid-
+  // flight) doesn't overwrite newer state.
+  const loadReqIdRef = useRef(0);
+
+  const loadLiveModels = async () => {
+    if (!llmProvider) return;
+    const reqId = ++loadReqIdRef.current;
+    const provider = llmProvider;
+    setAiLoading(true);
+    setLiveError(null);
+    try {
+      // Build the config map the backend expects: every field the user
+      // filled in, plus api_key as its own key (the factories all read
+      // cfg["api_key"]).
+      const config: Record<string, string> = { ...llmConfig };
+      if (llmApiKey) config['api_key'] = llmApiKey;
+      const resp = await api.listLiveLLMModels(provider, config);
+      if (reqId !== loadReqIdRef.current) return; // superseded
+      setLiveModels(resp.models);
+      if (resp.live_error) setLiveError(resp.live_error);
+      setAiPhase('model');
+    } catch (e: unknown) {
+      if (reqId !== loadReqIdRef.current) return; // superseded
+      setLiveError((e as Error).message);
+      // Still advance to phase 2 — user can type a model manually.
+      setAiPhase('model');
+    } finally {
+      if (reqId === loadReqIdRef.current) setAiLoading(false);
+    }
+  };
+
+  const resetAiPhase = () => {
+    setAiPhase('credentials');
+    setLiveModels(null);
+    setLiveError(null);
+  };
 
   const handleCreate = async () => {
     setLoading(true);
@@ -237,7 +294,7 @@ export default function NewProjectPage() {
                 </Card>
               </Stepper.Step>
 
-              <Stepper.Step label="AI" description="LLM provider">
+              <Stepper.Step label="AI" description="Provider + model">
                 <Card withBorder p="lg" mt="md">
                   <Stack>
                     <Select label="LLM Provider" required placeholder="Select LLM provider"
@@ -248,30 +305,101 @@ export default function NewProjectPage() {
                         setLlmApiKey('');
                         const prov = llmProviders.find((p) => p.id === v);
                         if (prov) setLlmConfig(buildDefaults(prov.config_fields));
+                        resetAiPhase();
                       }} />
                     {selectedLLM && (
                       <Text size="xs" c="dimmed">{selectedLLM.description}</Text>
                     )}
 
-                    {selectedLLM?.config_fields
-                      .filter((f) => f.key !== 'api_key')
-                      .map((field) => (
-                        <DynamicField key={field.key} field={field}
-                          value={llmConfig[field.key] || ''}
-                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))} />
-                      ))}
+                    {aiPhase === 'credentials' && (
+                      <>
+                        {/* Phase 1: credentials + cloud config (NOT model or wire_override) */}
+                        {selectedLLM?.config_fields
+                          .filter((f) => f.key !== 'api_key' && f.key !== 'model' && f.key !== 'wire_override')
+                          .map((field) => (
+                            <CatalogAwareField
+                              key={field.key}
+                              field={field}
+                              providerMeta={selectedLLM}
+                              value={llmConfig[field.key] || ''}
+                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))}
+                            />
+                          ))}
 
-                    {llmNeedsApiKey && (
-                      <TextInput label="API Key" required type="password"
-                        placeholder={selectedLLM?.config_fields.find((f) => f.key === 'api_key')?.placeholder || 'Enter API key'}
-                        value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)}
-                        description="Stored encrypted. Never exposed in full." />
+                        {llmNeedsApiKey && (
+                          <TextInput label="API Key" required type="password"
+                            placeholder={selectedLLM?.config_fields.find((f) => f.key === 'api_key')?.placeholder || 'Enter API key'}
+                            value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)}
+                            description="Stored encrypted after project creation. Used now only to load the model list." />
+                        )}
+
+                        {!llmNeedsApiKey && (
+                          <Text size="xs" c="dimmed">
+                            This provider uses cloud credentials (IAM / ADC). No API key needed.
+                          </Text>
+                        )}
+
+                        <Button
+                          onClick={loadLiveModels}
+                          loading={aiLoading}
+                          disabled={!llmProvider || (llmNeedsApiKey && !llmApiKey)}
+                        >
+                          Load models
+                        </Button>
+                      </>
                     )}
 
-                    {!llmNeedsApiKey && (
-                      <Text size="xs" c="dimmed">
-                        This provider uses cloud credentials (IAM / ADC). No API key needed.
-                      </Text>
+                    {aiPhase === 'model' && (
+                      <>
+                        {liveError && (
+                          <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
+                            {liveError} — showing catalog models instead.
+                          </Alert>
+                        )}
+
+                        <LiveModelCombobox
+                          providerMeta={selectedLLM ?? null}
+                          liveModels={liveModels}
+                          value={llmConfig['model'] || ''}
+                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, model: val }))}
+                        />
+
+                        {/* wire_override: shown inline when the model's
+                            wire is unknown (user needs the escape hatch),
+                            otherwise tucked behind "Advanced settings". */}
+                        {(() => {
+                          const wireField = selectedLLM?.config_fields.find((f) => f.key === 'wire_override');
+                          if (!wireField) return null;
+                          const wireKnown = modelWireIsKnown(liveModels, selectedLLM ?? null, llmConfig['model'] || '');
+                          const renderField = (
+                            <CatalogAwareField
+                              field={wireField}
+                              providerMeta={selectedLLM}
+                              value={llmConfig[wireField.key] || ''}
+                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [wireField.key]: val }))}
+                            />
+                          );
+                          if (!wireKnown) return renderField;
+                          return (
+                            <>
+                              <Button
+                                variant="subtle"
+                                size="xs"
+                                onClick={() => setShowAdvancedLLM((v) => !v)}
+                                style={{ alignSelf: 'flex-start' }}
+                              >
+                                {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
+                              </Button>
+                              <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                            </>
+                          );
+                        })()}
+
+                        <Group>
+                          <Button variant="default" onClick={resetAiPhase}>Back to credentials</Button>
+                          <Button variant="subtle" onClick={loadLiveModels} loading={aiLoading}>Refresh model list</Button>
+                        </Group>
+                      </>
                     )}
                   </Stack>
                 </Card>

@@ -1,16 +1,19 @@
 // Package bedrock provides an llm.Provider for AWS Bedrock.
-// Bedrock hosts Claude, Llama, Mistral, and other models with AWS-native auth.
+// Bedrock hosts Claude, Llama, Mistral, Qwen, DeepSeek, and other models
+// behind a single IAM-authenticated endpoint.
 //
-// Routes based on model prefix:
-//   - anthropic.* → Anthropic Messages API format
-//   - meta.* → Meta Llama format (future)
-//   - mistral.* → Mistral format (future)
+// Dispatch is catalog-driven: each model's wire (Anthropic Messages vs.
+// OpenAI /chat/completions) is looked up in libs/go-common/llm/modelcatalog
+// at request time. Models not in the catalog can be routed explicitly via
+// the optional wire_override config key (project.llm.wire_override).
 //
 // Configuration:
 //
 //	LLM_PROVIDER=bedrock
 //	LLM_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 //	region in project LLM config (default: us-east-1)
+//	wire_override=anthropic|openai-compat  (optional; required for models
+//	                                        that are not yet in the catalog)
 //
 // Authentication: AWS credentials (IAM role, env vars, or ~/.aws/credentials).
 package bedrock
@@ -20,13 +23,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
-
-	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
 func init() {
@@ -38,6 +40,22 @@ func init() {
 		model := cfg["model"]
 		if model == "" {
 			return nil, fmt.Errorf("bedrock: model is required")
+		}
+
+		wireOverride := modelcatalog.Unknown
+		if raw := cfg["wire_override"]; raw != "" {
+			parsed := modelcatalog.ParseWire(raw)
+			// Bedrock dispatches on Anthropic and OpenAICompat only.
+			// google-native parses as a valid Wire but there's no
+			// implementation on Bedrock, so reject it here rather
+			// than failing at first Chat.
+			if parsed != modelcatalog.Anthropic && parsed != modelcatalog.OpenAICompat {
+				return nil, fmt.Errorf(
+					"bedrock: invalid wire_override %q; use one of: %s, %s",
+					raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat,
+				)
+			}
+			wireOverride = parsed
 		}
 
 		timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
@@ -55,17 +73,39 @@ func init() {
 		client := bedrockruntime.NewFromConfig(awsCfg)
 
 		return &BedrockProvider{
-			client:     client,
-			region:     region,
-			model:      model,
-			httpClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			client:       client,
+			region:       region,
+			model:        model,
+			wireOverride: wireOverride,
+			httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		}, nil
 	}, gollm.ProviderMeta{
 		Name:        "AWS Bedrock",
-		Description: "AWS-managed AI platform — Claude, Llama, Mistral with IAM auth",
+		Description: "AWS-managed AI platform — Claude, Qwen, DeepSeek, Mistral, Llama with IAM auth",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "region", Label: "AWS Region", Type: "string", Default: "us-east-1"},
-			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "anthropic.claude-sonnet-4-20250514-v1:0", Placeholder: "anthropic.claude-sonnet-4-20250514-v1:0"},
+			{
+				Key:         "model",
+				Label:       "Model",
+				Required:    true,
+				Type:        "string",
+				FreeText:    true,
+				Default:     "anthropic.claude-sonnet-4-20250514-v1:0",
+				Placeholder: "anthropic.claude-sonnet-4-20250514-v1:0",
+				Description: "Pick a catalogued model or type any Bedrock model ID.",
+			},
+			{
+				Key:   "wire_override",
+				Label: "Wire override",
+				Type:  "string",
+				Description: "Leave on auto unless your model is not yet in the catalog. " +
+					"Bedrock supports Anthropic (Claude) and OpenAI Chat Completions (Qwen/DeepSeek/Mistral/Llama).",
+				Options: []gollm.ConfigOption{
+					{Value: "", Label: "Auto — use model catalog"},
+					{Value: "anthropic", Label: "Anthropic Messages (Claude)"},
+					{Value: "openai-compat", Label: "OpenAI Chat Completions"},
+				},
+			},
 		},
 		DefaultPricing: map[string]gollm.TokenPricing{
 			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
@@ -92,16 +132,18 @@ func init() {
 }
 
 // BedrockProvider implements llm.Provider for AWS Bedrock.
-// Routes to different API formats based on model prefix.
+// Routes to different wire formats based on the model catalog.
 type BedrockProvider struct {
-	client     bedrockClient
-	region     string
-	model      string
-	httpClient *http.Client
+	client       bedrockClient
+	region       string
+	model        string
+	wireOverride modelcatalog.Wire
+	httpClient   *http.Client
 }
 
-// Validate checks that AWS credentials are valid and the model is accessible.
-// Makes a minimal request (max_tokens=1) to verify auth and model access.
+// Validate checks that AWS credentials are valid and the configured model is
+// reachable. Makes a minimal request (max_tokens=1) so it exercises the
+// same dispatch path as a real call.
 func (p *BedrockProvider) Validate(ctx context.Context) error {
 	_, err := p.Chat(ctx, gollm.ChatRequest{
 		Model:     p.model,
@@ -114,21 +156,11 @@ func (p *BedrockProvider) Validate(ctx context.Context) error {
 	return nil
 }
 
-// Chat sends a conversation to AWS Bedrock.
-// Routes to the correct format based on model prefix.
+// Chat sends a conversation to AWS Bedrock, dispatching on the wire format
+// resolved from the model catalog (or the configured wire_override).
 func (p *BedrockProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = p.model
 	}
-
-	if isAnthropic(req.Model) {
-		return p.claudeChat(ctx, req)
-	}
-
-	return nil, fmt.Errorf("bedrock: unsupported model %q — currently supports anthropic.* models. Meta Llama and Mistral support coming soon", req.Model)
-}
-
-// isAnthropic returns true if the model is an Anthropic Claude model.
-func isAnthropic(model string) bool {
-	return strings.HasPrefix(model, "anthropic.") || strings.Contains(model, "claude")
+	return p.dispatch(ctx, req)
 }

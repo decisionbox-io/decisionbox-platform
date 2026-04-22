@@ -1,15 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Group, Loader, MultiSelect,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Group, Loader, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
+import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -32,6 +33,14 @@ export default function ProjectSettingsPage() {
   const [llmProvider, setLlmProvider] = useState('');
   const [llmModel, setLlmModel] = useState('');
   const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
+  const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
+  // Monotonic id guards against out-of-order responses if the user
+  // triggers multiple refreshes or the auto-refresh-on-mount overlaps
+  // with a manual click.
+  const liveReqIdRef = useRef(0);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -113,6 +122,24 @@ export default function ProjectSettingsPage() {
         setLlmProvider(proj.llm.provider);
         setLlmModel(proj.llm.model);
         setLlmConfig(proj.llm.config || {});
+
+        // Auto-refresh the model list on page load so the settings
+        // picker is immediately populated. We swallow any error here —
+        // the refresh button is visible for retry and the user can
+        // still type a model ID by hand.
+        if (proj.llm.provider) {
+          const reqId = ++liveReqIdRef.current;
+          api.listLiveLLMModelsForProject(proj.id)
+            .then((resp) => {
+              if (reqId !== liveReqIdRef.current) return;
+              setLiveModels(resp.models);
+              if (resp.live_error) setLiveError(resp.live_error);
+            })
+            .catch((e) => {
+              if (reqId !== liveReqIdRef.current) return;
+              setLiveError((e as Error).message);
+            });
+        }
         setEmbProvider(proj.embedding?.provider || '');
         setEmbModel(proj.embedding?.model || '');
         setScheduleEnabled(proj.schedule?.enabled || false);
@@ -137,7 +164,7 @@ export default function ProjectSettingsPage() {
     try {
       const datasetsList = datasets.split(',').map((d) => d.trim()).filter(Boolean);
 
-      await api.updateProject(id, {
+      const saved = await api.updateProject(id, {
         name,
         description,
         domain: project!.domain,
@@ -159,7 +186,45 @@ export default function ProjectSettingsPage() {
         profile,
       });
 
+      // Sync local project state with the saved payload so derived
+      // flags (e.g. setupMode = llmProvider !== project.llm.provider)
+      // recompute correctly without a page reload. The API returns
+      // the updated project; fall back to a merge when it doesn't.
+      setProject((prev) => {
+        if (saved) return saved;
+        if (!prev) return prev;
+        return {
+          ...prev,
+          name, description,
+          warehouse: { ...prev.warehouse, provider: whProvider, datasets: datasetsList, location: whConfig['location'] || '', filter_field: filterField, filter_value: filterValue, project_id: whConfig['project_id'] || '', config: prev.warehouse.config },
+          llm: { provider: llmProvider, model: llmModel, config: llmConfig },
+          embedding: { ...(prev.embedding || {}), provider: embProvider, model: embModel },
+          schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
+          profile,
+        };
+      });
+
       setDirty(false);
+
+      // If the provider changed, we're now entering normal mode and
+      // want the new provider's live model list right away. Kick off
+      // an auto-refresh so the model picker is populated without
+      // requiring the user to click Refresh.
+      if (saved && saved.llm?.provider) {
+        const reqId = ++liveReqIdRef.current;
+        api.listLiveLLMModelsForProject(saved.id)
+          .then((resp) => {
+            if (reqId !== liveReqIdRef.current) return;
+            setLiveModels(resp.models);
+            if (resp.live_error) setLiveError(resp.live_error);
+            else setLiveError(null);
+          })
+          .catch((e) => {
+            if (reqId !== liveReqIdRef.current) return;
+            setLiveError((e as Error).message);
+          });
+      }
+
       notifications.show({ title: 'Saved', message: 'Project settings updated', color: 'green' });
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
@@ -338,71 +403,233 @@ export default function ProjectSettingsPage() {
         {/* AI Provider */}
         <Tabs.Panel value="ai">
           <SettingsSection>
-            <Select label="LLM Provider" data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
-              value={llmProvider} onChange={(v) => {
-                setLlmProvider(v || '');
-                setLlmModel('');
-                setLlmConfig({});
-                setDirty(true);
-              }} />
-            {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
+            {(() => {
+              // Two-mode layout:
+              //
+              //   setupMode (provider changed, not saved yet) — show
+              //   only provider select + connection params + API key.
+              //   Hide model picker / refresh / wire_override / test
+              //   connection; those need a saved provider to be useful.
+              //   A single banner tells the user to save to continue.
+              //
+              //   normalMode (provider matches saved) — full UI.
+              const savedProvider = project.llm.provider || '';
+              const setupMode = llmProvider !== savedProvider;
 
-            <TextInput label="Model" value={llmModel} onChange={(e) => { setLlmModel(e.target.value); setDirty(true); }}
-              placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro" />
+              const providerSelect = (
+                <>
+                  <Select
+                    label="LLM Provider"
+                    data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
+                    value={llmProvider}
+                    onChange={(v) => {
+                      setLlmProvider(v || '');
+                      setLlmModel('');
+                      setLlmConfig({});
+                      // Cancel any in-flight live-list request from the
+                      // old provider so its late-landing response can't
+                      // overwrite our cleared state.
+                      liveReqIdRef.current++;
+                      setLiveModels(null);
+                      setLiveError(null);
+                      setDirty(true);
+                    }}
+                  />
+                  {selectedLlm?.description && (
+                    <Text size="xs" c="dimmed">{selectedLlm.description}</Text>
+                  )}
+                </>
+              );
 
-            {selectedLlm?.config_fields
-              .filter((f) => f.key !== 'model' && f.key !== 'api_key')
-              .map((field) => (
-                <DynamicField key={field.key} field={field}
-                  value={llmConfig[field.key] || ''}
-                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
-              ))}
+              const connectionParams = selectedLlm?.config_fields
+                .filter((f) => f.key !== 'model' && f.key !== 'api_key' && f.key !== 'wire_override')
+                .map((field) => (
+                  <CatalogAwareField
+                    key={field.key}
+                    field={field}
+                    providerMeta={selectedLlm}
+                    value={llmConfig[field.key] || ''}
+                    onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
+                  />
+                ));
 
-            {selectedLlm?.config_fields.some((f) => f.key === 'api_key') && (
-              <>
-                {secretsList.some((s) => s.key === 'llm-api-key') && (
-                  <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
+              const apiKeySection = selectedLlm?.config_fields.some((f) => f.key === 'api_key') ? (
+                <>
+                  {secretsList.some((s) => s.key === 'llm-api-key') && !setupMode && (
+                    <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
+                      <Group gap="xs">
+                        <IconShieldCheck size={14} color="var(--db-green-text)" />
+                        <Text size="xs" fw={500}>API Key saved</Text>
+                        <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                          {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
+                        </Text>
+                      </Group>
+                    </div>
+                  )}
+                  <Group gap="xs" align="end">
+                    <TextInput
+                      label={setupMode ? 'API Key' : 'Update API Key'}
+                      size="xs"
+                      style={{ flex: 1 }}
+                      placeholder="Enter API key"
+                      value={newSecretValue}
+                      onChange={(e) => setNewSecretValue(e.target.value)}
+                      type="password"
+                      description="Stored encrypted. Leave empty to keep current."
+                    />
+                    <Button
+                      size="xs"
+                      loading={savingSecret}
+                      disabled={!newSecretValue}
+                      onClick={async () => {
+                        setSavingSecret(true);
+                        try {
+                          await api.setSecret(id, 'llm-api-key', newSecretValue);
+                          setNewSecretValue('');
+                          notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
+                          const updated = await api.listSecrets(id);
+                          setSecretsList(updated || []);
+                        } catch (e: unknown) {
+                          notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                        } finally {
+                          setSavingSecret(false);
+                        }
+                      }}
+                    >
+                      {setupMode ? 'Save Key' : 'Update Key'}
+                    </Button>
+                  </Group>
+                </>
+              ) : selectedLlm ? (
+                <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
+              ) : null;
+
+              if (setupMode) {
+                return (
+                  <>
+                    {providerSelect}
+                    {llmProvider && (
+                      <>
+                        <Alert color="blue" icon={<IconAlertCircle size={16} />} title="Finish switching to this provider">
+                          <Text size="sm">
+                            Fill in the connection details below and click <b>Save settings</b> in the top bar.
+                            The model picker and connection test will appear after saving.
+                          </Text>
+                        </Alert>
+                        {connectionParams}
+                        {apiKeySection}
+                      </>
+                    )}
+                  </>
+                );
+              }
+
+              // Normal mode — provider saved, show everything.
+              return (
+                <>
+                  {providerSelect}
+                  {connectionParams}
+                  {apiKeySection}
+
+                  {selectedLlm && (
+                    <LiveModelCombobox
+                      providerMeta={selectedLlm}
+                      liveModels={liveModels}
+                      value={llmModel}
+                      onChange={(val) => { setLlmModel(val); setDirty(true); }}
+                    />
+                  )}
+
+                  {selectedLlm && (
                     <Group gap="xs">
-                      <IconShieldCheck size={14} color="var(--db-green-text)" />
-                      <Text size="xs" fw={500}>API Key saved</Text>
-                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                        {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
-                      </Text>
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        loading={liveLoading}
+                        disabled={dirty}
+                        onClick={async () => {
+                          const reqId = ++liveReqIdRef.current;
+                          setLiveLoading(true);
+                          setLiveError(null);
+                          try {
+                            const resp = await api.listLiveLLMModelsForProject(id);
+                            if (reqId !== liveReqIdRef.current) return;
+                            setLiveModels(resp.models);
+                            if (resp.live_error) setLiveError(resp.live_error);
+                            const fromUpstream = resp.models.filter((m) => m.source === 'live' || m.source === 'both').length;
+                            notifications.show({
+                              title: fromUpstream > 0 ? 'Models refreshed' : 'Live fetch returned no models',
+                              message:
+                                fromUpstream > 0
+                                  ? `${fromUpstream} model${fromUpstream === 1 ? '' : 's'} loaded`
+                                  : resp.live_error
+                                    ? 'Upstream rejected the request — see details below.'
+                                    : 'Upstream returned zero models for your region/credentials.',
+                              color: fromUpstream > 0 ? 'green' : 'orange',
+                            });
+                          } catch (e: unknown) {
+                            if (reqId !== liveReqIdRef.current) return;
+                            setLiveError((e as Error).message);
+                            notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
+                          } finally {
+                            if (reqId === liveReqIdRef.current) setLiveLoading(false);
+                          }
+                        }}
+                      >
+                        Refresh model list
+                      </Button>
+                      {dirty ? (
+                        <Text size="xs" c="dimmed">Save changes before refreshing.</Text>
+                      ) : liveModels !== null ? (
+                        (() => {
+                          const fromUpstream = liveModels.filter((m) => m.source === 'live' || m.source === 'both').length;
+                          return (
+                            <Text size="xs" c="dimmed">
+                              {fromUpstream} model{fromUpstream === 1 ? '' : 's'} · refreshed from provider
+                            </Text>
+                          );
+                        })()
+                      ) : null}
                     </Group>
-                  </div>
-                )}
-                <Group gap="xs" align="end">
-                  <TextInput label="Update API Key" size="xs" style={{ flex: 1 }}
-                    placeholder="Enter new API key" value={newSecretValue}
-                    onChange={(e) => setNewSecretValue(e.target.value)}
-                    type="password"
-                    description="Stored encrypted. Leave empty to keep current." />
-                  <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
-                    onClick={async () => {
-                      setSavingSecret(true);
-                      try {
-                        await api.setSecret(id, 'llm-api-key', newSecretValue);
-                        setNewSecretValue('');
-                        notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
-                        const updated = await api.listSecrets(id);
-                        setSecretsList(updated || []);
-                      } catch (e: unknown) {
-                        notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                      } finally {
-                        setSavingSecret(false);
-                      }
-                    }}>
-                    Update Key
-                  </Button>
-                </Group>
-              </>
-            )}
+                  )}
+                  {liveError && (
+                    <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
+                      {liveError}
+                    </Alert>
+                  )}
 
-            {!selectedLlm?.config_fields.some((f) => f.key === 'api_key') && selectedLlm && (
-              <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
-            )}
+                  {(() => {
+                    const wireField = selectedLlm?.config_fields.find((f) => f.key === 'wire_override');
+                    if (!wireField) return null;
+                    const wireKnown = modelWireIsKnown(liveModels, selectedLlm ?? null, llmModel);
+                    const renderField = (
+                      <CatalogAwareField
+                        field={wireField}
+                        providerMeta={selectedLlm}
+                        value={llmConfig[wireField.key] || ''}
+                        onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [wireField.key]: val })); setDirty(true); }}
+                      />
+                    );
+                    if (!wireKnown) return renderField;
+                    return (
+                      <>
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          onClick={() => setShowAdvancedLLM((v) => !v)}
+                          style={{ alignSelf: 'flex-start' }}
+                        >
+                          {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
+                        </Button>
+                        <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                      </>
+                    );
+                  })()}
 
-            <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
+                  <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
+                </>
+              );
+            })()}
           </SettingsSection>
         </Tabs.Panel>
 
