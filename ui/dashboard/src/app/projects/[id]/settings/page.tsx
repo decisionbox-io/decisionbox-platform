@@ -164,7 +164,7 @@ export default function ProjectSettingsPage() {
     try {
       const datasetsList = datasets.split(',').map((d) => d.trim()).filter(Boolean);
 
-      await api.updateProject(id, {
+      const saved = await api.updateProject(id, {
         name,
         description,
         domain: project!.domain,
@@ -186,7 +186,45 @@ export default function ProjectSettingsPage() {
         profile,
       });
 
+      // Sync local project state with the saved payload so derived
+      // flags (e.g. setupMode = llmProvider !== project.llm.provider)
+      // recompute correctly without a page reload. The API returns
+      // the updated project; fall back to a merge when it doesn't.
+      setProject((prev) => {
+        if (saved) return saved;
+        if (!prev) return prev;
+        return {
+          ...prev,
+          name, description,
+          warehouse: { ...prev.warehouse, provider: whProvider, datasets: datasetsList, location: whConfig['location'] || '', filter_field: filterField, filter_value: filterValue, project_id: whConfig['project_id'] || '', config: prev.warehouse.config },
+          llm: { provider: llmProvider, model: llmModel, config: llmConfig },
+          embedding: { ...(prev.embedding || {}), provider: embProvider, model: embModel },
+          schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
+          profile,
+        };
+      });
+
       setDirty(false);
+
+      // If the provider changed, we're now entering normal mode and
+      // want the new provider's live model list right away. Kick off
+      // an auto-refresh so the model picker is populated without
+      // requiring the user to click Refresh.
+      if (saved && saved.llm?.provider) {
+        const reqId = ++liveReqIdRef.current;
+        api.listLiveLLMModelsForProject(saved.id)
+          .then((resp) => {
+            if (reqId !== liveReqIdRef.current) return;
+            setLiveModels(resp.models);
+            if (resp.live_error) setLiveError(resp.live_error);
+            else setLiveError(null);
+          })
+          .catch((e) => {
+            if (reqId !== liveReqIdRef.current) return;
+            setLiveError((e as Error).message);
+          });
+      }
+
       notifications.show({ title: 'Saved', message: 'Project settings updated', color: 'green' });
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
