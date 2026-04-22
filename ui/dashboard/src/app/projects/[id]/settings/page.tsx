@@ -365,187 +365,233 @@ export default function ProjectSettingsPage() {
         {/* AI Provider */}
         <Tabs.Panel value="ai">
           <SettingsSection>
-            <Select label="LLM Provider" data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
-              value={llmProvider} onChange={(v) => {
-                setLlmProvider(v || '');
-                setLlmModel('');
-                setLlmConfig({});
-                // Previous provider's live list no longer applies.
-                // Bumping liveReqIdRef cancels any auto-refresh in
-                // flight so its late-landing response can't overwrite
-                // the cleared state with the old provider's models.
-                liveReqIdRef.current++;
-                setLiveModels(null);
-                setLiveError(null);
-                setDirty(true);
-              }} />
-            {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
-
-            {/* Connection params first (region, project_id, endpoint,
-                base_url, …) — the model list depends on these, and the
-                API key below, so they must come before the picker. */}
-            {selectedLlm?.config_fields
-              .filter((f) => f.key !== 'model' && f.key !== 'api_key' && f.key !== 'wire_override')
-              .map((field) => (
-                <CatalogAwareField
-                  key={field.key}
-                  field={field}
-                  providerMeta={selectedLlm}
-                  value={llmConfig[field.key] || ''}
-                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
-                />
-              ))}
-
-            {selectedLlm?.config_fields.some((f) => f.key === 'api_key') && (
-              <>
-                {secretsList.some((s) => s.key === 'llm-api-key') && (
-                  <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
-                    <Group gap="xs">
-                      <IconShieldCheck size={14} color="var(--db-green-text)" />
-                      <Text size="xs" fw={500}>API Key saved</Text>
-                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                        {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
-                      </Text>
-                    </Group>
-                  </div>
-                )}
-                <Group gap="xs" align="end">
-                  <TextInput label="Update API Key" size="xs" style={{ flex: 1 }}
-                    placeholder="Enter new API key" value={newSecretValue}
-                    onChange={(e) => setNewSecretValue(e.target.value)}
-                    type="password"
-                    description="Stored encrypted. Leave empty to keep current." />
-                  <Button size="xs" loading={savingSecret} disabled={!newSecretValue}
-                    onClick={async () => {
-                      setSavingSecret(true);
-                      try {
-                        await api.setSecret(id, 'llm-api-key', newSecretValue);
-                        setNewSecretValue('');
-                        notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
-                        const updated = await api.listSecrets(id);
-                        setSecretsList(updated || []);
-                      } catch (e: unknown) {
-                        notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                      } finally {
-                        setSavingSecret(false);
-                      }
-                    }}>
-                    Update Key
-                  </Button>
-                </Group>
-              </>
-            )}
-
-            {!selectedLlm?.config_fields.some((f) => f.key === 'api_key') && selectedLlm && (
-              <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
-            )}
-
-            {/* Model picker comes AFTER connection params and API key —
-                the list is loaded using those credentials, so the user
-                must set them first. */}
-            {selectedLlm && (
-              <LiveModelCombobox
-                providerMeta={selectedLlm}
-                liveModels={liveModels}
-                value={llmModel}
-                onChange={(val) => { setLlmModel(val); setDirty(true); }}
-              />
-            )}
-
-            {selectedLlm && (
-              <Group gap="xs">
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  loading={liveLoading}
-                  disabled={dirty}
-                  onClick={async () => {
-                    const reqId = ++liveReqIdRef.current;
-                    setLiveLoading(true);
-                    setLiveError(null);
-                    try {
-                      const resp = await api.listLiveLLMModelsForProject(id);
-                      if (reqId !== liveReqIdRef.current) return;
-                      setLiveModels(resp.models);
-                      if (resp.live_error) setLiveError(resp.live_error);
-                      // Report the count of rows the user will actually
-                      // see in the picker — live or both, not catalog-
-                      // only fallbacks that surface when the upstream
-                      // fetch failed.
-                      const fromUpstream = resp.models.filter((m) => m.source === 'live' || m.source === 'both').length;
-                      notifications.show({
-                        title: fromUpstream > 0 ? 'Models refreshed' : 'Live fetch returned no models',
-                        message:
-                          fromUpstream > 0
-                            ? `${fromUpstream} model${fromUpstream === 1 ? '' : 's'} loaded`
-                            : resp.live_error
-                              ? 'Upstream rejected the request — see details below.'
-                              : 'Upstream returned zero models for your region/credentials.',
-                        color: fromUpstream > 0 ? 'green' : 'orange',
-                      });
-                    } catch (e: unknown) {
-                      if (reqId !== liveReqIdRef.current) return;
-                      setLiveError((e as Error).message);
-                      notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
-                    } finally {
-                      if (reqId === liveReqIdRef.current) setLiveLoading(false);
-                    }
-                  }}
-                >
-                  Refresh model list
-                </Button>
-                {dirty ? (
-                  <Text size="xs" c="dimmed">Save changes to refresh for the new settings.</Text>
-                ) : liveModels !== null ? (
-                  (() => {
-                    const fromUpstream = liveModels.filter((m) => m.source === 'live' || m.source === 'both').length;
-                    return (
-                      <Text size="xs" c="dimmed">
-                        {fromUpstream} model{fromUpstream === 1 ? '' : 's'} · refreshed from provider
-                      </Text>
-                    );
-                  })()
-                ) : null}
-              </Group>
-            )}
-            {liveError && (
-              <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
-                {liveError} — showing catalog models only.
-              </Alert>
-            )}
-
-            {/* wire_override: inline when the model's wire is unknown
-                (user needs the escape hatch), otherwise tucked behind
-                "Advanced settings". */}
             {(() => {
-              const wireField = selectedLlm?.config_fields.find((f) => f.key === 'wire_override');
-              if (!wireField) return null;
-              const wireKnown = modelWireIsKnown(liveModels, selectedLlm ?? null, llmModel);
-              const renderField = (
-                <CatalogAwareField
-                  field={wireField}
-                  providerMeta={selectedLlm}
-                  value={llmConfig[wireField.key] || ''}
-                  onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [wireField.key]: val })); setDirty(true); }}
-                />
+              // Two-mode layout:
+              //
+              //   setupMode (provider changed, not saved yet) — show
+              //   only provider select + connection params + API key.
+              //   Hide model picker / refresh / wire_override / test
+              //   connection; those need a saved provider to be useful.
+              //   A single banner tells the user to save to continue.
+              //
+              //   normalMode (provider matches saved) — full UI.
+              const savedProvider = project.llm.provider || '';
+              const setupMode = llmProvider !== savedProvider;
+
+              const providerSelect = (
+                <>
+                  <Select
+                    label="LLM Provider"
+                    data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
+                    value={llmProvider}
+                    onChange={(v) => {
+                      setLlmProvider(v || '');
+                      setLlmModel('');
+                      setLlmConfig({});
+                      // Cancel any in-flight live-list request from the
+                      // old provider so its late-landing response can't
+                      // overwrite our cleared state.
+                      liveReqIdRef.current++;
+                      setLiveModels(null);
+                      setLiveError(null);
+                      setDirty(true);
+                    }}
+                  />
+                  {selectedLlm?.description && (
+                    <Text size="xs" c="dimmed">{selectedLlm.description}</Text>
+                  )}
+                </>
               );
-              if (!wireKnown) return renderField;
+
+              const connectionParams = selectedLlm?.config_fields
+                .filter((f) => f.key !== 'model' && f.key !== 'api_key' && f.key !== 'wire_override')
+                .map((field) => (
+                  <CatalogAwareField
+                    key={field.key}
+                    field={field}
+                    providerMeta={selectedLlm}
+                    value={llmConfig[field.key] || ''}
+                    onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
+                  />
+                ));
+
+              const apiKeySection = selectedLlm?.config_fields.some((f) => f.key === 'api_key') ? (
+                <>
+                  {secretsList.some((s) => s.key === 'llm-api-key') && !setupMode && (
+                    <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
+                      <Group gap="xs">
+                        <IconShieldCheck size={14} color="var(--db-green-text)" />
+                        <Text size="xs" fw={500}>API Key saved</Text>
+                        <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                          {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
+                        </Text>
+                      </Group>
+                    </div>
+                  )}
+                  <Group gap="xs" align="end">
+                    <TextInput
+                      label={setupMode ? 'API Key' : 'Update API Key'}
+                      size="xs"
+                      style={{ flex: 1 }}
+                      placeholder="Enter API key"
+                      value={newSecretValue}
+                      onChange={(e) => setNewSecretValue(e.target.value)}
+                      type="password"
+                      description="Stored encrypted. Leave empty to keep current."
+                    />
+                    <Button
+                      size="xs"
+                      loading={savingSecret}
+                      disabled={!newSecretValue}
+                      onClick={async () => {
+                        setSavingSecret(true);
+                        try {
+                          await api.setSecret(id, 'llm-api-key', newSecretValue);
+                          setNewSecretValue('');
+                          notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
+                          const updated = await api.listSecrets(id);
+                          setSecretsList(updated || []);
+                        } catch (e: unknown) {
+                          notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                        } finally {
+                          setSavingSecret(false);
+                        }
+                      }}
+                    >
+                      {setupMode ? 'Save Key' : 'Update Key'}
+                    </Button>
+                  </Group>
+                </>
+              ) : selectedLlm ? (
+                <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
+              ) : null;
+
+              if (setupMode) {
+                return (
+                  <>
+                    {providerSelect}
+                    {llmProvider && (
+                      <>
+                        <Alert color="blue" icon={<IconAlertCircle size={16} />} title="Finish switching to this provider">
+                          <Text size="sm">
+                            Fill in the connection details below and click <b>Save settings</b> in the top bar.
+                            The model picker and connection test will appear after saving.
+                          </Text>
+                        </Alert>
+                        {connectionParams}
+                        {apiKeySection}
+                      </>
+                    )}
+                  </>
+                );
+              }
+
+              // Normal mode — provider saved, show everything.
               return (
                 <>
-                  <Button
-                    variant="subtle"
-                    size="xs"
-                    onClick={() => setShowAdvancedLLM((v) => !v)}
-                    style={{ alignSelf: 'flex-start' }}
-                  >
-                    {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
-                  </Button>
-                  <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                  {providerSelect}
+                  {connectionParams}
+                  {apiKeySection}
+
+                  {selectedLlm && (
+                    <LiveModelCombobox
+                      providerMeta={selectedLlm}
+                      liveModels={liveModels}
+                      value={llmModel}
+                      onChange={(val) => { setLlmModel(val); setDirty(true); }}
+                    />
+                  )}
+
+                  {selectedLlm && (
+                    <Group gap="xs">
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        loading={liveLoading}
+                        disabled={dirty}
+                        onClick={async () => {
+                          const reqId = ++liveReqIdRef.current;
+                          setLiveLoading(true);
+                          setLiveError(null);
+                          try {
+                            const resp = await api.listLiveLLMModelsForProject(id);
+                            if (reqId !== liveReqIdRef.current) return;
+                            setLiveModels(resp.models);
+                            if (resp.live_error) setLiveError(resp.live_error);
+                            const fromUpstream = resp.models.filter((m) => m.source === 'live' || m.source === 'both').length;
+                            notifications.show({
+                              title: fromUpstream > 0 ? 'Models refreshed' : 'Live fetch returned no models',
+                              message:
+                                fromUpstream > 0
+                                  ? `${fromUpstream} model${fromUpstream === 1 ? '' : 's'} loaded`
+                                  : resp.live_error
+                                    ? 'Upstream rejected the request — see details below.'
+                                    : 'Upstream returned zero models for your region/credentials.',
+                              color: fromUpstream > 0 ? 'green' : 'orange',
+                            });
+                          } catch (e: unknown) {
+                            if (reqId !== liveReqIdRef.current) return;
+                            setLiveError((e as Error).message);
+                            notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
+                          } finally {
+                            if (reqId === liveReqIdRef.current) setLiveLoading(false);
+                          }
+                        }}
+                      >
+                        Refresh model list
+                      </Button>
+                      {dirty ? (
+                        <Text size="xs" c="dimmed">Save changes before refreshing.</Text>
+                      ) : liveModels !== null ? (
+                        (() => {
+                          const fromUpstream = liveModels.filter((m) => m.source === 'live' || m.source === 'both').length;
+                          return (
+                            <Text size="xs" c="dimmed">
+                              {fromUpstream} model{fromUpstream === 1 ? '' : 's'} · refreshed from provider
+                            </Text>
+                          );
+                        })()
+                      ) : null}
+                    </Group>
+                  )}
+                  {liveError && (
+                    <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
+                      {liveError}
+                    </Alert>
+                  )}
+
+                  {(() => {
+                    const wireField = selectedLlm?.config_fields.find((f) => f.key === 'wire_override');
+                    if (!wireField) return null;
+                    const wireKnown = modelWireIsKnown(liveModels, selectedLlm ?? null, llmModel);
+                    const renderField = (
+                      <CatalogAwareField
+                        field={wireField}
+                        providerMeta={selectedLlm}
+                        value={llmConfig[wireField.key] || ''}
+                        onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [wireField.key]: val })); setDirty(true); }}
+                      />
+                    );
+                    if (!wireKnown) return renderField;
+                    return (
+                      <>
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          onClick={() => setShowAdvancedLLM((v) => !v)}
+                          style={{ alignSelf: 'flex-start' }}
+                        >
+                          {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
+                        </Button>
+                        <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
+                      </>
+                    );
+                  })()}
+
+                  <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
                 </>
               );
             })()}
-
-            <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
           </SettingsSection>
         </Tabs.Panel>
 
