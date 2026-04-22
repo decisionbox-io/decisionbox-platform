@@ -30,8 +30,11 @@ COPY providers/secrets/gcp/go.mod providers/secrets/gcp/go.sum providers/secrets
 COPY providers/secrets/aws/go.mod providers/secrets/aws/go.sum providers/secrets/aws/
 COPY providers/secrets/azure/go.mod providers/secrets/azure/go.sum providers/secrets/azure/
 COPY services/api/go.mod services/api/go.sum services/api/
+COPY services/agent/go.mod services/agent/go.sum services/agent/
 # Download deps
 WORKDIR /workspace/services/api
+RUN go mod download
+WORKDIR /workspace/services/agent
 RUN go mod download
 
 # Copy all source
@@ -39,10 +42,17 @@ WORKDIR /workspace
 COPY libs/ libs/
 COPY providers/ providers/
 COPY services/api/ services/api/
+COPY services/agent/ services/agent/
 
 # Build API binary
 WORKDIR /workspace/services/api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-api .
+
+# Build agent binary — required by API subprocess runner (RUNNER_MODE=subprocess),
+# the default mode for docker-compose. In kubernetes mode the agent runs as a Job
+# from its own image and this binary is unused.
+WORKDIR /workspace/services/agent
+RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-agent .
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && \
@@ -52,6 +62,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=builder /decisionbox-api /usr/local/bin/decisionbox-api
+COPY --from=builder /decisionbox-agent /usr/local/bin/decisionbox-agent
 
 EXPOSE 8080
 USER app

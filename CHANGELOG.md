@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Related items promoted + right sidebar TOC** — Related recommendations (on insight pages) and related insights (on recommendation pages) now appear in a sticky right-column TOC at the top of the viewport, alongside semantic-search similar items. On narrow screens the TOC collapses to a horizontally-scrollable chip strip above the main content. The inline mid-page "Related" cards and bottom "Similar" blocks were removed — everything lives in the sidebar now.
 - **API endpoints** for the above: `POST/GET/PATCH/DELETE /api/v1/projects/{id}/lists`, `POST/DELETE /api/v1/projects/{id}/lists/{listId}/items`, `GET /api/v1/projects/{id}/bookmarks`, `POST/DELETE/GET /api/v1/projects/{id}/reads`. Every record carries a `user_id` field sourced from `auth.UserFromContext(ctx).Sub` — `"anonymous"` under NoAuth, the OIDC sub claim under enterprise. Same schema, same handlers in both modes; enterprise deployments get per-user scoping without schema migration.
 
+### Fixed
+
+- **Docker Compose Quick Start: `decisionbox-agent` missing from API image** — The API container's default `RUNNER_MODE=subprocess` spawns the agent via `exec.Command("decisionbox-agent", ...)`, but `services/api/Dockerfile` only shipped the `decisionbox-api` binary. Starting a discovery failed with `exec: "decisionbox-agent": executable file not found in $PATH`. The API image now also builds and installs `decisionbox-agent` into `/usr/local/bin`, so `docker compose up -d` works end-to-end out of the box. Kubernetes deployments are unaffected — they use `RUNNER_MODE=kubernetes` and run the agent as a Job from its own image.
+
 ## [0.4.0] - 2026-04-14
 
 ### Added
