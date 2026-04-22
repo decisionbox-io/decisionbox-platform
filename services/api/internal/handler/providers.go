@@ -123,7 +123,19 @@ func (h *ProvidersHandler) ListLiveLLMModels(w http.ResponseWriter, r *http.Requ
 // fetchLiveModels calls the provider's ModelLister if the factory
 // succeeds and the provider implements the interface. Returns nil + nil
 // when the provider does not support live listing (no error, no rows).
+//
+// A placeholder is injected into cfg["model"] if missing — bedrock /
+// vertex-ai / azure-foundry / ollama factories reject an empty model
+// field, but ListModels never reads it. Keeping the construction strict
+// for the Chat path while letting listing work without a picked model
+// is worth the small kludge.
 func fetchLiveModels(ctx context.Context, provider string, cfg map[string]string) ([]gollm.RemoteModel, error) {
+	if cfg == nil {
+		cfg = map[string]string{}
+	}
+	if cfg["model"] == "" {
+		cfg["model"] = "list-only-placeholder"
+	}
 	prov, err := gollm.NewProvider(provider, gollm.ProviderConfig(cfg))
 	if err != nil {
 		return nil, err
@@ -181,9 +193,15 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 	}
 
 	// Build config from project.llm.config + the stored secret.
-	cfg := map[string]string{"model": project.LLM.Model}
+	// For the *list* call we only need credentials + connection params;
+	// fetchLiveModels fills in a placeholder model for factories that
+	// require one at construction time.
+	cfg := map[string]string{}
 	for k, v := range project.LLM.Config {
 		cfg[k] = v
+	}
+	if project.LLM.Model != "" {
+		cfg["model"] = project.LLM.Model
 	}
 	if h.secretProvider != nil {
 		if key, err := h.secretProvider.Get(r.Context(), pid, "llm-api-key"); err == nil && key != "" {

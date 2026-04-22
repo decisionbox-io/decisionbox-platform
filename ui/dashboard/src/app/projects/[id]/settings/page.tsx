@@ -468,10 +468,20 @@ export default function ProjectSettingsPage() {
                       if (reqId !== liveReqIdRef.current) return;
                       setLiveModels(resp.models);
                       if (resp.live_error) setLiveError(resp.live_error);
+                      // Report the count of rows the user will actually
+                      // see in the picker — live or both, not catalog-
+                      // only fallbacks that surface when the upstream
+                      // fetch failed.
+                      const fromUpstream = resp.models.filter((m) => m.source === 'live' || m.source === 'both').length;
                       notifications.show({
-                        title: 'Models refreshed',
-                        message: `${resp.models.length} models loaded`,
-                        color: 'green',
+                        title: fromUpstream > 0 ? 'Models refreshed' : 'Live fetch returned no models',
+                        message:
+                          fromUpstream > 0
+                            ? `${fromUpstream} model${fromUpstream === 1 ? '' : 's'} loaded`
+                            : resp.live_error
+                              ? 'Upstream rejected the request — see details below.'
+                              : 'Upstream returned zero models for your region/credentials.',
+                        color: fromUpstream > 0 ? 'green' : 'orange',
                       });
                     } catch (e: unknown) {
                       if (reqId !== liveReqIdRef.current) return;
@@ -487,9 +497,14 @@ export default function ProjectSettingsPage() {
                 {dirty ? (
                   <Text size="xs" c="dimmed">Save changes to refresh for the new settings.</Text>
                 ) : liveModels !== null ? (
-                  <Text size="xs" c="dimmed">
-                    {liveModels.length} model{liveModels.length === 1 ? '' : 's'} · refreshed from provider
-                  </Text>
+                  (() => {
+                    const fromUpstream = liveModels.filter((m) => m.source === 'live' || m.source === 'both').length;
+                    return (
+                      <Text size="xs" c="dimmed">
+                        {fromUpstream} model{fromUpstream === 1 ? '' : 's'} · refreshed from provider
+                      </Text>
+                    );
+                  })()
                 ) : null}
               </Group>
             )}
