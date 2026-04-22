@@ -166,7 +166,7 @@ func TestNewExplorationEngine_Defaults(t *testing.T) {
 
 func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 	called := false
-	cb := func(stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 		called = true
 	}
 
@@ -183,7 +183,7 @@ func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 	}
 
 	// Invoke the callback
-	engine.onStep(1, "thinking", "SELECT 1", 5, 100, false, "")
+	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "")
 	if !called {
 		t.Error("onStep callback was not invoked")
 	}
@@ -191,13 +191,14 @@ func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 
 func TestOnStepCallback_Parameters(t *testing.T) {
 	var gotStep int
-	var gotThinking, gotQuery, gotErr string
+	var gotAction, gotThinking, gotQuery, gotErr string
 	var gotRows int
 	var gotTimeMs int64
 	var gotFixed bool
 
-	cb := func(stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 		gotStep = stepNum
+		gotAction = action
 		gotThinking = thinking
 		gotQuery = query
 		gotRows = rowCount
@@ -211,10 +212,13 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 		OnStep:   cb,
 	})
 
-	engine.onStep(3, "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error")
+	engine.onStep(3, "query_data", "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error")
 
 	if gotStep != 3 {
 		t.Errorf("stepNum = %d, want 3", gotStep)
+	}
+	if gotAction != "query_data" {
+		t.Errorf("action = %q, want query_data", gotAction)
 	}
 	if gotThinking != "checking retention" {
 		t.Errorf("thinking = %q", gotThinking)
@@ -555,7 +559,7 @@ func TestExploration_Explore_WithOnStepCallback(t *testing.T) {
 		Executor: executor,
 		MaxSteps: 5,
 		Dataset:  "test_dataset",
-		OnStep: func(stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 			callbackCalled = true
 		},
 	})
@@ -838,6 +842,23 @@ func TestExtractJSON_Comprehensive(t *testing.T) {
 			name:  "unbalanced braces returns empty",
 			input: `{"query": "SELECT 1"`,
 			want:  "",
+		},
+		{
+			// Regression (Copilot PR #176 review): a fenced preamble that has
+			// no action key must NOT hijack the parse when the real action
+			// JSON lives outside the fences.
+			name: "fenced preamble without action key does not shadow raw action JSON",
+			input: "Thinking out loud:\n```json\n{\"plan\": \"step 1 then 2\"}\n```\n" +
+				"Now running the query:\n" +
+				`{"thinking": "execute", "query": "SELECT 1"}`,
+			want: `{"thinking": "execute", "query": "SELECT 1"}`,
+		},
+		{
+			// Dual regression: fenced action JSON still wins when it is the
+			// ONLY block carrying an action key.
+			name:  "fenced action JSON beats raw preamble",
+			input: `{"plan": "x"} then ` + "```json\n" + `{"query": "SELECT 2"}` + "\n```",
+			want:  `{"query": "SELECT 2"}`,
 		},
 	}
 
@@ -1209,6 +1230,95 @@ func TestMinSteps_RejectsPrematureCompletion(t *testing.T) {
 	}
 	if nudges == 0 {
 		t.Error("expected at least one min-steps nudge in the conversation history")
+	}
+}
+
+// TestMinSteps_CallbackCarriesRejectedAction is the regression for the
+// Copilot PR #176 review: the StepCallback must receive action="complete_rejected"
+// (not "" or "query_data") when the engine rejects an early done signal,
+// so downstream StatusReporter can record the step with the right Type
+// and skip the query counter.
+func TestMinSteps_CallbackCarriesRejectedAction(t *testing.T) {
+	type capturedStep struct {
+		step   int
+		action string
+		query  string
+		errMsg string
+	}
+	var captured []capturedStep
+
+	opts := ExplorationEngineOptions{
+		MaxSteps: 10,
+		MinSteps: 3,
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+			captured = append(captured, capturedStep{
+				step:   stepNum,
+				action: action,
+				query:  query,
+				errMsg: errMsg,
+			})
+		},
+	}
+	engine, _ := buildTestEngine(t, opts, nil) // DefaultResponse is done:true every call
+
+	result, err := engine.Explore(context.Background(), ExplorationContext{
+		ProjectID:     "proj-1",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore the data.",
+	})
+	if err != nil {
+		t.Fatalf("Explore error: %v", err)
+	}
+	if !result.Completed {
+		t.Fatal("run should complete at step 3 (MinSteps boundary)")
+	}
+
+	// Expect two complete_rejected callbacks (steps 1 and 2); nothing for
+	// step 3 (accepted completion breaks out before the query-step branch
+	// emits a callback, which is current behaviour — asserted here so any
+	// future change is deliberate).
+	var rejectedCallbacks int
+	for _, c := range captured {
+		if c.action == "complete_rejected" {
+			rejectedCallbacks++
+			if c.query != "" {
+				t.Errorf("rejected-completion callback for step %d carried a non-empty query %q — should be empty", c.step, c.query)
+			}
+			if !containsStr(c.errMsg, "rejected premature completion") {
+				t.Errorf("rejected-completion callback errMsg = %q, want containing 'rejected premature completion'", c.errMsg)
+			}
+		}
+		if c.action == "" {
+			t.Errorf("callback for step %d got empty action — would hide intent from StatusReporter", c.step)
+		}
+	}
+	if rejectedCallbacks != 2 {
+		t.Errorf("expected exactly 2 complete_rejected callbacks (steps 1 and 2), got %d", rejectedCallbacks)
+	}
+}
+
+// TestStatusReporter_CompleteRejected_SkipsQueryCounter is colocated here
+// with the engine tests to document the StepCallback → StatusReporter
+// contract (see services/agent/internal/discovery/status.go). A rejected
+// completion step must not inflate the query counter. The StatusReporter
+// itself has more direct tests; this one asserts the contract from the
+// engine side: when the engine emits action="complete_rejected" the
+// integration with StatusReporter is type-compatible.
+func TestStatusReporter_CallbackShapeCompiles(t *testing.T) {
+	// Compile-time assertion that a function matching the new callback
+	// signature can be passed through OnStep. If the signature drifts this
+	// file stops compiling.
+	_ = ExplorationEngineOptions{
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+			_ = stepNum
+			_ = action
+			_ = thinking
+			_ = query
+			_ = rowCount
+			_ = queryTimeMs
+			_ = queryFixed
+			_ = errMsg
+		},
 	}
 }
 

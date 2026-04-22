@@ -316,8 +316,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		MaxSteps: opts.MaxSteps,
 		MinSteps: opts.MinSteps,
 		Dataset:  datasetsStr,
-		OnStep: func(stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
-			o.statusReporter.AddExplorationStep(ctx, stepNum, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
 		},
 	})
 

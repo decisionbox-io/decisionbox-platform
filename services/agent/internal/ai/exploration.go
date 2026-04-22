@@ -28,7 +28,13 @@ type ExplorationEngine struct {
 const maxParseRetries = 3
 
 // StepCallback is called after each exploration step with live progress data.
-type StepCallback func(stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string)
+// The action argument carries the step's action type — usually "query_data"
+// for a real query, "complete_rejected" when the LLM signalled done before
+// MinSteps and the engine rejected it. Downstream (StatusReporter) uses
+// this to distinguish real queries from non-query events so the live UI
+// doesn't render a rejected completion as an empty-SQL failed query and
+// the per-run query counter only counts real queries.
+type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string)
 
 // ExplorationEngineOptions configures the exploration engine.
 type ExplorationEngineOptions struct {
@@ -157,7 +163,7 @@ func (e *ExplorationEngine) Explore(
 			result.TotalSteps = step
 
 			if e.onStep != nil {
-				e.onStep(step, action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps))
+				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps))
 			}
 			continue
 		}
@@ -186,7 +192,7 @@ func (e *ExplorationEngine) Explore(
 		// Report step for live status
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
-			e.onStep(step, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg)
+			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg)
 		}
 
 		// Check if exploration is complete
@@ -353,43 +359,50 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 
 // extractJSON extracts a JSON action object from the LLM response.
 //
-// Reasoning / "thinking" models (Qwen3, DeepSeek R1, GPT-OSS, ...) often emit
-// multiple JSON-shaped blocks per turn — a planning/reasoning preamble followed
-// by the real action. We walk every top-level JSON object in the text and
-// return the LAST one that carries a recognized action key (query, done, or
-// action); falling back to the last balanced object if none match.
-//
-// ```json / ``` fenced blocks are preferred when present.
+// Reasoning / "thinking" models (Qwen3, DeepSeek R1, GPT-OSS, ...) emit
+// multiple JSON-shaped blocks per turn — a planning / reasoning preamble,
+// followed by the real action. We gather every candidate JSON object
+// (both fenced and raw) into a single ordered list and return the LAST
+// one that carries a recognized action key (query, done, or action). If
+// no candidate has an action key, we fall back to the last balanced
+// object overall. This way a fenced preamble without an action key
+// cannot hijack parsing when the real action lives later outside fences.
 func (e *ExplorationEngine) extractJSON(text string) string {
-	if fenced := extractFencedJSON(text); fenced != "" {
-		return fenced
-	}
-
-	objects := findBalancedJSONObjects(text)
-	if len(objects) == 0 {
+	candidates := collectJSONCandidates(text)
+	if len(candidates) == 0 {
 		return ""
 	}
-
-	for i := len(objects) - 1; i >= 0; i-- {
-		if jsonHasActionKey(objects[i]) {
-			return objects[i]
+	for i := len(candidates) - 1; i >= 0; i-- {
+		if jsonHasActionKey(candidates[i]) {
+			return candidates[i]
 		}
 	}
-	return objects[len(objects)-1]
+	return candidates[len(candidates)-1]
 }
 
-// extractFencedJSON pulls JSON out of markdown fences (```json or ```).
-// Prefers the last fenced block that carries an action key.
-func extractFencedJSON(text string) string {
-	candidates := []string{}
+// collectJSONCandidates returns every plausible JSON object in text:
+// first the contents of each fenced block (```json / ``` / ```JSON) that
+// starts with '{', then every balanced top-level { ... } found by a
+// scan over the raw text. Fenced blocks are listed first so that, when
+// no candidate carries an action key, the fallback prefers raw trailing
+// JSON over a fenced preamble.
+func collectJSONCandidates(text string) []string {
+	var out []string
+	out = append(out, fencedJSONBlocks(text)...)
+	out = append(out, findBalancedJSONObjects(text)...)
+	return out
+}
 
+// fencedJSONBlocks returns every markdown-fenced block whose body starts
+// with '{'. Language tags json / JSON / (empty) are all accepted.
+func fencedJSONBlocks(text string) []string {
+	var out []string
 	for rest := text; ; {
 		idx := strings.Index(rest, "```")
 		if idx < 0 {
 			break
 		}
 		after := rest[idx+3:]
-		// Drop an optional language tag on the fence (json, JSON, etc.).
 		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
 			maybeLang := strings.TrimSpace(after[:nl])
 			if maybeLang == "" || strings.EqualFold(maybeLang, "json") {
@@ -402,20 +415,11 @@ func extractFencedJSON(text string) string {
 		}
 		block := strings.TrimSpace(after[:end])
 		if strings.HasPrefix(block, "{") {
-			candidates = append(candidates, block)
+			out = append(out, block)
 		}
 		rest = after[end+3:]
 	}
-
-	for i := len(candidates) - 1; i >= 0; i-- {
-		if jsonHasActionKey(candidates[i]) {
-			return candidates[i]
-		}
-	}
-	if len(candidates) > 0 {
-		return candidates[len(candidates)-1]
-	}
-	return ""
+	return out
 }
 
 // findBalancedJSONObjects returns every balanced top-level { ... } substring

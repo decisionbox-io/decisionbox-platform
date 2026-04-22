@@ -50,19 +50,38 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 }
 
 // AddExplorationStep logs an exploration step with LLM thinking and query.
-func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string) {
+//
+// The action argument distinguishes real query steps from non-query events
+// emitted by the exploration engine. Today the only non-query event is
+// "complete_rejected" — recorded when MinSteps rejects a premature done
+// signal — which is written to the run log with Type="complete_rejected",
+// carries no Query text, and does NOT increment the run's query counter.
+// Any unrecognized action falls through to the legacy "query" behaviour.
+func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string) {
 	if !s.enabled() {
 		return
 	}
 
-	msg := fmt.Sprintf("Step %d", stepNum)
-	if thinking != "" {
-		// Truncate thinking for display
-		t := thinking
-		if len(t) > 200 {
-			t = t[:200] + "..."
+	isRejected := action == "complete_rejected"
+
+	var (
+		stepType string
+		msg      string
+	)
+	switch {
+	case isRejected:
+		stepType = "complete_rejected"
+		msg = fmt.Sprintf("Step %d: rejected premature completion (min-steps floor)", stepNum)
+	default:
+		stepType = "query"
+		msg = fmt.Sprintf("Step %d", stepNum)
+		if thinking != "" {
+			t := thinking
+			if len(t) > 200 {
+				t = t[:200] + "..."
+			}
+			msg = fmt.Sprintf("Step %d: %s", stepNum, t)
 		}
-		msg = fmt.Sprintf("Step %d: %s", stepNum, t)
 	}
 
 	resultSummary := ""
@@ -73,7 +92,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, th
 	step := models.RunStep{
 		Phase:       models.PhaseExploration,
 		StepNum:     stepNum,
-		Type:        "query",
+		Type:        stepType,
 		Message:     msg,
 		LLMThinking: thinking,
 		Query:       query,
@@ -98,9 +117,12 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, th
 		logger.WithError(err).Warn("failed to update exploration status")
 	}
 
-	// Update query count
-	if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
-		logger.WithError(err).Warn("failed to increment query count")
+	// Only real queries count toward the run's query counter. A
+	// complete_rejected step didn't execute any SQL.
+	if !isRejected {
+		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
+			logger.WithError(err).Warn("failed to increment query count")
+		}
 	}
 }
 

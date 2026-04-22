@@ -52,7 +52,7 @@ func TestStatusReporter_SetPhase_NoOp_WhenDisabled(t *testing.T) {
 func TestStatusReporter_AddExplorationStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, "", 10)
 	// Should not panic when disabled
-	sr.AddExplorationStep(context.TODO(), 1, "thinking", "SELECT 1", 10, 100, false, "")
+	sr.AddExplorationStep(context.TODO(), 1, "query_data", "thinking", "SELECT 1", 10, 100, false, "")
 }
 
 func TestStatusReporter_AddAnalysisStep_NoOp_WhenDisabled(t *testing.T) {
@@ -145,8 +145,9 @@ func TestStatusReporter_AllMethods_NoOp_WhenEmptyRunID(t *testing.T) {
 	// All of these should be no-ops and not panic
 	sr.SetPhase(ctx, models.PhaseSchemaDiscovery, "discovering schemas...", 10)
 	sr.AddStep(ctx, models.RunStep{Phase: models.PhaseInit, Type: "info", Message: "starting"})
-	sr.AddExplorationStep(ctx, 1, "thinking about retention", "SELECT 1", 5, 100, false, "")
-	sr.AddExplorationStep(ctx, 2, "thinking", "SELECT 2", 0, 50, false, "query failed")
+	sr.AddExplorationStep(ctx, 1, "query_data", "thinking about retention", "SELECT 1", 5, 100, false, "")
+	sr.AddExplorationStep(ctx, 2, "query_data", "thinking", "SELECT 2", 0, 50, false, "query failed")
+	sr.AddExplorationStep(ctx, 3, "complete_rejected", "premature done", "", 0, 0, false, "rejected premature completion (3 < 5)")
 	sr.AddAnalysisStep(ctx, "churn", "Churn Risks", 0, "timeout")
 	sr.AddInsightStep(ctx, "Revenue Drop", "high", "monetization")
 	sr.AddValidationStep(ctx, "affected_count", "adjusted", 500, 350)
