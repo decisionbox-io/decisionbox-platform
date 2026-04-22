@@ -45,10 +45,16 @@ func (p *VertexAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel,
 	}
 
 	out := make([]gollm.RemoteModel, 0, 64)
+	var firstErr error
 	for _, pub := range publishers {
 		models, err := p.listPublisherModels(ctx, host, pub.name, token)
 		if err != nil {
-			// non-fatal; continue to next publisher
+			// Non-fatal individually, but track the first failure so
+			// we can surface it when every publisher fails (otherwise
+			// the caller sees "0 models" with no explanation).
+			if firstErr == nil {
+				firstErr = fmt.Errorf("publisher %s: %w", pub.name, err)
+			}
 			continue
 		}
 		for _, m := range models {
@@ -59,6 +65,9 @@ func (p *VertexAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel,
 			}
 			out = append(out, gollm.RemoteModel{ID: id, DisplayName: name})
 		}
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, fmt.Errorf("vertex-ai: list models: all publishers failed; first error: %w", firstErr)
 	}
 	return out, nil
 }

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
@@ -16,17 +18,53 @@ import (
 // validateLLMConfig surfaces malformed llm.config values at write time so a
 // typo like wire_override="antropik" is rejected by the API instead of
 // being accepted and then failing at agent-run time with a less obvious
-// error. Returns a user-facing message on validation failure, or empty
-// string on success.
-func validateLLMConfig(cfg map[string]string) string {
-	if raw, ok := cfg["wire_override"]; ok && raw != "" {
-		parsed := modelcatalog.ParseWire(raw)
-		if !parsed.Valid() {
-			return fmt.Sprintf(
-				"llm.config.wire_override: %q is not a valid wire; use one of %s, %s, %s",
-				raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat, modelcatalog.GoogleNative,
-			)
+// error.
+//
+// When provider is non-empty and has a registered wire_override
+// ConfigField with Options, the accepted values are scoped to that
+// provider's supported wires (e.g. bedrock only offers anthropic +
+// openai-compat). Otherwise we fall back to the generic catalog-wide
+// parse so providers that don't register options still get syntax
+// validation. Returns a user-facing message on failure, or "" on pass.
+func validateLLMConfig(provider string, cfg map[string]string) string {
+	raw, ok := cfg["wire_override"]
+	if !ok || raw == "" {
+		return ""
+	}
+
+	// Provider-scoped check: if the provider exposes wire_override as a
+	// dropdown, use its Options as the authoritative allowlist.
+	if provider != "" {
+		if meta, ok := gollm.GetProviderMeta(provider); ok {
+			for _, f := range meta.ConfigFields {
+				if f.Key != "wire_override" || len(f.Options) == 0 {
+					continue
+				}
+				for _, o := range f.Options {
+					if o.Value == raw {
+						return ""
+					}
+				}
+				accepted := make([]string, 0, len(f.Options))
+				for _, o := range f.Options {
+					if o.Value != "" {
+						accepted = append(accepted, o.Value)
+					}
+				}
+				return fmt.Sprintf(
+					"llm.config.wire_override: %q is not supported by provider %q; use one of %s",
+					raw, provider, strings.Join(accepted, ", "),
+				)
+			}
 		}
+	}
+
+	// Fallback: generic wire-syntax check.
+	if !modelcatalog.ParseWire(raw).Valid() {
+		return fmt.Sprintf(
+			"llm.config.wire_override: %q is not a valid wire; use one of %s, %s, %s",
+			raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat, modelcatalog.GoogleNative,
+		)
 	}
 	return ""
 }
@@ -62,7 +100,7 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "category is required")
 		return
 	}
-	if msg := validateLLMConfig(p.LLM.Config); msg != "" {
+	if msg := validateLLMConfig(p.LLM.Provider, p.LLM.Config); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -227,7 +265,7 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Validate provider-specific LLM config (e.g., wire_override syntax).
 	if incoming.LLM.Provider != "" {
-		if msg := validateLLMConfig(incoming.LLM.Config); msg != "" {
+		if msg := validateLLMConfig(incoming.LLM.Provider, incoming.LLM.Config); msg != "" {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}

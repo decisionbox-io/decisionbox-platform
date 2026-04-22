@@ -48,6 +48,12 @@ type ModelInfo struct {
 	MaxOutputTokens       int     `json:"max_output_tokens,omitempty"`
 	InputPricePerMillion  float64 `json:"input_price_per_million,omitempty"`
 	OutputPricePerMillion float64 `json:"output_price_per_million,omitempty"`
+
+	// Lifecycle is a free-form status string from the upstream list
+	// endpoint — empty for catalog-only rows. Known values include
+	// "ACTIVE" and "LEGACY" (Bedrock). The dashboard uses this to
+	// grey out deprecated models.
+	Lifecycle string `json:"lifecycle,omitempty"`
 }
 
 // ConfigField describes a single configuration field.
@@ -75,9 +81,8 @@ type ConfigField struct {
 
 // ConfigOption is one entry in a dropdown-style ConfigField.
 type ConfigOption struct {
-	Value       string `json:"value"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 var (

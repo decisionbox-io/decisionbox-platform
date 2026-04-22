@@ -307,6 +307,10 @@ export interface ModelInfo {
   max_output_tokens?: number;
   input_price_per_million?: number;
   output_price_per_million?: number;
+  // Lifecycle from the upstream list endpoint when available —
+  // e.g. "ACTIVE" / "LEGACY" on Bedrock. Empty when the upstream
+  // does not expose it or the row came from our shipped catalog.
+  lifecycle?: string;
 }
 
 // LiveModel extends ModelInfo with two derived fields:
@@ -349,7 +353,6 @@ export interface ConfigField {
 export interface ConfigOption {
   value: string;
   label: string;
-  description?: string;
 }
 
 export interface DiscoveryRunStatus {

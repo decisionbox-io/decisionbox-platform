@@ -36,7 +36,7 @@ func (p *AzureFoundryProvider) ListModels(ctx context.Context) ([]gollm.RemoteMo
 		return nil, fmt.Errorf("azure-foundry: list models: read: %w", readErr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("azure-foundry: list models: status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("azure-foundry: list models: status %d: %s", resp.StatusCode, gollm.SanitizeErrorBody(body, 500))
 	}
 
 	var decoded struct {

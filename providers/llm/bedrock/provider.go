@@ -45,10 +45,14 @@ func init() {
 		wireOverride := modelcatalog.Unknown
 		if raw := cfg["wire_override"]; raw != "" {
 			parsed := modelcatalog.ParseWire(raw)
-			if !parsed.Valid() {
+			// Bedrock dispatches on Anthropic and OpenAICompat only.
+			// google-native parses as a valid Wire but there's no
+			// implementation on Bedrock, so reject it here rather
+			// than failing at first Chat.
+			if parsed != modelcatalog.Anthropic && parsed != modelcatalog.OpenAICompat {
 				return nil, fmt.Errorf(
-					"bedrock: invalid wire_override %q; use one of: %s, %s, %s",
-					raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat, modelcatalog.GoogleNative,
+					"bedrock: invalid wire_override %q; use one of: %s, %s",
+					raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat,
 				)
 			}
 			wireOverride = parsed

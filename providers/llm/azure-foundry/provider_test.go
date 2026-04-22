@@ -117,15 +117,15 @@ func TestAzureFoundryProvider_ChatDefaultModel(t *testing.T) {
 		httpClient: &http.Client{Timeout: 1 * time.Second},
 	}
 
-	// Empty model in request should fall back to provider default.
-	// Will fail on HTTP (no server), but verifies routing.
+	// Empty model in request should fall back to provider default and
+	// route through the catalog (claude-sonnet-4-6 is catalogued). The
+	// call fails on HTTP (nonexistent endpoint) — we assert it is *not*
+	// a catalog/dispatch error, meaning routing worked.
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "test"}},
 	})
-
-	// Should fail on HTTP, not on model routing
-	if err != nil && strings.Contains(err.Error(), "unsupported model") {
-		t.Error("should route to claude, not fail on model check")
+	if err != nil && strings.Contains(err.Error(), "not in catalog") {
+		t.Errorf("claude-sonnet-4-6 should be catalogued, got dispatch error: %v", err)
 	}
 }
 

@@ -103,7 +103,7 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 		return nil, fmt.Errorf("claude: API key is required")
 	}
 	if cfg.Model == "" {
-		cfg.Model = "claude-sonnet-4-20250514"
+		cfg.Model = "claude-sonnet-4-6"
 	}
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 3

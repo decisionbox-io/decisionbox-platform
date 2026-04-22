@@ -31,7 +31,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel, e
 		return nil, fmt.Errorf("openai: list models: read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openai: list models: status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai: list models: status %d: %s", resp.StatusCode, gollm.SanitizeErrorBody(body, 500))
 	}
 
 	var decoded struct {

@@ -1,6 +1,10 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"regexp"
+	"strings"
+)
 
 // Provider abstracts LLM chat operations.
 // Implement this interface to add support for a new LLM provider
@@ -59,6 +63,26 @@ type Usage struct {
 // creation — the handler returns the catalog as a fallback.
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]RemoteModel, error)
+}
+
+// secretEchoPattern strips strings that look like API keys echoed back
+// from an upstream's error response. Some gateways include the request
+// headers in 4xx bodies; without this, a 401 "live_error" could leak
+// the caller's bearer token into the dashboard.
+var secretEchoPattern = regexp.MustCompile(`(?i)(sk-[A-Za-z0-9_\-]+|Bearer\s+[A-Za-z0-9_\-\.]+|x-api-key[:=]\s*[A-Za-z0-9_\-\.]+|api-key[:=]\s*[A-Za-z0-9_\-\.]+)`)
+
+// SanitizeErrorBody trims whitespace, truncates to maxLen runes, and
+// masks sequences that look like API keys or Authorization headers so
+// the snippet can safely be included in user-facing error messages.
+// Intended for provider ListModels and Chat error paths that include
+// the raw upstream response body for debuggability.
+func SanitizeErrorBody(body []byte, maxLen int) string {
+	s := strings.TrimSpace(string(body))
+	s = secretEchoPattern.ReplaceAllString(s, "[REDACTED]")
+	if maxLen > 0 && len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	return s
 }
 
 // RemoteModel is one row returned by an upstream list endpoint.

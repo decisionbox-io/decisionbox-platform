@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ActionIcon, Alert, Button, Checkbox, CloseButton, Group, Loader, MultiSelect,
@@ -36,6 +36,10 @@ export default function ProjectSettingsPage() {
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
+  // Monotonic id guards against out-of-order responses if the user
+  // triggers multiple refreshes or the auto-refresh-on-mount overlaps
+  // with a manual click.
+  const liveReqIdRef = useRef(0);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -123,12 +127,17 @@ export default function ProjectSettingsPage() {
         // the refresh button is visible for retry and the user can
         // still type a model ID by hand.
         if (proj.llm.provider) {
+          const reqId = ++liveReqIdRef.current;
           api.listLiveLLMModelsForProject(proj.id)
             .then((resp) => {
+              if (reqId !== liveReqIdRef.current) return;
               setLiveModels(resp.models);
               if (resp.live_error) setLiveError(resp.live_error);
             })
-            .catch((e) => setLiveError((e as Error).message));
+            .catch((e) => {
+              if (reqId !== liveReqIdRef.current) return;
+              setLiveError((e as Error).message);
+            });
         }
         setEmbProvider(proj.embedding?.provider || '');
         setEmbModel(proj.embedding?.model || '');
@@ -360,6 +369,9 @@ export default function ProjectSettingsPage() {
                 setLlmProvider(v || '');
                 setLlmModel('');
                 setLlmConfig({});
+                // Previous provider's live list no longer applies.
+                setLiveModels(null);
+                setLiveError(null);
                 setDirty(true);
               }} />
             {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
@@ -380,10 +392,12 @@ export default function ProjectSettingsPage() {
                   variant="subtle"
                   loading={liveLoading}
                   onClick={async () => {
+                    const reqId = ++liveReqIdRef.current;
                     setLiveLoading(true);
                     setLiveError(null);
                     try {
                       const resp = await api.listLiveLLMModelsForProject(id);
+                      if (reqId !== liveReqIdRef.current) return;
                       setLiveModels(resp.models);
                       if (resp.live_error) setLiveError(resp.live_error);
                       notifications.show({
@@ -392,10 +406,11 @@ export default function ProjectSettingsPage() {
                         color: 'green',
                       });
                     } catch (e: unknown) {
+                      if (reqId !== liveReqIdRef.current) return;
                       setLiveError((e as Error).message);
                       notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
                     } finally {
-                      setLiveLoading(false);
+                      if (reqId === liveReqIdRef.current) setLiveLoading(false);
                     }
                   }}
                 >

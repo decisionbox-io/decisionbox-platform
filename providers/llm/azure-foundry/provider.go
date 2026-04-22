@@ -65,7 +65,11 @@ func init() {
 		wireOverride := modelcatalog.Unknown
 		if raw := cfg["wire_override"]; raw != "" {
 			parsed := modelcatalog.ParseWire(raw)
-			if !parsed.Valid() {
+			// Azure Foundry dispatches on Anthropic and OpenAICompat
+			// only — reject other wires at factory time (parsed may be
+			// a valid Wire value like google-native that Foundry does
+			// not implement).
+			if parsed != modelcatalog.Anthropic && parsed != modelcatalog.OpenAICompat {
 				return nil, fmt.Errorf(
 					"azure-foundry: invalid wire_override %q; use one of: %s, %s",
 					raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat,

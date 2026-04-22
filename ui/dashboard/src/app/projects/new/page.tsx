@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
@@ -105,8 +105,15 @@ export default function NewProjectPage() {
     () => true,
   ];
 
+  // Monotonic request id so a stale response from an in-flight fetch
+  // (e.g. user clicked Load models twice, or switched provider mid-
+  // flight) doesn't overwrite newer state.
+  const loadReqIdRef = useRef(0);
+
   const loadLiveModels = async () => {
     if (!llmProvider) return;
+    const reqId = ++loadReqIdRef.current;
+    const provider = llmProvider;
     setAiLoading(true);
     setLiveError(null);
     try {
@@ -115,19 +122,18 @@ export default function NewProjectPage() {
       // cfg["api_key"]).
       const config: Record<string, string> = { ...llmConfig };
       if (llmApiKey) config['api_key'] = llmApiKey;
-      const resp = await api.listLiveLLMModels(llmProvider, config);
+      const resp = await api.listLiveLLMModels(provider, config);
+      if (reqId !== loadReqIdRef.current) return; // superseded
       setLiveModels(resp.models);
-      if (resp.live_error) {
-        setLiveError(resp.live_error);
-      }
+      if (resp.live_error) setLiveError(resp.live_error);
       setAiPhase('model');
     } catch (e: unknown) {
+      if (reqId !== loadReqIdRef.current) return; // superseded
       setLiveError((e as Error).message);
-      // Fall through to phase 2 anyway — the catalog (via selectedLLM.models)
-      // is still shown and the user can pick or type freely.
+      // Still advance to phase 2 — user can type a model manually.
       setAiPhase('model');
     } finally {
-      setAiLoading(false);
+      if (reqId === loadReqIdRef.current) setAiLoading(false);
     }
   };
 

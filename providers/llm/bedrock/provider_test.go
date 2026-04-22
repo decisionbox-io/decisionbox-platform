@@ -101,23 +101,19 @@ func TestBedrockProvider_Dispatch_WireOverrideWhenUncatalogued(t *testing.T) {
 	}
 }
 
-func TestBedrockProvider_Dispatch_GoogleNativeRejected(t *testing.T) {
-	// wire_override=google-native is valid at config time but not
-	// implementable on Bedrock; dispatch must return a specific error,
-	// not silently fall through.
-	p := &BedrockProvider{
-		model:        "vendor.gemini-on-bedrock",
-		wireOverride: modelcatalog.GoogleNative,
-		httpClient:   &http.Client{},
-	}
-	_, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model: "vendor.gemini-on-bedrock", Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+func TestBedrockProvider_Factory_RejectsGoogleNativeWireOverride(t *testing.T) {
+	// google-native is a valid Wire value but no implementation exists
+	// on Bedrock. The factory should reject it at save time rather than
+	// letting the user hit a confusing dispatch-time error.
+	_, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{
+		"model":         "vendor.gemini-on-bedrock",
+		"wire_override": "google-native",
 	})
 	if err == nil {
-		t.Fatal("expected error for google-native wire on Bedrock")
+		t.Fatal("expected factory to reject google-native wire_override on Bedrock")
 	}
-	if !strings.Contains(err.Error(), "not implemented on Bedrock") {
-		t.Errorf("error %q should say 'not implemented on Bedrock'", err.Error())
+	if !strings.Contains(err.Error(), "invalid wire_override") {
+		t.Errorf("error = %q, should mention invalid wire_override", err.Error())
 	}
 }
 
@@ -162,16 +158,21 @@ func TestBedrockProvider_Factory_InvalidWireOverride(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid wire_override") {
 		t.Errorf("error = %q", err.Error())
 	}
-	// The message should list the valid choices so users can self-serve.
-	for _, want := range []string{"anthropic", "openai-compat", "google-native"} {
+	// The message should list the Bedrock-supported choices so users
+	// can self-serve. google-native is intentionally omitted because
+	// Bedrock has no implementation for it.
+	for _, want := range []string{"anthropic", "openai-compat"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should list wire %q", err.Error(), want)
 		}
 	}
+	if strings.Contains(err.Error(), "google-native") {
+		t.Errorf("error should not list google-native (not implemented on Bedrock): %q", err.Error())
+	}
 }
 
 func TestBedrockProvider_Factory_AcceptsValidWireOverride(t *testing.T) {
-	for _, wo := range []string{"anthropic", "openai-compat", "google-native"} {
+	for _, wo := range []string{"anthropic", "openai-compat"} {
 		prov, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{
 			"model":         "vendor.custom",
 			"wire_override": wo,
@@ -199,8 +200,8 @@ func TestBedrockProvider_Registered(t *testing.T) {
 	if !ok {
 		t.Fatal("bedrock not registered")
 	}
-	if strings.Contains(meta.Description, "coming soon") {
-		t.Error("description still says coming soon")
+	if meta.Description == "" {
+		t.Error("missing provider description")
 	}
 	if len(meta.DefaultPricing) == 0 {
 		t.Error("no default pricing")

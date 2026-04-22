@@ -262,7 +262,7 @@ func All() []Entry {
 	return out
 }
 
-// resolveWire is the shared dispatch helper used by every provider's
+// ResolveWire is the shared dispatch helper used by every provider's
 // Chat() method.
 //
 // Resolution order:
@@ -278,7 +278,7 @@ func All() []Entry {
 //
 // Keeping the error format in one place is what makes the
 // wire_override hint discoverable.
-func resolveWire(cloud, model string, wireOverride Wire) (Wire, error) {
+func ResolveWire(cloud, model string, wireOverride Wire) (Wire, error) {
 	if w := LookupWire(cloud, model); w != Unknown {
 		return w, nil
 	}
@@ -293,10 +293,4 @@ func resolveWire(cloud, model string, wireOverride Wire) (Wire, error) {
 			"set wire_override in project config to one of: %s, %s, %s",
 		cloud, model, Anthropic, OpenAICompat, GoogleNative,
 	)
-}
-
-// ResolveWire is the exported form of the internal resolver. Providers
-// should call this from their dispatch code path.
-func ResolveWire(cloud, model string, wireOverride Wire) (Wire, error) {
-	return resolveWire(cloud, model, wireOverride)
 }

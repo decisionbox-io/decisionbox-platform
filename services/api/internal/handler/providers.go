@@ -107,12 +107,10 @@ func (h *ProvidersHandler) ListLiveLLMModels(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	// zero out config map after we're done, best-effort
-	defer func() {
-		for k := range body.Config {
-			body.Config[k] = ""
-		}
-	}()
+	// Credentials in body.Config are used for this single call only —
+	// the request body is not persisted anywhere and the map goes out
+	// of scope when the handler returns. Go strings are immutable so
+	// we cannot actively scrub; we rely on scope + GC.
 
 	// Build a 15-second timeout so a hung upstream doesn't block the UI.
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -150,13 +148,12 @@ func displayOr(a, b string) string {
 // that use ambient credentials (Bedrock, Vertex) work here too — the
 // factory picks up IAM / ADC from the environment.
 //
+// Requires a handler built via NewProvidersHandlerWithProject — the
+// plain NewProvidersHandler() does not wire the project repo and
+// should not be routed to this endpoint.
+//
 // POST /api/v1/projects/{id}/providers/llm/models/live
 func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r *http.Request) {
-	if h.projectRepo == nil {
-		writeError(w, http.StatusNotImplemented, "project scoped live list is not enabled on this server")
-		return
-	}
-
 	pid := r.PathValue("id")
 	if pid == "" {
 		writeError(w, http.StatusBadRequest, "project id is required")
@@ -193,11 +190,9 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 			cfg["api_key"] = key
 		}
 	}
-	defer func() {
-		for k := range cfg {
-			cfg[k] = ""
-		}
-	}()
+	// cfg holds the secret for the duration of this handler; it goes
+	// out of scope on return. Go strings are immutable so active
+	// scrubbing is not possible; we rely on scope + GC.
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -237,6 +232,9 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			if lm.DisplayName != "" {
 				row.DisplayName = lm.DisplayName
 			}
+			if lm.Lifecycle != "" {
+				row.Lifecycle = lm.Lifecycle
+			}
 			merged[lm.ID] = row
 		} else {
 			inferred := string(modelcatalog.InferWire(meta.ID, lm.ID))
@@ -247,6 +245,7 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 					ID:          lm.ID,
 					DisplayName: displayOr(lm.DisplayName, lm.ID),
 					Wire:        inferred,
+					Lifecycle:   lm.Lifecycle,
 				},
 			}
 		}
