@@ -3,11 +3,14 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
 func mockOpenAIServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -30,34 +33,23 @@ func defaultHandler(t *testing.T) http.HandlerFunc {
 			t.Error("missing Content-Type header")
 		}
 
-		var req chatRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		var req openaicompat.RequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
 
-		resp := chatResponse{
+		resp := openaicompat.ResponseBody{
 			ID:    "chatcmpl-test",
 			Model: req.Model,
-			Choices: []struct {
-				Message      chatMessage `json:"message"`
-				FinishReason string      `json:"finish_reason"`
-			}{
+			Choices: []openaicompat.Choice{
 				{
-					Message:      chatMessage{Role: "assistant", Content: "Hello from mock OpenAI"},
+					Message:      openaicompat.Message{Role: "assistant", Content: "Hello from mock OpenAI"},
 					FinishReason: "stop",
 				},
 			},
-			Usage: struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				TotalTokens      int `json:"total_tokens"`
-			}{
-				PromptTokens:     10,
-				CompletionTokens: 5,
-				TotalTokens:      15,
-			},
+			Usage: openaicompat.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
 
@@ -91,22 +83,21 @@ func TestChat_Success(t *testing.T) {
 }
 
 func TestChat_SystemPrompt(t *testing.T) {
-	var receivedMessages []chatMessage
+	var receivedMessages []openaicompat.Message
 
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var req chatRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		var req openaicompat.RequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedMessages = req.Messages
 
-		resp := chatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: req.Model,
-			Choices: []struct {
-				Message      chatMessage `json:"message"`
-				FinishReason string      `json:"finish_reason"`
-			}{{Message: chatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer server.Close()
 
@@ -135,19 +126,18 @@ func TestChat_ModelOverride(t *testing.T) {
 	var receivedModel string
 
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var req chatRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		var req openaicompat.RequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedModel = req.Model
 
-		resp := chatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: req.Model,
-			Choices: []struct {
-				Message      chatMessage `json:"message"`
-				FinishReason string      `json:"finish_reason"`
-			}{{Message: chatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer server.Close()
 
@@ -165,11 +155,11 @@ func TestChat_ModelOverride(t *testing.T) {
 	}
 }
 
-func TestChat_APIError(t *testing.T) {
+func TestChat_APIError_Typed(t *testing.T) {
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": map[string]string{
 				"message": "Invalid API key",
 				"type":    "invalid_api_key",
@@ -184,15 +174,43 @@ func TestChat_APIError(t *testing.T) {
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
 	if err == nil {
-		t.Error("should return error for 401")
+		t.Fatal("should return error for 401")
+	}
+	if !strings.Contains(err.Error(), "invalid_api_key") {
+		t.Errorf("error %q should carry typed APIError fields", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Invalid API key") {
+		t.Errorf("error %q should include server message", err.Error())
+	}
+}
+
+func TestChat_APIError_RawBodyFallback(t *testing.T) {
+	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>502 Bad Gateway</html>"))
+	})
+	defer server.Close()
+
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("should return error for 502")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error %q should mention status 502", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Bad Gateway") {
+		t.Errorf("error %q should include raw body when no JSON error envelope", err.Error())
 	}
 }
 
 func TestChat_EmptyChoices(t *testing.T) {
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
-		resp := chatResponse{Model: "gpt-4o"}
+		resp := openaicompat.ResponseBody{Model: "gpt-4o"}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer server.Close()
 
@@ -206,21 +224,35 @@ func TestChat_EmptyChoices(t *testing.T) {
 	}
 }
 
+func TestChat_MalformedJSON(t *testing.T) {
+	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "definitely not JSON")
+	})
+	defer server.Close()
+
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
 func TestChat_MaxTokensAndTemperature(t *testing.T) {
-	var receivedReq chatRequest
+	var receivedReq openaicompat.RequestBody
 
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedReq)
+		_ = json.NewDecoder(r.Body).Decode(&receivedReq)
 
-		resp := chatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: receivedReq.Model,
-			Choices: []struct {
-				Message      chatMessage `json:"message"`
-				FinishReason string      `json:"finish_reason"`
-			}{{Message: chatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer server.Close()
 
@@ -241,7 +273,7 @@ func TestChat_MaxTokensAndTemperature(t *testing.T) {
 }
 
 func TestChat_ServerDown(t *testing.T) {
-	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://localhost:1")
+	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1")
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
@@ -312,7 +344,7 @@ func TestValidate_Success(t *testing.T) {
 			t.Errorf("auth = %q", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
 	})
 	defer server.Close()
 
@@ -325,7 +357,7 @@ func TestValidate_Success(t *testing.T) {
 func TestValidate_Unauthorized(t *testing.T) {
 	server := mockOpenAIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
+		_, _ = w.Write([]byte(`{"error": {"message": "Invalid API key"}}`))
 	})
 	defer server.Close()
 
@@ -336,18 +368,18 @@ func TestValidate_Unauthorized(t *testing.T) {
 }
 
 func TestValidate_ServerDown(t *testing.T) {
-	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://localhost:1")
+	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1")
 	if err := provider.Validate(context.Background()); err == nil {
 		t.Error("Validate should fail when server is unreachable")
 	}
 }
 
 func TestProviderFactory_DefaultModel(t *testing.T) {
-	// Can't fully test without actual API, but verify factory doesn't error
-	// We use a bad base_url to avoid real API calls
+	// Can't fully test without actual API, but verify factory doesn't error.
+	// Use a bad base_url to avoid real API calls.
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
 		"api_key":  "test",
-		"base_url": "http://localhost:1",
+		"base_url": "http://127.0.0.1:1",
 	})
 	if err != nil {
 		t.Fatalf("factory error: %v", err)

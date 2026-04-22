@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
 // newTestProvider creates an AzureFoundryProvider pointing at a test HTTP server.
@@ -422,25 +423,16 @@ func TestAzureFoundry_OpenAIChat_Success(t *testing.T) {
 			t.Errorf("anthropic-version = %q, should not be set for OpenAI", v)
 		}
 
-		resp := openaiChatResponse{
+		resp := openaicompat.ResponseBody{
 			ID:    "chatcmpl-123",
 			Model: "gpt-4o",
-			Choices: []struct {
-				Message      openaiChatMsg `json:"message"`
-				FinishReason string        `json:"finish_reason"`
-			}{
+			Choices: []openaicompat.Choice{
 				{
-					Message:      openaiChatMsg{Role: "assistant", Content: "Hello from GPT on Azure!"},
+					Message:      openaicompat.Message{Role: "assistant", Content: "Hello from GPT on Azure!"},
 					FinishReason: "stop",
 				},
 			},
-			Usage: struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			}{
-				PromptTokens:     10,
-				CompletionTokens: 6,
-			},
+			Usage: openaicompat.Usage{PromptTokens: 10, CompletionTokens: 6},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -512,13 +504,10 @@ func TestAzureFoundry_OpenAIChat_SystemPrompt(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		capturedBody = body
 
-		resp := openaiChatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: "gpt-4o",
-			Choices: []struct {
-				Message      openaiChatMsg `json:"message"`
-				FinishReason string        `json:"finish_reason"`
-			}{
-				{Message: openaiChatMsg{Role: "assistant", Content: "4"}, FinishReason: "stop"},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "4"}, FinishReason: "stop"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -536,7 +525,7 @@ func TestAzureFoundry_OpenAIChat_SystemPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var reqBody openaiChatRequest
+	var reqBody openaicompat.RequestBody
 	if err := json.Unmarshal(capturedBody, &reqBody); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
@@ -555,7 +544,7 @@ func TestAzureFoundry_OpenAIChat_SystemPrompt(t *testing.T) {
 
 func TestAzureFoundry_OpenAIChat_EmptyChoices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := openaiChatResponse{Model: "gpt-4o"}
+		resp := openaicompat.ResponseBody{Model: "gpt-4o"}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	}))
@@ -581,13 +570,10 @@ func TestAzureFoundry_OpenAIChat_NonClaudeModel(t *testing.T) {
 			t.Errorf("path = %q, expected OpenAI endpoint", r.URL.Path)
 		}
 
-		resp := openaiChatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: "DeepSeek-V3",
-			Choices: []struct {
-				Message      openaiChatMsg `json:"message"`
-				FinishReason string        `json:"finish_reason"`
-			}{
-				{Message: openaiChatMsg{Role: "assistant", Content: "Hello from DeepSeek!"}, FinishReason: "stop"},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "Hello from DeepSeek!"}, FinishReason: "stop"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -645,13 +631,10 @@ func TestAzureFoundry_OpenAIEndpointURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 
-		resp := openaiChatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: "gpt-4o",
-			Choices: []struct {
-				Message      openaiChatMsg `json:"message"`
-				FinishReason string        `json:"finish_reason"`
-			}{
-				{Message: openaiChatMsg{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -805,13 +788,10 @@ func TestAzureFoundry_OpenAIChat_MaxTokensAndTemperature(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		capturedBody = body
 
-		resp := openaiChatResponse{
+		resp := openaicompat.ResponseBody{
 			Model: "gpt-4o",
-			Choices: []struct {
-				Message      openaiChatMsg `json:"message"`
-				FinishReason string        `json:"finish_reason"`
-			}{
-				{Message: openaiChatMsg{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			Choices: []openaicompat.Choice{
+				{Message: openaicompat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -830,7 +810,7 @@ func TestAzureFoundry_OpenAIChat_MaxTokensAndTemperature(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var reqBody openaiChatRequest
+	var reqBody openaicompat.RequestBody
 	if err := json.Unmarshal(capturedBody, &reqBody); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}

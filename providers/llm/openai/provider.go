@@ -22,6 +22,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -115,64 +116,9 @@ func (p *OpenAIProvider) Validate(ctx context.Context) error {
 	return nil
 }
 
-// chatRequest is the OpenAI chat completions request body.
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature float64       `json:"temperature,omitempty"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// chatResponse is the OpenAI chat completions response body.
-type chatResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Message      chatMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error,omitempty"`
-}
-
 // Chat sends a conversation to OpenAI and returns the response.
 func (p *OpenAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = p.model
-	}
-
-	// Build messages
-	messages := make([]chatMessage, 0, len(req.Messages)+1)
-	if req.SystemPrompt != "" {
-		messages = append(messages, chatMessage{Role: "system", Content: req.SystemPrompt})
-	}
-	for _, msg := range req.Messages {
-		messages = append(messages, chatMessage{Role: msg.Role, Content: msg.Content})
-	}
-
-	body := chatRequest{
-		Model:    model,
-		Messages: messages,
-	}
-	if req.MaxTokens > 0 {
-		body.MaxTokens = req.MaxTokens
-	}
-	if req.Temperature > 0 {
-		body.Temperature = req.Temperature
-	}
+	body := openaicompat.BuildRequestBody(p.model, req)
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -198,31 +144,15 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		var errResp chatResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
-			return nil, fmt.Errorf("openai: API error (%d): %s - %s", httpResp.StatusCode, errResp.Error.Type, errResp.Error.Message)
+		if apiErr := openaicompat.ExtractAPIError(respBody); apiErr != nil {
+			return nil, fmt.Errorf("openai: API error (%d): %s - %s", httpResp.StatusCode, apiErr.Type, apiErr.Message)
 		}
 		return nil, fmt.Errorf("openai: API error (%d): %s", httpResp.StatusCode, string(respBody))
 	}
 
-	var resp chatResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("openai: failed to parse response: %w", err)
+	resp, err := openaicompat.ParseResponseBody(respBody)
+	if err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
 	}
-
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("openai: no choices in response")
-	}
-
-	choice := resp.Choices[0]
-
-	return &gollm.ChatResponse{
-		Content:    choice.Message.Content,
-		Model:      resp.Model,
-		StopReason: choice.FinishReason,
-		Usage: gollm.Usage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		},
-	}, nil
+	return resp, nil
 }
