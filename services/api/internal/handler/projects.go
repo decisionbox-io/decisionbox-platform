@@ -1,15 +1,35 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
+
+// validateLLMConfig surfaces malformed llm.config values at write time so a
+// typo like wire_override="antropik" is rejected by the API instead of
+// being accepted and then failing at agent-run time with a less obvious
+// error. Returns a user-facing message on validation failure, or empty
+// string on success.
+func validateLLMConfig(cfg map[string]string) string {
+	if raw, ok := cfg["wire_override"]; ok && raw != "" {
+		parsed := modelcatalog.ParseWire(raw)
+		if !parsed.Valid() {
+			return fmt.Sprintf(
+				"llm.config.wire_override: %q is not a valid wire; use one of %s, %s, %s",
+				raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat, modelcatalog.GoogleNative,
+			)
+		}
+	}
+	return ""
+}
 
 // ProjectsHandler handles project CRUD endpoints.
 type ProjectsHandler struct {
@@ -40,6 +60,10 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Category == "" {
 		writeError(w, http.StatusBadRequest, "category is required")
+		return
+	}
+	if msg := validateLLMConfig(p.LLM.Config); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -197,6 +221,14 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+			return
+		}
+	}
+
+	// Validate provider-specific LLM config (e.g., wire_override syntax).
+	if incoming.LLM.Provider != "" {
+		if msg := validateLLMConfig(incoming.LLM.Config); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
 	}

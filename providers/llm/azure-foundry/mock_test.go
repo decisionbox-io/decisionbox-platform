@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
@@ -581,7 +582,10 @@ func TestAzureFoundry_OpenAIChat_NonClaudeModel(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// DeepSeek-V3 is not in the seed catalog, so the user must set
+	// wire_override=openai-compat to route it explicitly.
 	p := newTestProviderWithURL(server.URL, "DeepSeek-V3")
+	p.wireOverride = modelcatalog.OpenAICompat
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
 		Model:    "DeepSeek-V3",
 		Messages: []gollm.Message{{Role: "user", Content: "Hello"}},

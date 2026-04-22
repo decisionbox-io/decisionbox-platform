@@ -8,28 +8,104 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
-func TestIsClaude(t *testing.T) {
-	tests := []struct {
-		model string
-		want  bool
-	}{
-		{"claude-sonnet-4-6", true},
-		{"claude-opus-4-6", true},
-		{"claude-haiku-4-5", true},
-		{"claude-sonnet-4-5", true},
-		{"claude-opus-4-1", true},
-		{"gpt-4o", false},
-		{"gpt-4o-mini", false},
-		{"o3", false},
-		{"DeepSeek-V3", false},
-		{"", false},
+// alias to keep the long name from dominating the test body
+var modelcatalog_OpenAICompat = modelcatalog.OpenAICompat
+
+// Dispatch is now catalog-driven — see modelcatalog registry tests for
+// (cloud, model) → wire coverage. The provider-level check that used to
+// pattern-match "claude-" is gone. Here we assert the provider routes a
+// known Claude-on-Azure model ID to the Anthropic path and a known GPT
+// model to the OpenAI path.
+
+func TestAzureFoundryProvider_Dispatch_CatalogClaude(t *testing.T) {
+	// Without a mock server, the HTTP call will fail — we just want to
+	// observe that the dispatch picked the Anthropic path. An uncatalogued
+	// error would be caught before any HTTP attempt.
+	p := &AzureFoundryProvider{
+		endpoint:   "http://127.0.0.1:1",
+		apiKey:     "test-key",
+		model:      "claude-sonnet-4-6",
+		httpClient: &http.Client{Timeout: 200 * time.Millisecond},
 	}
-	for _, tt := range tests {
-		if got := isClaude(tt.model); got != tt.want {
-			t.Errorf("isClaude(%q) = %v, want %v", tt.model, got, tt.want)
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from unreachable endpoint")
+	}
+	if strings.Contains(err.Error(), "not in catalog") {
+		t.Errorf("claude-sonnet-4-6 should be catalogued, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "anthropic") && !strings.Contains(err.Error(), "request failed") {
+		t.Errorf("error %q did not go through the Anthropic path", err.Error())
+	}
+}
+
+func TestAzureFoundryProvider_Dispatch_CatalogGPT(t *testing.T) {
+	p := &AzureFoundryProvider{
+		endpoint:   "http://127.0.0.1:1",
+		apiKey:     "test-key",
+		model:      "gpt-4o",
+		httpClient: &http.Client{Timeout: 200 * time.Millisecond},
+	}
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from unreachable endpoint")
+	}
+	if strings.Contains(err.Error(), "not in catalog") {
+		t.Errorf("gpt-4o should be catalogued, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "openai") && !strings.Contains(err.Error(), "request failed") {
+		t.Errorf("error %q did not go through the OpenAI path", err.Error())
+	}
+}
+
+func TestAzureFoundryProvider_Dispatch_UncataloguedActionableError(t *testing.T) {
+	p := &AzureFoundryProvider{
+		endpoint:   "http://127.0.0.1:1",
+		apiKey:     "test-key",
+		model:      "DeepSeek-V3",
+		httpClient: &http.Client{Timeout: 200 * time.Millisecond},
+	}
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for uncatalogued model")
+	}
+	for _, want := range []string{"azure-foundry", "DeepSeek-V3", "wire_override"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
 		}
+	}
+}
+
+func TestAzureFoundryProvider_Dispatch_WireOverrideOpenAICompat(t *testing.T) {
+	// Uncatalogued non-Claude model with wire_override=openai-compat
+	// should go through the openai path (we detect by path fragment).
+	p := &AzureFoundryProvider{
+		endpoint:     "http://127.0.0.1:1",
+		apiKey:       "test-key",
+		model:        "custom-ft-model",
+		wireOverride: modelcatalog_OpenAICompat,
+		httpClient:   &http.Client{Timeout: 200 * time.Millisecond},
+	}
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from unreachable endpoint")
+	}
+	if strings.Contains(err.Error(), "not in catalog") {
+		t.Errorf("wire_override should override catalog miss, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "openai") && !strings.Contains(err.Error(), "request failed") {
+		t.Errorf("error %q did not route through openai-compat", err.Error())
 	}
 }
 
