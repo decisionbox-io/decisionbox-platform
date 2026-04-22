@@ -456,6 +456,213 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// TestDiscoveriesHandler_TriggerDiscovery_MinSteps_* exercises the min_steps
+// plumbing added alongside PR #176's agent-side --min-steps flag. The
+// handler must:
+//   - default min_steps to floor(60% * max_steps) when omitted
+//   - forward an explicit 0 as "no floor"
+//   - reject negative values and values greater than max_steps
+// and the resolved MinSteps must reach the runner's RunOptions.
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultsTo60Percent(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	// max_steps=50 and no min_steps → default = floor(50 * 0.6) = 30.
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":50}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(mockRun.runCalls) != 1 {
+		t.Fatalf("runner should have been called once, got %d", len(mockRun.runCalls))
+	}
+	if got, want := mockRun.runCalls[0].MinSteps, 30; got != want {
+		t.Errorf("RunOptions.MinSteps = %d, want %d (60%% of max_steps=50)", got, want)
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultUsesMaxStepsDefault_WhenMaxOmitted(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	// Empty body — max_steps omitted. The handler treats zero as the
+	// agent's own default of 100, so min_steps defaults to 60.
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(mockRun.runCalls) != 1 {
+		t.Fatalf("runner should have been called once, got %d", len(mockRun.runCalls))
+	}
+	if got, want := mockRun.runCalls[0].MinSteps, 60; got != want {
+		t.Errorf("RunOptions.MinSteps = %d, want %d (60%% of default max_steps=100)", got, want)
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitValueHonored(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":100,"min_steps":25}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if got, want := mockRun.runCalls[0].MinSteps, 25; got != want {
+		t.Errorf("RunOptions.MinSteps = %d, want %d (explicit value, NOT the 60%% default)", got, want)
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitZeroDisablesFloor(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	// Crucial: {"min_steps": 0} must be distinguishable from "min_steps
+	// omitted" — the handler uses a *int pointer so the JSON decoder
+	// preserves the explicit zero.
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":100,"min_steps":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if got := mockRun.runCalls[0].MinSteps; got != 0 {
+		t.Errorf("RunOptions.MinSteps = %d, want 0 (user disabled the floor; NOT the 60%% default)", got)
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsNegative(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":100,"min_steps":-5}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if len(mockRun.runCalls) != 0 {
+		t.Error("runner must not have been called for a rejected request")
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsExceedingMaxSteps(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":50,"min_steps":60}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (min_steps > max_steps)", w.Code)
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if !strings.Contains(resp.Error, "cannot exceed") {
+		t.Errorf("error = %q, should explain that min_steps cannot exceed max_steps", resp.Error)
+	}
+	if len(mockRun.runCalls) != 0 {
+		t.Error("runner must not have been called for a rejected request")
+	}
+}
+
+func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_EqualToMaxStepsAccepted(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+
+	// Boundary — the handler uses `>` not `>=`, so equality is accepted.
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
+		strings.NewReader(`{"max_steps":50,"min_steps":50}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (equality is allowed)", w.Code)
+	}
+	if got := mockRun.runCalls[0].MinSteps; got != 50 {
+		t.Errorf("RunOptions.MinSteps = %d, want 50", got)
+	}
+}
+
 func TestDiscoveriesHandler_TriggerDiscovery_ProjectNotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()

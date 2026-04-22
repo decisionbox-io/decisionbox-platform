@@ -126,12 +126,49 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Parse optional request body
+	// Parse optional request body.
+	//
+	// MinSteps is a pointer so the handler can distinguish three cases:
+	//   nil        → field omitted, apply 60%-of-MaxSteps default
+	//   *val == 0  → user explicitly disabled the floor
+	//   *val  > 0  → user-provided floor
 	var body struct {
-		Areas    []string `json:"areas"`     // optional: run only these areas
-		MaxSteps int      `json:"max_steps"` // optional: override exploration steps (default 100)
+		Areas    []string `json:"areas"`               // optional: run only these areas
+		MaxSteps int      `json:"max_steps,omitempty"` // optional: override exploration steps (default 100)
+		MinSteps *int     `json:"min_steps,omitempty"` // optional: reject premature completion (default 60% of max_steps)
 	}
 	_ = decodeJSON(r, &body) // body is optional
+
+	// Resolve MaxSteps for the min-steps default computation below. The
+	// agent CLI enforces its own default (100) when zero reaches it, so we
+	// mirror that here to keep the on-the-wire default and the computed
+	// min-steps default consistent.
+	effectiveMaxSteps := body.MaxSteps
+	if effectiveMaxSteps <= 0 {
+		effectiveMaxSteps = 100
+	}
+
+	// Compute MinSteps.
+	// Omitted → default = floor(0.6 * max_steps). Reasoning-model discoveries
+	// (Qwen3, DeepSeek-R1, GPT-OSS on Bedrock) terminated in 2-18 steps
+	// before the min-steps floor existed; 60% is a conservative baseline
+	// that still leaves headroom for genuinely short runs.
+	// Explicit zero → user disabled the floor; forward as 0.
+	// Negative or > max_steps → reject with 400.
+	var minSteps int
+	if body.MinSteps == nil {
+		minSteps = (effectiveMaxSteps * 6) / 10
+	} else {
+		minSteps = *body.MinSteps
+		if minSteps < 0 {
+			writeError(w, http.StatusBadRequest, "min_steps must be >= 0")
+			return
+		}
+		if minSteps > effectiveMaxSteps {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("min_steps (%d) cannot exceed max_steps (%d)", minSteps, effectiveMaxSteps))
+			return
+		}
+	}
 
 	// Create a run record first — we need a stable runID for the policy
 	// reservation and the repo-level "already running" invariant is
@@ -193,6 +230,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		RunID:     runID,
 		Areas:     body.Areas,
 		MaxSteps:  body.MaxSteps,
+		MinSteps:  minSteps,
 		OnFailure: func(failedRunID string, errMsg string) {
 			apilog.WithFields(apilog.Fields{
 				"run_id": failedRunID, "error": errMsg,

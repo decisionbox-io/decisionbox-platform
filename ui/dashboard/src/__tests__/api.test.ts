@@ -589,6 +589,38 @@ describe('api.triggerDiscovery with options', () => {
     const [, opts] = mockFetch.mock.calls[0];
     expect(opts.body).toBeUndefined();
   });
+
+  it('forwards min_steps when provided', async () => {
+    mockSuccess({ status: 'accepted', run_id: 'run-min' });
+    await api.triggerDiscovery('proj-1', { max_steps: 100, min_steps: 70 });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.max_steps).toBe(100);
+    expect(body.min_steps).toBe(70);
+  });
+
+  it('forwards explicit min_steps=0 to disable the floor', async () => {
+    mockSuccess({ status: 'accepted' });
+    await api.triggerDiscovery('proj-1', { min_steps: 0 });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    // Explicit zero must survive JSON round-trip (regression: an earlier
+    // `if (min_steps)` guard would have dropped it, letting the server
+    // apply its 60% default instead of honouring the user's disable).
+    expect(body).toHaveProperty('min_steps', 0);
+  });
+
+  it('omits min_steps entirely when not provided (server computes default)', async () => {
+    mockSuccess({ status: 'accepted' });
+    await api.triggerDiscovery('proj-1', { max_steps: 50 });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.max_steps).toBe(50);
+    expect(body).not.toHaveProperty('min_steps');
+  });
 });
 
 // --- Error Handling ---

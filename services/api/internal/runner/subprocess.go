@@ -37,6 +37,12 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	if opts.MaxSteps > 0 {
 		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
 	}
+	// MinSteps forwards as-is: zero means "no floor, disabled" (either the
+	// caller explicitly set it to 0 or the handler defaulted an old client
+	// request with max_steps<=0). The agent CLI also clamps defensively.
+	if opts.MinSteps > 0 {
+		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
+	}
 
 	cmd := exec.Command("decisionbox-agent", args...) //nolint:gosec // controlled binary name
 	cmd.Env = append(os.Environ(),

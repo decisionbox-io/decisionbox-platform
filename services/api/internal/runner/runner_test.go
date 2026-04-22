@@ -126,6 +126,7 @@ func TestKubernetesRunner_Run_CreatesJob(t *testing.T) {
 		RunID:     "run-abc-def-123456",
 		Areas:     []string{"churn", "monetization"},
 		MaxSteps:  50,
+		MinSteps:  30,
 	})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
@@ -187,6 +188,9 @@ func TestKubernetesRunner_Run_CreatesJob(t *testing.T) {
 	if !containsStr(argsStr, "--max-steps") || !containsStr(argsStr, "50") {
 		t.Errorf("args missing max-steps: %v", c.Args)
 	}
+	if !containsStr(argsStr, "--min-steps") || !containsStr(argsStr, "30") {
+		t.Errorf("args missing min-steps: %v", c.Args)
+	}
 
 	// Check resource limits
 	cpuLimit := c.Resources.Limits["cpu"]
@@ -238,6 +242,34 @@ func TestKubernetesRunner_Run_NoAreas(t *testing.T) {
 	for _, a := range c.Args {
 		if a == "--areas" {
 			t.Error("full run should not have --areas arg")
+		}
+	}
+}
+
+// TestKubernetesRunner_Run_MinStepsZeroOmitted confirms the runner only
+// emits --min-steps when the value is positive. Zero means "no floor"
+// (explicitly disabled by the caller) — the agent CLI's own default is 0,
+// so omitting the flag is equivalent and keeps argv minimal.
+func TestKubernetesRunner_Run_MinStepsZeroOmitted(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{
+		ProjectID: "proj-min-zero",
+		RunID:     "run-zero-floor",
+		MaxSteps:  50,
+		MinSteps:  0, // explicit disable
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	for _, a := range c.Args {
+		if a == "--min-steps" {
+			t.Errorf("MinSteps=0 should NOT emit --min-steps flag, got args: %v", c.Args)
 		}
 	}
 }

@@ -325,14 +325,32 @@ curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/promp
 
 Trigger a discovery run. Spawns the agent as a subprocess or K8s Job.
 
+Request body (all fields optional):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `areas` | `string[]` | *(all)* | Selective discovery — run only these analysis areas. Empty/omitted = all areas. |
+| `max_steps` | `int` | `100` | Maximum exploration steps. |
+| `min_steps` | `int` | `floor(0.6 * max_steps)` | Floor on exploration steps before the agent will accept a `done` signal from the LLM. `0` disables the floor. Recommended for reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that tend to terminate exploration too early. Must be in `[0, max_steps]` — values outside that range return `400`. |
+
 ```bash
-# Run all areas with default steps
+# Run all areas with default steps and the 60%-of-max_steps floor
 curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover
 
 # Run specific areas with custom step count
 curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover \
   -H "Content-Type: application/json" \
   -d '{"areas": ["churn", "monetization"], "max_steps": 50}'
+
+# Force a stricter floor for a reasoning model (e.g., Qwen3 on Bedrock)
+curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover \
+  -H "Content-Type: application/json" \
+  -d '{"max_steps": 100, "min_steps": 80}'
+
+# Disable the floor entirely
+curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover \
+  -H "Content-Type: application/json" \
+  -d '{"max_steps": 100, "min_steps": 0}'
 ```
 
 ```json
@@ -344,6 +362,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
 ```
 
 Returns `409 Conflict` if a discovery is already running for this project.
+Returns `400 Bad Request` if `min_steps` is negative or exceeds `max_steps`.
 
 ### GET /api/v1/projects/{id}/discoveries
 

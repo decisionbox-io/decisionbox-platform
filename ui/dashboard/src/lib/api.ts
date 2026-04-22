@@ -638,7 +638,13 @@ export const api = {
     request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`, { method: 'PUT', body: JSON.stringify(prompts) }),
 
   // Discovery
-  triggerDiscovery: (projectId: string, options?: { areas?: string[]; max_steps?: number }) =>
+  //
+  // min_steps: optional floor on exploration steps before the agent will
+  // accept a "done" signal from the LLM. Omitted → server applies default
+  // (60% of max_steps). 0 → explicitly disabled. > max_steps → 400 error.
+  // Recommended for reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that
+  // tend to terminate exploration too early.
+  triggerDiscovery: (projectId: string, options?: { areas?: string[]; max_steps?: number; min_steps?: number }) =>
     request<{ status: string; message: string; run_id?: string }>(`/api/v1/projects/${projectId}/discover`, {
       method: 'POST',
       body: options ? JSON.stringify(options) : undefined,

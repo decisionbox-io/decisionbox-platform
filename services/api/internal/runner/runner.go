@@ -38,6 +38,12 @@ type RunOptions struct {
 	RunID     string
 	Areas     []string // optional: selective discovery
 	MaxSteps  int      // optional: override default
+	// MinSteps is a floor on exploration steps — premature "done" signals
+	// below this value are rejected and exploration continues. The handler
+	// layer defaults this to 60% of MaxSteps when the request omits it; the
+	// runner layer forwards whatever it receives unchanged so zero means
+	// "no floor" (explicitly disabled by the caller).
+	MinSteps int
 
 	// OnFailure is called when the agent process exits with an error.
 	// The runner passes the error message so the caller can update the run status.

@@ -135,6 +135,9 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	if opts.MaxSteps > 0 {
 		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
 	}
+	if opts.MinSteps > 0 {
+		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
+	}
 
 	job := r.buildJob(jobSpec{
 		name: jobName,

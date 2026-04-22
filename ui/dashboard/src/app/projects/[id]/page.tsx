@@ -26,6 +26,14 @@ export default function ProjectPage() {
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [maxSteps, setMaxSteps] = useState(100);
+  // minSteps rejects premature completion from the LLM — important for
+  // reasoning models that tend to terminate exploration too early. The
+  // value auto-tracks 60% of maxSteps until the user edits it; after that
+  // it stays wherever the user put it (minStepsTouched flips to true).
+  // Sending `undefined` to the API omits the field so the server applies
+  // its own default; sending 0 explicitly disables the floor.
+  const [minSteps, setMinSteps] = useState<number>(60);
+  const [minStepsTouched, setMinStepsTouched] = useState(false);
   const [estimate, setEstimate] = useState<CostEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [pendingAreas, setPendingAreas] = useState<string[] | undefined>(undefined);
@@ -82,6 +90,8 @@ export default function ProjectPage() {
       const opts: { areas?: string[]; max_steps?: number } = {};
       if (areas && areas.length > 0) opts.areas = areas;
       opts.max_steps = maxSteps;
+      // Cost estimation doesn't care about min_steps — it only depends on
+      // max_steps and selected areas. Keep the call minimal.
       const est = await api.estimateCost(id, opts);
       setEstimate(est);
     } catch (e: unknown) {
@@ -95,15 +105,25 @@ export default function ProjectPage() {
     setTriggering(true);
     setEstimate(null);
     try {
-      const opts: { areas?: string[]; max_steps?: number } = {};
+      const opts: { areas?: string[]; max_steps?: number; min_steps?: number } = {};
       if (areas && areas.length > 0) opts.areas = areas;
       if (maxSteps !== 100) opts.max_steps = maxSteps;
+      // Only send min_steps when the user actively touched the field. If
+      // untouched, the server computes the 60%-of-max_steps default — so
+      // the default stays in one place and bumping max_steps on the server
+      // automatically adjusts the floor for untouched clients.
+      if (minStepsTouched) opts.min_steps = minSteps;
       const result = await api.triggerDiscovery(id, Object.keys(opts).length > 0 ? opts : undefined);
       if (result.run_id) {
         const newRun = await api.getRun(result.run_id);
         setRun(newRun);
       }
-      notifications.show({ title: 'Discovery started', message: `${maxSteps} steps`, color: 'blue' });
+      const floor = minStepsTouched ? minSteps : Math.floor(maxSteps * 0.6);
+      notifications.show({
+        title: 'Discovery started',
+        message: `${maxSteps} steps (min ${floor})`,
+        color: 'blue',
+      });
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
@@ -155,8 +175,28 @@ export default function ProjectPage() {
       <Menu.Dropdown>
         <Menu.Label>Exploration steps</Menu.Label>
         <div style={{ padding: '4px 12px 8px' }}>
-          <NumberInput size="xs" value={maxSteps} onChange={(v) => setMaxSteps(Number(v) || 100)}
+          <NumberInput size="xs" value={maxSteps}
+            onChange={(v) => {
+              const next = Number(v) || 100;
+              setMaxSteps(next);
+              // Auto-track 60% of max_steps until the user customises the floor.
+              if (!minStepsTouched) setMinSteps(Math.floor(next * 0.6));
+            }}
             min={5} max={500} step={5} description="More steps = more comprehensive" />
+        </div>
+        <Menu.Label>Minimum steps</Menu.Label>
+        <div style={{ padding: '4px 12px 8px' }}>
+          <NumberInput size="xs" value={minSteps}
+            onChange={(v) => {
+              const next = Number(v);
+              setMinSteps(Number.isFinite(next) && next >= 0 ? next : 0);
+              setMinStepsTouched(true);
+            }}
+            min={0} max={maxSteps} step={5}
+            error={minSteps > maxSteps ? `Cannot exceed ${maxSteps}` : undefined}
+            description={minStepsTouched
+              ? "Rejects premature done — 0 disables"
+              : `Default: 60% of max (${Math.floor(maxSteps * 0.6)})`} />
         </div>
         <Menu.Item closeMenuOnClick={false}>
           <Checkbox label="Estimate cost before running" size="xs"
