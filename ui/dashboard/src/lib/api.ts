@@ -303,10 +303,22 @@ export interface ProviderMeta {
 export interface ModelInfo {
   id: string;
   display_name: string;
-  wire: string; // "anthropic" | "openai-compat" | "google-native"
+  wire: string; // "anthropic" | "openai-compat" | "google-native" | "" (unknown)
   max_output_tokens?: number;
   input_price_per_million?: number;
   output_price_per_million?: number;
+}
+
+// LiveModel extends ModelInfo with a source tag describing where the
+// row came from — "catalog" (only in our shipped catalog), "live" (only
+// in the upstream), "both" (matched).
+export interface LiveModel extends ModelInfo {
+  source: 'catalog' | 'live' | 'both';
+}
+
+export interface LiveModelsResponse {
+  models: LiveModel[];
+  live_error?: string;
 }
 
 export interface AuthMethod {
@@ -615,6 +627,16 @@ export interface BookmarkListWithItems extends BookmarkList {
 export const api = {
   // Providers (dynamic — registered in Go via init())
   listLLMProviders: () => request<ProviderMeta[]>('/api/v1/providers/llm'),
+  listLiveLLMModels: (providerID: string, config: Record<string, string>) =>
+    request<LiveModelsResponse>(`/api/v1/providers/llm/${encodeURIComponent(providerID)}/models/live`, {
+      method: 'POST',
+      body: JSON.stringify({ config }),
+    }),
+  listLiveLLMModelsForProject: (projectID: string) =>
+    request<LiveModelsResponse>(`/api/v1/projects/${encodeURIComponent(projectID)}/providers/llm/models/live`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
 
   // Domain Packs (CRUD)

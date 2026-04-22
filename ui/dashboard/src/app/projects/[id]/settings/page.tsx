@@ -9,8 +9,8 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
-import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { DynamicField as CatalogAwareField, LiveModelCombobox } from '@/components/common/LLMModelField';
+import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -33,6 +33,9 @@ export default function ProjectSettingsPage() {
   const [llmProvider, setLlmProvider] = useState('');
   const [llmModel, setLlmModel] = useState('');
   const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
+  const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -348,13 +351,54 @@ export default function ProjectSettingsPage() {
               }} />
             {selectedLlm?.description && <Text size="xs" c="dimmed">{selectedLlm.description}</Text>}
 
-            {selectedLlm?.config_fields.find((f) => f.key === 'model') && (
-              <CatalogAwareField
-                field={selectedLlm.config_fields.find((f) => f.key === 'model')!}
+            {selectedLlm && (
+              <LiveModelCombobox
                 providerMeta={selectedLlm}
+                liveModels={liveModels}
                 value={llmModel}
                 onChange={(val) => { setLlmModel(val); setDirty(true); }}
               />
+            )}
+
+            {selectedLlm && (
+              <Group gap="xs">
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  loading={liveLoading}
+                  onClick={async () => {
+                    setLiveLoading(true);
+                    setLiveError(null);
+                    try {
+                      const resp = await api.listLiveLLMModelsForProject(id);
+                      setLiveModels(resp.models);
+                      if (resp.live_error) setLiveError(resp.live_error);
+                      notifications.show({
+                        title: 'Models refreshed',
+                        message: `${resp.models.length} models loaded`,
+                        color: 'green',
+                      });
+                    } catch (e: unknown) {
+                      setLiveError((e as Error).message);
+                      notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
+                    } finally {
+                      setLiveLoading(false);
+                    }
+                  }}
+                >
+                  Refresh model list
+                </Button>
+                {liveModels !== null && (
+                  <Text size="xs" c="dimmed">
+                    {liveModels.length} model{liveModels.length === 1 ? '' : 's'} · refreshed from provider
+                  </Text>
+                )}
+              </Group>
+            )}
+            {liveError && (
+              <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
+                {liveError} — showing catalog models only.
+              </Alert>
             )}
 
             {selectedLlm?.config_fields
