@@ -84,6 +84,25 @@ export default function ProjectSettingsPage() {
     setDebugLogsEnabled(window.localStorage.getItem(`db:showDebugLogs:${id}`) === '1');
   }, [id]);
 
+  // Active tab — defaults to "general" but honours `location.hash` so
+  // deep-links like `/projects/:id/settings#advanced` open the right tab.
+  // The set of valid tab values must match the `<Tabs.Tab value=...>` IDs
+  // below; an unknown hash is ignored.
+  const validTabs = ['general', 'warehouse', 'ai', 'embedding', 'schedule', 'profile', 'advanced'];
+  const [activeTab, setActiveTab] = useState<string>('general');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const applyHash = () => {
+      const h = window.location.hash.replace(/^#/, '');
+      if (h && validTabs.includes(h)) setActiveTab(h);
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+    // validTabs is stable (literal); exhaustive-deps is noisy here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Intercept client-side navigation when dirty
   const router = useRouter();
   const guardedNavigate = useCallback((href: string) => {
@@ -278,7 +297,11 @@ export default function ProjectSettingsPage() {
 
   return (
     <Shell breadcrumb={breadcrumb} actions={saveButton}>
-      <Tabs defaultValue="general" styles={{
+      {/* `value` + `onChange` (not `defaultValue`) so the tab is
+          controlled; `useEffect` below reads `location.hash` on mount
+          and on hashchange, letting deep-links like
+          `/projects/:id/settings#advanced` open the right tab. */}
+      <Tabs value={activeTab} onChange={(v) => { if (v) setActiveTab(v); }} styles={{
         tab: { fontSize: 13, fontWeight: 500, padding: '8px 16px' },
         panel: { paddingTop: 20 },
       }}>

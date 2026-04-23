@@ -127,7 +127,7 @@ func (l *Logger) LogBigQuery(
 	)
 }
 
-// LogLLM logs a Claude API request
+// LogLLM logs an LLM API request (any provider — name is historical)
 func (l *Logger) LogLLM(
 	ctx context.Context,
 	step int,

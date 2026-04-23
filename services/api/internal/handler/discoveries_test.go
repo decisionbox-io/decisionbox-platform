@@ -681,6 +681,15 @@ func TestDiscoveriesHandler_TriggerDiscovery_ProjectNotFound_MockRepo(t *testing
 }
 
 func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.T) {
+	// Defensive: the "already running" short-circuit in TriggerDiscovery
+	// only fires when `policy.GetChecker()` returns a NoopChecker. Other
+	// tests in this package swap a stub via the global registry; if one
+	// of those tests' cleanups hasn't run (e.g. under -count=N or with
+	// parallel execution), this test would skip the short-circuit and
+	// return 202 instead of 409. Pinning a Noop at the top keeps the
+	// test self-contained.
+	swapChecker(t, nil)
+
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()

@@ -118,7 +118,9 @@ func (d *DebugLog) SetBigQueryDetails(query, purpose string, results []map[strin
 	}
 }
 
-// SetLLMDetails sets Claude-specific fields
+// SetLLMDetails sets LLM-specific fields (applies to any provider — the
+// struct names were historically Claude-specific but the schema is now
+// provider-agnostic).
 func (d *DebugLog) SetLLMDetails(model, systemPrompt, prompt, response string, inputTokens, outputTokens int, durationMs int64) {
 	d.LLMModel = model
 	d.LLMSystemPrompt = systemPrompt

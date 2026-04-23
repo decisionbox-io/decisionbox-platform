@@ -793,6 +793,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
   const hasDetails =
     (entry.llm_response && entry.llm_response.length > 0)
     || (entry.sql_query && entry.sql_query.length > 0)
+    || (entry.sql_query_fixed && entry.sql_query_fixed.length > 0)
     || (err && err.length > 200);
 
   return (
@@ -839,9 +840,21 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
         }}>
           {entry.sql_query && (
             <details open style={{ marginBottom: 6 }}>
-              <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>SQL</summary>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
+                {entry.sql_query_fixed ? 'SQL — original (rewritten on retry)' : 'SQL'}
+              </summary>
               <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
                 {entry.sql_query}
+              </div>
+            </details>
+          )}
+          {entry.sql_query_fixed && (
+            <details open style={{ marginBottom: 6 }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
+                SQL — executed (after fix{entry.fix_attempts ? `, ${entry.fix_attempts} attempt${entry.fix_attempts === 1 ? '' : 's'}` : ''})
+              </summary>
+              <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
+                {entry.sql_query_fixed}
               </div>
             </details>
           )}

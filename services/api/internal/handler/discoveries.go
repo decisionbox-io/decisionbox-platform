@@ -381,9 +381,9 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 
 // GetDebugLogs streams the agent's debug log entries for a single run. The
 // dashboard polls this endpoint every few seconds while a run is active to
-// show a live view of what the agent is doing (Claude calls, SQL executions,
-// retries, errors). The response is deliberately a lean projection — it does
-// NOT include full Claude prompts, raw query result rows, or analysis
+// show a live view of what the agent is doing (LLM calls, SQL executions,
+// retries, errors). The response is deliberately a lean projection — it
+// does NOT include full LLM prompts, raw query result rows, or analysis
 // input/output blobs. Those stay in Mongo.
 //
 // GET /api/v1/runs/{runId}/debug-logs?since=<RFC3339>&limit=<n>

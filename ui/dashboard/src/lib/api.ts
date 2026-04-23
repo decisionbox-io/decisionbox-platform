@@ -391,9 +391,10 @@ export interface RunStep {
 }
 
 // DebugLogEntry mirrors services/api/models/DebugLogEntry — the lean,
-// public-safe projection of an agent debug log event. The server strips
-// LLM prompts/responses and raw query result rows, so this is safe to
-// render directly in the UI.
+// public-safe projection of an agent debug log event. The server
+// withholds raw LLM system prompts and raw query result rows (those stay
+// in Mongo); LLM responses are included but truncated to ~4KB (UTF-8-safe).
+// Safe to render directly in the UI.
 export interface DebugLogEntry {
   id: string;
   discovery_run_id: string;
@@ -405,8 +406,11 @@ export interface DebugLogEntry {
   step?: number;
   duration_ms?: number;
   success: boolean;
-  // SQL fields (present for execute_query)
+  // SQL fields (present for execute_query). `sql_query_fixed` is set when
+  // the SQL fixer rewrote the query on retry — the executed query is
+  // `sql_query_fixed` if non-empty, otherwise `sql_query`.
   sql_query?: string;
+  sql_query_fixed?: string;
   query_purpose?: string;
   row_count?: number;
   fix_attempts?: number;

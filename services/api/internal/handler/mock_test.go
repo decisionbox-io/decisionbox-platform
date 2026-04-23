@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -312,13 +313,28 @@ func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Collect all running/pending candidates and return the oldest one.
+	// Without explicit ordering Go map iteration is randomized, and the
+	// TriggerDiscovery handler's "already running" check assumes the
+	// returned run is a stable, oldest-wins choice (it specifically
+	// ignores the just-reserved run via `running.ID != runID`). A
+	// random return could pick the just-reserved pending run and make
+	// the handler skip the 409 branch — causing intermittent test
+	// failures under map-order randomization.
+	var candidates []*models.DiscoveryRun
 	for _, r := range m.runs {
 		if r.ProjectID == projectID && (r.Status == "running" || r.Status == "pending") {
-			cp := *r
-			return &cp, nil
+			candidates = append(candidates, r)
 		}
 	}
-	return nil, nil
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].StartedAt.Before(candidates[j].StartedAt)
+	})
+	cp := *candidates[0]
+	return &cp, nil
 }
 
 func (m *mockRunRepo) Fail(_ context.Context, runID string, errMsg string) error {
