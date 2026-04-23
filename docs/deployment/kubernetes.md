@@ -321,6 +321,42 @@ helm upgrade decisionbox-dashboard decisionbox/decisionbox-dashboard \
 
 The API re-creates MongoDB indexes on startup (idempotent). No database migrations needed.
 
+## Local Development (kind / minikube)
+
+For local testing on kind or minikube, use these overrides:
+
+```bash
+# Create a kind cluster
+kind create cluster --name decisionbox
+
+# Create namespace
+kubectl create namespace decisionbox
+
+# Install API (single replica, no anti-affinity conflicts on single node)
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
+  --set replicaCount=1 \
+  --set env.LOG_LEVEL=info \
+  --set env.ENV=dev \
+  -n decisionbox
+
+# Install Dashboard (single replica, no ingress — use port-forward instead)
+helm upgrade --install decisionbox-dashboard decisionbox/decisionbox-dashboard \
+  --set replicaCount=1 \
+  --set ingress.enabled=false \
+  -n decisionbox
+
+# Access the dashboard
+kubectl port-forward svc/decisionbox-dashboard-service 3000:3000 -n decisionbox
+# Open http://localhost:3000
+```
+
+Key differences from production:
+- `replicaCount=1` — single-node clusters can't schedule anti-affinity replicas
+- `ingress.enabled=false` — local clusters don't have an ingress controller by default
+- The dashboard may restart once during initial startup while waiting for the API and MongoDB
+
+Multi-arch images (amd64 + arm64) are published to GHCR, so this works on both Intel and Apple Silicon.
+
 ## Uninstalling
 
 ```bash
