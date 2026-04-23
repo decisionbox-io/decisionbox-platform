@@ -324,6 +324,16 @@ func (p *MSSQLProvider) SQLDialect() string {
 	return "Microsoft SQL Server T-SQL (ANSI SQL with extensions: TOP, OFFSET/FETCH, CTEs, window functions, PIVOT/UNPIVOT, MERGE, CROSS APPLY, OUTER APPLY, XML/JSON functions)"
 }
 
+// SampleQuery builds a T-SQL "sample N rows" query: `SELECT TOP N * FROM
+// [schema].[table] <filter>`. T-SQL does not support LIMIT — TOP N must
+// follow SELECT. Square brackets quote identifiers so names with reserved
+// words, leading underscores, or dots still parse.
+// `filterClause` is either empty or a full `WHERE ...` fragment; it goes
+// after the table reference.
+func (p *MSSQLProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf("SELECT TOP %d * FROM [%s].[%s] %s", limit, dataset, table, filterClause)
+}
+
 func (p *MSSQLProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }
