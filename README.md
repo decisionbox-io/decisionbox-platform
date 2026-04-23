@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logos/logo-light@2x.png" alt="DecisionBox" width="400" />
+  <a href="https://decisionbox.io"><img src="assets/logos/logo-light@2x.png" alt="DecisionBox" width="400" /></a>
 </p>
 
 <p align="center">
@@ -14,13 +14,21 @@
   <a href="https://decisionbox.io/docs"><img src="https://img.shields.io/badge/docs-decisionbox.io-blue" alt="Docs" /></a>
 </p>
 
-**AI-powered data discovery platform.** Connect your data warehouse, run AI agents that explore your data autonomously, and get actionable insights — no pipelines, no SDKs, no setup complexity.
+**Autonomous AI data discovery on your data warehouse.** DecisionBox connects to your warehouse, runs an agent that decides what to investigate, writes and executes SQL, and ships validated insights and ranked recommendations — without you asking a single question.
 
-DecisionBox is designed for product managers, analysts, and developers who want to understand their data without writing SQL or building dashboards. Point it at your warehouse, tell it about your product, and let the AI find what matters.
+Built for any team that makes decisions on data. Every finding is re-queried against your warehouse before it reaches you. Every SQL query, reasoning step, and decision logged and visible.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="DecisionBox Dashboard" width="900" />
+  <img src="assets/screenshots/hero.gif" alt="DecisionBox — insights, agent reasoning, recommendations, and Ask Insights" width="900" />
 </p>
+
+## Why DecisionBox
+
+- **Autonomous, not a copilot.** The agent picks what to investigate. 50–100+ SQL queries per discovery run, unattended.
+- **Every number re-queried.** Independent verification queries confirm each claim against your warehouse before it ships. Nothing hallucinated, nothing unchecked.
+- **Full transparency.** Every SQL query, every reasoning step, every decision logged and visible. Audit the agent the way you'd review an analyst.
+- **Your infra, your data.** Open source, AGPL v3, self-hostable. Works with any major warehouse and any LLM — including local models via Ollama.
+- **Tuned to your industry.** Swap or author domain packs without touching core code. E-commerce, social, and gaming shipped; bring your own for anything else.
 
 ## How It Works
 
@@ -34,42 +42,92 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
                                  actionable advice
 ```
 
-1. **Connect** your data warehouse (BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server, and more)
-2. **Configure** your project (domain, game profile, LLM provider)
+1. **Connect** your data warehouse (BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server)
+2. **Configure** your project (domain pack, profile, LLM provider)
 3. **Run discovery** — the AI agent autonomously explores your data
 4. **Review insights** — severity-ranked findings with confidence scores
 5. **Act on recommendations** — specific, numbered action steps
 
 ## Features
 
-- **Autonomous data exploration** — AI writes and executes SQL queries, iterates based on results
-- **Domain-aware analysis** — Pluggable domain packs (gaming, social network, ecommerce shipped — bring your own)
-- **Multiple LLM providers** — Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry
-- **Multiple warehouses** — BigQuery, Amazon Redshift (serverless + provisioned), Snowflake, PostgreSQL, Databricks, Microsoft SQL Server (incl. Azure SQL Database)
-- **Per-project secrets** — API keys encrypted per-project (MongoDB, GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
-- **Insight validation** — AI claims are verified against your actual data
-- **Feedback loop** — Like/dislike insights, agent learns from feedback on next run
-- **Reader UX** — Bookmark insights and recommendations into named lists, read-state tracking with greyed-out rows, collapsible "technical details" for non-technical users, sticky sidebar of related items on detail pages
-- **Cost estimation** — Estimate LLM + warehouse costs before running
-- **Live progress** — Watch the agent explore in real-time with step-by-step updates
-- **Editable prompts** — Customize all AI prompts per-project from the dashboard
-- **Extensible** — Add your own domain packs, LLM providers, warehouse providers via plugin architecture
+### Discovery
+- **Autonomous agent loop** — AI writes and executes SQL, iterates on results, and produces insights + ranked recommendations without prompts or questions
+- **Insight validation** — Independent verification queries re-check every claim against your warehouse before it ships
+- **Live progress** — Watch the agent explore in real time with phase tracking, step details, and expandable SQL
+- **Cost estimation** — Estimate LLM tokens + warehouse query costs before running
+- **Selective discovery** — Run specific analysis areas on demand
+- **Feedback loop** — Like/dislike insights and recommendations; the agent learns from feedback on the next run
+
+### Search & Ask
+- **Semantic search** — Vector search over insights and recommendations (Qdrant + HNSW), with cross-project scope
+- **Ask Insights** — RAG-powered Q&A across your discoveries with citations, multi-turn sessions, and 90-day search history
+- **Spotlight (Cmd+K)** — Fast navigation and search across projects from anywhere in the dashboard
+- **Knowledge sources hook** — Plug in your own retrieval (docs, runbooks, policies) to enrich exploration, analysis, and /ask prompts
+
+### Reading UX
+- **Bookmark lists** — Save insights and recommendations into named lists with inline notes
+- **Read tracking** — Per-user read state across devices, with reduced-opacity rows and "mark unread" action
+- **Technical details toggle** — SQL queries and exploration steps collapsed by default; one click to reveal the engine internals
+- **Related items sidebar** — Sticky right-column TOC with related recommendations, related insights, and semantic matches
+- **Recommendation ↔ insight cross-linking** — Every recommendation carries the insight IDs it's grounded in
+
+### Domain Packs
+- **Built-in packs** — E-commerce, social, and gaming. Each domain ships with sub-categories so the agent's analysis areas, prompts, and profile schema match how a specific kind of product actually behaves — e-commerce, for example, covers many sub-categories because a fashion marketplace, a grocery store, and a digital-goods shop have fundamentally different funnels, retention curves, and margin structures, and a single generic "e-commerce" prompt would miss what matters for each. Gaming, similarly, covers match-3, idle/incremental, and casual/hyper-casual. New packs — SaaS, fintech, content/media, education, health, and more — ship weekly.
+- **Dynamic packs** — Create, edit, import, and export packs from the dashboard (stored in MongoDB, no code changes)
+- **Portable JSON format** — Share packs across projects and environments
+- **System-test pack** — Diagnostic pack (env-gated) for validating warehouse connectivity and type mapping
+
+### Warehouses
+- **BigQuery** — ADC or Service Account Key, with dry-run cost estimation
+- **Redshift** — Serverless + provisioned; IAM Role, Access Keys, or Assume Role with external ID for cross-account
+- **Snowflake** — Username/password or Key Pair (JWT)
+- **PostgreSQL** — Username/password or connection string, SSL configurable
+- **Databricks** — Unity Catalog via Personal Access Token or OAuth M2M (service principal)
+- **Microsoft SQL Server** — SQL Server 2016+ and Azure SQL Database, SQL login or full connection string
+- **Read-only enforcement + schema-aware SQL self-heal** — Each provider ships a tuned SQL-fix prompt for its dialect
+- **More warehouses ship weekly** — request one on [GitHub Issues](https://github.com/decisionbox-io/decisionbox-platform/issues) to fast-track it
+
+### LLM Providers
+Claude (direct API), OpenAI, Ollama (local), Vertex AI (Claude + Gemini on GCP), AWS Bedrock, Azure AI Foundry. Per-project configuration; editable prompts; per-model max output token limits.
+
+### Embedding Providers
+OpenAI, Vertex AI, Bedrock, Azure OpenAI, Voyage AI, Ollama. Used for insight/recommendation embeddings, semantic search, and /ask.
+
+### Secrets
+Per-project credentials, encrypted. MongoDB (AES-256-GCM default), GCP Secret Manager, AWS Secrets Manager, Azure Key Vault.
+
+### Notifications
+Webhook notifications on discovery completion: Slack, generic HTTP, or email — configurable per-project with templated payloads.
+
+### Deployment
+- **Docker Compose** for local dev and single-server installs
+- **Helm charts** (API + Dashboard + optional MongoDB + Qdrant subcharts); public chart repo at `https://decisionbox-io.github.io/decisionbox-platform`
+- **Terraform modules** for GCP (GKE), AWS (EKS), and Azure (AKS), with Workload Identity / IRSA wiring
+- **Interactive setup wizard** (`terraform/setup.sh`) for GCP, AWS, or Azure with auth, resume, and destroy support
+- **Optional IP allowlist** for GKE / EKS / AKS control-plane and dashboard ingress
+- **Multi-arch Docker images** (linux/amd64 + linux/arm64)
+
+### Extensibility
+- **Plugin architecture** — providers register via `init()` + `RegisterWithMeta()`
+- **Warehouse middleware** (`warehouse.RegisterMiddleware()`) — wrap providers with logging, metrics, or access controls
+- **HTTP middleware** (`apiserver.RegisterGlobalMiddleware()`) — wrap all API requests (audit logging, custom auth)
+- **Custom builds** via `apiserver.Run()` / `agentserver.Run()` with blank imports
 
 ## Use Cases
 
 DecisionBox works with any queryable data. Point it at your data source and it discovers insights specific to your domain.
 
-**Gaming** — _"Players who fail level 12 more than 3 times have 68% higher Day-7 churn. Consider adding a hint system or difficulty adjustment at this stage."_
-
-**Social Network** — _"Posts published between 6–8 PM with images get 3.2x more shares, but only 12% of creators post during this window. A scheduling nudge could boost platform-wide engagement."_
-
 **E-commerce** — _"Cart abandonment spikes 40% when shipping cost exceeds 8% of cart value. Free shipping threshold at $75 would recover an estimated 1,200 orders/month."_
-
-**Fraud Detection** — _"Accounts created in the last 48 hours with 5+ high-value transactions account for 82% of chargebacks. Flagging this pattern would prevent $34K/month in losses."_
 
 **SaaS** — _"Teams that don't use the dashboard feature within 14 days of signup have 3x higher churn. An onboarding email on Day 3 highlighting dashboards could improve activation."_
 
+**Fraud Detection** — _"Accounts created in the last 48 hours with 5+ high-value transactions account for 82% of chargebacks. Flagging this pattern would prevent $34K/month in losses."_
+
+**Social Network** — _"Posts published between 6–8 PM with images get 3.2x more shares, but only 12% of creators post during this window. A scheduling nudge could boost platform-wide engagement."_
+
 **SQL Performance** — _"The top 10 slowest queries consume 62% of warehouse compute. 7 of them scan full tables where a partition filter would reduce cost by ~$4,800/month."_
+
+**Gaming** — _"Players who fail level 12 more than 3 times have 68% higher Day-7 churn. Consider adding a hint system or difficulty adjustment at this stage."_
 
 These are examples — create a [domain pack](https://decisionbox.io/docs/guides/creating-domain-packs) for any industry and DecisionBox adapts its analysis accordingly.
 
@@ -82,7 +140,7 @@ These are examples — create a [domain pack](https://decisionbox.io/docs/guides
 git clone https://github.com/decisionbox-io/decisionbox-platform.git
 cd decisionbox-platform
 
-# Start MongoDB + API + Dashboard
+# Start MongoDB + Qdrant + API + Dashboard
 docker compose up -d
 
 # Open the dashboard
@@ -90,8 +148,8 @@ open http://localhost:3000
 ```
 
 The dashboard will guide you through creating your first project. You'll need:
-- A data warehouse connection (BigQuery project ID, Redshift workgroup, Snowflake account, or Databricks workspace)
-- An LLM API key (Anthropic, OpenAI, or configure Vertex AI / Bedrock)
+- A data warehouse connection (BigQuery project ID, Redshift workgroup, Snowflake account, PostgreSQL host, Databricks workspace, or SQL Server host)
+- An LLM API key (Anthropic, OpenAI, or configure Vertex AI / Bedrock / Azure AI Foundry)
 
 For detailed setup instructions, see the [Installation Guide](https://decisionbox.io/docs/getting-started/installation).
 
@@ -113,8 +171,8 @@ Resources: [Helm charts](helm-charts/) | [Terraform modules](terraform/) | [Helm
 **Run locally without Docker** (recommended for development):
 
 ```bash
-# Start MongoDB only
-docker compose up -d mongodb
+# Start MongoDB + Qdrant only
+docker compose up -d mongodb qdrant
 
 # Terminal 1: Run the API
 make dev-api
@@ -152,7 +210,7 @@ Domain packs define how the AI analyzes data for a specific industry. A domain p
 - Prompt templates (how the AI reasons)
 - Profile schemas (what context users provide)
 
-Domain packs are stored in MongoDB and managed from the dashboard. Built-in packs (gaming, ecommerce, social) are seeded on first startup. Create your own from the dashboard or import a portable JSON file -- no code changes needed.
+Domain packs are stored in MongoDB and managed from the dashboard. Built-in packs (e-commerce, social, gaming) are seeded on first startup. Create your own from the dashboard or import a portable JSON file — no code changes needed.
 
 See [Creating Domain Packs](https://decisionbox.io/docs/guides/creating-domain-packs).
 
@@ -184,7 +242,8 @@ Key environment variables:
 |----------|---------|-------------|
 | `MONGODB_URI` | (required) | MongoDB connection string |
 | `MONGODB_DB` | `decisionbox` | Database name |
-| `SECRET_PROVIDER` | `mongodb` | Secret storage: `mongodb`, `gcp`, `aws` |
+| `QDRANT_URL` | `http://qdrant:6334` | Qdrant endpoint for vector search |
+| `SECRET_PROVIDER` | `mongodb` | Secret storage: `mongodb`, `gcp`, `aws`, `azure` |
 | `RUNNER_MODE` | `subprocess` | Agent runner: `subprocess`, `kubernetes` |
 | `LLM_TIMEOUT` | `300s` | Timeout per LLM API call |
 | `TELEMETRY_ENABLED` | `true` | Anonymous usage telemetry ([details](TELEMETRY.md)) |
@@ -216,6 +275,11 @@ DecisionBox collects anonymous usage telemetry to help improve the product. No P
 | API | Go 1.25, net/http (stdlib) |
 | Dashboard | Next.js 16, React 19, TypeScript, Mantine 8 |
 | Database | MongoDB |
+| Vector store | Qdrant (HNSW) |
+| Warehouses | BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server |
+| LLM providers | Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry |
+| Embedding providers | OpenAI, Vertex AI, Bedrock, Azure OpenAI, Voyage AI, Ollama |
+| Secret providers | MongoDB (AES-256-GCM), GCP Secret Manager, AWS Secrets Manager, Azure Key Vault |
 | CI/CD | GitHub Actions, GHCR |
 | Deployment | Docker Compose, Kubernetes (Helm), Terraform (GCP, AWS, Azure) |
 
