@@ -173,6 +173,10 @@ services:
       # Values: debug | info | warn | error
       - LOG_LEVEL=info
 
+      # Timeout per LLM API call (inherited by agent subprocess when RUNNER_MODE=subprocess)
+      # Values: Go duration string (e.g., 30s, 2m, 600s)
+      - LLM_TIMEOUT=600s
+
     depends_on:
       mongodb:
         condition: service_healthy
@@ -211,7 +215,7 @@ services:
 
       # Timeout per LLM API call
       # Values: Go duration string (e.g., 30s, 2m, 120s)
-      - LLM_TIMEOUT=120s
+      - LLM_TIMEOUT=600s
 
       # Delay between consecutive LLM calls (rate limiting / cost control)
       # Values: milliseconds (0 = no delay)

@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"testing"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
@@ -103,7 +104,7 @@ func TestOllamaProvider_DefaultHost(t *testing.T) {
 }
 
 func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
-	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b")
+	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b", 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
 }
 
 func TestNewOllamaProvider_InvalidURL(t *testing.T) {
-	_, err := NewOllamaProvider("://invalid", "model")
+	_, err := NewOllamaProvider("://invalid", "model", 5*time.Second)
 	if err == nil {
 		t.Error("should error on invalid URL")
 	}
