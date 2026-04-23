@@ -149,7 +149,11 @@ var schema = []struct {
 		Name: "discovery_debug_logs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "timestamp", Value: -1}}},
-			{Keys: bson.D{{Key: "discovery_run_id", Value: 1}}},
+			// Compound (run_id, created_at) — supports the dashboard's live-tail
+			// endpoint which filters by run_id and `created_at > since` and sorts
+			// ascending. Without the `created_at` key Mongo does an in-memory
+			// sort on every 2s poll.
+			{Keys: bson.D{{Key: "discovery_run_id", Value: 1}, {Key: "created_at", Value: 1}}},
 			{
 				Keys:    bson.D{{Key: "timestamp", Value: 1}},
 				Options: options.Index().SetExpireAfterSeconds(30 * 24 * 60 * 60), // 30 day TTL

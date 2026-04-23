@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -11,6 +12,21 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// truncateUTF8 trims s at the last rune boundary at or before `max` bytes
+// and appends the supplied suffix. Needed because LLM responses routinely
+// contain multi-byte runes (Turkish, emoji, domain glossaries) and a naive
+// byte-slice cut could produce invalid UTF-8 that JSON encoders reject.
+func truncateUTF8(s string, max int, suffix string) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + suffix
+}
 
 // debugLogRaw mirrors the subset of `discovery_debug_logs` we project on
 // read. `_id` is an ObjectId in Mongo but the API surface uses a hex string,
@@ -121,10 +137,7 @@ func (r *DebugLogRepository) ListByRun(ctx context.Context, runID string, since 
 
 	out := make([]models.DebugLogEntry, len(raw))
 	for i, d := range raw {
-		response := d.LLMResponse
-		if len(response) > maxLLMResponseBytes {
-			response = response[:maxLLMResponseBytes] + "\n…[truncated]"
-		}
+		response := truncateUTF8(d.LLMResponse, maxLLMResponseBytes, "\n…[truncated]")
 		out[i] = models.DebugLogEntry{
 			ID:                 d.ID.Hex(),
 			DiscoveryRunID:     d.DiscoveryRunID,

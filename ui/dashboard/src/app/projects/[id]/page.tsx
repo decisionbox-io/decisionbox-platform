@@ -628,6 +628,13 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
   const [entries, setEntries] = useState<DebugLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Polling uses the newest rendered `created_at` as the `since` cursor
+  // on each request. We read it through a ref instead of including
+  // `entries` in the effect deps — otherwise every successful poll
+  // updates `entries`, which would re-run the effect, tear down the old
+  // interval, and fire a fresh immediate poll, doubling the effective
+  // rate.
+  const sinceRef = useRef<string | undefined>(undefined);
   // Cap retained entries to keep the DOM small on long runs.
   const MAX_ENTRIES = 500;
 
@@ -639,14 +646,14 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
     const onStorage = (e: StorageEvent) => {
       if (e.key === debugLogsVisibleKey(projectId)) {
         setVisible(e.newValue === '1');
-        if (e.newValue !== '1') { setEntries([]); setError(null); }
+        if (e.newValue !== '1') { setEntries([]); setError(null); sinceRef.current = undefined; }
       }
     };
     const onFocus = () => {
       const next = window.localStorage.getItem(debugLogsVisibleKey(projectId)) === '1';
       setVisible((prev) => {
         if (prev !== next) {
-          if (!next) { setEntries([]); setError(null); }
+          if (!next) { setEntries([]); setError(null); sinceRef.current = undefined; }
         }
         return next;
       });
@@ -660,18 +667,21 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
   }, [projectId]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      sinceRef.current = undefined;
+      return;
+    }
     let cancelled = false;
 
     const poll = async () => {
       // The server filters with $gt on created_at, so passing the newest
       // timestamp we already rendered gives us only what's new since the
       // last tick — safe to repeat as often as we like.
-      const since = entries.length > 0 ? entries[entries.length - 1].created_at : undefined;
       try {
-        const next = await api.getDebugLogs(runId, since, 200);
+        const next = await api.getDebugLogs(runId, sinceRef.current, 200);
         if (cancelled) return;
         if (next && next.length > 0) {
+          sinceRef.current = next[next.length - 1].created_at;
           setEntries((prev) => {
             const merged = [...prev, ...next];
             return merged.length > MAX_ENTRIES ? merged.slice(merged.length - MAX_ENTRIES) : merged;
@@ -691,7 +701,7 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
 
     const timer = setInterval(poll, 2000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [visible, runId, isDone, entries]);
+  }, [visible, runId, isDone]);
 
   // Auto-scroll to latest unless the user scrolled up.
   const userScrolledUp = useRef(false);
