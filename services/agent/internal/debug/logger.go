@@ -23,7 +23,7 @@ type Logger struct {
 
 	// Stats tracking
 	totalQueries       int
-	totalClaudeCalls   int
+	totalLLMCalls   int
 	validationFailures int
 }
 
@@ -32,11 +32,21 @@ type LoggerOptions struct {
 	Repo    *database.DebugLogRepository
 	AppID   string
 	Enabled bool
+	// DiscoveryRunID is the ID used to key all log entries written by this
+	// logger. In production this is the hex string of the `discovery_runs._id`
+	// ObjectId so the dashboard can join `discovery_debug_logs` back to the
+	// run. Leave empty to auto-generate a UUID (useful in tests or when the
+	// agent is invoked outside the API — the logger still works, but the logs
+	// won't be joinable to a run).
+	DiscoveryRunID string
 }
 
 // NewLogger creates a new debug logger
 func NewLogger(opts LoggerOptions) *Logger {
-	discoveryRunID := uuid.New().String()
+	discoveryRunID := opts.DiscoveryRunID
+	if discoveryRunID == "" {
+		discoveryRunID = uuid.New().String()
+	}
 
 	l := &Logger{
 		repo:           opts.Repo,
@@ -117,8 +127,8 @@ func (l *Logger) LogBigQuery(
 	)
 }
 
-// LogClaude logs a Claude API request
-func (l *Logger) LogClaude(
+// LogLLM logs a Claude API request
+func (l *Logger) LogLLM(
 	ctx context.Context,
 	step int,
 	phase string,
@@ -128,14 +138,14 @@ func (l *Logger) LogClaude(
 	err error,
 ) {
 	l.mu.Lock()
-	l.totalClaudeCalls++
+	l.totalLLMCalls++
 	l.mu.Unlock()
 
 	if !l.IsEnabled() || l.repo == nil {
 		return
 	}
 
-	l.repo.LogClaudeRequest(
+	l.repo.LogLLMRequest(
 		ctx,
 		l.appID,
 		l.discoveryRunID,
@@ -299,7 +309,7 @@ func (l *Logger) GetStats() map[string]interface{} {
 	return map[string]interface{}{
 		"discovery_run_id":    l.discoveryRunID,
 		"total_queries":       l.totalQueries,
-		"total_claude_calls":  l.totalClaudeCalls,
+		"total_llm_calls":  l.totalLLMCalls,
 		"validation_failures": l.validationFailures,
 	}
 }

@@ -390,6 +390,36 @@ export interface RunStep {
   error: string;
 }
 
+// DebugLogEntry mirrors services/api/models/DebugLogEntry — the lean,
+// public-safe projection of an agent debug log event. The server strips
+// LLM prompts/responses and raw query result rows, so this is safe to
+// render directly in the UI.
+export interface DebugLogEntry {
+  id: string;
+  discovery_run_id: string;
+  created_at: string;
+  log_type: string;
+  component: string;
+  operation: string;
+  phase?: string;
+  step?: number;
+  duration_ms?: number;
+  success: boolean;
+  // SQL fields (present for execute_query)
+  sql_query?: string;
+  query_purpose?: string;
+  row_count?: number;
+  fix_attempts?: number;
+  query_error?: string;
+  // LLM fields (present for create_message) — response is capped
+  // server-side to keep polls cheap; look at the ...[truncated] suffix.
+  llm_model?: string;
+  llm_response?: string;
+  llm_input_tokens?: number;
+  llm_output_tokens?: number;
+  error_message?: string;
+}
+
 export interface Feedback {
   id: string;
   project_id: string;
@@ -702,6 +732,17 @@ export const api = {
     request<DiscoveryRunStatus>(`/api/v1/runs/${runId}`),
   cancelRun: (runId: string) =>
     request<{ status: string; message: string }>(`/api/v1/runs/${runId}`, { method: 'DELETE' }),
+  // getDebugLogs returns the lean projection of `discovery_debug_logs` the
+  // agent writes for a run. The "since" arg is the ISO timestamp of the
+  // newest entry already rendered — the UI passes it on each poll so the
+  // server only returns what's new, making the tailing panel idempotent.
+  getDebugLogs: (runId: string, since?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<DebugLogEntry[]>(`/api/v1/runs/${runId}/debug-logs${qs ? '?' + qs : ''}`);
+  },
   listDiscoveries: (projectId: string) =>
     request<DiscoveryResult[]>(`/api/v1/projects/${projectId}/discoveries`),
   getLatestDiscovery: (projectId: string) =>

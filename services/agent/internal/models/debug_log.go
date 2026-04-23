@@ -6,13 +6,13 @@ import "time"
 type DebugLogType string
 
 const (
-	DebugLogTypeBigQuery        DebugLogType = "bigquery"
-	DebugLogTypeClaude          DebugLogType = "claude"
-	DebugLogTypeAnalysis        DebugLogType = "analysis"
-	DebugLogTypeValidation      DebugLogType = "validation"
-	DebugLogTypeExploration     DebugLogType = "exploration"
-	DebugLogTypeRecommendation  DebugLogType = "recommendation"
-	DebugLogTypeOrchestrator    DebugLogType = "orchestrator"
+	DebugLogTypeBigQuery       DebugLogType = "bigquery"
+	DebugLogTypeLLM            DebugLogType = "llm"
+	DebugLogTypeAnalysis       DebugLogType = "analysis"
+	DebugLogTypeValidation     DebugLogType = "validation"
+	DebugLogTypeExploration    DebugLogType = "exploration"
+	DebugLogTypeRecommendation DebugLogType = "recommendation"
+	DebugLogTypeOrchestrator   DebugLogType = "orchestrator"
 )
 
 // DebugLog represents a single debug log entry for AI Discovery
@@ -45,13 +45,13 @@ type DebugLog struct {
 	FixAttempts   int                      `bson:"fix_attempts,omitempty" json:"fix_attempts,omitempty"`
 
 	// Claude specific fields
-	ClaudeModel       string `bson:"claude_model,omitempty" json:"claude_model,omitempty"`
-	ClaudePrompt      string `bson:"claude_prompt,omitempty" json:"claude_prompt,omitempty"` // Full prompt sent
-	ClaudeSystemPrompt string `bson:"claude_system_prompt,omitempty" json:"claude_system_prompt,omitempty"`
-	ClaudeResponse    string `bson:"claude_response,omitempty" json:"claude_response,omitempty"` // Full response
-	ClaudeInputTokens  int   `bson:"claude_input_tokens,omitempty" json:"claude_input_tokens,omitempty"`
-	ClaudeOutputTokens int   `bson:"claude_output_tokens,omitempty" json:"claude_output_tokens,omitempty"`
-	ClaudeError       string `bson:"claude_error,omitempty" json:"claude_error,omitempty"`
+	LLMModel       string `bson:"llm_model,omitempty" json:"llm_model,omitempty"`
+	LLMPrompt      string `bson:"llm_prompt,omitempty" json:"llm_prompt,omitempty"` // Full prompt sent
+	LLMSystemPrompt string `bson:"llm_system_prompt,omitempty" json:"llm_system_prompt,omitempty"`
+	LLMResponse    string `bson:"llm_response,omitempty" json:"llm_response,omitempty"` // Full response
+	LLMInputTokens  int   `bson:"llm_input_tokens,omitempty" json:"llm_input_tokens,omitempty"`
+	LLMOutputTokens int   `bson:"llm_output_tokens,omitempty" json:"llm_output_tokens,omitempty"`
+	LLMError       string `bson:"llm_error,omitempty" json:"llm_error,omitempty"`
 
 	// Analysis specific fields
 	AnalysisCategory string                 `bson:"analysis_category,omitempty" json:"analysis_category,omitempty"` // churn, monetization, levels, engagement
@@ -118,14 +118,14 @@ func (d *DebugLog) SetBigQueryDetails(query, purpose string, results []map[strin
 	}
 }
 
-// SetClaudeDetails sets Claude-specific fields
-func (d *DebugLog) SetClaudeDetails(model, systemPrompt, prompt, response string, inputTokens, outputTokens int, durationMs int64) {
-	d.ClaudeModel = model
-	d.ClaudeSystemPrompt = systemPrompt
-	d.ClaudePrompt = prompt
-	d.ClaudeResponse = response
-	d.ClaudeInputTokens = inputTokens
-	d.ClaudeOutputTokens = outputTokens
+// SetLLMDetails sets Claude-specific fields
+func (d *DebugLog) SetLLMDetails(model, systemPrompt, prompt, response string, inputTokens, outputTokens int, durationMs int64) {
+	d.LLMModel = model
+	d.LLMSystemPrompt = systemPrompt
+	d.LLMPrompt = prompt
+	d.LLMResponse = response
+	d.LLMInputTokens = inputTokens
+	d.LLMOutputTokens = outputTokens
 	d.DurationMs = durationMs
 }
 
@@ -195,7 +195,7 @@ type DebugLogSummary struct {
 
 	// Counts by type
 	BigQueryLogCount   int `json:"bigquery_log_count"`
-	ClaudeLogCount     int `json:"claude_log_count"`
+	LLMLogCount     int `json:"llm_log_count"`
 	AnalysisLogCount   int `json:"analysis_log_count"`
 	ValidationLogCount int `json:"validation_log_count"`
 	ErrorCount         int `json:"error_count"`
@@ -207,9 +207,9 @@ type DebugLogSummary struct {
 	FixedQueries         int   `json:"fixed_queries"`
 
 	// Claude stats
-	TotalClaudeCalls     int `json:"total_claude_calls"`
-	TotalClaudeInputTokens int `json:"total_claude_input_tokens"`
-	TotalClaudeOutputTokens int `json:"total_claude_output_tokens"`
+	TotalLLMCalls     int `json:"total_llm_calls"`
+	TotalLLMInputTokens int `json:"total_llm_input_tokens"`
+	TotalLLMOutputTokens int `json:"total_llm_output_tokens"`
 
 	// Validation stats
 	UserCountValidations     int `json:"user_count_validations"`

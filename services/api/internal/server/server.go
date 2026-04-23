@@ -29,6 +29,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	projectRepo := database.NewProjectRepository(db)
 	discoveryRepo := database.NewDiscoveryRepository(db)
 	runRepo := database.NewRunRepository(db)
+	debugLogRepo := database.NewDebugLogRepository(db)
 	feedbackRepo := database.NewFeedbackRepository(db)
 	pricingRepo := database.NewPricingRepository(db)
 	insightRepo := database.NewInsightRepository(db)
@@ -75,7 +76,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	domains := handler.NewDomainsHandler(domainPackRepo)
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo)
-	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, agentRunner)
+	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
@@ -155,6 +156,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 
 	// Runs — viewer for read, admin for cancel
 	mux.HandleFunc("GET /api/v1/runs/{runId}", withRole(viewer, discoveries.GetRun))
+	mux.HandleFunc("GET /api/v1/runs/{runId}/debug-logs", withRole(viewer, discoveries.GetDebugLogs))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
 
 	// Feedback — member for submit, viewer for read, admin for delete

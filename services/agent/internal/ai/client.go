@@ -120,7 +120,7 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 		// returned partial usage even on error; report what we have.
 		c.emitLLMUsage(ctx, 0, 0, latencyMs, err)
 		if c.debugLogger != nil {
-			c.debugLogger.LogClaude(ctx, c.currentStep, c.currentPhase, c.model,
+			c.debugLogger.LogLLM(ctx, c.currentStep, c.currentPhase, c.model,
 				systemPrompt, promptContent, "", 0, 0,
 				latencyMs, err)
 		}
@@ -136,7 +136,7 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 	c.emitLLMUsage(ctx, resp.Usage.InputTokens, resp.Usage.OutputTokens, latencyMs, nil)
 
 	if c.debugLogger != nil {
-		c.debugLogger.LogClaude(ctx, c.currentStep, c.currentPhase, c.model,
+		c.debugLogger.LogLLM(ctx, c.currentStep, c.currentPhase, c.model,
 			systemPrompt, promptContent, resp.Content,
 			resp.Usage.InputTokens, resp.Usage.OutputTokens,
 			latencyMs, nil)

@@ -109,8 +109,8 @@ func (r *DebugLogRepository) LogBigQueryExecution(
 	r.Log(ctx, log)
 }
 
-// LogClaudeRequest logs a Claude API request with full prompt and response
-func (r *DebugLogRepository) LogClaudeRequest(
+// LogLLMRequest logs a Claude API request with full prompt and response
+func (r *DebugLogRepository) LogLLMRequest(
 	ctx context.Context,
 	appID, discoveryRunID string,
 	step int,
@@ -124,14 +124,14 @@ func (r *DebugLogRepository) LogClaudeRequest(
 		return
 	}
 
-	log := models.NewDebugLog(appID, discoveryRunID, models.DebugLogTypeClaude, "claude", "create_message")
+	log := models.NewDebugLog(appID, discoveryRunID, models.DebugLogTypeLLM, "llm", "create_message")
 	log.Step = step
 	log.Phase = phase
-	log.SetClaudeDetails(model, systemPrompt, prompt, response, inputTokens, outputTokens, durationMs)
+	log.SetLLMDetails(model, systemPrompt, prompt, response, inputTokens, outputTokens, durationMs)
 
 	if err != nil {
 		log.SetError(err.Error(), "")
-		log.ClaudeError = err.Error()
+		log.LLMError = err.Error()
 	}
 
 	r.Log(ctx, log)
@@ -390,11 +390,11 @@ func (r *DebugLogRepository) GetSummary(
 			if log.SQLQueryFixed != "" {
 				summary.FixedQueries++
 			}
-		case models.DebugLogTypeClaude:
-			summary.ClaudeLogCount++
-			summary.TotalClaudeCalls++
-			summary.TotalClaudeInputTokens += log.ClaudeInputTokens
-			summary.TotalClaudeOutputTokens += log.ClaudeOutputTokens
+		case models.DebugLogTypeLLM:
+			summary.LLMLogCount++
+			summary.TotalLLMCalls++
+			summary.TotalLLMInputTokens += log.LLMInputTokens
+			summary.TotalLLMOutputTokens += log.LLMOutputTokens
 		case models.DebugLogTypeAnalysis:
 			summary.AnalysisLogCount++
 		case models.DebugLogTypeValidation:

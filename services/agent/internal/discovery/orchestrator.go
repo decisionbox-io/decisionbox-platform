@@ -113,9 +113,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	var debugLogger *debug.Logger
 	if opts.DebugLogRepo != nil {
 		debugLogger = debug.NewLogger(debug.LoggerOptions{
-			Repo:    opts.DebugLogRepo,
-			AppID:   opts.ProjectID,
-			Enabled: opts.EnableDebugLogs,
+			Repo:           opts.DebugLogRepo,
+			AppID:          opts.ProjectID,
+			Enabled:        opts.EnableDebugLogs,
+			DiscoveryRunID: opts.RunID,
 		})
 	}
 

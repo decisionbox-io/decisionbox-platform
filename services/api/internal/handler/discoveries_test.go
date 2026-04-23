@@ -50,7 +50,7 @@ func TestDiscoveriesHandler_GetByDate_WrongFormat(t *testing.T) {
 }
 
 func TestNewDiscoveriesHandler(t *testing.T) {
-	h := NewDiscoveriesHandler(nil, nil, nil, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil)
 	if h == nil {
 		t.Fatal("NewDiscoveriesHandler returned nil")
 	}
@@ -85,7 +85,7 @@ func TestDiscoveriesHandler_List_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	// Create a project
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
@@ -131,7 +131,7 @@ func TestDiscoveriesHandler_List_ProjectNotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/nonexistent/discoveries", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -148,7 +148,7 @@ func TestDiscoveriesHandler_GetLatest_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-old",
@@ -186,7 +186,7 @@ func TestDiscoveriesHandler_GetLatest_NotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries/latest", nil)
 	req.SetPathValue("id", "proj-1")
@@ -209,7 +209,7 @@ func TestDiscoveriesHandler_GetByDate_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-march20",
@@ -241,7 +241,7 @@ func TestDiscoveriesHandler_GetByDate_NoMatch_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/discoveries/2026-01-01", nil)
 	req.SetPathValue("id", "proj-1")
@@ -259,7 +259,7 @@ func TestDiscoveriesHandler_GetDiscoveryByID_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	discRepo.add(&models.DiscoveryResult{
 		ID:            "disc-abc",
@@ -293,7 +293,7 @@ func TestDiscoveriesHandler_GetDiscoveryByID_NotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/discoveries/nonexistent", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -310,7 +310,7 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	// Create a project
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
@@ -367,7 +367,7 @@ func TestDiscoveriesHandler_GetStatus_ProjectNotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/nonexistent/status", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -384,7 +384,7 @@ func TestDiscoveriesHandler_GetStatus_NoRunsOrDiscoveries_MockRepo(t *testing.T)
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -415,7 +415,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -469,7 +469,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultsTo60Percent(t *tes
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -499,7 +499,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultUsesMaxStepsDefault
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -529,7 +529,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitValueHonored(t *te
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -555,7 +555,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitZeroDisablesFloor(
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -584,7 +584,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsNegative(t *testing
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -610,7 +610,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsExceedingMaxSteps(t
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -641,7 +641,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_EqualToMaxStepsAccepted(t 
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -667,7 +667,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_ProjectNotFound_MockRepo(t *testing
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/nonexistent/discover", nil)
 	req.SetPathValue("id", "nonexistent")
@@ -684,7 +684,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -725,7 +725,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_RunnerFails_MockRepo(t *testing.T) 
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
 	mockRun.runErr = fmt.Errorf("binary not found")
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
 	projRepo.Create(context.Background(), p)
@@ -758,7 +758,7 @@ func TestDiscoveriesHandler_GetRun_Success_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-abc",
@@ -794,7 +794,7 @@ func TestDiscoveriesHandler_GetRun_NotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("GET", "/api/v1/runs/nonexistent", nil)
 	req.SetPathValue("runId", "nonexistent")
@@ -812,7 +812,7 @@ func TestDiscoveriesHandler_CancelRun_Success_MockRepo(t *testing.T) {
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	runRepo.addRun(&models.DiscoveryRun{
 		ID:        "run-to-cancel",
@@ -858,7 +858,7 @@ func TestDiscoveriesHandler_CancelRun_NotFound_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	req := httptest.NewRequest("DELETE", "/api/v1/runs/nonexistent", nil)
 	req.SetPathValue("runId", "nonexistent")
@@ -875,7 +875,7 @@ func TestDiscoveriesHandler_CancelRun_NotActive_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
 
 	// Add a completed run
 	now := time.Now()
@@ -910,7 +910,7 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
 	mockRun := newMockRunner()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, mockRun)
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, mockRun)
 
 	// Pending runs should also be cancellable
 	runRepo.addRun(&models.DiscoveryRun{

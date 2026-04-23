@@ -23,14 +23,18 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo        database.DiscoveryRepo
-	projectRepo database.ProjectRepo
-	runRepo     database.RunRepo
-	agentRunner runner.Runner
+	repo         database.DiscoveryRepo
+	projectRepo  database.ProjectRepo
+	runRepo      database.RunRepo
+	debugLogRepo database.DebugLogRepo
+	agentRunner  runner.Runner
 }
 
-func NewDiscoveriesHandler(repo database.DiscoveryRepo, projectRepo database.ProjectRepo, runRepo database.RunRepo, r runner.Runner) *DiscoveriesHandler {
-	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, agentRunner: r}
+// NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
+// that case the debug-logs endpoint returns an empty list (useful for tests
+// and for builds that ship without the agent's debug log collection).
+func NewDiscoveriesHandler(repo database.DiscoveryRepo, projectRepo database.ProjectRepo, runRepo database.RunRepo, debugLogRepo database.DebugLogRepo, r runner.Runner) *DiscoveriesHandler {
+	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, debugLogRepo: debugLogRepo, agentRunner: r}
 }
 
 // List returns discovery results for a project.
@@ -373,4 +377,53 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 		"status":  "cancelled",
 		"message": "Run cancelled",
 	})
+}
+
+// GetDebugLogs streams the agent's debug log entries for a single run. The
+// dashboard polls this endpoint every few seconds while a run is active to
+// show a live view of what the agent is doing (Claude calls, SQL executions,
+// retries, errors). The response is deliberately a lean projection — it does
+// NOT include full Claude prompts, raw query result rows, or analysis
+// input/output blobs. Those stay in Mongo.
+//
+// GET /api/v1/runs/{runId}/debug-logs?since=<RFC3339>&limit=<n>
+//
+//   - `since` (optional): RFC3339 timestamp. Only entries created strictly
+//     after it are returned. The client passes the `created_at` of the most
+//     recent entry it has already rendered, so polling becomes idempotent.
+//   - `limit` (optional): max rows. Defaults to 200, capped at 1000.
+func (h *DiscoveriesHandler) GetDebugLogs(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "runId is required")
+		return
+	}
+
+	if h.debugLogRepo == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+
+	var since time.Time
+	if s := r.URL.Query().Get("since"); s != "" {
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'since' timestamp (expected RFC3339): "+err.Error())
+			return
+		}
+		since = t
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	entries, err := h.debugLogRepo.ListByRun(r.Context(), runID, since, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list debug logs: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, entries)
 }

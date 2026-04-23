@@ -44,6 +44,13 @@ export default function ProjectSettingsPage() {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
+  // Debug-logs visibility is a client-side-only preference (it controls
+  // whether the live-run panel on the project page renders the verbose
+  // per-query debug tail). It's kept in localStorage, not on the project
+  // document — no server round-trip needed, and nothing the agent cares
+  // about. Keyed per-project so different projects can keep different
+  // defaults.
+  const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
   const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
   const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
@@ -68,6 +75,14 @@ export default function ProjectSettingsPage() {
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
+
+  // Load the debug-logs preference from localStorage. Kept separate from
+  // the project save cycle because this is purely a local UI preference —
+  // doesn't go to the server, doesn't count as "dirty".
+  useEffect(() => {
+    if (typeof window === 'undefined' || !id) return;
+    setDebugLogsEnabled(window.localStorage.getItem(`db:showDebugLogs:${id}`) === '1');
+  }, [id]);
 
   // Intercept client-side navigation when dirty
   const router = useRouter();
@@ -274,6 +289,7 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="embedding">Embedding &amp; Search</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
+          <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
         </Tabs.List>
 
         {/* General */}
@@ -744,6 +760,32 @@ export default function ProjectSettingsPage() {
             </SettingsSection>
           </Tabs.Panel>
         )}
+
+        {/* Advanced — client-side UI preferences + debug tooling. Nothing
+            here goes to the server; toggles are stored in localStorage and
+            do not count as "unsaved changes". */}
+        <Tabs.Panel value="advanced">
+          <SettingsSection>
+            <Stack gap="sm">
+              <Text size="sm" fw={500}>Debugging</Text>
+              <Switch
+                label="Show debug logs during discovery"
+                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel. Useful for troubleshooting stalled runs or understanding what the agent is doing step by step."
+                checked={debugLogsEnabled}
+                onChange={(e) => {
+                  const next = e.currentTarget.checked;
+                  setDebugLogsEnabled(next);
+                  if (typeof window !== 'undefined' && id) {
+                    window.localStorage.setItem(`db:showDebugLogs:${id}`, next ? '1' : '0');
+                  }
+                }}
+              />
+              <Text size="xs" c="dimmed">
+                This is a local-browser preference — it is not shared with other users or saved on the project.
+              </Text>
+            </Stack>
+          </SettingsSection>
+        </Tabs.Panel>
       </Tabs>
     </Shell>
   );

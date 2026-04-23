@@ -40,6 +40,11 @@ type RunRepo interface {
 	ClearPolicyReservationID(ctx context.Context, runID string) error
 }
 
+// DebugLogRepo abstracts debug log read operations for handler unit testing.
+type DebugLogRepo interface {
+	ListByRun(ctx context.Context, runID string, since time.Time, limit int) ([]models.DebugLogEntry, error)
+}
+
 // FeedbackRepo abstracts feedback operations for handler unit testing.
 type FeedbackRepo interface {
 	Upsert(ctx context.Context, fb *models.Feedback) (*models.Feedback, error)

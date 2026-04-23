@@ -14,7 +14,7 @@ import {
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
-import { api, CostEstimate, DiscoveryResult, DiscoveryRunStatus, Project, RunStep } from '@/lib/api';
+import { api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep } from '@/lib/api';
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -598,8 +598,288 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           </ScrollArea>
         </div>
       )}
+
+      {/* Debug log tail — rendered only when the per-project preference is
+          on (set under Project Settings → Advanced). The high-level step
+          list above only advances when the agent finishes a macro step,
+          which can be minutes apart during schema discovery; this panel
+          tails every LLM call and SQL execution in near-real time. */}
+      <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone} />
     </div>
   );
+}
+
+/* ========== Debug Logs Panel ========== */
+
+// localStorage key for the per-project "show debug logs" preference. The
+// toggle UI lives in Project Settings → Advanced; this panel just reads
+// the value. Keyed by project ID so different projects can keep different
+// defaults (e.g. the one you're debugging has it on, production is off).
+export const debugLogsVisibleKey = (projectId: string) => `db:showDebugLogs:${projectId}`;
+
+function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId: string; isDone: boolean }) {
+  // Read the preference fresh on mount. If it flips while the panel is
+  // open (user toggled it in another tab), the `storage` event below
+  // picks it up.
+  const [visible, setVisible] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(debugLogsVisibleKey(projectId)) === '1';
+  });
+  const [entries, setEntries] = useState<DebugLogEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Cap retained entries to keep the DOM small on long runs.
+  const MAX_ENTRIES = 500;
+
+  // Re-read the preference when the Settings tab (in a different browser
+  // tab, or same tab after navigation) updates it. `storage` fires on
+  // OTHER tabs; within the same tab we poll the key on focus.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === debugLogsVisibleKey(projectId)) {
+        setVisible(e.newValue === '1');
+        if (e.newValue !== '1') { setEntries([]); setError(null); }
+      }
+    };
+    const onFocus = () => {
+      const next = window.localStorage.getItem(debugLogsVisibleKey(projectId)) === '1';
+      setVisible((prev) => {
+        if (prev !== next) {
+          if (!next) { setEntries([]); setError(null); }
+        }
+        return next;
+      });
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      // The server filters with $gt on created_at, so passing the newest
+      // timestamp we already rendered gives us only what's new since the
+      // last tick — safe to repeat as often as we like.
+      const since = entries.length > 0 ? entries[entries.length - 1].created_at : undefined;
+      try {
+        const next = await api.getDebugLogs(runId, since, 200);
+        if (cancelled) return;
+        if (next && next.length > 0) {
+          setEntries((prev) => {
+            const merged = [...prev, ...next];
+            return merged.length > MAX_ENTRIES ? merged.slice(merged.length - MAX_ENTRIES) : merged;
+          });
+        }
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    };
+
+    poll();
+    // Stop polling once the run is terminal — no new events will arrive,
+    // and a live run panel is typically dismissed soon after. Still allow
+    // one final fetch above to pick up any trailing entries.
+    if (isDone) return () => { cancelled = true; };
+
+    const timer = setInterval(poll, 2000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [visible, runId, isDone, entries]);
+
+  // Auto-scroll to latest unless the user scrolled up.
+  const userScrolledUp = useRef(false);
+  useEffect(() => {
+    if (!visible) return;
+    const el = scrollRef.current;
+    if (el && !userScrolledUp.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [entries, visible]);
+
+  if (!visible) return null;
+
+  return (
+    <div style={{ borderTop: '1px solid var(--db-border-default)', padding: '10px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--db-text-secondary)' }}>
+          Debug logs
+          <span style={{ color: 'var(--db-text-tertiary)', fontWeight: 400, marginLeft: 6 }}>
+            (LLM calls + SQL executions, refreshes every 2s)
+          </span>
+        </span>
+        <Link href={`/projects/${projectId}/settings#advanced`}
+          style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textDecoration: 'none' }}>
+          Hide in settings
+        </Link>
+      </div>
+      {error && (
+        <div style={{ fontSize: 12, color: 'var(--db-red-text)', marginBottom: 6 }}>
+          Failed to load debug logs: {error}
+        </div>
+      )}
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 40;
+        }}
+        style={{
+          maxHeight: 480,
+          overflowY: 'auto',
+          background: 'var(--db-bg-muted)',
+          border: '1px solid var(--db-border-default)',
+          borderRadius: 'var(--db-radius)',
+          fontFamily: 'var(--db-font-mono, ui-monospace, SFMono-Regular, monospace)',
+          fontSize: 11,
+          lineHeight: 1.5,
+        }}
+      >
+        {entries.length === 0 ? (
+          <div style={{ padding: '10px 12px', color: 'var(--db-text-tertiary)' }}>
+            {isDone ? 'No debug entries recorded for this run.' : 'Waiting for first event...'}
+          </div>
+        ) : (
+          entries.map((d) => <DebugLogRow key={d.id} entry={d} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const ts = new Date(entry.created_at).toLocaleTimeString('en-US', {
+    hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const err = entry.query_error || entry.error_message;
+  const ok = entry.success && !err;
+  const statusColor = ok ? 'var(--db-green-text)' : 'var(--db-red-text)';
+
+  // Headline summary — one line, no wrap. Expanding reveals full text.
+  const summary = (() => {
+    if (err) return err;
+    if (entry.operation === 'execute_query') {
+      return entry.query_purpose || shortSQL(entry.sql_query) || '(query)';
+    }
+    if (entry.operation === 'create_message') {
+      const tokens = entry.llm_input_tokens || entry.llm_output_tokens
+        ? `${entry.llm_input_tokens || 0}→${entry.llm_output_tokens || 0} tok`
+        : '';
+      const preview = firstLine(entry.llm_response);
+      const model = entry.llm_model ? shortModel(entry.llm_model) : '';
+      return [model, tokens, preview].filter(Boolean).join(' · ');
+    }
+    return `${entry.component || ''}${entry.phase ? ' / ' + entry.phase : ''}`;
+  })();
+
+  const hasDetails =
+    (entry.llm_response && entry.llm_response.length > 0)
+    || (entry.sql_query && entry.sql_query.length > 0)
+    || (err && err.length > 200);
+
+  return (
+    <div style={{ borderBottom: '1px solid var(--db-border-default)' }}>
+      <div
+        onClick={() => hasDetails && setExpanded((x) => !x)}
+        style={{
+          padding: '3px 12px',
+          display: 'grid',
+          gridTemplateColumns: 'auto 10px 14px auto auto 1fr auto',
+          gap: 8,
+          alignItems: 'baseline',
+          cursor: hasDetails ? 'pointer' : 'default',
+        }}
+      >
+        <span style={{ color: 'var(--db-text-tertiary)' }}>{ts}</span>
+        <span style={{ color: 'var(--db-text-tertiary)', fontSize: 9 }}>
+          {hasDetails ? (expanded ? '▾' : '▸') : ''}
+        </span>
+        <span style={{ color: statusColor }}>{ok ? '✓' : '✗'}</span>
+        <span style={{ color: 'var(--db-text-secondary)', fontWeight: 500 }}>{entry.operation}</span>
+        {entry.duration_ms !== undefined && entry.duration_ms > 0 ? (
+          <span style={{ color: 'var(--db-text-tertiary)' }}>{entry.duration_ms}ms</span>
+        ) : <span />}
+        <span style={{
+          color: err ? 'var(--db-red-text)' : 'var(--db-text-primary)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {summary}
+        </span>
+        {entry.row_count && entry.row_count > 0 ? (
+          <span style={{ color: 'var(--db-text-tertiary)' }}>{entry.row_count} rows</span>
+        ) : <span />}
+      </div>
+      {expanded && (
+        <div style={{
+          padding: '4px 12px 10px 34px',
+          color: 'var(--db-text-secondary)',
+          fontSize: 11,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          {entry.sql_query && (
+            <details open style={{ marginBottom: 6 }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>SQL</summary>
+              <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
+                {entry.sql_query}
+              </div>
+            </details>
+          )}
+          {entry.llm_response && (
+            <details open>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
+                LLM response{entry.llm_model ? ` · ${entry.llm_model}` : ''}
+              </summary>
+              <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
+                {entry.llm_response}
+              </div>
+            </details>
+          )}
+          {err && err.length > 200 && (
+            <details open>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-red-text)', fontSize: 10, marginBottom: 2 }}>Error</summary>
+              <div style={{ background: 'var(--db-red-bg)', padding: 6, borderRadius: 3, color: 'var(--db-red-text)' }}>
+                {err}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// firstLine returns the first non-empty line of a string, trimmed and
+// length-capped so it fits in a single row. We show it next to create_message
+// entries so users can see what the LLM said without expanding every row.
+function firstLine(s?: string): string {
+  if (!s) return '';
+  const line = s.split('\n').map(l => l.trim()).find(Boolean) || '';
+  return line.length > 200 ? line.slice(0, 200) + '…' : line;
+}
+
+// shortSQL compresses whitespace to fit the SQL into one row when a purpose
+// field isn't available. Full SQL is still shown when the row is expanded.
+function shortSQL(s?: string): string {
+  if (!s) return '';
+  return s.replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+// shortModel strips the provider-specific version prefix so model IDs like
+// `global.anthropic.claude-opus-4-6-v1` render as just `claude-opus-4-6`.
+function shortModel(m: string): string {
+  const parts = m.split(/[.\/]/);
+  return parts[parts.length - 1].replace(/-v\d+$/, '');
 }
 
 /* ========== Step Row ========== */

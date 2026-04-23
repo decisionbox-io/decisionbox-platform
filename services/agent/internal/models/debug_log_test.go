@@ -99,10 +99,10 @@ func TestDebugLog_SetBigQueryDetails_EmptyResults(t *testing.T) {
 	}
 }
 
-func TestDebugLog_SetClaudeDetails(t *testing.T) {
-	log := NewDebugLog("app-123", "run-1", DebugLogTypeClaude, "ai_client", "chat")
+func TestDebugLog_SetLLMDetails(t *testing.T) {
+	log := NewDebugLog("app-123", "run-1", DebugLogTypeLLM, "ai_client", "chat")
 
-	log.SetClaudeDetails(
+	log.SetLLMDetails(
 		"claude-sonnet-4-20250514",
 		"You are an analyst",
 		"Analyze the data",
@@ -112,23 +112,23 @@ func TestDebugLog_SetClaudeDetails(t *testing.T) {
 		1500,
 	)
 
-	if log.ClaudeModel != "claude-sonnet-4-20250514" {
-		t.Errorf("ClaudeModel = %q", log.ClaudeModel)
+	if log.LLMModel != "claude-sonnet-4-20250514" {
+		t.Errorf("LLMModel = %q", log.LLMModel)
 	}
-	if log.ClaudeSystemPrompt != "You are an analyst" {
-		t.Errorf("ClaudeSystemPrompt = %q", log.ClaudeSystemPrompt)
+	if log.LLMSystemPrompt != "You are an analyst" {
+		t.Errorf("LLMSystemPrompt = %q", log.LLMSystemPrompt)
 	}
-	if log.ClaudePrompt != "Analyze the data" {
-		t.Errorf("ClaudePrompt = %q", log.ClaudePrompt)
+	if log.LLMPrompt != "Analyze the data" {
+		t.Errorf("LLMPrompt = %q", log.LLMPrompt)
 	}
-	if log.ClaudeResponse != `{"insights": []}` {
-		t.Errorf("ClaudeResponse = %q", log.ClaudeResponse)
+	if log.LLMResponse != `{"insights": []}` {
+		t.Errorf("LLMResponse = %q", log.LLMResponse)
 	}
-	if log.ClaudeInputTokens != 500 {
-		t.Errorf("ClaudeInputTokens = %d, want 500", log.ClaudeInputTokens)
+	if log.LLMInputTokens != 500 {
+		t.Errorf("LLMInputTokens = %d, want 500", log.LLMInputTokens)
 	}
-	if log.ClaudeOutputTokens != 200 {
-		t.Errorf("ClaudeOutputTokens = %d, want 200", log.ClaudeOutputTokens)
+	if log.LLMOutputTokens != 200 {
+		t.Errorf("LLMOutputTokens = %d, want 200", log.LLMOutputTokens)
 	}
 	if log.DurationMs != 1500 {
 		t.Errorf("DurationMs = %d, want 1500", log.DurationMs)
@@ -257,7 +257,7 @@ func TestDebugLog_AddMetadata_NilMap(t *testing.T) {
 func TestDebugLogType_Constants(t *testing.T) {
 	types := []DebugLogType{
 		DebugLogTypeBigQuery,
-		DebugLogTypeClaude,
+		DebugLogTypeLLM,
 		DebugLogTypeAnalysis,
 		DebugLogTypeValidation,
 		DebugLogTypeExploration,
@@ -274,8 +274,8 @@ func TestDebugLogType_Constants(t *testing.T) {
 	if DebugLogTypeBigQuery != "bigquery" {
 		t.Errorf("DebugLogTypeBigQuery = %q", DebugLogTypeBigQuery)
 	}
-	if DebugLogTypeClaude != "claude" {
-		t.Errorf("DebugLogTypeClaude = %q", DebugLogTypeClaude)
+	if DebugLogTypeLLM != "llm" {
+		t.Errorf("DebugLogTypeLLM = %q", DebugLogTypeLLM)
 	}
 }
 
@@ -313,7 +313,7 @@ func TestDebugLogSummary_Fields(t *testing.T) {
 		EndTime:                     time.Now(),
 		TotalDurationMs:             300000,
 		BigQueryLogCount:            20,
-		ClaudeLogCount:              10,
+		LLMLogCount:              10,
 		AnalysisLogCount:            5,
 		ValidationLogCount:          8,
 		ErrorCount:                  2,
@@ -321,9 +321,9 @@ func TestDebugLogSummary_Fields(t *testing.T) {
 		TotalQueryTimeMs:            15000,
 		FailedQueries:               3,
 		FixedQueries:                2,
-		TotalClaudeCalls:            10,
-		TotalClaudeInputTokens:      50000,
-		TotalClaudeOutputTokens:     12000,
+		TotalLLMCalls:            10,
+		TotalLLMInputTokens:      50000,
+		TotalLLMOutputTokens:     12000,
 		UserCountValidations:        8,
 		UserCountValidationsFailed:  1,
 		Errors:                      []string{"query timeout", "parse error"},
@@ -335,8 +335,8 @@ func TestDebugLogSummary_Fields(t *testing.T) {
 	if summary.ErrorCount != 2 {
 		t.Errorf("ErrorCount = %d, want 2", summary.ErrorCount)
 	}
-	if summary.TotalClaudeInputTokens != 50000 {
-		t.Errorf("TotalClaudeInputTokens = %d, want 50000", summary.TotalClaudeInputTokens)
+	if summary.TotalLLMInputTokens != 50000 {
+		t.Errorf("TotalLLMInputTokens = %d, want 50000", summary.TotalLLMInputTokens)
 	}
 	if len(summary.Errors) != 2 {
 		t.Errorf("Errors = %d, want 2", len(summary.Errors))
