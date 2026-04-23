@@ -126,12 +126,26 @@ func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName 
 	return schema, nil
 }
 
+// sampleRowLimit is the number of rows fetched per table when sampling for
+// schema discovery. Small enough to stay cheap on large tables, big enough
+// to reveal value distribution and nullability patterns to the LLM.
+const sampleRowLimit = 5
+
 func (s *SchemaDiscovery) getSampleData(ctx context.Context, dataset, tableName string) ([]map[string]interface{}, error) {
-	filterClause := ""
-	if s.filter != "" {
-		filterClause = s.filter
+	// Prefer the provider's own dialect-aware builder when it implements
+	// SampleQueryBuilder. This avoids a per-table LLM round-trip through
+	// the SQL fixer for every non-BigQuery provider (MSSQL, Snowflake,
+	// Redshift, Postgres, Databricks), which is particularly expensive
+	// during schema discovery on large warehouses (~1 LLM call + ~5s +
+	// ~8KB tokens per table). Providers that haven't implemented the
+	// builder fall back to the legacy BigQuery/MySQL-style query below,
+	// which the SQL fixer will rewrite on first use.
+	var query string
+	if b, ok := s.warehouse.(gowarehouse.SampleQueryBuilder); ok {
+		query = b.SampleQuery(dataset, tableName, s.filter, sampleRowLimit)
+	} else {
+		query = fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT %d", dataset, tableName, s.filter, sampleRowLimit)
 	}
-	query := fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT 5", dataset, tableName, filterClause)
 
 	result, err := s.executor.Execute(ctx, query, "sample data for "+dataset+"."+tableName)
 	if err != nil {

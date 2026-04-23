@@ -374,6 +374,14 @@ func (p *RedshiftProvider) SQLDialect() string {
 	return "Amazon Redshift SQL (PostgreSQL-compatible)"
 }
 
+// SampleQuery builds a Redshift "sample N rows" query. Redshift is wire-
+// compatible with PostgreSQL — double-quoted identifiers + LIMIT n.
+// `filterClause` is either empty or a full `WHERE ...` fragment; it goes
+// between the table reference and LIMIT.
+func (p *RedshiftProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
+}
+
 func (p *RedshiftProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

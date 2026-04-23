@@ -308,6 +308,16 @@ func (p *SnowflakeProvider) SQLDialect() string {
 	return "Snowflake SQL (ANSI-based with extensions: QUALIFY, FLATTEN, VARIANT, ILIKE, LATERAL)"
 }
 
+// SampleQuery builds a Snowflake "sample N rows" query. Snowflake uppercases
+// unquoted identifiers; we double-quote so the names configured by the user
+// (and returned by ListTablesInDataset) match the stored-case form in the
+// catalog — typically uppercase (e.g. TPCDS_SF100TCL.CUSTOMER). `filterClause`
+// is either empty or a full `WHERE ...` fragment; it goes between the table
+// reference and LIMIT.
+func (p *SnowflakeProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
+}
+
 func (p *SnowflakeProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

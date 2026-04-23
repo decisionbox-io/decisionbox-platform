@@ -65,6 +65,32 @@ type CostEstimator interface {
 	DryRun(ctx context.Context, query string) (*DryRunResult, error)
 }
 
+// SampleQueryBuilder is an optional interface for providers that can build
+// a native-dialect "sample N rows" query. Schema discovery uses this to
+// read a few rows per table during the warehouse scan; implementing it
+// avoids a round-trip through the SQL-fix retry loop for every table,
+// which would otherwise cost one LLM call per table for any non-BigQuery
+// provider (backticks + LIMIT is BigQuery/MySQL syntax; T-SQL uses TOP n
+// and square brackets, Postgres/Snowflake use double-quoted identifiers,
+// Databricks accepts backticks, etc.).
+//
+// `filterClause` is either an empty string or a full SQL fragment such as
+// `WHERE country = 'TR'` — the caller passes it through verbatim. The
+// implementation decides where to place it relative to TOP / LIMIT.
+//
+// Providers that do NOT implement this interface fall back to a generic
+// BigQuery-style query in schema discovery; the SQL fixer will rewrite
+// it on first use at the cost of one LLM call per table.
+//
+// Use type assertion to check: if b, ok := provider.(SampleQueryBuilder); ok { ... }
+type SampleQueryBuilder interface {
+	// SampleQuery returns a read-only "SELECT up to `limit` rows from
+	// `dataset`.`table`" in the provider's native SQL dialect. Callers
+	// must validate `dataset` and `table` are plain identifiers before
+	// calling; this method does not sanitise its inputs.
+	SampleQuery(dataset, table, filterClause string, limit int) string
+}
+
 // DryRunResult holds the result of a dry-run query estimation.
 type DryRunResult struct {
 	BytesProcessed int64

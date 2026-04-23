@@ -293,6 +293,15 @@ func (p *PostgresProvider) SQLDialect() string {
 	return "PostgreSQL (ANSI SQL with extensions: DISTINCT ON, CTEs, window functions, JSON operators, array types)"
 }
 
+// SampleQuery builds a PostgreSQL "sample N rows" query: `SELECT * FROM
+// "schema"."table" <filter> LIMIT n`. Double-quoted identifiers preserve
+// case and let reserved words through. `filterClause` is either empty or
+// a full `WHERE ...` fragment; it goes between the table reference and
+// LIMIT.
+func (p *PostgresProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
+}
+
 func (p *PostgresProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

@@ -282,6 +282,13 @@ func (p *BigQueryProvider) SQLDialect() string {
 	return "BigQuery Standard SQL"
 }
 
+// SampleQuery builds a BigQuery-native "sample N rows" query — backtick-
+// quoted qualified name + LIMIT n. The filter clause (either empty or a
+// full WHERE fragment) is inlined between FROM and LIMIT.
+func (p *BigQueryProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT %d", dataset, table, filterClause, limit)
+}
+
 func (p *BigQueryProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

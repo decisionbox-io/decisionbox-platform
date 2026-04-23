@@ -303,6 +303,15 @@ func (p *DatabricksProvider) SQLDialect() string {
 	return "Databricks SQL (ANSI SQL with extensions: QUALIFY, PIVOT, UNPIVOT, LATERAL VIEW, Delta time travel, STRUCT/ARRAY/MAP types)"
 }
 
+// SampleQuery builds a Databricks SQL "sample N rows" query. Databricks
+// accepts backtick-quoted identifiers for names with reserved words,
+// special characters, or leading underscores — matching the Spark SQL
+// ancestry. `filterClause` is either empty or a full `WHERE ...` fragment;
+// it goes between the table reference and LIMIT.
+func (p *DatabricksProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
+	return fmt.Sprintf("SELECT * FROM `%s`.`%s` %s LIMIT %d", dataset, table, filterClause, limit)
+}
+
 func (p *DatabricksProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }
