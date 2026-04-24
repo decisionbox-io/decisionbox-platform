@@ -196,7 +196,12 @@ func (g *Generator) Generate(ctx context.Context, inputs []Input, progress Progr
 			defer wg.Done()
 			for j := range jobs {
 				if ctx.Err() != nil {
+					// ctx cancelled between submit and pickup — stamp the
+					// slot + count as a failure so the failure-budget check
+					// at the end returns a meaningful error instead of
+					// swallowing the cancellation.
 					outputs[j.idx] = Output{Table: j.in.Schema.TableName, Err: ctx.Err()}
+					atomic.AddInt64(&failures, 1)
 					if progress != nil {
 						progress(1)
 					}
@@ -281,7 +286,10 @@ func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
 		return Output{Table: table, Err: fmt.Errorf("blurb(%s): empty response from %s", g.providerID(), g.model)}
 	}
 	if len(text) > MaxBlurbLen {
-		text = text[:MaxBlurbLen]
+		// Runaway response — mid-word truncation would poison the
+		// embedding. Fail the per-table blurb; the generator's failure
+		// budget decides whether that's fatal for the run.
+		return Output{Table: table, Err: fmt.Errorf("blurb(%s): response exceeds MaxBlurbLen=%d chars (got %d); pick a less verbose model or raise the cap", g.providerID(), MaxBlurbLen, len(text))}
 	}
 	return Output{
 		Table:        table,

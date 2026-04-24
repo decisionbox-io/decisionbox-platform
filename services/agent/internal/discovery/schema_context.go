@@ -7,6 +7,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_render"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -65,14 +66,24 @@ func (b *SchemaContextBuilder) BuildOnce(ctx context.Context, projectID, query s
 	picks := make([]string, 0, topK)
 
 	if b.Retriever != nil && b.Embedder != nil && strings.TrimSpace(query) != "" {
-		vec, err := b.Embedder.Embed(ctx, []string{query})
-		if err == nil && len(vec) > 0 {
-			hits, err := b.Retriever.Search(ctx, projectID, vec[0], schema_retrieve.SearchOpts{
+		vec, embErr := b.Embedder.Embed(ctx, []string{query})
+		switch {
+		case embErr != nil:
+			// Retriever is wired but embedding failed — degrade to
+			// keyword matching. Log so ops can catch transient
+			// embedding-API outages instead of them being silent.
+			applog.WithError(embErr).Warn("schema_context: embedding provider failed, falling back to keyword match")
+		case len(vec) == 0:
+			applog.Warn("schema_context: embedder returned zero vectors, falling back to keyword match")
+		default:
+			hits, searchErr := b.Retriever.Search(ctx, projectID, vec[0], schema_retrieve.SearchOpts{
 				TopK:         topK,
 				KeywordBoost: keywords,
 				RowCountPrior: 0.05,
 			})
-			if err == nil {
+			if searchErr != nil {
+				applog.WithError(searchErr).Warn("schema_context: Qdrant search failed, falling back to keyword match")
+			} else {
 				for _, h := range hits {
 					if _, dup := seen[h.Blurb.Table]; dup {
 						continue

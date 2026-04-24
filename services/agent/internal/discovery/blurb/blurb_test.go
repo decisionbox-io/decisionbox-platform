@@ -244,13 +244,18 @@ func TestGenerate_TrimsWhitespace(t *testing.T) {
 	}
 }
 
-func TestGenerate_TruncatesOversize(t *testing.T) {
+func TestGenerate_RejectsOversize(t *testing.T) {
 	giant := strings.Repeat("x", MaxBlurbLen+500)
 	llm := &fakeLLM{respondWith: giant}
 	g, _ := New(Config{LLM: llm, Model: "gpt-4o"})
 	outs, _ := g.Generate(context.Background(), []Input{sampleInput("t")}, nil)
-	if len(outs[0].Blurb) != MaxBlurbLen {
-		t.Errorf("blurb len = %d, want %d", len(outs[0].Blurb), MaxBlurbLen)
+	// Oversize responses fail the per-table blurb rather than silently
+	// truncating mid-word and poisoning the embedding.
+	if outs[0].Err == nil {
+		t.Error("oversize blurb should return an error, not silently truncate")
+	}
+	if outs[0].Blurb != "" {
+		t.Errorf("failed blurb should be empty, got %d chars", len(outs[0].Blurb))
 	}
 }
 

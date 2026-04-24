@@ -235,6 +235,18 @@ func Run() {
 		} else if n > 0 {
 			apilog.WithField("migrated_projects", n).Info("schemaindex: migration sweep completed")
 		}
+
+		// Crash-recovery: projects stuck in "indexing" for more than
+		// 2 hours are assumed to have lost their agent subprocess (API
+		// crash, host reboot, OOM). Flip them back to pending_indexing
+		// so the worker re-queues them, instead of leaving the user
+		// with a forever-spinning banner. Threshold generous enough
+		// that real 30-min FINPORT rebuilds don't trip it.
+		if n, rErr := database.NewProjectRepository(db).ResetStaleIndexingProjects(ctx, 2*time.Hour); rErr != nil {
+			apilog.WithError(rErr).Warn("schemaindex: stale-indexing sweep failed")
+		} else if n > 0 {
+			apilog.WithField("reset_projects", n).Info("schemaindex: reset stale indexing rows to pending_indexing")
+		}
 		var workerCtx context.Context
 		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
 		go worker.Start(workerCtx)

@@ -67,7 +67,10 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 
 	// Embedding provider is mandatory for schema indexing (plan §3.7).
 	// If it's missing, fail fast with a message the API will relay to
-	// the dashboard's error banner.
+	// the dashboard's error banner. The provider itself is pre-flight-
+	// validated with a single "ping" embedding so credential / quota /
+	// dimension-mismatch errors surface up-front instead of 20 minutes
+	// into the indexing pipeline.
 	embeddingProvider, err := initEmbeddingProvider(ctx, project, secretProvider, projectID)
 	if err != nil {
 		return fmt.Errorf("embedding provider: %w", err)
@@ -75,6 +78,12 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	if embeddingProvider == nil {
 		return fmt.Errorf("schema indexing requires an embedding provider — configure one in project settings")
 	}
+	pingCtx, pingCancel := context.WithTimeout(ctx, 30*time.Second)
+	if _, err := embeddingProvider.Embed(pingCtx, []string{"decisionbox schema-index pre-flight"}); err != nil {
+		pingCancel()
+		return fmt.Errorf("embedding provider pre-flight failed: %w", err)
+	}
+	pingCancel()
 
 	// Blurb LLM — independent of the analysis LLM. Falls back to
 	// project.LLM if blurb_llm is not set (e.g. a legacy project), on

@@ -224,6 +224,35 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 	return nil
 }
 
+// ResetStaleIndexingProjects flips projects stuck in "indexing" back to
+// "pending_indexing" when their updated_at is older than staleAfter.
+// Covers the crash-recovery case: the API died mid-run, the agent
+// subprocess is gone, and Mongo still says "indexing" forever. Runs
+// once on API boot. Returns the number of rows reset.
+//
+// We use updated_at (which the progress-repo path bumps on every
+// IncrementDone) rather than started_at so a genuinely long FINPORT
+// rebuild (~6 min) never trips this.
+func (r *ProjectRepository) ResetStaleIndexingProjects(ctx context.Context, staleAfter time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-staleAfter)
+	filter := bson.M{
+		"schema_index_status": models.SchemaIndexStatusIndexing,
+		"updated_at":          bson.M{"$lt": cutoff},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_index_status": models.SchemaIndexStatusPendingIndexing,
+			"schema_index_error":  "previous indexing run did not complete (process crash or shutdown) — re-queued",
+			"updated_at":          time.Now().UTC(),
+		},
+	}
+	res, err := r.col.UpdateMany(ctx, filter, update)
+	if err != nil {
+		return 0, fmt.Errorf("reset stale indexing projects: %w", err)
+	}
+	return int(res.ModifiedCount), nil
+}
+
 // ClaimNextPendingIndex atomically picks one project in
 // pending_indexing state and transitions it to indexing, so the
 // single-node worker loop can safely poll without racing against a user
