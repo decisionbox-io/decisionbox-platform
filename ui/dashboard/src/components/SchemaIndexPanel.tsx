@@ -47,9 +47,9 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
         if (s.status === 'pending_indexing' || s.status === 'indexing') {
           pollTimer.current = setTimeout(poll, POLL_MS);
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (!alive.current) return;
-        setError(e?.message || String(e));
+        setError(e instanceof Error ? e.message : String(e));
         // Keep retrying on transient errors — the worker is local and
         // usually recovers within a second or two.
         pollTimer.current = setTimeout(poll, POLL_MS * 2);
@@ -70,8 +70,8 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
       const s = await api.getSchemaIndexStatus(projectId);
       setStatus(s);
       onStatusChange?.(s);
-    } catch (e: any) {
-      setError(e?.message || String(e));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -88,8 +88,8 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
       const s = await api.getSchemaIndexStatus(projectId);
       setStatus(s);
       onStatusChange?.(s);
-    } catch (e: any) {
-      setError(e?.message || String(e));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
