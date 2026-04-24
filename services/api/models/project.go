@@ -15,8 +15,11 @@ type Project struct {
 
 	Warehouse WarehouseConfig `bson:"warehouse" json:"warehouse"`
 	LLM       LLMConfig       `bson:"llm" json:"llm"`
+	BlurbLLM  *BlurbLLMConfig `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
 	Schedule  ScheduleConfig  `bson:"schedule" json:"schedule"`
+
+	SchemaRetrieval *SchemaRetrievalConfig `bson:"schema_retrieval,omitempty" json:"schema_retrieval,omitempty"`
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
@@ -24,6 +27,10 @@ type Project struct {
 	Status        string     `bson:"status" json:"status"`
 	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 	LastRunStatus string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
+
+	SchemaIndexStatus    string     `bson:"schema_index_status,omitempty" json:"schema_index_status,omitempty"`
+	SchemaIndexError     string     `bson:"schema_index_error,omitempty" json:"schema_index_error,omitempty"`
+	SchemaIndexUpdatedAt *time.Time `bson:"schema_index_updated_at,omitempty" json:"schema_index_updated_at,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
