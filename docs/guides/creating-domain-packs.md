@@ -115,8 +115,11 @@ You are an autonomous data exploration agent for an e-commerce business. Your jo
 
 **Datasets**: {{DATASET}}
 
-**Tables and Schemas**:
-{{SCHEMA_INFO}}
+**All Tables** (one-line catalog; every run includes this so the LLM can use `inspect_table`):
+{{SCHEMA_CATALOG}}
+
+**Most-Relevant Tables** (full column lists + sample rows for the top-K tables the retriever matched):
+{{SCHEMA_RETRIEVED}}
 
 ## Data Filtering
 

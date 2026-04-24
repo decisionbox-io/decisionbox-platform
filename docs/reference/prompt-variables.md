@@ -10,7 +10,9 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 |----------|---------|---------------|------|
 | `{{PROFILE}}` | `base_context.md` | JSON-encoded project profile | JSON string |
 | `{{PREVIOUS_CONTEXT}}` | `base_context.md` | Previous discoveries + user feedback | Multi-line text |
-| `{{SCHEMA_INFO}}` | `exploration.md` | Warehouse table schemas | JSON string |
+| `{{SCHEMA_CATALOG}}` | `exploration.md` | Level-0 catalog: one line per table (name, column count, row count, keyword hints) | Plain text |
+| `{{SCHEMA_RETRIEVED}}` | `exploration.md` | Level-1 details for top-K tables the retriever matched against the current task | Plain text |
+| `{{SCHEMA_INFO}}` | `exploration.md` | **Deprecated alias.** Renders `{{SCHEMA_CATALOG}}\n\n{{SCHEMA_RETRIEVED}}` back-to-back so pre-v0.4 templates keep working. New templates should use the explicit variables. | Plain text |
 | `{{DATASET}}` | `exploration.md`, `analysis_*.md` | Dataset/schema names | Comma-separated string |
 | `{{FILTER}}` | `exploration.md` | SQL WHERE clause | SQL fragment |
 | `{{FILTER_CONTEXT}}` | `exploration.md` | Human-readable filter description | Text |
@@ -97,37 +99,50 @@ Don't repeat these unless the situation has changed.
 
 **If first run:** Empty string (no previous context).
 
-### {{SCHEMA_INFO}}
+### {{SCHEMA_CATALOG}}
 
-**Source:** Warehouse schema discovery (Phase 3)
+**Source:** Schema renderer, Level 0 (see `docs/guides/schema-indexing.md`)
 
-JSON-encoded table schemas discovered from the warehouse.
+Compact catalog of every table the project indexed in Qdrant.
+One line per table: `name | Nc | Xk/M rows | keyword1, keyword2 | -> joins_to`.
 
 **Example value:**
-```json
-{
-  "tables": [
-    {
-      "name": "analytics_data.users",
-      "columns": [
-        {"name": "user_id", "type": "STRING", "nullable": false},
-        {"name": "created_at", "type": "TIMESTAMP", "nullable": false},
-        {"name": "country", "type": "STRING", "nullable": true}
-      ],
-      "row_count": 50000
-    },
-    {
-      "name": "analytics_data.sessions",
-      "columns": [
-        {"name": "session_id", "type": "STRING", "nullable": false},
-        {"name": "user_id", "type": "STRING", "nullable": false},
-        {"name": "duration_seconds", "type": "INT64", "nullable": true}
-      ],
-      "row_count": 500000
-    }
-  ]
-}
 ```
+analytics_data.users       | 14c | 50K rows   | users, accounts       | -> sessions
+analytics_data.sessions    |  9c | 500K rows  | sessions, activity    | -> users, events
+analytics_data.events      | 22c | 4.2M rows  | events, clickstream
+```
+
+Always included in every exploration prompt (plan §5). Lets the LLM
+see the names of tables it didn't retrieve in Level 1 and request
+them on demand via the `inspect_table` tool.
+
+### {{SCHEMA_RETRIEVED}}
+
+**Source:** Schema renderer, Level 1 — per-project Qdrant retrieval
+against the current task's keywords + domain-pack keywords.
+
+Full column list + 3 sample rows for the top-K tables (K=40 by
+default for tool-capable models, 60 for tool-disabled models;
+override via project `schema_retrieval.top_k`).
+
+**Example value:**
+```
+TABLE analytics_data.users (50K rows)
+  columns:
+    - user_id STRING NOT NULL [primary_key]
+    - created_at TIMESTAMP NOT NULL [time]
+    - country STRING NULL [dimension]
+  sample rows:
+    country=US, created_at=2026-01-15T12:00:00Z, user_id=u123
+    country=TR, created_at=2026-02-03T09:30:00Z, user_id=u456
+```
+
+### {{SCHEMA_INFO}} (deprecated alias)
+
+Renders `{{SCHEMA_CATALOG}}\n\n{{SCHEMA_RETRIEVED}}` back-to-back so
+templates shipped before v0.4 still work. New templates should use
+the explicit variables.
 
 ### {{DATASET}}
 

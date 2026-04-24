@@ -258,7 +258,8 @@ Agent loads prompts (project overrides take priority)
 Agent substitutes template variables:
   {{PROFILE}}         → JSON-encoded project profile
   {{PREVIOUS_CONTEXT}} → Previous discoveries + feedback
-  {{SCHEMA_INFO}}      → Discovered table schemas
+  {{SCHEMA_CATALOG}}    → Level-0 catalog of every table
+  {{SCHEMA_RETRIEVED}}  → Level-1 top-K table details
   {{DATASET}}          → Dataset names
   {{FILTER}}           → WHERE clause for multi-tenant
   {{QUERY_RESULTS}}    → Exploration query results (per area)

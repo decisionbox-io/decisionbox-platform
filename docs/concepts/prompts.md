@@ -26,7 +26,7 @@ exploration.md              ← Main exploration system prompt
 exploration_context.md      ← Category-specific context (e.g., match-3)
 ```
 
-Variables substituted: `{{PROFILE}}`, `{{PREVIOUS_CONTEXT}}`, `{{SCHEMA_INFO}}`, `{{DATASET}}`, `{{FILTER}}`, `{{FILTER_CONTEXT}}`, `{{FILTER_RULE}}`, `{{ANALYSIS_AREAS}}`
+Variables substituted: `{{PROFILE}}`, `{{PREVIOUS_CONTEXT}}`, `{{SCHEMA_CATALOG}}` + `{{SCHEMA_RETRIEVED}}`, `{{DATASET}}`, `{{FILTER}}`, `{{FILTER_CONTEXT}}`, `{{FILTER_RULE}}`, `{{ANALYSIS_AREAS}}`
 
 ### Analysis Prompt (per area)
 
@@ -67,7 +67,7 @@ Used in `exploration.md` and `exploration_context.md`.
 
 | Variable | Source | Description | Example |
 |----------|--------|-------------|---------|
-| `{{SCHEMA_INFO}}` | Warehouse schema discovery | JSON-encoded table schemas (table names, column names/types, row counts). | `{"tables": [{"name": "users", "columns": [{"name": "user_id", "type": "STRING"}, {"name": "created_at", "type": "TIMESTAMP"}], "row_count": 50000}]}` |
+| `{{SCHEMA_CATALOG}}` + `{{SCHEMA_RETRIEVED}}` | Warehouse schema discovery | Three-level schema context: Level 0 (catalog of all tables) + Level 1 (top-K retrieved details). See docs/reference/prompt-variables.md. | `{"tables": [{"name": "users", "columns": [{"name": "user_id", "type": "STRING"}, {"name": "created_at", "type": "TIMESTAMP"}], "row_count": 50000}]}` |
 | `{{DATASET}}` | `project.warehouse.datasets` | Comma-separated dataset/schema names. | `"analytics_data, features_prod"` |
 | `{{FILTER}}` | `project.warehouse.filter_field/value` | SQL WHERE clause for multi-tenant filtering. Empty if no filter configured. | `"WHERE app_id = '68a42f378e3b227c8e41b0e5'"` |
 | `{{FILTER_CONTEXT}}` | Same as filter | Human-readable explanation of the filter. | `"Data is filtered to app_id='68a42f378e3b227c8e41b0e5'. Always include this filter in your queries."` |

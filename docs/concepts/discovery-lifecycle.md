@@ -84,7 +84,7 @@ For each dataset in project.warehouse.datasets:
   Cache schemas for the exploration phase
 ```
 
-Schema information is injected into the exploration prompt via `{{SCHEMA_INFO}}` so the AI knows what tables and columns are available.
+Schema information is injected into the exploration prompt via `{{SCHEMA_CATALOG}}` + `{{SCHEMA_RETRIEVED}}` so the AI knows what tables and columns are available.
 
 ## Phase 4: Exploration
 
