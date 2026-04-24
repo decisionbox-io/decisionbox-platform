@@ -17,6 +17,11 @@ type ProjectRepo interface {
 	Delete(ctx context.Context, id string) error
 	Count(ctx context.Context) (int, error)
 	CountWithWarehouse(ctx context.Context) (int, error)
+	// SetSchemaIndexStatus transitions the project's schema-indexing
+	// lifecycle. See database.ProjectRepository.SetSchemaIndexStatus for
+	// invariants (ready stamps updated_at, failed carries the error,
+	// others clear it).
+	SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.

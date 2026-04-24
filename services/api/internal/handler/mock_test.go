@@ -52,6 +52,14 @@ func (m *mockProjectRepo) Create(_ context.Context, p *models.Project) error {
 	p.ID = fmt.Sprintf("proj-%d", m.nextID)
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = time.Now()
+	// Default to "ready" on insert so existing discovery-trigger tests
+	// don't need to set schema_index_status explicitly. Tests that care
+	// about the pending_indexing → indexing → ready lifecycle (see
+	// projects_test.go and schema_index_test.go) override this by
+	// calling SetSchemaIndexStatus directly.
+	if p.SchemaIndexStatus == "" {
+		p.SchemaIndexStatus = models.SchemaIndexStatusReady
+	}
 	stored := *p
 	m.projects[p.ID] = &stored
 	return nil
@@ -127,6 +135,29 @@ func (m *mockProjectRepo) Count(_ context.Context) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.projects), nil
+}
+
+// SetSchemaIndexStatus mirrors database.ProjectRepository.SetSchemaIndexStatus —
+// in-memory version for the handler unit tests. ready stamps UpdatedAt,
+// failed carries error, other statuses clear error.
+func (m *mockProjectRepo) SetSchemaIndexStatus(_ context.Context, id, status, errMsg string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.projects[id]
+	if !ok {
+		return fmt.Errorf("project not found: %s", id)
+	}
+	p.SchemaIndexStatus = status
+	if status == models.SchemaIndexStatusReady {
+		now := time.Now()
+		p.SchemaIndexUpdatedAt = &now
+	}
+	if status == models.SchemaIndexStatusFailed {
+		p.SchemaIndexError = errMsg
+	} else {
+		p.SchemaIndexError = ""
+	}
+	return nil
 }
 
 func (m *mockProjectRepo) CountWithWarehouse(_ context.Context) (int, error) {
@@ -717,4 +748,8 @@ func (m *mockRunner) Cancel(_ context.Context, runID string) error {
 		return m.cancelErr
 	}
 	return nil
+}
+
+func (m *mockRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
+	return nil // discovery-trigger tests don't exercise indexing
 }

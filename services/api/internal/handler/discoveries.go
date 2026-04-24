@@ -12,6 +12,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 func getEnvOrDefault(key, def string) string {
@@ -127,6 +128,27 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	p, err := h.projectRepo.GetByID(r.Context(), projectID)
 	if err != nil || p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	// Gate on schema-index lifecycle (plan §4 + §8.4): discovery
+	// requires a ready index. Empty status means the project was
+	// created before schema indexing shipped and never migrated —
+	// treat it the same as pending_indexing so the migration path
+	// kicks in on first run. The dashboard polls
+	// /schema-index/status to tell the user what to do next.
+	switch p.SchemaIndexStatus {
+	case models.SchemaIndexStatusReady:
+		// ok — proceed
+	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
+		writeError(w, http.StatusConflict, "schema index is not ready yet — poll /api/v1/projects/"+projectID+"/schema-index/status")
+		return
+	case models.SchemaIndexStatusFailed:
+		writeError(w, http.StatusConflict, "schema indexing failed: "+p.SchemaIndexError+" — click Retry indexing in project settings")
+		return
+	default:
+		// empty status — pre-existing project not yet migrated
+		writeError(w, http.StatusConflict, "project has not been indexed yet — trigger POST /api/v1/projects/"+projectID+"/reindex first")
 		return
 	}
 

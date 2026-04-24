@@ -22,6 +22,9 @@ func (quietRunner) RunSync(_ context.Context, _ runner.RunSyncOptions) (*runner.
 	return &runner.RunSyncResult{}, nil
 }
 func (quietRunner) Cancel(_ context.Context, _ string) error { return nil }
+func (quietRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
+	return nil
+}
 
 // failingRunner simulates a runner that cannot spawn the agent.
 type failingRunner struct{ err error }
@@ -31,6 +34,9 @@ func (f failingRunner) RunSync(_ context.Context, _ runner.RunSyncOptions) (*run
 	return nil, f.err
 }
 func (failingRunner) Cancel(_ context.Context, _ string) error { return nil }
+func (failingRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
+	return nil
+}
 
 func newTriggerRequest(projectID string) *http.Request {
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+projectID+"/discover", strings.NewReader(`{}`))
@@ -47,7 +53,7 @@ func TestDiscoveriesHandler_Trigger_PolicyDeniesStart(t *testing.T) {
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1"}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, quietRunner{})
@@ -77,7 +83,7 @@ func TestDiscoveriesHandler_Trigger_RunnerFailure_ReleasesReservation(t *testing
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1"}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 
@@ -140,7 +146,7 @@ func TestDiscoveriesHandler_Trigger_LimitError_BodyIncludesStructuredFields(t *t
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1"}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, quietRunner{})

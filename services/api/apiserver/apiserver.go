@@ -26,6 +26,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/schemaindex"
@@ -194,12 +195,22 @@ func Run() {
 		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
 	}
 
-	// Schema-index worker: background loop that claims pending_indexing
-	// projects and spawns agent --mode index-schema. Runs only when
-	// Qdrant is configured (mandatory dependency per plan §3.7 — without
-	// it there's nothing to index into).
+	// Schema-index worker + /reindex dropper: both need Qdrant. Without
+	// it the worker is disabled (discovery will 409 until QDRANT_URL is
+	// set), and /reindex returns a nil dropper so the handler falls back
+	// on the worker's own pre-run drop.
 	var schemaIndexCancel context.CancelFunc
+	var schemaDropper *schemaindex.QdrantDropper
 	if cfg.Qdrant.URL != "" {
+		host, port := parseQdrantHostPort(cfg.Qdrant.URL)
+		dropper, err := schemaindex.NewQdrantDropper(host, port, cfg.Qdrant.APIKey, false)
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to connect dropper")
+			os.Exit(1)
+		}
+		schemaDropper = dropper
+		defer func() { _ = dropper.Close() }()
+
 		runnerCfg := runner.LoadConfig()
 		r, err := runner.New(runnerCfg)
 		if err != nil {
@@ -223,7 +234,7 @@ func Run() {
 	}
 
 	// HTTP server
-	handler := server.New(db, healthHandler, secretProvider, authProvider, qdrantProvider)
+	handler := server.New(db, healthHandler, secretProvider, authProvider, droppersAsHandlerInterface(schemaDropper), qdrantProvider)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      ApplyGlobalMiddlewares(handler),
@@ -306,6 +317,32 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 }
 
 // deploymentMethod infers the deployment method from environment signals.
+// droppersAsHandlerInterface adapts a nullable concrete *QdrantDropper
+// to the handler.CollectionDropper interface. When the dropper is nil
+// we pass nil (not a non-nil interface wrapping a nil pointer) so the
+// handler's `if h.dropper != nil` check works.
+func droppersAsHandlerInterface(d *schemaindex.QdrantDropper) handler.CollectionDropper {
+	if d == nil {
+		return nil
+	}
+	return d
+}
+
+// parseQdrantHostPort splits the QDRANT_URL env var into (host, port).
+// Accepts "host", "host:port", and bare IPv4 forms. Returns port=6334
+// when unspecified (Qdrant's gRPC default).
+func parseQdrantHostPort(url string) (string, int) {
+	host := url
+	port := 6334
+	if idx := strings.LastIndex(host, ":"); idx > 0 {
+		if p, err := strconv.Atoi(host[idx+1:]); err == nil {
+			port = p
+			host = host[:idx]
+		}
+	}
+	return host, port
+}
+
 func deploymentMethod() string {
 	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 		return "kubernetes"

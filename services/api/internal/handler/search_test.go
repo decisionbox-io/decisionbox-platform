@@ -45,6 +45,9 @@ func (m *mockProjectRepoForSearch) Count(_ context.Context) (int, error)    { re
 func (m *mockProjectRepoForSearch) CountWithWarehouse(_ context.Context) (int, error) {
 	return 0, nil
 }
+func (m *mockProjectRepoForSearch) SetSchemaIndexStatus(_ context.Context, _, _, _ string) error {
+	return nil
+}
 
 // mockVectorStoreForSearch returns pre-set search results.
 type mockVectorStoreForSearch struct {

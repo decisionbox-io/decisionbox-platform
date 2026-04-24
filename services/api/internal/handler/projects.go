@@ -192,6 +192,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	telemetry.TrackProjectCreated(p.Warehouse.Provider, p.LLM.Provider, p.Domain)
 
+	// Enqueue the new project for schema indexing. A project without a
+	// warehouse (blank-state) cannot be indexed; it will transition to
+	// pending_indexing on its first PUT that adds one. We set this
+	// explicitly rather than defaulting in the repo so reads without a
+	// warehouse still see SchemaIndexStatus == "" (→ "not yet
+	// configured" in the dashboard).
+	if p.Warehouse.Provider != "" {
+		if err := h.repo.SetSchemaIndexStatus(r.Context(), p.ID, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
+			apilog.WithError(err).Warn("schema-index: failed to enqueue new project; user must click Re-index manually")
+		} else {
+			p.SchemaIndexStatus = models.SchemaIndexStatusPendingIndexing
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, p)
 }
 

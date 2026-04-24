@@ -114,6 +114,9 @@ func (r *stubProjectRepo) Update(context.Context, string, *models.Project) error
 func (r *stubProjectRepo) Delete(context.Context, string) error                      { return nil }
 func (r *stubProjectRepo) Count(context.Context) (int, error)                        { return 0, nil }
 func (r *stubProjectRepo) CountWithWarehouse(context.Context) (int, error)           { return 0, nil }
+func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, string) error {
+	return nil
+}
 
 func TestProvidersHandler_ListLiveLLMModelsForProject_ProjectNotFound(t *testing.T) {
 	repo := &stubProjectRepo{project: nil}
