@@ -226,6 +226,15 @@ func Run() {
 			apilog.WithError(err).Error("schemaindex: failed to create worker")
 			os.Exit(1)
 		}
+		// One-shot migration for projects that existed before schema
+		// indexing shipped. Flips warehouse-configured, unindexed
+		// projects to pending_indexing so the worker picks them up.
+		// Idempotent — subsequent restarts find zero matches.
+		if n, mErr := schemaindex.MigratePreExistingProjects(ctx, database.NewProjectRepository(db)); mErr != nil {
+			apilog.WithError(mErr).Warn("schemaindex: migration sweep failed; existing projects can be unblocked via POST /reindex")
+		} else if n > 0 {
+			apilog.WithField("migrated_projects", n).Info("schemaindex: migration sweep completed")
+		}
 		var workerCtx context.Context
 		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
 		go worker.Start(workerCtx)
