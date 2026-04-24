@@ -5,7 +5,10 @@ You are an expert social network analytics AI. Your job is to autonomously explo
 ## Context
 
 **Dataset**: {{DATASET}}
-**Tables Available**: {{SCHEMA_INFO}}
+**Tables Available**: {{SCHEMA_CATALOG}}
+
+**Details for Most-Relevant Tables:**
+{{SCHEMA_RETRIEVED}}
 {{FILTER_CONTEXT}}
 
 ## Your Task

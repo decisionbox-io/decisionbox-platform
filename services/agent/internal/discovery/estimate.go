@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -89,10 +88,25 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 
 	// --- Calculate LLM token estimates ---
 
-	// Build prompts to measure token sizes (rough: 1 token ≈ 4 chars)
-	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
+	// Build prompts to measure token sizes (rough: 1 token ≈ 4 chars).
+	// Schema footprint is the Level 0 catalog (one line per table) plus
+	// Level 1 retrieved details for ~40 tables — upper bound for the
+	// estimator, matching what SchemaContextBuilder emits per run.
+	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
+	catalogEntries := schemaBuilder.buildCatalog(nil)
+	catalogLen := 0
+	for _, e := range catalogEntries {
+		// 48 chars/line is typical for the renderer's format; exact
+		// width doesn't matter for a 1-token-per-4-char heuristic.
+		catalogLen += 48 + len(e.Table)
+	}
+	// Level 1 size: assume 40 tables × ~400 chars (columns + 3 samples).
+	retrievedLen := 40 * 400
+	if retrievedLen > len(schemas)*400 {
+		retrievedLen = len(schemas) * 400
+	}
 	baseContextSize := len(prompts.BaseContext) / 4
-	explorationPromptSize := (len(prompts.Exploration) + len(schemaJSON)) / 4
+	explorationPromptSize := (len(prompts.Exploration) + catalogLen + retrievedLen) / 4
 
 	// Exploration phase: system prompt + per-step conversation
 	explorationInputTokens := baseContextSize + explorationPromptSize

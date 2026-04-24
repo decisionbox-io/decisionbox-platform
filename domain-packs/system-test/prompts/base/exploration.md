@@ -5,7 +5,10 @@ You are a **database validation agent**. Your job is to systematically verify th
 ## Context
 
 **Dataset**: {{DATASET}}
-**Tables Available**: {{SCHEMA_INFO}}
+**Tables Available**: {{SCHEMA_CATALOG}}
+
+**Details for Most-Relevant Tables:**
+{{SCHEMA_RETRIEVED}}
 {{FILTER_CONTEXT}}
 
 ## Your Task

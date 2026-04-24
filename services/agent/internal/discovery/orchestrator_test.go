@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -134,8 +135,7 @@ func TestBuildPreviousContext(t *testing.T) {
 	}
 }
 
-func TestSimplifySchemas(t *testing.T) {
-	o := &Orchestrator{}
+func TestSchemaContextBuilder_SingleTable(t *testing.T) {
 	schemas := map[string]models.TableSchema{
 		"sessions": {
 			TableName: "sessions",
@@ -148,19 +148,19 @@ func TestSimplifySchemas(t *testing.T) {
 			Dimensions: []string{},
 		},
 	}
-
-	simplified := o.simplifySchemas(schemas)
-
-	if _, ok := simplified["sessions"]; !ok {
-		t.Fatal("should contain sessions table")
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r, err := b.BuildOnce(context.Background(), "p1", "explore sessions", 5, []string{"sessions"})
+	if err != nil {
+		t.Fatalf("BuildOnce: %v", err)
 	}
-	table := simplified["sessions"].(map[string]interface{})
-	if table["row_count"].(int64) != 1000 {
-		t.Error("row_count should be 1000")
+	if !contains(r.Catalog, "sessions") {
+		t.Errorf("catalog missing table: %s", r.Catalog)
 	}
-	cols := table["columns"].([]map[string]string)
-	if len(cols) != 2 {
-		t.Errorf("columns = %d, want 2", len(cols))
+	if !contains(r.Catalog, "2c") {
+		t.Errorf("column count missing from catalog line: %s", r.Catalog)
+	}
+	if !contains(r.Retrieved, "user_id") {
+		t.Errorf("retrieved block missing column detail: %s", r.Retrieved)
 	}
 }
 
@@ -674,44 +674,73 @@ func TestNewSchemaDiscovery(t *testing.T) {
 	}
 }
 
-// --- simplifySchemas: additional cases ---
+// --- SchemaContextBuilder: additional cases ---
 
-func TestSimplifySchemas_Empty(t *testing.T) {
-	o := &Orchestrator{}
-	simplified := o.simplifySchemas(map[string]models.TableSchema{})
-
-	if len(simplified) != 0 {
-		t.Errorf("simplified = %d, want 0", len(simplified))
+func TestSchemaContextBuilder_Empty(t *testing.T) {
+	b := &SchemaContextBuilder{Schemas: map[string]models.TableSchema{}}
+	r, err := b.BuildOnce(context.Background(), "p", "", 10, nil)
+	if err != nil {
+		t.Fatalf("BuildOnce: %v", err)
+	}
+	if !contains(r.Catalog, "no tables") {
+		t.Errorf("empty catalog should say 'no tables', got %q", r.Catalog)
+	}
+	if r.TopK != 0 {
+		t.Errorf("top-K on empty schemas = %d", r.TopK)
 	}
 }
 
-func TestSimplifySchemas_MultipleTablesWithAllFields(t *testing.T) {
-	o := &Orchestrator{}
+func TestSchemaContextBuilder_MultipleTablesWithAllFields(t *testing.T) {
 	schemas := map[string]models.TableSchema{
 		"events.sessions": {
-			TableName: "events.sessions",
-			RowCount:  10000,
-			Columns: []models.ColumnInfo{
-				{Name: "user_id", Type: "STRING", Category: "primary_key"},
-			},
+			TableName:  "events.sessions",
+			RowCount:   10000,
+			Columns:    []models.ColumnInfo{{Name: "user_id", Type: "STRING", Category: "primary_key"}},
 			Metrics:    []string{"duration"},
 			Dimensions: []string{"country"},
 		},
 		"events.users": {
 			TableName: "events.users",
 			RowCount:  5000,
-			Columns:   []models.ColumnInfo{},
+			Columns:   []models.ColumnInfo{{Name: "id"}},
 		},
 	}
-
-	simplified := o.simplifySchemas(schemas)
-	if len(simplified) != 2 {
-		t.Errorf("simplified = %d, want 2", len(simplified))
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r, err := b.BuildOnce(context.Background(), "p", "users", 10, []string{"users"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	// Both tables should land in the catalog line-count.
+	if strings.Count(r.Catalog, "\n")+1 < 2 {
+		t.Errorf("catalog should render both tables, got %q", r.Catalog)
+	}
+	// Level 1: the users table (keyword match) must be present.
+	if !contains(r.Retrieved, "events.users") {
+		t.Errorf("retrieved should include events.users: %s", r.Retrieved)
+	}
+}
 
-	sessions := simplified["events.sessions"].(map[string]interface{})
-	if sessions["row_count"].(int64) != 10000 {
-		t.Error("row_count should be 10000")
+func TestSchemaContextBuilder_KeywordBoostAddsHint(t *testing.T) {
+	schemas := map[string]models.TableSchema{
+		"sales_orders": {
+			TableName: "sales_orders", RowCount: 1, Columns: []models.ColumnInfo{{Name: "id"}},
+		},
+	}
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r, _ := b.BuildOnce(context.Background(), "p", "sales", 10, []string{"sales"})
+	if !contains(r.Catalog, "sales") {
+		t.Errorf("keyword hint missing: %s", r.Catalog)
+	}
+}
+
+func TestCollectAreaKeywords_Dedupes(t *testing.T) {
+	o := &Orchestrator{}
+	got := o.collectAreaKeywords([]AnalysisArea{
+		{Keywords: []string{"churn", "retention"}},
+		{Keywords: []string{"retention", "revenue", ""}},
+	})
+	if len(got) != 3 {
+		t.Errorf("keywords = %v, want 3 unique", got)
 	}
 }
 

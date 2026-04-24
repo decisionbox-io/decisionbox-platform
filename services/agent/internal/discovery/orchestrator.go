@@ -15,6 +15,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -73,6 +74,13 @@ type Orchestrator struct {
 	vectorStore       vectorstore.Provider
 	embeddingProvider goembedding.Provider
 	embedIndexStore   EmbedIndexStore
+
+	// embedder + schemaRetriever are the Phase B Qdrant-backed retrieval
+	// layer; both nil on legacy runs (project index not yet built).
+	// Schemas are still discovered locally for Level 0, so the orchestrator
+	// works in both modes.
+	embedder        Embedder
+	schemaRetriever *schema_retrieve.Retriever
 }
 
 // OrchestratorOptions configures the orchestrator.
@@ -106,6 +114,12 @@ type OrchestratorOptions struct {
 
 	// EmbedIndexStore is needed for Phase 9 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
+
+	// SchemaRetriever is the Phase B Qdrant-backed retrieval layer for
+	// the schema-indexing pipeline. Optional — nil falls back to the
+	// local keyword-match heuristic in SchemaContextBuilder. Supplied
+	// when the project's schema_index_status is ready.
+	SchemaRetriever *schema_retrieve.Retriever
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -168,6 +182,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		vectorStore:        opts.VectorStore,
 		embeddingProvider:  opts.EmbeddingProvider,
 		embedIndexStore:    opts.EmbedIndexStore,
+		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:    opts.SchemaRetriever,
 	}
 }
 
@@ -272,13 +288,43 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("tables", len(schemas)).Info("Schemas discovered")
 
-	// Build context for prompts
-	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
+	// Build three-level schema context (PLAN-SCHEMA-RETRIEVAL.md §5):
+	//   Level 0 = one-line catalog of every table, always included
+	//   Level 1 = top-K tables for the current task (full columns + samples)
+	//   Level 2 = inspect_table tool for tool-capable models (Phase B7)
+	//
+	// The retriever and embedder passed in by the orchestrator wiring
+	// may be nil (tests without Qdrant, projects still on the legacy
+	// flow). In that case the builder falls back to keyword-substring
+	// matching over the already-discovered schema list, which matches
+	// what the old full-JSON dump did in spirit but at a fraction of
+	// the prompt-token cost.
+	schemaBuilder := &SchemaContextBuilder{
+		Embedder:  o.embedder,
+		Retriever: o.schemaRetriever,
+		Schemas:   schemas,
+	}
+	schemaQuery := "data analysis across datasets: " + datasetsStr + "; " + o.areaNamesCSV(analysisAreas)
+	keywords := o.collectAreaKeywords(analysisAreas)
+	rendered, err := schemaBuilder.BuildOnce(ctx, o.projectID, schemaQuery, 0, keywords)
+	if err != nil {
+		return nil, fmt.Errorf("schema context: %w", err)
+	}
+	applog.WithFields(applog.Fields{
+		"tables":          len(schemas),
+		"catalog_tokens":  rendered.CatalogTokens,
+		"retrieved_tokens": rendered.RetrievedTokens,
+		"top_k":           rendered.TopK,
+		"catalog_dropped": rendered.CatalogDropped,
+	}).Info("Schema context built")
 
-	// Provide schema context to SQL fixer and insight validator
-	sqlFixer.SetSchemaContext(string(schemaJSON))
+	// SQL fixer + insight validator still consume a single "context"
+	// string. Feed them the Level-0 catalog — they don't need the
+	// full retrieved block (sample rows aren't useful when the goal is
+	// to map an error back to a table name).
+	sqlFixer.SetSchemaContext(rendered.Catalog)
 	if o.insightValidator != nil {
-		o.insightValidator.SetSchemaContext(string(schemaJSON))
+		o.insightValidator.SetSchemaContext(rendered.Catalog)
 	}
 
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
@@ -296,7 +342,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Prepare exploration prompt: base context + exploration-specific content
 	explorationPrompt := baseContext + "\n\n" + prompts.Exploration
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{DATASET}}", datasetsStr)
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", string(schemaJSON))
+	// Three-level schema block. {{SCHEMA_INFO}} is kept as a convenience
+	// alias that renders "catalog + retrieved" back-to-back — old domain
+	// packs are migrated to explicit {{SCHEMA_CATALOG}} + {{SCHEMA_RETRIEVED}}
+	// template variables in the same change that introduced this layer.
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_CATALOG}}", rendered.Catalog)
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_RETRIEVED}}", rendered.Retrieved)
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", rendered.Catalog+"\n\n"+rendered.Retrieved)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER}}", filterClause)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
@@ -836,24 +888,6 @@ func (o *Orchestrator) buildPreviousContext(
 	return sb.String()
 }
 
-func (o *Orchestrator) simplifySchemas(schemas map[string]models.TableSchema) map[string]interface{} {
-	simplified := make(map[string]interface{})
-	for name, schema := range schemas {
-		cols := make([]map[string]string, 0, len(schema.Columns))
-		for _, col := range schema.Columns {
-			cols = append(cols, map[string]string{
-				"name": col.Name, "type": col.Type, "category": col.Category,
-			})
-		}
-		simplified[name] = map[string]interface{}{
-			"row_count":  schema.RowCount,
-			"columns":    cols,
-			"metrics":    schema.Metrics,
-			"dimensions": schema.Dimensions,
-		}
-	}
-	return simplified
-}
 
 func (o *Orchestrator) loadProjectContext(ctx context.Context) (*models.ProjectContext, error) {
 	return o.contextRepo.GetByProjectID(ctx, o.projectID)
@@ -1095,6 +1129,28 @@ func (o *Orchestrator) areaNamesCSV(areas []AnalysisArea) string {
 		names = append(names, a.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// collectAreaKeywords flattens the keyword lists from every analysis area
+// into one de-duplicated slice. Used by the schema-context builder for
+// Level 0 hint tagging and Level 1 sparse-keyword re-rank.
+func (o *Orchestrator) collectAreaKeywords(areas []AnalysisArea) []string {
+	seen := make(map[string]struct{}, 4*len(areas))
+	out := make([]string, 0, 4*len(areas))
+	for _, a := range areas {
+		for _, k := range a.Keywords {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // recommendationsKnowledgeQuery builds the retrieval query string for the
