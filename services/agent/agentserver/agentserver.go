@@ -77,6 +77,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse' or 'llm'")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit (default: run discovery).")
 	)
 
 	flag.Parse()
@@ -90,6 +91,25 @@ func Run() {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// index-schema mode is the Phase B pipeline: drop Qdrant collection →
+	// list tables → blurb + embed → upsert → exit. Runs before logger
+	// init so the exit-code semantics stay clean for the API worker loop
+	// that spawned this subprocess.
+	if *mode == "index-schema" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		defer applog.Sync()
+		if err := runIndexSchema(cfg, *projectID, *runID); err != nil {
+			applog.WithError(err).Error("Schema index failed")
+			applog.Sync()
+			os.Exit(1)
+		}
+		return
+	}
+	if *mode != "" {
+		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema' or empty)\n", *mode)
 		os.Exit(1)
 	}
 
