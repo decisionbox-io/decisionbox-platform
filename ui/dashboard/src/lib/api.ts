@@ -166,6 +166,29 @@ export interface SchemaIndexStatus {
   progress?: SchemaIndexProgress;
 }
 
+// EmbeddingLiveModel is one row from the embedding live-list endpoint.
+// Mirrors LiveModel (LLM) but with dimensions instead of wire — that's
+// the dimension badge the dashboard renders in the picker, and the
+// field that actually matters for Qdrant collection compatibility.
+export interface EmbeddingLiveModel {
+  id: string;
+  display_name: string;
+  dimensions: number;
+  lifecycle?: string;
+  source: 'catalog' | 'live' | 'both';
+}
+
+export interface EmbeddingLiveModelsResponse {
+  models: EmbeddingLiveModel[];
+  live_error?: string;
+}
+
+export interface SchemaIndexLogLine {
+  run_id: string;
+  line: string;
+  created_at: string;
+}
+
 export interface EmbeddingConfig {
   provider: string;
   model: string;
@@ -766,6 +789,18 @@ export const api = {
     request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
   reindexSchema: (projectId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/reindex`, { method: 'POST' }),
+  // listSchemaIndexLogs returns agent stderr lines captured during
+  // indexing runs. `since` (ISO 8601) cursor keeps the tail poll cheap —
+  // only lines newer than the timestamp come back.
+  listSchemaIndexLogs: (projectId: string, since?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaIndexLogLine[]>(
+      `/api/v1/projects/${projectId}/schema-index/logs${qs ? '?' + qs : ''}`
+    );
+  },
 
   // Discovery
   //
@@ -840,6 +875,20 @@ export const api = {
 
   // Embedding providers
   listEmbeddingProviders: () => request<EmbeddingProviderMeta[]>('/api/v1/providers/embedding'),
+  // Live-list parity with LLM: the dashboard's shared "Load models"
+  // phase hits this endpoint with user-entered credentials. Response
+  // merges shipped catalog + live-upstream rows — see
+  // writeEmbeddingLiveModelsResponse on the API side.
+  listLiveEmbeddingModels: (providerID: string, config: Record<string, string>) =>
+    request<EmbeddingLiveModelsResponse>(
+      `/api/v1/providers/embedding/${encodeURIComponent(providerID)}/models/live`,
+      { method: 'POST', body: JSON.stringify({ config }) }
+    ),
+  listLiveEmbeddingModelsForProject: (projectID: string) =>
+    request<EmbeddingLiveModelsResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectID)}/providers/embedding/models/live`,
+      { method: 'POST', body: JSON.stringify({}) }
+    ),
 
   // Vector search
   searchInsights: (projectId: string, req: SearchRequest) =>

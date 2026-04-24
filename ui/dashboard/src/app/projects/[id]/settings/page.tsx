@@ -10,6 +10,8 @@ import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
+import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
+import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
 import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
@@ -61,10 +63,17 @@ export default function ProjectSettingsPage() {
 
   // Embedding state
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
-  const [embProvider, setEmbProvider] = useState('');
-  const [embModel, setEmbModel] = useState('');
-  const [embApiKey, setEmbApiKey] = useState('');
+  // Unified embedding editor state. Parallels the blurb editor state
+  // shape so both settings panels follow the same "edit here → save
+  // via project PUT + secret rotation" pattern.
+  const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
   const [savingEmbKey, setSavingEmbKey] = useState(false);
+
+  // Blurb LLM state — per-project override for the schema-indexing
+  // model (PLAN-SCHEMA-RETRIEVAL.md §6.2). Disabled by default; the
+  // agent falls back to project.llm + llm-api-key when blurb_llm is nil.
+  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
+  const [savingBlurbKey, setSavingBlurbKey] = useState(false);
 
   // Warn on browser close/refresh with unsaved changes
   useEffect(() => {
@@ -88,7 +97,7 @@ export default function ProjectSettingsPage() {
   // deep-links like `/projects/:id/settings#advanced` open the right tab.
   // The set of valid tab values must match the `<Tabs.Tab value=...>` IDs
   // below; an unknown hash is ignored.
-  const validTabs = ['general', 'warehouse', 'ai', 'embedding', 'schedule', 'profile', 'advanced'];
+  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'embedding', 'schedule', 'profile', 'advanced'];
   const [activeTab, setActiveTab] = useState<string>('general');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -174,8 +183,27 @@ export default function ProjectSettingsPage() {
               setLiveError((e as Error).message);
             });
         }
-        setEmbProvider(proj.embedding?.provider || '');
-        setEmbModel(proj.embedding?.model || '');
+        setEmbedding({
+          provider: proj.embedding?.provider || '',
+          model: proj.embedding?.model || '',
+          config: {},
+          // Saved key never round-trips back from the server — user
+          // re-enters only when rotating.
+          apiKey: '',
+        });
+        // Blurb LLM: hydrate from the saved project doc. When
+        // blurb_llm is nil the editor renders "use analysis LLM".
+        if (proj.blurb_llm && proj.blurb_llm.provider) {
+          setBlurb({
+            enabled: true,
+            provider: proj.blurb_llm.provider,
+            model: proj.blurb_llm.model || '',
+            config: proj.blurb_llm.config || {},
+            apiKey: '', // API key is never sent back — user re-enters to rotate.
+          });
+        } else {
+          setBlurb(emptyBlurbLLMState());
+        }
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -215,10 +243,56 @@ export default function ProjectSettingsPage() {
           ),
         },
         llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-        embedding: { provider: embProvider, model: embModel },
+        // When the user toggles the blurb override off, send blurb_llm
+        // with empty strings — the Go JSON unmarshaller drops it with
+        // `omitempty` via the pointer type, which tells the indexer to
+        // fall back to the analysis LLM on the next run.
+        blurb_llm:
+          blurb.enabled && blurb.provider && blurb.model
+            ? {
+                provider: blurb.provider,
+                model: blurb.model,
+                config: Object.fromEntries(
+                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key')
+                ),
+              }
+            : undefined,
+        embedding: { provider: embedding.provider, model: embedding.model },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
         profile,
       });
+
+      // Rotate the blurb-LLM api key if the user entered one. A blank
+      // field means "leave the stored key alone" — we never auto-delete
+      // the secret on save.
+      if (blurb.enabled && blurb.apiKey) {
+        try {
+          setSavingBlurbKey(true);
+          await api.setSecret(id, 'blurb-llm-api-key', blurb.apiKey);
+          setBlurb((prev) => ({ ...prev, apiKey: '' }));
+        } catch (e: unknown) {
+          notifications.show({ title: 'Blurb LLM key save failed', message: (e as Error).message, color: 'red' });
+        } finally {
+          setSavingBlurbKey(false);
+        }
+      }
+
+      // Same pattern for the embedding api key — blank field means
+      // "keep the stored key", any value rotates.
+      if (embedding.apiKey) {
+        try {
+          setSavingEmbKey(true);
+          await api.setSecret(id, 'embedding-api-key', embedding.apiKey);
+          setEmbedding((prev) => ({ ...prev, apiKey: '' }));
+          // Refresh the secrets list so the panel's "Current key" hint
+          // reflects the new mask without a page reload.
+          api.listSecrets(id).then((s) => setSecretsList(s || [])).catch(() => {});
+        } catch (e: unknown) {
+          notifications.show({ title: 'Embedding key save failed', message: (e as Error).message, color: 'red' });
+        } finally {
+          setSavingEmbKey(false);
+        }
+      }
 
       // Sync local project state with the saved payload so derived
       // flags (e.g. setupMode = llmProvider !== project.llm.provider)
@@ -232,7 +306,7 @@ export default function ProjectSettingsPage() {
           name, description,
           warehouse: { ...prev.warehouse, provider: whProvider, datasets: datasetsList, location: whConfig['location'] || '', filter_field: filterField, filter_value: filterValue, project_id: whConfig['project_id'] || '', config: prev.warehouse.config },
           llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-          embedding: { ...(prev.embedding || {}), provider: embProvider, model: embModel },
+          embedding: { ...(prev.embedding || {}), provider: embedding.provider, model: embedding.model },
           schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
           profile,
         };
@@ -309,6 +383,7 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
           <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
+          <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>
           <Tabs.Tab value="embedding">Embedding &amp; Search</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
@@ -672,89 +747,50 @@ export default function ProjectSettingsPage() {
           </SettingsSection>
         </Tabs.Panel>
 
+        {/* Blurb LLM — schema-indexing model (plan §6.2) */}
+        <Tabs.Panel value="blurb">
+          <SettingsSection>
+            <Text size="sm" fw={500}>Blurb Model</Text>
+            <Text size="xs" c="dimmed" mb="sm">
+              The LLM used during schema indexing to generate the per-table
+              descriptions that get embedded into Qdrant. By default this
+              reuses your analysis LLM; override here to pick a cheaper /
+              faster model (spike defaults: Bedrock <code>qwen.qwen3-32b-v1:0</code>,
+              OpenAI <code>gpt-4.1-nano</code>). Changes apply to the next
+              re-index — click <b>Re-index schema</b> on the project page
+              after saving.
+            </Text>
+            <BlurbLLMEditor
+              llmProviders={llmProviders}
+              value={blurb}
+              onChange={(next) => { setBlurb(next); setDirty(true); }}
+              startInModelPhase={!!project?.blurb_llm?.provider}
+              footer={
+                savingBlurbKey ? (
+                  <Text size="xs" c="dimmed">Saving blurb LLM key…</Text>
+                ) : null
+              }
+            />
+          </SettingsSection>
+        </Tabs.Panel>
+
         {/* Embedding & Search */}
         <Tabs.Panel value="embedding">
           <SettingsSection>
             <Text size="sm" fw={500}>Embedding Provider</Text>
             <Text size="xs" c="dimmed" mb="sm">
-              Configure an embedding provider to enable semantic search across your insights and recommendations.
+              Required for schema indexing and semantic search. Use the same picker as the LLM provider — pick a provider, enter credentials, load models.
+              {secretsList.some(s => s.key === 'embedding-api-key') ? (
+                <> Current key: <b>{secretsList.find(s => s.key === 'embedding-api-key')?.masked}</b>. Leave the key field blank to keep it.</>
+              ) : null}
             </Text>
-
-            <Select
-              label="Provider"
-              placeholder="Select embedding provider"
-              value={embProvider || null}
-              onChange={(v) => {
-                setEmbProvider(v || '');
-                setEmbModel('');
-                setDirty(true);
-              }}
-              data={embeddingProviders.map(p => ({ value: p.id, label: p.name }))}
-              clearable
+            <EmbeddingEditor
+              providers={embeddingProviders}
+              value={embedding}
+              onChange={(next) => { setEmbedding(next); setDirty(true); }}
+              startInModelPhase={!!project?.embedding?.provider}
             />
-
-            {embProvider && (() => {
-              const selectedEmb = embeddingProviders.find(p => p.id === embProvider);
-              if (!selectedEmb) return null;
-              return (
-                <>
-                  <Select
-                    label="Model"
-                    placeholder="Select model"
-                    value={embModel || null}
-                    onChange={(v) => { setEmbModel(v || ''); setDirty(true); }}
-                    data={selectedEmb.models.map(m => ({
-                      value: m.id,
-                      label: `${m.name} (${m.dimensions}d)`,
-                    }))}
-                  />
-
-                  {selectedEmb.config_fields.some(f => f.type === 'credential') && (
-                    <>
-                      <Text size="sm" fw={500} mt="md">Embedding API Key</Text>
-                      {secretsList.some(s => s.key === 'embedding-api-key') ? (
-                        <Text size="xs" c="dimmed">
-                          Key set: {secretsList.find(s => s.key === 'embedding-api-key')?.masked}
-                        </Text>
-                      ) : (
-                        <Text size="xs" c="orange">No API key configured yet.</Text>
-                      )}
-                      <Group>
-                        <TextInput
-                          placeholder="sk-..."
-                          value={embApiKey}
-                          onChange={(e) => setEmbApiKey(e.currentTarget.value)}
-                          type="password"
-                          style={{ flex: 1 }}
-                        />
-                        <Button size="sm" loading={savingEmbKey} disabled={!embApiKey} onClick={async () => {
-                          setSavingEmbKey(true);
-                          try {
-                            await api.setSecret(id, 'embedding-api-key', embApiKey);
-                            setEmbApiKey('');
-                            notifications.show({ title: 'Saved', message: 'Embedding API key updated', color: 'green' });
-                            const s = await api.listSecrets(id);
-                            setSecretsList(s || []);
-                          } catch (e: unknown) {
-                            notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                          } finally {
-                            setSavingEmbKey(false);
-                          }
-                        }}>
-                          Update Key
-                        </Button>
-                      </Group>
-                    </>
-                  )}
-                </>
-              );
-            })()}
-
-            {!embProvider && (
-              <Text size="xs" c="dimmed" mt="sm">
-                Search and &ldquo;Ask Insights&rdquo; features require an embedding provider. You can skip this and configure it later.
-              </Text>
-            )}
+            {savingEmbKey && <Text size="xs" c="dimmed" mt="xs">Saving embedding API key…</Text>}
           </SettingsSection>
         </Tabs.Panel>
 
@@ -792,8 +828,8 @@ export default function ProjectSettingsPage() {
             <Stack gap="sm">
               <Text size="sm" fw={500}>Debugging</Text>
               <Switch
-                label="Show debug logs during discovery"
-                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel. Useful for troubleshooting stalled runs or understanding what the agent is doing step by step."
+                label="Show debug logs during discovery and indexing"
+                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel, and a live agent-stderr tail to the schema-index panel on this project's page. Useful for troubleshooting stalled runs or watching what the agent is doing in real time."
                 checked={debugLogsEnabled}
                 onChange={(e) => {
                   const next = e.currentTarget.checked;
@@ -804,7 +840,7 @@ export default function ProjectSettingsPage() {
                 }}
               />
               <Text size="xs" c="dimmed">
-                This is a local-browser preference — it is not shared with other users or saved on the project.
+                This is a local-browser preference — not shared with other users and not saved on the project. The indexing log tail is always captured server-side for 7 days; this toggle only controls whether the UI renders it.
               </Text>
             </Stack>
           </SettingsSection>
