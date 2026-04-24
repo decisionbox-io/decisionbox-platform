@@ -91,9 +91,15 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 				"i":       i + 1,
 				"of":      len(tables),
 			}).Info("Discovering table schema")
+			tableStart := time.Now()
 			schema, err := s.discoverTable(ctx, dataset, tableName)
 			if err != nil {
-				logger.WithFields(logger.Fields{"table": tableName, "dataset": dataset, "error": err.Error()}).Warn("Failed to discover table, skipping")
+				logger.WithFields(logger.Fields{
+					"table":   tableName,
+					"dataset": dataset,
+					"error":   err.Error(),
+					"elapsed": time.Since(tableStart).String(),
+				}).Warn("Failed to discover table, skipping")
 				if s.onTableDiscovered != nil {
 					s.onTableDiscovered(dataset, tableName, false)
 				}
@@ -118,13 +124,28 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	return allSchemas, nil
 }
 
+// perTableTimeout bounds how long a single table's schema + sample can
+// take. A rogue MSSQL catalog view or a pathological linked-server table
+// can hang `GetTableSchemaInDataset` indefinitely, wedging the entire
+// indexing run. Two minutes is generous for well-behaved warehouses and
+// short enough that a 1400-table run still completes in bounded time
+// even if several tables each exhaust their budget.
+const perTableTimeout = 2 * time.Minute
+
 // discoverTable discovers the schema for a specific table using the provider.
+// Enforces perTableTimeout so a single stuck catalog query doesn't block
+// the rest of the discovery pass.
 func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName string) (*models.TableSchema, error) {
 	qualifiedName := fmt.Sprintf("%s.%s", dataset, tableName)
 
-	// Use provider's multi-dataset schema method
-	whSchema, err := s.warehouse.GetTableSchemaInDataset(ctx, dataset, tableName)
+	tableCtx, cancel := context.WithTimeout(ctx, perTableTimeout)
+	defer cancel()
+
+	whSchema, err := s.warehouse.GetTableSchemaInDataset(tableCtx, dataset, tableName)
 	if err != nil {
+		if tableCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("get schema: timed out after %s (warehouse never responded)", perTableTimeout)
+		}
 		return nil, fmt.Errorf("get schema: %w", err)
 	}
 
@@ -149,8 +170,9 @@ func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName 
 		categorizeColumn(&colInfo, schema)
 	}
 
-	// Get sample data
-	sampleData, err := s.getSampleData(ctx, dataset, tableName)
+	// Get sample data under the same per-table budget — a slow SELECT
+	// against a hostile table shouldn't extend the discovery pass either.
+	sampleData, err := s.getSampleData(tableCtx, dataset, tableName)
 	if err == nil {
 		schema.SampleData = sampleData
 	}
