@@ -62,6 +62,46 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 	return err
 }
 
+// RecordSchemaContextTelemetry stamps the one-shot counters that describe
+// the schema context the run used (plan §15). Called once, immediately
+// after the schema renderer builds the context; the inspect_table call
+// counter is updated separately via IncrementInspectTableCalls each time
+// the engine services a tool call.
+func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount, topK int) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_tokens":              tokens,
+			"schema_table_count":         tableCount,
+			"schema_retrieval_top_k_used": topK,
+			"updated_at":                 time.Now(),
+		},
+	}
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
+// IncrementInspectTableCalls atomically bumps the inspect_table counter
+// on a run. Safe to call under concurrent tool-call servicing.
+func (r *RunRepository) IncrementInspectTableCalls(ctx context.Context, runID string, delta int) error {
+	if delta <= 0 {
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	update := bson.M{
+		"$inc": bson.M{"schema_inspect_table_calls": delta},
+		"$set": bson.M{"updated_at": time.Now()},
+	}
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
 // AddStep appends a step to the run's step log.
 func (r *RunRepository) AddStep(ctx context.Context, runID string, step models.RunStep) error {
 	oid, err := primitive.ObjectIDFromHex(runID)

@@ -24,6 +24,14 @@ type DiscoveryRun struct {
 	FailedQueries     int `bson:"failed_queries" json:"failed_queries"`
 	InsightsFound     int `bson:"insights_found" json:"insights_found"`
 
+	// Schema-retrieval telemetry (plan §15). Stamped once at run start
+	// from the rendered schema context, plus inspect_table-call counter
+	// that increments as the engine services tool calls.
+	SchemaTokens             int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
+	SchemaTableCount         int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
+	SchemaRetrievalTopKUsed  int `bson:"schema_retrieval_top_k_used,omitempty" json:"schema_retrieval_top_k_used,omitempty"`
+	SchemaInspectTableCalls  int `bson:"schema_inspect_table_calls,omitempty" json:"schema_inspect_table_calls,omitempty"`
+
 	// PolicyReservationID is the reservation the API opened when the run
 	// was triggered (plan-gated concurrent-runs-per-project and
 	// runs-per-period counters). Empty when the policy Checker is Noop

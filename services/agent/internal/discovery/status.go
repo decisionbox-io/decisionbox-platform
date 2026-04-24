@@ -202,6 +202,29 @@ func (s *StatusReporter) Complete(ctx context.Context, insightsFound int) {
 	}
 }
 
+// RecordSchemaTelemetry stamps the rendered schema-context counters on
+// the run doc. No-op when status reporting is disabled (agent run
+// without API).
+func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tableCount, topK int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount, topK); err != nil {
+		logger.WithError(err).Warn("failed to record schema-context telemetry")
+	}
+}
+
+// IncrementInspectTableCalls bumps the inspect_table counter on the
+// run doc. Safe under concurrent tool-call servicing.
+func (s *StatusReporter) IncrementInspectTableCalls(ctx context.Context, delta int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.IncrementInspectTableCalls(ctx, s.runID, delta); err != nil {
+		logger.WithError(err).Warn("failed to increment inspect_table calls")
+	}
+}
+
 // Fail marks the run as failed.
 func (s *StatusReporter) Fail(ctx context.Context, errMsg string) {
 	if !s.enabled() {

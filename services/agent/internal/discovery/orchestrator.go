@@ -318,6 +318,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"catalog_dropped": rendered.CatalogDropped,
 	}).Info("Schema context built")
 
+	// Stamp plan §15 telemetry on the run document.
+	o.statusReporter.RecordSchemaTelemetry(ctx,
+		rendered.CatalogTokens+rendered.RetrievedTokens,
+		len(schemas),
+		rendered.TopK,
+	)
+
 	// SQL fixer + insight validator still consume a single "context"
 	// string. Feed them the Level-0 catalog — they don't need the
 	// full retrieved block (sample rows aren't useful when the goal is
