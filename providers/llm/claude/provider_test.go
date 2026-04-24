@@ -149,10 +149,7 @@ func TestChat_Headers(t *testing.T) {
 
 		resp := claudeResponse{
 			Model: "claude-sonnet-4-20250514",
-			Content: []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}{{Type: "text", Text: "ok"}},
+			Content: []claudeResponseContent{{Type: "text", Text: "ok"}},
 			StopReason: "end_turn",
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -290,12 +287,7 @@ func TestChat_Success(t *testing.T) {
 		resp := claudeResponse{
 			ID:    "msg_success_123",
 			Model: req.Model,
-			Content: []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}{
-				{Type: "text", Text: "The answer is 42."},
-			},
+			Content: []claudeResponseContent{{Type: "text", Text: "The answer is 42."}},
 			StopReason: "end_turn",
 			Usage: struct {
 				InputTokens  int `json:"input_tokens"`
@@ -367,12 +359,7 @@ func TestChat_TokenCounting(t *testing.T) {
 		resp := claudeResponse{
 			ID:    "msg_tokens_456",
 			Model: "claude-sonnet-4-20250514",
-			Content: []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}{
-				{Type: "text", Text: "Short response."},
-			},
+			Content: []claudeResponseContent{{Type: "text", Text: "Short response."}},
 			StopReason: "max_tokens",
 			Usage: struct {
 				InputTokens  int `json:"input_tokens"`

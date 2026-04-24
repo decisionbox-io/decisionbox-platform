@@ -14,6 +14,19 @@ import (
 // chatGoogleNative sends a request to a Google-native model (Gemini) on
 // Vertex AI using the generateContent REST API.
 func (p *VertexAIProvider) chatGoogleNative(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Gemini supports function calling natively, but the agent's tool-
+	// dependent flows route to Anthropic/Bedrock today. Wiring Gemini
+	// tools-use through the neutral interface is not in scope for this
+	// phase; reject explicitly so callers don't silently lose tool defs.
+	if len(req.Tools) > 0 {
+		return nil, fmt.Errorf("vertex-ai/google-native: %w (use direct Anthropic, Bedrock, or OpenAI for tool-dependent flows)", gollm.ErrToolsNotSupported)
+	}
+	for _, m := range req.Messages {
+		if len(m.ToolResults) > 0 {
+			return nil, fmt.Errorf("vertex-ai/google-native: tool_results in message but tools not supported: %w", gollm.ErrToolsNotSupported)
+		}
+	}
+
 	// Build Gemini request
 	contents := make([]geminiContent, 0, len(req.Messages)+1)
 

@@ -34,6 +34,14 @@ type ProviderMeta struct {
 	// provider has no catalog entries the slice is empty and the UI
 	// falls back to plain text input.
 	Models []ModelInfo `json:"models,omitempty"`
+
+	// SupportsTools declares whether the provider's Chat method honours
+	// ChatRequest.Tools. When false, callers with a tool-dependent flow
+	// (inspect_table during discovery, /ask function-calling) must pick
+	// a different provider or skip the tool. When true, the provider
+	// emits tool_calls on the ChatResponse when the model decides to
+	// invoke one.
+	SupportsTools bool `json:"supports_tools"`
 }
 
 // ModelInfo is the per-model catalog snapshot the dashboard needs to

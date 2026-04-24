@@ -14,6 +14,18 @@ import (
 // chatAnthropic sends a request to a Claude model on Vertex AI.
 // Uses the Anthropic Messages API format via Vertex AI's rawPredict endpoint.
 func (p *VertexAIProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Tool-use on Vertex Claude wire would need the same block plumbing
+	// as Bedrock + direct Anthropic. Not yet implemented — tool-dependent
+	// flows should route to direct Anthropic or Bedrock.
+	if len(req.Tools) > 0 {
+		return nil, fmt.Errorf("vertex-ai/anthropic: %w (use direct Anthropic or Bedrock for tool-dependent flows)", gollm.ErrToolsNotSupported)
+	}
+	for _, m := range req.Messages {
+		if len(m.ToolResults) > 0 {
+			return nil, fmt.Errorf("vertex-ai/anthropic: tool_results in message but tools not supported: %w", gollm.ErrToolsNotSupported)
+		}
+	}
+
 	// Build Anthropic Messages API request body
 	messages := make([]map[string]string, 0, len(req.Messages))
 	for _, msg := range req.Messages {

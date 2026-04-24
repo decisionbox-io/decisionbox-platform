@@ -7,9 +7,9 @@
 //
 // The helper is intentionally minimal: it handles the fields the DecisionBox
 // agent uses today (messages, system prompt, max_tokens, temperature, token
-// usage). Streaming, tool calls, logprobs and multi-modal content are out of
-// scope — they have no consumer yet and adding them here without a consumer
-// would be speculative.
+// usage, and tool/function calling). Streaming, logprobs, and multi-modal
+// content are out of scope — they have no consumer yet and adding them here
+// without a consumer would be speculative.
 package openaicompat
 
 import (
@@ -25,12 +25,54 @@ type RequestBody struct {
 	Messages    []Message `json:"messages"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
+
+	// Tools and ToolChoice are populated only when the caller supplies
+	// ChatRequest.Tools. Empty slices/strings are omitted so providers
+	// that don't support tool use see exactly the request shape they
+	// always did.
+	Tools      []Tool      `json:"tools,omitempty"`
+	ToolChoice interface{} `json:"tool_choice,omitempty"`
 }
 
-// Message is one turn in the chat history.
+// Tool is one entry in the `tools` array. OpenAI distinguishes tool type
+// (currently only "function"); keep Type pluggable for future variants.
+type Tool struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction describes the callable the model may invoke.
+type ToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters"`
+}
+
+// Message is one turn in the chat history. For tool-using conversations:
+//   - Assistant turns that called a tool have role=assistant and ToolCalls
+//     populated; Content may be an empty string.
+//   - Tool-result turns have role=tool, ToolCallID bound to the call,
+//     and Content carrying the tool output.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Name       string     `json:"name,omitempty"`        // legacy function-call naming
+	ToolCallID string     `json:"tool_call_id,omitempty"` // only on role=tool
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// ToolCall is one tool invocation from the assistant turn. OpenAI returns
+// Function.Arguments as a JSON string; callers parse it into a map.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction pairs the function name with a JSON-string argument blob.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // ResponseBody is the OpenAI /chat/completions response body.
@@ -86,6 +128,9 @@ func (e *APIError) Error() string {
 //
 // Callers must supply the concrete model ID; the request's Model field is
 // used only when non-empty (providers substitute their default otherwise).
+//
+// When req.Tools is non-empty, tool definitions are attached and each
+// gollm.Message.ToolResults entry is emitted as a role=tool turn.
 func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 	effectiveModel := req.Model
 	if effectiveModel == "" {
@@ -97,6 +142,51 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 		messages = append(messages, Message{Role: "system", Content: req.SystemPrompt})
 	}
 	for _, m := range req.Messages {
+		// A user message carrying ToolResults expands into one role=tool
+		// message per result. OpenAI rejects role=tool without a preceding
+		// assistant turn carrying tool_calls — the caller is responsible
+		// for getting the history right; we only translate.
+		if len(m.ToolResults) > 0 {
+			for _, r := range m.ToolResults {
+				messages = append(messages, Message{
+					Role:       "tool",
+					Content:    r.Content,
+					ToolCallID: r.CallID,
+				})
+			}
+			continue
+		}
+
+		// Assistant message that invoked tools — echo the tool_calls back
+		// so OpenAI can correlate the next role=tool message by ID.
+		if len(m.ToolCalls) > 0 {
+			tcs := make([]ToolCall, len(m.ToolCalls))
+			for i, call := range m.ToolCalls {
+				args := "{}"
+				if call.Input != nil {
+					// Serialize to the JSON-string shape OpenAI expects
+					// on the wire. We ignore the error because Input is
+					// a plain map; failure modes are impossible here.
+					b, _ := json.Marshal(call.Input)
+					args = string(b)
+				}
+				tcs[i] = ToolCall{
+					ID:   call.ID,
+					Type: "function",
+					Function: ToolCallFunction{
+						Name:      call.Name,
+						Arguments: args,
+					},
+				}
+			}
+			messages = append(messages, Message{
+				Role:      m.Role,
+				Content:   m.Content,
+				ToolCalls: tcs,
+			})
+			continue
+		}
+
 		messages = append(messages, Message{Role: m.Role, Content: m.Content})
 	}
 
@@ -110,7 +200,43 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 	if req.Temperature > 0 {
 		body.Temperature = req.Temperature
 	}
+	if len(req.Tools) > 0 {
+		body.Tools = make([]Tool, len(req.Tools))
+		for i, t := range req.Tools {
+			body.Tools[i] = Tool{
+				Type: "function",
+				Function: ToolFunction{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				},
+			}
+		}
+	}
+	if tc := translateToolChoice(req.ToolChoice); tc != nil {
+		body.ToolChoice = tc
+	}
 	return body
+}
+
+// translateToolChoice maps the wire-neutral string to OpenAI's
+// tool_choice field. "" and "auto" omit the field (OpenAI's default).
+// "any"/"required" → "required". "none" → "none". Any other value is
+// treated as a specific function name: {type: "function", function: {name: X}}.
+func translateToolChoice(choice string) interface{} {
+	switch choice {
+	case "", "auto":
+		return nil
+	case "any", "required":
+		return "required"
+	case "none":
+		return "none"
+	default:
+		return map[string]interface{}{
+			"type":     "function",
+			"function": map[string]interface{}{"name": choice},
+		}
+	}
 }
 
 // ParseResponseBody parses the response body bytes into a neutral
@@ -129,7 +255,7 @@ func ParseResponseBody(raw []byte) (*gollm.ChatResponse, error) {
 	}
 
 	choice := body.Choices[0]
-	return &gollm.ChatResponse{
+	resp := &gollm.ChatResponse{
 		Content:    choice.Message.Content,
 		Model:      body.Model,
 		StopReason: choice.FinishReason,
@@ -137,7 +263,26 @@ func ParseResponseBody(raw []byte) (*gollm.ChatResponse, error) {
 			InputTokens:  body.Usage.PromptTokens,
 			OutputTokens: body.Usage.CompletionTokens,
 		},
-	}, nil
+	}
+	if len(choice.Message.ToolCalls) > 0 {
+		resp.ToolCalls = make([]gollm.ToolCall, 0, len(choice.Message.ToolCalls))
+		for _, tc := range choice.Message.ToolCalls {
+			if tc.Type != "" && tc.Type != "function" {
+				// Unknown tool type — skip rather than misrepresent it.
+				continue
+			}
+			var input map[string]interface{}
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			}
+			resp.ToolCalls = append(resp.ToolCalls, gollm.ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: input,
+			})
+		}
+	}
+	return resp, nil
 }
 
 // ExtractAPIError tries to parse an OpenAI-style error envelope from a
