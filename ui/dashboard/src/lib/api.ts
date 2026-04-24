@@ -124,13 +124,46 @@ export interface Project {
   warehouse: WarehouseConfig;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
+  blurb_llm?: BlurbLLMConfig;
   schedule: ScheduleConfig;
   profile: Record<string, unknown>;
+  schema_retrieval?: SchemaRetrievalConfig;
   status: string;
   last_run_at: string | null;
   last_run_status: string;
+  // Schema-indexing lifecycle: "", "pending_indexing", "indexing", "ready", "failed".
+  // Empty string = pre-migration (no index ever built).
+  schema_index_status?: string;
+  schema_index_error?: string;
+  schema_index_updated_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BlurbLLMConfig {
+  provider: string;
+  model: string;
+  config?: Record<string, string>;
+}
+
+export interface SchemaRetrievalConfig {
+  top_k?: number;
+}
+
+export interface SchemaIndexProgress {
+  phase: string; // "listing_tables" | "describing_tables" | "embedding"
+  tables_total: number;
+  tables_done: number;
+  started_at?: string;
+  updated_at?: string;
+  error_message?: string;
+}
+
+export interface SchemaIndexStatus {
+  status: string; // "", "pending_indexing", "indexing", "ready", "failed"
+  error?: string;
+  updated_at?: string;
+  progress?: SchemaIndexProgress;
 }
 
 export interface EmbeddingConfig {
@@ -719,6 +752,20 @@ export const api = {
     request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`),
   updatePrompts: (projectId: string, prompts: ProjectPrompts) =>
     request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`, { method: 'PUT', body: JSON.stringify(prompts) }),
+
+  // Schema indexing lifecycle
+  //
+  // Status / retry / reindex surface the background worker loop that
+  // builds per-project schema vectors in Qdrant. Dashboard polls status
+  // every 2s while the project-detail page is live; POST retry is only
+  // valid from `failed`; POST reindex forces a full rebuild from any
+  // state (drops the collection + flips to pending_indexing).
+  getSchemaIndexStatus: (projectId: string) =>
+    request<SchemaIndexStatus>(`/api/v1/projects/${projectId}/schema-index/status`),
+  retrySchemaIndex: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
+  reindexSchema: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/reindex`, { method: 'POST' }),
 
   // Discovery
   //

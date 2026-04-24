@@ -14,7 +14,8 @@ import {
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
-import { api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep } from '@/lib/api';
+import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
+import { api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus } from '@/lib/api';
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -34,6 +35,10 @@ export default function ProjectPage() {
   // its own default; sending 0 explicitly disables the floor.
   const [minSteps, setMinSteps] = useState<number>(60);
   const [minStepsTouched, setMinStepsTouched] = useState(false);
+  // schemaIndexStatus is refreshed by SchemaIndexPanel's poll loop. When
+  // status is not "ready" we disable the Run Discovery button because the
+  // agent will 409 anyway (plan §8.4 — discovery is gated on the index).
+  const [schemaIndexStatus, setSchemaIndexStatus] = useState<SchemaIndexStatus | null>(null);
   const [estimate, setEstimate] = useState<CostEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [pendingAreas, setPendingAreas] = useState<string[] | undefined>(undefined);
@@ -136,6 +141,14 @@ export default function ProjectPage() {
   if (!project) return <Shell><Text>Project not found</Text></Shell>;
 
   const isRunning = run && (run.status === 'running' || run.status === 'pending');
+  // Schema index must be "ready" (or legacy ready-by-default with a
+  // warehouse configured) before discovery can proceed. Block the Run
+  // button otherwise so users see the gate reason in the banner instead
+  // of a 409 toast.
+  const schemaReady = schemaIndexStatus
+    ? schemaIndexStatus.status === 'ready'
+    : (project.schema_index_status === 'ready' || project.schema_index_status === undefined);
+  const triggerDisabled = !!isRunning || !schemaReady;
   const justFinished = run && (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled');
   const showRunPanel = isRunning || justFinished;
 
@@ -155,21 +168,22 @@ export default function ProjectPage() {
   ];
 
   const topBarActions = (
-    <Menu shadow="md" width={280} disabled={!!isRunning}>
+    <Menu shadow="md" width={280} disabled={triggerDisabled}>
       <Menu.Target>
         <button style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           background: 'var(--db-text-primary)', color: '#fff',
           border: 'none', borderRadius: 6, padding: '6px 14px',
           fontSize: 13, fontWeight: 500, cursor: 'pointer',
-          fontFamily: 'inherit', opacity: isRunning ? 0.5 : 1,
+          fontFamily: 'inherit', opacity: triggerDisabled ? 0.5 : 1,
           transition: 'background 120ms ease',
         }}
-        onMouseEnter={e => { if (!isRunning) e.currentTarget.style.background = '#333'; }}
+        onMouseEnter={e => { if (!triggerDisabled) e.currentTarget.style.background = '#333'; }}
         onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
+        title={!schemaReady ? 'Schema index is not ready — see the banner above.' : undefined}
         >
           <IconPlayerPlay size={14} />
-          {isRunning ? 'Running...' : 'Run discovery'}
+          {isRunning ? 'Running...' : !schemaReady ? 'Waiting for schema index...' : 'Run discovery'}
         </button>
       </Menu.Target>
       <Menu.Dropdown>
@@ -229,6 +243,11 @@ export default function ProjectPage() {
 
   return (
     <Shell breadcrumb={breadcrumb} actions={topBarActions}>
+      {/* Schema-index status banner — polls every 2s while indexing. */}
+      <div style={{ marginBottom: 16 }}>
+        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} />
+      </div>
+
       {/* Aggregate Stats Row */}
       {totalRuns > 0 && (
         <div style={{
