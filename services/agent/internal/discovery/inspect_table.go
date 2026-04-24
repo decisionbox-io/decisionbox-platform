@@ -135,13 +135,14 @@ func (e *InspectTableExecutor) Inspect(ctx context.Context, refs []string) (*Ins
 			query = fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT %d", dataset, table, e.Filter, sampleLimit)
 		}
 		qr, qErr := e.Executor.Execute(ctx, query, "inspect_table sample "+ref)
-		if qErr != nil {
+		switch {
+		case qErr != nil:
 			// Schema succeeded; sample failed — still valuable. Note it
 			// but keep the column list visible.
 			fmt.Fprintf(&b, "  samples: (sample fetch failed: %s)\n", qErr.Error())
-		} else if len(qr.Data) == 0 {
+		case len(qr.Data) == 0:
 			b.WriteString("  samples: (table is empty)\n")
-		} else {
+		default:
 			b.WriteString("  samples:\n")
 			for _, row := range qr.Data {
 				b.WriteString("    ")

@@ -100,10 +100,12 @@ func Run() {
 	// that spawned this subprocess.
 	if *mode == "index-schema" {
 		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
-		defer applog.Sync()
-		if err := runIndexSchema(cfg, *projectID, *runID); err != nil {
+		err := runIndexSchema(cfg, *projectID, *runID)
+		if err != nil {
 			applog.WithError(err).Error("Schema index failed")
-			applog.Sync()
+		}
+		applog.Sync()
+		if err != nil {
 			os.Exit(1)
 		}
 		return
