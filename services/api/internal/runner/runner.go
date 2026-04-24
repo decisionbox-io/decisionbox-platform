@@ -31,6 +31,13 @@ type Runner interface {
 type IndexSchemaOptions struct {
 	ProjectID string
 	RunID     string // logical run identifier stamped into the progress doc
+	// OnLogLine, when non-nil, is called with each raw stderr line
+	// emitted by the agent in real time. Used to fan the live tail out
+	// to MongoDB (so the dashboard can render an in-UI log viewer) in
+	// addition to the API's own stderr. Must not block — the scanner
+	// goroutine calls it synchronously; callbacks that need IO should
+	// queue the work and return fast.
+	OnLogLine func(line string)
 }
 
 // RunSyncOptions configures a synchronous agent invocation (e.g., test-connection).

@@ -183,6 +183,23 @@ var schema = []struct {
 			},
 		},
 	},
+	{
+		Name: "project_schema_index_logs",
+		Indexes: []mongo.IndexModel{
+			// Dashboard poll path: by project_id ordered by created_at.
+			// Paired index keeps the since-cursor query cheap even
+			// when the collection has millions of rows from historical
+			// runs.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "created_at", Value: 1}}},
+			// 7-day TTL. Indexing runs produce ~one line per table
+			// (FINPORT ~1500 lines) — keeping a week of history is
+			// plenty for debugging and cheap on storage.
+			{
+				Keys:    bson.D{{Key: "created_at", Value: 1}},
+				Options: options.Index().SetExpireAfterSeconds(7 * 24 * 60 * 60),
+			},
+		},
+	},
 }
 
 // InitDatabase creates all collections and indexes on startup.

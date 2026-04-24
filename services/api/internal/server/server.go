@@ -95,7 +95,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	askSessionRepo := database.NewAskSessionRepository(db)
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
 	schemaIndexProgressRepo := database.NewSchemaIndexProgressRepository(db)
-	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper)
+	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
+	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo)
 
 	// RBAC helpers — wrap a handler with role-based access control.
 	// With NoAuth (default), all requests get "admin" role — all routes pass.
@@ -124,6 +125,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("POST /api/v1/projects/{id}/providers/llm/models/live", withRole(viewer, providers.ListLiveLLMModelsForProject))
 	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 	mux.HandleFunc("GET /api/v1/providers/embedding", withRole(viewer, providers.ListEmbeddingProviders))
+	mux.HandleFunc("POST /api/v1/providers/embedding/{id}/models/live", withRole(viewer, providers.ListLiveEmbeddingModels))
+	mux.HandleFunc("POST /api/v1/projects/{id}/providers/embedding/models/live", withRole(viewer, providers.ListLiveEmbeddingModelsForProject))
 
 	// Domain packs — viewer for read, admin for write
 	mux.HandleFunc("GET /api/v1/domain-packs", withRole(viewer, domainPacks.List))
@@ -149,6 +152,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 
 	// Schema-index lifecycle — viewer for status, member for retry/reindex
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/status", withRole(viewer, schemaIndex.GetStatus))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/logs", withRole(viewer, schemaIndex.ListLogs))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/retry", withRole(member, schemaIndex.Retry))
 	mux.HandleFunc("POST /api/v1/projects/{id}/reindex", withRole(member, schemaIndex.Reindex))
 

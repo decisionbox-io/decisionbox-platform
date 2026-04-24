@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -142,16 +144,73 @@ func (r *SubprocessRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaO
 		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
 	)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// Agent writes structured logs to stderr. We want two things
+	// simultaneously:
+	//   1. Live-tail the output to the API stderr so operators watching
+	//      /tmp/dbx-schema-retrieval/api.log see progress in real time
+	//      (buffering until exit means a hung run shows nothing).
+	//   2. Keep the full stderr in a byte buffer so `extractErrorMessage`
+	//      can still surface a human-readable failure when the agent
+	//      exits non-zero.
+	// The tee writer below does both — each line is forked to the API's
+	// os.Stderr (prefixed so it's obvious which subprocess it came from)
+	// and to the tail-capture buffer.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("agent stderr pipe: %w", err)
+	}
 
 	apilog.WithFields(apilog.Fields{
 		"project_id": opts.ProjectID,
 		"run_id":     opts.RunID,
 	}).Info("Agent index-schema subprocess starting")
 
-	if err := cmd.Run(); err != nil {
-		msg := extractErrorMessage(stderr.String(), err)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("agent start: %w", err)
+	}
+
+	// Rolling tail buffer. Cap at 64 KiB so a runaway log output doesn't
+	// blow API memory while still holding enough context for the
+	// extractErrorMessage call post-exit.
+	const tailCap = 64 * 1024
+	var tail bytes.Buffer
+	tail.Grow(tailCap)
+
+	// Single goroutine consumes the pipe, forwards each line to API
+	// stderr (visible in /tmp/.../api.log) and pushes to the tail buffer
+	// with ring-style trimming.
+	prefix := fmt.Sprintf("[agent %s] ", opts.RunID)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scanner := bufio.NewScanner(stderrPipe)
+		// Bump buffer for long zap JSON log lines (default is 64KiB).
+		scanner.Buffer(make([]byte, 0, 128*1024), 512*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			_, _ = io.WriteString(os.Stderr, prefix)
+			_, _ = os.Stderr.Write(line)
+			_, _ = os.Stderr.Write([]byte{'\n'})
+			// Ring-style append with soft cap.
+			if tail.Len()+len(line)+1 > tailCap {
+				tail.Reset()
+			}
+			tail.Write(line)
+			tail.WriteByte('\n')
+			if opts.OnLogLine != nil {
+				// Copy out of scanner's internal buffer — scanner
+				// reuses the byte slice across iterations, so handing
+				// the raw []byte to an async consumer would tear.
+				opts.OnLogLine(string(line))
+			}
+		}
+	}()
+
+	waitErr := cmd.Wait()
+	<-done
+
+	if waitErr != nil {
+		msg := extractErrorMessage(tail.String(), waitErr)
 		apilog.WithFields(apilog.Fields{
 			"project_id": opts.ProjectID,
 			"run_id":     opts.RunID,

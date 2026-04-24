@@ -15,6 +15,7 @@ const (
 // Schema-indexing progress phases. Stored on SchemaIndexProgress.Phase.
 const (
 	SchemaIndexPhaseListingTables    = "listing_tables"
+	SchemaIndexPhaseSchemaDiscovery  = "schema_discovery" // per-table columns + samples (the longest leg on big warehouses)
 	SchemaIndexPhaseDescribingTables = "describing_tables"
 	SchemaIndexPhaseEmbedding        = "embedding"
 )

@@ -19,6 +19,9 @@ type SchemaDiscovery struct {
 	projectID string
 	datasets  []string // multiple datasets to discover
 	filter    string
+
+	onTablesListed    func(dataset string, total int)
+	onTableDiscovered func(dataset, table string, ok bool)
 }
 
 // SchemaDiscoveryOptions configures schema discovery.
@@ -28,16 +31,31 @@ type SchemaDiscoveryOptions struct {
 	ProjectID string
 	Datasets  []string
 	Filter    string
+
+	// OnTablesListed, when non-nil, is called once per dataset after
+	// ListTablesInDataset returns but before per-table discovery
+	// begins. Lets the schema-indexer stamp `tables_total` on the
+	// progress doc so the dashboard renders a meaningful progress bar
+	// during the longest leg of indexing.
+	OnTablesListed func(dataset string, total int)
+
+	// OnTableDiscovered, when non-nil, is called after each table's
+	// schema has been pulled (or after the pull failed). Used by the
+	// schema-indexer to increment the progress doc's tables_done
+	// counter during the schema-discovery phase.
+	OnTableDiscovered func(dataset, table string, ok bool)
 }
 
 // NewSchemaDiscovery creates a new schema discovery service.
 func NewSchemaDiscovery(opts SchemaDiscoveryOptions) *SchemaDiscovery {
 	return &SchemaDiscovery{
-		warehouse: opts.Warehouse,
-		executor:  opts.Executor,
-		projectID: opts.ProjectID,
-		datasets:  opts.Datasets,
-		filter:    opts.Filter,
+		warehouse:         opts.Warehouse,
+		executor:          opts.Executor,
+		projectID:         opts.ProjectID,
+		datasets:          opts.Datasets,
+		filter:            opts.Filter,
+		onTablesListed:    opts.OnTablesListed,
+		onTableDiscovered: opts.OnTableDiscovered,
 	}
 }
 
@@ -58,15 +76,35 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 			continue
 		}
 
-		for _, tableName := range tables {
+		logger.WithFields(logger.Fields{"dataset": dataset, "tables": len(tables)}).Info("Listed tables, now pulling schema per-table")
+		if s.onTablesListed != nil {
+			s.onTablesListed(dataset, len(tables))
+		}
+		for i, tableName := range tables {
+			// Per-table tick at Info level so a hang on a specific
+			// table is visible in live logs without flipping the whole
+			// agent to Debug. Keeps the observability bill cheap
+			// (~2K log lines for a FINPORT run, one per table).
+			logger.WithFields(logger.Fields{
+				"dataset": dataset,
+				"table":   tableName,
+				"i":       i + 1,
+				"of":      len(tables),
+			}).Info("Discovering table schema")
 			schema, err := s.discoverTable(ctx, dataset, tableName)
 			if err != nil {
 				logger.WithFields(logger.Fields{"table": tableName, "dataset": dataset, "error": err.Error()}).Warn("Failed to discover table, skipping")
+				if s.onTableDiscovered != nil {
+					s.onTableDiscovered(dataset, tableName, false)
+				}
 				continue
 			}
 
 			key := fmt.Sprintf("%s.%s", dataset, tableName)
 			allSchemas[key] = *schema
+			if s.onTableDiscovered != nil {
+				s.onTableDiscovered(dataset, tableName, true)
+			}
 		}
 
 		logger.WithFields(logger.Fields{

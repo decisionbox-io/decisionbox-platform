@@ -220,6 +220,7 @@ func Run() {
 		worker, err := schemaindex.New(schemaindex.WorkerConfig{
 			Projects: database.NewProjectRepository(db),
 			Progress: database.NewSchemaIndexProgressRepository(db),
+			Logs:     database.NewSchemaIndexLogRepository(db),
 			Runner:   r,
 		})
 		if err != nil {

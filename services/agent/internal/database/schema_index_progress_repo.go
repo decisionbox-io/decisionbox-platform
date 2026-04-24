@@ -100,6 +100,35 @@ func (r *SchemaIndexProgressRepository) SetTotals(ctx context.Context, projectID
 	return nil
 }
 
+// SetCounters stamps both tables_total and tables_done in one
+// update — used when the indexer moves between phases that each have
+// their own 0→N progression (e.g. schema_discovery wraps up with
+// done=total, then describing_tables resets to done=0 with the same
+// total).
+func (r *SchemaIndexProgressRepository) SetCounters(ctx context.Context, projectID string, total, done int) error {
+	if projectID == "" {
+		return errors.New("projectID is required")
+	}
+	if total < 0 || done < 0 {
+		return fmt.Errorf("counters must be non-negative: total=%d done=%d", total, done)
+	}
+	res, err := r.col().UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$set": bson.M{
+			"tables_total": total,
+			"tables_done":  done,
+			"updated_at":   time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("set schema-index counters: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("schema-index progress not found for project %q", projectID)
+	}
+	return nil
+}
+
 // IncrementDone atomically advances tables_done by delta. Safe under
 // concurrent worker goroutines.
 func (r *SchemaIndexProgressRepository) IncrementDone(ctx context.Context, projectID string, delta int) error {
@@ -147,6 +176,7 @@ func (r *SchemaIndexProgressRepository) RecordError(ctx context.Context, project
 func isValidAgentSchemaIndexPhase(phase string) bool {
 	switch phase {
 	case models.SchemaIndexPhaseListingTables,
+		models.SchemaIndexPhaseSchemaDiscovery,
 		models.SchemaIndexPhaseDescribingTables,
 		models.SchemaIndexPhaseEmbedding:
 		return true

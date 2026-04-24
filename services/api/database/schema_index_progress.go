@@ -182,6 +182,7 @@ func (r *SchemaIndexProgressRepository) Delete(ctx context.Context, projectID st
 func isValidSchemaIndexPhase(phase string) bool {
 	switch phase {
 	case models.SchemaIndexPhaseListingTables,
+		models.SchemaIndexPhaseSchemaDiscovery,
 		models.SchemaIndexPhaseDescribingTables,
 		models.SchemaIndexPhaseEmbedding:
 		return true

@@ -117,7 +117,7 @@ func makeHandlerWithProject(t *testing.T, p *models.Project) (*SchemaIndexHandle
 	}
 	prog := newMockProgress()
 	drop := &mockDropper{}
-	h := NewSchemaIndexHandler(projRepo, prog, drop)
+	h := NewSchemaIndexHandler(projRepo, prog, drop, nil)
 	return h, projRepo, prog, drop
 }
 
@@ -197,7 +197,7 @@ func TestSchemaIndex_GetStatus_NoProgressDoc(t *testing.T) {
 }
 
 func TestSchemaIndex_GetStatus_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil)
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -206,7 +206,7 @@ func TestSchemaIndex_GetStatus_MissingProject(t *testing.T) {
 }
 
 func TestSchemaIndex_GetStatus_EmptyProjectID(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil)
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -263,7 +263,7 @@ func TestSchemaIndex_Retry_FromIndexing_409(t *testing.T) {
 }
 
 func TestSchemaIndex_Retry_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil)
 	w := httptest.NewRecorder()
 	h.Retry(w, newReq("POST", "/schema-index/retry", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -327,7 +327,7 @@ func TestSchemaIndex_Reindex_NilDropperSkipsDropStep(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
@@ -341,7 +341,7 @@ func TestSchemaIndex_Reindex_NilDropperSkipsDropStep(t *testing.T) {
 }
 
 func TestSchemaIndex_Reindex_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), &mockDropper{})
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), &mockDropper{}, nil)
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", "nope", ""))
 	if w.Code != http.StatusNotFound {

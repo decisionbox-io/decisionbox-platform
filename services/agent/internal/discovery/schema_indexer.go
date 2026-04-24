@@ -69,6 +69,7 @@ type ProgressReporter interface {
 	Reset(ctx context.Context, projectID, runID string) error
 	SetPhase(ctx context.Context, projectID, phase string) error
 	SetTotals(ctx context.Context, projectID string, total int) error
+	SetCounters(ctx context.Context, projectID string, total, done int) error
 	IncrementDone(ctx context.Context, projectID string, delta int) error
 	RecordError(ctx context.Context, projectID, msg string) error
 }
@@ -111,6 +112,11 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}
 
 	start := time.Now()
+	applog.WithFields(applog.Fields{
+		"project_id":  opts.ProjectID,
+		"run_id":      opts.RunID,
+		"blurb_model": opts.BlurbModelLabel,
+	}).Info("schema_indexer: BuildIndex starting")
 
 	// 0. Progress reset. Worker loop has already flipped status to
 	// "indexing"; Reset clears any counters left over from a prior failed
@@ -123,6 +129,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	// 1. Drop the old collection first so a failed half-written index
 	// can't poison a subsequent search. Idempotent — missing → no-op.
+	applog.Info("schema_indexer: phase=drop_collection")
 	if err := si.Retriever.DropCollection(ctx, opts.ProjectID); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "drop prior collection: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: drop prior collection: %w", err)
@@ -130,11 +137,22 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	// 2. Discover tables + schemas. Reuses the exact path normal
 	// discovery uses, so warehouse-specific sampling is inherited.
+	discoveryStart := time.Now()
+	applog.Info("schema_indexer: phase=discover_schemas (this may take minutes on ERP-scale warehouses)")
+	if si.Progress != nil {
+		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseSchemaDiscovery); err != nil {
+			applog.WithError(err).Warn("schema_indexer: SetPhase schema_discovery failed")
+		}
+	}
 	schemas, err := si.Discovery.DiscoverSchemas(ctx)
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "discover schemas: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: discover schemas: %w", err)
 	}
+	applog.WithFields(applog.Fields{
+		"tables":  len(schemas),
+		"elapsed": time.Since(discoveryStart).String(),
+	}).Info("schema_indexer: phase=discover_schemas complete")
 	if len(schemas) == 0 {
 		return nil, fmt.Errorf("schema_indexer: no tables discovered — check datasets and warehouse permissions")
 	}
@@ -142,19 +160,23 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	// 3. Provision Qdrant with the embedder's dimension count. If the
 	// caller swapped embedding models, the DropCollection above cleared
 	// the old dimension so this creates a fresh collection.
+	applog.WithField("dimensions", si.Embedder.Dimensions()).Info("schema_indexer: phase=ensure_collection")
 	if err := si.Retriever.EnsureCollection(ctx, opts.ProjectID, si.Embedder.Dimensions()); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "ensure collection: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: ensure collection: %w", err)
 	}
 
 	if si.Progress != nil {
-		if err := si.Progress.SetTotals(ctx, opts.ProjectID, len(schemas)); err != nil {
-			applog.WithError(err).Warn("schema_indexer: SetTotals failed")
+		// Reset counters for the blurb phase — describing_tables has its
+		// own 0→N progression separate from the schema-discovery leg.
+		if err := si.Progress.SetCounters(ctx, opts.ProjectID, len(schemas), 0); err != nil {
+			applog.WithError(err).Warn("schema_indexer: reset counters for describing_tables failed")
 		}
 		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseDescribingTables); err != nil {
 			applog.WithError(err).Warn("schema_indexer: SetPhase describing_tables failed")
 		}
 	}
+	applog.WithField("tables", len(schemas)).Info("schema_indexer: phase=describing_tables (blurb generation)")
 
 	// 4. Build blurb inputs. DiscoverSchemas keys the map as
 	// "dataset.table"; we split that back out so the Blurb input carries
@@ -185,11 +207,13 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			}
 		}
 	}
+	blurbStart := time.Now()
 	blurbs, err := si.Blurber.Generate(ctx, inputs, progressCB)
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "blurb generation: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: blurb generation: %w", err)
 	}
+	applog.WithField("elapsed", time.Since(blurbStart).String()).Info("schema_indexer: blurb generation complete")
 
 	// 5. Embed + upsert.
 	if si.Progress != nil {
@@ -197,6 +221,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			applog.WithError(err).Warn("schema_indexer: SetPhase embedding failed")
 		}
 	}
+	applog.Info("schema_indexer: phase=embedding")
 
 	type idxBlurb struct {
 		i     int
@@ -244,10 +269,17 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		blurbIn += k.blurb.InputTokens
 		blurbOut += k.blurb.OutputTokens
 	}
+	applog.WithFields(applog.Fields{"points": len(items)}).Info("schema_indexer: phase=qdrant_upsert")
 	if err := si.Retriever.Upsert(ctx, opts.ProjectID, items); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
+	applog.WithFields(applog.Fields{
+		"tables":           len(items),
+		"total_elapsed":    time.Since(start).String(),
+		"blurb_tokens_in":  blurbIn,
+		"blurb_tokens_out": blurbOut,
+	}).Info("schema_indexer: BuildIndex complete")
 
 	return &Stats{
 		Tables:         len(items),

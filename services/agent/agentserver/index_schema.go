@@ -126,12 +126,32 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		FilterField: project.Warehouse.FilterField,
 		FilterValue: project.Warehouse.FilterValue,
 	})
+	progressRepo := database.NewSchemaIndexProgressRepository(db)
+
+	// Per-dataset totals accumulate into the progress doc so the
+	// dashboard's progress bar is populated during schema_discovery
+	// (the longest leg on ERP-scale warehouses, previously invisible
+	// on the UI). Callbacks are synchronous — the per-table queries
+	// take seconds each, Mongo UpdateOne takes ~1ms, so we're fine.
+	onTablesListed := func(_ string, total int) {
+		if err := progressRepo.SetCounters(ctx, projectID, total, 0); err != nil {
+			applog.WithError(err).Warn("SetCounters on listed tables failed")
+		}
+	}
+	onTableDiscovered := func(_, _ string, _ bool) {
+		if err := progressRepo.IncrementDone(ctx, projectID, 1); err != nil {
+			applog.WithError(err).Debug("IncrementDone during discovery failed")
+		}
+	}
+
 	schemaDiscovery := discovery.NewSchemaDiscovery(discovery.SchemaDiscoveryOptions{
-		Warehouse: warehouseProvider,
-		Executor:  executor,
-		ProjectID: projectID,
-		Datasets:  project.Warehouse.GetDatasets(),
-		Filter:    buildFilterClause(project.Warehouse.FilterField, project.Warehouse.FilterValue),
+		Warehouse:         warehouseProvider,
+		Executor:          executor,
+		ProjectID:         projectID,
+		Datasets:          project.Warehouse.GetDatasets(),
+		Filter:            buildFilterClause(project.Warehouse.FilterField, project.Warehouse.FilterValue),
+		OnTablesListed:    onTablesListed,
+		OnTableDiscovered: onTableDiscovered,
 	})
 
 	workers := envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers)
@@ -145,7 +165,6 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("blurb generator: %w", err)
 	}
 
-	progressRepo := database.NewSchemaIndexProgressRepository(db)
 	indexer := &discovery.SchemaIndexer{
 		Discovery: schemaDiscovery,
 		Blurber:   gen,

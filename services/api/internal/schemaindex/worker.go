@@ -28,6 +28,7 @@ const DefaultPollInterval = 5 * time.Second
 type WorkerConfig struct {
 	Projects     *database.ProjectRepository
 	Progress     *database.SchemaIndexProgressRepository
+	Logs         *database.SchemaIndexLogRepository // optional — enables per-run log capture into Mongo
 	Runner       runner.Runner
 	PollInterval time.Duration // 0 → DefaultPollInterval
 }
@@ -113,9 +114,30 @@ func (w *Worker) tick(ctx context.Context) {
 	// progress doc carries it.
 	runID := time.Now().UTC().Format("20060102T150405.000Z")
 
+	// Log capture fan-out: every agent stderr line also lands in
+	// project_schema_index_logs so the dashboard can show an in-UI
+	// debug tail. The callback is synchronous on purpose — Mongo
+	// InsertOne takes ~1ms locally, and ordering matters for a tail
+	// view. If latency ever becomes a concern we'd swap to a channel-
+	// fed worker here rather than racing goroutines.
+	var onLine func(string)
+	if w.cfg.Logs != nil {
+		projectID := p.ID
+		capRunID := runID
+		onLine = func(line string) {
+			// Use a short-lived detached context: the subprocess
+			// ctx can be cancelled mid-write on shutdown, but we
+			// still want the last line persisted.
+			writeCtx, writeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = w.cfg.Logs.Append(writeCtx, projectID, capRunID, line)
+			writeCancel()
+		}
+	}
+
 	err = w.cfg.Runner.RunIndexSchema(ctx, runner.IndexSchemaOptions{
 		ProjectID: p.ID,
 		RunID:     runID,
+		OnLogLine: onLine,
 	})
 	// Use a detached context for the status transition — ctx may be
 	// cancelled by Start's return (clean shutdown) and we still want
