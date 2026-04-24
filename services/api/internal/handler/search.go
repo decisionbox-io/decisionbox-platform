@@ -466,6 +466,29 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gate /ask on schema-index readiness (plan §8.6 — same contract as
+	// POST /discover). Empty status is treated as pre-migration and the
+	// user is pointed at /reindex to unblock. Pending/indexing returns
+	// 409 so the dashboard can surface the banner without a toast; the
+	// client polls /schema-index/status for the next state.
+	switch project.SchemaIndexStatus {
+	case models.SchemaIndexStatusReady:
+		// ok — proceed
+	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
+		writeError(w, http.StatusConflict, "schema index is not ready yet — poll /api/v1/projects/"+projectID+"/schema-index/status")
+		return
+	case models.SchemaIndexStatusFailed:
+		writeError(w, http.StatusConflict, "schema indexing failed: "+project.SchemaIndexError+" — click Retry indexing in project settings")
+		return
+	case "":
+		// Pre-migration project — skipped by the bootstrap sweep because
+		// the migration worker only runs on startup, or because this
+		// instance hasn't rebooted since shipping the feature. Users can
+		// unblock with POST /reindex.
+		writeError(w, http.StatusConflict, "project has not been indexed yet — trigger POST /api/v1/projects/"+projectID+"/reindex first")
+		return
+	}
+
 	// Embed the question
 	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID)
 	if err != nil {

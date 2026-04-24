@@ -27,7 +27,14 @@ type mockProjectRepoForSearch struct {
 func (m *mockProjectRepoForSearch) Create(_ context.Context, _ *models.Project) error { return nil }
 func (m *mockProjectRepoForSearch) GetByID(_ context.Context, id string) (*models.Project, error) {
 	if m.project != nil && m.project.ID == id {
-		return m.project, nil
+		// Default schema-index status to "ready" so /ask tests that don't
+		// care about gating still see 200 responses. Tests covering the
+		// gate set SchemaIndexStatus explicitly on the fixture.
+		p := *m.project
+		if p.SchemaIndexStatus == "" {
+			p.SchemaIndexStatus = models.SchemaIndexStatusReady
+		}
+		return &p, nil
 	}
 	return nil, context.DeadlineExceeded
 }
