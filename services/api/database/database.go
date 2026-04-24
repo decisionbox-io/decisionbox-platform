@@ -171,6 +171,99 @@ func (r *ProjectRepository) EnsureIndexes(ctx context.Context) error {
 	return err
 }
 
+// SetSchemaIndexStatus transitions a project through the indexing lifecycle
+// (pending_indexing → indexing → ready | failed). Stamps
+// schema_index_updated_at on success transitions so "last indexed" timers
+// are accurate, and sets/clears schema_index_error on failed/ready.
+//
+// This is the only entry point that writes schema_index_status — handlers
+// and the worker loop call it instead of hand-rolling UpdateOne. Prevents
+// drift between lifecycle transitions.
+func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error {
+	if !isValidSchemaIndexStatus(status) {
+		return fmt.Errorf("invalid schema_index_status: %q", status)
+	}
+
+	filter := bson.M{}
+	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
+		filter["_id"] = oid
+	} else {
+		filter["_id"] = id
+	}
+
+	now := time.Now().UTC()
+	set := bson.M{
+		"schema_index_status": status,
+		"updated_at":          now,
+	}
+	// Only stamp `schema_index_updated_at` on terminal success. Failure keeps
+	// the prior timestamp so the UI can still show "last indexed 3h ago"
+	// while the current attempt is in failed state.
+	if status == models.SchemaIndexStatusReady {
+		set["schema_index_updated_at"] = now
+	}
+
+	update := bson.M{"$set": set}
+
+	switch status {
+	case models.SchemaIndexStatusFailed:
+		update["$set"].(bson.M)["schema_index_error"] = errMsg
+	case models.SchemaIndexStatusReady, models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
+		// Entering a non-failed state → clear any prior error message so the
+		// UI doesn't show a stale banner.
+		update["$unset"] = bson.M{"schema_index_error": ""}
+	}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("set schema_index_status: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("project not found")
+	}
+	return nil
+}
+
+// ClaimNextPendingIndex atomically picks one project in
+// pending_indexing state and transitions it to indexing, so the
+// single-node worker loop can safely poll without racing against a user
+// clicking "Re-index" at the same moment. Returns (nil, nil) when nothing
+// is pending.
+func (r *ProjectRepository) ClaimNextPendingIndex(ctx context.Context) (*models.Project, error) {
+	now := time.Now().UTC()
+	filter := bson.M{"schema_index_status": models.SchemaIndexStatusPendingIndexing}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_index_status": models.SchemaIndexStatusIndexing,
+			"updated_at":          now,
+		},
+		"$unset": bson.M{"schema_index_error": ""},
+	}
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.After).
+		SetSort(bson.D{{Key: "updated_at", Value: 1}}) // FIFO: oldest pending first
+
+	var p models.Project
+	if err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&p); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("claim next pending index: %w", err)
+	}
+	return &p, nil
+}
+
+func isValidSchemaIndexStatus(s string) bool {
+	switch s {
+	case models.SchemaIndexStatusPendingIndexing,
+		models.SchemaIndexStatusIndexing,
+		models.SchemaIndexStatusReady,
+		models.SchemaIndexStatusFailed:
+		return true
+	}
+	return false
+}
+
 // --- Discovery Repository ---
 
 type DiscoveryRepository struct {

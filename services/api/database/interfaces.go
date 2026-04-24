@@ -123,6 +123,19 @@ type ReadMarkRepo interface {
 	ListReadIDs(ctx context.Context, projectID, userID, targetType string) ([]string, error)
 }
 
+// SchemaIndexProgressRepo abstracts live schema-indexing progress operations.
+// One document per project, upserted by (project_id). Reset at the start of
+// each indexing run.
+type SchemaIndexProgressRepo interface {
+	Reset(ctx context.Context, projectID, runID string) error
+	SetPhase(ctx context.Context, projectID, phase string) error
+	UpdateTables(ctx context.Context, projectID string, total, done int) error
+	IncrementDone(ctx context.Context, projectID string, delta int) error
+	RecordError(ctx context.Context, projectID, msg string) error
+	Get(ctx context.Context, projectID string) (*models.SchemaIndexProgress, error)
+	Delete(ctx context.Context, projectID string) error
+}
+
 // DomainPackRepo abstracts domain pack CRUD operations for handler unit testing.
 type DomainPackRepo interface {
 	Create(ctx context.Context, pack *models.DomainPack) error
@@ -148,4 +161,5 @@ var (
 	_ BookmarkListRepo   = (*BookmarkListRepository)(nil)
 	_ BookmarkRepo       = (*BookmarkRepository)(nil)
 	_ ReadMarkRepo       = (*ReadMarkRepository)(nil)
+	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
 )

@@ -29,6 +29,18 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "created_at", Value: -1}}},
 			{Keys: bson.D{{Key: "domain", Value: 1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
+			// Supports the indexing worker's ClaimNextPendingIndex
+			// (sorted scan of pending_indexing projects). Partial index —
+			// we only care about documents with an explicit status value.
+			{
+				Keys: bson.D{
+					{Key: "schema_index_status", Value: 1},
+					{Key: "updated_at", Value: 1},
+				},
+				Options: options.Index().SetPartialFilterExpression(bson.M{
+					"schema_index_status": bson.M{"$exists": true},
+				}),
+			},
 		},
 	},
 	{
@@ -157,6 +169,17 @@ var schema = []struct {
 			{
 				Keys:    bson.D{{Key: "timestamp", Value: 1}},
 				Options: options.Index().SetExpireAfterSeconds(30 * 24 * 60 * 60), // 30 day TTL
+			},
+		},
+	},
+	{
+		Name: "project_schema_index_progress",
+		Indexes: []mongo.IndexModel{
+			{
+				// One-progress-doc-per-project. The worker upserts by
+				// project_id; the dashboard polls by project_id.
+				Keys:    bson.D{{Key: "project_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
 			},
 		},
 	},
