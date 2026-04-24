@@ -51,16 +51,24 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 	}
 }
 
-func TestFactoryUnsupportedModel(t *testing.T) {
-	_, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
+// TestFactoryUnknownModel documents the relaxed-validation contract:
+// the factory accepts model IDs outside the shipped map so the
+// list-only path and user-typed custom IDs work without a placeholder
+// kludge. Unknown IDs come back with Dimensions()==0, and any real
+// Embed() call will surface the "unknown model" error from OpenAI.
+func TestFactoryUnknownModel(t *testing.T) {
+	prov, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
 		"api_key": "test-key",
-		"model":   "nonexistent-model",
+		"model":   "text-embedding-future-ultra",
 	})
-	if err == nil {
-		t.Fatal("expected error for unsupported model")
+	if err != nil {
+		t.Fatalf("factory should accept unknown model for list-only use, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "unsupported model") {
-		t.Errorf("unexpected error: %v", err)
+	if prov.Dimensions() != 0 {
+		t.Errorf("unknown model should report Dimensions()==0, got %d", prov.Dimensions())
+	}
+	if prov.ModelName() != "text-embedding-future-ultra" {
+		t.Errorf("ModelName should round-trip the unknown ID, got %q", prov.ModelName())
 	}
 }
 

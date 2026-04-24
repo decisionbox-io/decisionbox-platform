@@ -42,10 +42,11 @@ func init() {
 			model = "text-embedding-3-small"
 		}
 
-		dims, ok := modelDimensions[model]
-		if !ok {
-			return nil, fmt.Errorf("openai embedding: unsupported model %q (supported: text-embedding-3-small, text-embedding-3-large)", model)
-		}
+		// Accept unknown models with dims=0 so the list-only path and
+		// user-typed custom model IDs both work. Actual Embed() calls
+		// against an unknown model will still fail upstream at the
+		// OpenAI API; we don't pretend to know the vector size.
+		dims := modelDimensions[model]
 
 		baseURL := cfg["base_url"]
 		if baseURL == "" {

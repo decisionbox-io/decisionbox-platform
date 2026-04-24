@@ -281,3 +281,171 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// --- Embedding live-list ---
+//
+// Embedding providers don't have a wire concept (they all speak each
+// cloud's own REST shape), so the response is simpler: one row per
+// model with id, name, and dimensions. The merge logic is otherwise
+// identical to the LLM variant — live rows ship through, catalog rows
+// fill in anything the upstream missed, and dimension 0 on a live row
+// falls back to the catalog's dimension when the ID matches.
+
+// embeddingLiveModelRow is the wire shape for one row. Keeps the
+// catalog's Dimensions name on the live variant so the dashboard has
+// one shape to render against.
+type embeddingLiveModelRow struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Dimensions  int    `json:"dimensions"`
+	Lifecycle   string `json:"lifecycle,omitempty"`
+	Source      string `json:"source"` // "catalog" | "live" | "both"
+}
+
+// ListLiveEmbeddingModels hits the provider's ModelLister with the
+// supplied config, merges with the shipped catalog, and returns a
+// sorted list.
+//
+// POST /api/v1/providers/embedding/{id}/models/live
+func (h *ProvidersHandler) ListLiveEmbeddingModels(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "provider id is required")
+		return
+	}
+	meta, ok := goembedding.GetProviderMeta(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown embedding provider: "+id)
+		return
+	}
+
+	var body liveModelsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	live, liveErr := fetchLiveEmbeddingModels(ctx, id, body.Config)
+	writeEmbeddingLiveModelsResponse(w, meta, live, liveErr)
+}
+
+// ListLiveEmbeddingModelsForProject is the project-scoped variant that
+// pulls the API key from the saved secret so the user doesn't re-enter
+// it on the settings screen.
+//
+// POST /api/v1/projects/{id}/providers/embedding/models/live
+func (h *ProvidersHandler) ListLiveEmbeddingModelsForProject(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("id")
+	if pid == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
+		return
+	}
+	project, err := h.projectRepo.GetByID(r.Context(), pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load project: "+err.Error())
+		return
+	}
+	if project == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	providerID := project.Embedding.Provider
+	if providerID == "" {
+		writeError(w, http.StatusBadRequest, "project has no embedding provider configured")
+		return
+	}
+	meta, ok := goembedding.GetProviderMeta(providerID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown embedding provider: "+providerID)
+		return
+	}
+
+	cfg := map[string]string{}
+	// Pull the stored key so the live call has credentials without the
+	// user re-typing. Match the agent's lookup so project-scoped list
+	// works exactly like a real indexing run's embed call.
+	if h.secretProvider != nil {
+		if key, err := h.secretProvider.Get(r.Context(), pid, "embedding-api-key"); err == nil && key != "" {
+			cfg["api_key"] = key
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	live, liveErr := fetchLiveEmbeddingModels(ctx, providerID, cfg)
+	writeEmbeddingLiveModelsResponse(w, meta, live, liveErr)
+}
+
+// fetchLiveEmbeddingModels constructs the provider and asks it to list
+// models if it implements the optional ModelLister capability. Returns
+// (nil, nil) for providers that don't — the dashboard then just
+// renders the shipped catalog, no user-visible error.
+func fetchLiveEmbeddingModels(ctx context.Context, providerID string, cfg map[string]string) ([]goembedding.RemoteModel, error) {
+	if cfg == nil {
+		cfg = map[string]string{}
+	}
+	// Every registered embedding provider factory validates required
+	// config fields up-front; supply a harmless model default so the
+	// factory doesn't reject a list-only call. ListModels never reads
+	// cfg["model"].
+	if cfg["model"] == "" {
+		cfg["model"] = "list-only-placeholder"
+	}
+	prov, err := goembedding.NewProvider(providerID, goembedding.ProviderConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := prov.(goembedding.ModelLister)
+	if !ok {
+		return nil, nil
+	}
+	return lister.ListModels(ctx)
+}
+
+// writeEmbeddingLiveModelsResponse returns ONLY the models reported by
+// the provider's ListModels. We deliberately skip merging with the
+// shipped catalog — the user wants to see what the provider actually
+// serves today, and the catalog is just a fallback that the combobox
+// already has access to via ProviderMeta.Models.
+//
+// Enriches live rows with catalog dimensions when the provider doesn't
+// report dims (OpenAI's /v1/models endpoint doesn't), so known IDs
+// still carry a usable vector size.
+func writeEmbeddingLiveModelsResponse(w http.ResponseWriter, meta goembedding.ProviderMeta, live []goembedding.RemoteModel, liveErr error) {
+	catalogDims := make(map[string]goembedding.ModelInfo, len(meta.Models))
+	for _, m := range meta.Models {
+		catalogDims[m.ID] = m
+	}
+
+	out := make([]embeddingLiveModelRow, 0, len(live))
+	for _, lm := range live {
+		row := embeddingLiveModelRow{
+			ID:          lm.ID,
+			DisplayName: displayOr(lm.DisplayName, lm.ID),
+			Dimensions:  lm.Dimensions,
+			Lifecycle:   lm.Lifecycle,
+			Source:      "live",
+		}
+		if row.Dimensions == 0 {
+			if cat, ok := catalogDims[lm.ID]; ok {
+				row.Dimensions = cat.Dimensions
+				if row.DisplayName == lm.ID && cat.Name != "" {
+					row.DisplayName = cat.Name
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+
+	resp := map[string]interface{}{"models": out}
+	if liveErr != nil {
+		resp["live_error"] = liveErr.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
