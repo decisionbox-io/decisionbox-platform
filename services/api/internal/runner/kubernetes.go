@@ -233,6 +233,72 @@ func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*R
 	}
 }
 
+// RunIndexSchema runs the agent in --mode index-schema as a K8s Job and
+// blocks until it completes. Same polling shape as RunSync but with a
+// longer deadline (schema indexing on 2K-table warehouses takes ~6 min
+// with default workers; 30 minutes is the documented headroom in §9).
+func (r *KubernetesRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaOptions) error {
+	safeProjectID := opts.ProjectID
+	if len(safeProjectID) > 12 {
+		safeProjectID = safeProjectID[:12]
+	}
+	jobName := fmt.Sprintf("index-%s-%d", safeProjectID, time.Now().UnixMilli()%100000)
+	args := []string{"--mode", "index-schema", "--project-id", opts.ProjectID}
+	if opts.RunID != "" {
+		args = append(args, "--run-id", opts.RunID)
+	}
+	deadline := int64(30 * 60) // 30 minutes
+
+	job := r.buildJob(jobSpec{
+		name: jobName,
+		labels: map[string]string{
+			"app": "decisionbox-agent", "type": "index-schema", "project-id": opts.ProjectID,
+		},
+		podLabels: map[string]string{
+			"app": "decisionbox-agent", "type": "index-schema",
+		},
+		args:     args,
+		ttl:      300, // keep pod around 5 min after completion for log fetch
+		deadline: &deadline,
+		cpuReq:   r.config.CPURequest, cpuLim: r.config.CPULimit,
+		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
+	})
+
+	if _, err := r.client.BatchV1().Jobs(r.config.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create index-schema Job: %w", err)
+	}
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "project_id": opts.ProjectID, "run_id": opts.RunID,
+	}).Info("Agent index-schema K8s Job created")
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			j, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if j.Status.Succeeded > 0 {
+				apilog.WithFields(apilog.Fields{
+					"job": jobName, "project_id": opts.ProjectID,
+				}).Info("Agent index-schema K8s Job completed")
+				return nil
+			}
+			if j.Status.Failed > 0 {
+				errMsg := r.getPodErrorMessage(ctx, jobName)
+				if errMsg == "" {
+					errMsg = "index-schema job failed"
+				}
+				return fmt.Errorf("%s", errMsg)
+			}
+		}
+	}
+}
+
 // readPodLogs reads stdout from a pod created by a Job.
 func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []byte {
 	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{

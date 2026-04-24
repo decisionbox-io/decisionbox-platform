@@ -27,6 +27,8 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/schemaindex"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 
 	// Secret provider registrations
@@ -192,6 +194,34 @@ func Run() {
 		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
 	}
 
+	// Schema-index worker: background loop that claims pending_indexing
+	// projects and spawns agent --mode index-schema. Runs only when
+	// Qdrant is configured (mandatory dependency per plan §3.7 — without
+	// it there's nothing to index into).
+	var schemaIndexCancel context.CancelFunc
+	if cfg.Qdrant.URL != "" {
+		runnerCfg := runner.LoadConfig()
+		r, err := runner.New(runnerCfg)
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to create runner")
+			os.Exit(1)
+		}
+		worker, err := schemaindex.New(schemaindex.WorkerConfig{
+			Projects: database.NewProjectRepository(db),
+			Progress: database.NewSchemaIndexProgressRepository(db),
+			Runner:   r,
+		})
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to create worker")
+			os.Exit(1)
+		}
+		var workerCtx context.Context
+		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
+		go worker.Start(workerCtx)
+	} else {
+		apilog.Warn("Qdrant not configured — schema-index worker disabled (discovery will be blocked until Qdrant is set)")
+	}
+
 	// HTTP server
 	handler := server.New(db, healthHandler, secretProvider, authProvider, qdrantProvider)
 	srv := &http.Server{
@@ -224,6 +254,14 @@ func Run() {
 	<-done
 	apilog.Info("Shutdown signal received, gracefully stopping")
 	telemetry.TrackServerStopped()
+
+	// Stop the schema-index worker first so no new agent subprocesses
+	// get spawned while we're draining HTTP. Any in-flight subprocess
+	// is left to exit on its own — the worker detaches ctx for the
+	// final status transition.
+	if schemaIndexCancel != nil {
+		schemaIndexCancel()
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

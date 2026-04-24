@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -118,6 +119,51 @@ func (r *SubprocessRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*R
 	}
 
 	return &RunSyncResult{Output: output}, nil
+}
+
+// RunIndexSchema executes the agent in schema-indexing mode and blocks
+// until it exits. Unlike Run (which backgrounds the agent and reports
+// failure via a callback), indexing runs are owned by the single-node
+// worker loop in the API — it needs the exit code synchronously to
+// decide whether to flip the project's schema_index_status to ready
+// or failed.
+func (r *SubprocessRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaOptions) error {
+	args := []string{
+		"--mode", "index-schema",
+		"--project-id", opts.ProjectID,
+	}
+	if opts.RunID != "" {
+		args = append(args, "--run-id", opts.RunID)
+	}
+
+	cmd := exec.CommandContext(ctx, "decisionbox-agent", args...) //nolint:gosec // controlled binary name
+	cmd.Env = append(os.Environ(),
+		"MONGODB_URI="+getEnv("MONGODB_URI", "mongodb://localhost:27017"),
+		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	apilog.WithFields(apilog.Fields{
+		"project_id": opts.ProjectID,
+		"run_id":     opts.RunID,
+	}).Info("Agent index-schema subprocess starting")
+
+	if err := cmd.Run(); err != nil {
+		msg := extractErrorMessage(stderr.String(), err)
+		apilog.WithFields(apilog.Fields{
+			"project_id": opts.ProjectID,
+			"run_id":     opts.RunID,
+			"error":      msg,
+		}).Warn("Agent index-schema subprocess failed")
+		return fmt.Errorf("agent --mode index-schema: %s", msg)
+	}
+	apilog.WithFields(apilog.Fields{
+		"project_id": opts.ProjectID,
+		"run_id":     opts.RunID,
+	}).Info("Agent index-schema subprocess completed")
+	return nil
 }
 
 func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
