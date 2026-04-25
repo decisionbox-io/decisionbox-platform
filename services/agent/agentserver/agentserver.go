@@ -606,6 +606,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		FilterValue:     project.Warehouse.FilterValue,
 		LLMProvider:       project.LLM.Provider,
 		LLMModel:          project.LLM.Model,
+		WarehouseProvider: project.Warehouse.Provider,
 		EnableDebugLogs:   enableDebugLogs,
 		VectorStore:       qdrantProvider,
 		EmbeddingProvider: embeddingProvider,

@@ -18,6 +18,12 @@ type Logger struct {
 	repo           *database.DebugLogRepository
 	appID          string
 	discoveryRunID string
+	// warehouseProvider is the provider id (e.g. "mssql", "bigquery",
+	// "snowflake") used as log_type and component on warehouse-query
+	// debug rows. Set from the project's warehouse config — empty
+	// falls back to "warehouse" so the dashboard's "where did this
+	// query come from" column never reads as a blank.
+	warehouseProvider string
 	mu             sync.RWMutex
 	enabled        bool
 
@@ -39,6 +45,11 @@ type LoggerOptions struct {
 	// agent is invoked outside the API — the logger still works, but the logs
 	// won't be joinable to a run).
 	DiscoveryRunID string
+	// WarehouseProvider is the warehouse provider id from the project
+	// config (e.g. "mssql"). Stamped on every warehouse-query debug
+	// row as log_type + component so the dashboard correctly labels
+	// queries by their actual source. Empty falls back to "warehouse".
+	WarehouseProvider string
 }
 
 // NewLogger creates a new debug logger
@@ -47,12 +58,17 @@ func NewLogger(opts LoggerOptions) *Logger {
 	if discoveryRunID == "" {
 		discoveryRunID = uuid.New().String()
 	}
+	whProvider := opts.WarehouseProvider
+	if whProvider == "" {
+		whProvider = "warehouse"
+	}
 
 	l := &Logger{
-		repo:           opts.Repo,
-		appID:          opts.AppID,
-		discoveryRunID: discoveryRunID,
-		enabled:        opts.Enabled,
+		repo:              opts.Repo,
+		appID:             opts.AppID,
+		discoveryRunID:    discoveryRunID,
+		warehouseProvider: whProvider,
+		enabled:           opts.Enabled,
 	}
 
 	if opts.Enabled {
@@ -89,8 +105,13 @@ func (l *Logger) SetEnabled(enabled bool) {
 	l.enabled = enabled
 }
 
-// LogBigQuery logs a BigQuery query execution
-func (l *Logger) LogBigQuery(
+// LogWarehouseQuery records a warehouse query execution under the
+// project's actual provider id (mssql, bigquery, snowflake, …) so the
+// dashboard's debug-log table labels queries correctly. The historical
+// "BigQuery" name was misleading once we shipped other warehouse
+// providers — every query was stamped log_type=bigquery regardless of
+// the real source.
+func (l *Logger) LogWarehouseQuery(
 	ctx context.Context,
 	step int,
 	phase string,
@@ -110,10 +131,11 @@ func (l *Logger) LogBigQuery(
 		return
 	}
 
-	l.repo.LogBigQueryExecution(
+	l.repo.LogWarehouseQueryExecution(
 		ctx,
 		l.appID,
 		l.discoveryRunID,
+		l.warehouseProvider,
 		step,
 		phase,
 		query,

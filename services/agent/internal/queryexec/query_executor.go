@@ -120,7 +120,7 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 				if result.Fixed {
 					fixedQuery = result.FinalQuery
 				}
-				e.debugLogger.LogBigQuery(ctx, e.currentStep, e.currentPhase,
+				e.debugLogger.LogWarehouseQuery(ctx, e.currentStep, e.currentPhase,
 					query, purpose, result.Data, result.RowCount, result.ExecutionTimeMs,
 					nil, result.FixAttempts, fixedQuery)
 			}
@@ -145,7 +145,7 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 			}).Error("Query exhausted all retry attempts")
 
 			if e.debugLogger != nil {
-				e.debugLogger.LogBigQuery(ctx, e.currentStep, e.currentPhase,
+				e.debugLogger.LogWarehouseQuery(ctx, e.currentStep, e.currentPhase,
 					query, purpose, nil, 0, time.Since(startTime).Milliseconds(),
 					err, result.FixAttempts, "")
 			}

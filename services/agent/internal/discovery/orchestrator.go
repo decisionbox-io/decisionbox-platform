@@ -96,17 +96,18 @@ type OrchestratorOptions struct {
 	RunRepo         *database.RunRepository
 	RunID           string
 
-	ProjectID       string
-	Domain          string
-	Category        string
-	Profile         map[string]interface{}
-	ProjectPrompts  *models.ProjectPrompts
-	Datasets        []string
-	FilterField     string
-	FilterValue     string
-	LLMProvider     string
-	LLMModel        string
-	EnableDebugLogs bool
+	ProjectID         string
+	Domain            string
+	Category          string
+	Profile           map[string]interface{}
+	ProjectPrompts    *models.ProjectPrompts
+	Datasets          []string
+	FilterField       string
+	FilterValue       string
+	LLMProvider       string
+	LLMModel          string
+	WarehouseProvider string // provider id used to label warehouse-query debug rows
+	EnableDebugLogs   bool
 
 	// Optional — nil if Qdrant/embedding not configured
 	VectorStore       vectorstore.Provider
@@ -127,10 +128,11 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	var debugLogger *debug.Logger
 	if opts.DebugLogRepo != nil {
 		debugLogger = debug.NewLogger(debug.LoggerOptions{
-			Repo:           opts.DebugLogRepo,
-			AppID:          opts.ProjectID,
-			Enabled:        opts.EnableDebugLogs,
-			DiscoveryRunID: opts.RunID,
+			Repo:              opts.DebugLogRepo,
+			AppID:             opts.ProjectID,
+			Enabled:           opts.EnableDebugLogs,
+			DiscoveryRunID:    opts.RunID,
+			WarehouseProvider: opts.WarehouseProvider,
 		})
 	}
 
