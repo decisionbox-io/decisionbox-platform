@@ -288,32 +288,77 @@ func (p *MSSQLProvider) GetTableSchemaInDataset(ctx context.Context, dataset, ta
 		return nil, fmt.Errorf("mssql: column iteration error: %w", err)
 	}
 
-	// Row count: use sys.dm_db_partition_stats (heap/clustered index only),
-	// which returns an accurate row count without scanning the table.
-	// Requires VIEW DATABASE STATE permission; silently skipped on failure.
-	// A short timeout guards against callers that pass context.Background() —
-	// the stats query should return in milliseconds and we don't want it to
-	// block GetTableSchema if permissions are wrong or the DMV is contended.
+	// Row count: try sys.dm_db_partition_stats first (accurate, fast,
+	// no table scan). If that errors / returns no rows we fall back to
+	// sys.partitions, which is a catalog view reachable by any account
+	// with SELECT on the table — ERP service accounts without VIEW
+	// DATABASE STATE would otherwise stay at row_count=0 across the
+	// entire warehouse.
+	//
+	// Short timeout guards against callers that pass context.Background()
+	// — the lookup should return in milliseconds and we don't want it
+	// to block GetTableSchema if permissions are wrong or the DMV is
+	// contended.
 	countCtx, countCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer countCancel()
-	countRows, err := p.client.QueryContext(countCtx, `
+	if got, ok := mssqlCountViaStats(countCtx, p.client, dataset, table); ok {
+		schema.RowCount = got
+	} else if got, ok := mssqlCountViaPartitions(countCtx, p.client, dataset, table); ok {
+		schema.RowCount = got
+	}
+
+	return schema, nil
+}
+
+// mssqlCountViaStats reads sys.dm_db_partition_stats. Returns (count,
+// true) on success; (0, false) when the DMV is blocked by permissions
+// or the query returns no rows.
+func mssqlCountViaStats(ctx context.Context, c msClient, schemaName, table string) (int64, bool) {
+	rows, err := c.QueryContext(ctx, `
 		SELECT SUM(ps.row_count)
 		FROM sys.dm_db_partition_stats ps
 		JOIN sys.tables t ON t.object_id = ps.object_id
 		JOIN sys.schemas s ON s.schema_id = t.schema_id
 		WHERE s.name = @p1 AND t.name = @p2 AND ps.index_id IN (0, 1)
-	`, dataset, table)
-	if err == nil {
-		defer countRows.Close()
-		if countRows.Next() {
-			var rowCount sql.NullInt64
-			if err := countRows.Scan(&rowCount); err == nil && rowCount.Valid && rowCount.Int64 >= 0 {
-				schema.RowCount = rowCount.Int64
-			}
-		}
+	`, schemaName, table)
+	if err != nil {
+		return 0, false
 	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, false
+	}
+	var n sql.NullInt64
+	if err := rows.Scan(&n); err != nil || !n.Valid || n.Int64 < 0 {
+		return 0, false
+	}
+	return n.Int64, true
+}
 
-	return schema, nil
+// mssqlCountViaPartitions reads sys.partitions — the catalog-view
+// fallback for accounts without VIEW DATABASE STATE. Same row-count
+// semantics (heap/clustered rows), slightly less accurate under heavy
+// concurrent DML but fine for indexing.
+func mssqlCountViaPartitions(ctx context.Context, c msClient, schemaName, table string) (int64, bool) {
+	rows, err := c.QueryContext(ctx, `
+		SELECT SUM(p.rows)
+		FROM sys.partitions p
+		JOIN sys.tables t ON t.object_id = p.object_id
+		JOIN sys.schemas s ON s.schema_id = t.schema_id
+		WHERE s.name = @p1 AND t.name = @p2 AND p.index_id IN (0, 1)
+	`, schemaName, table)
+	if err != nil {
+		return 0, false
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, false
+	}
+	var n sql.NullInt64
+	if err := rows.Scan(&n); err != nil || !n.Valid || n.Int64 < 0 {
+		return 0, false
+	}
+	return n.Int64, true
 }
 
 func (p *MSSQLProvider) GetDataset() string {

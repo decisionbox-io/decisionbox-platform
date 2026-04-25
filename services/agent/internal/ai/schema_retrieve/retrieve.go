@@ -359,9 +359,19 @@ func payloadFromBlurb(b TableBlurb, projectID string) map[string]interface{} {
 	for i, k := range b.Keywords {
 		kws[i] = k
 	}
+	// b.Table is the qualified form "dataset.table" (contract enforced by
+	// TableBlurb's doc comment). The payload splits it into the bare
+	// table name + the dataset so operators inspecting a point don't see
+	// the redundant "dbo.dbo.foo"-looking render when a tool joins the
+	// two fields. blurbFromPayload rehydrates the qualified form on read
+	// so consumers keep seeing the same contract.
+	bareTable := b.Table
+	if b.Dataset != "" {
+		bareTable = strings.TrimPrefix(b.Table, b.Dataset+".")
+	}
 	return map[string]interface{}{
 		"project_id":      projectID,
-		"table":           b.Table,
+		"table":           bareTable,
 		"dataset":         b.Dataset,
 		"blurb":           b.Blurb,
 		"keywords":        kws,
@@ -373,9 +383,19 @@ func payloadFromBlurb(b TableBlurb, projectID string) map[string]interface{} {
 }
 
 func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
-	b := TableBlurb{
-		Table:          strVal(payload, "table"),
-		Dataset:        strVal(payload, "dataset"),
+	table := strVal(payload, "table")
+	dataset := strVal(payload, "dataset")
+	// Rehydrate the qualified form the rest of the agent expects.
+	// Defensive against legacy payloads written before the payload
+	// split (those already stored a qualified Table): only prefix if
+	// the stored table doesn't already start with the dataset.
+	qualified := table
+	if dataset != "" && !strings.HasPrefix(table, dataset+".") {
+		qualified = dataset + "." + table
+	}
+	return TableBlurb{
+		Table:          qualified,
+		Dataset:        dataset,
 		Blurb:          strVal(payload, "blurb"),
 		Keywords:       strListVal(payload, "keywords"),
 		RowCount:       intVal(payload, "row_count"),
@@ -383,7 +403,6 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 		BlurbModel:     strVal(payload, "blurb_model"),
 		EmbeddingModel: strVal(payload, "embedding_model"),
 	}
-	return b
 }
 
 func strVal(m map[string]*pb.Value, key string) string {

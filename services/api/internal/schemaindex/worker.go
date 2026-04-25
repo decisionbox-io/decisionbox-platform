@@ -11,6 +11,7 @@ package schemaindex
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -43,6 +44,13 @@ type WorkerConfig struct {
 // deployment, and flipping status from under it would double-count.
 type Worker struct {
 	cfg WorkerConfig
+
+	// inflight maps projectID → a cancel func that aborts the current
+	// indexing run. Populated in tick() for the duration of a run and
+	// removed in the defer path. The Cancel() method reads this map to
+	// signal a user-initiated abort from the dashboard.
+	mu       sync.Mutex
+	inflight map[string]context.CancelFunc
 }
 
 // New constructs a Worker. Validates dependencies so configuration errors
@@ -60,7 +68,48 @@ func New(cfg WorkerConfig) (*Worker, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = DefaultPollInterval
 	}
-	return &Worker{cfg: cfg}, nil
+	return &Worker{cfg: cfg, inflight: make(map[string]context.CancelFunc)}, nil
+}
+
+// Cancel aborts the in-flight indexing run for projectID, if any.
+// Returns true when a run was in flight and the cancel signal was
+// delivered; false when nothing was running for that project (e.g.
+// the user clicked Cancel just as the run completed — race-safe).
+//
+// The actual status transition to "cancelled" happens in tick() when
+// the subprocess exits with context.Canceled; Cancel only signals.
+func (w *Worker) Cancel(projectID string) bool {
+	w.mu.Lock()
+	cancel, ok := w.inflight[projectID]
+	w.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	apilog.WithField("project_id", projectID).Info("Schema-index run cancel requested")
+	return true
+}
+
+// IsRunning reports whether the worker currently has an agent subprocess
+// running for projectID. Useful for the API to 409 a cancel request
+// that races a run completion.
+func (w *Worker) IsRunning(projectID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.inflight[projectID]
+	return ok
+}
+
+func (w *Worker) register(projectID string, cancel context.CancelFunc) {
+	w.mu.Lock()
+	w.inflight[projectID] = cancel
+	w.mu.Unlock()
+}
+
+func (w *Worker) deregister(projectID string) {
+	w.mu.Lock()
+	delete(w.inflight, projectID)
+	w.mu.Unlock()
 }
 
 // Start runs the worker loop until ctx is cancelled. Blocking — intended
@@ -134,7 +183,17 @@ func (w *Worker) tick(ctx context.Context) {
 		}
 	}
 
-	err = w.cfg.Runner.RunIndexSchema(ctx, runner.IndexSchemaOptions{
+	// Derive a per-run context so the dashboard can cancel this one
+	// run without bringing down the whole worker loop. register()
+	// captures the cancel func so Worker.Cancel can reach it.
+	runCtx, runCancel := context.WithCancel(ctx)
+	w.register(p.ID, runCancel)
+	defer func() {
+		w.deregister(p.ID)
+		runCancel()
+	}()
+
+	err = w.cfg.Runner.RunIndexSchema(runCtx, runner.IndexSchemaOptions{
 		ProjectID: p.ID,
 		RunID:     runID,
 		OnLogLine: onLine,
@@ -146,6 +205,19 @@ func (w *Worker) tick(ctx context.Context) {
 	defer cancel()
 
 	if err != nil {
+		// Distinguish user-initiated cancellation from a real failure
+		// so the UI can show a "Cancelled" pill instead of an error.
+		// runCtx.Err being set means Worker.Cancel fired; the parent
+		// ctx.Err check covers API shutdown, which we also treat as
+		// cancellation (the worker will resume-or-retry on next boot
+		// via ResetStaleIndexingProjects).
+		if runCtx.Err() != nil {
+			apilog.WithField("project_id", p.ID).Info("Schema-index run cancelled")
+			if setErr := w.cfg.Projects.SetSchemaIndexStatus(transitionCtx, p.ID, models.SchemaIndexStatusCancelled, "cancelled by user"); setErr != nil {
+				apilog.WithError(setErr).Error("schemaindex: set cancelled-status")
+			}
+			return
+		}
 		apilog.WithFields(apilog.Fields{
 			"project_id": p.ID,
 			"error":      err.Error(),

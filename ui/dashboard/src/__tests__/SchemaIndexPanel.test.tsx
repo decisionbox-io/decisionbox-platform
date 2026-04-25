@@ -12,6 +12,7 @@ jest.mock('@/lib/api', () => ({
     getSchemaIndexStatus: jest.fn(),
     retrySchemaIndex: jest.fn(),
     reindexSchema: jest.fn(),
+    cancelSchemaIndex: jest.fn(),
     listSchemaIndexLogs: jest.fn(),
   },
 }));
@@ -112,5 +113,92 @@ describe('SchemaIndexPanel', () => {
     mount();
     await waitFor(() => expect(mockedApi.listSchemaIndexLogs).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText(/Agent log tail/)).toBeInTheDocument());
+  });
+
+  // --- cancel flow ---
+
+  it('shows Cancel indexing button while indexing and opens a confirmation modal', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'schema_discovery', tables_total: 10, tables_done: 3 },
+    });
+    mount();
+    const btn = await screen.findByRole('button', { name: /Cancel indexing/i });
+    expect(btn).toBeInTheDocument();
+    expect(btn).not.toBeDisabled();
+
+    // Modal closed initially.
+    expect(screen.queryByText(/Cancel schema indexing\?/)).not.toBeInTheDocument();
+    btn.click();
+    await waitFor(() =>
+      expect(screen.getByText(/Cancel schema indexing\?/)).toBeInTheDocument()
+    );
+    // Explicit "Keep running" escape hatch is present — required by the
+    // confirmation UX spec.
+    expect(screen.getByRole('button', { name: /Keep running/i })).toBeInTheDocument();
+  });
+
+  it('calls api.cancelSchemaIndex when confirmation is accepted', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'schema_discovery', tables_total: 10, tables_done: 3 },
+    });
+    (mockedApi.cancelSchemaIndex as jest.Mock).mockResolvedValue({ status: 'cancelling' });
+    mount();
+    (await screen.findByRole('button', { name: /Cancel indexing/i })).click();
+    (await screen.findByRole('button', { name: /Yes, cancel/i })).click();
+    await waitFor(() => expect(mockedApi.cancelSchemaIndex).toHaveBeenCalledWith('p1'));
+  });
+
+  it('does NOT call api.cancelSchemaIndex when "Keep running" is clicked', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'schema_discovery', tables_total: 10, tables_done: 3 },
+    });
+    mount();
+    (await screen.findByRole('button', { name: /Cancel indexing/i })).click();
+    (await screen.findByRole('button', { name: /Keep running/i })).click();
+    // Wait for the modal to close and ensure cancel was NOT called.
+    await waitFor(() =>
+      expect(screen.queryByText(/Cancel schema indexing\?/)).not.toBeInTheDocument()
+    );
+    expect(mockedApi.cancelSchemaIndex).not.toHaveBeenCalled();
+  });
+
+  it('does NOT show Cancel indexing in pending_indexing state (worker has not claimed yet)', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'pending_indexing',
+    });
+    mount();
+    // The status label waits for the first poll to complete.
+    await screen.findByText(/Queued/);
+    // Button exists but is disabled per the API contract (Cancel 409s
+    // on pending_indexing — there's no subprocess to kill).
+    const btn = screen.getByRole('button', { name: /Cancel indexing/i });
+    expect(btn).toBeDisabled();
+  });
+
+  it('renders the Cancelled banner with a Re-index button once the worker confirms', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'cancelled',
+      error: 'cancelled by user',
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText(/Cancelled/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Re-index/i })).toBeInTheDocument();
+    // No Cancel indexing button in terminal state.
+    expect(screen.queryByRole('button', { name: /Cancel indexing/i })).not.toBeInTheDocument();
+  });
+
+  it('surfaces a cancel API error in the banner without crashing', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'schema_discovery', tables_total: 10, tables_done: 3 },
+    });
+    (mockedApi.cancelSchemaIndex as jest.Mock).mockRejectedValue(new Error('network down'));
+    mount();
+    (await screen.findByRole('button', { name: /Cancel indexing/i })).click();
+    (await screen.findByRole('button', { name: /Yes, cancel/i })).click();
+    await waitFor(() => expect(screen.getByText(/network down/i)).toBeInTheDocument());
   });
 });

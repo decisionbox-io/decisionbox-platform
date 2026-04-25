@@ -42,6 +42,16 @@ type SchemaIndexer struct {
 	Embedder  Embedder
 	Retriever *schema_retrieve.Retriever
 	Progress  ProgressReporter
+
+	// Cache is optional. When non-nil and a hit is present for the
+	// current (ProjectID, WarehouseHash), BuildIndex skips the catalog
+	// pass and reuses the stored TableSchema map. Nil keeps the old
+	// always-rediscover behaviour (which is also what unit tests use).
+	Cache SchemaCache
+	// WarehouseHash is computed by the caller (agentserver) from the
+	// project's WarehouseConfig via WarehouseConfigHash. Empty hash
+	// disables the cache for this run even if Cache is set.
+	WarehouseHash string
 }
 
 // SchemaSource is the slim subset of discovery.SchemaDiscovery the
@@ -135,8 +145,12 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		return nil, fmt.Errorf("schema_indexer: drop prior collection: %w", err)
 	}
 
-	// 2. Discover tables + schemas. Reuses the exact path normal
-	// discovery uses, so warehouse-specific sampling is inherited.
+	// 2. Discover tables + schemas. When the cache has a hit for the
+	// current warehouse hash we skip the catalog pass entirely — every
+	// subsequent blurb LLM / embedding / Qdrant step stays the same, so
+	// the only thing we sidestep is the slow MSSQL/BigQuery/Snowflake
+	// introspection. The cache is best-effort: any failure falls
+	// through to fresh discovery and logs a warning.
 	discoveryStart := time.Now()
 	applog.Info("schema_indexer: phase=discover_schemas (this may take minutes on ERP-scale warehouses)")
 	if si.Progress != nil {
@@ -144,14 +158,16 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			applog.WithError(err).Warn("schema_indexer: SetPhase schema_discovery failed")
 		}
 	}
-	schemas, err := si.Discovery.DiscoverSchemas(ctx)
+
+	schemas, fromCache, err := si.resolveSchemas(ctx, opts)
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "discover schemas: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: discover schemas: %w", err)
 	}
 	applog.WithFields(applog.Fields{
-		"tables":  len(schemas),
-		"elapsed": time.Since(discoveryStart).String(),
+		"tables":     len(schemas),
+		"elapsed":    time.Since(discoveryStart).String(),
+		"from_cache": fromCache,
 	}).Info("schema_indexer: phase=discover_schemas complete")
 	if len(schemas) == 0 {
 		return nil, fmt.Errorf("schema_indexer: no tables discovered — check datasets and warehouse permissions")
@@ -288,6 +304,38 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		BlurbTokensOut: blurbOut,
 		Duration:       time.Since(start),
 	}, nil
+}
+
+// resolveSchemas returns the TableSchema map to index, tagging whether
+// it came from the cache. The cache is strictly best-effort: Find
+// errors degrade to a fresh discovery (logged + continue) and Save
+// errors don't fail the run (the next run just rediscovers).
+//
+// Extracted as its own method so it can be unit-tested without a live
+// Qdrant — the rest of BuildIndex needs a real *schema_retrieve.Retriever.
+func (si *SchemaIndexer) resolveSchemas(ctx context.Context, opts IndexOptions) (map[string]models.TableSchema, bool, error) {
+	cacheActive := si.Cache != nil && si.WarehouseHash != ""
+
+	if cacheActive {
+		hit, cacheErr := si.Cache.Find(ctx, opts.ProjectID, si.WarehouseHash)
+		if cacheErr != nil {
+			applog.WithError(cacheErr).Warn("schema_indexer: schema-cache lookup failed; falling through to fresh discovery")
+		} else if len(hit) > 0 {
+			applog.WithField("tables", len(hit)).Info("schema_indexer: schema cache hit — skipping catalog pass")
+			return hit, true, nil
+		}
+	}
+
+	schemas, err := si.Discovery.DiscoverSchemas(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if cacheActive && len(schemas) > 0 {
+		if err := si.Cache.Save(ctx, opts.ProjectID, si.WarehouseHash, schemas); err != nil {
+			applog.WithError(err).Warn("schema_indexer: schema-cache save failed; next run will rediscover")
+		}
+	}
+	return schemas, false, nil
 }
 
 func (si *SchemaIndexer) recordErr(ctx context.Context, projectID, msg string) {

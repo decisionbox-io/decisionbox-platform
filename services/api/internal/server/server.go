@@ -23,7 +23,7 @@ import (
 // to clear the per-project Qdrant collection before re-enqueuing. Pass
 // nil when Qdrant is not configured; /reindex then relies on the
 // worker's pre-run drop as the source of truth.
-func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, vectorStore ...vectorstore.Provider) http.Handler {
+func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, vectorStore ...vectorstore.Provider) http.Handler {
 	var vs vectorstore.Provider
 	if len(vectorStore) > 0 {
 		vs = vectorStore[0]
@@ -96,7 +96,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
 	schemaIndexProgressRepo := database.NewSchemaIndexProgressRepository(db)
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
-	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo)
+	schemaCacheRepo := database.NewSchemaCacheRepository(db)
+	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
 
 	// RBAC helpers — wrap a handler with role-based access control.
 	// With NoAuth (default), all requests get "admin" role — all routes pass.
@@ -154,6 +155,9 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/status", withRole(viewer, schemaIndex.GetStatus))
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/logs", withRole(viewer, schemaIndex.ListLogs))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/retry", withRole(member, schemaIndex.Retry))
+	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/cancel", withRole(member, schemaIndex.Cancel))
+	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/invalidate-cache", withRole(member, schemaIndex.InvalidateCache))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/cache-info", withRole(viewer, schemaIndex.GetCacheInfo))
 	mux.HandleFunc("POST /api/v1/projects/{id}/reindex", withRole(member, schemaIndex.Reindex))
 
 	// Prompts — viewer for read, member for write

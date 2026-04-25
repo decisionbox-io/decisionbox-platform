@@ -160,10 +160,17 @@ export interface SchemaIndexProgress {
 }
 
 export interface SchemaIndexStatus {
-  status: string; // "", "pending_indexing", "indexing", "ready", "failed"
+  status: string; // "", "pending_indexing", "indexing", "ready", "failed", "cancelled", "needs_reindex"
   error?: string;
   updated_at?: string;
   progress?: SchemaIndexProgress;
+}
+
+// SchemaCacheInfo is the wire shape for GET /schema-index/cache-info,
+// rendered in Settings → Advanced next to the Clear button.
+export interface SchemaCacheInfo {
+  cached: boolean;
+  last_cached_at?: string; // RFC 3339; empty when cached=false
 }
 
 // EmbeddingLiveModel is one row from the embedding live-list endpoint.
@@ -787,8 +794,31 @@ export const api = {
     request<SchemaIndexStatus>(`/api/v1/projects/${projectId}/schema-index/status`),
   retrySchemaIndex: (projectId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
+  // cancelSchemaIndex signals the in-flight indexing run to stop. The
+  // status transition (→ "cancelled") happens asynchronously once the
+  // worker sees the cancel via context — the dashboard's 2s status
+  // poll picks it up.
+  cancelSchemaIndex: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/cancel`, { method: 'POST' }),
   reindexSchema: (projectId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/reindex`, { method: 'POST' }),
+  // invalidateSchemaCache drops the project_schema_cache rows so the next
+  // indexing run skips the cache and rediscovers from the warehouse.
+  // Used by Settings → Advanced "Clear schema cache". 409 when an
+  // indexing run is in flight; 503 when the API instance has no cache
+  // wired (Qdrant-less builds).
+  invalidateSchemaCache: (projectId: string) =>
+    request<{ status: string }>(
+      `/api/v1/projects/${projectId}/schema-index/invalidate-cache`,
+      { method: 'POST' }
+    ),
+  // getSchemaCacheInfo returns metadata about the project's schema
+  // cache (last_cached_at, cached). Used by Settings → Advanced to
+  // render "Last cached: …" next to the Clear button.
+  getSchemaCacheInfo: (projectId: string) =>
+    request<SchemaCacheInfo>(
+      `/api/v1/projects/${projectId}/schema-index/cache-info`
+    ),
   // listSchemaIndexLogs returns agent stderr lines captured during
   // indexing runs. `since` (ISO 8601) cursor keeps the tail poll cheap —
   // only lines newer than the timestamp come back.

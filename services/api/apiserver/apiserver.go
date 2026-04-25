@@ -201,6 +201,7 @@ func Run() {
 	// on the worker's own pre-run drop.
 	var schemaIndexCancel context.CancelFunc
 	var schemaDropper *schemaindex.QdrantDropper
+	var indexWorker *schemaindex.Worker
 	if cfg.Qdrant.URL != "" {
 		host, port := parseQdrantHostPort(cfg.Qdrant.URL)
 		dropper, err := schemaindex.NewQdrantDropper(host, port, cfg.Qdrant.APIKey, false)
@@ -227,6 +228,7 @@ func Run() {
 			apilog.WithError(err).Error("schemaindex: failed to create worker")
 			os.Exit(1)
 		}
+		indexWorker = worker
 		// One-shot migration for projects that existed before schema
 		// indexing shipped. Flips warehouse-configured, unindexed
 		// projects to pending_indexing so the worker picks them up.
@@ -256,7 +258,7 @@ func Run() {
 	}
 
 	// HTTP server
-	handler := server.New(db, healthHandler, secretProvider, authProvider, droppersAsHandlerInterface(schemaDropper), qdrantProvider)
+	handler := server.New(db, healthHandler, secretProvider, authProvider, droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker), qdrantProvider)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      ApplyGlobalMiddlewares(handler),
@@ -348,6 +350,15 @@ func droppersAsHandlerInterface(d *schemaindex.QdrantDropper) handler.Collection
 		return nil
 	}
 	return d
+}
+
+// indexCancellerOrNil avoids the typed-nil trap when the schema-index
+// worker didn't start (no Qdrant). Same dance as droppersAsHandlerInterface.
+func indexCancellerOrNil(w *schemaindex.Worker) handler.IndexCanceller {
+	if w == nil {
+		return nil
+	}
+	return w
 }
 
 // parseQdrantHostPort splits the QDRANT_URL env var into (host, port).

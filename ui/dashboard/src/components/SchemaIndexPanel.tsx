@@ -20,8 +20,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Group, Progress, ScrollArea, Stack, Text } from '@mantine/core';
-import { IconAlertCircle, IconCheck, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
+import { Alert, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
+import { IconAlertCircle, IconCheck, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
 import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
@@ -48,6 +48,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
     return window.localStorage.getItem(`db:showDebugLogs:${projectId}`) === '1';
   });
   const [logs, setLogs] = useState<SchemaIndexLogLine[]>([]);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const alive = useRef(true);
@@ -149,6 +150,22 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
     }
   };
 
+  const handleCancel = async () => {
+    setCancelModalOpen(false);
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelSchemaIndex(projectId);
+      // Don't bother re-polling immediately — the worker writes
+      // the "cancelled" status transition asynchronously; the
+      // 2-second status poll will pick it up.
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleReindex = async () => {
     if (!confirm('Re-index schema? Drops the current index and rebuilds from scratch. Costs time + LLM tokens.')) {
       return;
@@ -180,6 +197,8 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
   const phaseLabel = (() => {
     if (status?.status === 'ready') return 'Ready';
     if (status?.status === 'failed') return 'Failed';
+    if (status?.status === 'cancelled') return 'Cancelled';
+    if (status?.status === 'needs_reindex') return 'Cache cleared — re-index required';
     if (status?.status === 'pending_indexing') return 'Queued';
     if (progress?.phase && PHASE_LABELS[progress.phase]) return PHASE_LABELS[progress.phase];
     return 'Not indexed';
@@ -187,12 +206,16 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
   const bannerColor =
     status?.status === 'ready' ? 'green'
       : status?.status === 'failed' ? 'red'
-        : status?.status === 'indexing' || status?.status === 'pending_indexing' ? 'blue'
-          : 'yellow';
+        : status?.status === 'cancelled' ? 'orange'
+          : status?.status === 'needs_reindex' ? 'orange'
+            : status?.status === 'indexing' || status?.status === 'pending_indexing' ? 'blue'
+              : 'yellow';
   const bannerIcon =
     status?.status === 'ready' ? <IconCheck size={16} />
       : status?.status === 'failed' ? <IconAlertCircle size={16} />
-        : <IconRotateClockwise size={16} />;
+        : status?.status === 'cancelled' ? <IconPlayerStop size={16} />
+          : status?.status === 'needs_reindex' ? <IconAlertCircle size={16} />
+            : <IconRotateClockwise size={16} />;
 
   if (!status) {
     return <Text size="sm" c="dimmed">Loading schema index status...</Text>;
@@ -227,7 +250,42 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
         </Button>
       );
     }
-    // indexing / pending_indexing — no button; let the progress speak.
+    if (status.status === 'indexing' || status.status === 'pending_indexing') {
+      // Cancel is only meaningful once the worker has actually picked
+      // up the project; the backend returns 409 for pending_indexing
+      // (there's no subprocess yet to kill). Keeping the button enabled
+      // only during `indexing` matches that contract.
+      return (
+        <Button
+          size="xs"
+          color="red"
+          variant="light"
+          leftSection={<IconPlayerStop size={14} />}
+          onClick={() => setCancelModalOpen(true)}
+          disabled={status.status !== 'indexing' || busy}
+        >
+          Cancel indexing
+        </Button>
+      );
+    }
+    if (status.status === 'cancelled') {
+      return (
+        <Group gap="xs">
+          <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={handleReindex} loading={busy}>
+            Re-index
+          </Button>
+        </Group>
+      );
+    }
+    if (status.status === 'needs_reindex') {
+      return (
+        <Group gap="xs">
+          <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={handleReindex} loading={busy}>
+            Re-index now
+          </Button>
+        </Group>
+      );
+    }
     return null;
   })();
 
@@ -299,6 +357,33 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
           </ScrollArea>
         </div>
       )}
+
+      <Modal
+        opened={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        title="Cancel schema indexing?"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            This stops the running agent subprocess. The partial progress is
+            discarded and the project state switches to <b>Cancelled</b>. You
+            can restart it any time via <b>Re-index</b>.
+          </Text>
+          <Text size="xs" c="dimmed">
+            Cached table schemas from this run stay in Mongo — a restart will
+            skip the slow catalog pass unless the warehouse config has changed.
+          </Text>
+          <Group justify="flex-end" gap="xs">
+            <Button variant="subtle" onClick={() => setCancelModalOpen(false)}>
+              Keep running
+            </Button>
+            <Button color="red" leftSection={<IconPlayerStop size={14} />} onClick={handleCancel} loading={busy}>
+              Yes, cancel
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

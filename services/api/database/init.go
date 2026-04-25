@@ -184,6 +184,26 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "project_schema_cache",
+		Indexes: []mongo.IndexModel{
+			// Cache lookup path: Find({project_id, warehouse_hash}).
+			// Compound index keeps hits cheap even with thousands of
+			// (project × warehouse-config) rows.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "warehouse_hash", Value: 1}}},
+			// Save() deletes all prior rows for a project_id before
+			// inserting fresh ones — the standalone project_id index
+			// keeps that delete cheap.
+			{Keys: bson.D{{Key: "project_id", Value: 1}}},
+			// 7-day TTL: a warehouse whose physical schema has drifted
+			// without the config changing still gets rediscovered at
+			// least weekly.
+			{
+				Keys:    bson.D{{Key: "cached_at", Value: 1}},
+				Options: options.Index().SetExpireAfterSeconds(7 * 24 * 60 * 60),
+			},
+		},
+	},
+	{
 		Name: "project_schema_index_logs",
 		Indexes: []mongo.IndexModel{
 			// Dashboard poll path: by project_id ordered by created_at.

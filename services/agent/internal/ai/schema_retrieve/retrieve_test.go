@@ -261,10 +261,15 @@ func TestUpsert_SendsCorrectCollectionAndPoints(t *testing.T) {
 	if len(req.Points) != 2 {
 		t.Fatalf("points = %d", len(req.Points))
 	}
-	// Payload shape: table, dataset, blurb, keywords list, row_count/column_count ints.
+	// Payload shape: bare table + dataset (see payloadFromBlurb — we
+	// deliberately split the qualified name so operator tooling that
+	// renders {dataset}.{table} doesn't show "sales.sales.orders").
 	p0 := req.Points[0].Payload
-	if s, ok := p0["table"].Kind.(*pb.Value_StringValue); !ok || s.StringValue != "sales.orders" {
+	if s, ok := p0["table"].Kind.(*pb.Value_StringValue); !ok || s.StringValue != "orders" {
 		t.Errorf("payload[table] wrong: %+v", p0["table"])
+	}
+	if s, ok := p0["dataset"].Kind.(*pb.Value_StringValue); !ok || s.StringValue != "sales" {
+		t.Errorf("payload[dataset] wrong: %+v", p0["dataset"])
 	}
 	if _, ok := p0["keywords"].Kind.(*pb.Value_ListValue); !ok {
 		t.Errorf("payload[keywords] should be list, got %+v", p0["keywords"])
@@ -460,6 +465,75 @@ func TestPayloadRoundTrip(t *testing.T) {
 	}
 	if len(out.Keywords) != 2 || out.Keywords[0] != "sales" {
 		t.Errorf("keywords lost: %v", out.Keywords)
+	}
+}
+
+// Payload stores the bare table name so operator tooling that renders
+// {dataset}.{table} doesn't see a doubled prefix. blurbFromPayload
+// rehydrates the qualified form the rest of the agent expects.
+func TestPayloadStoresBareTableNotQualified(t *testing.T) {
+	in := TableBlurb{
+		Table:   "dbo.FINP_PERSONEL",
+		Dataset: "dbo",
+	}
+	raw := payloadFromBlurb(in, "p")
+	if got := raw["table"]; got != "FINP_PERSONEL" {
+		t.Errorf("payload.table = %q, want bare %q", got, "FINP_PERSONEL")
+	}
+	if got := raw["dataset"]; got != "dbo" {
+		t.Errorf("payload.dataset = %q, want %q", got, "dbo")
+	}
+}
+
+func TestPayloadRoundTrip_EmptyDataset(t *testing.T) {
+	// Providers that don't use a multi-dataset namespace (e.g. BigQuery
+	// single-project mode) write Dataset="" and Table=bare. The payload
+	// should faithfully round-trip that shape without inventing a dot.
+	in := TableBlurb{Table: "events", Dataset: ""}
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out := blurbFromPayload(pv)
+	if out.Table != "events" {
+		t.Errorf("empty-dataset Table = %q, want %q", out.Table, "events")
+	}
+	if out.Dataset != "" {
+		t.Errorf("empty-dataset Dataset = %q, want empty", out.Dataset)
+	}
+}
+
+func TestPayloadRoundTrip_UnqualifiedTableWithDataset(t *testing.T) {
+	// Defensive: if a caller writes TableBlurb{Table: "orders",
+	// Dataset: "dbo"} instead of the documented qualified form, the
+	// payload still rehydrates sensibly — Table comes back as
+	// "dbo.orders" so downstream Schemas[table] lookups hit.
+	in := TableBlurb{Table: "orders", Dataset: "dbo"}
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out := blurbFromPayload(pv)
+	if out.Table != "dbo.orders" {
+		t.Errorf("rehydrated Table = %q, want %q", out.Table, "dbo.orders")
+	}
+}
+
+func TestBlurbFromPayload_LegacyQualifiedStillWorks(t *testing.T) {
+	// Forward-compat with points written by pre-fix agents: payload
+	// already contains "dbo.orders" in the "table" field. The prefix
+	// guard in blurbFromPayload must NOT double it to "dbo.dbo.orders".
+	legacy := map[string]interface{}{
+		"table":   "dbo.orders",
+		"dataset": "dbo",
+	}
+	pv, err := pb.TryValueMap(legacy)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out := blurbFromPayload(pv)
+	if out.Table != "dbo.orders" {
+		t.Errorf("legacy-qualified Table = %q, want %q (no double prefix)", out.Table, "dbo.orders")
 	}
 }
 

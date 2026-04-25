@@ -443,3 +443,64 @@ func TestIntegration_ProviderInterface(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegration_RowCountFromDescribeExtended exercises the new
+// DESCRIBE EXTENDED → row-count path against a live Databricks
+// warehouse. Set INTEGRATION_TEST_DATABRICKS_ROWCOUNT_TABLE to a
+// table with stats populated (e.g. "samples.nyctaxi.trips", which
+// ships with ANALYZE TABLE pre-computed) to exercise the happy
+// path; leave it unset to just verify the code doesn't panic on a
+// stats-less table (the nyctaxi default below works either way —
+// 0 is a valid result if stats weren't computed).
+func TestIntegration_RowCountFromDescribeExtended(t *testing.T) {
+	cfg := getIntegrationConfig(t)
+
+	tableName := os.Getenv("INTEGRATION_TEST_DATABRICKS_ROWCOUNT_TABLE")
+	schemaOverride := os.Getenv("INTEGRATION_TEST_DATABRICKS_ROWCOUNT_SCHEMA")
+	if tableName == "" {
+		// Reasonable default on the samples catalog. trips is analyzed
+		// on the public samples.nyctaxi — we'll see a non-zero count.
+		tableName = "trips"
+	}
+	if schemaOverride != "" {
+		cfg["dataset"] = schemaOverride
+	}
+
+	provider, err := gowarehouse.NewProvider("databricks", cfg)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	defer provider.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	schema, err := provider.GetTableSchemaInDataset(ctx, cfg["dataset"], tableName)
+	if err != nil {
+		t.Fatalf("GetTableSchemaInDataset(%s.%s): %v", cfg["dataset"], tableName, err)
+	}
+	if len(schema.Columns) == 0 {
+		t.Fatalf("no columns returned for %s.%s — table may not exist on this workspace", cfg["dataset"], tableName)
+	}
+
+	// Contract: RowCount is either a real positive number (stats
+	// computed) or 0 (stats absent). Negative or wildly large values
+	// are a regression in the parser.
+	if schema.RowCount < 0 {
+		t.Errorf("negative RowCount=%d", schema.RowCount)
+	}
+	if schema.RowCount > 1_000_000_000_000 {
+		t.Errorf("implausible RowCount=%d (>1T) — likely a parser mis-match", schema.RowCount)
+	}
+	t.Logf("%s.%s: RowCount=%d columns=%d", cfg["dataset"], tableName, schema.RowCount, len(schema.Columns))
+
+	if os.Getenv("INTEGRATION_TEST_DATABRICKS_ROWCOUNT_MIN") != "" {
+		// Opt-in hard assertion for CI: require a strictly-positive
+		// count on the operator-supplied table. Useful to catch a
+		// Databricks runtime upgrade that changes the Statistics row
+		// format in a way our regex no longer matches.
+		if schema.RowCount <= 0 {
+			t.Errorf("INTEGRATION_TEST_DATABRICKS_ROWCOUNT_MIN is set but RowCount=%d — stats path broke", schema.RowCount)
+		}
+	}
+}

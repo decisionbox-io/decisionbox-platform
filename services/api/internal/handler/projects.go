@@ -310,6 +310,16 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.Embedding.Provider != "" {
 		existing.Embedding = incoming.Embedding
 	}
+	// BlurbLLM is a pointer — nil means "field not present in this
+	// request" (preserve existing), an empty-provider value means "user
+	// cleared the override" (so we clear it too).
+	if incoming.BlurbLLM != nil {
+		if incoming.BlurbLLM.Provider == "" {
+			existing.BlurbLLM = nil
+		} else {
+			existing.BlurbLLM = incoming.BlurbLLM
+		}
+	}
 
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")

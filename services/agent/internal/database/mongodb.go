@@ -14,6 +14,7 @@ const (
 	CollectionDebugLogs                = "discovery_debug_logs"
 	CollectionFeedback                 = "feedback"
 	CollectionSchemaIndexProgress      = "project_schema_index_progress"
+	CollectionSchemaCache              = "project_schema_cache"
 )
 
 // DB wraps go-common's MongoDB client.

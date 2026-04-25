@@ -287,7 +287,9 @@ func isValidSchemaIndexStatus(s string) bool {
 	case models.SchemaIndexStatusPendingIndexing,
 		models.SchemaIndexStatusIndexing,
 		models.SchemaIndexStatusReady,
-		models.SchemaIndexStatusFailed:
+		models.SchemaIndexStatusFailed,
+		models.SchemaIndexStatusCancelled,
+		models.SchemaIndexStatusNeedsReindex:
 		return true
 	}
 	return false

@@ -6,9 +6,17 @@ import "time"
 //
 // Transitions:
 //
-//	pending_indexing ─┬─> indexing ─┬─> ready    (success)
-//	                  │             └─> failed   (error)
+//	pending_indexing ─┬─> indexing ─┬─> ready      (success)
+//	                  │             ├─> failed     (error)
+//	                  │             └─> cancelled  (user cancel from the dashboard)
 //	                  └── (user-triggered reindex → back to pending_indexing)
+//
+//	ready / failed / cancelled / "" ─> needs_reindex
+//	    via Settings → Advanced → "Clear schema cache". Cache + Qdrant are
+//	    dropped; the project sits in needs_reindex until the user manually
+//	    clicks Reindex (which flips it to pending_indexing). The worker
+//	    explicitly does NOT auto-claim needs_reindex — the user wants to
+//	    pick the moment (e.g. wait for VPN, off-peak hours).
 //
 // Discovery and /ask are gated on status == ready.
 const (
@@ -16,6 +24,8 @@ const (
 	SchemaIndexStatusIndexing        = "indexing"
 	SchemaIndexStatusReady           = "ready"
 	SchemaIndexStatusFailed          = "failed"
+	SchemaIndexStatusCancelled       = "cancelled"
+	SchemaIndexStatusNeedsReindex    = "needs_reindex"
 )
 
 // Schema-indexing progress phases. Stored on SchemaIndexProgress.Phase.

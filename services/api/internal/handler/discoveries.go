@@ -146,6 +146,12 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	case models.SchemaIndexStatusFailed:
 		writeError(w, http.StatusConflict, "schema indexing failed: "+p.SchemaIndexError+" — click Retry indexing in project settings")
 		return
+	case models.SchemaIndexStatusNeedsReindex:
+		writeError(w, http.StatusConflict, "schema cache was cleared; re-indexing is required before discovery — trigger POST /api/v1/projects/"+projectID+"/reindex")
+		return
+	case models.SchemaIndexStatusCancelled:
+		writeError(w, http.StatusConflict, "previous schema-indexing run was cancelled — trigger POST /api/v1/projects/"+projectID+"/reindex to rebuild")
+		return
 	default:
 		// empty status — pre-existing project not yet migrated
 		writeError(w, http.StatusConflict, "project has not been indexed yet — trigger POST /api/v1/projects/"+projectID+"/reindex first")

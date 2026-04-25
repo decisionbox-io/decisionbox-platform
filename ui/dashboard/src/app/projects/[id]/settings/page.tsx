@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Group, Loader, MultiSelect,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Divider, Group, Loader, Modal, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -842,11 +842,135 @@ export default function ProjectSettingsPage() {
               <Text size="xs" c="dimmed">
                 This is a local-browser preference — not shared with other users and not saved on the project. The indexing log tail is always captured server-side for 7 days; this toggle only controls whether the UI renders it.
               </Text>
+              <Divider my="xs" />
+              <Text size="sm" fw={500}>Schema cache</Text>
+              <Text size="xs" c="dimmed">
+                The agent caches the discovered warehouse schema (table list, columns, row counts) so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes. Use this when row counts have drifted or the warehouse schema has changed in ways the cache wouldn&apos;t detect.
+              </Text>
+              {id && <ClearSchemaCacheButton projectId={id} />}
             </Stack>
           </SettingsSection>
         </Tabs.Panel>
       </Tabs>
     </Shell>
+  );
+}
+
+// formatRelativeTime renders a small "Last cached: 3 hours ago" string
+// next to the Clear button. Truncated to single-unit precision —
+// users only care about freshness order-of-magnitude.
+function formatRelativeTime(rfc3339: string): string {
+  const t = new Date(rfc3339).getTime();
+  if (Number.isNaN(t)) return rfc3339;
+  const seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} ${months === 1 ? 'month' : 'months'} ago`;
+}
+
+// formatAbsoluteTime renders the local datetime in parens after the
+// relative one, so users can hover-or-not but still see exact time.
+function formatAbsoluteTime(rfc3339: string): string {
+  const d = new Date(rfc3339);
+  if (Number.isNaN(d.getTime())) return rfc3339;
+  return d.toLocaleString();
+}
+
+// ClearSchemaCacheButton wraps the invalidate-cache call in a confirm
+// modal so a misclick can't silently throw away discovery work. The
+// confirmation copy spells out what the cache stores and what happens
+// next — the user often clicks this *because* they've changed something
+// and want fresh counts, so we don't surprise them.
+function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
+  const [opened, setOpened] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [info, setInfo] = useState<{ cached: boolean; last?: string } | null>(null);
+
+  const refreshInfo = useCallback(async () => {
+    try {
+      const res = await api.getSchemaCacheInfo(projectId);
+      setInfo({ cached: res.cached, last: res.last_cached_at });
+    } catch {
+      // Endpoint failures here aren't user-actionable — fall back to
+      // hiding the timestamp line. The Clear button still works.
+      setInfo({ cached: false });
+    }
+  }, [projectId]);
+
+  useEffect(() => { void refreshInfo(); }, [refreshInfo]);
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      await api.invalidateSchemaCache(projectId);
+      notifications.show({
+        title: 'Schema cache cleared',
+        message: 'Project marked as needs_reindex. Click Re-index now on the project page when you\'re ready.',
+        color: 'green',
+      });
+      setOpened(false);
+      void refreshInfo();
+    } catch (e: unknown) {
+      const msg = (e as Error).message || 'Unknown error';
+      notifications.show({
+        title: 'Could not clear schema cache',
+        message: msg,
+        color: 'red',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Group align="center">
+        <Button variant="default" color="orange" onClick={() => setOpened(true)}>
+          Clear schema cache
+        </Button>
+        <Text size="xs" c="dimmed">
+          {info === null
+            ? 'Loading cache info…'
+            : info.cached && info.last
+              ? `Last cached: ${formatRelativeTime(info.last)} (${formatAbsoluteTime(info.last)})`
+              : 'No cache yet — next indexing run will discover schemas from the warehouse.'}
+        </Text>
+      </Group>
+      <Modal
+        opened={opened}
+        onClose={() => { if (!submitting) setOpened(false); }}
+        title="Clear schema cache?"
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            This resets the project&apos;s schema-discovery state:
+          </Text>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
+            <li>Cached warehouse schema (table list, columns, row counts) is deleted.</li>
+            <li>The vector index in Qdrant is dropped.</li>
+            <li>Project status is set to <strong>needs_reindex</strong>, blocking discovery until you re-index.</li>
+          </ul>
+          <Text size="sm" c="dimmed">
+            Reindexing is <strong>not</strong> started automatically — you control when it runs (warehouse access, off-peak hours, etc). Click <strong>Re-index now</strong> on the project page when you&apos;re ready; for ERP-scale schemas this can take 30–60 minutes. Past discoveries, insights and recommendations stay untouched.
+          </Text>
+          <Group justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button color="orange" onClick={handleConfirm} loading={submitting}>
+              Yes, clear cache
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
   );
 }
 
