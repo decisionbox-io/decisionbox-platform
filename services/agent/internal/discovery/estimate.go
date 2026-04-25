@@ -9,7 +9,6 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
 // EstimateOptions configures a cost estimation.
@@ -20,6 +19,11 @@ type EstimateOptions struct {
 
 // EstimateCost calculates estimated costs for a discovery run without executing it.
 // Phases: load schemas → calculate prompt token sizes → dry-run queries → apply pricing.
+//
+// Like RunDiscovery, EstimateCost requires the schema cache to be populated
+// (estimate is meaningless without knowing the warehouse footprint, and the
+// API gates estimate behind the same schema_index_status == "ready" check).
+// No live-warehouse fallback by design.
 func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (*models.CostEstimate, error) {
 	if opts.MaxSteps <= 0 {
 		opts.MaxSteps = 100
@@ -27,40 +31,13 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 
 	applog.Info("Estimating discovery cost")
 
-	// Initialize schema discovery if not already set (estimate bypasses RunDiscovery)
-	if o.schemaDiscovery == nil {
-		filterClause := ""
-		if o.filterField != "" && o.filterValue != "" {
-			filterClause = fmt.Sprintf("WHERE %s = '%s'", o.filterField, o.filterValue)
-		}
-		executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-			Warehouse:   o.warehouse,
-			MaxRetries:  2,
-			FilterField: o.filterField,
-			FilterValue: o.filterValue,
-		})
-		o.schemaDiscovery = NewSchemaDiscovery(SchemaDiscoveryOptions{
-			Warehouse: o.warehouse,
-			Executor:  executor,
-			ProjectID: o.projectID,
-			Datasets:  o.datasets,
-			Filter:    filterClause,
-		})
-	}
-
-	// Phase 1: Load project context (for schema cache)
-	projectCtx, err := o.loadProjectContext(ctx)
+	// Phase 1: Load schemas from the per-project cache.
+	applog.Info("Estimation: loading schemas from cache")
+	schemas, err := o.discoverSchemas(ctx)
 	if err != nil {
-		projectCtx = models.NewProjectContext(o.projectID)
+		return nil, fmt.Errorf("schema cache lookup failed: %w", err)
 	}
-
-	// Phase 2: Discover schemas (use cache if available)
-	applog.Info("Estimation: discovering schemas")
-	schemas, err := o.discoverSchemas(ctx, projectCtx, false)
-	if err != nil {
-		return nil, fmt.Errorf("schema discovery failed: %w", err)
-	}
-	applog.WithField("tables", len(schemas)).Info("Estimation: schemas discovered")
+	applog.WithField("tables", len(schemas)).Info("Estimation: schemas loaded from cache")
 
 	// Resolve prompts and areas from project configuration
 	prompts, analysisAreas := o.resolvePrompts()

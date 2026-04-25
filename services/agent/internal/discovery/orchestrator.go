@@ -52,7 +52,6 @@ type Orchestrator struct {
 	feedbackRepo  *database.FeedbackRepository
 	debugLogRepo  *database.DebugLogRepository
 
-	schemaDiscovery      *SchemaDiscovery
 	explorationEngine    *ai.ExplorationEngine
 	userCountValidator   *validation.UserCountValidator
 	insightValidator     *validation.InsightValidator
@@ -75,12 +74,21 @@ type Orchestrator struct {
 	embeddingProvider goembedding.Provider
 	embedIndexStore   EmbedIndexStore
 
-	// embedder + schemaRetriever are the Phase B Qdrant-backed retrieval
-	// layer; both nil on legacy runs (project index not yet built).
-	// Schemas are still discovered locally for Level 0, so the orchestrator
-	// works in both modes.
+	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
+	// layer (top-K relevant tables in the prompt instead of dumping the
+	// full catalog). Required — discovery is gated on schema_index_status
+	// == "ready" upstream, so the indexer has populated both Mongo and
+	// Qdrant by the time we run.
 	embedder        Embedder
 	schemaRetriever *schema_retrieve.Retriever
+
+	// schemaCache + warehouseHash drive the bulk schemas-map lookup that
+	// used to live as a per-table live re-discovery against the warehouse.
+	// The cache is populated by the schema indexer (see
+	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
+	// any warehouse-config change self-invalidates the cache.
+	schemaCache    SchemaCache
+	warehouseHash  string
 }
 
 // OrchestratorOptions configures the orchestrator.
@@ -116,11 +124,27 @@ type OrchestratorOptions struct {
 	// EmbedIndexStore is needed for Phase 9 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
 
-	// SchemaRetriever is the Phase B Qdrant-backed retrieval layer for
-	// the schema-indexing pipeline. Optional — nil falls back to the
-	// local keyword-match heuristic in SchemaContextBuilder. Supplied
-	// when the project's schema_index_status is ready.
+	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
+	// Required — discovery is gated on schema_index_status == "ready",
+	// so the indexer has built the per-project Qdrant collection before
+	// we get here. Passing nil produces a hard error at run time rather
+	// than silently regressing to the legacy keyword-match heuristic.
 	SchemaRetriever *schema_retrieve.Retriever
+
+	// SchemaCache is the per-project schema cache populated by the
+	// schema indexer (see agentserver/index_schema.go). Required for the
+	// same reason as SchemaRetriever — without it the orchestrator would
+	// re-issue ~one SELECT per warehouse table to rebuild the schemas
+	// map, which is exactly the behavior the schema-retrieval feature
+	// replaces.
+	SchemaCache SchemaCache
+
+	// WarehouseHash is the hash that keys the SchemaCache lookup. Caller
+	// computes it once from the project's WarehouseConfig (matches what
+	// the indexer wrote with) so a config change naturally misses the
+	// cache and surfaces the "re-index required" error rather than
+	// returning stale schemas.
+	WarehouseHash string
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -186,6 +210,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		embedIndexStore:    opts.EmbedIndexStore,
 		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
 		schemaRetriever:    opts.SchemaRetriever,
+		schemaCache:        opts.SchemaCache,
+		warehouseHash:      opts.WarehouseHash,
 	}
 }
 
@@ -195,7 +221,6 @@ type DiscoveryOptions struct {
 	// MinSteps is a floor on exploration steps — early "done" signals below
 	// this value are rejected and exploration continues. Zero disables it.
 	MinSteps              int
-	SkipSchemaCache       bool
 	IncludeExplorationLog bool
 	TestMode              bool
 	SelectedAreas         []string // if set, only run these analysis areas (partial run)
@@ -253,14 +278,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		})
 	}
 
-	// Initialize schema discovery for all datasets
-	o.schemaDiscovery = NewSchemaDiscovery(SchemaDiscoveryOptions{
-		Warehouse: o.warehouse,
-		Executor:  executor,
-		ProjectID: o.projectID,
-		Datasets:  o.datasets,
-		Filter:    filterClause,
-	})
+	// Note: live SchemaDiscovery is intentionally NOT constructed here.
+	// Discovery runs require a ready schema index (API gates on
+	// schema_index_status == "ready"), so o.schemaCache.Find returns
+	// the full schemas map without touching the warehouse. The indexer
+	// owns live discovery; the run loop never re-issues per-table
+	// SELECTs during a discovery.
 
 	// Phase 1: Load project context + previous discoveries + feedback
 	applog.Info("Phase 1: Loading project context")
@@ -281,14 +304,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries)
 
-	// Phase 2: Schema discovery
-	applog.Info("Phase 2: Discovering schemas")
-	o.statusReporter.SetPhase(ctx, models.PhaseSchemaDiscovery, "Discovering warehouse table schemas...", 8)
-	schemas, err := o.discoverSchemas(ctx, projectCtx, opts.SkipSchemaCache)
+	// Phase 2: Load schemas from the per-project schema cache.
+	// (Discovery is gated on schema_index_status == "ready"; the indexer
+	// has already populated the cache and the Qdrant collection.)
+	applog.Info("Phase 2: Loading schemas from cache")
+	o.statusReporter.SetPhase(ctx, models.PhaseSchemaDiscovery, "Loading cached warehouse schemas...", 8)
+	schemas, err := o.discoverSchemas(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("schema discovery failed: %w", err)
+		return nil, fmt.Errorf("schema cache lookup failed: %w", err)
 	}
-	applog.WithField("tables", len(schemas)).Info("Schemas discovered")
+	applog.WithField("tables", len(schemas)).Info("Schemas loaded from cache")
 
 	// Build three-level schema context (PLAN-SCHEMA-RETRIEVAL.md §5):
 	//   Level 0 = one-line catalog of every table, always included
@@ -1009,17 +1034,36 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	return insightSummaries, recSummaries, feedbackSummaries
 }
 
-func (o *Orchestrator) discoverSchemas(ctx context.Context, pctx *models.ProjectContext, skipCache bool) (map[string]models.TableSchema, error) {
-	if !skipCache && pctx != nil && len(pctx.KnownSchemas) > 0 {
-		schemas := make(map[string]models.TableSchema)
-		for name, sk := range pctx.KnownSchemas {
-			schemas[name] = sk.CurrentSchema
-		}
-		applog.WithField("cached_tables", len(schemas)).Info("Using cached schemas")
-		return schemas, nil
+// discoverSchemas loads the schemas map from the project's schema cache
+// and returns it as-is. The cache is the single source of truth — there
+// is no live-warehouse fallback, by design:
+//   - The discovery API gates on schema_index_status == "ready", so the
+//     cache is guaranteed to be populated by the time we run.
+//   - Falling back to live re-discovery would issue ~one SELECT per
+//     table (the legacy SchemaDiscovery path), which on a 1,400-table
+//     warehouse takes ~50 minutes and is exactly what the
+//     schema-retrieval feature replaces.
+//
+// A cache miss here means an invariant has been violated upstream
+// (warehouse config changed without a re-index, the indexer wrote
+// nothing, the cache was cleared) — surface it as a hard error so the
+// user reaches for /reindex rather than silently waiting an hour.
+func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.TableSchema, error) {
+	if o.schemaCache == nil {
+		return nil, fmt.Errorf("schema cache not wired into orchestrator (programmer error)")
 	}
-
-	return o.schemaDiscovery.DiscoverSchemas(ctx)
+	if o.warehouseHash == "" {
+		return nil, fmt.Errorf("warehouse hash not set on orchestrator (programmer error)")
+	}
+	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseHash)
+	if err != nil {
+		return nil, fmt.Errorf("read schema cache: %w", err)
+	}
+	if len(schemas) == 0 {
+		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
+	}
+	applog.WithField("cached_tables", len(schemas)).Info("Loaded schemas from cache")
+	return schemas, nil
 }
 
 func (o *Orchestrator) filterQueriesByKeywords(steps []models.ExplorationStep, keywords []string) []models.ExplorationStep {

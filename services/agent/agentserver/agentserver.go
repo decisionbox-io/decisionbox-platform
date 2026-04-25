@@ -71,7 +71,6 @@ func Run() {
 		areasFlag       = flag.String("areas", "", "Comma-separated analysis areas to run (empty = all)")
 		maxSteps        = flag.Int("max-steps", 100, "Maximum exploration steps")
 		minSteps        = flag.Int("min-steps", 0, "Minimum exploration steps before accepting a done signal (0 = no floor). If the LLM says 'done' before this count, it is rejected and exploration continues. Guards against reasoning models that terminate too early.")
-		skipCache       = flag.Bool("skip-cache", false, "Force schema rediscovery")
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
@@ -164,7 +163,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *skipCache, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -476,7 +475,7 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, skipCache, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -586,6 +585,18 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	datasets := project.Warehouse.GetDatasets()
 
+	// Schema-retrieval wiring (required — discovery is gated on
+	// schema_index_status == "ready", so the cache + Qdrant collection
+	// are guaranteed to exist by the time we get here).
+	schemaCache := database.NewSchemaCacheRepository(db)
+	warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
+
+	schemaRetriever, err := newSchemaRetriever(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect schema retriever (Qdrant): %w", err)
+	}
+	defer func() { _ = schemaRetriever.Close() }()
+
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:        aiClient,
@@ -611,6 +622,9 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		VectorStore:       qdrantProvider,
 		EmbeddingProvider: embeddingProvider,
 		EmbedIndexStore:   discovery.NewMongoEmbedIndexStore(db),
+		SchemaRetriever:   schemaRetriever,
+		SchemaCache:       schemaCache,
+		WarehouseHash:     warehouseHash,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -640,7 +654,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
 		MaxSteps:              maxSteps,
 		MinSteps:              minSteps,
-		SkipSchemaCache:       skipCache,
 		IncludeExplorationLog: includeLog,
 		TestMode:              testMode,
 		SelectedAreas:         selectedAreas,
