@@ -74,7 +74,7 @@ Respond with ONLY valid JSON:
 - **moderate**: Requires development work, typically 1-2 weeks. New feature, UI change, new event tracking.
 - **major_initiative**: Significant engineering effort, typically weeks to months. System redesign, new content, new game mechanic.
 
-### Priority Scale (P1 = highest):
+### Priority Scale (1 = highest, 5 = lowest — emit as an integer, NOT a string):
 - **1 (Critical)**: Large player base affected AND high revenue/retention impact. Do this first.
 - **2 (High)**: Significant impact, implement soon. Strong evidence and clear path to implementation.
 - **3 (Medium)**: Moderate impact. Worth doing but not urgent.

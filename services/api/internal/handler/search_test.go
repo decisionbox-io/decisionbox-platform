@@ -47,8 +47,9 @@ func (m *mockProjectRepoForSearch) List(_ context.Context, _, _ int) ([]*models.
 func (m *mockProjectRepoForSearch) Update(_ context.Context, _ string, _ *models.Project) error {
 	return nil
 }
-func (m *mockProjectRepoForSearch) Delete(_ context.Context, _ string) error { return nil }
-func (m *mockProjectRepoForSearch) Count(_ context.Context) (int, error)    { return 0, nil }
+func (m *mockProjectRepoForSearch) Delete(_ context.Context, _ string) error        { return nil }
+func (m *mockProjectRepoForSearch) DeleteCascade(_ context.Context, _ string) error { return nil }
+func (m *mockProjectRepoForSearch) Count(_ context.Context) (int, error)            { return 0, nil }
 func (m *mockProjectRepoForSearch) CountWithWarehouse(_ context.Context) (int, error) {
 	return 0, nil
 }

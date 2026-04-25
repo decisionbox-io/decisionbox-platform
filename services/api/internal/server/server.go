@@ -80,7 +80,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	providers := handler.NewProvidersHandlerWithProject(projectRepo, secretProvider)
 	domains := handler.NewDomainsHandler(domainPackRepo)
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
-	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo)
+	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
+		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)

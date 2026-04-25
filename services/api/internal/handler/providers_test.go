@@ -112,6 +112,7 @@ func (r *stubProjectRepo) Create(context.Context, *models.Project) error        
 func (r *stubProjectRepo) List(context.Context, int, int) ([]*models.Project, error) { return nil, nil }
 func (r *stubProjectRepo) Update(context.Context, string, *models.Project) error     { return nil }
 func (r *stubProjectRepo) Delete(context.Context, string) error                      { return nil }
+func (r *stubProjectRepo) DeleteCascade(context.Context, string) error               { return nil }
 func (r *stubProjectRepo) Count(context.Context) (int, error)                        { return 0, nil }
 func (r *stubProjectRepo) CountWithWarehouse(context.Context) (int, error)           { return 0, nil }
 func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, string) error {

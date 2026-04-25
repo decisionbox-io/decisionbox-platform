@@ -29,11 +29,13 @@ type mockProjectRepo struct {
 	projects map[string]*models.Project
 	nextID   int
 
-	createErr error
-	getErr    error
-	listErr   error
-	updateErr error
-	deleteErr error
+	createErr        error
+	getErr           error
+	listErr          error
+	updateErr        error
+	deleteErr        error
+	deleteCascadeErr error
+	cascadeCalls     []string
 }
 
 func newMockProjectRepo() *mockProjectRepo {
@@ -126,6 +128,21 @@ func (m *mockProjectRepo) Delete(_ context.Context, id string) error {
 	defer m.mu.Unlock()
 	if _, ok := m.projects[id]; !ok {
 		return fmt.Errorf("project not found: %s", id)
+	}
+	delete(m.projects, id)
+	return nil
+}
+
+// DeleteCascade for the in-memory mock just records the call and
+// drops the project — handler tests assert by inspecting cascadeCalls
+// and the projects map. The real cascade across child collections is
+// covered by the integration tests with a real Mongo TestContainer.
+func (m *mockProjectRepo) DeleteCascade(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cascadeCalls = append(m.cascadeCalls, id)
+	if m.deleteCascadeErr != nil {
+		return m.deleteCascadeErr
 	}
 	delete(m.projects, id)
 	return nil

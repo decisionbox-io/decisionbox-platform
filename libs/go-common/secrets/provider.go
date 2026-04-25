@@ -20,7 +20,11 @@ import (
 
 // Provider manages per-project secrets.
 // All operations are scoped to a namespace + project ID.
-// No Delete method — secrets are removed manually via cloud console or CLI.
+// No Delete method on the base interface — external secret managers
+// (GCP/AWS/Azure) intentionally route deletion through cloud
+// console/IAM-audited paths rather than a tenant API. Mongo-backed
+// providers may implement the optional ProjectDeleter interface so
+// the project-deletion cascade can sweep them automatically.
 type Provider interface {
 	// Get retrieves a secret value for a project.
 	// Returns ErrNotFound if the secret doesn't exist.
@@ -31,6 +35,16 @@ type Provider interface {
 
 	// List returns all secret keys for a project (masked values, never full values).
 	List(ctx context.Context, projectID string) ([]SecretEntry, error)
+}
+
+// ProjectDeleter is implemented by Provider impls that own their
+// storage and can cleanly drop every secret for a project — currently
+// only the MongoDB provider. The API's project-cascade handler type-
+// asserts to this interface; if the assertion fails, secrets are left
+// intact and the user is told to clean them up out-of-band (the
+// recommended path for cloud-managed secret stores anyway).
+type ProjectDeleter interface {
+	DeleteAllForProject(ctx context.Context, projectID string) error
 }
 
 // SecretEntry represents a secret in a list response.

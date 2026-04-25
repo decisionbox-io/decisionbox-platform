@@ -774,8 +774,17 @@ export const api = {
   getProject: (id: string) => request<Project>(`/api/v1/projects/${id}`),
   updateProject: (id: string, data: Partial<Project>) =>
     request<Project>(`/api/v1/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // deleteProject performs a full cascade delete (Mongo, Qdrant, and
+  // mongo-backed secrets). `secrets_skipped: true` means an external
+  // secret manager (GCP/AWS/Azure) is configured and the user must
+  // clean up warehouse credentials via the cloud console themselves.
+  // 409 from the server when a schema-indexing run is in flight —
+  // user must cancel that first via POST .../schema-index/cancel.
   deleteProject: (id: string) =>
-    request<{ deleted: string }>(`/api/v1/projects/${id}`, { method: 'DELETE' }),
+    request<{ deleted: string; secrets_skipped: boolean }>(
+      `/api/v1/projects/${id}`,
+      { method: 'DELETE' }
+    ),
 
   // Prompts
   getPrompts: (projectId: string) =>

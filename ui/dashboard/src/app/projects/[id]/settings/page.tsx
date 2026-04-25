@@ -848,6 +848,14 @@ export default function ProjectSettingsPage() {
                 The agent caches the discovered warehouse schema (table list, columns, row counts) so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes. Use this when row counts have drifted or the warehouse schema has changed in ways the cache wouldn&apos;t detect.
               </Text>
               {id && <ClearSchemaCacheButton projectId={id} />}
+              <Divider my="md" />
+              <Text size="sm" fw={500} c="red">Danger zone</Text>
+              <Text size="xs" c="dimmed">
+                Deleting a project removes everything tied to it: discoveries, insights, recommendations, debug logs, search history, bookmarks, the schema cache, and the Qdrant vector index. Warehouse and AI-provider credentials stored in MongoDB are also deleted; credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there. <strong>This cannot be undone.</strong>
+              </Text>
+              {id && project && (
+                <DeleteProjectButton projectId={id} projectName={project.name || id} />
+              )}
             </Stack>
           </SettingsSection>
         </Tabs.Panel>
@@ -966,6 +974,102 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
             </Button>
             <Button color="orange" onClick={handleConfirm} loading={submitting}>
               Yes, clear cache
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
+// DeleteProjectButton wraps the cascade delete in a type-the-name
+// confirmation modal — far more deliberate than a generic "are you
+// sure?" because the project name is unique per workspace and a mistyped
+// project shouldn't sneak through. On 409 (indexing in flight) we
+// surface the message verbatim so the user knows to cancel the run
+// first; the API never silently aborts an indexing run.
+function DeleteProjectButton({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const router = useRouter();
+  const [opened, setOpened] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+
+  const matches = confirmText === projectName;
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      const res = await api.deleteProject(projectId);
+      notifications.show({
+        title: 'Project deleted',
+        message: `"${projectName}" and all related data have been removed.`,
+        color: 'green',
+      });
+      // External secret backends (GCP/AWS/Azure) require manual cleanup
+      // — surface that follow-up so the user doesn't leak credentials.
+      if (res.secrets_skipped) {
+        notifications.show({
+          title: 'Action required',
+          message: 'Warehouse and AI credentials are stored in an external secret manager. Remove them from your cloud console — the API does not delete them automatically.',
+          color: 'yellow',
+          autoClose: 12000,
+        });
+      }
+      router.push('/projects');
+    } catch (e: unknown) {
+      const msg = (e as Error).message || 'Unknown error';
+      notifications.show({
+        title: 'Could not delete project',
+        message: msg,
+        color: 'red',
+        autoClose: 8000,
+      });
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Group>
+        <Button color="red" onClick={() => { setConfirmText(''); setOpened(true); }}>
+          Delete project
+        </Button>
+      </Group>
+      <Modal
+        opened={opened}
+        onClose={() => { if (!submitting) setOpened(false); }}
+        title={<Text fw={600} c="red">Delete project?</Text>}
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            This permanently removes <strong>{projectName}</strong> and everything tied to it:
+          </Text>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
+            <li>Project record, discoveries, runs, and project context</li>
+            <li>Insights, recommendations, and debug logs</li>
+            <li>Ask sessions, search history, bookmarks, and read marks</li>
+            <li>Schema cache, indexing progress, and indexing logs</li>
+            <li>Qdrant vector collection</li>
+            <li>Mongo-backed secrets (warehouse + AI credentials)</li>
+          </ul>
+          <Text size="sm" c="dimmed">
+            Credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there — the API will report this and not touch them.
+          </Text>
+          <TextInput
+            label={<>Type <strong>{projectName}</strong> to confirm</>}
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.currentTarget.value)}
+            placeholder={projectName}
+            disabled={submitting}
+            data-autofocus
+          />
+          <Group justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button color="red" onClick={handleConfirm} loading={submitting} disabled={!matches}>
+              Delete project
             </Button>
           </Group>
         </Stack>
