@@ -149,18 +149,15 @@ func TestSchemaContextBuilder_SingleTable(t *testing.T) {
 		},
 	}
 	b := &SchemaContextBuilder{Schemas: schemas}
-	r, err := b.BuildOnce(context.Background(), "p1", "explore sessions", 5, []string{"sessions"})
-	if err != nil {
-		t.Fatalf("BuildOnce: %v", err)
-	}
+	r := b.BuildCatalog([]string{"sessions"})
 	if !contains(r.Catalog, "sessions") {
 		t.Errorf("catalog missing table: %s", r.Catalog)
 	}
 	if !contains(r.Catalog, "2c") {
 		t.Errorf("column count missing from catalog line: %s", r.Catalog)
 	}
-	if !contains(r.Retrieved, "user_id") {
-		t.Errorf("retrieved block missing column detail: %s", r.Retrieved)
+	if r.CatalogTokens == 0 {
+		t.Errorf("CatalogTokens should be > 0 for non-empty catalog: %d", r.CatalogTokens)
 	}
 }
 
@@ -678,19 +675,16 @@ func TestNewSchemaDiscovery(t *testing.T) {
 
 func TestSchemaContextBuilder_Empty(t *testing.T) {
 	b := &SchemaContextBuilder{Schemas: map[string]models.TableSchema{}}
-	r, err := b.BuildOnce(context.Background(), "p", "", 10, nil)
-	if err != nil {
-		t.Fatalf("BuildOnce: %v", err)
-	}
+	r := b.BuildCatalog(nil)
 	if !contains(r.Catalog, "no tables") {
 		t.Errorf("empty catalog should say 'no tables', got %q", r.Catalog)
 	}
-	if r.TopK != 0 {
-		t.Errorf("top-K on empty schemas = %d", r.TopK)
+	if r.CatalogDropped != 0 {
+		t.Errorf("CatalogDropped on empty schemas = %d, want 0", r.CatalogDropped)
 	}
 }
 
-func TestSchemaContextBuilder_MultipleTablesWithAllFields(t *testing.T) {
+func TestSchemaContextBuilder_MultipleTablesRenderedInCatalog(t *testing.T) {
 	schemas := map[string]models.TableSchema{
 		"events.sessions": {
 			TableName:  "events.sessions",
@@ -706,17 +700,21 @@ func TestSchemaContextBuilder_MultipleTablesWithAllFields(t *testing.T) {
 		},
 	}
 	b := &SchemaContextBuilder{Schemas: schemas}
-	r, err := b.BuildOnce(context.Background(), "p", "users", 10, []string{"users"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Both tables should land in the catalog line-count.
+	r := b.BuildCatalog([]string{"users"})
+
+	// Both tables should land in the catalog line-count. Per-table L1
+	// detail is no longer pre-rendered — the LLM uses lookup_schema for
+	// that. The catalog only carries the directory.
 	if strings.Count(r.Catalog, "\n")+1 < 2 {
 		t.Errorf("catalog should render both tables, got %q", r.Catalog)
 	}
-	// Level 1: the users table (keyword match) must be present.
-	if !contains(r.Retrieved, "events.users") {
-		t.Errorf("retrieved should include events.users: %s", r.Retrieved)
+	// Both qualified table names should be visible in the catalog so the
+	// model can name them in lookup_schema calls.
+	if !contains(r.Catalog, "events.users") {
+		t.Errorf("catalog should include events.users: %s", r.Catalog)
+	}
+	if !contains(r.Catalog, "events.sessions") {
+		t.Errorf("catalog should include events.sessions: %s", r.Catalog)
 	}
 }
 
@@ -727,9 +725,30 @@ func TestSchemaContextBuilder_KeywordBoostAddsHint(t *testing.T) {
 		},
 	}
 	b := &SchemaContextBuilder{Schemas: schemas}
-	r, _ := b.BuildOnce(context.Background(), "p", "sales", 10, []string{"sales"})
+	r := b.BuildCatalog([]string{"sales"})
 	if !contains(r.Catalog, "sales") {
 		t.Errorf("keyword hint missing: %s", r.Catalog)
+	}
+}
+
+func TestSchemaContextBuilder_SortsTablesAlphabetically(t *testing.T) {
+	// Stable order matters for prompt-cache prefix reuse — random map
+	// iteration would make the catalog block change every run.
+	schemas := map[string]models.TableSchema{
+		"z_archive": {RowCount: 1},
+		"a_first":   {RowCount: 1},
+		"m_middle":  {RowCount: 1},
+	}
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r := b.BuildCatalog(nil)
+	idxA := strings.Index(r.Catalog, "a_first")
+	idxM := strings.Index(r.Catalog, "m_middle")
+	idxZ := strings.Index(r.Catalog, "z_archive")
+	if idxA < 0 || idxM < 0 || idxZ < 0 {
+		t.Fatalf("all three tables should appear: %q", r.Catalog)
+	}
+	if idxA >= idxM || idxM >= idxZ {
+		t.Errorf("catalog should be alphabetical, got: %q", r.Catalog)
 	}
 }
 

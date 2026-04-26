@@ -64,11 +64,25 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	}).Info("Estimation: calculating token costs")
 
 	// --- Calculate LLM token estimates ---
-
-	// Build prompts to measure token sizes (rough: 1 token ≈ 4 chars).
-	// Schema footprint is the Level 0 catalog (one line per table) plus
-	// Level 1 retrieved details for ~40 tables — upper bound for the
-	// estimator, matching what SchemaContextBuilder emits per run.
+	//
+	// Token math (post on-demand-schema architecture):
+	//
+	//   - System prompt: base context + exploration template + the
+	//     catalog block. The catalog is one line per table; size is
+	//     bounded by the per-line approximation below. There is NO
+	//     longer an upfront L1 dump (~16K tokens previously) — the
+	//     model fetches column / sample detail on demand via
+	//     lookup_schema. This is the dominant change vs. the previous
+	//     estimator.
+	//   - Per step: avg LLM output ~600 tokens (action JSON is small;
+	//     thinking blocks vary). Plus per step the previous turn's
+	//     user message lands in conversation history; we assume
+	//     ~1.2K tokens / step on average, weighted across action types
+	//     (query results dominate, lookup_schema and search_tables
+	//     are lighter).
+	//
+	// The numbers are upper-bound estimates — the estimator is a
+	// planning aid, not a billing record, so we round up.
 	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
 	catalogEntries := schemaBuilder.buildCatalog(nil)
 	catalogLen := 0
@@ -77,20 +91,18 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 		// width doesn't matter for a 1-token-per-4-char heuristic.
 		catalogLen += 48 + len(e.Table)
 	}
-	// Level 1 size: assume 40 tables × ~400 chars (columns + 3 samples).
-	retrievedLen := 40 * 400
-	if retrievedLen > len(schemas)*400 {
-		retrievedLen = len(schemas) * 400
-	}
 	baseContextSize := len(prompts.BaseContext) / 4
-	explorationPromptSize := (len(prompts.Exploration) + catalogLen + retrievedLen) / 4
+	explorationPromptSize := (len(prompts.Exploration) + catalogLen) / 4
 
-	// Exploration phase: system prompt + per-step conversation
+	// Exploration phase: system prompt + growing per-step conversation.
+	// Per-step user-message budget mixes query_data (~1.5K tokens),
+	// lookup_schema (~0.7K), and search_tables (~0.4K). Empirical mix
+	// runs ~70/20/10 → weighted avg 1.16K tokens, rounded to 1.2K.
 	explorationInputTokens := baseContextSize + explorationPromptSize
-	avgOutputPerStep := 500 // avg tokens per exploration step response
+	avgOutputPerStep := 600
 	explorationOutputTokens := opts.MaxSteps * avgOutputPerStep
-	// Conversation grows: each step adds ~300 tokens of context
-	explorationInputTokens += opts.MaxSteps * 300
+	const avgUserMessagePerStepTokens = 1200
+	explorationInputTokens += opts.MaxSteps * avgUserMessagePerStepTokens
 
 	// Analysis phase: per area
 	avgAreaPromptSize := 0

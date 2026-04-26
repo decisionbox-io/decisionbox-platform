@@ -13,10 +13,7 @@ This is a **multi-category online retail store** selling across diverse product 
 
 ### Multi-Category Example Queries
 
-> **Important**: Adapt all column names, table names, and SQL functions to match the actual schema in {{SCHEMA_CATALOG}}
-
-**Details for Most-Relevant Tables:**
-{{SCHEMA_RETRIEVED}} and the connected warehouse's SQL dialect. These examples illustrate the types of analysis to perform.
+> **Important**: Adapt all column names, table names, and SQL functions to match the actual schema. Use `lookup_schema` on the candidate tables before running these queries — column names below are illustrative, not guaranteed.
 
 **Top Categories by Event Type**:
 ```sql

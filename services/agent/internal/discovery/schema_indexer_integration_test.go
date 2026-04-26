@@ -15,14 +15,17 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// stubSchemaSource implements SchemaSource for the indexer test —
-// returns a fixed set of tables without needing a real warehouse.
-type stubSchemaSource struct {
+// stubIntegSchemaSource implements SchemaSource for the indexer
+// integration tests — returns a fixed set of tables without needing a
+// real warehouse. Renamed from stubSchemaSource to avoid colliding with
+// the untagged unit-test stub of the same purpose in
+// schema_indexer_cache_test.go (different field shape).
+type stubIntegSchemaSource struct {
 	schemas map[string]models.TableSchema
 	err     error
 }
 
-func (s *stubSchemaSource) DiscoverSchemas(_ context.Context) (map[string]models.TableSchema, error) {
+func (s *stubIntegSchemaSource) DiscoverSchemas(_ context.Context) (map[string]models.TableSchema, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -49,6 +52,10 @@ func (p *memProgress) SetPhase(_ context.Context, _, phase string) error {
 	return nil
 }
 func (p *memProgress) SetTotals(_ context.Context, _ string, total int) error {
+	p.totals = append(p.totals, total)
+	return nil
+}
+func (p *memProgress) SetCounters(_ context.Context, _ string, total, _ int) error {
 	p.totals = append(p.totals, total)
 	return nil
 }
@@ -125,7 +132,7 @@ func TestInteg_SchemaIndexer_BuildIndex_EndToEnd(t *testing.T) {
 			Columns:   []models.ColumnInfo{{Name: "id", Type: "INT64"}},
 		},
 	}
-	src := &stubSchemaSource{schemas: schemas}
+	src := &stubIntegSchemaSource{schemas: schemas}
 
 	llm := &stubLLM{text: "A concise table description grounded in the metadata."}
 	gen, err := blurb.New(blurb.Config{LLM: llm, Model: "gpt-4o", Workers: 2})
@@ -161,12 +168,11 @@ func TestInteg_SchemaIndexer_BuildIndex_EndToEnd(t *testing.T) {
 	if progress.resetCalls != 1 {
 		t.Errorf("reset called %d times", progress.resetCalls)
 	}
-	// Phase order: describing_tables → embedding. Listing_tables is set
-	// by the progress repo's Reset; we don't SetPhase to listing_tables
-	// explicitly.
-	if len(progress.phases) != 2 ||
-		progress.phases[0] != "describing_tables" ||
-		progress.phases[1] != "embedding" {
+	// Phase order: schema_discovery → describing_tables → embedding.
+	if len(progress.phases) != 3 ||
+		progress.phases[0] != "schema_discovery" ||
+		progress.phases[1] != "describing_tables" ||
+		progress.phases[2] != "embedding" {
 		t.Errorf("phase sequence: %v", progress.phases)
 	}
 	if progress.totals[0] != 3 {
@@ -203,7 +209,7 @@ func TestInteg_SchemaIndexer_EmptySchemas_Errors(t *testing.T) {
 	retriever := startQdrant(t)
 	gen, _ := blurb.New(blurb.Config{LLM: &stubLLM{text: "x"}, Model: "gpt-4o"})
 	si := SchemaIndexer{
-		Discovery: &stubSchemaSource{schemas: map[string]models.TableSchema{}},
+		Discovery: &stubIntegSchemaSource{schemas: map[string]models.TableSchema{}},
 		Blurber:   gen,
 		Embedder:  &stubEmbedder{dim: 3, model: "stub"},
 		Retriever: retriever,
@@ -223,7 +229,7 @@ func TestInteg_SchemaIndexer_DropCollectionOnRetry(t *testing.T) {
 		"s.t2": {TableName: "s.t2", RowCount: 2, Columns: []models.ColumnInfo{{Name: "id"}}},
 	}
 	si := SchemaIndexer{
-		Discovery: &stubSchemaSource{schemas: schemas},
+		Discovery: &stubIntegSchemaSource{schemas: schemas},
 		Blurber:   gen,
 		Embedder:  &stubEmbedder{dim: 3, model: "stub"},
 		Retriever: retriever,
@@ -236,7 +242,7 @@ func TestInteg_SchemaIndexer_DropCollectionOnRetry(t *testing.T) {
 
 	// Second run with a smaller schema set: should drop and rebuild,
 	// leaving exactly 1 table.
-	si.Discovery = &stubSchemaSource{schemas: map[string]models.TableSchema{
+	si.Discovery = &stubIntegSchemaSource{schemas: map[string]models.TableSchema{
 		"s.only": {TableName: "s.only", RowCount: 5, Columns: []models.ColumnInfo{{Name: "id"}}},
 	}}
 	if _, err := si.BuildIndex(ctx, IndexOptions{ProjectID: "p-reindex"}); err != nil {

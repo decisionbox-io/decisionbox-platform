@@ -28,11 +28,15 @@ type DiscoveryRun struct {
 	FailedQueries    int `bson:"failed_queries" json:"failed_queries"`
 	InsightsFound    int `bson:"insights_found" json:"insights_found"`
 
-	// Schema-retrieval telemetry (plan §15). Mirrors the API-side model.
-	SchemaTokens             int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
-	SchemaTableCount         int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
-	SchemaRetrievalTopKUsed  int `bson:"schema_retrieval_top_k_used,omitempty" json:"schema_retrieval_top_k_used,omitempty"`
-	SchemaInspectTableCalls  int `bson:"schema_inspect_table_calls,omitempty" json:"schema_inspect_table_calls,omitempty"`
+	// Schema-retrieval telemetry. Mirrors the API-side model.
+	//
+	// SchemaTokens / SchemaTableCount describe the boot context size.
+	// SchemaLookupCalls / SchemaSearchCalls track the on-demand schema
+	// actions the LLM issued during the run.
+	SchemaTokens      int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
+	SchemaTableCount  int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
+	SchemaLookupCalls int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
+	SchemaSearchCalls int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
 }
 
 // RunStep is a single step in the discovery run log.

@@ -256,10 +256,12 @@ Project-level overrides stored in MongoDB (editable via dashboard)
 Agent loads prompts (project overrides take priority)
   ↓
 Agent substitutes template variables:
-  {{PROFILE}}         → JSON-encoded project profile
+  {{PROFILE}}          → JSON-encoded project profile
   {{PREVIOUS_CONTEXT}} → Previous discoveries + feedback
-  {{SCHEMA_CATALOG}}    → Level-0 catalog of every table
-  {{SCHEMA_RETRIEVED}}  → Level-1 top-K table details
+  {{SCHEMA_INFO}}      → Level-0 catalog of every table (one line per table).
+                          Per-table column lists + sample rows are NOT injected
+                          up-front; the agent fetches them on demand via
+                          lookup_schema / search_tables actions.
   {{DATASET}}          → Dataset names
   {{FILTER}}           → WHERE clause for multi-tenant
   {{QUERY_RESULTS}}    → Exploration query results (per area)
@@ -268,7 +270,7 @@ Agent substitutes template variables:
 Rendered prompt sent to LLM
 ```
 
-See [Prompts](prompts.md) for the full variable reference.
+See [Prompts](prompts.md) and [On-Demand Schema](../architecture/agent-on-demand-schema.md) for the full variable reference and the architecture rationale.
 
 ## Deployment Models
 

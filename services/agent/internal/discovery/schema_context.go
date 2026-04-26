@@ -1,140 +1,76 @@
 package discovery
 
 import (
-	"context"
 	"sort"
 	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_render"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
-	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// SchemaContextBuilder replaces the old `simplifySchemas`+JSON dump with
-// the three-level shape described in PLAN-SCHEMA-RETRIEVAL.md §5:
-//   Level 0 — catalog of every table (one line each)
-//   Level 1 — top-K tables the retriever picked for the current task
-//   Level 2 — inspect_table tool (registered in Phase B7 on tool-capable LLMs)
+// SchemaContextBuilder renders the per-run "catalog" — a one-line-per-
+// table directory the LLM gets in its system prompt. It deliberately
+// does NOT pre-populate per-table column / sample detail (Level 1):
+// the model fetches that on demand via the lookup_schema action,
+// served by ai.SchemaProvider (CacheSchemaProvider in production).
 //
-// BuildOnce renders the (catalog, retrieved) block once per run. Per-step
-// retrieval lands later; for the initial rewire every prompt sees the
-// same context, which still halves prompt size on small warehouses and
-// unblocks ERP-scale warehouses where the full JSON wouldn't fit in a
-// 1M-token window.
+// Why no upfront Level-1 dump?
+//
+// The previous flow injected ~40 tables of column lists + sample rows
+// into the system prompt every turn, regardless of which tables the
+// model actually used. On a real exploration run that scales to 100K+
+// tokens of dead weight by step 90 — and is the dominant contributor
+// to the 1M-token Bedrock ceiling we hit at step 98. Switching the
+// retrieval surface from "push at boot" to "pull per turn" makes the
+// per-step cost linear in tables-touched-per-step instead of
+// tables-relevant-to-the-run.
+//
+// What stays in the catalog?
+//
+//   - All tables (subject to the schema_render budget; archive-shaped
+//     names are dropped first when over budget).
+//   - Per-table: column count, row count, optional 1–3 keyword hints
+//     drawn from substring match against the analysis-area keywords.
+//   - Catalog ordering is stable (alphabetical) so the prompt-cache
+//     prefix can be reused across turns.
+//
+// Use NewSchemaContextBuilder to construct — direct struct literals
+// remain valid (Schemas is the only required field) but the
+// constructor sets up sensible defaults.
 type SchemaContextBuilder struct {
-	// Embedder is required to turn the search query into a vector.
-	Embedder Embedder
-	// Retriever is required for Level 1 retrieval. nil falls back to a
-	// local heuristic over Schemas (keyword match on blurb-shaped
-	// strings) — used by tests that don't spin up Qdrant.
-	Retriever *schema_retrieve.Retriever
-	// Schemas is the full per-table metadata discovered at run start.
-	// Used for Level 0 rendering and for resolving Level 1 hits back to
-	// full column lists + sample rows.
+	// Schemas is the full per-table metadata loaded from the schema
+	// cache at run start. Used for catalog rendering and as the
+	// source of truth for column counts / row counts.
 	Schemas map[string]models.TableSchema
 }
 
-// Rendered is what the builder emits: the two string blocks plus the
-// telemetry fields the orchestrator stamps onto the discovery_run.
+// Rendered is what BuildCatalog emits. The two telemetry fields are
+// stamped onto discovery_runs so operators can see how big the boot
+// context actually was for a given run.
 type Rendered struct {
-	Catalog         string
-	Retrieved       string
-	CatalogTokens   int
-	RetrievedTokens int
-	CatalogDropped  int
-	TopK            int
+	Catalog        string
+	CatalogTokens  int
+	CatalogDropped int // archive-shaped + lowest-row-count entries removed by Compress
 }
 
-// BuildOnce renders a fresh (catalog, retrieved) block for the whole run.
-// The query is derived from the analysis-area keywords + dataset name;
-// retrieved tables are the union of the top-K vector hits and any tables
-// whose name contains a domain-pack keyword (so obvious matches don't
-// depend on the retriever).
+// BuildCatalog renders the catalog string for the run. The keyword
+// list (typically the union of analysis-area keywords) is used to
+// attach 1–3 hint tags per table line so the model can spot likely
+// targets without burning a search_tables call.
 //
-// topK defaults to schema_render.DefaultRetrievalTopK when 0.
-func (b *SchemaContextBuilder) BuildOnce(ctx context.Context, projectID, query string, topK int, keywords []string) (*Rendered, error) {
-	if topK <= 0 {
-		topK = schema_render.DefaultRetrievalTopK
-	}
-	catalog := b.buildCatalog(keywords)
-
-	// Resolve Level 1 table list. Order: retriever hits first (preserves
-	// relevance order), then any keyword-substring matches not already
-	// included. We cap at topK so a keyword flood can't blow the budget.
-	seen := map[string]struct{}{}
-	picks := make([]string, 0, topK)
-
-	if b.Retriever != nil && b.Embedder != nil && strings.TrimSpace(query) != "" {
-		vec, embErr := b.Embedder.Embed(ctx, []string{query})
-		switch {
-		case embErr != nil:
-			// Retriever is wired but embedding failed — degrade to
-			// keyword matching. Log so ops can catch transient
-			// embedding-API outages instead of them being silent.
-			applog.WithError(embErr).Warn("schema_context: embedding provider failed, falling back to keyword match")
-		case len(vec) == 0:
-			applog.Warn("schema_context: embedder returned zero vectors, falling back to keyword match")
-		default:
-			hits, searchErr := b.Retriever.Search(ctx, projectID, vec[0], schema_retrieve.SearchOpts{
-				TopK:         topK,
-				KeywordBoost: keywords,
-				RowCountPrior: 0.05,
-			})
-			if searchErr != nil {
-				applog.WithError(searchErr).Warn("schema_context: Qdrant search failed, falling back to keyword match")
-			} else {
-				for _, h := range hits {
-					if _, dup := seen[h.Blurb.Table]; dup {
-						continue
-					}
-					seen[h.Blurb.Table] = struct{}{}
-					picks = append(picks, h.Blurb.Table)
-					if len(picks) >= topK {
-						break
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback / complement: keyword substring matches against the local
-	// schema list. Useful even with Qdrant wired, because the spike
-	// showed keyword boosts push obvious matches up further when the
-	// vector score is close.
-	for _, table := range b.sortedTableNames() {
-		if len(picks) >= topK {
-			break
-		}
-		if _, dup := seen[table]; dup {
-			continue
-		}
-		lc := strings.ToLower(table)
-		for _, kw := range keywords {
-			if kw == "" {
-				continue
-			}
-			if strings.Contains(lc, strings.ToLower(kw)) {
-				picks = append(picks, table)
-				seen[table] = struct{}{}
-				break
-			}
-		}
-	}
-
-	retrieved := b.buildRetrieved(picks)
+// The function is pure (no I/O, no global state) so callers can
+// snapshot-test the output deterministically. Heavy lifting lives in
+// the schema_render package — this method is thin glue.
+func (b *SchemaContextBuilder) BuildCatalog(keywords []string) *Rendered {
+	entries := b.buildCatalog(keywords)
 	rr := schema_render.Render(schema_render.RenderOptions{
-		Catalog:   catalog,
-		Retrieved: retrieved,
+		Catalog: entries,
 	})
 	return &Rendered{
-		Catalog:         rr.Catalog,
-		Retrieved:       rr.Retrieved,
-		CatalogTokens:   rr.CatalogTokens,
-		RetrievedTokens: rr.RetrievedTokens,
-		CatalogDropped:  rr.CatalogDropped,
-		TopK:            len(picks),
-	}, nil
+		Catalog:        rr.Catalog,
+		CatalogTokens:  rr.CatalogTokens,
+		CatalogDropped: rr.CatalogDropped,
+	}
 }
 
 func (b *SchemaContextBuilder) buildCatalog(keywords []string) []schema_render.CatalogEntry {
@@ -153,8 +89,8 @@ func (b *SchemaContextBuilder) buildCatalog(keywords []string) []schema_render.C
 			ColumnCount: len(s.Columns),
 			RowCount:    s.RowCount,
 		}
-		// Attach keyword hints by substring-matching the table name.
-		// Light touch — domain-pack keywords dropped verbatim into the
+		// Substring-match the table name against the lowercased keyword
+		// set. Light touch — domain-pack keywords land verbatim on the
 		// catalog line when they appear in the table name.
 		lc := strings.ToLower(name)
 		for _, kw := range lcKeywords {
@@ -166,23 +102,6 @@ func (b *SchemaContextBuilder) buildCatalog(keywords []string) []schema_render.C
 			}
 		}
 		out = append(out, entry)
-	}
-	return out
-}
-
-func (b *SchemaContextBuilder) buildRetrieved(tables []string) []schema_render.TableDetail {
-	out := make([]schema_render.TableDetail, 0, len(tables))
-	for _, t := range tables {
-		s, ok := b.Schemas[t]
-		if !ok {
-			continue
-		}
-		out = append(out, schema_render.TableDetail{
-			Table:      t,
-			Columns:    s.Columns,
-			SampleRows: s.SampleData,
-			RowCount:   s.RowCount,
-		})
 	}
 	return out
 }

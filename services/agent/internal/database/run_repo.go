@@ -63,31 +63,48 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 }
 
 // RecordSchemaContextTelemetry stamps the one-shot counters that describe
-// the schema context the run used (plan §15). Called once, immediately
-// after the schema renderer builds the context; the inspect_table call
-// counter is updated separately via IncrementInspectTableCalls each time
-// the engine services a tool call.
+// the schema context the run used. Called once, immediately after the
+// schema renderer builds the catalog. The on-demand action counters
+// (lookup_schema, search_tables) are updated separately via
+// IncrementSchemaActionCalls as the engine services each action.
+//
+// topK is retained in the signature for compatibility with existing
+// call sites but is no longer persisted — the on-demand schema layer
+// no longer pre-retrieves a top-K block at boot. The status reporter
+// passes 0 for it; schema_retrieval_top_k_used was removed in the same
+// migration that introduced the lookup/search counters.
 func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount, topK int) error {
+	_ = topK // intentionally ignored — see docstring
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"schema_tokens":              tokens,
-			"schema_table_count":         tableCount,
-			"schema_retrieval_top_k_used": topK,
-			"updated_at":                 time.Now(),
+			"schema_tokens":      tokens,
+			"schema_table_count": tableCount,
+			"updated_at":         time.Now(),
 		},
 	}
 	_, err = r.col.UpdateByID(ctx, oid, update)
 	return err
 }
 
-// IncrementInspectTableCalls atomically bumps the inspect_table counter
-// on a run. Safe to call under concurrent tool-call servicing.
-func (r *RunRepository) IncrementInspectTableCalls(ctx context.Context, runID string, delta int) error {
+// IncrementSchemaActionCalls atomically bumps the per-action counters
+// on a run. action is one of "lookup_schema" or "search_tables"; any
+// other value is a no-op so a future action type doesn't accidentally
+// roll into the wrong counter. Safe to call concurrently.
+func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int) error {
 	if delta <= 0 {
+		return nil
+	}
+	var field string
+	switch action {
+	case "lookup_schema":
+		field = "schema_lookup_calls"
+	case "search_tables":
+		field = "schema_search_calls"
+	default:
 		return nil
 	}
 	oid, err := primitive.ObjectIDFromHex(runID)
@@ -95,7 +112,7 @@ func (r *RunRepository) IncrementInspectTableCalls(ctx context.Context, runID st
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	update := bson.M{
-		"$inc": bson.M{"schema_inspect_table_calls": delta},
+		"$inc": bson.M{field: delta},
 		"$set": bson.M{"updated_at": time.Now()},
 	}
 	_, err = r.col.UpdateByID(ctx, oid, update)

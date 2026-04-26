@@ -84,7 +84,7 @@ For each dataset in project.warehouse.datasets:
   Cache schemas for the exploration phase
 ```
 
-Schema information is injected into the exploration prompt via `{{SCHEMA_CATALOG}}` + `{{SCHEMA_RETRIEVED}}` so the AI knows what tables and columns are available.
+A compact Level-0 catalog (one line per table: name, column count, row count, keyword hints, joins) is injected into the exploration prompt via `{{SCHEMA_INFO}}`. The agent fetches per-table column lists and sample rows on demand during exploration via `lookup_schema` (up to 10 tables per call, 30 calls per run) or `search_tables` (semantic query against the per-project Qdrant index, 30 calls per run). See [On-Demand Schema](../architecture/agent-on-demand-schema.md) for the rationale (the previous "always inject L1 detail" approach exhausted the Bedrock 1M-token context on long runs).
 
 ## Phase 4: Exploration
 
@@ -123,6 +123,8 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 
 **Step types reported to the dashboard:**
 - `query` — SQL query executed (with thinking, SQL, row count, timing)
+- `lookup_schema` — Agent fetched L1 detail (columns + sample rows) for one or more tables from the cache (no warehouse traffic)
+- `search_tables` — Agent ran a semantic search against the per-project Qdrant index for tables not surfaced by the catalog
 - `complete_rejected` — LLM signalled `done` before `--min-steps`; rejected and exploration continued
 - `insight` — The AI identified a pattern (name, severity)
 - `analysis` — Analysis phase started for an area

@@ -34,9 +34,10 @@ const DefaultMaxTokens = 512
 // DefaultMaxFailureRate is the fraction of per-table blurb failures the
 // generator will tolerate before aborting the run. 5% on a 2000-table
 // warehouse = 100 failed blurbs — acceptable because the retrieval layer
-// will simply not have those tables indexed (they fall back to the
-// catalog line + inspect_table path). Beyond that it usually indicates
-// credentials/quota problems, so we fail fast.
+// will simply not have those tables indexed (the agent still sees them
+// in the Level-0 catalog and can pull L1 detail via lookup_schema).
+// Beyond that it usually indicates credentials/quota problems, so we
+// fail fast.
 const DefaultMaxFailureRate = 0.05
 
 // DefaultWorkers defaults to 8 parallel LLM calls. §9 of the plan says

@@ -18,7 +18,7 @@ import (
 func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	// Tool-use on the Foundry Claude wire would require the same content-
 	// block plumbing as Bedrock and direct Anthropic. Not implemented
-	// today — the agent's tool-dependent flows (inspect_table, /ask) run
+	// today — tool-dependent flows (e.g. /ask function-calling) run
 	// against direct Anthropic or Bedrock. Reject explicitly rather than
 	// silently drop tool definitions.
 	if len(req.Tools) > 0 {

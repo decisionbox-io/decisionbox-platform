@@ -315,41 +315,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("tables", len(schemas)).Info("Schemas loaded from cache")
 
-	// Build three-level schema context (PLAN-SCHEMA-RETRIEVAL.md §5):
-	//   Level 0 = one-line catalog of every table, always included
-	//   Level 1 = top-K tables for the current task (full columns + samples)
-	//   Level 2 = inspect_table tool for tool-capable models (Phase B7)
-	//
-	// The retriever and embedder passed in by the orchestrator wiring
-	// may be nil (tests without Qdrant, projects still on the legacy
-	// flow). In that case the builder falls back to keyword-substring
-	// matching over the already-discovered schema list, which matches
-	// what the old full-JSON dump did in spirit but at a fraction of
-	// the prompt-token cost.
-	schemaBuilder := &SchemaContextBuilder{
-		Embedder:  o.embedder,
-		Retriever: o.schemaRetriever,
-		Schemas:   schemas,
-	}
-	schemaQuery := "data analysis across datasets: " + datasetsStr + "; " + o.areaNamesCSV(analysisAreas)
+	// Build the catalog the LLM sees in its system prompt: one line per
+	// table. We DO NOT pre-populate per-table column / sample detail —
+	// that arrives on demand via the lookup_schema action, served by
+	// the SchemaProvider wired below. This is the architectural change
+	// that bounds prompt growth (full discussion in
+	// docs/architecture/agent-on-demand-schema.md).
+	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
 	keywords := o.collectAreaKeywords(analysisAreas)
-	rendered, err := schemaBuilder.BuildOnce(ctx, o.projectID, schemaQuery, 0, keywords)
-	if err != nil {
-		return nil, fmt.Errorf("schema context: %w", err)
-	}
+	rendered := schemaBuilder.BuildCatalog(keywords)
 	applog.WithFields(applog.Fields{
 		"tables":          len(schemas),
 		"catalog_tokens":  rendered.CatalogTokens,
-		"retrieved_tokens": rendered.RetrievedTokens,
-		"top_k":           rendered.TopK,
 		"catalog_dropped": rendered.CatalogDropped,
-	}).Info("Schema context built")
+	}).Info("Schema catalog built")
 
-	// Stamp plan §15 telemetry on the run document.
+	// Stamp telemetry on the run document. top_k is now 0 — the boot
+	// context no longer carries pre-retrieved tables; the model fetches
+	// what it needs as it explores.
 	o.statusReporter.RecordSchemaTelemetry(ctx,
-		rendered.CatalogTokens+rendered.RetrievedTokens,
+		rendered.CatalogTokens,
 		len(schemas),
-		rendered.TopK,
+		0,
 	)
 
 	// SQL fixer + insight validator still consume a single "context"
@@ -373,16 +360,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 
-	// Prepare exploration prompt: base context + exploration-specific content
+	// Prepare exploration prompt: base context + exploration-specific content.
+	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
+	// resolves to the compact catalog (one line per table). Per-table
+	// column / sample detail is no longer pre-rendered — the LLM
+	// fetches it on demand via the lookup_schema action.
 	explorationPrompt := baseContext + "\n\n" + prompts.Exploration
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{DATASET}}", datasetsStr)
-	// Three-level schema block. {{SCHEMA_INFO}} is kept as a convenience
-	// alias that renders "catalog + retrieved" back-to-back — old domain
-	// packs are migrated to explicit {{SCHEMA_CATALOG}} + {{SCHEMA_RETRIEVED}}
-	// template variables in the same change that introduced this layer.
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_CATALOG}}", rendered.Catalog)
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_RETRIEVED}}", rendered.Retrieved)
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", rendered.Catalog+"\n\n"+rendered.Retrieved)
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", rendered.Catalog)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER}}", filterClause)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
@@ -397,12 +382,33 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
 	o.statusReporter.SetPhase(ctx, models.PhaseExploration, "Starting autonomous data exploration...", 10)
+
+	// Build the SchemaProvider that backs the lookup_schema /
+	// search_tables actions. The cache provider serves entirely from
+	// the schemas map already loaded above + the per-project Qdrant
+	// collection, so there is no live warehouse traffic in the
+	// exploration loop.
+	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		ProjectID: o.projectID,
+		Datasets:  o.datasets,
+		Schemas:   schemas,
+		Retriever: o.schemaRetriever,
+		Embedder:  o.embedder,
+	})
+	if spErr != nil {
+		// This is a wiring bug — the schema cache lookup above already
+		// guarantees Schemas is non-nil. Surface clearly rather than
+		// continuing with a nil provider.
+		return nil, fmt.Errorf("build schema provider: %w", spErr)
+	}
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
-		Client:   o.aiClient,
-		Executor: executor,
-		MaxSteps: opts.MaxSteps,
-		MinSteps: opts.MinSteps,
-		Dataset:  datasetsStr,
+		Client:         o.aiClient,
+		Executor:       executor,
+		MaxSteps:       opts.MaxSteps,
+		MinSteps:       opts.MinSteps,
+		Dataset:        datasetsStr,
+		SchemaProvider: schemaProvider,
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
 		},

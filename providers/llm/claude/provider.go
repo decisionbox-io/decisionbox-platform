@@ -76,8 +76,8 @@ func init() {
 			"claude-haiku-4-5":  64000,
 			"_default":          16384,
 		},
-		// Claude supports tool_use natively. Enables inspect_table during
-		// discovery / /ask.
+		// Claude supports tool_use natively. Enables function-calling on
+		// /ask and any other tool-dependent flow.
 		SupportsTools: true,
 	})
 }

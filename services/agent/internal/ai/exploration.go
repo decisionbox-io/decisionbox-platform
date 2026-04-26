@@ -20,6 +20,25 @@ type ExplorationEngine struct {
 	minSteps int
 	dataset  string
 	onStep   StepCallback
+
+	// schemaProvider serves the on-demand schema actions (lookup_schema,
+	// search_tables). Optional — when nil the engine still parses those
+	// actions and reports a graceful "schema service unavailable" reply
+	// to the model so a misconfigured run doesn't crash the loop.
+	schemaProvider SchemaProvider
+
+	// Per-run budgets for the on-demand schema actions. Initialized from
+	// ExplorationEngineOptions in NewExplorationEngine; decremented as
+	// the engine serves each action. The remaining counts are surfaced
+	// to the model in every action result so it can self-pace.
+	maxLookupsPerRun  int
+	maxSearchesPerRun int
+
+	// Mutated state. Tracked on the engine (not the conversation) so
+	// the budgets persist across retried steps and across action types.
+	lookupsUsed   int
+	searchesUsed  int
+	fetchedTables map[string]struct{} // canonicalised refs already lookup'd; dedupes repeat asks
 }
 
 // maxParseRetries caps how many times we re-prompt the LLM on a single step
@@ -48,6 +67,22 @@ type ExplorationEngineOptions struct {
 	MinSteps int
 	Dataset  string
 	OnStep   StepCallback // optional: called after each step for live status
+
+	// SchemaProvider serves on-demand schema actions issued by the LLM
+	// during a run (lookup_schema for L1 detail, search_tables for
+	// semantic table discovery). Required for production wiring; may
+	// be nil in tests that exercise only the query/done paths. When
+	// nil, the engine reports "schema service unavailable" to the
+	// model rather than crashing — see executeLookupSchema.
+	SchemaProvider SchemaProvider
+
+	// MaxLookupsPerRun caps total lookup_schema actions across the
+	// whole run. 0 → DefaultMaxLookupsPerRun. Negative → 0 (off).
+	MaxLookupsPerRun int
+
+	// MaxSearchesPerRun caps total search_tables actions across the
+	// whole run. 0 → DefaultMaxSearchesPerRun. Negative → 0 (off).
+	MaxSearchesPerRun int
 }
 
 // NewExplorationEngine creates a new exploration engine.
@@ -62,13 +97,36 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		opts.MinSteps = opts.MaxSteps
 	}
 
+	// Lookup / search budgets: 0 means "use default", negative means
+	// "off" (the engine treats them as out-of-budget from step 1, which
+	// effectively disables the action). This split exists so a test can
+	// disable an action surface without touching the conversation prompt.
+	maxLookups := opts.MaxLookupsPerRun
+	switch {
+	case maxLookups == 0:
+		maxLookups = DefaultMaxLookupsPerRun
+	case maxLookups < 0:
+		maxLookups = 0
+	}
+	maxSearches := opts.MaxSearchesPerRun
+	switch {
+	case maxSearches == 0:
+		maxSearches = DefaultMaxSearchesPerRun
+	case maxSearches < 0:
+		maxSearches = 0
+	}
+
 	return &ExplorationEngine{
-		client:   opts.Client,
-		executor: opts.Executor,
-		maxSteps: opts.MaxSteps,
-		minSteps: opts.MinSteps,
-		dataset:  opts.Dataset,
-		onStep:   opts.OnStep,
+		client:            opts.Client,
+		executor:          opts.Executor,
+		maxSteps:          opts.MaxSteps,
+		minSteps:          opts.MinSteps,
+		dataset:           opts.Dataset,
+		onStep:            opts.OnStep,
+		schemaProvider:    opts.SchemaProvider,
+		maxLookupsPerRun:  maxLookups,
+		maxSearchesPerRun: maxSearches,
+		fetchedTables:     make(map[string]struct{}),
 	}
 }
 
@@ -223,20 +281,58 @@ func (e *ExplorationEngine) Explore(
 	return result, nil
 }
 
-// ExplorationAction represents Claude's decision
+// ExplorationAction represents the LLM's decision for one exploration
+// step. Exactly ONE action mode is taken per turn; the parser picks
+// which mode applies based on the JSON keys present.
+//
+// Action modes (set by parseAction based on which fields are populated):
+//
+//	"query_data"   — Query is set; execute SQL against the warehouse.
+//	"complete"     — Done==true OR Action=="complete"; end exploration.
+//	"lookup_schema"— LookupSchema lists fully-qualified table refs the
+//	                 LLM wants L1 detail (columns + samples) for. Served
+//	                 by the engine's SchemaProvider; result becomes the
+//	                 next user message in the conversation.
+//	"search_tables"— SearchTables is a free-text query the LLM wants
+//	                 ranked semantically against the per-project schema
+//	                 index. Top hits flow back as the next user message.
+//
+// Legacy fields (Action, QueryPurpose, AnalysisType, Data, Reason) stay
+// for the JSON parser's "explicit action" path — older prompts still
+// emit `{"action": "query_data", ...}`.
 type ExplorationAction struct {
-	// Simple query mode
-	Thinking string                 // Claude's reasoning
-	Query    string                 // SQL query to execute
-	Done     bool                   // True when exploration is complete
-	Summary  string                 // Summary when done
+	// Common
+	Thinking string `json:"thinking"`
 
-	// Legacy fields (deprecated but kept for compatibility)
-	Action       string
-	QueryPurpose string
-	AnalysisType string
-	Data         map[string]interface{}
-	Reason       string
+	// query_data
+	Query string `json:"query"`
+
+	// complete (modern shape)
+	Done    bool   `json:"done"`
+	Summary string `json:"summary"`
+
+	// lookup_schema (new) — list of fully-qualified table refs
+	// (canonically "dataset.table"). Bare "table" is accepted; the
+	// SchemaProvider rehydrates the qualified form. Empty when this
+	// turn isn't a lookup.
+	LookupSchema []string `json:"lookup_schema"`
+
+	// search_tables (new) — free-text semantic query. Empty when
+	// this turn isn't a search. SearchTopK is optional; 0 falls
+	// back to DefaultSearchTopK and values above MaxSearchTopK
+	// are clamped at execution time.
+	SearchTables string `json:"search_tables"`
+	SearchTopK   int    `json:"search_top_k"`
+
+	// Legacy / explicit-action shape — kept so a prompt can still
+	// say {"action": "query_data", ...}. The parser normalises
+	// modern key-driven shapes into Action so executeAction has
+	// one switch.
+	Action       string                 `json:"action"`
+	QueryPurpose string                 `json:"query_purpose"`
+	AnalysisType string                 `json:"analysis_type"`
+	Data         map[string]interface{} `json:"data"`
+	Reason       string                 `json:"reason"`
 }
 
 // runStepWithRetry calls the LLM for one exploration step and parses the
@@ -344,14 +440,24 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 		}
 	case action.Query != "":
 		action.Action = "query_data"
+	case len(action.LookupSchema) > 0:
+		// Modern key-driven: presence of lookup_schema list selects mode.
+		action.Action = "lookup_schema"
+	case strings.TrimSpace(action.SearchTables) != "":
+		// Modern key-driven: a non-empty search query selects mode.
+		action.Action = "search_tables"
 	case action.Action == "complete":
 		// Legacy explicit complete — accept.
 	case action.Action == "query_data" && action.Query != "":
 		// Legacy explicit query — accept.
+	case action.Action == "lookup_schema" && len(action.LookupSchema) > 0:
+		// Legacy explicit lookup — accept.
+	case action.Action == "search_tables" && strings.TrimSpace(action.SearchTables) != "":
+		// Legacy explicit search — accept.
 	default:
-		// JSON parsed but carries neither a query nor an explicit completion signal.
-		// Fail loudly so the caller can re-prompt, instead of silently terminating.
-		return nil, fmt.Errorf("action JSON has no query, done flag, or recognized action (got action=%q)", action.Action)
+		// JSON parsed but carries no recognised payload. Fail loudly so
+		// the caller can re-prompt instead of silently terminating.
+		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, done flag, or recognized action (got action=%q)", action.Action)
 	}
 
 	return &action, nil
@@ -483,7 +589,11 @@ func jsonHasActionKey(s string) bool {
 	return hasQuery || hasDone || hasAction
 }
 
-// executeAction executes the action and returns result message
+// executeAction executes the action and returns the user-message string
+// the engine appends to the conversation. The string format is part of
+// the engine's contract with prompts — domain-pack prompts assume the
+// "Schema for `dataset.table`:" / "Search results for ..." shapes
+// below when describing the actions to the LLM.
 func (e *ExplorationEngine) executeAction(
 	ctx context.Context,
 	action *ExplorationAction,
@@ -492,6 +602,12 @@ func (e *ExplorationEngine) executeAction(
 	switch action.Action {
 	case "query_data":
 		return e.executeQuery(ctx, action, step)
+
+	case "lookup_schema":
+		return e.executeLookupSchema(ctx, action, step)
+
+	case "search_tables":
+		return e.executeSearchTables(ctx, action, step)
 
 	case "explore_schema":
 		return e.exploreSchema(ctx, action, step)
@@ -561,15 +677,189 @@ func (e *ExplorationEngine) executeQuery(
 	return resultMsg
 }
 
-// exploreSchema explores table schemas
+// executeLookupSchema serves a lookup_schema action by asking the
+// engine's SchemaProvider for L1 detail on the requested tables. The
+// result string becomes the next user message, so its format is part
+// of the prompt contract (see domain-packs/*/prompts/base/exploration.md).
+//
+// Budget rules (enforced here, not in the parser):
+//   - Per-call cap: MaxLookupTablesPerCall. Excess refs are dropped
+//     with a "truncated" hint so the model knows to issue follow-ups.
+//   - Per-run cap: e.maxLookupsPerRun. When exhausted the engine
+//     replies with a "lookup budget exceeded" message and refuses
+//     to call the provider — the model can still issue queries
+//     against tables it already saw.
+//   - Dedup: refs already returned by a prior lookup_schema in this
+//     run are short-circuited locally with a friendly "you already
+//     have this; reuse it from earlier in the conversation" reply
+//     rather than re-burning a slot of the budget.
+//
+// The step's ExplorationStep.Action is recorded as "lookup_schema"
+// in the caller; here we just mutate Thinking and Error if needed.
+func (e *ExplorationEngine) executeLookupSchema(
+	ctx context.Context,
+	action *ExplorationAction,
+	step *models.ExplorationStep,
+) string {
+	step.QueryPurpose = "lookup_schema"
+
+	// Provider unavailable → graceful degradation. The model still
+	// has the catalog in the system prompt; it can use bare table
+	// names and recover via the SQL fixer if columns mismatch.
+	if e.schemaProvider == nil {
+		step.Error = "schema provider not configured"
+		return "Schema lookup unavailable: schema provider not configured. " +
+			"Use the catalog in the system prompt to pick a table and run a SELECT — " +
+			"the SQL fixer can recover from minor column mismatches."
+	}
+
+	// Budget exhausted before this call → refuse and explain.
+	if e.maxLookupsPerRun > 0 && e.lookupsUsed >= e.maxLookupsPerRun {
+		step.Error = fmt.Sprintf("lookup budget exhausted (%d/%d)", e.lookupsUsed, e.maxLookupsPerRun)
+		return fmt.Sprintf(
+			"Lookup budget exhausted — you have used %d of %d lookups this run. "+
+				"No more schemas will be served. Continue with the tables you have already inspected.",
+			e.lookupsUsed, e.maxLookupsPerRun,
+		)
+	}
+
+	// Normalise + deduplicate refs the model named THIS turn. Empty
+	// strings are dropped silently — they're a parser/escaping artefact,
+	// not the model's intent.
+	refs := normaliseRefs(action.LookupSchema)
+	if len(refs) == 0 {
+		step.Error = "lookup_schema with no tables"
+		return "lookup_schema action had no tables. " +
+			`Use {"thinking": "...", "lookup_schema": ["dataset.table_a", "dataset.table_b"]}.`
+	}
+
+	// Local dedup: anything already fetched short-circuits without
+	// burning provider calls or budget.
+	seen := make(map[string]struct{}, len(refs))
+	fresh := make([]string, 0, len(refs))
+	already := make([]string, 0)
+	for _, r := range refs {
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		if _, ok := e.fetchedTables[r]; ok {
+			already = append(already, r)
+			continue
+		}
+		fresh = append(fresh, r)
+	}
+
+	// All requested refs already served — useful no-op feedback.
+	if len(fresh) == 0 {
+		var b strings.Builder
+		b.WriteString("All requested tables were already inspected earlier in this run; reuse the previous lookup result.\n")
+		b.WriteString("Already inspected: ")
+		b.WriteString(strings.Join(already, ", "))
+		return b.String()
+	}
+
+	// Per-call cap: anything beyond MaxLookupTablesPerCall is dropped
+	// and the model is told (so it can issue follow-ups). The provider
+	// also enforces this cap — duplicate enforcement is intentional so
+	// fakes in tests don't have to replicate the rule.
+	truncatedAtCallCap := false
+	if len(fresh) > MaxLookupTablesPerCall {
+		fresh = fresh[:MaxLookupTablesPerCall]
+		truncatedAtCallCap = true
+	}
+
+	res, err := e.schemaProvider.Lookup(ctx, fresh)
+	// Decrement budget regardless of outcome — even a failed lookup
+	// burns server resources and we don't want to invite retry storms.
+	e.lookupsUsed++
+
+	if err != nil {
+		step.Error = err.Error()
+		logger.WithError(err).Warn("lookup_schema failed")
+		return fmt.Sprintf(
+			"Schema lookup failed: %s. "+
+				"You can continue with tables you have already inspected, "+
+				"or try again with different refs.",
+			err.Error(),
+		)
+	}
+
+	// Cache successful refs so the same request short-circuits next time.
+	for _, t := range res.Tables {
+		e.fetchedTables[t.Table] = struct{}{}
+	}
+
+	return formatLookupResult(res, already, truncatedAtCallCap, e.lookupsUsed, e.maxLookupsPerRun)
+}
+
+// executeSearchTables serves a search_tables action by ranking
+// semantically against the per-project schema embedding index. The
+// result string becomes the next user message; format is part of the
+// prompt contract.
+func (e *ExplorationEngine) executeSearchTables(
+	ctx context.Context,
+	action *ExplorationAction,
+	step *models.ExplorationStep,
+) string {
+	step.QueryPurpose = "search_tables"
+
+	if e.schemaProvider == nil {
+		step.Error = "schema provider not configured"
+		return "Table search unavailable: schema provider not configured. " +
+			"Use the catalog in the system prompt to pick tables instead."
+	}
+
+	if e.maxSearchesPerRun > 0 && e.searchesUsed >= e.maxSearchesPerRun {
+		step.Error = fmt.Sprintf("search budget exhausted (%d/%d)", e.searchesUsed, e.maxSearchesPerRun)
+		return fmt.Sprintf(
+			"Search budget exhausted — you have used %d of %d searches this run. "+
+				"Use the catalog or already-known tables for the rest of the run.",
+			e.searchesUsed, e.maxSearchesPerRun,
+		)
+	}
+
+	query := strings.TrimSpace(action.SearchTables)
+	if query == "" {
+		step.Error = "search_tables with empty query"
+		return "search_tables action had an empty query. " +
+			`Use {"thinking": "...", "search_tables": "topic terms describing what you're looking for"}.`
+	}
+
+	k := action.SearchTopK
+	if k <= 0 {
+		k = DefaultSearchTopK
+	}
+	if k > MaxSearchTopK {
+		k = MaxSearchTopK
+	}
+
+	hits, err := e.schemaProvider.Search(ctx, query, k)
+	e.searchesUsed++
+
+	if err != nil {
+		step.Error = err.Error()
+		logger.WithError(err).Warn("search_tables failed")
+		return fmt.Sprintf(
+			"Table search failed: %s. "+
+				"Use the catalog in the system prompt to pick tables instead.",
+			err.Error(),
+		)
+	}
+
+	return formatSearchResult(query, hits, e.searchesUsed, e.maxSearchesPerRun)
+}
+
+// exploreSchema is a legacy no-op kept so prompts that still emit
+// `{"action": "explore_schema"}` don't crash the run. The current path
+// for "I want column detail" is lookup_schema (above).
 func (e *ExplorationEngine) exploreSchema(
 	ctx context.Context,
 	action *ExplorationAction,
 	step *models.ExplorationStep,
 ) string {
-	// Schema exploration would typically be provided upfront
-	// For now, return a message
-	return "Schema information is available in the initial context. Please refer to it for table structures."
+	return "explore_schema is no longer supported. " +
+		`Use lookup_schema instead: {"thinking": "...", "lookup_schema": ["dataset.table"]}.`
 }
 
 // analyzePattern analyzes a pattern
@@ -593,8 +883,10 @@ func (e *ExplorationEngine) formatResults(data []map[string]interface{}) string 
 }
 
 // buildInitialMessage builds the first message to Claude.
-// The system prompt already contains schema, filter rules, analysis areas, and profile.
-// This message just kicks off the exploration loop.
+// The system prompt already contains the schema catalog, filter rules,
+// analysis areas, and profile. This message kicks off the exploration
+// loop and announces the on-demand schema budget so the model can
+// pace itself across the run.
 func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContext) string {
 	var msg strings.Builder
 
@@ -602,6 +894,217 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	fmt.Fprintf(&msg, "You have up to %d exploration steps. ", e.maxSteps)
 	msg.WriteString("Follow the rules and format described in the system prompt.\n")
 
+	if e.schemaProvider != nil {
+		fmt.Fprintf(&msg,
+			"\nOn-demand schema budget for this run: %d lookup_schema calls (max %d tables per call), %d search_tables calls.\n",
+			e.maxLookupsPerRun, MaxLookupTablesPerCall, e.maxSearchesPerRun,
+		)
+	}
+
 	return msg.String()
+}
+
+// normaliseRefs canonicalises and dedupes the table refs an LLM emits
+// in lookup_schema. Whitespace is trimmed; backticks (BigQuery) and
+// surrounding quotes (Snowflake/Postgres) are stripped; empty refs
+// are dropped. Order is preserved so the engine renders results in
+// the order the model asked for them — useful when the model labels
+// expected behaviour in its thinking ("first I want users, then
+// orders").
+func normaliseRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		r = strings.TrimSpace(r)
+		// Strip a single outermost layer of common quoting so "`db.t`" or
+		// "\"db.t\"" resolves to "db.t". We only ever peel one layer total —
+		// a model emitting "`\"db.t\"`" is already wrong; over-stripping
+		// would silently mask the bug instead of surfacing it via NotFound.
+		if stripped := stripWrappingQuote(r, '`'); stripped != r {
+			r = stripped
+		} else {
+			r = stripWrappingQuote(r, '"')
+		}
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// stripWrappingQuote removes one layer of `q` quoting if `s` is wrapped
+// in it (e.g. `"foo"` → `foo`).
+func stripWrappingQuote(s string, q byte) string {
+	if len(s) >= 2 && s[0] == q && s[len(s)-1] == q {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// formatLookupResult renders the user message for a successful
+// lookup_schema action. Returned string is what gets appended to the
+// conversation, so prompts can rely on "Schema for `dataset.table`:"
+// being the marker the model can scan for in its own history.
+func formatLookupResult(res LookupResult, already []string, truncatedAtCallCap bool, lookupsUsed, maxLookups int) string {
+	var b strings.Builder
+
+	if len(res.Tables) == 0 {
+		b.WriteString("No schemas resolved for the requested tables.")
+	} else {
+		for i, t := range res.Tables {
+			if i > 0 {
+				b.WriteString("\n\n")
+			}
+			fmt.Fprintf(&b, "Schema for `%s` (%s rows):\n", t.Table, formatRowCountShort(t.RowCount))
+			if len(t.Columns) == 0 {
+				b.WriteString("  columns: (no column metadata available)\n")
+			} else {
+				b.WriteString("  columns:\n")
+				for _, c := range t.Columns {
+					nullable := "NOT NULL"
+					if c.Nullable {
+						nullable = "NULL"
+					}
+					fmt.Fprintf(&b, "    - %s %s %s", c.Name, c.Type, nullable)
+					if c.Category != "" {
+						fmt.Fprintf(&b, " [%s]", c.Category)
+					}
+					b.WriteByte('\n')
+				}
+			}
+			if len(t.SampleRows) > 0 {
+				b.WriteString("  sample rows:\n")
+				for _, row := range t.SampleRows {
+					b.WriteString("    ")
+					b.WriteString(formatLookupRow(row))
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+
+	if len(res.NotFound) > 0 {
+		b.WriteString("\n\nNot found (typo, dropped, or wrong dataset): ")
+		b.WriteString(strings.Join(res.NotFound, ", "))
+	}
+	if len(already) > 0 {
+		b.WriteString("\n\nAlready inspected earlier in this run (reuse from prior context): ")
+		b.WriteString(strings.Join(already, ", "))
+	}
+	if res.Truncated || truncatedAtCallCap {
+		fmt.Fprintf(&b, "\n\nNote: per-call cap is %d tables — extra refs were dropped. Issue another lookup_schema for the remainder.", MaxLookupTablesPerCall)
+	}
+
+	if maxLookups > 0 {
+		fmt.Fprintf(&b, "\n\nLookup budget: %d/%d used (%d remaining).",
+			lookupsUsed, maxLookups, maxLookups-lookupsUsed)
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatSearchResult renders the user message for a search_tables
+// action. Includes the query so the model can refer back to it when
+// chaining a follow-up lookup_schema.
+func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearches int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Search results for %q:\n", query)
+
+	if len(hits) == 0 {
+		b.WriteString("(no matching tables; try different terms or pick from the catalog in the system prompt)")
+	} else {
+		for i, h := range hits {
+			fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			if h.Blurb != "" {
+				b.WriteString("\n   ")
+				b.WriteString(h.Blurb)
+			}
+			b.WriteByte('\n')
+		}
+		b.WriteString("\nIssue lookup_schema with the table refs you want full column detail for before querying them.")
+	}
+
+	if maxSearches > 0 {
+		fmt.Fprintf(&b, "\n\nSearch budget: %d/%d used (%d remaining).",
+			searchesUsed, maxSearches, maxSearches-searchesUsed)
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatRowCountShort renders a row count with a K/M/B suffix. -1
+// means unknown (some warehouses don't expose row counts cheaply).
+// Mirrors schema_render.formatRowCount but duplicated here to avoid
+// an ai → schema_render dependency for one helper — schema_render
+// already imports models which already imports ai indirectly through
+// llm and we keep the engine's import graph flat.
+func formatRowCountShort(n int64) string {
+	switch {
+	case n < 0:
+		return "unknown"
+	case n < 1_000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		v := float64(n) / 1_000
+		if n%1_000 == 0 {
+			return fmt.Sprintf("%.0fK", v)
+		}
+		return fmt.Sprintf("%.1fK", v)
+	case n < 1_000_000_000:
+		v := float64(n) / 1_000_000
+		if n%1_000_000 == 0 {
+			return fmt.Sprintf("%.0fM", v)
+		}
+		return fmt.Sprintf("%.1fM", v)
+	default:
+		v := float64(n) / 1_000_000_000
+		if n%1_000_000_000 == 0 {
+			return fmt.Sprintf("%.0fB", v)
+		}
+		return fmt.Sprintf("%.1fB", v)
+	}
+}
+
+// formatLookupRow renders a sample row with stable alphabetical key
+// order. NULLs become "NULL"; long string values get truncated so
+// one wide JSON column can't blow up the prompt.
+func formatLookupRow(row map[string]interface{}) string {
+	keys := make([]string, 0, len(row))
+	for k := range row {
+		keys = append(keys, k)
+	}
+	// Sort for deterministic output (Go map iteration is randomised).
+	// Imported sort would tie our hands; the inline insertion sort below
+	// keeps this file's import set lean.
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, formatLookupValue(row[k])))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// maxLookupValueLen caps how many characters of a single sample value
+// are shown. Longer values are truncated with an ellipsis so a single
+// JSON / text-blob column doesn't dominate the prompt.
+const maxLookupValueLen = 80
+
+func formatLookupValue(v interface{}) string {
+	if v == nil {
+		return "NULL"
+	}
+	s := fmt.Sprintf("%v", v)
+	// Collapse internal whitespace so a multi-line cell renders on one line.
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > maxLookupValueLen {
+		return s[:maxLookupValueLen] + "…"
+	}
+	return s
 }
 

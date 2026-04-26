@@ -4,12 +4,17 @@
 
 Every project builds a persistent, searchable schema index before its
 first discovery run. The index lets discovery and `/ask` work on
-warehouses of any size (ERPs with 2K+ tables) by replacing the old
-"dump the whole schema into every prompt" approach with a two-level
-context: a one-line catalog of every table plus top-K retrieved details
-for the current task.
+warehouses of any size (ERPs with 2K+ tables) without dumping every
+table's columns into every prompt.
 
-See `PLAN-SCHEMA-RETRIEVAL.md` in the repo root for the full design.
+The index serves two distinct callers:
+
+- **Discovery** — the agent receives a compact Level-0 catalog up front
+  (one line per table) and pulls per-table column lists + sample rows
+  on demand via the `lookup_schema` and `search_tables` actions during
+  exploration. See [On-Demand Schema](../architecture/agent-on-demand-schema.md).
+- **/ask** — answers single-question requests by retrieving the top-K
+  most relevant tables for the question via Qdrant similarity search.
 
 ## What gets indexed
 
@@ -142,8 +147,11 @@ logs a warning at startup when `QDRANT_URL` is not set.
 | `QDRANT_URL` | — | Required. host or host:port for Qdrant gRPC |
 | `QDRANT_API_KEY` | empty | Optional; set on secured Qdrant instances |
 | `BLURB_WORKERS` | 8 | Parallel blurb-generation goroutines |
-| `SCHEMA_CATALOG_BUDGET` | 150000 | Token cap on Level 0 rendering |
-| `SCHEMA_RETRIEVAL_TOP_K` | 40 | Default Level 1 size for tool-capable models |
-| `SCHEMA_RETRIEVAL_TOP_K_NOTOOL` | 60 | Default Level 1 size for tool-disabled models |
+| `SCHEMA_CATALOG_BUDGET` | 150000 | Token cap on the Level-0 catalog rendered into the discovery prompt |
+| `SCHEMA_RETRIEVAL_TOP_K` | 40 | Default top-K for `/ask` retrieval (discovery uses on-demand `search_tables` instead, capped at 30) |
 
 Per-project overrides live on `project.schema_retrieval.top_k`.
+
+`SCHEMA_RETRIEVAL_TOP_K_NOTOOL` was retired in v0.4: discovery no longer
+performs an upfront top-K retrieval, so the tool-capable / tool-disabled
+distinction collapsed into a single retrieval policy used by `/ask`.

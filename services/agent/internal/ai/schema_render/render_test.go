@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // ---------- renderCatalog ----------
@@ -63,127 +61,6 @@ func TestRenderCatalog_KeywordsCappedAtThree(t *testing.T) {
 	// d and e must NOT appear.
 	if strings.Contains(got, "d") || strings.Contains(got, "e") {
 		t.Errorf("keywords should cap at 3: %q", got)
-	}
-}
-
-// ---------- renderRetrieved ----------
-
-func TestRenderRetrieved_Empty(t *testing.T) {
-	got := renderRetrieved(nil, 3)
-	if !strings.Contains(got, "inspect_table") {
-		t.Errorf("empty Level 1 should hint about inspect_table: %q", got)
-	}
-}
-
-func TestRenderRetrieved_SingleTable_NullAndCategory(t *testing.T) {
-	got := renderRetrieved([]TableDetail{
-		{
-			Table:    "users",
-			RowCount: 150_000,
-			Columns: []models.ColumnInfo{
-				{Name: "user_id", Type: "INT64", Nullable: false, Category: "primary_key"},
-				{Name: "email", Type: "STRING", Nullable: true, Category: "dimension"},
-				{Name: "signup_ts", Type: "TIMESTAMP", Nullable: false, Category: "time"},
-			},
-			SampleRows: []map[string]interface{}{
-				{"user_id": 1, "email": "a@example.com", "signup_ts": "2026-01-01T00:00:00Z"},
-			},
-		},
-	}, 3)
-	if !strings.Contains(got, "TABLE users (150K rows)") {
-		t.Errorf("missing header line: %q", got)
-	}
-	if !strings.Contains(got, "- user_id INT64 NOT NULL [primary_key]") {
-		t.Errorf("column line wrong:\n%s", got)
-	}
-	if !strings.Contains(got, "- email STRING NULL [dimension]") {
-		t.Errorf("nullable column line wrong:\n%s", got)
-	}
-	if !strings.Contains(got, "user_id=1") {
-		t.Errorf("sample row missing: %s", got)
-	}
-}
-
-func TestRenderRetrieved_SampleRowTruncation(t *testing.T) {
-	long := strings.Repeat("x", 500)
-	got := renderRetrieved([]TableDetail{{
-		Table: "t", RowCount: 1,
-		Columns:    []models.ColumnInfo{{Name: "payload", Type: "STRING"}},
-		SampleRows: []map[string]interface{}{{"payload": long}},
-	}}, 3)
-	if strings.Contains(got, strings.Repeat("x", 500)) {
-		t.Error("long sample value should be truncated")
-	}
-	if !strings.Contains(got, "…") {
-		t.Error("truncated value should end with ellipsis")
-	}
-}
-
-func TestRenderRetrieved_SampleRowWhitespaceCollapsed(t *testing.T) {
-	multiline := "line1\nline2\nline3"
-	got := renderRetrieved([]TableDetail{{
-		Table: "t", RowCount: 1,
-		Columns:    []models.ColumnInfo{{Name: "v", Type: "STRING"}},
-		SampleRows: []map[string]interface{}{{"v": multiline}},
-	}}, 3)
-	if strings.Contains(got, "line1\n    line2") {
-		t.Error("multi-line sample values should be collapsed to one line")
-	}
-}
-
-func TestRenderRetrieved_NilValue(t *testing.T) {
-	got := renderRetrieved([]TableDetail{{
-		Table: "t", RowCount: 1,
-		Columns:    []models.ColumnInfo{{Name: "v", Type: "STRING"}},
-		SampleRows: []map[string]interface{}{{"v": nil}},
-	}}, 3)
-	if !strings.Contains(got, "v=NULL") {
-		t.Errorf("nil sample value should render as NULL: %s", got)
-	}
-}
-
-func TestRenderRetrieved_SampleRowCappedAtMax(t *testing.T) {
-	rows := []map[string]interface{}{{"a": 1}, {"a": 2}, {"a": 3}, {"a": 4}, {"a": 5}}
-	got := renderRetrieved([]TableDetail{{
-		Table: "t", RowCount: 5,
-		Columns:    []models.ColumnInfo{{Name: "a", Type: "INT64"}},
-		SampleRows: rows,
-	}}, 2)
-	if strings.Count(got, "a=") != 2 {
-		t.Errorf("expected 2 sample rows, got:\n%s", got)
-	}
-}
-
-func TestRenderRetrieved_TableWithoutColumnMetadata(t *testing.T) {
-	got := renderRetrieved([]TableDetail{{Table: "orphan", RowCount: 99}}, 3)
-	if !strings.Contains(got, "(no column metadata available)") {
-		t.Errorf("missing column placeholder: %s", got)
-	}
-}
-
-func TestRenderRetrieved_TwoTablesSeparatedByBlankLine(t *testing.T) {
-	got := renderRetrieved([]TableDetail{
-		{Table: "a", RowCount: 1, Columns: []models.ColumnInfo{{Name: "id"}}},
-		{Table: "b", RowCount: 2, Columns: []models.ColumnInfo{{Name: "id"}}},
-	}, 3)
-	if !strings.Contains(got, "TABLE a") || !strings.Contains(got, "TABLE b") {
-		t.Errorf("both tables missing: %s", got)
-	}
-	if !strings.Contains(got, "\n\nTABLE b") {
-		t.Error("tables should be separated by blank line")
-	}
-}
-
-func TestRenderRetrieved_DeterministicColumnOrder(t *testing.T) {
-	rows := []map[string]interface{}{{"b": 1, "a": 2, "c": 3}}
-	got1 := renderRetrieved([]TableDetail{{Table: "t", RowCount: 1, SampleRows: rows}}, 3)
-	got2 := renderRetrieved([]TableDetail{{Table: "t", RowCount: 1, SampleRows: rows}}, 3)
-	if got1 != got2 {
-		t.Error("sample-row rendering must be deterministic")
-	}
-	// a before b before c — alphabetical.
-	if !strings.Contains(got1, "a=2, b=1, c=3") {
-		t.Errorf("expected alphabetical order, got %s", got1)
 	}
 }
 
@@ -285,14 +162,19 @@ func TestCompressCatalog_PathologicallyTightBudget(t *testing.T) {
 
 func TestRender_DefaultsApplied(t *testing.T) {
 	r := Render(RenderOptions{
-		Catalog:   []CatalogEntry{{Table: "a", ColumnCount: 1, RowCount: 1}},
-		Retrieved: []TableDetail{{Table: "a", RowCount: 1}},
+		Catalog: []CatalogEntry{{Table: "a", ColumnCount: 1, RowCount: 1}},
 	})
-	if r.Catalog == "" || r.Retrieved == "" {
-		t.Error("both blocks should be populated")
+	if r.Catalog == "" {
+		t.Error("catalog block should be populated")
 	}
-	if r.CatalogTokens == 0 || r.RetrievedTokens == 0 {
-		t.Error("token counts should be positive")
+	if r.CatalogTokens == 0 {
+		t.Error("CatalogTokens should be positive for non-empty catalog")
+	}
+	if r.CatalogTablesUsed != 1 {
+		t.Errorf("CatalogTablesUsed = %d, want 1", r.CatalogTablesUsed)
+	}
+	if r.CatalogDropped != 0 {
+		t.Errorf("CatalogDropped = %d, want 0 for in-budget input", r.CatalogDropped)
 	}
 }
 

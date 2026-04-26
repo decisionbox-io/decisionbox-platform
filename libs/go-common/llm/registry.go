@@ -37,10 +37,9 @@ type ProviderMeta struct {
 
 	// SupportsTools declares whether the provider's Chat method honours
 	// ChatRequest.Tools. When false, callers with a tool-dependent flow
-	// (inspect_table during discovery, /ask function-calling) must pick
-	// a different provider or skip the tool. When true, the provider
-	// emits tool_calls on the ChatResponse when the model decides to
-	// invoke one.
+	// (e.g. /ask function-calling) must pick a different provider or
+	// skip the tool. When true, the provider emits tool_calls on the
+	// ChatResponse when the model decides to invoke one.
 	SupportsTools bool `json:"supports_tools"`
 }
 

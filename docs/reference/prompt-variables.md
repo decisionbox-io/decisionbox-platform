@@ -1,6 +1,6 @@
 # Prompt Variables Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent replaces them with project-specific values at runtime before sending to the LLM.
 
@@ -10,9 +10,7 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 |----------|---------|---------------|------|
 | `{{PROFILE}}` | `base_context.md` | JSON-encoded project profile | JSON string |
 | `{{PREVIOUS_CONTEXT}}` | `base_context.md` | Previous discoveries + user feedback | Multi-line text |
-| `{{SCHEMA_CATALOG}}` | `exploration.md` | Level-0 catalog: one line per table (name, column count, row count, keyword hints) | Plain text |
-| `{{SCHEMA_RETRIEVED}}` | `exploration.md` | Level-1 details for top-K tables the retriever matched against the current task | Plain text |
-| `{{SCHEMA_INFO}}` | `exploration.md` | **Deprecated alias.** Renders `{{SCHEMA_CATALOG}}\n\n{{SCHEMA_RETRIEVED}}` back-to-back so pre-v0.4 templates keep working. New templates should use the explicit variables. | Plain text |
+| `{{SCHEMA_INFO}}` | `exploration.md` | Level-0 catalog only — one line per table (name, column count, row count, keyword hints). Per-table column lists and sample rows are fetched on demand by the LLM via `lookup_schema` / `search_tables` actions. | Plain text |
 | `{{DATASET}}` | `exploration.md`, `analysis_*.md` | Dataset/schema names | Comma-separated string |
 | `{{FILTER}}` | `exploration.md` | SQL WHERE clause | SQL fragment |
 | `{{FILTER_CONTEXT}}` | `exploration.md` | Human-readable filter description | Text |
@@ -99,12 +97,15 @@ Don't repeat these unless the situation has changed.
 
 **If first run:** Empty string (no previous context).
 
-### {{SCHEMA_CATALOG}}
+### {{SCHEMA_INFO}}
 
-**Source:** Schema renderer, Level 0 (see `docs/guides/schema-indexing.md`)
+**Source:** Schema renderer — Level-0 catalog only.
 
-Compact catalog of every table the project indexed in Qdrant.
-One line per table: `name | Nc | Xk/M rows | keyword1, keyword2 | -> joins_to`.
+Compact catalog of every table the project indexed in Qdrant. One line
+per table: `name | Nc | Xk/M rows | keyword1, keyword2 | -> joins_to`.
+The catalog is sized to the project's prompt budget; archive-shaped tables
+(`*_2023`, `*_LOG`, `*_BKP`, `*_TMP`, …) and the smallest by row count are
+dropped first when the catalog exceeds the budget.
 
 **Example value:**
 ```
@@ -113,36 +114,18 @@ analytics_data.sessions    |  9c | 500K rows  | sessions, activity    | -> users
 analytics_data.events      | 22c | 4.2M rows  | events, clickstream
 ```
 
-Always included in every exploration prompt (plan §5). Lets the LLM
-see the names of tables it didn't retrieve in Level 1 and request
-them on demand via the `inspect_table` tool.
+This is the **only** schema content sent up-front. Column lists and
+sample rows are fetched on demand by the LLM during exploration:
 
-### {{SCHEMA_RETRIEVED}}
+- `lookup_schema`: pulls L1 detail (columns + 3 sample rows) for up to
+  10 tables per call. Per-run budget: 30 lookup calls.
+- `search_tables`: runs a semantic query against the per-project Qdrant
+  index. Per-run budget: 30 search calls. TopK clamped to 30.
 
-**Source:** Schema renderer, Level 1 — per-project Qdrant retrieval
-against the current task's keywords + domain-pack keywords.
-
-Full column list + 3 sample rows for the top-K tables (K=40 by
-default for tool-capable models, 60 for tool-disabled models;
-override via project `schema_retrieval.top_k`).
-
-**Example value:**
-```
-TABLE analytics_data.users (50K rows)
-  columns:
-    - user_id STRING NOT NULL [primary_key]
-    - created_at TIMESTAMP NOT NULL [time]
-    - country STRING NULL [dimension]
-  sample rows:
-    country=US, created_at=2026-01-15T12:00:00Z, user_id=u123
-    country=TR, created_at=2026-02-03T09:30:00Z, user_id=u456
-```
-
-### {{SCHEMA_INFO}} (deprecated alias)
-
-Renders `{{SCHEMA_CATALOG}}\n\n{{SCHEMA_RETRIEVED}}` back-to-back so
-templates shipped before v0.4 still work. New templates should use
-the explicit variables.
+Both budgets and the per-call cap are surfaced to the LLM in the initial
+exploration message; see [docs/architecture/agent-on-demand-schema.md](../architecture/agent-on-demand-schema.md)
+for the architectural rationale (the previous "always send L1" model
+exhausted the Bedrock 1M-token context on long runs).
 
 ### {{DATASET}}
 
