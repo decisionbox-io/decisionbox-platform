@@ -152,6 +152,104 @@ func TestParseAction_SearchTablesShape(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Tool-use envelope shape (Anthropic / OpenAI function-calling)
+// -----------------------------------------------------------------------------
+
+func TestParseAction_ToolEnvelope_LookupSchema(t *testing.T) {
+	// This is the exact shape Claude emits in the wild on this codebase
+	// even when the prompt asks for the key-driven shape — verified
+	// against the discovery_debug_logs of a failed run on the customer
+	// project. The parser must accept it and route to lookup_schema.
+	engine := &ExplorationEngine{}
+	resp := `{"name": "lookup_schema", "input": {"tables": ["TBLSIPAMAS", "TBLSIPATRA"]}}`
+	a, err := engine.parseAction(resp)
+	if err != nil {
+		t.Fatalf("parseAction error: %v", err)
+	}
+	if a.Action != "lookup_schema" {
+		t.Errorf("Action = %q, want lookup_schema", a.Action)
+	}
+	if len(a.LookupSchema) != 2 || a.LookupSchema[0] != "TBLSIPAMAS" {
+		t.Errorf("LookupSchema = %v, want [TBLSIPAMAS, TBLSIPATRA]", a.LookupSchema)
+	}
+}
+
+func TestParseAction_ToolEnvelope_SearchTables(t *testing.T) {
+	engine := &ExplorationEngine{}
+	resp := `{"name": "search_tables", "input": {"query": "customer order tables", "top_k": 7}}`
+	a, err := engine.parseAction(resp)
+	if err != nil {
+		t.Fatalf("parseAction error: %v", err)
+	}
+	if a.Action != "search_tables" {
+		t.Errorf("Action = %q, want search_tables", a.Action)
+	}
+	if a.SearchTables != "customer order tables" {
+		t.Errorf("SearchTables = %q", a.SearchTables)
+	}
+	if a.SearchTopK != 7 {
+		t.Errorf("SearchTopK = %d, want 7", a.SearchTopK)
+	}
+}
+
+func TestParseAction_ToolEnvelope_QueryData(t *testing.T) {
+	engine := &ExplorationEngine{}
+	resp := `{"name": "query_data", "input": {"query": "SELECT 1", "purpose": "smoke"}}`
+	a, err := engine.parseAction(resp)
+	if err != nil {
+		t.Fatalf("parseAction error: %v", err)
+	}
+	if a.Action != "query_data" {
+		t.Errorf("Action = %q, want query_data", a.Action)
+	}
+	if a.Query != "SELECT 1" {
+		t.Errorf("Query = %q", a.Query)
+	}
+	if a.QueryPurpose != "smoke" {
+		t.Errorf("QueryPurpose = %q", a.QueryPurpose)
+	}
+}
+
+func TestParseAction_ToolEnvelope_Complete(t *testing.T) {
+	engine := &ExplorationEngine{}
+	a, err := engine.parseAction(`{"name": "complete", "input": {"summary": "all good"}}`)
+	if err != nil {
+		t.Fatalf("parseAction error: %v", err)
+	}
+	if a.Action != "complete" {
+		t.Errorf("Action = %q, want complete", a.Action)
+	}
+	if a.Summary != "all good" {
+		t.Errorf("Summary = %q", a.Summary)
+	}
+}
+
+func TestParseAction_ToolEnvelope_KeyDrivenWinsOnConflict(t *testing.T) {
+	// If the model sends BOTH shapes — key-driven wins. We don't want
+	// a malformed envelope to silently override a clean key-driven
+	// payload in the same turn.
+	engine := &ExplorationEngine{}
+	resp := `{"name": "lookup_schema", "input": {"tables": ["WRONG"]}, "lookup_schema": ["RIGHT"]}`
+	a, err := engine.parseAction(resp)
+	if err != nil {
+		t.Fatalf("parseAction error: %v", err)
+	}
+	if len(a.LookupSchema) != 1 || a.LookupSchema[0] != "RIGHT" {
+		t.Errorf("LookupSchema = %v, want [RIGHT]", a.LookupSchema)
+	}
+}
+
+func TestParseAction_ToolEnvelope_UnknownNameIgnored(t *testing.T) {
+	// An unknown tool name must not silently succeed — let the parser's
+	// "no recognised payload" branch reject it so the caller re-prompts.
+	engine := &ExplorationEngine{}
+	_, err := engine.parseAction(`{"name": "do_something_weird", "input": {"foo": 1}}`)
+	if err == nil {
+		t.Fatal("expected error for unknown tool name")
+	}
+}
+
 func TestParseAction_DonePrecedence(t *testing.T) {
 	// Done flag must take precedence over every other field — the
 	// model is signalling completion. Anything else in the same JSON

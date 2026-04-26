@@ -430,6 +430,14 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 		return nil, fmt.Errorf("failed to parse action JSON: %w", err)
 	}
 
+	// Tool-use envelope normalisation. Anthropic Claude and OpenAI
+	// function-calling models emit `{"name": "lookup_schema", "input":
+	// {"tables": [...]}}` even when the prompt asks for the key-driven
+	// shape — that's how they were trained. Translate it into the
+	// key-driven fields the rest of the parser already handles, so a
+	// single switch below dispatches both shapes.
+	normaliseToolEnvelope(jsonStr, &action)
+
 	switch {
 	case action.Done:
 		action.Action = "complete"
@@ -459,6 +467,99 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 	}
 
 	return &action, nil
+}
+
+// normaliseToolEnvelope detects an Anthropic / OpenAI tool-use call
+// envelope (`{"name": "<tool>", "input": {...}}`) inside the parsed
+// JSON and rewrites the key-driven fields on the action so the
+// downstream switch in parseAction can dispatch it without caring
+// which shape the model used.
+//
+// The envelope arrives from models that were RLHF'd into emitting
+// tool-use even when the prompt asks for inline JSON actions —
+// observed on Claude 4 and gpt-4.1 against this codebase. Rather
+// than fight the model, we accept both shapes.
+//
+// Supported tool names: lookup_schema, search_tables, query_data,
+// complete. Inputs we know about:
+//
+//   lookup_schema: {"tables": ["dataset.t1", ...]} — array of refs.
+//   search_tables: {"query": "...", "top_k": <int>} — query + optional k.
+//   query_data:    {"query": "SELECT ...", "purpose": "..."} — SQL.
+//   complete:      {"summary": "..."} — exploration done.
+//
+// We do NOT touch fields the action already populated (key-driven
+// shape wins on conflict) so a malformed envelope can't silently
+// override a clean key-driven payload in the same turn.
+func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
+	var env struct {
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &env); err != nil || env.Name == "" {
+		return
+	}
+
+	switch env.Name {
+	case "lookup_schema":
+		if len(action.LookupSchema) > 0 {
+			return
+		}
+		var in struct {
+			Tables []string `json:"tables"`
+		}
+		if err := json.Unmarshal(env.Input, &in); err == nil && len(in.Tables) > 0 {
+			action.LookupSchema = in.Tables
+		}
+	case "search_tables":
+		if strings.TrimSpace(action.SearchTables) != "" {
+			return
+		}
+		var in struct {
+			Query string `json:"query"`
+			TopK  int    `json:"top_k"`
+		}
+		if err := json.Unmarshal(env.Input, &in); err == nil && strings.TrimSpace(in.Query) != "" {
+			action.SearchTables = in.Query
+			if action.SearchTopK == 0 {
+				action.SearchTopK = in.TopK
+			}
+		}
+	case "query_data":
+		if action.Query != "" {
+			return
+		}
+		var in struct {
+			Query   string `json:"query"`
+			Purpose string `json:"purpose"`
+		}
+		if err := json.Unmarshal(env.Input, &in); err == nil && strings.TrimSpace(in.Query) != "" {
+			action.Query = in.Query
+			if action.QueryPurpose == "" {
+				action.QueryPurpose = in.Purpose
+			}
+		}
+	case "complete":
+		if action.Done || action.Action == "complete" {
+			return
+		}
+		var in struct {
+			Summary string `json:"summary"`
+			Reason  string `json:"reason"`
+		}
+		_ = json.Unmarshal(env.Input, &in)
+		action.Done = true
+		if action.Summary == "" {
+			action.Summary = in.Summary
+		}
+		if action.Reason == "" {
+			if in.Reason != "" {
+				action.Reason = in.Reason
+			} else {
+				action.Reason = in.Summary
+			}
+		}
+	}
 }
 
 // extractJSON extracts a JSON action object from the LLM response.
