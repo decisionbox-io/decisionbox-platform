@@ -21,8 +21,8 @@ import (
 	"strings"
 )
 
-// DefaultCatalogBudgetTokens is the catalog token ceiling. Env-overridable
-// via SCHEMA_CATALOG_BUDGET on the agent. 150K leaves comfortable
+// DefaultCatalogBudgetTokens is the catalog token ceiling. Callers may
+// override per-render via RenderOptions.Budget. 150K leaves comfortable
 // headroom for base context + dialogue history inside a 1M-token window
 // and is well within reach for typical 200K-context models.
 const DefaultCatalogBudgetTokens = 150_000

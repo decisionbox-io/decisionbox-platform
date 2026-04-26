@@ -74,23 +74,6 @@ func TestBlurbLLMConfig_OmitEmptyConfig(t *testing.T) {
 	}
 }
 
-func TestSchemaRetrievalConfig_OmitEmptyTopK(t *testing.T) {
-	c := SchemaRetrievalConfig{}
-	data, _ := json.Marshal(c)
-	var raw map[string]interface{}
-	_ = json.Unmarshal(data, &raw)
-	if _, ok := raw["top_k"]; ok {
-		t.Error("zero TopK should be omitted")
-	}
-
-	c.TopK = 60
-	data, _ = json.Marshal(c)
-	_ = json.Unmarshal(data, &raw)
-	if raw["top_k"].(float64) != 60 {
-		t.Errorf("top_k = %v", raw["top_k"])
-	}
-}
-
 func TestSchemaIndexProgress_JSONRoundTrip(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond)
 	original := SchemaIndexProgress{
@@ -178,7 +161,6 @@ func TestProject_SchemaIndexFields_RoundTrip(t *testing.T) {
 			Provider: "bedrock",
 			Model:    "qwen.qwen3-32b-v1:0",
 		},
-		SchemaRetrieval: &SchemaRetrievalConfig{TopK: 40},
 	}
 
 	data, err := json.Marshal(original)
@@ -198,9 +180,6 @@ func TestProject_SchemaIndexFields_RoundTrip(t *testing.T) {
 	if decoded.BlurbLLM == nil || decoded.BlurbLLM.Model != "qwen.qwen3-32b-v1:0" {
 		t.Errorf("BlurbLLM = %+v", decoded.BlurbLLM)
 	}
-	if decoded.SchemaRetrieval == nil || decoded.SchemaRetrieval.TopK != 40 {
-		t.Errorf("SchemaRetrieval = %+v", decoded.SchemaRetrieval)
-	}
 }
 
 func TestProject_SchemaIndex_OmitEmpty(t *testing.T) {
@@ -211,7 +190,6 @@ func TestProject_SchemaIndex_OmitEmpty(t *testing.T) {
 
 	for _, f := range []string{
 		"blurb_llm",
-		"schema_retrieval",
 		"schema_index_status",
 		"schema_index_error",
 		"schema_index_updated_at",

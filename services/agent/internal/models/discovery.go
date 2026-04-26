@@ -150,7 +150,7 @@ type ExplorationStep struct {
 	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
 
 	// LLM decision
-	Action       string `bson:"action" json:"action"` // query_data, explore_schema, analyze_pattern, complete
+	Action       string `bson:"action" json:"action"` // query_data, lookup_schema, search_tables, complete, complete_rejected
 	Thinking     string `bson:"thinking" json:"thinking"`
 	QueryPurpose string `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
 

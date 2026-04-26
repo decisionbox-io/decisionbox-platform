@@ -89,7 +89,6 @@ func TestProject_SchemaIndex_Agent_RoundTrip(t *testing.T) {
 			Provider: "bedrock",
 			Model:    "qwen.qwen3-32b-v1:0",
 		},
-		SchemaRetrieval: &SchemaRetrievalConfig{TopK: 60},
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -105,9 +104,6 @@ func TestProject_SchemaIndex_Agent_RoundTrip(t *testing.T) {
 	if decoded.BlurbLLM == nil || decoded.BlurbLLM.Provider != "bedrock" {
 		t.Errorf("BlurbLLM = %+v", decoded.BlurbLLM)
 	}
-	if decoded.SchemaRetrieval == nil || decoded.SchemaRetrieval.TopK != 60 {
-		t.Errorf("SchemaRetrieval = %+v", decoded.SchemaRetrieval)
-	}
 }
 
 func TestProject_SchemaIndex_Agent_OmitEmpty(t *testing.T) {
@@ -117,7 +113,6 @@ func TestProject_SchemaIndex_Agent_OmitEmpty(t *testing.T) {
 	_ = json.Unmarshal(data, &raw)
 	for _, f := range []string{
 		"blurb_llm",
-		"schema_retrieval",
 		"schema_index_status",
 		"schema_index_error",
 		"schema_index_updated_at",

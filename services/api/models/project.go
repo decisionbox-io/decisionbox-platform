@@ -19,8 +19,6 @@ type Project struct {
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
 	Schedule  ScheduleConfig  `bson:"schedule" json:"schedule"`
 
-	SchemaRetrieval *SchemaRetrievalConfig `bson:"schema_retrieval,omitempty" json:"schema_retrieval,omitempty"`
-
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
 

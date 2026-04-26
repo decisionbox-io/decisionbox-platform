@@ -3,18 +3,20 @@
 > **Version**: 0.4.0+
 
 Every project builds a persistent, searchable schema index before its
-first discovery run. The index lets discovery and `/ask` work on
-warehouses of any size (ERPs with 2K+ tables) without dumping every
-table's columns into every prompt.
+first discovery run. The index lets discovery work on warehouses of any
+size (ERPs with 2K+ tables) without dumping every table's columns into
+every prompt.
 
-The index serves two distinct callers:
+How the index is used:
 
 - **Discovery** — the agent receives a compact Level-0 catalog up front
   (one line per table) and pulls per-table column lists + sample rows
   on demand via the `lookup_schema` and `search_tables` actions during
-  exploration. See [On-Demand Schema](../architecture/agent-on-demand-schema.md).
-- **/ask** — answers single-question requests by retrieving the top-K
-  most relevant tables for the question via Qdrant similarity search.
+  exploration. `search_tables` is the path that actually queries the
+  Qdrant collection. See [On-Demand Schema](../architecture/agent-on-demand-schema.md).
+- **/ask** — gates on the schema index being `ready` (so we know
+  discovery can run) but performs its own retrieval against the
+  insights/recommendations vector store, not the schema collection.
 
 ## What gets indexed
 
@@ -147,11 +149,15 @@ logs a warning at startup when `QDRANT_URL` is not set.
 | `QDRANT_URL` | — | Required. host or host:port for Qdrant gRPC |
 | `QDRANT_API_KEY` | empty | Optional; set on secured Qdrant instances |
 | `BLURB_WORKERS` | 8 | Parallel blurb-generation goroutines |
-| `SCHEMA_CATALOG_BUDGET` | 150000 | Token cap on the Level-0 catalog rendered into the discovery prompt |
-| `SCHEMA_RETRIEVAL_TOP_K` | 40 | Default top-K for `/ask` retrieval (discovery uses on-demand `search_tables` instead, capped at 30) |
 
-Per-project overrides live on `project.schema_retrieval.top_k`.
+The Level-0 catalog rendered into the discovery prompt is capped at
+`schema_render.DefaultCatalogBudgetTokens` (150K). This is a constant
+in the agent today; if a per-deployment override becomes useful it
+should be wired through `RenderOptions.Budget` rather than re-introduced
+as an env var.
 
-`SCHEMA_RETRIEVAL_TOP_K_NOTOOL` was retired in v0.4: discovery no longer
-performs an upfront top-K retrieval, so the tool-capable / tool-disabled
-distinction collapsed into a single retrieval policy used by `/ask`.
+The pre-v0.4 knobs `SCHEMA_RETRIEVAL_TOP_K`, `SCHEMA_RETRIEVAL_TOP_K_NOTOOL`,
+and the per-project `project.schema_retrieval.top_k` field were retired
+when discovery moved to on-demand schema actions — discovery no longer
+performs an upfront top-K retrieval at all, and `search_tables`
+clamps its TopK at the constant `ai.MaxSearchTopK` (30).

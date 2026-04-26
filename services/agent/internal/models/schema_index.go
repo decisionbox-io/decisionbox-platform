@@ -28,11 +28,6 @@ type BlurbLLMConfig struct {
 	Config   map[string]string `bson:"config,omitempty" json:"config,omitempty"`
 }
 
-// SchemaRetrievalConfig is the per-project knob set for retrieval.
-type SchemaRetrievalConfig struct {
-	TopK int `bson:"top_k,omitempty" json:"top_k,omitempty"`
-}
-
 // SchemaIndexProgress is the live worker-emitted progress document.
 type SchemaIndexProgress struct {
 	ProjectID    string    `bson:"project_id" json:"project_id"`

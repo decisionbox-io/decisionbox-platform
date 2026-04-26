@@ -439,40 +439,6 @@ func TestExploration_ExecuteAction_Complete(t *testing.T) {
 	}
 }
 
-func TestExploration_ExecuteAction_ExploreSchema(t *testing.T) {
-	engine := &ExplorationEngine{}
-
-	action := &ExplorationAction{
-		Action: "explore_schema",
-	}
-
-	step := &models.ExplorationStep{Step: 1}
-	resultMsg := engine.executeAction(context.Background(), action, step)
-
-	if resultMsg == "" {
-		t.Error("result message should not be empty for explore_schema")
-	}
-}
-
-func TestExploration_ExecuteAction_AnalyzePattern(t *testing.T) {
-	engine := &ExplorationEngine{}
-
-	action := &ExplorationAction{
-		Action:       "analyze_pattern",
-		AnalysisType: "retention_drop",
-	}
-
-	step := &models.ExplorationStep{Step: 2}
-	resultMsg := engine.executeAction(context.Background(), action, step)
-
-	if resultMsg == "" {
-		t.Error("result message should not be empty for analyze_pattern")
-	}
-	if !step.IsInsight {
-		t.Error("step.IsInsight should be true for analyze_pattern")
-	}
-}
-
 func TestExploration_ExecuteAction_Unknown(t *testing.T) {
 	engine := &ExplorationEngine{}
 

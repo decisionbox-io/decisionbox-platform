@@ -297,9 +297,9 @@ func (e *ExplorationEngine) Explore(
 //	                 ranked semantically against the per-project schema
 //	                 index. Top hits flow back as the next user message.
 //
-// Legacy fields (Action, QueryPurpose, AnalysisType, Data, Reason) stay
-// for the JSON parser's "explicit action" path — older prompts still
-// emit `{"action": "query_data", ...}`.
+// Legacy fields (Action, QueryPurpose, Reason) stay for the JSON
+// parser's "explicit action" path — older prompts still emit
+// `{"action": "query_data", ...}`.
 type ExplorationAction struct {
 	// Common
 	Thinking string `json:"thinking"`
@@ -328,11 +328,9 @@ type ExplorationAction struct {
 	// say {"action": "query_data", ...}. The parser normalises
 	// modern key-driven shapes into Action so executeAction has
 	// one switch.
-	Action       string                 `json:"action"`
-	QueryPurpose string                 `json:"query_purpose"`
-	AnalysisType string                 `json:"analysis_type"`
-	Data         map[string]interface{} `json:"data"`
-	Reason       string                 `json:"reason"`
+	Action       string `json:"action"`
+	QueryPurpose string `json:"query_purpose"`
+	Reason       string `json:"reason"`
 }
 
 // runStepWithRetry calls the LLM for one exploration step and parses the
@@ -609,12 +607,6 @@ func (e *ExplorationEngine) executeAction(
 	case "search_tables":
 		return e.executeSearchTables(ctx, action, step)
 
-	case "explore_schema":
-		return e.exploreSchema(ctx, action, step)
-
-	case "analyze_pattern":
-		return e.analyzePattern(ctx, action, step)
-
 	case "complete":
 		return fmt.Sprintf("Exploration complete: %s", action.Reason)
 
@@ -848,29 +840,6 @@ func (e *ExplorationEngine) executeSearchTables(
 	}
 
 	return formatSearchResult(query, hits, e.searchesUsed, e.maxSearchesPerRun)
-}
-
-// exploreSchema is a legacy no-op kept so prompts that still emit
-// `{"action": "explore_schema"}` don't crash the run. The current path
-// for "I want column detail" is lookup_schema (above).
-func (e *ExplorationEngine) exploreSchema(
-	ctx context.Context,
-	action *ExplorationAction,
-	step *models.ExplorationStep,
-) string {
-	return "explore_schema is no longer supported. " +
-		`Use lookup_schema instead: {"thinking": "...", "lookup_schema": ["dataset.table"]}.`
-}
-
-// analyzePattern analyzes a pattern
-func (e *ExplorationEngine) analyzePattern(
-	ctx context.Context,
-	action *ExplorationAction,
-	step *models.ExplorationStep,
-) string {
-	step.IsInsight = true
-
-	return fmt.Sprintf("Pattern analysis recorded: %s\n\nContinue with next step.", action.AnalysisType)
 }
 
 // formatResults formats query results as JSON

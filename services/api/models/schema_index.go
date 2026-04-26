@@ -51,15 +51,6 @@ type BlurbLLMConfig struct {
 	Config   map[string]string `bson:"config,omitempty" json:"config,omitempty"`
 }
 
-// SchemaRetrievalConfig is the per-project knob set for retrieval.
-// All fields have env-var defaults in the agent; anything zero here
-// falls back to those defaults.
-type SchemaRetrievalConfig struct {
-	// TopK is how many tables to pull into Level 1 per discovery/analysis
-	// step. Zero means "use the env default" (SCHEMA_RETRIEVAL_TOP_K).
-	TopK int `bson:"top_k,omitempty" json:"top_k,omitempty"`
-}
-
 // SchemaIndexProgress is a live worker-emitted progress document.
 // One row per project in the project_schema_index_progress collection,
 // upserted by (project_id) so the dashboard can poll it at 2s intervals

@@ -230,11 +230,11 @@ func (s *StatusReporter) Complete(ctx context.Context, insightsFound int) {
 // RecordSchemaTelemetry stamps the rendered schema-context counters on
 // the run doc. No-op when status reporting is disabled (agent run
 // without API).
-func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tableCount, topK int) {
+func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tableCount int) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount, topK); err != nil {
+	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount); err != nil {
 		logger.WithError(err).Warn("failed to record schema-context telemetry")
 	}
 }

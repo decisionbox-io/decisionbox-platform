@@ -127,7 +127,6 @@ export interface Project {
   blurb_llm?: BlurbLLMConfig;
   schedule: ScheduleConfig;
   profile: Record<string, unknown>;
-  schema_retrieval?: SchemaRetrievalConfig;
   status: string;
   last_run_at: string | null;
   last_run_status: string;
@@ -144,10 +143,6 @@ export interface BlurbLLMConfig {
   provider: string;
   model: string;
   config?: Record<string, string>;
-}
-
-export interface SchemaRetrievalConfig {
-  top_k?: number;
 }
 
 export interface SchemaIndexProgress {

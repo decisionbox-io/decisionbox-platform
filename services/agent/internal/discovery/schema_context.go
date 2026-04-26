@@ -34,9 +34,7 @@ import (
 //   - Catalog ordering is stable (alphabetical) so the prompt-cache
 //     prefix can be reused across turns.
 //
-// Use NewSchemaContextBuilder to construct — direct struct literals
-// remain valid (Schemas is the only required field) but the
-// constructor sets up sensible defaults.
+// Construct via a struct literal — Schemas is the only required field.
 type SchemaContextBuilder struct {
 	// Schemas is the full per-table metadata loaded from the schema
 	// cache at run start. Used for catalog rendering and as the

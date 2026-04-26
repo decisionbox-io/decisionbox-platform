@@ -330,14 +330,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"catalog_dropped": rendered.CatalogDropped,
 	}).Info("Schema catalog built")
 
-	// Stamp telemetry on the run document. top_k is now 0 — the boot
-	// context no longer carries pre-retrieved tables; the model fetches
-	// what it needs as it explores.
-	o.statusReporter.RecordSchemaTelemetry(ctx,
-		rendered.CatalogTokens,
-		len(schemas),
-		0,
-	)
+	// Stamp telemetry on the run document. Per-action lookup / search
+	// counters are bumped separately by the StatusReporter as the
+	// engine services each on-demand schema action.
+	o.statusReporter.RecordSchemaTelemetry(ctx, rendered.CatalogTokens, len(schemas))
 
 	// SQL fixer + insight validator still consume a single "context"
 	// string. Feed them the Level-0 catalog — they don't need the

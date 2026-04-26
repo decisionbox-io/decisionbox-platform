@@ -67,14 +67,7 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 // schema renderer builds the catalog. The on-demand action counters
 // (lookup_schema, search_tables) are updated separately via
 // IncrementSchemaActionCalls as the engine services each action.
-//
-// topK is retained in the signature for compatibility with existing
-// call sites but is no longer persisted — the on-demand schema layer
-// no longer pre-retrieves a top-K block at boot. The status reporter
-// passes 0 for it; schema_retrieval_top_k_used was removed in the same
-// migration that introduced the lookup/search counters.
-func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount, topK int) error {
-	_ = topK // intentionally ignored — see docstring
+func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
