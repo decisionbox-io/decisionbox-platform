@@ -50,8 +50,17 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   // pack_gen_last_error first; the state revert lands on the next
   // successful Mongo write). Done / failed transitions out of
   // pack_generation eventually unmount the poller.
+  //
+  // We ALSO poll during pack_generation_pending when there is no
+  // recorded error — the wizard's "Generate pack" button transitions
+  // the project from pending → pack_generation via the orchestrator,
+  // and without this branch the project page would sit on the
+  // pending UI until the user hit refresh.
   useEffect(() => {
-    if (project.state !== PROJECT_STATE_PACK_GENERATION) return;
+    const polling =
+      project.state === PROJECT_STATE_PACK_GENERATION ||
+      (project.state === PROJECT_STATE_PACK_GENERATION_PENDING && !project.pack_gen_last_error);
+    if (!polling) return;
     const interval = setInterval(async () => {
       try {
         const next = await api.getProject(project.id);
@@ -288,17 +297,12 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
             <Title order={5}>Draft pack saved</Title>
             <Badge color="green">Saved</Badge>
           </Group>
-          <Group gap="xs">
-            <Button variant="default" onClick={handleStartDiscovery} loading={starting}>
-              Skip review
-            </Button>
-            <Button onClick={handleStartDiscovery} loading={starting}>
-              Accept and continue
-            </Button>
-          </Group>
+          <Button onClick={handleStartDiscovery} loading={starting}>
+            Continue to discovery
+          </Button>
         </Group>
         <Text size="sm" c="dimmed">
-          The pack is saved. Use the per-section <b>Regenerate</b> buttons below to iterate (each rewrite saves inline — no manual save needed) or skip straight to discovery. You can always come back to edit individual prompts later from <b>Project Settings → Prompts</b>.
+          The pack is saved. Use the per-section <b>Regenerate</b> buttons below to iterate (each rewrite saves inline — no manual save needed), or click <b>Continue to discovery</b> to unlock the discovery view. You can always come back to edit individual prompts later from <b>Project Settings → Prompts</b>.
         </Text>
 
         {packError && (

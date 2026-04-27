@@ -106,6 +106,10 @@ export default function PackGenWizardPage() {
       .finally(() => setLoading(false));
   }, [id, router]);
 
+  // refresh re-fetches the project doc + applies it to local state.
+  // Called after async writes (pack-generate failure, schema-index
+  // status changes, etc.) so the wizard reflects the latest server
+  // state without a full page reload.
   const refresh = async () => {
     try {
       const p = await api.getProject(id);
@@ -135,6 +139,14 @@ export default function PackGenWizardPage() {
     setKickingIndex(true);
     try {
       await api.reindexSchema(id);
+      // Optimistic state flip: SchemaIndexPanel polls every 2s, so
+      // without this the parent's gating UI lags 0–2s behind the
+      // user's click. Setting status to pending_indexing immediately
+      // means the gate, the badge, and the disabled-button hint all
+      // update on the same tick the user clicks. The next real poll
+      // overwrites with whatever the worker has actually done by
+      // then.
+      setIndexStatus({ status: 'pending_indexing' } as SchemaIndexStatus);
       notifications.show({ title: 'Indexing started', message: 'Schema indexing is running. Generate will unlock once it is ready.', color: 'blue' });
     } catch (e: unknown) {
       notifications.show({ title: 'Could not start indexing', message: (e as Error).message, color: 'red' });
@@ -181,27 +193,49 @@ export default function PackGenWizardPage() {
 
   const handleLaunch = async () => {
     setLaunching(true);
-    try {
-      const result = await api.packGenerate(id);
-      notifications.show({
-        title: result.async ? 'Generation started' : 'Pack generated',
-        message: result.async
-          ? 'The agent is running — you can watch progress on the project page.'
-          : `Generated in ${result.attempts} attempt${result.attempts === 1 ? '' : 's'}.`,
-        color: 'green',
-      });
-      router.push(`/projects/${id}`);
-    } catch (e: unknown) {
+    // Fire pack-gen as a background HTTP call and redirect IMMEDIATELY
+    // to the project page. The orchestrator runs synchronously and
+    // can take 4+ minutes on big warehouses; awaiting it from the
+    // wizard meant a 4-minute spinner with no live progress. The
+    // project page's PackGenStatusPanel polls state + shows the
+    // schema-index + synth steps live, so handing the user off as
+    // soon as we know the request landed is strictly better UX.
+    //
+    // We poll the project doc here for up to ~3s waiting for the
+    // orchestrator's first action — flipping state to
+    // pack_generation — so the project page mounts with the
+    // running-state UI directly, not the pending-state branch.
+    const bgPromise: Promise<unknown> = api.packGenerate(id).catch((e: unknown) => {
       const msg = (e as Error).message;
-      // 404 surfaces as a generic message — flag the most common cause
-      // so the user knows where to look instead of staring at "not found".
       const friendly = msg.toLowerCase().includes('not available')
         ? 'Pack generation is not available on this deployment. Contact your administrator.'
         : msg;
       notifications.show({ title: 'Could not start generation', message: friendly, color: 'red' });
-    } finally {
-      setLaunching(false);
+      // Re-fetch the project so any pack_gen_last_error the
+      // orchestrator wrote shows up on the next render.
+      void refresh();
+    });
+    void bgPromise;
+
+    // Poll up to 15 × 200ms (3s) for state flip; bail early if the
+    // project moves to pack_generation OR if something errored out
+    // (state went back to pack_generation_pending with a fresh error).
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      try {
+        const p = await api.getProject(id);
+        if (
+          p.state === PROJECT_STATE_PACK_GENERATION ||
+          p.state === PROJECT_STATE_PACK_GENERATION_DONE ||
+          (p.pack_gen_last_error && p.pack_gen_last_error !== project?.pack_gen_last_error)
+        ) {
+          setProject(p);
+          break;
+        }
+      } catch { /* transient — keep polling */ }
     }
+    setLaunching(false);
+    router.push(`/projects/${id}`);
   };
 
   const handleDiscard = async () => {
@@ -237,7 +271,12 @@ export default function PackGenWizardPage() {
 
   const topActions = (
     <Group gap="xs">
-      <Button variant="subtle" size="xs" onClick={() => router.push('/')}>Save and finish later</Button>
+      {/* The wizard auto-saves at every step (each panel calls
+          PUT /projects on Save), so "back to projects" is a no-op
+          relative to persistence. The previous label "Save and
+          finish later" implied a manual save action that doesn't
+          exist. */}
+      <Button variant="subtle" size="xs" onClick={() => router.push('/')}>Back to projects</Button>
       <Button variant="subtle" color="red" size="xs" onClick={openDiscard}>Discard</Button>
     </Group>
   );
