@@ -72,7 +72,15 @@ func (r *BookmarkListRepository) GetByID(ctx context.Context, projectID, userID,
 // Each list is populated with an accurate ItemCount.
 func (r *BookmarkListRepository) List(ctx context.Context, projectID, userID string) ([]*models.BookmarkList, error) {
 	filter := bson.M{"project_id": projectID, "user_id": userID}
-	opts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}})
+	// Tiebreaker on _id desc: BSON DateTime has only millisecond
+	// resolution, so a Create+Update issued within the same tick can
+	// share updated_at — the storage-order fallback would be
+	// non-deterministic. ObjectID embeds insertion time so it gives a
+	// stable secondary order without changing the primary semantic.
+	opts := options.Find().SetSort(bson.D{
+		{Key: "updated_at", Value: -1},
+		{Key: "_id", Value: -1},
+	})
 
 	cursor, err := r.col.Find(ctx, filter, opts)
 	if err != nil {

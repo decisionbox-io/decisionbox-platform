@@ -288,11 +288,72 @@ func (p *DatabricksProvider) GetTableSchemaInDataset(ctx context.Context, datase
 		return nil, fmt.Errorf("databricks: column iteration error: %w", err)
 	}
 
-	// Row count: Databricks DESCRIBE DETAIL returns numFiles and sizeInBytes
-	// but not numRecords. Row count is left at 0 (the agent does not depend
-	// on exact row counts for discovery).
+	// Row count: DESCRIBE EXTENDED exposes a "Statistics" row of the
+	// form "1.2 GB, 2400000 rows" when the admin has run
+	// `ANALYZE TABLE … COMPUTE STATISTICS` on the table. On warehouses
+	// without stats computed we silently fall back to 0 — the indexer
+	// doesn't depend on exact counts, and DESCRIBE DETAIL returns
+	// numFiles / sizeInBytes but no numRecords so there's no second
+	// fallback that works broadly.
+	if n, ok := databricksRowCountFromDescribeExtended(ctx, p.client, p.catalog, dataset, table); ok {
+		schema.RowCount = n
+	}
 
 	return schema, nil
+}
+
+// statsRowsPattern extracts the "N rows" segment from DESCRIBE
+// EXTENDED's Statistics row. Accepts commas as thousand separators
+// ("2,400,000 rows") since the Databricks stats renderer uses them
+// on some versions.
+var statsRowsPattern = regexp.MustCompile(`([\d,]+)\s+rows`)
+
+// parseDescribeExtendedRowCount extracts the row count from a
+// DESCRIBE EXTENDED "Statistics" data-type string. Recognised
+// formats on recent Databricks runtimes:
+//
+//	"1234 bytes, 42 rows"
+//	"1.2 GB, 2,400,000 rows"
+//	"3.5 MiB, 1 rows"
+//
+// Returns (count, true) on match; (0, false) otherwise. Split out
+// from the live SQL path so it can be unit-tested without a mock.
+func parseDescribeExtendedRowCount(statsRow string) (int64, bool) {
+	m := statsRowsPattern.FindStringSubmatch(statsRow)
+	if len(m) != 2 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.ReplaceAll(m[1], ",", ""), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// databricksRowCountFromDescribeExtended runs DESCRIBE EXTENDED and
+// scans for the Statistics row. Returns (count, true) on a hit;
+// (0, false) when DESCRIBE fails, the row is absent, ANALYZE TABLE
+// was never run, or the Statistics string doesn't match the expected
+// "N rows" format.
+func databricksRowCountFromDescribeExtended(ctx context.Context, c dbClient, catalog, dataset, table string) (int64, bool) {
+	q := fmt.Sprintf("DESCRIBE EXTENDED `%s`.`%s`.`%s`", catalog, dataset, table)
+	rows, err := c.QueryContext(ctx, q)
+	if err != nil {
+		return 0, false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var col, dataType, comment sql.NullString
+		if err := rows.Scan(&col, &dataType, &comment); err != nil {
+			return 0, false
+		}
+		if !col.Valid || !strings.EqualFold(strings.TrimSpace(col.String), "Statistics") {
+			continue
+		}
+		return parseDescribeExtendedRowCount(dataType.String)
+	}
+	return 0, false
 }
 
 func (p *DatabricksProvider) GetDataset() string {

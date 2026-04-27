@@ -68,6 +68,7 @@ test-go: ## Run Go unit tests
 test-integration: ## Run integration tests (requires Docker)
 	cd services/agent && go test -tags=integration -count=1 .
 	cd services/agent && go test -tags=integration -count=1 ./internal/database/
+	cd services/agent && go test -tags=integration -count=1 -timeout=5m ./internal/discovery/
 	cd services/api && go test -tags=integration -count=1 .
 	cd services/api && go test -tags=integration -count=1 ./database/
 

@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Group, Loader, MultiSelect,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Divider, Group, Loader, Modal, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
+import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
+import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
 import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
@@ -61,10 +63,17 @@ export default function ProjectSettingsPage() {
 
   // Embedding state
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
-  const [embProvider, setEmbProvider] = useState('');
-  const [embModel, setEmbModel] = useState('');
-  const [embApiKey, setEmbApiKey] = useState('');
+  // Unified embedding editor state. Parallels the blurb editor state
+  // shape so both settings panels follow the same "edit here → save
+  // via project PUT + secret rotation" pattern.
+  const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
   const [savingEmbKey, setSavingEmbKey] = useState(false);
+
+  // Blurb LLM state — per-project override for the schema-indexing
+  // model (PLAN-SCHEMA-RETRIEVAL.md §6.2). Disabled by default; the
+  // agent falls back to project.llm + llm-api-key when blurb_llm is nil.
+  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
+  const [savingBlurbKey, setSavingBlurbKey] = useState(false);
 
   // Warn on browser close/refresh with unsaved changes
   useEffect(() => {
@@ -88,7 +97,7 @@ export default function ProjectSettingsPage() {
   // deep-links like `/projects/:id/settings#advanced` open the right tab.
   // The set of valid tab values must match the `<Tabs.Tab value=...>` IDs
   // below; an unknown hash is ignored.
-  const validTabs = ['general', 'warehouse', 'ai', 'embedding', 'schedule', 'profile', 'advanced'];
+  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'embedding', 'schedule', 'profile', 'advanced'];
   const [activeTab, setActiveTab] = useState<string>('general');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -174,8 +183,27 @@ export default function ProjectSettingsPage() {
               setLiveError((e as Error).message);
             });
         }
-        setEmbProvider(proj.embedding?.provider || '');
-        setEmbModel(proj.embedding?.model || '');
+        setEmbedding({
+          provider: proj.embedding?.provider || '',
+          model: proj.embedding?.model || '',
+          config: {},
+          // Saved key never round-trips back from the server — user
+          // re-enters only when rotating.
+          apiKey: '',
+        });
+        // Blurb LLM: hydrate from the saved project doc. When
+        // blurb_llm is nil the editor renders "use analysis LLM".
+        if (proj.blurb_llm && proj.blurb_llm.provider) {
+          setBlurb({
+            enabled: true,
+            provider: proj.blurb_llm.provider,
+            model: proj.blurb_llm.model || '',
+            config: proj.blurb_llm.config || {},
+            apiKey: '', // API key is never sent back — user re-enters to rotate.
+          });
+        } else {
+          setBlurb(emptyBlurbLLMState());
+        }
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -215,10 +243,56 @@ export default function ProjectSettingsPage() {
           ),
         },
         llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-        embedding: { provider: embProvider, model: embModel },
+        // When the user toggles the blurb override off, send blurb_llm
+        // with empty strings — the Go JSON unmarshaller drops it with
+        // `omitempty` via the pointer type, which tells the indexer to
+        // fall back to the analysis LLM on the next run.
+        blurb_llm:
+          blurb.enabled && blurb.provider && blurb.model
+            ? {
+                provider: blurb.provider,
+                model: blurb.model,
+                config: Object.fromEntries(
+                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key')
+                ),
+              }
+            : undefined,
+        embedding: { provider: embedding.provider, model: embedding.model },
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
         profile,
       });
+
+      // Rotate the blurb-LLM api key if the user entered one. A blank
+      // field means "leave the stored key alone" — we never auto-delete
+      // the secret on save.
+      if (blurb.enabled && blurb.apiKey) {
+        try {
+          setSavingBlurbKey(true);
+          await api.setSecret(id, 'blurb-llm-api-key', blurb.apiKey);
+          setBlurb((prev) => ({ ...prev, apiKey: '' }));
+        } catch (e: unknown) {
+          notifications.show({ title: 'Blurb LLM key save failed', message: (e as Error).message, color: 'red' });
+        } finally {
+          setSavingBlurbKey(false);
+        }
+      }
+
+      // Same pattern for the embedding api key — blank field means
+      // "keep the stored key", any value rotates.
+      if (embedding.apiKey) {
+        try {
+          setSavingEmbKey(true);
+          await api.setSecret(id, 'embedding-api-key', embedding.apiKey);
+          setEmbedding((prev) => ({ ...prev, apiKey: '' }));
+          // Refresh the secrets list so the panel's "Current key" hint
+          // reflects the new mask without a page reload.
+          api.listSecrets(id).then((s) => setSecretsList(s || [])).catch(() => {});
+        } catch (e: unknown) {
+          notifications.show({ title: 'Embedding key save failed', message: (e as Error).message, color: 'red' });
+        } finally {
+          setSavingEmbKey(false);
+        }
+      }
 
       // Sync local project state with the saved payload so derived
       // flags (e.g. setupMode = llmProvider !== project.llm.provider)
@@ -232,7 +306,7 @@ export default function ProjectSettingsPage() {
           name, description,
           warehouse: { ...prev.warehouse, provider: whProvider, datasets: datasetsList, location: whConfig['location'] || '', filter_field: filterField, filter_value: filterValue, project_id: whConfig['project_id'] || '', config: prev.warehouse.config },
           llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-          embedding: { ...(prev.embedding || {}), provider: embProvider, model: embModel },
+          embedding: { ...(prev.embedding || {}), provider: embedding.provider, model: embedding.model },
           schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
           profile,
         };
@@ -309,6 +383,7 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
           <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
+          <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>
           <Tabs.Tab value="embedding">Embedding &amp; Search</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
@@ -672,89 +747,50 @@ export default function ProjectSettingsPage() {
           </SettingsSection>
         </Tabs.Panel>
 
+        {/* Blurb LLM — schema-indexing model (plan §6.2) */}
+        <Tabs.Panel value="blurb">
+          <SettingsSection>
+            <Text size="sm" fw={500}>Blurb Model</Text>
+            <Text size="xs" c="dimmed" mb="sm">
+              The LLM used during schema indexing to generate the per-table
+              descriptions that get embedded into Qdrant. By default this
+              reuses your analysis LLM; override here to pick a cheaper /
+              faster model (spike defaults: Bedrock <code>qwen.qwen3-32b-v1:0</code>,
+              OpenAI <code>gpt-4.1-nano</code>). Changes apply to the next
+              re-index — click <b>Re-index schema</b> on the project page
+              after saving.
+            </Text>
+            <BlurbLLMEditor
+              llmProviders={llmProviders}
+              value={blurb}
+              onChange={(next) => { setBlurb(next); setDirty(true); }}
+              startInModelPhase={!!project?.blurb_llm?.provider}
+              footer={
+                savingBlurbKey ? (
+                  <Text size="xs" c="dimmed">Saving blurb LLM key…</Text>
+                ) : null
+              }
+            />
+          </SettingsSection>
+        </Tabs.Panel>
+
         {/* Embedding & Search */}
         <Tabs.Panel value="embedding">
           <SettingsSection>
             <Text size="sm" fw={500}>Embedding Provider</Text>
             <Text size="xs" c="dimmed" mb="sm">
-              Configure an embedding provider to enable semantic search across your insights and recommendations.
+              Required for schema indexing and semantic search. Use the same picker as the LLM provider — pick a provider, enter credentials, load models.
+              {secretsList.some(s => s.key === 'embedding-api-key') ? (
+                <> Current key: <b>{secretsList.find(s => s.key === 'embedding-api-key')?.masked}</b>. Leave the key field blank to keep it.</>
+              ) : null}
             </Text>
-
-            <Select
-              label="Provider"
-              placeholder="Select embedding provider"
-              value={embProvider || null}
-              onChange={(v) => {
-                setEmbProvider(v || '');
-                setEmbModel('');
-                setDirty(true);
-              }}
-              data={embeddingProviders.map(p => ({ value: p.id, label: p.name }))}
-              clearable
+            <EmbeddingEditor
+              providers={embeddingProviders}
+              value={embedding}
+              onChange={(next) => { setEmbedding(next); setDirty(true); }}
+              startInModelPhase={!!project?.embedding?.provider}
             />
-
-            {embProvider && (() => {
-              const selectedEmb = embeddingProviders.find(p => p.id === embProvider);
-              if (!selectedEmb) return null;
-              return (
-                <>
-                  <Select
-                    label="Model"
-                    placeholder="Select model"
-                    value={embModel || null}
-                    onChange={(v) => { setEmbModel(v || ''); setDirty(true); }}
-                    data={selectedEmb.models.map(m => ({
-                      value: m.id,
-                      label: `${m.name} (${m.dimensions}d)`,
-                    }))}
-                  />
-
-                  {selectedEmb.config_fields.some(f => f.type === 'credential') && (
-                    <>
-                      <Text size="sm" fw={500} mt="md">Embedding API Key</Text>
-                      {secretsList.some(s => s.key === 'embedding-api-key') ? (
-                        <Text size="xs" c="dimmed">
-                          Key set: {secretsList.find(s => s.key === 'embedding-api-key')?.masked}
-                        </Text>
-                      ) : (
-                        <Text size="xs" c="orange">No API key configured yet.</Text>
-                      )}
-                      <Group>
-                        <TextInput
-                          placeholder="sk-..."
-                          value={embApiKey}
-                          onChange={(e) => setEmbApiKey(e.currentTarget.value)}
-                          type="password"
-                          style={{ flex: 1 }}
-                        />
-                        <Button size="sm" loading={savingEmbKey} disabled={!embApiKey} onClick={async () => {
-                          setSavingEmbKey(true);
-                          try {
-                            await api.setSecret(id, 'embedding-api-key', embApiKey);
-                            setEmbApiKey('');
-                            notifications.show({ title: 'Saved', message: 'Embedding API key updated', color: 'green' });
-                            const s = await api.listSecrets(id);
-                            setSecretsList(s || []);
-                          } catch (e: unknown) {
-                            notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                          } finally {
-                            setSavingEmbKey(false);
-                          }
-                        }}>
-                          Update Key
-                        </Button>
-                      </Group>
-                    </>
-                  )}
-                </>
-              );
-            })()}
-
-            {!embProvider && (
-              <Text size="xs" c="dimmed" mt="sm">
-                Search and &ldquo;Ask Insights&rdquo; features require an embedding provider. You can skip this and configure it later.
-              </Text>
-            )}
+            {savingEmbKey && <Text size="xs" c="dimmed" mt="xs">Saving embedding API key…</Text>}
           </SettingsSection>
         </Tabs.Panel>
 
@@ -792,8 +828,8 @@ export default function ProjectSettingsPage() {
             <Stack gap="sm">
               <Text size="sm" fw={500}>Debugging</Text>
               <Switch
-                label="Show debug logs during discovery"
-                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel. Useful for troubleshooting stalled runs or understanding what the agent is doing step by step."
+                label="Show debug logs during discovery and indexing"
+                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel, and a live agent-stderr tail to the schema-index panel on this project's page. Useful for troubleshooting stalled runs or watching what the agent is doing in real time."
                 checked={debugLogsEnabled}
                 onChange={(e) => {
                   const next = e.currentTarget.checked;
@@ -804,13 +840,241 @@ export default function ProjectSettingsPage() {
                 }}
               />
               <Text size="xs" c="dimmed">
-                This is a local-browser preference — it is not shared with other users or saved on the project.
+                This is a local-browser preference — not shared with other users and not saved on the project. The indexing log tail is always captured server-side for 7 days; this toggle only controls whether the UI renders it.
               </Text>
+              <Divider my="xs" />
+              <Text size="sm" fw={500}>Schema cache</Text>
+              <Text size="xs" c="dimmed">
+                The agent caches the discovered warehouse schema (table list, columns, row counts) so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes. Use this when row counts have drifted or the warehouse schema has changed in ways the cache wouldn&apos;t detect.
+              </Text>
+              {id && <ClearSchemaCacheButton projectId={id} />}
+              <Divider my="md" />
+              <Text size="sm" fw={500} c="red">Danger zone</Text>
+              <Text size="xs" c="dimmed">
+                Deleting a project removes everything tied to it: discoveries, insights, recommendations, debug logs, search history, bookmarks, the schema cache, and the Qdrant vector index. Warehouse and AI-provider credentials stored in MongoDB are also deleted; credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there. <strong>This cannot be undone.</strong>
+              </Text>
+              {id && project && (
+                <DeleteProjectButton projectId={id} projectName={project.name || id} />
+              )}
             </Stack>
           </SettingsSection>
         </Tabs.Panel>
       </Tabs>
     </Shell>
+  );
+}
+
+// formatRelativeTime renders a small "Last cached: 3 hours ago" string
+// next to the Clear button. Truncated to single-unit precision —
+// users only care about freshness order-of-magnitude.
+function formatRelativeTime(rfc3339: string): string {
+  const t = new Date(rfc3339).getTime();
+  if (Number.isNaN(t)) return rfc3339;
+  const seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} ${months === 1 ? 'month' : 'months'} ago`;
+}
+
+// formatAbsoluteTime renders the local datetime in parens after the
+// relative one, so users can hover-or-not but still see exact time.
+function formatAbsoluteTime(rfc3339: string): string {
+  const d = new Date(rfc3339);
+  if (Number.isNaN(d.getTime())) return rfc3339;
+  return d.toLocaleString();
+}
+
+// ClearSchemaCacheButton wraps the invalidate-cache call in a confirm
+// modal so a misclick can't silently throw away discovery work. The
+// confirmation copy spells out what the cache stores and what happens
+// next — the user often clicks this *because* they've changed something
+// and want fresh counts, so we don't surprise them.
+function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
+  const [opened, setOpened] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [info, setInfo] = useState<{ cached: boolean; last?: string } | null>(null);
+
+  const refreshInfo = useCallback(async () => {
+    try {
+      const res = await api.getSchemaCacheInfo(projectId);
+      setInfo({ cached: res.cached, last: res.last_cached_at });
+    } catch {
+      // Endpoint failures here aren't user-actionable — fall back to
+      // hiding the timestamp line. The Clear button still works.
+      setInfo({ cached: false });
+    }
+  }, [projectId]);
+
+  useEffect(() => { void refreshInfo(); }, [refreshInfo]);
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      await api.invalidateSchemaCache(projectId);
+      notifications.show({
+        title: 'Schema cache cleared',
+        message: 'Project marked as needs_reindex. Click Re-index now on the project page when you\'re ready.',
+        color: 'green',
+      });
+      setOpened(false);
+      void refreshInfo();
+    } catch (e: unknown) {
+      const msg = (e as Error).message || 'Unknown error';
+      notifications.show({
+        title: 'Could not clear schema cache',
+        message: msg,
+        color: 'red',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Group align="center">
+        <Button variant="default" color="orange" onClick={() => setOpened(true)}>
+          Clear schema cache
+        </Button>
+        <Text size="xs" c="dimmed">
+          {info === null
+            ? 'Loading cache info…'
+            : info.cached && info.last
+              ? `Last cached: ${formatRelativeTime(info.last)} (${formatAbsoluteTime(info.last)})`
+              : 'No cache yet — next indexing run will discover schemas from the warehouse.'}
+        </Text>
+      </Group>
+      <Modal
+        opened={opened}
+        onClose={() => { if (!submitting) setOpened(false); }}
+        title="Clear schema cache?"
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            This resets the project&apos;s schema-discovery state:
+          </Text>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
+            <li>Cached warehouse schema (table list, columns, row counts) is deleted.</li>
+            <li>The vector index in Qdrant is dropped.</li>
+            <li>Project status is set to <strong>needs_reindex</strong>, blocking discovery until you re-index.</li>
+          </ul>
+          <Text size="sm" c="dimmed">
+            Reindexing is <strong>not</strong> started automatically — you control when it runs (warehouse access, off-peak hours, etc). Click <strong>Re-index now</strong> on the project page when you&apos;re ready; for ERP-scale schemas this can take 30–60 minutes. Past discoveries, insights and recommendations stay untouched.
+          </Text>
+          <Group justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button color="orange" onClick={handleConfirm} loading={submitting}>
+              Yes, clear cache
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
+// DeleteProjectButton wraps the cascade delete in a type-the-name
+// confirmation modal — far more deliberate than a generic "are you
+// sure?" because the project name is unique per workspace and a mistyped
+// project shouldn't sneak through. On 409 (indexing in flight) we
+// surface the message verbatim so the user knows to cancel the run
+// first; the API never silently aborts an indexing run.
+function DeleteProjectButton({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const router = useRouter();
+  const [opened, setOpened] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+
+  const matches = confirmText === projectName;
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      const res = await api.deleteProject(projectId);
+      notifications.show({
+        title: 'Project deleted',
+        message: `"${projectName}" and all related data have been removed.`,
+        color: 'green',
+      });
+      // External secret backends (GCP/AWS/Azure) require manual cleanup
+      // — surface that follow-up so the user doesn't leak credentials.
+      if (res.secrets_skipped) {
+        notifications.show({
+          title: 'Action required',
+          message: 'Warehouse and AI credentials are stored in an external secret manager. Remove them from your cloud console — the API does not delete them automatically.',
+          color: 'yellow',
+          autoClose: 12000,
+        });
+      }
+      router.push('/projects');
+    } catch (e: unknown) {
+      const msg = (e as Error).message || 'Unknown error';
+      notifications.show({
+        title: 'Could not delete project',
+        message: msg,
+        color: 'red',
+        autoClose: 8000,
+      });
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Group>
+        <Button color="red" onClick={() => { setConfirmText(''); setOpened(true); }}>
+          Delete project
+        </Button>
+      </Group>
+      <Modal
+        opened={opened}
+        onClose={() => { if (!submitting) setOpened(false); }}
+        title={<Text fw={600} c="red">Delete project?</Text>}
+        centered
+      >
+        <Stack gap="sm">
+          <Text size="sm">
+            This permanently removes <strong>{projectName}</strong> and everything tied to it:
+          </Text>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
+            <li>Project record, discoveries, runs, and project context</li>
+            <li>Insights, recommendations, and debug logs</li>
+            <li>Ask sessions, search history, bookmarks, and read marks</li>
+            <li>Schema cache, indexing progress, and indexing logs</li>
+            <li>Qdrant vector collection</li>
+            <li>Mongo-backed secrets (warehouse + AI credentials)</li>
+          </ul>
+          <Text size="sm" c="dimmed">
+            Credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there — the API will report this and not touch them.
+          </Text>
+          <TextInput
+            label={<>Type <strong>{projectName}</strong> to confirm</>}
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.currentTarget.value)}
+            placeholder={projectName}
+            disabled={submitting}
+            data-autofocus
+          />
+          <Group justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button color="red" onClick={handleConfirm} loading={submitting} disabled={!matches}>
+              Delete project
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
   );
 }
 

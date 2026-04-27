@@ -78,6 +78,12 @@ func init() {
 			"o4-mini":      100000,
 			"_default":     16384,
 		},
+		// OpenAI's chat-completions endpoint supports function calling on
+		// gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini. Reasoning models
+		// (o3, o4-mini) do not expose tool_use through Converse-style
+		// function calling today — tool-dependent callers must pick a
+		// non-reasoning model or accept a no-tool fallback.
+		SupportsTools: true,
 	})
 }
 

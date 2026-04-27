@@ -62,6 +62,56 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 	return err
 }
 
+// RecordSchemaContextTelemetry stamps the one-shot counters that describe
+// the schema context the run used. Called once, immediately after the
+// schema renderer builds the catalog. The on-demand action counters
+// (lookup_schema, search_tables) are updated separately via
+// IncrementSchemaActionCalls as the engine services each action.
+func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_tokens":      tokens,
+			"schema_table_count": tableCount,
+			"updated_at":         time.Now(),
+		},
+	}
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
+// IncrementSchemaActionCalls atomically bumps the per-action counters
+// on a run. action is one of "lookup_schema" or "search_tables"; any
+// other value is a no-op so a future action type doesn't accidentally
+// roll into the wrong counter. Safe to call concurrently.
+func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int) error {
+	if delta <= 0 {
+		return nil
+	}
+	var field string
+	switch action {
+	case "lookup_schema":
+		field = "schema_lookup_calls"
+	case "search_tables":
+		field = "schema_search_calls"
+	default:
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	update := bson.M{
+		"$inc": bson.M{field: delta},
+		"$set": bson.M{"updated_at": time.Now()},
+	}
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
 // AddStep appends a step to the run's step log.
 func (r *RunRepository) AddStep(ctx context.Context, runID string, step models.RunStep) error {
 	oid, err := primitive.ObjectIDFromHex(runID)

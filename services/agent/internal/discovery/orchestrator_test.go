@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -134,8 +135,7 @@ func TestBuildPreviousContext(t *testing.T) {
 	}
 }
 
-func TestSimplifySchemas(t *testing.T) {
-	o := &Orchestrator{}
+func TestSchemaContextBuilder_SingleTable(t *testing.T) {
 	schemas := map[string]models.TableSchema{
 		"sessions": {
 			TableName: "sessions",
@@ -148,19 +148,16 @@ func TestSimplifySchemas(t *testing.T) {
 			Dimensions: []string{},
 		},
 	}
-
-	simplified := o.simplifySchemas(schemas)
-
-	if _, ok := simplified["sessions"]; !ok {
-		t.Fatal("should contain sessions table")
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r := b.BuildCatalog([]string{"sessions"})
+	if !contains(r.Catalog, "sessions") {
+		t.Errorf("catalog missing table: %s", r.Catalog)
 	}
-	table := simplified["sessions"].(map[string]interface{})
-	if table["row_count"].(int64) != 1000 {
-		t.Error("row_count should be 1000")
+	if !contains(r.Catalog, "2c") {
+		t.Errorf("column count missing from catalog line: %s", r.Catalog)
 	}
-	cols := table["columns"].([]map[string]string)
-	if len(cols) != 2 {
-		t.Errorf("columns = %d, want 2", len(cols))
+	if r.CatalogTokens == 0 {
+		t.Errorf("CatalogTokens should be > 0 for non-empty catalog: %d", r.CatalogTokens)
 	}
 }
 
@@ -674,44 +671,95 @@ func TestNewSchemaDiscovery(t *testing.T) {
 	}
 }
 
-// --- simplifySchemas: additional cases ---
+// --- SchemaContextBuilder: additional cases ---
 
-func TestSimplifySchemas_Empty(t *testing.T) {
-	o := &Orchestrator{}
-	simplified := o.simplifySchemas(map[string]models.TableSchema{})
-
-	if len(simplified) != 0 {
-		t.Errorf("simplified = %d, want 0", len(simplified))
+func TestSchemaContextBuilder_Empty(t *testing.T) {
+	b := &SchemaContextBuilder{Schemas: map[string]models.TableSchema{}}
+	r := b.BuildCatalog(nil)
+	if !contains(r.Catalog, "no tables") {
+		t.Errorf("empty catalog should say 'no tables', got %q", r.Catalog)
+	}
+	if r.CatalogDropped != 0 {
+		t.Errorf("CatalogDropped on empty schemas = %d, want 0", r.CatalogDropped)
 	}
 }
 
-func TestSimplifySchemas_MultipleTablesWithAllFields(t *testing.T) {
-	o := &Orchestrator{}
+func TestSchemaContextBuilder_MultipleTablesRenderedInCatalog(t *testing.T) {
 	schemas := map[string]models.TableSchema{
 		"events.sessions": {
-			TableName: "events.sessions",
-			RowCount:  10000,
-			Columns: []models.ColumnInfo{
-				{Name: "user_id", Type: "STRING", Category: "primary_key"},
-			},
+			TableName:  "events.sessions",
+			RowCount:   10000,
+			Columns:    []models.ColumnInfo{{Name: "user_id", Type: "STRING", Category: "primary_key"}},
 			Metrics:    []string{"duration"},
 			Dimensions: []string{"country"},
 		},
 		"events.users": {
 			TableName: "events.users",
 			RowCount:  5000,
-			Columns:   []models.ColumnInfo{},
+			Columns:   []models.ColumnInfo{{Name: "id"}},
 		},
 	}
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r := b.BuildCatalog([]string{"users"})
 
-	simplified := o.simplifySchemas(schemas)
-	if len(simplified) != 2 {
-		t.Errorf("simplified = %d, want 2", len(simplified))
+	// Both tables should land in the catalog line-count. Per-table L1
+	// detail is no longer pre-rendered — the LLM uses lookup_schema for
+	// that. The catalog only carries the directory.
+	if strings.Count(r.Catalog, "\n")+1 < 2 {
+		t.Errorf("catalog should render both tables, got %q", r.Catalog)
 	}
+	// Both qualified table names should be visible in the catalog so the
+	// model can name them in lookup_schema calls.
+	if !contains(r.Catalog, "events.users") {
+		t.Errorf("catalog should include events.users: %s", r.Catalog)
+	}
+	if !contains(r.Catalog, "events.sessions") {
+		t.Errorf("catalog should include events.sessions: %s", r.Catalog)
+	}
+}
 
-	sessions := simplified["events.sessions"].(map[string]interface{})
-	if sessions["row_count"].(int64) != 10000 {
-		t.Error("row_count should be 10000")
+func TestSchemaContextBuilder_KeywordBoostAddsHint(t *testing.T) {
+	schemas := map[string]models.TableSchema{
+		"sales_orders": {
+			TableName: "sales_orders", RowCount: 1, Columns: []models.ColumnInfo{{Name: "id"}},
+		},
+	}
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r := b.BuildCatalog([]string{"sales"})
+	if !contains(r.Catalog, "sales") {
+		t.Errorf("keyword hint missing: %s", r.Catalog)
+	}
+}
+
+func TestSchemaContextBuilder_SortsTablesAlphabetically(t *testing.T) {
+	// Stable order matters for prompt-cache prefix reuse — random map
+	// iteration would make the catalog block change every run.
+	schemas := map[string]models.TableSchema{
+		"z_archive": {RowCount: 1},
+		"a_first":   {RowCount: 1},
+		"m_middle":  {RowCount: 1},
+	}
+	b := &SchemaContextBuilder{Schemas: schemas}
+	r := b.BuildCatalog(nil)
+	idxA := strings.Index(r.Catalog, "a_first")
+	idxM := strings.Index(r.Catalog, "m_middle")
+	idxZ := strings.Index(r.Catalog, "z_archive")
+	if idxA < 0 || idxM < 0 || idxZ < 0 {
+		t.Fatalf("all three tables should appear: %q", r.Catalog)
+	}
+	if idxA >= idxM || idxM >= idxZ {
+		t.Errorf("catalog should be alphabetical, got: %q", r.Catalog)
+	}
+}
+
+func TestCollectAreaKeywords_Dedupes(t *testing.T) {
+	o := &Orchestrator{}
+	got := o.collectAreaKeywords([]AnalysisArea{
+		{Keywords: []string{"churn", "retention"}},
+		{Keywords: []string{"retention", "revenue", ""}},
+	})
+	if len(got) != 3 {
+		t.Errorf("keywords = %v, want 3 unique", got)
 	}
 }
 

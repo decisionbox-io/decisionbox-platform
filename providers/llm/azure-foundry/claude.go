@@ -16,6 +16,20 @@ import (
 //
 // Reference: https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
 func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Tool-use on the Foundry Claude wire would require the same content-
+	// block plumbing as Bedrock and direct Anthropic. Not implemented
+	// today — tool-dependent flows (e.g. /ask function-calling) run
+	// against direct Anthropic or Bedrock. Reject explicitly rather than
+	// silently drop tool definitions.
+	if len(req.Tools) > 0 {
+		return nil, fmt.Errorf("azure-foundry/claude: %w (use direct Anthropic or Bedrock for tool-dependent flows)", gollm.ErrToolsNotSupported)
+	}
+	for _, m := range req.Messages {
+		if len(m.ToolResults) > 0 {
+			return nil, fmt.Errorf("azure-foundry/claude: tool_results in message but tools not supported: %w", gollm.ErrToolsNotSupported)
+		}
+	}
+
 	messages := make([]map[string]string, 0, len(req.Messages))
 	for _, msg := range req.Messages {
 		messages = append(messages, map[string]string{

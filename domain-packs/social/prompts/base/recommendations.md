@@ -74,7 +74,7 @@ Respond with ONLY valid JSON:
 - **moderate**: Requires development work, typically 1-2 weeks. New feature, algorithm change, flow redesign.
 - **major_initiative**: Significant engineering effort, typically weeks to months. New product area, infrastructure change.
 
-### Priority Scale (P1 = highest):
+### Priority Scale (1 = highest, 5 = lowest — emit as an integer, NOT a string):
 - **1 (Critical)**: Large user base affected AND high retention/revenue impact. Creator health or premium user churn issues. Do this first.
 - **2 (High)**: Significant impact, implement soon. Strong evidence and clear path.
 - **3 (Medium)**: Moderate impact. Worth doing but not urgent.

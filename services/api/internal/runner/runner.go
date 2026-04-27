@@ -18,6 +18,26 @@ type Runner interface {
 	Run(ctx context.Context, opts RunOptions) error
 	RunSync(ctx context.Context, opts RunSyncOptions) (*RunSyncResult, error)
 	Cancel(ctx context.Context, runID string) error
+	// RunIndexSchema synchronously runs the schema-indexing mode of the
+	// agent. Returns a non-nil error only when the agent process exits
+	// non-zero or fails to start; progress is surfaced out-of-band
+	// through the project_schema_index_progress collection. Used by the
+	// API's indexing worker loop — the worker owns the project lifecycle
+	// status transitions around this call.
+	RunIndexSchema(ctx context.Context, opts IndexSchemaOptions) error
+}
+
+// IndexSchemaOptions configures a schema-indexing agent invocation.
+type IndexSchemaOptions struct {
+	ProjectID string
+	RunID     string // logical run identifier stamped into the progress doc
+	// OnLogLine, when non-nil, is called with each raw stderr line
+	// emitted by the agent in real time. Used to fan the live tail out
+	// to MongoDB (so the dashboard can render an in-UI log viewer) in
+	// addition to the API's own stderr. Must not block — the scanner
+	// goroutine calls it synchronously; callbacks that need IO should
+	// queue the work and return fast.
+	OnLogLine func(line string)
 }
 
 // RunSyncOptions configures a synchronous agent invocation (e.g., test-connection).

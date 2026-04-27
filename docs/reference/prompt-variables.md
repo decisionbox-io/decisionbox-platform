@@ -1,6 +1,6 @@
 # Prompt Variables Reference
 
-> **Version**: 0.1.0
+> **Version**: 0.4.0
 
 Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent replaces them with project-specific values at runtime before sending to the LLM.
 
@@ -10,7 +10,7 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 |----------|---------|---------------|------|
 | `{{PROFILE}}` | `base_context.md` | JSON-encoded project profile | JSON string |
 | `{{PREVIOUS_CONTEXT}}` | `base_context.md` | Previous discoveries + user feedback | Multi-line text |
-| `{{SCHEMA_INFO}}` | `exploration.md` | Warehouse table schemas | JSON string |
+| `{{SCHEMA_INFO}}` | `exploration.md` | Level-0 catalog only — one line per table (name, column count, row count, keyword hints). Per-table column lists and sample rows are fetched on demand by the LLM via `lookup_schema` / `search_tables` actions. | Plain text |
 | `{{DATASET}}` | `exploration.md`, `analysis_*.md` | Dataset/schema names | Comma-separated string |
 | `{{FILTER}}` | `exploration.md` | SQL WHERE clause | SQL fragment |
 | `{{FILTER_CONTEXT}}` | `exploration.md` | Human-readable filter description | Text |
@@ -99,35 +99,33 @@ Don't repeat these unless the situation has changed.
 
 ### {{SCHEMA_INFO}}
 
-**Source:** Warehouse schema discovery (Phase 3)
+**Source:** Schema renderer — Level-0 catalog only.
 
-JSON-encoded table schemas discovered from the warehouse.
+Compact catalog of every table the project indexed in Qdrant. One line
+per table: `name | Nc | Xk/M rows | keyword1, keyword2 | -> joins_to`.
+The catalog is sized to the project's prompt budget; archive-shaped tables
+(`*_2023`, `*_LOG`, `*_BKP`, `*_TMP`, …) and the smallest by row count are
+dropped first when the catalog exceeds the budget.
 
 **Example value:**
-```json
-{
-  "tables": [
-    {
-      "name": "analytics_data.users",
-      "columns": [
-        {"name": "user_id", "type": "STRING", "nullable": false},
-        {"name": "created_at", "type": "TIMESTAMP", "nullable": false},
-        {"name": "country", "type": "STRING", "nullable": true}
-      ],
-      "row_count": 50000
-    },
-    {
-      "name": "analytics_data.sessions",
-      "columns": [
-        {"name": "session_id", "type": "STRING", "nullable": false},
-        {"name": "user_id", "type": "STRING", "nullable": false},
-        {"name": "duration_seconds", "type": "INT64", "nullable": true}
-      ],
-      "row_count": 500000
-    }
-  ]
-}
 ```
+analytics_data.users       | 14c | 50K rows   | users, accounts       | -> sessions
+analytics_data.sessions    |  9c | 500K rows  | sessions, activity    | -> users, events
+analytics_data.events      | 22c | 4.2M rows  | events, clickstream
+```
+
+This is the **only** schema content sent up-front. Column lists and
+sample rows are fetched on demand by the LLM during exploration:
+
+- `lookup_schema`: pulls L1 detail (columns + 3 sample rows) for up to
+  10 tables per call. Per-run budget: 30 lookup calls.
+- `search_tables`: runs a semantic query against the per-project Qdrant
+  index. Per-run budget: 30 search calls. TopK clamped to 30.
+
+Both budgets and the per-call cap are surfaced to the LLM in the initial
+exploration message; see [docs/architecture/agent-on-demand-schema.md](../architecture/agent-on-demand-schema.md)
+for the architectural rationale (the previous "always send L1" model
+exhausted the Bedrock 1M-token context on long runs).
 
 ### {{DATASET}}
 

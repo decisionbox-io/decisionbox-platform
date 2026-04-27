@@ -51,38 +51,28 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 
 // AddExplorationStep logs an exploration step with LLM thinking and query.
 //
-// The action argument distinguishes real query steps from non-query events
-// emitted by the exploration engine. Today the only non-query event is
-// "complete_rejected" — recorded when MinSteps rejects a premature done
-// signal — which is written to the run log with Type="complete_rejected",
-// carries no Query text, and does NOT increment the run's query counter.
-// Any unrecognized action falls through to the legacy "query" behaviour.
+// The action argument distinguishes step types so the live UI and the
+// persisted run document can render them differently:
+//
+//   - "query_data"        — a real SQL query; increments the query counter.
+//   - "lookup_schema"     — on-demand schema fetch; increments the
+//                            schema_lookup_calls counter, not the query
+//                            counter.
+//   - "search_tables"     — on-demand semantic table search; increments
+//                            schema_search_calls.
+//   - "complete_rejected" — early-done signal rejected by MinSteps;
+//                            written with Type="complete_rejected", no
+//                            counter bumps, kept in the log so the UI
+//                            shows that the model tried to stop.
+//
+// Any unrecognised action falls through to the "query" rendering for
+// safety, but no counter is bumped.
 func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string) {
 	if !s.enabled() {
 		return
 	}
 
-	isRejected := action == "complete_rejected"
-
-	var (
-		stepType string
-		msg      string
-	)
-	switch {
-	case isRejected:
-		stepType = "complete_rejected"
-		msg = fmt.Sprintf("Step %d: rejected premature completion (min-steps floor)", stepNum)
-	default:
-		stepType = "query"
-		msg = fmt.Sprintf("Step %d", stepNum)
-		if thinking != "" {
-			t := thinking
-			if len(t) > 200 {
-				t = t[:200] + "..."
-			}
-			msg = fmt.Sprintf("Step %d: %s", stepNum, t)
-		}
-	}
+	stepType, msg := classifyExplorationStep(action, stepNum, thinking)
 
 	resultSummary := ""
 	if rowCount > 0 {
@@ -117,12 +107,47 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		logger.WithError(err).Warn("failed to update exploration status")
 	}
 
-	// Only real queries count toward the run's query counter. A
-	// complete_rejected step didn't execute any SQL.
-	if !isRejected {
+	// Per-action counter bumps — kept in one place so a future action
+	// type lands in the right bucket.
+	switch action {
+	case "query_data":
 		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
 			logger.WithError(err).Warn("failed to increment query count")
 		}
+	case "lookup_schema", "search_tables":
+		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1); err != nil {
+			logger.WithError(err).Warn("failed to increment schema-action count")
+		}
+	}
+}
+
+// classifyExplorationStep returns the (stepType, message) pair for an
+// exploration step based on the engine action. Pulled out so the
+// AddExplorationStep body stays linear and so unit tests can pin the
+// classification without spinning up MongoDB.
+func classifyExplorationStep(action string, stepNum int, thinking string) (string, string) {
+	t := thinking
+	if len(t) > 200 {
+		t = t[:200] + "..."
+	}
+	suffix := ""
+	if t != "" {
+		suffix = ": " + t
+	}
+
+	switch action {
+	case "complete_rejected":
+		return "complete_rejected", fmt.Sprintf("Step %d: rejected premature completion (min-steps floor)", stepNum)
+	case "lookup_schema":
+		return "lookup_schema", fmt.Sprintf("Step %d (lookup_schema)%s", stepNum, suffix)
+	case "search_tables":
+		return "search_tables", fmt.Sprintf("Step %d (search_tables)%s", stepNum, suffix)
+	default:
+		// "query_data" and any unknown action render as a query step;
+		// counter bumps are routed by the explicit switch in
+		// AddExplorationStep so an unknown action does NOT inflate
+		// the query counter.
+		return "query", fmt.Sprintf("Step %d%s", stepNum, suffix)
 	}
 }
 
@@ -199,6 +224,31 @@ func (s *StatusReporter) Complete(ctx context.Context, insightsFound int) {
 	}
 	if err := s.repo.Complete(ctx, s.runID, insightsFound); err != nil {
 		logger.WithError(err).Warn("failed to complete run")
+	}
+}
+
+// RecordSchemaTelemetry stamps the rendered schema-context counters on
+// the run doc. No-op when status reporting is disabled (agent run
+// without API).
+func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tableCount int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount); err != nil {
+		logger.WithError(err).Warn("failed to record schema-context telemetry")
+	}
+}
+
+// IncrementSchemaActionCalls bumps the per-action counter on the run
+// doc when the engine serves a lookup_schema or search_tables turn.
+// action must be one of "lookup_schema" or "search_tables"; other
+// values no-op so callers can pass action.Action verbatim.
+func (s *StatusReporter) IncrementSchemaActionCalls(ctx context.Context, action string, delta int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, delta); err != nil {
+		logger.WithError(err).Warn("failed to increment schema-action calls")
 	}
 }
 

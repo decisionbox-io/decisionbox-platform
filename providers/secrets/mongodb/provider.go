@@ -202,6 +202,31 @@ func (p *MongoProvider) List(ctx context.Context, projectID string) ([]secrets.S
 	return entries, nil
 }
 
+// DeleteAllForProject removes every secret stored for a project under
+// this provider's namespace. Used by the project-deletion cascade so
+// `warehouse-credentials`, `llm-api-key`, `blurb-llm-api-key`, and any
+// other per-project secret are dropped along with the project doc.
+//
+// Idempotent: a project with no secrets returns nil. The implicit
+// secrets.Deleter interface (Delete-AllForProject method) lets the API
+// type-assert at runtime to detect mongo-backed providers — external
+// providers (gcp/aws/azure Secret Managers) intentionally don't
+// implement it because secret deletion in those backends should go
+// through the cloud console / IAM-audited path, not a tenant API.
+func (p *MongoProvider) DeleteAllForProject(ctx context.Context, projectID string) error {
+	if projectID == "" {
+		return fmt.Errorf("projectID is required")
+	}
+	filter := bson.M{
+		"namespace":  p.namespace,
+		"project_id": projectID,
+	}
+	if _, err := p.col.DeleteMany(ctx, filter); err != nil {
+		return fmt.Errorf("delete project secrets: %w", err)
+	}
+	return nil
+}
+
 // encrypt encrypts plaintext using AES-256-GCM and returns base64-encoded ciphertext.
 func (p *MongoProvider) encrypt(plaintext string) (string, error) {
 	nonce := make([]byte, p.gcm.NonceSize())

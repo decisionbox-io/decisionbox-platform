@@ -27,7 +27,14 @@ type mockProjectRepoForSearch struct {
 func (m *mockProjectRepoForSearch) Create(_ context.Context, _ *models.Project) error { return nil }
 func (m *mockProjectRepoForSearch) GetByID(_ context.Context, id string) (*models.Project, error) {
 	if m.project != nil && m.project.ID == id {
-		return m.project, nil
+		// Default schema-index status to "ready" so /ask tests that don't
+		// care about gating still see 200 responses. Tests covering the
+		// gate set SchemaIndexStatus explicitly on the fixture.
+		p := *m.project
+		if p.SchemaIndexStatus == "" {
+			p.SchemaIndexStatus = models.SchemaIndexStatusReady
+		}
+		return &p, nil
 	}
 	return nil, context.DeadlineExceeded
 }
@@ -40,10 +47,14 @@ func (m *mockProjectRepoForSearch) List(_ context.Context, _, _ int) ([]*models.
 func (m *mockProjectRepoForSearch) Update(_ context.Context, _ string, _ *models.Project) error {
 	return nil
 }
-func (m *mockProjectRepoForSearch) Delete(_ context.Context, _ string) error { return nil }
-func (m *mockProjectRepoForSearch) Count(_ context.Context) (int, error)    { return 0, nil }
+func (m *mockProjectRepoForSearch) Delete(_ context.Context, _ string) error        { return nil }
+func (m *mockProjectRepoForSearch) DeleteCascade(_ context.Context, _ string) error { return nil }
+func (m *mockProjectRepoForSearch) Count(_ context.Context) (int, error)            { return 0, nil }
 func (m *mockProjectRepoForSearch) CountWithWarehouse(_ context.Context) (int, error) {
 	return 0, nil
+}
+func (m *mockProjectRepoForSearch) SetSchemaIndexStatus(_ context.Context, _, _, _ string) error {
+	return nil
 }
 
 // mockVectorStoreForSearch returns pre-set search results.

@@ -9,7 +9,9 @@ import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
-import { api, Domain, Category, ProviderMeta, ConfigField, LiveModel } from '@/lib/api';
+import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
+import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
+import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel } from '@/lib/api';
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -20,6 +22,7 @@ export default function NewProjectPage() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [warehouseProviders, setWarehouseProviders] = useState<ProviderMeta[]>([]);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
+  const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
 
@@ -52,6 +55,15 @@ export default function NewProjectPage() {
   // unknown (so the user can set wire_override) and stays whatever the
   // user toggles it to once they've opened it.
   const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
+  // Optional per-project blurb LLM override (PLAN-SCHEMA-RETRIEVAL.md §6.2).
+  // Defaults to "use analysis LLM" — when the user turns the switch on,
+  // the component renders a full provider + live-model picker.
+  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
+  // Embedding provider is mandatory — schema indexing will not start
+  // without one (plan §3.7). We require it up front instead of letting
+  // the user finish creation and then immediately hit a "failed" banner
+  // on the project-detail page.
+  const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
   const [maxSteps, setMaxSteps] = useState(100);
@@ -61,11 +73,26 @@ export default function NewProjectPage() {
       api.listDomains(),
       api.listWarehouseProviders(),
       api.listLLMProviders(),
+      api.listEmbeddingProviders(),
     ])
-      .then(([domainsData, whProviders, llmProvs]) => {
+      .then(([domainsData, whProviders, llmProvs, embProvs]) => {
         setDomains(domainsData);
         setWarehouseProviders(whProviders);
         setLlmProviders(llmProvs);
+        setEmbeddingProviders(embProvs || []);
+        // Pre-select the first embedding provider (usually OpenAI per
+        // the spike winners). The user can change it, but the field
+        // starts populated so the common case is one click.
+        if ((embProvs || []).length > 0) {
+          const openai = embProvs.find((p) => p.id === 'openai');
+          const first = openai || embProvs[0];
+          setEmbedding({
+            provider: first.id,
+            model: first.models.find((m) => m.id === 'text-embedding-3-large')?.id || first.models[0]?.id || '',
+            config: {},
+            apiKey: '',
+          });
+        }
 
         if (domainsData.length === 1) {
           setDomain(domainsData[0].id);
@@ -99,6 +126,11 @@ export default function NewProjectPage() {
   const authConfigFields = authFields.filter((f) => f.type !== 'credential');
   const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
 
+  const embProviderMeta = embeddingProviders.find((p) => p.id === embedding.provider);
+  const embNeedsKey = embProviderMeta?.config_fields.some(
+    (f) => f.type === 'credential' || f.key === 'api_key'
+  ) ?? false;
+
   const canProceed = [
     () => name && domain && category,
     () => warehouseProvider && warehouseConfig['dataset'] && (whAuthMethods.length === 0 || warehouseAuthMethod) && (!authNeedsCredential || warehouseCredential),
@@ -106,6 +138,14 @@ export default function NewProjectPage() {
     // model selected. The credentials phase uses its own "Load models"
     // button instead of Next.
     () => aiPhase === 'model' && llmProvider && llmConfig['model'],
+    // Embedding step: mandatory — schema indexing won't start without
+    // a provider + model. API key required when the provider asks for
+    // one (OpenAI, Voyage, etc); cloud-creds providers (Bedrock,
+    // Vertex) skip that check.
+    () => Boolean(embedding.provider) && Boolean(embedding.model) && (!embNeedsKey || Boolean(embedding.apiKey)),
+    // Blurb step: valid when the user either chose "use analysis LLM"
+    // (blurb.enabled === false) or picked a model.
+    () => !blurb.enabled || (blurb.provider && blurb.model),
     () => true,
   ];
 
@@ -173,6 +213,23 @@ export default function NewProjectPage() {
             Object.entries(llmConfig).filter(([k]) => k !== 'model' && k !== 'api_key')
           ),
         },
+        embedding: {
+          provider: embedding.provider,
+          model: embedding.model,
+        },
+        // Only send blurb_llm when the user explicitly overrode it; otherwise
+        // the agent falls back to the analysis LLM (its own fallback path).
+        ...(blurb.enabled && blurb.provider && blurb.model
+          ? {
+              blurb_llm: {
+                provider: blurb.provider,
+                model: blurb.model,
+                config: Object.fromEntries(
+                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key')
+                ),
+              },
+            }
+          : {}),
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
       // Save secrets
@@ -181,6 +238,18 @@ export default function NewProjectPage() {
       }
       if (warehouseCredential && project.id) {
         await api.setSecret(project.id, 'warehouse-credentials', warehouseCredential);
+      }
+      // Blurb-LLM key is stored separately. Only written when the user
+      // supplied one — otherwise the agent falls back to `llm-api-key`.
+      if (blurb.enabled && blurb.apiKey && project.id) {
+        await api.setSecret(project.id, 'blurb-llm-api-key', blurb.apiKey);
+      }
+      // Embedding key — required by the worker pre-flight if the
+      // provider exposes a credential field. Safe to save conditionally
+      // on user input (empty → skip, preserves an existing stored key
+      // on re-creates).
+      if (embedding.apiKey && project.id) {
+        await api.setSecret(project.id, 'embedding-api-key', embedding.apiKey);
       }
 
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });
@@ -405,6 +474,37 @@ export default function NewProjectPage() {
                 </Card>
               </Stepper.Step>
 
+              <Stepper.Step label="Embedding" description="Vector model">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Text size="sm" c="dimmed">
+                      Used to embed schema blurbs (for retrieval during discovery) and discovered insights (for semantic search). Schema indexing will not start until this is configured. Default recommendation from the spike against a real 2K-table ERP: OpenAI <code>text-embedding-3-large</code>.
+                    </Text>
+                    <EmbeddingEditor
+                      providers={embeddingProviders}
+                      value={embedding}
+                      onChange={setEmbedding}
+                      required
+                    />
+                  </Stack>
+                </Card>
+              </Stepper.Step>
+
+              <Stepper.Step label="Blurb Model" description="Schema-index LLM">
+                <Card withBorder p="lg" mt="md">
+                  <Stack>
+                    <Text size="sm" c="dimmed">
+                      The blurb model generates per-table descriptions during schema indexing (the ones the retriever embeds in Qdrant). A separate cheap + fast model here usually pays off — spike winners were Bedrock <code>qwen.qwen3-32b-v1:0</code> and OpenAI <code>gpt-4.1-nano</code>. Leave off to reuse the analysis LLM.
+                    </Text>
+                    <BlurbLLMEditor
+                      llmProviders={llmProviders}
+                      value={blurb}
+                      onChange={setBlurb}
+                    />
+                  </Stack>
+                </Card>
+              </Stepper.Step>
+
               <Stepper.Step label="Schedule" description="Discovery schedule">
                 <Card withBorder p="lg" mt="md">
                   <Stack>
@@ -428,6 +528,16 @@ export default function NewProjectPage() {
                     <Text><strong>Domain:</strong> {domain} / {category}</Text>
                     <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouseConfig['dataset']}</Text>
                     <Text><strong>LLM:</strong> {selectedLLM?.name} / {llmConfig['model']}</Text>
+                    <Text>
+                      <strong>Embedding:</strong>{' '}
+                      {embProviderMeta?.name || embedding.provider} / {embedding.model}
+                    </Text>
+                    <Text>
+                      <strong>Blurb model:</strong>{' '}
+                      {blurb.enabled && blurb.model
+                        ? `${llmProviders.find((p) => p.id === blurb.provider)?.name || blurb.provider} / ${blurb.model}`
+                        : 'same as analysis LLM'}
+                    </Text>
                     <Button onClick={handleCreate} loading={loading} fullWidth mt="md">Create Project</Button>
                   </Stack>
                 </Card>
@@ -436,7 +546,7 @@ export default function NewProjectPage() {
 
             <Group justify="flex-end">
               {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>}
-              {active < 4 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
+              {active < 6 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
             </Group>
           </>
         )}

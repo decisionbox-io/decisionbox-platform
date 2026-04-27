@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -81,6 +82,10 @@ func TestInteg_BookmarkList_ListOrdering(t *testing.T) {
 		}
 		ids = append(ids, l.ID)
 	}
+	// BSON DateTime is millisecond-resolution; without this sleep the
+	// three Creates and the Update can all land on the same tick, so
+	// updated_at ties and the secondary sort order is undefined.
+	time.Sleep(5 * time.Millisecond)
 	// Touch the middle one so it becomes most-recent.
 	name := "L1-updated"
 	_, err := repo.Update(ctx, "proj-ord", "u-ord", ids[1], UpdateFields{Name: &name})

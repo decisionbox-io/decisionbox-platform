@@ -107,6 +107,19 @@ func (p *OllamaProvider) Validate(ctx context.Context) error {
 
 // Chat sends a conversation to Ollama and returns the response.
 func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	if len(req.Tools) > 0 {
+		// Ollama's tool-calling support is model-dependent and we don't
+		// surface a catalog for it; reject explicitly so callers can
+		// route the request to a tool-capable provider instead of
+		// silently stripping tool defs.
+		return nil, fmt.Errorf("ollama: %w", gollm.ErrToolsNotSupported)
+	}
+	for _, m := range req.Messages {
+		if len(m.ToolResults) > 0 {
+			return nil, fmt.Errorf("ollama: tool_results in message but tools not supported: %w", gollm.ErrToolsNotSupported)
+		}
+	}
+
 	model := req.Model
 	if model == "" {
 		model = p.model

@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,7 +9,6 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
 // EstimateOptions configures a cost estimation.
@@ -21,6 +19,11 @@ type EstimateOptions struct {
 
 // EstimateCost calculates estimated costs for a discovery run without executing it.
 // Phases: load schemas → calculate prompt token sizes → dry-run queries → apply pricing.
+//
+// Like RunDiscovery, EstimateCost requires the schema cache to be populated
+// (estimate is meaningless without knowing the warehouse footprint, and the
+// API gates estimate behind the same schema_index_status == "ready" check).
+// No live-warehouse fallback by design.
 func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (*models.CostEstimate, error) {
 	if opts.MaxSteps <= 0 {
 		opts.MaxSteps = 100
@@ -28,40 +31,13 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 
 	applog.Info("Estimating discovery cost")
 
-	// Initialize schema discovery if not already set (estimate bypasses RunDiscovery)
-	if o.schemaDiscovery == nil {
-		filterClause := ""
-		if o.filterField != "" && o.filterValue != "" {
-			filterClause = fmt.Sprintf("WHERE %s = '%s'", o.filterField, o.filterValue)
-		}
-		executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-			Warehouse:   o.warehouse,
-			MaxRetries:  2,
-			FilterField: o.filterField,
-			FilterValue: o.filterValue,
-		})
-		o.schemaDiscovery = NewSchemaDiscovery(SchemaDiscoveryOptions{
-			Warehouse: o.warehouse,
-			Executor:  executor,
-			ProjectID: o.projectID,
-			Datasets:  o.datasets,
-			Filter:    filterClause,
-		})
-	}
-
-	// Phase 1: Load project context (for schema cache)
-	projectCtx, err := o.loadProjectContext(ctx)
+	// Phase 1: Load schemas from the per-project cache.
+	applog.Info("Estimation: loading schemas from cache")
+	schemas, err := o.discoverSchemas(ctx)
 	if err != nil {
-		projectCtx = models.NewProjectContext(o.projectID)
+		return nil, fmt.Errorf("schema cache lookup failed: %w", err)
 	}
-
-	// Phase 2: Discover schemas (use cache if available)
-	applog.Info("Estimation: discovering schemas")
-	schemas, err := o.discoverSchemas(ctx, projectCtx, false)
-	if err != nil {
-		return nil, fmt.Errorf("schema discovery failed: %w", err)
-	}
-	applog.WithField("tables", len(schemas)).Info("Estimation: schemas discovered")
+	applog.WithField("tables", len(schemas)).Info("Estimation: schemas loaded from cache")
 
 	// Resolve prompts and areas from project configuration
 	prompts, analysisAreas := o.resolvePrompts()
@@ -88,18 +64,45 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	}).Info("Estimation: calculating token costs")
 
 	// --- Calculate LLM token estimates ---
-
-	// Build prompts to measure token sizes (rough: 1 token ≈ 4 chars)
-	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
+	//
+	// Token math (post on-demand-schema architecture):
+	//
+	//   - System prompt: base context + exploration template + the
+	//     catalog block. The catalog is one line per table; size is
+	//     bounded by the per-line approximation below. There is NO
+	//     longer an upfront L1 dump (~16K tokens previously) — the
+	//     model fetches column / sample detail on demand via
+	//     lookup_schema. This is the dominant change vs. the previous
+	//     estimator.
+	//   - Per step: avg LLM output ~600 tokens (action JSON is small;
+	//     thinking blocks vary). Plus per step the previous turn's
+	//     user message lands in conversation history; we assume
+	//     ~1.2K tokens / step on average, weighted across action types
+	//     (query results dominate, lookup_schema and search_tables
+	//     are lighter).
+	//
+	// The numbers are upper-bound estimates — the estimator is a
+	// planning aid, not a billing record, so we round up.
+	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
+	catalogEntries := schemaBuilder.buildCatalog(nil)
+	catalogLen := 0
+	for _, e := range catalogEntries {
+		// 48 chars/line is typical for the renderer's format; exact
+		// width doesn't matter for a 1-token-per-4-char heuristic.
+		catalogLen += 48 + len(e.Table)
+	}
 	baseContextSize := len(prompts.BaseContext) / 4
-	explorationPromptSize := (len(prompts.Exploration) + len(schemaJSON)) / 4
+	explorationPromptSize := (len(prompts.Exploration) + catalogLen) / 4
 
-	// Exploration phase: system prompt + per-step conversation
+	// Exploration phase: system prompt + growing per-step conversation.
+	// Per-step user-message budget mixes query_data (~1.5K tokens),
+	// lookup_schema (~0.7K), and search_tables (~0.4K). Empirical mix
+	// runs ~70/20/10 → weighted avg 1.16K tokens, rounded to 1.2K.
 	explorationInputTokens := baseContextSize + explorationPromptSize
-	avgOutputPerStep := 500 // avg tokens per exploration step response
+	avgOutputPerStep := 600
 	explorationOutputTokens := opts.MaxSteps * avgOutputPerStep
-	// Conversation grows: each step adds ~300 tokens of context
-	explorationInputTokens += opts.MaxSteps * 300
+	const avgUserMessagePerStepTokens = 1200
+	explorationInputTokens += opts.MaxSteps * avgUserMessagePerStepTokens
 
 	// Analysis phase: per area
 	avgAreaPromptSize := 0

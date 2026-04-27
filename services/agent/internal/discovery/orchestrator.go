@@ -15,6 +15,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -51,7 +52,6 @@ type Orchestrator struct {
 	feedbackRepo  *database.FeedbackRepository
 	debugLogRepo  *database.DebugLogRepository
 
-	schemaDiscovery      *SchemaDiscovery
 	explorationEngine    *ai.ExplorationEngine
 	userCountValidator   *validation.UserCountValidator
 	insightValidator     *validation.InsightValidator
@@ -73,6 +73,22 @@ type Orchestrator struct {
 	vectorStore       vectorstore.Provider
 	embeddingProvider goembedding.Provider
 	embedIndexStore   EmbedIndexStore
+
+	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
+	// layer (top-K relevant tables in the prompt instead of dumping the
+	// full catalog). Required — discovery is gated on schema_index_status
+	// == "ready" upstream, so the indexer has populated both Mongo and
+	// Qdrant by the time we run.
+	embedder        Embedder
+	schemaRetriever *schema_retrieve.Retriever
+
+	// schemaCache + warehouseHash drive the bulk schemas-map lookup that
+	// used to live as a per-table live re-discovery against the warehouse.
+	// The cache is populated by the schema indexer (see
+	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
+	// any warehouse-config change self-invalidates the cache.
+	schemaCache    SchemaCache
+	warehouseHash  string
 }
 
 // OrchestratorOptions configures the orchestrator.
@@ -88,17 +104,18 @@ type OrchestratorOptions struct {
 	RunRepo         *database.RunRepository
 	RunID           string
 
-	ProjectID       string
-	Domain          string
-	Category        string
-	Profile         map[string]interface{}
-	ProjectPrompts  *models.ProjectPrompts
-	Datasets        []string
-	FilterField     string
-	FilterValue     string
-	LLMProvider     string
-	LLMModel        string
-	EnableDebugLogs bool
+	ProjectID         string
+	Domain            string
+	Category          string
+	Profile           map[string]interface{}
+	ProjectPrompts    *models.ProjectPrompts
+	Datasets          []string
+	FilterField       string
+	FilterValue       string
+	LLMProvider       string
+	LLMModel          string
+	WarehouseProvider string // provider id used to label warehouse-query debug rows
+	EnableDebugLogs   bool
 
 	// Optional — nil if Qdrant/embedding not configured
 	VectorStore       vectorstore.Provider
@@ -106,6 +123,28 @@ type OrchestratorOptions struct {
 
 	// EmbedIndexStore is needed for Phase 9 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
+
+	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
+	// Required — discovery is gated on schema_index_status == "ready",
+	// so the indexer has built the per-project Qdrant collection before
+	// we get here. Passing nil produces a hard error at run time rather
+	// than silently regressing to the legacy keyword-match heuristic.
+	SchemaRetriever *schema_retrieve.Retriever
+
+	// SchemaCache is the per-project schema cache populated by the
+	// schema indexer (see agentserver/index_schema.go). Required for the
+	// same reason as SchemaRetriever — without it the orchestrator would
+	// re-issue ~one SELECT per warehouse table to rebuild the schemas
+	// map, which is exactly the behavior the schema-retrieval feature
+	// replaces.
+	SchemaCache SchemaCache
+
+	// WarehouseHash is the hash that keys the SchemaCache lookup. Caller
+	// computes it once from the project's WarehouseConfig (matches what
+	// the indexer wrote with) so a config change naturally misses the
+	// cache and surfaces the "re-index required" error rather than
+	// returning stale schemas.
+	WarehouseHash string
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -113,10 +152,11 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	var debugLogger *debug.Logger
 	if opts.DebugLogRepo != nil {
 		debugLogger = debug.NewLogger(debug.LoggerOptions{
-			Repo:           opts.DebugLogRepo,
-			AppID:          opts.ProjectID,
-			Enabled:        opts.EnableDebugLogs,
-			DiscoveryRunID: opts.RunID,
+			Repo:              opts.DebugLogRepo,
+			AppID:             opts.ProjectID,
+			Enabled:           opts.EnableDebugLogs,
+			DiscoveryRunID:    opts.RunID,
+			WarehouseProvider: opts.WarehouseProvider,
 		})
 	}
 
@@ -168,6 +208,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		vectorStore:        opts.VectorStore,
 		embeddingProvider:  opts.EmbeddingProvider,
 		embedIndexStore:    opts.EmbedIndexStore,
+		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:    opts.SchemaRetriever,
+		schemaCache:        opts.SchemaCache,
+		warehouseHash:      opts.WarehouseHash,
 	}
 }
 
@@ -177,7 +221,6 @@ type DiscoveryOptions struct {
 	// MinSteps is a floor on exploration steps — early "done" signals below
 	// this value are rejected and exploration continues. Zero disables it.
 	MinSteps              int
-	SkipSchemaCache       bool
 	IncludeExplorationLog bool
 	TestMode              bool
 	SelectedAreas         []string // if set, only run these analysis areas (partial run)
@@ -235,14 +278,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		})
 	}
 
-	// Initialize schema discovery for all datasets
-	o.schemaDiscovery = NewSchemaDiscovery(SchemaDiscoveryOptions{
-		Warehouse: o.warehouse,
-		Executor:  executor,
-		ProjectID: o.projectID,
-		Datasets:  o.datasets,
-		Filter:    filterClause,
-	})
+	// Note: live SchemaDiscovery is intentionally NOT constructed here.
+	// Discovery runs require a ready schema index (API gates on
+	// schema_index_status == "ready"), so o.schemaCache.Find returns
+	// the full schemas map without touching the warehouse. The indexer
+	// owns live discovery; the run loop never re-issues per-table
+	// SELECTs during a discovery.
 
 	// Phase 1: Load project context + previous discoveries + feedback
 	applog.Info("Phase 1: Loading project context")
@@ -263,22 +304,44 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries)
 
-	// Phase 2: Schema discovery
-	applog.Info("Phase 2: Discovering schemas")
-	o.statusReporter.SetPhase(ctx, models.PhaseSchemaDiscovery, "Discovering warehouse table schemas...", 8)
-	schemas, err := o.discoverSchemas(ctx, projectCtx, opts.SkipSchemaCache)
+	// Phase 2: Load schemas from the per-project schema cache.
+	// (Discovery is gated on schema_index_status == "ready"; the indexer
+	// has already populated the cache and the Qdrant collection.)
+	applog.Info("Phase 2: Loading schemas from cache")
+	o.statusReporter.SetPhase(ctx, models.PhaseSchemaDiscovery, "Loading cached warehouse schemas...", 8)
+	schemas, err := o.discoverSchemas(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("schema discovery failed: %w", err)
+		return nil, fmt.Errorf("schema cache lookup failed: %w", err)
 	}
-	applog.WithField("tables", len(schemas)).Info("Schemas discovered")
+	applog.WithField("tables", len(schemas)).Info("Schemas loaded from cache")
 
-	// Build context for prompts
-	schemaJSON, _ := json.MarshalIndent(o.simplifySchemas(schemas), "", "  ")
+	// Build the catalog the LLM sees in its system prompt: one line per
+	// table. We DO NOT pre-populate per-table column / sample detail —
+	// that arrives on demand via the lookup_schema action, served by
+	// the SchemaProvider wired below. This is the architectural change
+	// that bounds prompt growth (full discussion in
+	// docs/architecture/agent-on-demand-schema.md).
+	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
+	keywords := o.collectAreaKeywords(analysisAreas)
+	rendered := schemaBuilder.BuildCatalog(keywords)
+	applog.WithFields(applog.Fields{
+		"tables":          len(schemas),
+		"catalog_tokens":  rendered.CatalogTokens,
+		"catalog_dropped": rendered.CatalogDropped,
+	}).Info("Schema catalog built")
 
-	// Provide schema context to SQL fixer and insight validator
-	sqlFixer.SetSchemaContext(string(schemaJSON))
+	// Stamp telemetry on the run document. Per-action lookup / search
+	// counters are bumped separately by the StatusReporter as the
+	// engine services each on-demand schema action.
+	o.statusReporter.RecordSchemaTelemetry(ctx, rendered.CatalogTokens, len(schemas))
+
+	// SQL fixer + insight validator still consume a single "context"
+	// string. Feed them the Level-0 catalog — they don't need the
+	// full retrieved block (sample rows aren't useful when the goal is
+	// to map an error back to a table name).
+	sqlFixer.SetSchemaContext(rendered.Catalog)
 	if o.insightValidator != nil {
-		o.insightValidator.SetSchemaContext(string(schemaJSON))
+		o.insightValidator.SetSchemaContext(rendered.Catalog)
 	}
 
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
@@ -293,10 +356,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 
-	// Prepare exploration prompt: base context + exploration-specific content
+	// Prepare exploration prompt: base context + exploration-specific content.
+	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
+	// resolves to the compact catalog (one line per table). Per-table
+	// column / sample detail is no longer pre-rendered — the LLM
+	// fetches it on demand via the lookup_schema action.
 	explorationPrompt := baseContext + "\n\n" + prompts.Exploration
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{DATASET}}", datasetsStr)
-	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", string(schemaJSON))
+	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{SCHEMA_INFO}}", rendered.Catalog)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER}}", filterClause)
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
@@ -311,12 +378,33 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
 	o.statusReporter.SetPhase(ctx, models.PhaseExploration, "Starting autonomous data exploration...", 10)
+
+	// Build the SchemaProvider that backs the lookup_schema /
+	// search_tables actions. The cache provider serves entirely from
+	// the schemas map already loaded above + the per-project Qdrant
+	// collection, so there is no live warehouse traffic in the
+	// exploration loop.
+	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		ProjectID: o.projectID,
+		Datasets:  o.datasets,
+		Schemas:   schemas,
+		Retriever: o.schemaRetriever,
+		Embedder:  o.embedder,
+	})
+	if spErr != nil {
+		// This is a wiring bug — the schema cache lookup above already
+		// guarantees Schemas is non-nil. Surface clearly rather than
+		// continuing with a nil provider.
+		return nil, fmt.Errorf("build schema provider: %w", spErr)
+	}
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
-		Client:   o.aiClient,
-		Executor: executor,
-		MaxSteps: opts.MaxSteps,
-		MinSteps: opts.MinSteps,
-		Dataset:  datasetsStr,
+		Client:         o.aiClient,
+		Executor:       executor,
+		MaxSteps:       opts.MaxSteps,
+		MinSteps:       opts.MinSteps,
+		Dataset:        datasetsStr,
+		SchemaProvider: schemaProvider,
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
 		},
@@ -836,24 +924,6 @@ func (o *Orchestrator) buildPreviousContext(
 	return sb.String()
 }
 
-func (o *Orchestrator) simplifySchemas(schemas map[string]models.TableSchema) map[string]interface{} {
-	simplified := make(map[string]interface{})
-	for name, schema := range schemas {
-		cols := make([]map[string]string, 0, len(schema.Columns))
-		for _, col := range schema.Columns {
-			cols = append(cols, map[string]string{
-				"name": col.Name, "type": col.Type, "category": col.Category,
-			})
-		}
-		simplified[name] = map[string]interface{}{
-			"row_count":  schema.RowCount,
-			"columns":    cols,
-			"metrics":    schema.Metrics,
-			"dimensions": schema.Dimensions,
-		}
-	}
-	return simplified
-}
 
 func (o *Orchestrator) loadProjectContext(ctx context.Context) (*models.ProjectContext, error) {
 	return o.contextRepo.GetByProjectID(ctx, o.projectID)
@@ -966,17 +1036,36 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	return insightSummaries, recSummaries, feedbackSummaries
 }
 
-func (o *Orchestrator) discoverSchemas(ctx context.Context, pctx *models.ProjectContext, skipCache bool) (map[string]models.TableSchema, error) {
-	if !skipCache && pctx != nil && len(pctx.KnownSchemas) > 0 {
-		schemas := make(map[string]models.TableSchema)
-		for name, sk := range pctx.KnownSchemas {
-			schemas[name] = sk.CurrentSchema
-		}
-		applog.WithField("cached_tables", len(schemas)).Info("Using cached schemas")
-		return schemas, nil
+// discoverSchemas loads the schemas map from the project's schema cache
+// and returns it as-is. The cache is the single source of truth — there
+// is no live-warehouse fallback, by design:
+//   - The discovery API gates on schema_index_status == "ready", so the
+//     cache is guaranteed to be populated by the time we run.
+//   - Falling back to live re-discovery would issue ~one SELECT per
+//     table (the legacy SchemaDiscovery path), which on a 1,400-table
+//     warehouse takes ~50 minutes and is exactly what the
+//     schema-retrieval feature replaces.
+//
+// A cache miss here means an invariant has been violated upstream
+// (warehouse config changed without a re-index, the indexer wrote
+// nothing, the cache was cleared) — surface it as a hard error so the
+// user reaches for /reindex rather than silently waiting an hour.
+func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.TableSchema, error) {
+	if o.schemaCache == nil {
+		return nil, fmt.Errorf("schema cache not wired into orchestrator (programmer error)")
 	}
-
-	return o.schemaDiscovery.DiscoverSchemas(ctx)
+	if o.warehouseHash == "" {
+		return nil, fmt.Errorf("warehouse hash not set on orchestrator (programmer error)")
+	}
+	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseHash)
+	if err != nil {
+		return nil, fmt.Errorf("read schema cache: %w", err)
+	}
+	if len(schemas) == 0 {
+		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
+	}
+	applog.WithField("cached_tables", len(schemas)).Info("Loaded schemas from cache")
+	return schemas, nil
 }
 
 func (o *Orchestrator) filterQueriesByKeywords(steps []models.ExplorationStep, keywords []string) []models.ExplorationStep {
@@ -1095,6 +1184,28 @@ func (o *Orchestrator) areaNamesCSV(areas []AnalysisArea) string {
 		names = append(names, a.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// collectAreaKeywords flattens the keyword lists from every analysis area
+// into one de-duplicated slice. Used by the schema-context builder for
+// Level 0 hint tagging and Level 1 sparse-keyword re-rank.
+func (o *Orchestrator) collectAreaKeywords(areas []AnalysisArea) []string {
+	seen := make(map[string]struct{}, 4*len(areas))
+	out := make([]string, 0, 4*len(areas))
+	for _, a := range areas {
+		for _, k := range a.Keywords {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // recommendationsKnowledgeQuery builds the retrieval query string for the

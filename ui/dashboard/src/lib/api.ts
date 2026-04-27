@@ -124,13 +124,71 @@ export interface Project {
   warehouse: WarehouseConfig;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
+  blurb_llm?: BlurbLLMConfig;
   schedule: ScheduleConfig;
   profile: Record<string, unknown>;
   status: string;
   last_run_at: string | null;
   last_run_status: string;
+  // Schema-indexing lifecycle: "", "pending_indexing", "indexing", "ready", "failed".
+  // Empty string = pre-migration (no index ever built).
+  schema_index_status?: string;
+  schema_index_error?: string;
+  schema_index_updated_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BlurbLLMConfig {
+  provider: string;
+  model: string;
+  config?: Record<string, string>;
+}
+
+export interface SchemaIndexProgress {
+  phase: string; // "listing_tables" | "describing_tables" | "embedding"
+  tables_total: number;
+  tables_done: number;
+  started_at?: string;
+  updated_at?: string;
+  error_message?: string;
+}
+
+export interface SchemaIndexStatus {
+  status: string; // "", "pending_indexing", "indexing", "ready", "failed", "cancelled", "needs_reindex"
+  error?: string;
+  updated_at?: string;
+  progress?: SchemaIndexProgress;
+}
+
+// SchemaCacheInfo is the wire shape for GET /schema-index/cache-info,
+// rendered in Settings → Advanced next to the Clear button.
+export interface SchemaCacheInfo {
+  cached: boolean;
+  last_cached_at?: string; // RFC 3339; empty when cached=false
+}
+
+// EmbeddingLiveModel is one row from the embedding live-list endpoint.
+// Mirrors LiveModel (LLM) but with dimensions instead of wire — that's
+// the dimension badge the dashboard renders in the picker, and the
+// field that actually matters for Qdrant collection compatibility.
+export interface EmbeddingLiveModel {
+  id: string;
+  display_name: string;
+  dimensions: number;
+  lifecycle?: string;
+  source: 'catalog' | 'live' | 'both';
+}
+
+export interface EmbeddingLiveModelsResponse {
+  models: EmbeddingLiveModel[];
+  live_error?: string;
+}
+
+export interface SchemaIndexLogLine {
+  run_id: string;
+  line: string;
+  created_at: string;
 }
 
 export interface EmbeddingConfig {
@@ -711,14 +769,72 @@ export const api = {
   getProject: (id: string) => request<Project>(`/api/v1/projects/${id}`),
   updateProject: (id: string, data: Partial<Project>) =>
     request<Project>(`/api/v1/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // deleteProject performs a full cascade delete (Mongo, Qdrant, and
+  // mongo-backed secrets). `secrets_skipped: true` means an external
+  // secret manager (GCP/AWS/Azure) is configured and the user must
+  // clean up warehouse credentials via the cloud console themselves.
+  // 409 from the server when a schema-indexing run is in flight —
+  // user must cancel that first via POST .../schema-index/cancel.
   deleteProject: (id: string) =>
-    request<{ deleted: string }>(`/api/v1/projects/${id}`, { method: 'DELETE' }),
+    request<{ deleted: string; secrets_skipped: boolean }>(
+      `/api/v1/projects/${id}`,
+      { method: 'DELETE' }
+    ),
 
   // Prompts
   getPrompts: (projectId: string) =>
     request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`),
   updatePrompts: (projectId: string, prompts: ProjectPrompts) =>
     request<ProjectPrompts>(`/api/v1/projects/${projectId}/prompts`, { method: 'PUT', body: JSON.stringify(prompts) }),
+
+  // Schema indexing lifecycle
+  //
+  // Status / retry / reindex surface the background worker loop that
+  // builds per-project schema vectors in Qdrant. Dashboard polls status
+  // every 2s while the project-detail page is live; POST retry is only
+  // valid from `failed`; POST reindex forces a full rebuild from any
+  // state (drops the collection + flips to pending_indexing).
+  getSchemaIndexStatus: (projectId: string) =>
+    request<SchemaIndexStatus>(`/api/v1/projects/${projectId}/schema-index/status`),
+  retrySchemaIndex: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
+  // cancelSchemaIndex signals the in-flight indexing run to stop. The
+  // status transition (→ "cancelled") happens asynchronously once the
+  // worker sees the cancel via context — the dashboard's 2s status
+  // poll picks it up.
+  cancelSchemaIndex: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/cancel`, { method: 'POST' }),
+  reindexSchema: (projectId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/reindex`, { method: 'POST' }),
+  // invalidateSchemaCache drops the project_schema_cache rows so the next
+  // indexing run skips the cache and rediscovers from the warehouse.
+  // Used by Settings → Advanced "Clear schema cache". 409 when an
+  // indexing run is in flight; 503 when the API instance has no cache
+  // wired (Qdrant-less builds).
+  invalidateSchemaCache: (projectId: string) =>
+    request<{ status: string }>(
+      `/api/v1/projects/${projectId}/schema-index/invalidate-cache`,
+      { method: 'POST' }
+    ),
+  // getSchemaCacheInfo returns metadata about the project's schema
+  // cache (last_cached_at, cached). Used by Settings → Advanced to
+  // render "Last cached: …" next to the Clear button.
+  getSchemaCacheInfo: (projectId: string) =>
+    request<SchemaCacheInfo>(
+      `/api/v1/projects/${projectId}/schema-index/cache-info`
+    ),
+  // listSchemaIndexLogs returns agent stderr lines captured during
+  // indexing runs. `since` (ISO 8601) cursor keeps the tail poll cheap —
+  // only lines newer than the timestamp come back.
+  listSchemaIndexLogs: (projectId: string, since?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaIndexLogLine[]>(
+      `/api/v1/projects/${projectId}/schema-index/logs${qs ? '?' + qs : ''}`
+    );
+  },
 
   // Discovery
   //
@@ -793,6 +909,20 @@ export const api = {
 
   // Embedding providers
   listEmbeddingProviders: () => request<EmbeddingProviderMeta[]>('/api/v1/providers/embedding'),
+  // Live-list parity with LLM: the dashboard's shared "Load models"
+  // phase hits this endpoint with user-entered credentials. Response
+  // merges shipped catalog + live-upstream rows — see
+  // writeEmbeddingLiveModelsResponse on the API side.
+  listLiveEmbeddingModels: (providerID: string, config: Record<string, string>) =>
+    request<EmbeddingLiveModelsResponse>(
+      `/api/v1/providers/embedding/${encodeURIComponent(providerID)}/models/live`,
+      { method: 'POST', body: JSON.stringify({ config }) }
+    ),
+  listLiveEmbeddingModelsForProject: (projectID: string) =>
+    request<EmbeddingLiveModelsResponse>(
+      `/api/v1/projects/${encodeURIComponent(projectID)}/providers/embedding/models/live`,
+      { method: 'POST', body: JSON.stringify({}) }
+    ),
 
   // Vector search
   searchInsights: (projectId: string, req: SearchRequest) =>

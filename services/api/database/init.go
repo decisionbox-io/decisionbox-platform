@@ -29,6 +29,18 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "created_at", Value: -1}}},
 			{Keys: bson.D{{Key: "domain", Value: 1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
+			// Supports the indexing worker's ClaimNextPendingIndex
+			// (sorted scan of pending_indexing projects). Partial index —
+			// we only care about documents with an explicit status value.
+			{
+				Keys: bson.D{
+					{Key: "schema_index_status", Value: 1},
+					{Key: "updated_at", Value: 1},
+				},
+				Options: options.Index().SetPartialFilterExpression(bson.M{
+					"schema_index_status": bson.M{"$exists": true},
+				}),
+			},
 		},
 	},
 	{
@@ -157,6 +169,54 @@ var schema = []struct {
 			{
 				Keys:    bson.D{{Key: "timestamp", Value: 1}},
 				Options: options.Index().SetExpireAfterSeconds(30 * 24 * 60 * 60), // 30 day TTL
+			},
+		},
+	},
+	{
+		Name: "project_schema_index_progress",
+		Indexes: []mongo.IndexModel{
+			{
+				// One-progress-doc-per-project. The worker upserts by
+				// project_id; the dashboard polls by project_id.
+				Keys:    bson.D{{Key: "project_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+	},
+	{
+		Name: "project_schema_cache",
+		Indexes: []mongo.IndexModel{
+			// Cache lookup path: Find({project_id, warehouse_hash}).
+			// Compound index keeps hits cheap even with thousands of
+			// (project × warehouse-config) rows.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "warehouse_hash", Value: 1}}},
+			// Save() deletes all prior rows for a project_id before
+			// inserting fresh ones — the standalone project_id index
+			// keeps that delete cheap.
+			{Keys: bson.D{{Key: "project_id", Value: 1}}},
+			// 7-day TTL: a warehouse whose physical schema has drifted
+			// without the config changing still gets rediscovered at
+			// least weekly.
+			{
+				Keys:    bson.D{{Key: "cached_at", Value: 1}},
+				Options: options.Index().SetExpireAfterSeconds(7 * 24 * 60 * 60),
+			},
+		},
+	},
+	{
+		Name: "project_schema_index_logs",
+		Indexes: []mongo.IndexModel{
+			// Dashboard poll path: by project_id ordered by created_at.
+			// Paired index keeps the since-cursor query cheap even
+			// when the collection has millions of rows from historical
+			// runs.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "created_at", Value: 1}}},
+			// 7-day TTL. Indexing runs produce ~one line per table
+			// (FINPORT ~1500 lines) — keeping a week of history is
+			// plenty for debugging and cheap on storage.
+			{
+				Keys:    bson.D{{Key: "created_at", Value: 1}},
+				Options: options.Index().SetExpireAfterSeconds(7 * 24 * 60 * 60),
 			},
 		},
 	},

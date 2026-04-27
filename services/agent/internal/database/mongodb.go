@@ -8,11 +8,13 @@ import (
 // Collection names shared between agent and API.
 // Both services read/write the same MongoDB database.
 const (
-	CollectionProjects       = "projects"
-	CollectionDiscoveries    = "discoveries"
-	CollectionProjectContext = "project_context"
-	CollectionDebugLogs      = "discovery_debug_logs"
-	CollectionFeedback       = "feedback"
+	CollectionProjects                 = "projects"
+	CollectionDiscoveries              = "discoveries"
+	CollectionProjectContext           = "project_context"
+	CollectionDebugLogs                = "discovery_debug_logs"
+	CollectionFeedback                 = "feedback"
+	CollectionSchemaIndexProgress      = "project_schema_index_progress"
+	CollectionSchemaCache              = "project_schema_cache"
 )
 
 // DB wraps go-common's MongoDB client.

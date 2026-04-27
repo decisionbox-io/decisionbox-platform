@@ -9,6 +9,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -71,12 +72,27 @@ func validateLLMConfig(provider string, cfg map[string]string) string {
 
 // ProjectsHandler handles project CRUD endpoints.
 type ProjectsHandler struct {
-	repo           database.ProjectRepo
-	domainPackRepo database.DomainPackRepo
+	repo            database.ProjectRepo
+	domainPackRepo  database.DomainPackRepo
+	dropper         CollectionDropper      // optional: Qdrant per-project collection
+	secretProvider  secrets.Provider       // optional: only mongo-backed providers get swept
+	indexCanceller  IndexCanceller         // optional: detect in-flight indexing for 409
 }
 
 func NewProjectsHandler(repo database.ProjectRepo, domainPackRepo database.DomainPackRepo) *ProjectsHandler {
 	return &ProjectsHandler{repo: repo, domainPackRepo: domainPackRepo}
+}
+
+// WithDeleteCascadeDeps attaches the optional dependencies the Delete
+// endpoint needs to fully wipe a project (Qdrant collection drop,
+// secret sweep, in-flight detection). All three are nullable — when
+// any is nil, that subsystem's cleanup step is skipped, which matches
+// the community Qdrant-less / external-secret-manager builds.
+func (h *ProjectsHandler) WithDeleteCascadeDeps(dropper CollectionDropper, secretProvider secrets.Provider, indexCanceller IndexCanceller) *ProjectsHandler {
+	h.dropper = dropper
+	h.secretProvider = secretProvider
+	h.indexCanceller = indexCanceller
+	return h
 }
 
 // Create creates a new project.
@@ -192,6 +208,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	telemetry.TrackProjectCreated(p.Warehouse.Provider, p.LLM.Provider, p.Domain)
 
+	// Enqueue the new project for schema indexing. A project without a
+	// warehouse (blank-state) cannot be indexed; it will transition to
+	// pending_indexing on its first PUT that adds one. We set this
+	// explicitly rather than defaulting in the repo so reads without a
+	// warehouse still see SchemaIndexStatus == "" (→ "not yet
+	// configured" in the dashboard).
+	if p.Warehouse.Provider != "" {
+		if err := h.repo.SetSchemaIndexStatus(r.Context(), p.ID, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
+			apilog.WithError(err).Warn("schema-index: failed to enqueue new project; user must click Re-index manually")
+		} else {
+			p.SchemaIndexStatus = models.SchemaIndexStatusPendingIndexing
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -296,6 +326,16 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.Embedding.Provider != "" {
 		existing.Embedding = incoming.Embedding
 	}
+	// BlurbLLM is a pointer — nil means "field not present in this
+	// request" (preserve existing), an empty-provider value means "user
+	// cleared the override" (so we clear it too).
+	if incoming.BlurbLLM != nil {
+		if incoming.BlurbLLM.Provider == "" {
+			existing.BlurbLLM = nil
+		} else {
+			existing.BlurbLLM = incoming.BlurbLLM
+		}
+	}
 
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
@@ -307,17 +347,88 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, existing)
 }
 
-// Delete deletes a project.
+// Delete fully removes a project: every Mongo collection, the Qdrant
+// per-project schema-index collection, and (when the configured secret
+// provider supports it) every secret stored under the project's
+// namespace.
+//
+// External secret managers (GCP/AWS/Azure) intentionally do NOT have
+// a server-driven delete path — those credentials must be cleaned
+// up via the cloud console / IAM-audited tooling. The handler reports
+// `secrets_skipped: true` in that case so the UI can surface the
+// follow-up to the user.
+//
+// Pre-flight checks:
+//   - 404 if the project doesn't exist
+//   - 409 if a schema-indexing run is in flight (caller must cancel
+//     first via /schema-index/cancel — auto-cancelling during a
+//     destructive operation is too easy to misread)
+//
+// On success returns 200. The cascade is best-effort within the
+// project: a Qdrant or secret failure logs but doesn't abort the
+// Mongo cascade — a re-issued Delete is idempotent and finishes any
+// step that didn't land.
+//
 // DELETE /api/v1/projects/{id}
 func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to delete project")
-		writeError(w, http.StatusInternalServerError, "failed to delete project: "+err.Error())
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
 		return
 	}
 
-	apilog.WithField("project_id", id).Info("Project deleted")
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
+	p, err := h.repo.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get project: "+err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	// 409 if indexing — the user must cancel through the dedicated
+	// endpoint first. Auto-cancelling during a destructive op would
+	// silently abort someone else's hour-long run.
+	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing {
+		writeError(w, http.StatusConflict, "schema indexing is in flight; cancel first via POST /api/v1/projects/"+id+"/schema-index/cancel before deleting the project")
+		return
+	}
+
+	// Drop Qdrant collection (best-effort). On failure we log and
+	// continue: BuildIndex drops on entry next time, so a leftover
+	// collection isn't catastrophic — but the user gets the audit
+	// log line so they know cleanup is partial.
+	if h.dropper != nil {
+		if err := h.dropper.DropCollection(r.Context(), id); err != nil {
+			apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Warn("Project delete: Qdrant drop failed; cascade continues")
+		}
+	}
+
+	// Sweep secrets ONLY when the configured provider implements
+	// secrets.ProjectDeleter (mongodb-backed). External secret
+	// managers (gcp/aws/azure) deliberately route deletion through
+	// IAM-audited tooling — the API never reaches into them.
+	secretsSkipped := true
+	if h.secretProvider != nil {
+		if del, ok := h.secretProvider.(secrets.ProjectDeleter); ok {
+			if err := del.DeleteAllForProject(r.Context(), id); err != nil {
+				apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Warn("Project delete: secret sweep failed; cascade continues")
+			} else {
+				secretsSkipped = false
+			}
+		}
+	}
+
+	if err := h.repo.DeleteCascade(r.Context(), id); err != nil {
+		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Project delete: Mongo cascade failed")
+		writeError(w, http.StatusInternalServerError, "delete cascade: "+err.Error())
+		return
+	}
+
+	apilog.WithFields(apilog.Fields{"project_id": id, "secrets_skipped": secretsSkipped}).Info("Project deleted")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"deleted":         id,
+		"secrets_skipped": secretsSkipped,
+	})
 }

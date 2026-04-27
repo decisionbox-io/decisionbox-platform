@@ -19,6 +19,37 @@ type ProjectConfig struct {
 	Credentials string `bson:"credentials,omitempty" json:"credentials,omitempty"`
 }
 
+// RemoteModel is one row returned by a provider's live ListModels
+// endpoint. Kept separate from the catalog-backed ModelInfo so the
+// dashboard can distinguish models the shipped build knows about from
+// ones it learned at runtime (e.g. a user's custom Ollama tag).
+type RemoteModel struct {
+	ID          string
+	DisplayName string
+	// Dimensions is 0 when the provider's list endpoint doesn't carry
+	// that field (OpenAI's /v1/models for example) — the dashboard
+	// falls back to the catalog Dimensions for known model IDs.
+	Dimensions int
+	// Lifecycle is the free-form status string the provider returns
+	// ("active", "deprecated", ...). Empty when the provider doesn't
+	// expose one.
+	Lifecycle string
+}
+
+// ModelLister is an optional capability interface: embedding providers
+// that can enumerate the user's available models implement it. Matches
+// the llm.ModelLister pattern so the UI phase-of-credentials → load-
+// models works the same way for both.
+//
+// Implementations must be read-only and must not consume paid quota —
+// use the provider's list endpoint (/v1/models for OpenAI-compat,
+// ListFoundationModels for Bedrock, etc.). A failing list call must
+// never block project creation: the handler falls back to the shipped
+// catalog.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]RemoteModel, error)
+}
+
 // Provider abstracts text embedding operations.
 // Implement this interface to add support for a new embedding provider
 // (e.g., OpenAI, Ollama, Vertex AI, Bedrock).

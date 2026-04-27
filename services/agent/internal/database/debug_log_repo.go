@@ -73,10 +73,15 @@ func (r *DebugLogRepository) LogAsync(log *models.DebugLog) {
 	}()
 }
 
-// LogBigQueryExecution logs a BigQuery execution with all details
-func (r *DebugLogRepository) LogBigQueryExecution(
+// LogWarehouseQueryExecution records one warehouse-query attempt. The
+// `provider` argument (mssql, bigquery, snowflake, …) is stamped on
+// log_type and component so the dashboard's debug-log column shows
+// the real source — historically this was hardcoded to "bigquery"
+// regardless of the project's actual warehouse, which made MSSQL /
+// Postgres / Snowflake queries display under the wrong label.
+func (r *DebugLogRepository) LogWarehouseQueryExecution(
 	ctx context.Context,
-	appID, discoveryRunID string,
+	appID, discoveryRunID, provider string,
 	step int,
 	phase string,
 	query, purpose string,
@@ -91,7 +96,10 @@ func (r *DebugLogRepository) LogBigQueryExecution(
 		return
 	}
 
-	log := models.NewDebugLog(appID, discoveryRunID, models.DebugLogTypeBigQuery, "bigquery", "execute_query")
+	if provider == "" {
+		provider = "warehouse"
+	}
+	log := models.NewDebugLog(appID, discoveryRunID, models.DebugLogType(provider), provider, "execute_query")
 	log.Step = step
 	log.Phase = phase
 	log.SetBigQueryDetails(query, purpose, results, rowCount, durationMs)

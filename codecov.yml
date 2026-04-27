@@ -8,11 +8,19 @@ ignore:
   - "services/api/apiserver/services.go"       # startup/wiring — tested by integration tests
   - "services/agent/main.go"
   - "services/agent/agentserver/agentserver.go" # startup/wiring — tested by integration tests
+  - "services/agent/agentserver/index_schema.go" # startup/wiring (--mode index-schema) — covered by integration tests
   - "services/api/internal/backfill/"           # CLI tool — tested manually
   - "services/api/database/*_repo.go"           # MongoDB repos — covered by integration tests
+  - "services/api/database/database.go"         # DB connection/index init — covered by integration tests
   - "services/api/database/init.go"             # DB init — covered by integration tests
+  - "services/api/database/schema_index_progress.go" # MongoDB repo — covered by integration tests
+  - "services/agent/internal/database/*_repo.go" # MongoDB repos — covered by integration tests
   - "services/agent/internal/discovery/embed_index_store.go" # store adapter — covered by integration tests
   - "services/agent/internal/discovery/embed_index_repo.go"  # repo interface — covered by integration tests
+  - "services/agent/internal/discovery/schema_indexer.go" # indexer pipeline — covered by integration test (Qdrant container)
+  - "services/api/internal/runner/subprocess.go" # subprocess runner — covered by integration tests
+  - "services/api/internal/runner/kubernetes.go" # K8s runner — covered by integration tests (K3s testcontainer)
+  - "services/api/internal/schemaindex/worker.go" # background worker — covered by migration_integration_test.go
 
 coverage:
   status:

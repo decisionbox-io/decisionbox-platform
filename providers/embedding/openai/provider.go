@@ -42,10 +42,11 @@ func init() {
 			model = "text-embedding-3-small"
 		}
 
-		dims, ok := modelDimensions[model]
-		if !ok {
-			return nil, fmt.Errorf("openai embedding: unsupported model %q (supported: text-embedding-3-small, text-embedding-3-large)", model)
-		}
+		// Accept unknown models with dims=0 so the list-only path and
+		// user-typed custom model IDs both work. Actual Embed() calls
+		// against an unknown model will still fail upstream at the
+		// OpenAI API; we don't pretend to know the vector size.
+		dims := modelDimensions[model]
 
 		baseURL := cfg["base_url"]
 		if baseURL == "" {
@@ -89,12 +90,45 @@ func newProvider(apiKey, model, baseURL string, dims int) *provider {
 	}
 }
 
-// Embed generates vector embeddings for the given texts.
+// embedBatchSize bounds the number of inputs per /v1/embeddings POST.
+//
+// OpenAI documents two hard limits on the request: (a) at most 2048
+// items in `input`, (b) at most 300K tokens summed across those items.
+// The batch is small enough to stay comfortably under (b) even when
+// every blurb hits the 4000-char MaxBlurbLen — 96 × ~250 tokens ≈ 24K
+// tokens, 8% of the per-request budget. Over-large batches silently
+// truncate the response on OpenAI's edge, which then surfaces here as
+// "unexpected end of JSON input" — we've been bitten, small batch is
+// the boring correct default.
+const embedBatchSize = 96
+
+// Embed generates vector embeddings for the given texts. Batches
+// internally so callers can pass thousands of inputs at once without
+// blowing past OpenAI's 300K-token-per-request cap.
 func (p *provider) Embed(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
+	result := make([][]float64, 0, len(texts))
+	for start := 0; start < len(texts); start += embedBatchSize {
+		end := start + embedBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		chunk := texts[start:end]
+		vecs, err := p.embedChunk(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, vecs...)
+	}
+	return result, nil
+}
+
+// embedChunk sends a single batch to /v1/embeddings. Size MUST be
+// within OpenAI's per-request limits (see embedBatchSize).
+func (p *provider) embedChunk(ctx context.Context, texts []string) ([][]float64, error) {
 	reqBody := embeddingRequest{
 		Model: p.model,
 		Input: texts,
@@ -131,9 +165,16 @@ func (p *provider) Embed(ctx context.Context, texts []string) ([][]float64, erro
 		return nil, fmt.Errorf("openai embedding: API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 
+	// Guard against the exact failure mode that motivated the batch:
+	// an empty / truncated 200 body deserves an actionable error
+	// rather than the generic "unexpected end of JSON input".
+	if len(respBody) == 0 {
+		return nil, fmt.Errorf("openai embedding: empty response body on HTTP 200 (likely a truncated batch — inputs=%d)", len(texts))
+	}
+
 	var embResp embeddingResponse
 	if err := json.Unmarshal(respBody, &embResp); err != nil {
-		return nil, fmt.Errorf("openai embedding: failed to unmarshal response: %w", err)
+		return nil, fmt.Errorf("openai embedding: failed to unmarshal response (inputs=%d, body_bytes=%d): %w", len(texts), len(respBody), err)
 	}
 
 	if len(embResp.Data) != len(texts) {

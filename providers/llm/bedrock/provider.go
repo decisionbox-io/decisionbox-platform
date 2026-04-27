@@ -128,6 +128,14 @@ func init() {
 			"claude-haiku-4-5":  64000,
 			"_default":          16384,
 		},
+		// Bedrock supports tool_use natively on the Anthropic wire.
+		// OpenAI-compat Bedrock models (Qwen, DeepSeek, Llama, Mistral)
+		// inherit tool support from the openaicompat helper, but whether
+		// the upstream *model* implements function calling reliably
+		// varies — callers should stick to Claude or gpt-4o-class models
+		// for tool-dependent flows. The blurb-generation flow never sets
+		// Tools so this is safe to advertise unconditionally.
+		SupportsTools: true,
 	})
 }
 

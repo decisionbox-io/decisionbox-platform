@@ -16,10 +16,11 @@ import (
 
 // mockSecretCollection implements secretCollection for unit testing.
 type mockSecretCollection struct {
-	findOneFn  func(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult
+	findOneFn   func(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult
 	updateOneFn func(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
-	findFn     func(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
-	indexesFn  func() mongo.IndexView
+	findFn      func(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
+	deleteManyFn func(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongo.DeleteResult, error)
+	indexesFn   func() mongo.IndexView
 }
 
 func (m *mockSecretCollection) FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult {
@@ -41,6 +42,13 @@ func (m *mockSecretCollection) Find(ctx context.Context, filter interface{}, opt
 		return m.findFn(ctx, filter, opts...)
 	}
 	return nil, fmt.Errorf("Find not implemented")
+}
+
+func (m *mockSecretCollection) DeleteMany(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongo.DeleteResult, error) {
+	if m.deleteManyFn != nil {
+		return m.deleteManyFn(ctx, filter, opts...)
+	}
+	return nil, fmt.Errorf("DeleteMany not implemented")
 }
 
 func (m *mockSecretCollection) Indexes() mongo.IndexView {
@@ -493,4 +501,63 @@ func TestMongoProvider_CustomNamespace(t *testing.T) {
 	if val != "value" {
 		t.Errorf("Get() = %q, want %q", val, "value")
 	}
+}
+
+// TestMongoProvider_DeleteAllForProject_Success verifies the cascade
+// helper that the API's project-delete handler relies on. It scopes
+// the DeleteMany filter by both `namespace` and `project_id` so a
+// shared secrets collection (multi-tenant control plane) doesn't wipe
+// another namespace's rows.
+func TestMongoProvider_DeleteAllForProject_Success(t *testing.T) {
+	var capturedFilter interface{}
+	mock := &mockSecretCollection{
+		deleteManyFn: func(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongo.DeleteResult, error) {
+			capturedFilter = filter
+			return &mongo.DeleteResult{DeletedCount: 3}, nil
+		},
+	}
+
+	p := newTestMongoProvider(mock, "decisionbox", "")
+	if err := p.DeleteAllForProject(context.Background(), "proj-1"); err != nil {
+		t.Fatalf("DeleteAllForProject error = %v", err)
+	}
+
+	got, ok := capturedFilter.(bson.M)
+	if !ok {
+		t.Fatalf("filter type = %T, want bson.M", capturedFilter)
+	}
+	if got["namespace"] != "decisionbox" {
+		t.Errorf("namespace filter = %v, want decisionbox", got["namespace"])
+	}
+	if got["project_id"] != "proj-1" {
+		t.Errorf("project_id filter = %v, want proj-1", got["project_id"])
+	}
+}
+
+func TestMongoProvider_DeleteAllForProject_EmptyID(t *testing.T) {
+	mock := &mockSecretCollection{
+		deleteManyFn: func(_ context.Context, _ interface{}, _ ...*options.DeleteOptions) (*mongo.DeleteResult, error) {
+			t.Error("DeleteMany should not be called with empty projectID")
+			return nil, nil
+		},
+	}
+	p := newTestMongoProvider(mock, "decisionbox", "")
+	if err := p.DeleteAllForProject(context.Background(), ""); err == nil {
+		t.Error("expected error for empty projectID")
+	}
+}
+
+func TestMongoProvider_DeleteAllForProject_DriverError(t *testing.T) {
+	mock := &mockSecretCollection{
+		deleteManyFn: func(_ context.Context, _ interface{}, _ ...*options.DeleteOptions) (*mongo.DeleteResult, error) {
+			return nil, fmt.Errorf("mongo connection lost")
+		},
+	}
+	p := newTestMongoProvider(mock, "decisionbox", "")
+	err := p.DeleteAllForProject(context.Background(), "proj-1")
+	if err == nil {
+		t.Fatal("expected error when DeleteMany fails")
+	}
+	// Caller relies on the underlying error being wrapped — secrets_skipped
+	// reporting in the API handler is keyed off this `err != nil` path.
 }

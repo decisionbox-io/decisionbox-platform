@@ -26,7 +26,10 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/schemaindex"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 
 	// Secret provider registrations
@@ -192,8 +195,70 @@ func Run() {
 		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
 	}
 
+	// Schema-index worker + /reindex dropper: both need Qdrant. Without
+	// it the worker is disabled (discovery will 409 until QDRANT_URL is
+	// set), and /reindex returns a nil dropper so the handler falls back
+	// on the worker's own pre-run drop.
+	var schemaIndexCancel context.CancelFunc
+	var schemaDropper *schemaindex.QdrantDropper
+	var indexWorker *schemaindex.Worker
+	if cfg.Qdrant.URL != "" {
+		host, port := parseQdrantHostPort(cfg.Qdrant.URL)
+		dropper, err := schemaindex.NewQdrantDropper(host, port, cfg.Qdrant.APIKey, false)
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to connect dropper")
+			os.Exit(1)
+		}
+		schemaDropper = dropper
+		defer func() { _ = dropper.Close() }()
+
+		runnerCfg := runner.LoadConfig()
+		r, err := runner.New(runnerCfg)
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to create runner")
+			os.Exit(1)
+		}
+		worker, err := schemaindex.New(schemaindex.WorkerConfig{
+			Projects: database.NewProjectRepository(db),
+			Progress: database.NewSchemaIndexProgressRepository(db),
+			Logs:     database.NewSchemaIndexLogRepository(db),
+			Runner:   r,
+		})
+		if err != nil {
+			apilog.WithError(err).Error("schemaindex: failed to create worker")
+			os.Exit(1)
+		}
+		indexWorker = worker
+		// One-shot migration for projects that existed before schema
+		// indexing shipped. Flips warehouse-configured, unindexed
+		// projects to pending_indexing so the worker picks them up.
+		// Idempotent — subsequent restarts find zero matches.
+		if n, mErr := schemaindex.MigratePreExistingProjects(ctx, database.NewProjectRepository(db)); mErr != nil {
+			apilog.WithError(mErr).Warn("schemaindex: migration sweep failed; existing projects can be unblocked via POST /reindex")
+		} else if n > 0 {
+			apilog.WithField("migrated_projects", n).Info("schemaindex: migration sweep completed")
+		}
+
+		// Crash-recovery: projects stuck in "indexing" for more than
+		// 2 hours are assumed to have lost their agent subprocess (API
+		// crash, host reboot, OOM). Flip them back to pending_indexing
+		// so the worker re-queues them, instead of leaving the user
+		// with a forever-spinning banner. Threshold generous enough
+		// that real 30-min FINPORT rebuilds don't trip it.
+		if n, rErr := database.NewProjectRepository(db).ResetStaleIndexingProjects(ctx, 2*time.Hour); rErr != nil {
+			apilog.WithError(rErr).Warn("schemaindex: stale-indexing sweep failed")
+		} else if n > 0 {
+			apilog.WithField("reset_projects", n).Info("schemaindex: reset stale indexing rows to pending_indexing")
+		}
+		var workerCtx context.Context
+		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
+		go worker.Start(workerCtx)
+	} else {
+		apilog.Warn("Qdrant not configured — schema-index worker disabled (discovery will be blocked until Qdrant is set)")
+	}
+
 	// HTTP server
-	handler := server.New(db, healthHandler, secretProvider, authProvider, qdrantProvider)
+	handler := server.New(db, healthHandler, secretProvider, authProvider, droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker), qdrantProvider)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      ApplyGlobalMiddlewares(handler),
@@ -224,6 +289,14 @@ func Run() {
 	<-done
 	apilog.Info("Shutdown signal received, gracefully stopping")
 	telemetry.TrackServerStopped()
+
+	// Stop the schema-index worker first so no new agent subprocesses
+	// get spawned while we're draining HTTP. Any in-flight subprocess
+	// is left to exit on its own — the worker detaches ctx for the
+	// final status transition.
+	if schemaIndexCancel != nil {
+		schemaIndexCancel()
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -268,6 +341,41 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 }
 
 // deploymentMethod infers the deployment method from environment signals.
+// droppersAsHandlerInterface adapts a nullable concrete *QdrantDropper
+// to the handler.CollectionDropper interface. When the dropper is nil
+// we pass nil (not a non-nil interface wrapping a nil pointer) so the
+// handler's `if h.dropper != nil` check works.
+func droppersAsHandlerInterface(d *schemaindex.QdrantDropper) handler.CollectionDropper {
+	if d == nil {
+		return nil
+	}
+	return d
+}
+
+// indexCancellerOrNil avoids the typed-nil trap when the schema-index
+// worker didn't start (no Qdrant). Same dance as droppersAsHandlerInterface.
+func indexCancellerOrNil(w *schemaindex.Worker) handler.IndexCanceller {
+	if w == nil {
+		return nil
+	}
+	return w
+}
+
+// parseQdrantHostPort splits the QDRANT_URL env var into (host, port).
+// Accepts "host", "host:port", and bare IPv4 forms. Returns port=6334
+// when unspecified (Qdrant's gRPC default).
+func parseQdrantHostPort(url string) (string, int) {
+	host := url
+	port := 6334
+	if idx := strings.LastIndex(host, ":"); idx > 0 {
+		if p, err := strconv.Atoi(host[idx+1:]); err == nil {
+			port = p
+			host = host[:idx]
+		}
+	}
+	return host, port
+}
+
 func deploymentMethod() string {
 	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 		return "kubernetes"
