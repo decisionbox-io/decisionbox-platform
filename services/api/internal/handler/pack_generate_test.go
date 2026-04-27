@@ -251,6 +251,23 @@ func TestPackGenerate_Generate_ProviderError_500(t *testing.T) {
 	}
 }
 
+func TestPackGenerate_Generate_RepoError_500(t *testing.T) {
+	installStubProvider(t, &stubPackgenProvider{})
+
+	repo := newMockProjectRepo()
+	repo.getErr = errors.New("mongo: connection refused")
+
+	h := NewPackGenerateHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/p-x/pack-generate", nil)
+	req.SetPathValue("id", "p-x")
+	w := httptest.NewRecorder()
+	h.Generate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+}
+
 // --- RegenerateSection ---
 
 func TestPackGenerate_Regenerate_NoProviderConfigured_404(t *testing.T) {
@@ -345,6 +362,83 @@ func TestPackGenerate_Regenerate_Success(t *testing.T) {
 	}
 	if stub.lastReg.PackSlug != "acme" {
 		t.Errorf("provider received PackSlug=%q (should be project.Domain)", stub.lastReg.PackSlug)
+	}
+}
+
+func TestPackGenerate_Regenerate_MissingProjectID_400(t *testing.T) {
+	installStubProvider(t, &stubPackgenProvider{})
+	h := NewPackGenerateHandler(newMockProjectRepo())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects//pack-generate/regenerate", strings.NewReader(`{"section":"x","feedback":"y"}`))
+	req.SetPathValue("id", "")
+	w := httptest.NewRecorder()
+	h.RegenerateSection(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPackGenerate_Regenerate_RepoError_500(t *testing.T) {
+	installStubProvider(t, &stubPackgenProvider{})
+	repo := newMockProjectRepo()
+	repo.getErr = errors.New("mongo: connection refused")
+	h := NewPackGenerateHandler(repo)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/p-x/pack-generate/regenerate", strings.NewReader(`{"section":"categories","feedback":"y"}`))
+	req.SetPathValue("id", "p-x")
+	w := httptest.NewRecorder()
+	h.RegenerateSection(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPackGenerate_Regenerate_ProjectNotFound_404(t *testing.T) {
+	installStubProvider(t, &stubPackgenProvider{})
+	h := NewPackGenerateHandler(newMockProjectRepo())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/missing/pack-generate/regenerate", strings.NewReader(`{"section":"categories","feedback":"y"}`))
+	req.SetPathValue("id", "missing")
+	w := httptest.NewRecorder()
+	h.RegenerateSection(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPackGenerate_Regenerate_ProviderErrNotConfigured_404(t *testing.T) {
+	stub := &stubPackgenProvider{regErr: packgen.ErrNotConfigured}
+	installStubProvider(t, stub)
+
+	repo := newMockProjectRepo()
+	p := &models.Project{ID: "p-r5", State: models.ProjectStatePackGenerationDone, Domain: "acme"}
+	_ = repo.Create(context.Background(), p)
+
+	h := NewPackGenerateHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+p.ID+"/pack-generate/regenerate", strings.NewReader(`{"section":"categories","feedback":"y"}`))
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.RegenerateSection(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPackGenerate_Regenerate_ProviderError_500(t *testing.T) {
+	stub := &stubPackgenProvider{regErr: errors.New("LLM unavailable")}
+	installStubProvider(t, stub)
+
+	repo := newMockProjectRepo()
+	p := &models.Project{ID: "p-r6", State: models.ProjectStatePackGenerationDone, Domain: "acme"}
+	_ = repo.Create(context.Background(), p)
+
+	h := NewPackGenerateHandler(repo)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+p.ID+"/pack-generate/regenerate", strings.NewReader(`{"section":"categories","feedback":"y"}`))
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.RegenerateSection(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body = %s", w.Code, w.Body.String())
 	}
 }
 
@@ -484,6 +578,31 @@ func TestProjectsCreate_WizardMode_RequiresNameAndSlug(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("case %d: status = %d, want 400; body = %s", i, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestProjectsCreate_WizardMode_GetBySlugError_500(t *testing.T) {
+	swapChecker(t, &stubChecker{})
+	repo := newMockProjectRepo()
+	domainPacks := newMockDomainPackRepo()
+	domainPacks.getErr = errors.New("mongo: connection refused")
+	h := NewProjectsHandler(repo, domainPacks)
+
+	body := map[string]interface{}{
+		"name": "Acme",
+		"generate_pack": map[string]interface{}{
+			"enabled":   true,
+			"pack_name": "Acme Gaming",
+			"pack_slug": "acme-gaming",
+		},
+	}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", bytes.NewReader(buf))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body = %s", w.Code, w.Body.String())
 	}
 }
 
