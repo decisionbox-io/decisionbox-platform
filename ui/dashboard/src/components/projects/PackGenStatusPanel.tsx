@@ -285,13 +285,13 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
         <Group gap={8} justify="space-between">
           <Group gap={8}>
             <IconWand size={18} />
-            <Title order={5}>Draft pack ready</Title>
-            <Badge color="green">Awaiting review</Badge>
+            <Title order={5}>Draft pack saved</Title>
+            <Badge color="green">Saved — review and accept</Badge>
           </Group>
-          <Button onClick={handleStartDiscovery} loading={starting}>Start discovery</Button>
+          <Button onClick={handleStartDiscovery} loading={starting}>Accept &amp; start discovery</Button>
         </Group>
         <Text size="sm" c="dimmed">
-          Review what the agent generated. Use the feedback boxes to regenerate any section that needs adjustment, then click <b>Start discovery</b>.
+          The pack is saved and you can keep iterating. Each <b>Regenerate</b> below rewrites that section inline — no manual save needed. When you&apos;re happy, click <b>Accept &amp; start discovery</b> to lock the pack in and unlock the discovery agent.
         </Text>
 
         {packError && (
