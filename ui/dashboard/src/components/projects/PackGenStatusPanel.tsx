@@ -43,19 +43,25 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   // does — by handing SchemaIndexPanel an onStatusChange callback.
   const [indexStatus, setIndexStatus] = useState<SchemaIndexStatus | null>(null);
 
-  // Poll project state every 3s while the agent is generating; stop as
-  // soon as state moves out of pack_generation. The done state hands
-  // off to the static draft-preview branch and unmounts the poller.
+  // Poll project state every 3s while the agent is generating. We push
+  // the project up on any change to either `state` or
+  // `pack_gen_last_error` — the orchestrator can record a failure
+  // without flipping state (the failure surfaces in
+  // pack_gen_last_error first; the state revert lands on the next
+  // successful Mongo write). Done / failed transitions out of
+  // pack_generation eventually unmount the poller.
   useEffect(() => {
     if (project.state !== PROJECT_STATE_PACK_GENERATION) return;
     const interval = setInterval(async () => {
       try {
         const next = await api.getProject(project.id);
-        if (next.state !== project.state) onProjectChanged(next);
+        if (next.state !== project.state || next.pack_gen_last_error !== project.pack_gen_last_error) {
+          onProjectChanged(next);
+        }
       } catch { /* ignore poll errors */ }
     }, 3000);
     return () => clearInterval(interval);
-  }, [project.id, project.state, onProjectChanged]);
+  }, [project.id, project.state, project.pack_gen_last_error, onProjectChanged]);
 
   // Load the draft pack when generation finishes so we can show the
   // user what the agent produced before they commit to discovery.
@@ -217,17 +223,55 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
 
           <Stack gap={6}>
             <Group gap={6} align="center">
-              {indexReady ? <Loader size="xs" /> : <IconCircleDashed size={14} color="var(--mantine-color-gray-5)" />}
+              {project.pack_gen_last_error
+                ? <IconAlertCircle size={14} color="var(--mantine-color-red-6)" />
+                : indexReady
+                  ? <Loader size="xs" />
+                  : <IconCircleDashed size={14} color="var(--mantine-color-gray-5)" />}
               <Text size="sm" fw={500}>Step 2 of 2 — Synthesising pack</Text>
-              {indexReady && <Badge size="xs" color="blue">Running</Badge>}
+              {project.pack_gen_last_error
+                ? <Badge size="xs" color="red">Failed</Badge>
+                : indexReady
+                  ? <Badge size="xs" color="blue">Running</Badge>
+                  : null}
             </Group>
-            <Text size="xs" c="dimmed">
-              {indexReady
-                ? 'The agent is now feeding the indexed schema + your knowledge sources to the LLM. The retry loop validates the output up to 3 times before giving up.'
-                : indexHalted
-                  ? 'Skipped — schema indexing did not finish.'
-                  : 'Waits for schema indexing to finish.'}
-            </Text>
+            {project.pack_gen_last_error ? (
+              <Alert color="red" icon={<IconAlertCircle size={16} />} title="Pack synthesis failed">
+                <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{project.pack_gen_last_error}</Text>
+                <Text size="xs" c="dimmed" mt={6}>
+                  The agent retried 3 times before giving up. Common causes: HTTP timeout on a slow LLM, the model rejecting the prompt, or invalid pack JSON. <b>Back to wizard</b> takes you back to the configuration steps so you can adjust and retry.
+                </Text>
+                <Group justify="flex-end" mt="sm">
+                  <Button
+                    size="xs"
+                    color="red"
+                    loading={resetting}
+                    onClick={async () => {
+                      setResetting(true);
+                      try {
+                        const next = await api.updateProject(project.id, { state: PROJECT_STATE_PACK_GENERATION_PENDING });
+                        onProjectChanged(next);
+                        router.push(`/projects/${project.id}/generate`);
+                      } catch (e: unknown) {
+                        notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                      } finally {
+                        setResetting(false);
+                      }
+                    }}
+                  >
+                    Back to wizard
+                  </Button>
+                </Group>
+              </Alert>
+            ) : (
+              <Text size="xs" c="dimmed">
+                {indexReady
+                  ? 'The agent is now feeding the indexed schema + your knowledge sources to the LLM. The retry loop validates the output up to 3 times before giving up.'
+                  : indexHalted
+                    ? 'Skipped — schema indexing did not finish.'
+                    : 'Waits for schema indexing to finish.'}
+              </Text>
+            )}
           </Stack>
         </Stack>
       </Card>
