@@ -895,3 +895,122 @@ func TestLLMConfig_JSONRoundTrip(t *testing.T) {
 		t.Errorf("Config[api_key] = %q", decoded.Config["api_key"])
 	}
 }
+
+// --- Pack-generation lifecycle ---
+
+func TestProjectState_Constants(t *testing.T) {
+	cases := map[string]string{
+		"ProjectStatePackGenerationPending": ProjectStatePackGenerationPending,
+		"ProjectStatePackGeneration":        ProjectStatePackGeneration,
+		"ProjectStatePackGenerationDone":    ProjectStatePackGenerationDone,
+		"ProjectStateReady":                 ProjectStateReady,
+	}
+	want := map[string]string{
+		"ProjectStatePackGenerationPending": "pack_generation_pending",
+		"ProjectStatePackGeneration":        "pack_generation",
+		"ProjectStatePackGenerationDone":    "pack_generation_done",
+		"ProjectStateReady":                 "ready",
+	}
+	for k, got := range cases {
+		if got != want[k] {
+			t.Errorf("%s = %q, want %q", k, got, want[k])
+		}
+	}
+}
+
+func TestProject_EffectiveState_EmptyIsReady(t *testing.T) {
+	p := &Project{State: ""}
+	if got := p.EffectiveState(); got != ProjectStateReady {
+		t.Errorf("EffectiveState() with empty State = %q, want %q", got, ProjectStateReady)
+	}
+}
+
+func TestProject_EffectiveState_PassesThroughExplicit(t *testing.T) {
+	for _, state := range []string{
+		ProjectStatePackGenerationPending,
+		ProjectStatePackGeneration,
+		ProjectStatePackGenerationDone,
+		ProjectStateReady,
+	} {
+		p := &Project{State: state}
+		if got := p.EffectiveState(); got != state {
+			t.Errorf("EffectiveState() with State=%q = %q", state, got)
+		}
+	}
+}
+
+func TestProject_OmitEmptyState(t *testing.T) {
+	// Legacy projects (created before pack-gen) marshal without a state
+	// field; the omitempty tag is what makes that round-trip clean.
+	p := Project{ID: "legacy-1", Name: "x"}
+	data, _ := json.Marshal(p)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["state"]; ok {
+		t.Error("empty state should be omitted from JSON")
+	}
+	if _, ok := raw["generate_pack"]; ok {
+		t.Error("nil generate_pack should be omitted from JSON")
+	}
+}
+
+func TestProject_GeneratePack_JSONRoundTrip(t *testing.T) {
+	p := Project{
+		ID:    "wizard-1",
+		Name:  "Acme",
+		State: ProjectStatePackGenerationPending,
+		GeneratePack: &GeneratePackConfig{
+			Enabled:     true,
+			PackName:    "Acme Gaming",
+			PackSlug:    "acme-gaming",
+			Description: "Match-3 puzzle game with energy mechanics",
+		},
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Project
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.State != ProjectStatePackGenerationPending {
+		t.Errorf("State = %q", decoded.State)
+	}
+	if decoded.GeneratePack == nil {
+		t.Fatal("GeneratePack should round-trip non-nil")
+	}
+	if !decoded.GeneratePack.Enabled {
+		t.Error("GeneratePack.Enabled should round-trip true")
+	}
+	if decoded.GeneratePack.PackSlug != "acme-gaming" {
+		t.Errorf("PackSlug = %q", decoded.GeneratePack.PackSlug)
+	}
+	if decoded.GeneratePack.Description != "Match-3 puzzle game with energy mechanics" {
+		t.Errorf("Description = %q", decoded.GeneratePack.Description)
+	}
+}
+
+func TestGeneratePackConfig_OmitEmptyDescription(t *testing.T) {
+	cfg := GeneratePackConfig{
+		Enabled:  true,
+		PackName: "X",
+		PackSlug: "x",
+	}
+	data, _ := json.Marshal(cfg)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["description"]; ok {
+		t.Error("empty description should be omitted")
+	}
+	// enabled, pack_name, pack_slug must always be present.
+	for _, field := range []string{"enabled", "pack_name", "pack_slug"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("required field %q missing from JSON", field)
+		}
+	}
+}

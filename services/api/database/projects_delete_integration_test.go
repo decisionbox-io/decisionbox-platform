@@ -29,25 +29,23 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)
 
+	// --- seed projects collection ---
+	// Create discards any pre-set ID; we capture the auto-generated
+	// hex ObjectIDs after each call.
+	projDelDoc := &models.Project{Name: "deleted", Domain: "gaming", Category: "match3", CreatedAt: time.Now()}
+	if err := repo.Create(ctx, projDelDoc); err != nil {
+		t.Fatalf("seed deleted project: %v", err)
+	}
+	projKeepDoc := &models.Project{Name: "kept", Domain: "gaming", Category: "match3", CreatedAt: time.Now()}
+	if err := repo.Create(ctx, projKeepDoc); err != nil {
+		t.Fatalf("seed kept project: %v", err)
+	}
+	projDel := projDelDoc.ID
+	projKeep := projKeepDoc.ID
 	const (
-		projDel  = "proj-del-cascade-A" // deleted
-		projKeep = "proj-del-cascade-B" // untouched control
 		discDel  = "disc-del-A1"
 		discKeep = "disc-del-B1"
 	)
-
-	// --- seed projects collection ---
-	for _, id := range []string{projDel, projKeep} {
-		if err := repo.Create(ctx, &models.Project{
-			ID:        id,
-			Name:      id,
-			Domain:    "gaming",
-			Category:  "match3",
-			CreatedAt: time.Now(),
-		}); err != nil {
-			t.Fatalf("seed project %s: %v", id, err)
-		}
-	}
 
 	// --- seed every project_id-keyed child collection ---
 	// Each entry inserts one doc per project. Keep this list aligned
@@ -167,14 +165,11 @@ func TestInteg_ProjectRepo_DeleteCascade_NoDiscoveries(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)
 
-	const projID = "proj-del-empty"
-	if err := repo.Create(ctx, &models.Project{
-		ID:        projID,
-		Name:      "empty",
-		CreatedAt: time.Now(),
-	}); err != nil {
+	doc := &models.Project{Name: "empty", CreatedAt: time.Now()}
+	if err := repo.Create(ctx, doc); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	projID := doc.ID
 
 	// Seed an unrelated feedback row so we can prove it survives.
 	if _, err := testDB.Collection("feedback").InsertOne(ctx, bson.M{

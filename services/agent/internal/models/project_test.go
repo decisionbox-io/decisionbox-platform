@@ -317,3 +317,54 @@ func TestWarehouseConfig_ConfigMap(t *testing.T) {
 		t.Errorf("region = %q", w.Config["region"])
 	}
 }
+
+// --- Pack-generation lifecycle ---
+
+func TestProject_EffectiveState_EmptyIsReady(t *testing.T) {
+	p := &Project{State: ""}
+	if got := p.EffectiveState(); got != ProjectStateReady {
+		t.Errorf("EffectiveState() with empty State = %q, want %q", got, ProjectStateReady)
+	}
+}
+
+func TestProject_EffectiveState_PassThrough(t *testing.T) {
+	for _, state := range []string{
+		ProjectStatePackGenerationPending,
+		ProjectStatePackGeneration,
+		ProjectStatePackGenerationDone,
+		ProjectStateReady,
+	} {
+		p := &Project{State: state}
+		if got := p.EffectiveState(); got != state {
+			t.Errorf("EffectiveState(State=%q) = %q", state, got)
+		}
+	}
+}
+
+func TestProject_GeneratePack_RoundTrip(t *testing.T) {
+	p := Project{
+		ID:    "wizard-1",
+		Name:  "Acme",
+		State: ProjectStatePackGeneration,
+		GeneratePack: &GeneratePackConfig{
+			Enabled:     true,
+			PackName:    "Acme Gaming",
+			PackSlug:    "acme-gaming",
+			Description: "Match-3 puzzle game",
+		},
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Project
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.State != ProjectStatePackGeneration {
+		t.Errorf("State = %q", decoded.State)
+	}
+	if decoded.GeneratePack == nil || decoded.GeneratePack.PackSlug != "acme-gaming" {
+		t.Errorf("GeneratePack = %+v", decoded.GeneratePack)
+	}
+}

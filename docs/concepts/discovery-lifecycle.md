@@ -4,6 +4,26 @@
 
 A discovery run is the core operation of DecisionBox. The agent autonomously explores your data warehouse, finds patterns, validates them, and generates recommendations. This page explains each phase in detail.
 
+## Project state machine
+
+Every project carries a lifecycle state. Most projects spend their entire life in `ready`; only projects created via the "Generate one for me" wizard cycle through the pack-generation states.
+
+| State | Meaning | Discovery allowed? |
+|-------|---------|--------------------|
+| `pack_generation_pending` | Draft project; user is filling the wizard (sources, warehouse, providers) before launching pack-gen. | No |
+| `pack_generation` | Agent is running `--mode=pack-gen` to synthesize the domain pack. | No |
+| `pack_generation_done` | Pack is generated; awaiting the user's "Start discovery" gate. | No |
+| `ready` | Normal runtime state. | Yes |
+
+A project with no state field set is treated as `ready` (legacy behavior for projects created before pack generation existed).
+
+Transitions:
+- New project → `ready` (default for "use a built-in pack" flow).
+- New project with `generate_pack.enabled=true` → `pack_generation_pending`.
+- `pack_generation_pending` → `pack_generation` when the user posts to `/api/v1/projects/{id}/pack-generate`.
+- `pack_generation` → `pack_generation_done` when the agent finishes successfully.
+- `pack_generation_done` → `ready` when the user accepts the draft pack (PUT `/api/v1/projects/{id}` with `state: "ready"`).
+
 ## Phases Overview
 
 | Phase | What happens | Duration |

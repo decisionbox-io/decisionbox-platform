@@ -1,0 +1,295 @@
+'use client';
+
+import { ComponentType, useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import {
+  Alert, Button, Card, Group, Loader, Modal, Stack, Stepper, Text, Title,
+} from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import { IconAlertCircle, IconWand, IconUpload } from '@tabler/icons-react';
+import Shell from '@/components/layout/AppShell';
+import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
+import ProvidersPanel from '@/components/projects/ProvidersPanel';
+import {
+  api, Project,
+  PROJECT_STATE_PACK_GENERATION_PENDING,
+  PROJECT_STATE_PACK_GENERATION,
+  PROJECT_STATE_PACK_GENERATION_DONE,
+} from '@/lib/api';
+
+// KnowledgeSourcesPanel ships in the enterprise overlay only. We probe
+// for it at runtime — when present (enterprise build) we render the
+// real panel inside step 1; when absent (community build) we fall back
+// to a placeholder alert so the wizard still loads.
+type KnowledgeSourcesPanelProps = {
+  projectId: string;
+  variant: 'page' | 'wizard';
+  intro?: string;
+  onReadyChange?: (ready: boolean) => void;
+};
+
+function useKnowledgeSourcesPanel(): ComponentType<KnowledgeSourcesPanelProps> | null {
+  const [Comp, setComp] = useState<ComponentType<KnowledgeSourcesPanelProps> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    import('@/components/projects/KnowledgeSourcesPanel')
+      .then((mod) => {
+        if (!cancelled && mod?.default) setComp(() => mod.default as ComponentType<KnowledgeSourcesPanelProps>);
+      })
+      .catch(() => { /* community build — panel not present */ });
+    return () => { cancelled = true; };
+  }, []);
+  return Comp;
+}
+
+// PackGenWizardPage hosts the three-step pack-generation wizard for
+// projects in pack_generation_pending state. Existing per-project pages
+// for sources / warehouse / providers are reused via panel components,
+// so this route only owns the stepper chrome and the launch button.
+export default function PackGenWizardPage() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const [project, setProject] = useState<Project | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [active, setActive] = useState(0);
+  const [launching, setLaunching] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [discardOpened, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
+  const KnowledgeSourcesPanel = useKnowledgeSourcesPanel();
+
+  useEffect(() => {
+    api.getProject(id)
+      .then((p) => {
+        setProject(p);
+        // Send the user back to the project page if there is no draft
+        // pack-gen flow active. The project page renders its own state-
+        // specific banners (running, draft preview, ready) so we don't
+        // duplicate them here.
+        if (p.state !== PROJECT_STATE_PACK_GENERATION_PENDING) {
+          router.replace(`/projects/${id}`);
+        }
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setLoading(false));
+  }, [id, router]);
+
+  const refresh = async () => {
+    try {
+      const p = await api.getProject(id);
+      setProject(p);
+    } catch { /* ignore */ }
+  };
+
+  const warehouseReady = Boolean(project?.warehouse?.provider && (project.warehouse.datasets || []).length > 0);
+  const llmReady = Boolean(project?.llm?.provider && project?.llm?.model);
+  const embeddingReady = Boolean(project?.embedding?.provider && project?.embedding?.model);
+  const providersReady = llmReady && embeddingReady;
+
+  const handleLaunch = async () => {
+    setLaunching(true);
+    try {
+      const result = await api.packGenerate(id);
+      notifications.show({
+        title: result.async ? 'Generation started' : 'Pack generated',
+        message: result.async
+          ? 'The agent is running — you can watch progress on the project page.'
+          : `Generated in ${result.attempts} attempt${result.attempts === 1 ? '' : 's'}.`,
+        color: 'green',
+      });
+      router.push(`/projects/${id}`);
+    } catch (e: unknown) {
+      const msg = (e as Error).message;
+      // 404 surfaces as a generic message — flag the most common cause
+      // so the user knows where to look instead of staring at "not found".
+      const friendly = msg.toLowerCase().includes('not available')
+        ? 'Pack generation is not available on this deployment. Contact your administrator.'
+        : msg;
+      notifications.show({ title: 'Could not start generation', message: friendly, color: 'red' });
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    setDiscarding(true);
+    try {
+      await api.deleteProject(id);
+      notifications.show({ title: 'Draft discarded', message: 'Project removed.', color: 'gray' });
+      router.push('/');
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setDiscarding(false);
+      closeDiscard();
+    }
+  };
+
+  if (loading) return <Shell><Loader /></Shell>;
+  if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
+  if (!project) return <Shell><Text>Project not found</Text></Shell>;
+
+  // Once we know the project is being generated or done, the redirect
+  // effect above kicks in. Render nothing extra to avoid flashing the
+  // wizard chrome on the way out.
+  if (project.state === PROJECT_STATE_PACK_GENERATION || project.state === PROJECT_STATE_PACK_GENERATION_DONE) {
+    return <Shell><Loader /></Shell>;
+  }
+
+  const breadcrumb = [
+    { label: 'Projects', href: '/' },
+    { label: project.name, href: `/projects/${id}` },
+    { label: 'Generate pack' },
+  ];
+
+  const topActions = (
+    <Group gap="xs">
+      <Button variant="subtle" size="xs" onClick={() => router.push('/')}>Save and finish later</Button>
+      <Button variant="subtle" color="red" size="xs" onClick={openDiscard}>Discard</Button>
+    </Group>
+  );
+
+  return (
+    <Shell breadcrumb={breadcrumb} actions={topActions}>
+      <Stack gap="lg" maw={720}>
+        <Stack gap={4}>
+          <Group gap={8}>
+            <IconWand size={20} />
+            <Title order={3}>Generate domain pack</Title>
+          </Group>
+          <Text size="sm" c="dimmed">
+            <b>{project.generate_pack?.pack_name}</b>
+            {' '}({project.generate_pack?.pack_slug})
+          </Text>
+        </Stack>
+
+        <Stepper active={active} onStepClick={setActive} allowNextStepsSelect={false}>
+          <Stepper.Step label="LLM + embedding" description="Required to index sources">
+            <Card withBorder p="lg" mt="md">
+              <Stack>
+                <Text size="sm" c="dimmed">
+                  Pack generation runs against your LLM provider, and knowledge sources are indexed by your embedding provider. Configure both before uploading sources.
+                </Text>
+                <ProvidersPanel projectId={id} variant="wizard" onSaved={(saved) => {
+                  setProject(saved);
+                  if (saved.llm?.provider && saved.llm?.model && saved.embedding?.provider && saved.embedding?.model) {
+                    setActive(1);
+                  }
+                }} />
+              </Stack>
+            </Card>
+          </Stepper.Step>
+
+          <Stepper.Step label="Knowledge sources" description="What the LLM will read">
+            {!providersReady ? (
+              <Card withBorder p="lg" mt="md">
+                <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Configure providers first">
+                  <Text size="sm">
+                    Knowledge sources are embedded as soon as you upload them, so an embedding provider must already be saved. Go back to step 1 and finish configuring LLM + embedding before adding sources.
+                  </Text>
+                </Alert>
+              </Card>
+            ) : KnowledgeSourcesPanel ? (
+              <div style={{ marginTop: 'var(--mantine-spacing-md)' }}>
+                <KnowledgeSourcesPanel
+                  projectId={id}
+                  variant="wizard"
+                  intro="Upload website URLs, DOCX/XLSX/CSV/MD/TXT files, or paste free-text notes describing your business. The agent embeds these and uses them — together with your warehouse schema — to synthesize the pack."
+                />
+              </div>
+            ) : (
+              <Card withBorder p="lg" mt="md">
+                <Stack>
+                  <Group gap={6}>
+                    <IconUpload size={18} />
+                    <Title order={5}>Knowledge sources</Title>
+                  </Group>
+                  <Text size="sm" c="dimmed">
+                    Upload website URLs, DOCX/XLSX/CSV/MD/TXT files, or paste free-text notes describing your business. The agent embeds these and uses them — together with your warehouse schema — to synthesize the pack.
+                  </Text>
+                  <Alert color="blue" icon={<IconAlertCircle size={16} />} title="Knowledge sources panel not loaded">
+                    This deployment does not have the knowledge-sources plugin installed. Pack generation is unlikely to produce a useful result without sources.
+                  </Alert>
+                </Stack>
+              </Card>
+            )}
+          </Stepper.Step>
+
+          <Stepper.Step label="Warehouse" description="Connect your data">
+            <Card withBorder p="lg" mt="md">
+              <WarehouseConfigPanel projectId={id} variant="wizard" onSaved={(saved) => {
+                setProject(saved);
+                if (saved.warehouse?.provider && (saved.warehouse.datasets || []).length > 0) {
+                  setActive(3);
+                }
+              }} />
+            </Card>
+          </Stepper.Step>
+
+          <Stepper.Step label="Generate" description="Run the agent">
+            <Card withBorder p="lg" mt="md">
+              <Stack>
+                <Title order={5}>Ready to generate</Title>
+                <Text size="sm" c="dimmed">
+                  When you click <b>Generate</b>, the agent reads your knowledge sources and warehouse schema and produces a complete domain pack. You&apos;ll review the result before discovery starts.
+                </Text>
+                {project.pack_gen_last_error && (
+                  <Alert color="red" icon={<IconAlertCircle size={16} />} title="Last attempt failed">
+                    <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{project.pack_gen_last_error}</Text>
+                    <Text size="xs" c="dimmed" mt={6}>
+                      The agent retried 3 times before giving up. Common fixes: add more focused knowledge sources, sharpen the pack description, or pick a more capable LLM.
+                    </Text>
+                  </Alert>
+                )}
+                <SummaryRow label="Pack name" value={project.generate_pack?.pack_name || ''} />
+                <SummaryRow label="Pack slug" value={project.generate_pack?.pack_slug || ''} />
+                <SummaryRow label="LLM" value={llmReady ? `${project.llm.provider} / ${project.llm.model}` : 'Not configured'} ok={llmReady} />
+                <SummaryRow label="Embedding" value={embeddingReady ? `${project.embedding.provider} / ${project.embedding.model}` : 'Not configured'} ok={embeddingReady} />
+                <SummaryRow label="Warehouse" value={warehouseReady ? `${project.warehouse.provider} / ${(project.warehouse.datasets || []).join(', ')}` : 'Not configured'} ok={warehouseReady} />
+                <Group justify="flex-end" mt="sm">
+                  <Button onClick={handleLaunch} loading={launching} disabled={!warehouseReady || !providersReady}>
+                    Generate pack
+                  </Button>
+                </Group>
+              </Stack>
+            </Card>
+          </Stepper.Step>
+        </Stepper>
+
+        <Group justify="space-between">
+          <Button variant="default" onClick={() => setActive((c) => Math.max(0, c - 1))} disabled={active === 0}>Back</Button>
+          {active < 3 && (
+            <Button
+              onClick={() => setActive((c) => c + 1)}
+              disabled={(active === 0 && !providersReady) || (active === 2 && !warehouseReady)}
+            >
+              Next
+            </Button>
+          )}
+        </Group>
+      </Stack>
+
+      <Modal opened={discardOpened} onClose={closeDiscard} title="Discard this draft?" centered>
+        <Stack>
+          <Text size="sm">
+            This deletes the project and any uploaded knowledge sources. This cannot be undone.
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={closeDiscard} disabled={discarding}>Cancel</Button>
+            <Button color="red" loading={discarding} onClick={handleDiscard}>Discard</Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </Shell>
+  );
+}
+
+function SummaryRow({ label, value, ok }: { label: string; value: string; ok?: boolean }) {
+  return (
+    <Group justify="space-between">
+      <Text size="sm" c="dimmed">{label}</Text>
+      <Text size="sm" c={ok === false ? 'red' : undefined}>{value || '—'}</Text>
+    </Group>
+  );
+}

@@ -1,103 +1,54 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Collapse, Divider, Group, Loader, Modal, MultiSelect,
+  ActionIcon, Alert, Button, Checkbox, CloseButton, Divider, Group, Loader, Modal, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconCheck, IconPlus, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
+import { IconAlertCircle, IconPlus } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
-import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
-import { api, Project, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
+import ProvidersPanel from '@/components/projects/ProvidersPanel';
+import { api, Project, ProviderMeta } from '@/lib/api';
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+
   const [project, setProject] = useState<Project | null>(null);
-  const [warehouseProviders, setWarehouseProviders] = useState<ProviderMeta[]>([]);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Form state
+  // General tab state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [whProvider, setWhProvider] = useState('');
-  const [whConfig, setWhConfig] = useState<Record<string, string>>({});
-  const [datasets, setDatasets] = useState('');
-  const [filterField, setFilterField] = useState('');
-  const [filterValue, setFilterValue] = useState('');
-  const [llmProvider, setLlmProvider] = useState('');
-  const [llmModel, setLlmModel] = useState('');
-  const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
-  const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
-  const [liveError, setLiveError] = useState<string | null>(null);
-  const [liveLoading, setLiveLoading] = useState(false);
-  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
-  // Monotonic id guards against out-of-order responses if the user
-  // triggers multiple refreshes or the auto-refresh-on-mount overlaps
-  // with a manual click.
-  const liveReqIdRef = useRef(0);
+  const [savingGeneral, setSavingGeneral] = useState(false);
+
+  // Schedule tab state
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   const [maxSteps, setMaxSteps] = useState(100);
-  // Debug-logs visibility is a client-side-only preference (it controls
-  // whether the live-run panel on the project page renders the verbose
-  // per-query debug tail). It's kept in localStorage, not on the project
-  // document — no server round-trip needed, and nothing the agent cares
-  // about. Keyed per-project so different projects can keep different
-  // defaults.
-  const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+
+  // Profile tab state
   const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
-  const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
-  const [newSecretValue, setNewSecretValue] = useState('');
-  const [newWhCredential, setNewWhCredential] = useState('');
-  const [savingSecret, setSavingSecret] = useState(false);
-  const [savingWhCredential, setSavingWhCredential] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
 
-  // Embedding state
-  const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
-  // Unified embedding editor state. Parallels the blurb editor state
-  // shape so both settings panels follow the same "edit here → save
-  // via project PUT + secret rotation" pattern.
-  const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
-  const [savingEmbKey, setSavingEmbKey] = useState(false);
-
-  // Blurb LLM state — per-project override for the schema-indexing
-  // model (PLAN-SCHEMA-RETRIEVAL.md §6.2). Disabled by default; the
-  // agent falls back to project.llm + llm-api-key when blurb_llm is nil.
+  // Blurb tab state
   const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
-  const [savingBlurbKey, setSavingBlurbKey] = useState(false);
+  const [savingBlurb, setSavingBlurb] = useState(false);
 
-  // Warn on browser close/refresh with unsaved changes
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (!dirty) return;
-      e.preventDefault();
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  // Advanced — local-only preference, not on the project document.
+  const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
 
-  // Load the debug-logs preference from localStorage. Kept separate from
-  // the project save cycle because this is purely a local UI preference —
-  // doesn't go to the server, doesn't count as "dirty".
-  useEffect(() => {
-    if (typeof window === 'undefined' || !id) return;
-    setDebugLogsEnabled(window.localStorage.getItem(`db:showDebugLogs:${id}`) === '1');
-  }, [id]);
-
-  // Active tab — defaults to "general" but honours `location.hash` so
-  // deep-links like `/projects/:id/settings#advanced` open the right tab.
-  // The set of valid tab values must match the `<Tabs.Tab value=...>` IDs
-  // below; an unknown hash is ignored.
-  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'embedding', 'schedule', 'profile', 'advanced'];
+  // Tab routing — honor `location.hash` so deep-links like
+  // `/projects/:id/settings#advanced` open the right tab.
+  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'schedule', 'profile', 'advanced'];
   const [activeTab, setActiveTab] = useState<string>('general');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -112,234 +63,50 @@ export default function ProjectSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Intercept client-side navigation when dirty
-  const router = useRouter();
-  const guardedNavigate = useCallback((href: string) => {
-    if (!dirty || window.confirm('You have unsaved changes. Leave without saving?')) {
-      router.push(href);
-    }
-  }, [dirty, router]);
-
-  // Intercept sidebar/breadcrumb link clicks when dirty
   useEffect(() => {
-    if (!dirty) return;
-    const handler = (e: MouseEvent) => {
-      const anchor = (e.target as HTMLElement).closest('a[href]') as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute('href');
-      if (!href || href.startsWith('http') || href.startsWith('#')) return;
-      // Allow clicks within the same settings page
-      if (href.includes('/settings')) return;
-      e.preventDefault();
-      e.stopPropagation();
-      guardedNavigate(href);
-    };
-    document.addEventListener('click', handler, true);
-    return () => document.removeEventListener('click', handler, true);
-  }, [dirty, guardedNavigate]);
+    if (typeof window === 'undefined' || !id) return;
+    setDebugLogsEnabled(window.localStorage.getItem(`db:showDebugLogs:${id}`) === '1');
+  }, [id]);
 
   useEffect(() => {
-    Promise.all([
-      api.getProject(id),
-      api.listWarehouseProviders(),
-      api.listLLMProviders(),
-      api.listEmbeddingProviders(),
-    ])
-      .then(([proj, whProvs, llmProvs, embProvs]) => {
+    Promise.all([api.getProject(id), api.listLLMProviders()])
+      .then(([proj, llmProvs]) => {
         setProject(proj);
-        setWarehouseProviders(whProvs);
         setLlmProviders(llmProvs);
-        setEmbeddingProviders(embProvs || []);
-
         setName(proj.name);
         setDescription(proj.description || '');
-        setWhProvider(proj.warehouse.provider);
-        setWhConfig({
-          project_id: proj.warehouse.project_id || '',
-          location: proj.warehouse.location || '',
-          ...(proj.warehouse.config || {}),
-        });
-        setDatasets((proj.warehouse.datasets || []).join(', '));
-        setFilterField(proj.warehouse.filter_field || '');
-        setFilterValue(proj.warehouse.filter_value || '');
-        setLlmProvider(proj.llm.provider);
-        setLlmModel(proj.llm.model);
-        setLlmConfig(proj.llm.config || {});
-
-        // Auto-refresh the model list on page load so the settings
-        // picker is immediately populated. We swallow any error here —
-        // the refresh button is visible for retry and the user can
-        // still type a model ID by hand.
-        if (proj.llm.provider) {
-          const reqId = ++liveReqIdRef.current;
-          api.listLiveLLMModelsForProject(proj.id)
-            .then((resp) => {
-              if (reqId !== liveReqIdRef.current) return;
-              setLiveModels(resp.models);
-              if (resp.live_error) setLiveError(resp.live_error);
-            })
-            .catch((e) => {
-              if (reqId !== liveReqIdRef.current) return;
-              setLiveError((e as Error).message);
-            });
-        }
-        setEmbedding({
-          provider: proj.embedding?.provider || '',
-          model: proj.embedding?.model || '',
-          config: {},
-          // Saved key never round-trips back from the server — user
-          // re-enters only when rotating.
-          apiKey: '',
-        });
-        // Blurb LLM: hydrate from the saved project doc. When
-        // blurb_llm is nil the editor renders "use analysis LLM".
+        setScheduleEnabled(proj.schedule?.enabled || false);
+        setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
+        setMaxSteps(proj.schedule?.max_steps || 100);
+        setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           setBlurb({
             enabled: true,
             provider: proj.blurb_llm.provider,
             model: proj.blurb_llm.model || '',
             config: proj.blurb_llm.config || {},
-            apiKey: '', // API key is never sent back — user re-enters to rotate.
+            apiKey: '',
           });
-        } else {
-          setBlurb(emptyBlurbLLMState());
         }
-        setScheduleEnabled(proj.schedule?.enabled || false);
-        setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
-        setMaxSteps(proj.schedule?.max_steps || 100);
-        setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
-
-        api.getProfileSchema(proj.domain, proj.category)
-          .then(setProfileSchema)
-          .catch(() => {});
-
-        api.listSecrets(proj.id || id)
-          .then((s) => setSecretsList(s || []))
-          .catch(() => {});
+        if (proj.domain) {
+          api.getProfileSchema(proj.domain, proj.category)
+            .then(setProfileSchema)
+            .catch(() => {});
+        }
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));
   }, [id]);
 
-  const handleSave = async () => {
-    setSaving(true);
+  const refreshProject = useCallback(async () => {
     try {
-      const datasetsList = datasets.split(',').map((d) => d.trim()).filter(Boolean);
-
-      const saved = await api.updateProject(id, {
-        name,
-        description,
-        domain: project!.domain,
-        category: project!.category,
-        warehouse: {
-          provider: whProvider,
-          project_id: whConfig['project_id'] || '',
-          datasets: datasetsList,
-          location: whConfig['location'] || '',
-          filter_field: filterField,
-          filter_value: filterValue,
-          config: Object.fromEntries(
-            Object.entries(whConfig).filter(([k]) => k !== 'project_id' && k !== 'location' && k !== 'dataset')
-          ),
-        },
-        llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-        // When the user toggles the blurb override off, send blurb_llm
-        // with empty strings — the Go JSON unmarshaller drops it with
-        // `omitempty` via the pointer type, which tells the indexer to
-        // fall back to the analysis LLM on the next run.
-        blurb_llm:
-          blurb.enabled && blurb.provider && blurb.model
-            ? {
-                provider: blurb.provider,
-                model: blurb.model,
-                config: Object.fromEntries(
-                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key')
-                ),
-              }
-            : undefined,
-        embedding: { provider: embedding.provider, model: embedding.model },
-        schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
-        profile,
-      });
-
-      // Rotate the blurb-LLM api key if the user entered one. A blank
-      // field means "leave the stored key alone" — we never auto-delete
-      // the secret on save.
-      if (blurb.enabled && blurb.apiKey) {
-        try {
-          setSavingBlurbKey(true);
-          await api.setSecret(id, 'blurb-llm-api-key', blurb.apiKey);
-          setBlurb((prev) => ({ ...prev, apiKey: '' }));
-        } catch (e: unknown) {
-          notifications.show({ title: 'Blurb LLM key save failed', message: (e as Error).message, color: 'red' });
-        } finally {
-          setSavingBlurbKey(false);
-        }
-      }
-
-      // Same pattern for the embedding api key — blank field means
-      // "keep the stored key", any value rotates.
-      if (embedding.apiKey) {
-        try {
-          setSavingEmbKey(true);
-          await api.setSecret(id, 'embedding-api-key', embedding.apiKey);
-          setEmbedding((prev) => ({ ...prev, apiKey: '' }));
-          // Refresh the secrets list so the panel's "Current key" hint
-          // reflects the new mask without a page reload.
-          api.listSecrets(id).then((s) => setSecretsList(s || [])).catch(() => {});
-        } catch (e: unknown) {
-          notifications.show({ title: 'Embedding key save failed', message: (e as Error).message, color: 'red' });
-        } finally {
-          setSavingEmbKey(false);
-        }
-      }
-
-      // Sync local project state with the saved payload so derived
-      // flags (e.g. setupMode = llmProvider !== project.llm.provider)
-      // recompute correctly without a page reload. The API returns
-      // the updated project; fall back to a merge when it doesn't.
-      setProject((prev) => {
-        if (saved) return saved;
-        if (!prev) return prev;
-        return {
-          ...prev,
-          name, description,
-          warehouse: { ...prev.warehouse, provider: whProvider, datasets: datasetsList, location: whConfig['location'] || '', filter_field: filterField, filter_value: filterValue, project_id: whConfig['project_id'] || '', config: prev.warehouse.config },
-          llm: { provider: llmProvider, model: llmModel, config: llmConfig },
-          embedding: { ...(prev.embedding || {}), provider: embedding.provider, model: embedding.model },
-          schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
-          profile,
-        };
-      });
-
-      setDirty(false);
-
-      // If the provider changed, we're now entering normal mode and
-      // want the new provider's live model list right away. Kick off
-      // an auto-refresh so the model picker is populated without
-      // requiring the user to click Refresh.
-      if (saved && saved.llm?.provider) {
-        const reqId = ++liveReqIdRef.current;
-        api.listLiveLLMModelsForProject(saved.id)
-          .then((resp) => {
-            if (reqId !== liveReqIdRef.current) return;
-            setLiveModels(resp.models);
-            if (resp.live_error) setLiveError(resp.live_error);
-            else setLiveError(null);
-          })
-          .catch((e) => {
-            if (reqId !== liveReqIdRef.current) return;
-            setLiveError((e as Error).message);
-          });
-      }
-
-      notifications.show({ title: 'Saved', message: 'Project settings updated', color: 'green' });
-    } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setSaving(false);
+      const proj = await api.getProject(id);
+      setProject(proj);
+    } catch {
+      // Refresh failures are non-fatal — the panel that just saved
+      // already updated its own local state.
     }
-  };
+  }, [id]);
 
   const breadcrumb = project
     ? [{ label: 'Projects', href: '/' }, { label: project.name, href: `/projects/${id}` }, { label: 'Settings' }]
@@ -349,32 +116,77 @@ export default function ProjectSettingsPage() {
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
   if (!project) return <Shell><Text>Project not found</Text></Shell>;
 
-  const selectedWh = warehouseProviders.find((p) => p.id === whProvider);
-  const selectedLlm = llmProviders.find((p) => p.id === llmProvider);
+  const saveGeneral = async () => {
+    setSavingGeneral(true);
+    try {
+      const saved = await api.updateProject(id, { name, description });
+      setProject(saved);
+      notifications.show({ title: 'Saved', message: 'General settings updated', color: 'green' });
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingGeneral(false);
+    }
+  };
 
-  const saveButton = (
-    <button onClick={handleSave} disabled={saving} style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      background: 'var(--db-text-primary)', color: '#fff',
-      border: 'none', borderRadius: 6, padding: '6px 14px',
-      fontSize: 13, fontWeight: 500, cursor: saving ? 'default' : 'pointer',
-      fontFamily: 'inherit', opacity: saving ? 0.5 : 1,
-      transition: 'background 120ms ease',
-    }}
-    onMouseEnter={e => { if (!saving) e.currentTarget.style.background = '#333'; }}
-    onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
-    >
-      <IconCheck size={14} />
-      {saving ? 'Saving...' : 'Save settings'}
-    </button>
-  );
+  const saveSchedule = async () => {
+    setSavingSchedule(true);
+    try {
+      const saved = await api.updateProject(id, {
+        schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
+      });
+      setProject(saved);
+      notifications.show({ title: 'Saved', message: 'Schedule updated', color: 'green' });
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const saveProfile = async () => {
+    setSavingProfile(true);
+    try {
+      const saved = await api.updateProject(id, { profile });
+      setProject(saved);
+      notifications.show({ title: 'Saved', message: 'Profile updated', color: 'green' });
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const saveBlurb = async () => {
+    setSavingBlurb(true);
+    try {
+      const saved = await api.updateProject(id, {
+        blurb_llm:
+          blurb.enabled && blurb.provider && blurb.model
+            ? {
+                provider: blurb.provider,
+                model: blurb.model,
+                config: Object.fromEntries(
+                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key'),
+                ),
+              }
+            : undefined,
+      });
+      if (blurb.enabled && blurb.apiKey) {
+        await api.setSecret(id, 'blurb-llm-api-key', blurb.apiKey);
+        setBlurb((prev) => ({ ...prev, apiKey: '' }));
+      }
+      setProject(saved);
+      notifications.show({ title: 'Saved', message: 'Blurb LLM updated', color: 'green' });
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingBlurb(false);
+    }
+  };
 
   return (
-    <Shell breadcrumb={breadcrumb} actions={saveButton}>
-      {/* `value` + `onChange` (not `defaultValue`) so the tab is
-          controlled; `useEffect` below reads `location.hash` on mount
-          and on hashchange, letting deep-links like
-          `/projects/:id/settings#advanced` open the right tab. */}
+    <Shell breadcrumb={breadcrumb}>
       <Tabs value={activeTab} onChange={(v) => { if (v) setActiveTab(v); }} styles={{
         tab: { fontSize: 13, fontWeight: 500, padding: '8px 16px' },
         panel: { paddingTop: 20 },
@@ -382,454 +194,92 @@ export default function ProjectSettingsPage() {
         <Tabs.List>
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
-          <Tabs.Tab value="ai">AI Provider</Tabs.Tab>
+          <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>
           <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>
-          <Tabs.Tab value="embedding">Embedding &amp; Search</Tabs.Tab>
           <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
           <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
         </Tabs.List>
 
-        {/* General */}
         <Tabs.Panel value="general">
           <SettingsSection>
-            <TextInput label="Project Name" required value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} />
-            <Textarea label="Description" value={description} onChange={(e) => { setDescription(e.target.value); setDirty(true); }} />
+            <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} />
+            <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
             <Group>
               <TextInput label="Domain" value={project.domain} disabled style={{ flex: 1 }} />
               <TextInput label="Category" value={project.category} disabled style={{ flex: 1 }} />
             </Group>
-          </SettingsSection>
-        </Tabs.Panel>
-
-        {/* Data Warehouse */}
-        <Tabs.Panel value="warehouse">
-          <SettingsSection>
-            <Select label="Provider" data={warehouseProviders.map((p) => ({ value: p.id, label: p.name }))}
-              value={whProvider} onChange={(v) => { setWhProvider(v || ''); setDirty(true); }} />
-            {selectedWh?.description && <Text size="xs" c="dimmed">{selectedWh.description}</Text>}
-
-            {selectedWh?.config_fields
-              .filter((f) => f.key !== 'dataset')
-              .map((field) => (
-                <DynamicField key={field.key} field={field}
-                  value={whConfig[field.key] || ''}
-                  onChange={(val) => { setWhConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
-              ))}
-
-            {(selectedWh?.auth_methods?.length ?? 0) > 0 && (
-              <>
-                <Select label="Authentication" size="xs"
-                  key={`auth-${whProvider}`}
-                  data={selectedWh!.auth_methods!.map((m) => ({ value: m.id, label: m.name }))}
-                  value={whConfig['auth_method'] || ''}
-                  onChange={(v) => {
-                    // Clear stale keys from previous auth method
-                    const allAuthKeys: string[] = [];
-                    for (const m of selectedWh!.auth_methods!) {
-                      for (const f of (m.fields || [])) { allAuthKeys.push(f.key); }
-                    }
-                    setWhConfig((prev) => {
-                      const next: Record<string, string> = { ...prev, auth_method: v || '' };
-                      for (const k of allAuthKeys) { delete next[k]; }
-                      return next;
-                    });
-                    setDirty(true);
-                  }} />
-                {(() => {
-                  const am = selectedWh!.auth_methods!.find((m) => m.id === whConfig['auth_method']);
-                  if (!am) return null;
-                  const fields = am.fields || [];
-                  const configFields = fields.filter((f) => f.type !== 'credential');
-                  const credField = fields.find((f) => f.type === 'credential');
-                  return (
-                    <>
-                      {am.description && <Text size="xs" c="dimmed">{am.description}</Text>}
-                      {configFields.map((field) => (
-                        <DynamicField key={field.key} field={field}
-                          value={whConfig[field.key] || ''}
-                          onChange={(val) => { setWhConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }} />
-                      ))}
-                      {credField && (
-                        <>
-                          {secretsList.some((s) => s.key === 'warehouse-credentials') && (
-                            <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
-                              <Group gap="xs">
-                                <IconShieldCheck size={14} color="var(--db-green-text)" />
-                                <Text size="xs" fw={500}>{credField.label} saved</Text>
-                                <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                                  {secretsList.find((s) => s.key === 'warehouse-credentials')?.masked}
-                                </Text>
-                              </Group>
-                            </div>
-                          )}
-                          <Textarea size="xs"
-                            label={`Update ${credField.label}`}
-                            placeholder={credField.placeholder || `Enter ${credField.label.toLowerCase()}`}
-                            description={(credField.description || '') + ' Stored encrypted. Leave empty to keep current.'}
-                            value={newWhCredential}
-                            onChange={(e) => setNewWhCredential(e.target.value)}
-                            minRows={2} autosize
-                            styles={{ input: { fontFamily: 'monospace', fontSize: '12px' } }}
-                          />
-                          <Button size="xs" loading={savingWhCredential} disabled={!newWhCredential}
-                            onClick={async () => {
-                              setSavingWhCredential(true);
-                              try {
-                                await api.setSecret(id, 'warehouse-credentials', newWhCredential);
-                                setNewWhCredential('');
-                                notifications.show({ title: 'Saved', message: 'Warehouse credentials updated', color: 'green' });
-                                const updated = await api.listSecrets(id);
-                                setSecretsList(updated || []);
-                              } catch (e: unknown) {
-                                notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                              } finally {
-                                setSavingWhCredential(false);
-                              }
-                            }}>
-                            Update Credential
-                          </Button>
-                        </>
-                      )}
-                    </>
-                  );
-                })()}
-              </>
-            )}
-
-            <TextInput label="Datasets" description="Comma-separated dataset names"
-              placeholder="events_prod, features_prod"
-              value={datasets} onChange={(e) => { setDatasets(e.target.value); setDirty(true); }} />
-
-            <div style={{ fontSize: 13, fontWeight: 500, marginTop: 8 }}>Filter (optional)</div>
-            <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
-            <Group grow>
-              <TextInput label="Filter Field" placeholder="app_id" value={filterField}
-                onChange={(e) => { setFilterField(e.target.value); setDirty(true); }} />
-              <TextInput label="Filter Value" placeholder="my-app-123" value={filterValue}
-                onChange={(e) => { setFilterValue(e.target.value); setDirty(true); }} />
+            <Group justify="flex-end">
+              <Button onClick={saveGeneral} loading={savingGeneral}>Save general</Button>
             </Group>
-
-            <TestConnectionButton projectId={id} target="warehouse" disabled={dirty} />
           </SettingsSection>
         </Tabs.Panel>
 
-        {/* AI Provider */}
+        <Tabs.Panel value="warehouse">
+          <WarehouseConfigPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
+        </Tabs.Panel>
+
         <Tabs.Panel value="ai">
-          <SettingsSection>
-            {(() => {
-              // Two-mode layout:
-              //
-              //   setupMode (provider changed, not saved yet) — show
-              //   only provider select + connection params + API key.
-              //   Hide model picker / refresh / wire_override / test
-              //   connection; those need a saved provider to be useful.
-              //   A single banner tells the user to save to continue.
-              //
-              //   normalMode (provider matches saved) — full UI.
-              const savedProvider = project.llm.provider || '';
-              const setupMode = llmProvider !== savedProvider;
-
-              const providerSelect = (
-                <>
-                  <Select
-                    label="LLM Provider"
-                    data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
-                    value={llmProvider}
-                    onChange={(v) => {
-                      setLlmProvider(v || '');
-                      setLlmModel('');
-                      setLlmConfig({});
-                      // Cancel any in-flight live-list request from the
-                      // old provider so its late-landing response can't
-                      // overwrite our cleared state.
-                      liveReqIdRef.current++;
-                      setLiveModels(null);
-                      setLiveError(null);
-                      setDirty(true);
-                    }}
-                  />
-                  {selectedLlm?.description && (
-                    <Text size="xs" c="dimmed">{selectedLlm.description}</Text>
-                  )}
-                </>
-              );
-
-              const connectionParams = selectedLlm?.config_fields
-                .filter((f) => f.key !== 'model' && f.key !== 'api_key' && f.key !== 'wire_override')
-                .map((field) => (
-                  <CatalogAwareField
-                    key={field.key}
-                    field={field}
-                    providerMeta={selectedLlm}
-                    value={llmConfig[field.key] || ''}
-                    onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [field.key]: val })); setDirty(true); }}
-                  />
-                ));
-
-              const apiKeySection = selectedLlm?.config_fields.some((f) => f.key === 'api_key') ? (
-                <>
-                  {secretsList.some((s) => s.key === 'llm-api-key') && !setupMode && (
-                    <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
-                      <Group gap="xs">
-                        <IconShieldCheck size={14} color="var(--db-green-text)" />
-                        <Text size="xs" fw={500}>API Key saved</Text>
-                        <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                          {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
-                        </Text>
-                      </Group>
-                    </div>
-                  )}
-                  <Group gap="xs" align="end">
-                    <TextInput
-                      label={setupMode ? 'API Key' : 'Update API Key'}
-                      size="xs"
-                      style={{ flex: 1 }}
-                      placeholder="Enter API key"
-                      value={newSecretValue}
-                      onChange={(e) => setNewSecretValue(e.target.value)}
-                      type="password"
-                      description="Stored encrypted. Leave empty to keep current."
-                    />
-                    <Button
-                      size="xs"
-                      loading={savingSecret}
-                      disabled={!newSecretValue}
-                      onClick={async () => {
-                        setSavingSecret(true);
-                        try {
-                          await api.setSecret(id, 'llm-api-key', newSecretValue);
-                          setNewSecretValue('');
-                          notifications.show({ title: 'Saved', message: 'LLM API key updated', color: 'green' });
-                          const updated = await api.listSecrets(id);
-                          setSecretsList(updated || []);
-                        } catch (e: unknown) {
-                          notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-                        } finally {
-                          setSavingSecret(false);
-                        }
-                      }}
-                    >
-                      {setupMode ? 'Save Key' : 'Update Key'}
-                    </Button>
-                  </Group>
-                </>
-              ) : selectedLlm ? (
-                <Text size="xs" c="dimmed">This provider uses cloud credentials. No API key needed.</Text>
-              ) : null;
-
-              if (setupMode) {
-                return (
-                  <>
-                    {providerSelect}
-                    {llmProvider && (
-                      <>
-                        <Alert color="blue" icon={<IconAlertCircle size={16} />} title="Finish switching to this provider">
-                          <Text size="sm">
-                            Fill in the connection details below and click <b>Save settings</b> in the top bar.
-                            The model picker and connection test will appear after saving.
-                          </Text>
-                        </Alert>
-                        {connectionParams}
-                        {apiKeySection}
-                      </>
-                    )}
-                  </>
-                );
-              }
-
-              // Normal mode — provider saved, show everything.
-              return (
-                <>
-                  {providerSelect}
-                  {connectionParams}
-                  {apiKeySection}
-
-                  {selectedLlm && (
-                    <LiveModelCombobox
-                      providerMeta={selectedLlm}
-                      liveModels={liveModels}
-                      value={llmModel}
-                      onChange={(val) => { setLlmModel(val); setDirty(true); }}
-                    />
-                  )}
-
-                  {selectedLlm && (
-                    <Group gap="xs">
-                      <Button
-                        size="xs"
-                        variant="subtle"
-                        loading={liveLoading}
-                        disabled={dirty}
-                        onClick={async () => {
-                          const reqId = ++liveReqIdRef.current;
-                          setLiveLoading(true);
-                          setLiveError(null);
-                          try {
-                            const resp = await api.listLiveLLMModelsForProject(id);
-                            if (reqId !== liveReqIdRef.current) return;
-                            setLiveModels(resp.models);
-                            if (resp.live_error) setLiveError(resp.live_error);
-                            const fromUpstream = resp.models.filter((m) => m.source === 'live' || m.source === 'both').length;
-                            notifications.show({
-                              title: fromUpstream > 0 ? 'Models refreshed' : 'Live fetch returned no models',
-                              message:
-                                fromUpstream > 0
-                                  ? `${fromUpstream} model${fromUpstream === 1 ? '' : 's'} loaded`
-                                  : resp.live_error
-                                    ? 'Upstream rejected the request — see details below.'
-                                    : 'Upstream returned zero models for your region/credentials.',
-                              color: fromUpstream > 0 ? 'green' : 'orange',
-                            });
-                          } catch (e: unknown) {
-                            if (reqId !== liveReqIdRef.current) return;
-                            setLiveError((e as Error).message);
-                            notifications.show({ title: 'Could not refresh', message: (e as Error).message, color: 'orange' });
-                          } finally {
-                            if (reqId === liveReqIdRef.current) setLiveLoading(false);
-                          }
-                        }}
-                      >
-                        Refresh model list
-                      </Button>
-                      {dirty ? (
-                        <Text size="xs" c="dimmed">Save changes before refreshing.</Text>
-                      ) : liveModels !== null ? (
-                        (() => {
-                          const fromUpstream = liveModels.filter((m) => m.source === 'live' || m.source === 'both').length;
-                          return (
-                            <Text size="xs" c="dimmed">
-                              {fromUpstream} model{fromUpstream === 1 ? '' : 's'} · refreshed from provider
-                            </Text>
-                          );
-                        })()
-                      ) : null}
-                    </Group>
-                  )}
-                  {liveError && (
-                    <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
-                      {liveError}
-                    </Alert>
-                  )}
-
-                  {(() => {
-                    const wireField = selectedLlm?.config_fields.find((f) => f.key === 'wire_override');
-                    if (!wireField) return null;
-                    const wireKnown = modelWireIsKnown(liveModels, selectedLlm ?? null, llmModel);
-                    const renderField = (
-                      <CatalogAwareField
-                        field={wireField}
-                        providerMeta={selectedLlm}
-                        value={llmConfig[wireField.key] || ''}
-                        onChange={(val) => { setLlmConfig((prev) => ({ ...prev, [wireField.key]: val })); setDirty(true); }}
-                      />
-                    );
-                    if (!wireKnown) return renderField;
-                    return (
-                      <>
-                        <Button
-                          variant="subtle"
-                          size="xs"
-                          onClick={() => setShowAdvancedLLM((v) => !v)}
-                          style={{ alignSelf: 'flex-start' }}
-                        >
-                          {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
-                        </Button>
-                        <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
-                      </>
-                    );
-                  })()}
-
-                  <TestConnectionButton projectId={id} target="llm" disabled={dirty} />
-                </>
-              );
-            })()}
-          </SettingsSection>
+          <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
         </Tabs.Panel>
 
-        {/* Blurb LLM — schema-indexing model (plan §6.2) */}
         <Tabs.Panel value="blurb">
           <SettingsSection>
             <Text size="sm" fw={500}>Blurb Model</Text>
             <Text size="xs" c="dimmed" mb="sm">
               The LLM used during schema indexing to generate the per-table
-              descriptions that get embedded into Qdrant. By default this
-              reuses your analysis LLM; override here to pick a cheaper /
-              faster model (spike defaults: Bedrock <code>qwen.qwen3-32b-v1:0</code>,
-              OpenAI <code>gpt-4.1-nano</code>). Changes apply to the next
-              re-index — click <b>Re-index schema</b> on the project page
-              after saving.
+              descriptions that get embedded into Qdrant. Override here to pick a
+              cheaper / faster model. Changes apply to the next re-index.
             </Text>
             <BlurbLLMEditor
               llmProviders={llmProviders}
               value={blurb}
-              onChange={(next) => { setBlurb(next); setDirty(true); }}
+              onChange={(next) => setBlurb(next)}
               startInModelPhase={!!project?.blurb_llm?.provider}
-              footer={
-                savingBlurbKey ? (
-                  <Text size="xs" c="dimmed">Saving blurb LLM key…</Text>
-                ) : null
-              }
             />
+            <Group justify="flex-end">
+              <Button onClick={saveBlurb} loading={savingBlurb}>Save blurb model</Button>
+            </Group>
           </SettingsSection>
         </Tabs.Panel>
 
-        {/* Embedding & Search */}
-        <Tabs.Panel value="embedding">
-          <SettingsSection>
-            <Text size="sm" fw={500}>Embedding Provider</Text>
-            <Text size="xs" c="dimmed" mb="sm">
-              Required for schema indexing and semantic search. Use the same picker as the LLM provider — pick a provider, enter credentials, load models.
-              {secretsList.some(s => s.key === 'embedding-api-key') ? (
-                <> Current key: <b>{secretsList.find(s => s.key === 'embedding-api-key')?.masked}</b>. Leave the key field blank to keep it.</>
-              ) : null}
-            </Text>
-            <EmbeddingEditor
-              providers={embeddingProviders}
-              value={embedding}
-              onChange={(next) => { setEmbedding(next); setDirty(true); }}
-              startInModelPhase={!!project?.embedding?.provider}
-            />
-            {savingEmbKey && <Text size="xs" c="dimmed" mt="xs">Saving embedding API key…</Text>}
-          </SettingsSection>
-        </Tabs.Panel>
-
-        {/* Schedule */}
         <Tabs.Panel value="schedule">
           <SettingsSection>
             <Switch label="Enable automatic discovery" checked={scheduleEnabled}
-              onChange={(e) => { setScheduleEnabled(e.currentTarget.checked); setDirty(true); }} />
+              onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
             {scheduleEnabled && (
               <TextInput label="Cron Expression" value={scheduleCron}
-                onChange={(e) => { setScheduleCron(e.target.value); setDirty(true); }} description="e.g., 0 2 * * * (daily at 2 AM)" />
+                onChange={(e) => setScheduleCron(e.target.value)} description="e.g., 0 2 * * * (daily at 2 AM)" />
             )}
             <NumberInput label="Max Exploration Steps" value={maxSteps}
-              onChange={(v) => { setMaxSteps(Number(v) || 100); setDirty(true); }} min={10} max={500} />
+              onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
+            <Group justify="flex-end">
+              <Button onClick={saveSchedule} loading={savingSchedule}>Save schedule</Button>
+            </Group>
           </SettingsSection>
         </Tabs.Panel>
 
-        {/* Profile */}
         {profileSchema && (
           <Tabs.Panel value="profile">
             <SettingsSection>
               <Text size="xs" c="dimmed" mb="md">
-                Help the AI understand your game. This context improves insight quality.
+                Help the AI understand your domain. This context improves insight quality.
               </Text>
               <ProfileEditor schema={profileSchema} profile={profile} onChange={setProfile} />
+              <Group justify="flex-end">
+                <Button onClick={saveProfile} loading={savingProfile}>Save profile</Button>
+              </Group>
             </SettingsSection>
           </Tabs.Panel>
         )}
 
-        {/* Advanced — client-side UI preferences + debug tooling. Nothing
-            here goes to the server; toggles are stored in localStorage and
-            do not count as "unsaved changes". */}
         <Tabs.Panel value="advanced">
           <SettingsSection>
             <Stack gap="sm">
               <Text size="sm" fw={500}>Debugging</Text>
               <Switch
                 label="Show debug logs during discovery and indexing"
-                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel, and a live agent-stderr tail to the schema-index panel on this project's page. Useful for troubleshooting stalled runs or watching what the agent is doing in real time."
+                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel, and a live agent-stderr tail to the schema-index panel on this project's page."
                 checked={debugLogsEnabled}
                 onChange={(e) => {
                   const next = e.currentTarget.checked;
@@ -840,18 +290,18 @@ export default function ProjectSettingsPage() {
                 }}
               />
               <Text size="xs" c="dimmed">
-                This is a local-browser preference — not shared with other users and not saved on the project. The indexing log tail is always captured server-side for 7 days; this toggle only controls whether the UI renders it.
+                Local-browser preference — not shared with other users and not saved on the project.
               </Text>
               <Divider my="xs" />
               <Text size="sm" fw={500}>Schema cache</Text>
               <Text size="xs" c="dimmed">
-                The agent caches the discovered warehouse schema (table list, columns, row counts) so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes. Use this when row counts have drifted or the warehouse schema has changed in ways the cache wouldn&apos;t detect.
+                The agent caches the discovered warehouse schema so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes.
               </Text>
               {id && <ClearSchemaCacheButton projectId={id} />}
               <Divider my="md" />
               <Text size="sm" fw={500} c="red">Danger zone</Text>
               <Text size="xs" c="dimmed">
-                Deleting a project removes everything tied to it: discoveries, insights, recommendations, debug logs, search history, bookmarks, the schema cache, and the Qdrant vector index. Warehouse and AI-provider credentials stored in MongoDB are also deleted; credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there. <strong>This cannot be undone.</strong>
+                Deleting a project removes everything tied to it. <strong>This cannot be undone.</strong>
               </Text>
               {id && project && (
                 <DeleteProjectButton projectId={id} projectName={project.name || id} />
@@ -862,11 +312,11 @@ export default function ProjectSettingsPage() {
       </Tabs>
     </Shell>
   );
+
+  // suppress unused warning when router isn't wired into a tab yet
+  void router;
 }
 
-// formatRelativeTime renders a small "Last cached: 3 hours ago" string
-// next to the Clear button. Truncated to single-unit precision —
-// users only care about freshness order-of-magnitude.
 function formatRelativeTime(rfc3339: string): string {
   const t = new Date(rfc3339).getTime();
   if (Number.isNaN(t)) return rfc3339;
@@ -882,19 +332,12 @@ function formatRelativeTime(rfc3339: string): string {
   return `${months} ${months === 1 ? 'month' : 'months'} ago`;
 }
 
-// formatAbsoluteTime renders the local datetime in parens after the
-// relative one, so users can hover-or-not but still see exact time.
 function formatAbsoluteTime(rfc3339: string): string {
   const d = new Date(rfc3339);
   if (Number.isNaN(d.getTime())) return rfc3339;
   return d.toLocaleString();
 }
 
-// ClearSchemaCacheButton wraps the invalidate-cache call in a confirm
-// modal so a misclick can't silently throw away discovery work. The
-// confirmation copy spells out what the cache stores and what happens
-// next — the user often clicks this *because* they've changed something
-// and want fresh counts, so we don't surprise them.
 function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
   const [opened, setOpened] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -905,8 +348,6 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
       const res = await api.getSchemaCacheInfo(projectId);
       setInfo({ cached: res.cached, last: res.last_cached_at });
     } catch {
-      // Endpoint failures here aren't user-actionable — fall back to
-      // hiding the timestamp line. The Clear button still works.
       setInfo({ cached: false });
     }
   }, [projectId]);
@@ -925,12 +366,7 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
       setOpened(false);
       void refreshInfo();
     } catch (e: unknown) {
-      const msg = (e as Error).message || 'Unknown error';
-      notifications.show({
-        title: 'Could not clear schema cache',
-        message: msg,
-        color: 'red',
-      });
+      notifications.show({ title: 'Could not clear schema cache', message: (e as Error).message, color: 'red' });
     } finally {
       setSubmitting(false);
     }
@@ -957,17 +393,12 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
         centered
       >
         <Stack gap="sm">
-          <Text size="sm">
-            This resets the project&apos;s schema-discovery state:
-          </Text>
+          <Text size="sm">This resets the project&apos;s schema-discovery state:</Text>
           <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
-            <li>Cached warehouse schema (table list, columns, row counts) is deleted.</li>
+            <li>Cached warehouse schema is deleted.</li>
             <li>The vector index in Qdrant is dropped.</li>
-            <li>Project status is set to <strong>needs_reindex</strong>, blocking discovery until you re-index.</li>
+            <li>Project status is set to <strong>needs_reindex</strong>.</li>
           </ul>
-          <Text size="sm" c="dimmed">
-            Reindexing is <strong>not</strong> started automatically — you control when it runs (warehouse access, off-peak hours, etc). Click <strong>Re-index now</strong> on the project page when you&apos;re ready; for ERP-scale schemas this can take 30–60 minutes. Past discoveries, insights and recommendations stay untouched.
-          </Text>
           <Group justify="flex-end" gap="sm">
             <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
               Cancel
@@ -982,12 +413,6 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
   );
 }
 
-// DeleteProjectButton wraps the cascade delete in a type-the-name
-// confirmation modal — far more deliberate than a generic "are you
-// sure?" because the project name is unique per workspace and a mistyped
-// project shouldn't sneak through. On 409 (indexing in flight) we
-// surface the message verbatim so the user knows to cancel the run
-// first; the API never silently aborts an indexing run.
 function DeleteProjectButton({ projectId, projectName }: { projectId: string; projectName: string }) {
   const router = useRouter();
   const [opened, setOpened] = useState(false);
@@ -1005,25 +430,17 @@ function DeleteProjectButton({ projectId, projectName }: { projectId: string; pr
         message: `"${projectName}" and all related data have been removed.`,
         color: 'green',
       });
-      // External secret backends (GCP/AWS/Azure) require manual cleanup
-      // — surface that follow-up so the user doesn't leak credentials.
       if (res.secrets_skipped) {
         notifications.show({
           title: 'Action required',
-          message: 'Warehouse and AI credentials are stored in an external secret manager. Remove them from your cloud console — the API does not delete them automatically.',
+          message: 'Warehouse and AI credentials are stored in an external secret manager. Remove them from your cloud console.',
           color: 'yellow',
           autoClose: 12000,
         });
       }
       router.push('/projects');
     } catch (e: unknown) {
-      const msg = (e as Error).message || 'Unknown error';
-      notifications.show({
-        title: 'Could not delete project',
-        message: msg,
-        color: 'red',
-        autoClose: 8000,
-      });
+      notifications.show({ title: 'Could not delete project', message: (e as Error).message, color: 'red', autoClose: 8000 });
       setSubmitting(false);
     }
   };
@@ -1043,18 +460,7 @@ function DeleteProjectButton({ projectId, projectName }: { projectId: string; pr
       >
         <Stack gap="sm">
           <Text size="sm">
-            This permanently removes <strong>{projectName}</strong> and everything tied to it:
-          </Text>
-          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
-            <li>Project record, discoveries, runs, and project context</li>
-            <li>Insights, recommendations, and debug logs</li>
-            <li>Ask sessions, search history, bookmarks, and read marks</li>
-            <li>Schema cache, indexing progress, and indexing logs</li>
-            <li>Qdrant vector collection</li>
-            <li>Mongo-backed secrets (warehouse + AI credentials)</li>
-          </ul>
-          <Text size="sm" c="dimmed">
-            Credentials stored in an external secret manager (GCP / AWS / Azure) must be removed there — the API will report this and not touch them.
+            This permanently removes <strong>{projectName}</strong> and everything tied to it.
           </Text>
           <TextInput
             label={<>Type <strong>{projectName}</strong> to confirm</>}
@@ -1089,81 +495,6 @@ function SettingsSection({ children }: { children: React.ReactNode }) {
     }}>
       <Stack gap="md">{children}</Stack>
     </div>
-  );
-}
-
-function TestConnectionButton({ projectId, target, disabled }: {
-  projectId: string; target: 'warehouse' | 'llm'; disabled?: boolean;
-}) {
-  const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-  const [errorMsg, setErrorMsg] = useState('');
-
-  const label = target === 'warehouse' ? 'Test Warehouse Connection' : 'Test AI Provider Connection';
-
-  const handleTest = async () => {
-    setStatus('testing');
-    setErrorMsg('');
-    try {
-      const result: TestConnectionResult = target === 'warehouse'
-        ? await api.testWarehouse(projectId)
-        : await api.testLLM(projectId);
-
-      if (result.success) {
-        setStatus('success');
-        notifications.show({ title: 'Connection successful', message: `${result.provider} is reachable`, color: 'green' });
-      } else {
-        setStatus('error');
-        setErrorMsg(result.error || 'Unknown error');
-      }
-    } catch (e: unknown) {
-      setStatus('error');
-      setErrorMsg((e as Error).message);
-    }
-  };
-
-  return (
-    <div style={{ marginTop: 4 }}>
-      <Group gap="sm" align="center">
-        <button onClick={handleTest} disabled={disabled || status === 'testing'} style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: 'none', color: 'var(--db-text-primary)',
-          border: '1px solid var(--db-border-default)', borderRadius: 6,
-          padding: '5px 12px', fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
-          cursor: disabled || status === 'testing' ? 'default' : 'pointer',
-          opacity: disabled || status === 'testing' ? 0.5 : 1,
-          transition: 'all 120ms ease',
-        }}
-        onMouseEnter={e => { if (!disabled && status !== 'testing') e.currentTarget.style.borderColor = 'var(--db-border-strong)'; }}
-        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--db-border-default)'; }}
-        >
-          {status === 'testing' ? <Loader size={14} /> : <IconPlugConnected size={14} />}
-          {status === 'testing' ? 'Testing...' : label}
-        </button>
-        {status === 'success' && <IconCheck size={16} color="var(--db-green-text)" />}
-        {status === 'error' && <IconX size={16} color="var(--db-red-text)" />}
-      </Group>
-      {disabled && <Text size="xs" c="dimmed">Save settings first to test the connection.</Text>}
-      {status === 'error' && errorMsg && (
-        <Text size="xs" c="red" mt={6} style={{ maxWidth: 560, wordBreak: 'break-word' }}>{errorMsg}</Text>
-      )}
-    </div>
-  );
-}
-
-function DynamicField({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
-  if (field.type === 'textarea') {
-    return (
-      <Textarea label={field.label} required={field.required}
-        placeholder={field.placeholder || field.default} description={field.description}
-        value={value} onChange={(e) => onChange(e.target.value)}
-        minRows={6} autosize
-        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }} />
-    );
-  }
-  return (
-    <TextInput label={field.label} required={field.required}
-      placeholder={field.placeholder || field.default} description={field.description}
-      value={value} onChange={(e) => onChange(e.target.value)} />
   );
 }
 
@@ -1336,7 +667,6 @@ function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
             }}>
               {Object.entries(fields).map(([fieldKey, fieldSchema]) => {
                 const fs = fieldSchema as { type?: string; title?: string };
-                // Full-width for text fields (description, name) and nested arrays
                 const isWide = fs.type === 'array' || fieldKey === 'description' || fieldKey === 'name';
                 return (
                   <div key={fieldKey} style={{ gridColumn: isWide ? '1 / -1' : undefined }}>
@@ -1388,7 +718,6 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
         </ActionIcon>
       </Group>
 
-      {/* Column headers */}
       {items.length > 0 && (
         <Group gap={8} mb={4} wrap="nowrap" style={{ paddingRight: 28 }}>
           {fieldEntries.map(([fk, fs]) => {

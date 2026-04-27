@@ -3,20 +3,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Collapse, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Group, Loader, SegmentedControl, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle } from '@tabler/icons-react';
+import { IconAlertCircle, IconWand } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
-import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, ConfigField, LiveModel } from '@/lib/api';
+import { WarehouseFormFields, WarehouseFormState, emptyWarehouseFormState, buildDefaults } from '@/components/projects/WarehouseFormFields';
+import { LLMFormFields, LLMFormState, emptyLLMFormState, AIPhase } from '@/components/projects/LLMFormFields';
+import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, LiveModel, PROJECT_STATE_PACK_GENERATION_PENDING } from '@/lib/api';
+
+type Mode = 'builtin' | 'generate';
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<Mode>('builtin');
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
+
+  // Generate-mode fields (used only when mode === 'generate'). The user
+  // names the pack here; the wizard at /projects/{id}/generate then
+  // collects sources, warehouse, and providers before launching pack-gen.
+  const [genPackName, setGenPackName] = useState('');
+  const [genPackSlug, setGenPackSlug] = useState('');
+  const [genPackSlugTouched, setGenPackSlugTouched] = useState(false);
+  const [genPackDescription, setGenPackDescription] = useState('');
 
   // Data from API (dynamic)
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -31,15 +43,8 @@ export default function NewProjectPage() {
   const [description, setDescription] = useState('');
   const [domain, setDomain] = useState('');
   const [category, setCategory] = useState('');
-  const [warehouseProvider, setWarehouseProvider] = useState('');
-  const [warehouseConfig, setWarehouseConfig] = useState<Record<string, string>>({});
-  const [warehouseAuthMethod, setWarehouseAuthMethod] = useState('');
-  const [warehouseCredential, setWarehouseCredential] = useState('');
-  const [filterField, setFilterField] = useState('');
-  const [filterValue, setFilterValue] = useState('');
-  const [llmProvider, setLlmProvider] = useState('');
-  const [llmConfig, setLlmConfig] = useState<Record<string, string>>({});
-  const [llmApiKey, setLlmApiKey] = useState('');
+  const [warehouse, setWarehouse] = useState<WarehouseFormState>(emptyWarehouseFormState);
+  const [llm, setLlm] = useState<LLMFormState>(emptyLLMFormState);
 
   // AI step is split in two phases:
   //   'credentials' — pick provider + fill API key / cloud creds
@@ -47,14 +52,10 @@ export default function NewProjectPage() {
   // Advancing from 'credentials' to 'model' runs the live-list call; if
   // the upstream fails the user still gets the catalog as a fallback
   // and an inline error.
-  const [aiPhase, setAiPhase] = useState<'credentials' | 'model'>('credentials');
+  const [aiPhase, setAiPhase] = useState<AIPhase>('credentials');
   const [aiLoading, setAiLoading] = useState(false);
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  // Advanced disclosure is opened when the selected model's wire is
-  // unknown (so the user can set wire_override) and stays whatever the
-  // user toggles it to once they've opened it.
-  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false);
   // Optional per-project blurb LLM override (PLAN-SCHEMA-RETRIEVAL.md §6.2).
   // Defaults to "use analysis LLM" — when the user turns the switch on,
   // the component renders a full provider + live-model picker.
@@ -99,15 +100,22 @@ export default function NewProjectPage() {
           if (domainsData[0].categories.length === 1) setCategory(domainsData[0].categories[0].id);
         }
         if (whProviders.length > 0) {
-          setWarehouseProvider(whProviders[0].id);
-          setWarehouseConfig(buildDefaults(whProviders[0].config_fields));
-          if (whProviders[0].auth_methods?.length === 1) setWarehouseAuthMethod(whProviders[0].auth_methods[0].id);
+          const first = whProviders[0];
+          setWarehouse((prev) => ({
+            ...prev,
+            provider: first.id,
+            config: buildDefaults(first.config_fields),
+            authMethod: first.auth_methods?.length === 1 ? first.auth_methods[0].id : '',
+          }));
         }
         if (llmProvs.length > 0) {
           const claude = llmProvs.find((p) => p.id === 'claude');
           const first = claude || llmProvs[0];
-          setLlmProvider(first.id);
-          setLlmConfig(buildDefaults(first.config_fields));
+          setLlm((prev) => ({
+            ...prev,
+            provider: first.id,
+            config: buildDefaults(first.config_fields),
+          }));
         }
       })
       .catch((e) => setDataError(e.message))
@@ -115,16 +123,13 @@ export default function NewProjectPage() {
   }, []);
 
   const categories: Category[] = domains.find((d) => d.id === domain)?.categories || [];
-  const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouseProvider);
-  const selectedLLM = llmProviders.find((p) => p.id === llmProvider);
+  const selectedWarehouse = warehouseProviders.find((p) => p.id === warehouse.provider);
+  const selectedLLM = llmProviders.find((p) => p.id === llm.provider);
 
   const whAuthMethods = selectedWarehouse?.auth_methods || [];
-  const selectedAuthMethod = whAuthMethods.find((m) => m.id === warehouseAuthMethod);
-  const authFields = selectedAuthMethod?.fields || [];
-  const authCredentialField = authFields.find((f) => f.type === 'credential');
+  const selectedAuthMethod = whAuthMethods.find((m) => m.id === warehouse.authMethod);
+  const authCredentialField = (selectedAuthMethod?.fields || []).find((f) => f.type === 'credential');
   const authNeedsCredential = authCredentialField?.required ?? false;
-  const authConfigFields = authFields.filter((f) => f.type !== 'credential');
-  const llmNeedsApiKey = selectedLLM?.config_fields.some((f) => f.key === 'api_key') ?? false;
 
   const embProviderMeta = embeddingProviders.find((p) => p.id === embedding.provider);
   const embNeedsKey = embProviderMeta?.config_fields.some(
@@ -133,11 +138,11 @@ export default function NewProjectPage() {
 
   const canProceed = [
     () => name && domain && category,
-    () => warehouseProvider && warehouseConfig['dataset'] && (whAuthMethods.length === 0 || warehouseAuthMethod) && (!authNeedsCredential || warehouseCredential),
+    () => warehouse.provider && warehouse.config['dataset'] && (whAuthMethods.length === 0 || warehouse.authMethod) && (!authNeedsCredential || warehouse.credential),
     // AI step: must be in the "model" phase (models loaded) and have a
     // model selected. The credentials phase uses its own "Load models"
     // button instead of Next.
-    () => aiPhase === 'model' && llmProvider && llmConfig['model'],
+    () => aiPhase === 'model' && llm.provider && llm.config['model'],
     // Embedding step: mandatory — schema indexing won't start without
     // a provider + model. API key required when the provider asks for
     // one (OpenAI, Voyage, etc); cloud-creds providers (Bedrock,
@@ -155,17 +160,17 @@ export default function NewProjectPage() {
   const loadReqIdRef = useRef(0);
 
   const loadLiveModels = async () => {
-    if (!llmProvider) return;
+    if (!llm.provider) return;
     const reqId = ++loadReqIdRef.current;
-    const provider = llmProvider;
+    const provider = llm.provider;
     setAiLoading(true);
     setLiveError(null);
     try {
       // Build the config map the backend expects: every field the user
       // filled in, plus api_key as its own key (the factories all read
       // cfg["api_key"]).
-      const config: Record<string, string> = { ...llmConfig };
-      if (llmApiKey) config['api_key'] = llmApiKey;
+      const config: Record<string, string> = { ...llm.config };
+      if (llm.apiKey) config['api_key'] = llm.apiKey;
       const resp = await api.listLiveLLMModels(provider, config);
       if (reqId !== loadReqIdRef.current) return; // superseded
       setLiveModels(resp.models);
@@ -181,10 +186,35 @@ export default function NewProjectPage() {
     }
   };
 
-  const resetAiPhase = () => {
-    setAiPhase('credentials');
-    setLiveModels(null);
-    setLiveError(null);
+  // Create the draft project for "Generate one for me" mode. The
+  // project starts in pack_generation_pending state with empty
+  // domain/category — those are populated by the agent after the
+  // generated pack is saved. Sources, warehouse, and providers are
+  // collected on the wizard at /projects/{id}/generate.
+  const handleCreateGenerateDraft = async () => {
+    if (!name || !genPackName || !genPackSlug) return;
+    setLoading(true);
+    try {
+      const project = await api.createProject({
+        name,
+        description,
+        domain: '',
+        category: '',
+        state: PROJECT_STATE_PACK_GENERATION_PENDING,
+        generate_pack: {
+          enabled: true,
+          pack_name: genPackName,
+          pack_slug: genPackSlug,
+          ...(genPackDescription ? { description: genPackDescription } : {}),
+        },
+      });
+      notifications.show({ title: 'Draft created', message: 'Continue to the pack-gen wizard', color: 'green' });
+      router.push(`/projects/${project.id}/generate`);
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCreate = async () => {
@@ -193,24 +223,24 @@ export default function NewProjectPage() {
       const project = await api.createProject({
         name, description, domain, category,
         warehouse: {
-          provider: warehouseProvider,
-          project_id: warehouseConfig['project_id'] || '',
-          datasets: (warehouseConfig['dataset'] || '').split(',').map((d) => d.trim()).filter(Boolean),
-          location: warehouseConfig['location'] || '',
-          filter_field: filterField,
-          filter_value: filterValue,
+          provider: warehouse.provider,
+          project_id: warehouse.config['project_id'] || '',
+          datasets: (warehouse.config['dataset'] || '').split(',').map((d) => d.trim()).filter(Boolean),
+          location: warehouse.config['location'] || '',
+          filter_field: warehouse.filterField,
+          filter_value: warehouse.filterValue,
           config: {
             ...Object.fromEntries(
-              Object.entries(warehouseConfig).filter(([k]) => k !== 'project_id' && k !== 'location' && k !== 'dataset')
+              Object.entries(warehouse.config).filter(([k]) => k !== 'project_id' && k !== 'location' && k !== 'dataset')
             ),
-            ...(warehouseAuthMethod ? { auth_method: warehouseAuthMethod } : {}),
+            ...(warehouse.authMethod ? { auth_method: warehouse.authMethod } : {}),
           },
         },
         llm: {
-          provider: llmProvider,
-          model: llmConfig['model'] || '',
+          provider: llm.provider,
+          model: llm.config['model'] || '',
           config: Object.fromEntries(
-            Object.entries(llmConfig).filter(([k]) => k !== 'model' && k !== 'api_key')
+            Object.entries(llm.config).filter(([k]) => k !== 'model' && k !== 'api_key')
           ),
         },
         embedding: {
@@ -233,11 +263,11 @@ export default function NewProjectPage() {
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
       // Save secrets
-      if (llmApiKey && project.id) {
-        await api.setSecret(project.id, 'llm-api-key', llmApiKey);
+      if (llm.apiKey && project.id) {
+        await api.setSecret(project.id, 'llm-api-key', llm.apiKey);
       }
-      if (warehouseCredential && project.id) {
-        await api.setSecret(project.id, 'warehouse-credentials', warehouseCredential);
+      if (warehouse.credential && project.id) {
+        await api.setSecret(project.id, 'warehouse-credentials', warehouse.credential);
       }
       // Blurb-LLM key is stored separately. Only written when the user
       // supplied one — otherwise the agent falls back to `llm-api-key`.
@@ -275,6 +305,54 @@ export default function NewProjectPage() {
         )}
 
         {!dataLoading && !dataError && (
+          <SegmentedControl
+            value={mode}
+            onChange={(v) => setMode(v as Mode)}
+            data={[
+              { value: 'builtin', label: 'Use a built-in pack' },
+              { value: 'generate', label: 'Generate one for me' },
+            ]}
+            fullWidth
+          />
+        )}
+
+        {!dataLoading && !dataError && mode === 'generate' && (
+          <Card withBorder p="lg">
+            <Stack>
+              <Group gap={6}>
+                <IconWand size={18} />
+                <Title order={4}>Generate a domain pack</Title>
+              </Group>
+              <Text size="sm" c="dimmed">
+                We&apos;ll create a draft project, then walk you through uploading knowledge sources and connecting your warehouse. The agent reads everything and synthesizes the full pack — categories, profile, analysis areas, and prompts — for you.
+              </Text>
+              <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Domain Discovery" />
+              <Textarea label="Project Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" />
+              <TextInput label="Pack Name" required value={genPackName}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setGenPackName(v);
+                  if (!genPackSlugTouched) setGenPackSlug(slugify(v));
+                }}
+                placeholder="Acme Marketplace" />
+              <TextInput label="Pack Slug" required value={genPackSlug}
+                onChange={(e) => { setGenPackSlug(e.target.value); setGenPackSlugTouched(true); }}
+                description="Lowercase, hyphen-separated. Used as the pack&apos;s identifier."
+                placeholder="acme-marketplace" />
+              <Textarea label="Description (optional)" value={genPackDescription}
+                onChange={(e) => setGenPackDescription(e.target.value)}
+                placeholder="One or two sentences about the business — anything you want the LLM to weight heavily." />
+              <Group justify="flex-end">
+                <Button onClick={handleCreateGenerateDraft} loading={loading}
+                  disabled={!name || !genPackName || !slugIsValid(genPackSlug)}>
+                  Create draft and continue
+                </Button>
+              </Group>
+            </Stack>
+          </Card>
+        )}
+
+        {!dataLoading && !dataError && mode === 'builtin' && (
           <>
             <Stepper active={active} onStepClick={setActive}>
               <Stepper.Step label="Basics" description="Name and domain">
@@ -296,181 +374,33 @@ export default function NewProjectPage() {
 
               <Stepper.Step label="Warehouse" description="Data source">
                 <Card withBorder p="lg" mt="md">
-                  <Stack>
-                    <Select label="Warehouse Provider" required placeholder="Select warehouse"
-                      data={warehouseProviders.map((p) => ({ value: p.id, label: p.name }))}
-                      value={warehouseProvider}
-                      onChange={(v) => {
-                        setWarehouseProvider(v || '');
-                        setWarehouseAuthMethod('');
-                        setWarehouseCredential('');
-                        const prov = warehouseProviders.find((p) => p.id === v);
-                        if (prov) {
-                          setWarehouseConfig(buildDefaults(prov.config_fields));
-                          if (prov.auth_methods?.length === 1) setWarehouseAuthMethod(prov.auth_methods[0].id);
-                        }
-                      }} />
-                    {selectedWarehouse && (
-                      <Text size="xs" c="dimmed">{selectedWarehouse.description}</Text>
-                    )}
-
-                    {selectedWarehouse?.config_fields.map((field) => (
-                      <DynamicField key={field.key} field={field}
-                        value={warehouseConfig[field.key] || ''}
-                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
-                    ))}
-
-                    {whAuthMethods.length > 0 && (
-                      <Select key={`auth-${warehouseProvider}`} label="Authentication" required placeholder="Select auth method"
-                        data={whAuthMethods.map((m) => ({ value: m.id, label: m.name }))}
-                        value={warehouseAuthMethod}
-                        onChange={(v) => { setWarehouseAuthMethod(v || ''); setWarehouseCredential(''); }} />
-                    )}
-
-                    {selectedAuthMethod?.description && (
-                      <Text size="xs" c="dimmed">{selectedAuthMethod.description}</Text>
-                    )}
-
-                    {authConfigFields.map((field) => (
-                      <DynamicField key={field.key} field={field}
-                        value={warehouseConfig[field.key] || ''}
-                        onChange={(val) => setWarehouseConfig((prev) => ({ ...prev, [field.key]: val }))} />
-                    ))}
-
-                    {authCredentialField && (
-                      <Textarea
-                        label={authCredentialField.label}
-                        required={authCredentialField.required}
-                        placeholder={authCredentialField.placeholder}
-                        description={(authCredentialField.description || '') + ' Stored encrypted.'}
-                        value={warehouseCredential}
-                        onChange={(e) => setWarehouseCredential(e.target.value)}
-                        minRows={3}
-                        autosize
-                        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
-                      />
-                    )}
-
-                    <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
-                    <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
-                    <Group grow>
-                      <TextInput label="Filter Field" placeholder="e.g. app_id" value={filterField}
-                        onChange={(e) => setFilterField(e.target.value)} />
-                      <TextInput label="Filter Value" placeholder="e.g. my-app-123" value={filterValue}
-                        onChange={(e) => setFilterValue(e.target.value)} />
-                    </Group>
-                  </Stack>
+                  <WarehouseFormFields
+                    providers={warehouseProviders}
+                    value={warehouse}
+                    onChange={setWarehouse}
+                  />
                 </Card>
               </Stepper.Step>
 
               <Stepper.Step label="AI" description="Provider + model">
                 <Card withBorder p="lg" mt="md">
-                  <Stack>
-                    <Select label="LLM Provider" required placeholder="Select LLM provider"
-                      data={llmProviders.map((p) => ({ value: p.id, label: p.name }))}
-                      value={llmProvider}
-                      onChange={(v) => {
-                        setLlmProvider(v || '');
-                        setLlmApiKey('');
-                        const prov = llmProviders.find((p) => p.id === v);
-                        if (prov) setLlmConfig(buildDefaults(prov.config_fields));
-                        resetAiPhase();
-                      }} />
-                    {selectedLLM && (
-                      <Text size="xs" c="dimmed">{selectedLLM.description}</Text>
-                    )}
-
-                    {aiPhase === 'credentials' && (
-                      <>
-                        {/* Phase 1: credentials + cloud config (NOT model or wire_override) */}
-                        {selectedLLM?.config_fields
-                          .filter((f) => f.key !== 'api_key' && f.key !== 'model' && f.key !== 'wire_override')
-                          .map((field) => (
-                            <CatalogAwareField
-                              key={field.key}
-                              field={field}
-                              providerMeta={selectedLLM}
-                              value={llmConfig[field.key] || ''}
-                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [field.key]: val }))}
-                            />
-                          ))}
-
-                        {llmNeedsApiKey && (
-                          <TextInput label="API Key" required type="password"
-                            placeholder={selectedLLM?.config_fields.find((f) => f.key === 'api_key')?.placeholder || 'Enter API key'}
-                            value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)}
-                            description="Stored encrypted after project creation. Used now only to load the model list." />
-                        )}
-
-                        {!llmNeedsApiKey && (
-                          <Text size="xs" c="dimmed">
-                            This provider uses cloud credentials (IAM / ADC). No API key needed.
-                          </Text>
-                        )}
-
-                        <Button
-                          onClick={loadLiveModels}
-                          loading={aiLoading}
-                          disabled={!llmProvider || (llmNeedsApiKey && !llmApiKey)}
-                        >
-                          Load models
-                        </Button>
-                      </>
-                    )}
-
-                    {aiPhase === 'model' && (
-                      <>
-                        {liveError && (
-                          <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
-                            {liveError} — showing catalog models instead.
-                          </Alert>
-                        )}
-
-                        <LiveModelCombobox
-                          providerMeta={selectedLLM ?? null}
-                          liveModels={liveModels}
-                          value={llmConfig['model'] || ''}
-                          onChange={(val) => setLlmConfig((prev) => ({ ...prev, model: val }))}
-                        />
-
-                        {/* wire_override: shown inline when the model's
-                            wire is unknown (user needs the escape hatch),
-                            otherwise tucked behind "Advanced settings". */}
-                        {(() => {
-                          const wireField = selectedLLM?.config_fields.find((f) => f.key === 'wire_override');
-                          if (!wireField) return null;
-                          const wireKnown = modelWireIsKnown(liveModels, selectedLLM ?? null, llmConfig['model'] || '');
-                          const renderField = (
-                            <CatalogAwareField
-                              field={wireField}
-                              providerMeta={selectedLLM}
-                              value={llmConfig[wireField.key] || ''}
-                              onChange={(val) => setLlmConfig((prev) => ({ ...prev, [wireField.key]: val }))}
-                            />
-                          );
-                          if (!wireKnown) return renderField;
-                          return (
-                            <>
-                              <Button
-                                variant="subtle"
-                                size="xs"
-                                onClick={() => setShowAdvancedLLM((v) => !v)}
-                                style={{ alignSelf: 'flex-start' }}
-                              >
-                                {showAdvancedLLM ? 'Hide advanced settings' : 'Advanced settings'}
-                              </Button>
-                              <Collapse in={showAdvancedLLM}>{renderField}</Collapse>
-                            </>
-                          );
-                        })()}
-
-                        <Group>
-                          <Button variant="default" onClick={resetAiPhase}>Back to credentials</Button>
-                          <Button variant="subtle" onClick={loadLiveModels} loading={aiLoading}>Refresh model list</Button>
-                        </Group>
-                      </>
-                    )}
-                  </Stack>
+                  <LLMFormFields
+                    providers={llmProviders}
+                    value={llm}
+                    onChange={setLlm}
+                    phase={aiPhase}
+                    onPhaseChange={(next) => {
+                      setAiPhase(next);
+                      if (next === 'credentials') {
+                        setLiveModels(null);
+                        setLiveError(null);
+                      }
+                    }}
+                    liveModels={liveModels}
+                    liveError={liveError}
+                    loading={aiLoading}
+                    onLoadModels={loadLiveModels}
+                  />
                 </Card>
               </Stepper.Step>
 
@@ -526,8 +456,8 @@ export default function NewProjectPage() {
                     <Title order={4}>Ready to create</Title>
                     <Text><strong>Name:</strong> {name}</Text>
                     <Text><strong>Domain:</strong> {domain} / {category}</Text>
-                    <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouseConfig['dataset']}</Text>
-                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llmConfig['model']}</Text>
+                    <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
+                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['model']}</Text>
                     <Text>
                       <strong>Embedding:</strong>{' '}
                       {embProviderMeta?.name || embedding.provider} / {embedding.model}
@@ -555,38 +485,18 @@ export default function NewProjectPage() {
   );
 }
 
-function DynamicField({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
-  if (field.type === 'textarea') {
-    return (
-      <Textarea
-        label={field.label}
-        required={field.required}
-        placeholder={field.placeholder || field.default}
-        description={field.description}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        minRows={6}
-        autosize
-        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
-      />
-    );
-  }
-  return (
-    <TextInput
-      label={field.label}
-      required={field.required}
-      placeholder={field.placeholder || field.default}
-      description={field.description}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  );
+// Mirror of the API's slug regex (^[a-z][a-z0-9-]*$). Used to drive the
+// auto-derived slug field in generate-mode and the disabled state on the
+// Create button.
+const SLUG_RE = /^[a-z][a-z0-9-]*$/;
+
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
-function buildDefaults(fields: ConfigField[]): Record<string, string> {
-  const defaults: Record<string, string> = {};
-  for (const f of fields) {
-    if (f.default) defaults[f.key] = f.default;
-  }
-  return defaults;
+function slugIsValid(slug: string): boolean {
+  return SLUG_RE.test(slug);
 }

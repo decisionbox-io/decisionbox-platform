@@ -106,6 +106,10 @@ The agent is **stateless** — it reads everything from MongoDB and the domain p
 - A **subprocess** spawned by the API (local development, `RUNNER_MODE=subprocess`)
 - A **Kubernetes Job** created by the API (production, `RUNNER_MODE=kubernetes`)
 
+The agent has two run modes selected via `--mode`:
+- `--mode=run` (default) — discovery: explores the warehouse, generates insights, writes recommendations.
+- `--mode=pack-gen` — domain-pack generation: reads the project's knowledge sources and warehouse schema, synthesizes a complete `DomainPack`, saves it to MongoDB, and parks the project at `pack_generation_done` for the user to accept. Available only when a pack-gen provider is registered (no-op in the stock community build).
+
 ### MongoDB
 
 The only infrastructure dependency. Stores:

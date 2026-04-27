@@ -41,7 +41,12 @@ func (r *ProjectRepository) GetCollection() *mongo.Collection {
 	return r.col
 }
 
+// Create inserts a new project. The `_id` is always a Mongo-generated
+// ObjectID — any value the caller put in p.ID is discarded so production
+// and tests share a single id shape (see also Update / Delete /
+// SetSchemaIndexStatus, which all assume ObjectID).
 func (r *ProjectRepository) Create(ctx context.Context, p *models.Project) error {
+	p.ID = "" // force Mongo to generate an ObjectID
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = time.Now()
 	if p.Status == "" {
@@ -53,23 +58,22 @@ func (r *ProjectRepository) Create(ctx context.Context, p *models.Project) error
 		return fmt.Errorf("insert project: %w", err)
 	}
 
-	if oid, ok := result.InsertedID.(primitive.ObjectID); ok {
-		p.ID = oid.Hex()
+	oid, ok := result.InsertedID.(primitive.ObjectID)
+	if !ok {
+		return fmt.Errorf("insert project: expected ObjectID, got %T", result.InsertedID)
 	}
-
+	p.ID = oid.Hex()
 	return nil
 }
 
 func (r *ProjectRepository) GetByID(ctx context.Context, id string) (*models.Project, error) {
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
 	var p models.Project
-	if err := r.col.FindOne(ctx, filter).Decode(&p); err != nil {
+	if err := r.col.FindOne(ctx, bson.M{"_id": oid}).Decode(&p); err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
 		}
@@ -102,18 +106,16 @@ func (r *ProjectRepository) List(ctx context.Context, limit, offset int) ([]*mod
 }
 
 func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Project) error {
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
 	p.ID = "" // don't attempt to update _id
 	p.UpdatedAt = time.Now()
 	update := bson.M{"$set": p}
 
-	result, err := r.col.UpdateOne(ctx, filter, update)
+	result, err := r.col.UpdateOne(ctx, bson.M{"_id": oid}, update)
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
@@ -124,14 +126,12 @@ func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Pro
 }
 
 func (r *ProjectRepository) Delete(ctx context.Context, id string) error {
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
-	result, err := r.col.DeleteOne(ctx, filter)
+	result, err := r.col.DeleteOne(ctx, bson.M{"_id": oid})
 	if err != nil {
 		return fmt.Errorf("delete project: %w", err)
 	}
@@ -193,6 +193,10 @@ func (r *ProjectRepository) DeleteCascade(ctx context.Context, id string) error 
 	if r.db == nil {
 		return fmt.Errorf("project repository not wired with DB; cannot cascade")
 	}
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid project id %q: %w", id, err)
+	}
 
 	// Step 1: collect discovery ids so feedback can be cleaned up by
 	// discovery_id without a join. We do this BEFORE deleting the
@@ -243,13 +247,7 @@ func (r *ProjectRepository) DeleteCascade(ctx context.Context, id string) error 
 	// Step 4: the project doc itself. If it was already deleted (race
 	// or retry) we treat that as success — the goal is "no project
 	// with this id exists", not "we performed the deletion".
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
-	}
-	if _, err := r.col.DeleteOne(ctx, filter); err != nil {
+	if _, err := r.col.DeleteOne(ctx, bson.M{"_id": oid}); err != nil {
 		return fmt.Errorf("delete project doc: %w", err)
 	}
 	return nil
@@ -298,12 +296,9 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 	if !isValidSchemaIndexStatus(status) {
 		return fmt.Errorf("invalid schema_index_status: %q", status)
 	}
-
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
 	now := time.Now().UTC()
@@ -329,7 +324,7 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 		update["$unset"] = bson.M{"schema_index_error": ""}
 	}
 
-	res, err := r.col.UpdateOne(ctx, filter, update)
+	res, err := r.col.UpdateOne(ctx, bson.M{"_id": oid}, update)
 	if err != nil {
 		return fmt.Errorf("set schema_index_status: %w", err)
 	}
