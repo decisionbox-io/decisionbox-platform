@@ -89,6 +89,18 @@ func init() {
 
 func seedBedrock() {
 	// Anthropic wire — Claude on Bedrock.
+	Register(Entry{Cloud: "bedrock", ID: "anthropic.claude-opus-4-7-v1:0",
+		Wire: Anthropic, DisplayName: "Claude Opus 4.7 (Bedrock)",
+		MaxOutputTokens:      claudeOpus4x6Max,
+		InputPricePerMillion: claudeOpusIn, OutputPricePerMillion: claudeOpusOut})
+	Register(Entry{Cloud: "bedrock", ID: "global.anthropic.claude-opus-4-7-v1",
+		Wire: Anthropic, DisplayName: "Claude Opus 4.7 global (Bedrock)",
+		MaxOutputTokens:      claudeOpus4x6Max,
+		InputPricePerMillion: claudeOpusIn, OutputPricePerMillion: claudeOpusOut})
+	Register(Entry{Cloud: "bedrock", ID: "global.anthropic.claude-opus-4-7",
+		Wire: Anthropic, DisplayName: "Claude Opus 4.7 global (Bedrock)",
+		MaxOutputTokens:      claudeOpus4x6Max,
+		InputPricePerMillion: claudeOpusIn, OutputPricePerMillion: claudeOpusOut})
 	Register(Entry{Cloud: "bedrock", ID: "anthropic.claude-opus-4-6-v1:0",
 		Wire: Anthropic, DisplayName: "Claude Opus 4.6 (Bedrock)",
 		MaxOutputTokens:      claudeOpus4x6Max,
