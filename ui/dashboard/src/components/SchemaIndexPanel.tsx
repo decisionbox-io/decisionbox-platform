@@ -27,6 +27,19 @@ import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
 interface Props {
   projectId: string;
   onStatusChange?: (status: SchemaIndexStatus) => void;
+  /**
+   * When true, suppress the Retry / Cancel / Re-index buttons. Used by
+   * the pack-gen status panel where the agent owns the indexing
+   * lifecycle — letting the user cancel just the indexing while
+   * pack-gen is still in flight would leave the project in an
+   * inconsistent state.
+   */
+  hideActions?: boolean;
+  /**
+   * Optional override for the heading. Defaults to "Schema index". The
+   * pack-gen panel sets this to "Step 1: Indexing schema".
+   */
+  title?: string;
 }
 
 const POLL_MS = 2000;
@@ -39,7 +52,7 @@ const PHASE_LABELS: Record<string, string> = {
   embedding: 'Building vector index',
 };
 
-export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
+export function SchemaIndexPanel({ projectId, onStatusChange, hideActions, title }: Props) {
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -295,12 +308,12 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
         <Stack gap={6}>
           <Group justify="space-between" wrap="nowrap">
             <Text size="sm" fw={500}>
-              Schema index: {phaseLabel}
+              {title || 'Schema index'}: {phaseLabel}
               {status.status === 'ready' && updatedDate && (
                 <Text component="span" size="xs" c="dimmed" ml="sm">last built {updatedDate}</Text>
               )}
             </Text>
-            {actions}
+            {!hideActions && actions}
           </Group>
           {/*
             Always-visible progress bar. During schema_discovery and

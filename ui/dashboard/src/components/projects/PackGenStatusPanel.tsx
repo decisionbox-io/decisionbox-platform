@@ -6,14 +6,15 @@ import {
   Alert, Badge, Button, Card, Group, Loader, Stack, Text, Textarea, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconWand } from '@tabler/icons-react';
+import { IconAlertCircle, IconCircleDashed, IconWand } from '@tabler/icons-react';
 import {
-  api, DomainPack, Project,
+  api, DomainPack, Project, SchemaIndexStatus,
   PROJECT_STATE_PACK_GENERATION,
   PROJECT_STATE_PACK_GENERATION_DONE,
   PROJECT_STATE_PACK_GENERATION_PENDING,
   PROJECT_STATE_READY,
 } from '@/lib/api';
+import { SchemaIndexPanel } from '../SchemaIndexPanel';
 import DraftDiffSummary from './DraftDiffSummary';
 
 export interface PackGenStatusPanelProps {
@@ -34,6 +35,12 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   const [lastFeedback, setLastFeedback] = useState<Record<string, string>>({});
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Schema-index status drives the "Step 1 / Step 2" progression in the
+  // running-state UI. The agent builds the schema index first (which
+  // can take many minutes on ERP-scale warehouses), then synthesises
+  // the pack. We track the same per-project status the discovery page
+  // does — by handing SchemaIndexPanel an onStatusChange callback.
+  const [indexStatus, setIndexStatus] = useState<SchemaIndexStatus | null>(null);
 
   // Poll project state every 3s while the agent is generating; stop as
   // soon as state moves out of pack_generation. The done state hands
@@ -132,17 +139,52 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   }
 
   if (project.state === PROJECT_STATE_PACK_GENERATION) {
+    // Two-step progression. The agent runs schema indexing first (long
+    // pole on ERP-scale warehouses — minutes to tens of minutes); pack
+    // synthesis runs only after the index is ready.
+    //   - schema_index_status indexing/pending_indexing → step 1 active
+    //   - schema_index_status ready                     → step 1 done,
+    //                                                     step 2 active
+    // Once the orchestrator finishes synth, project.state moves to
+    // pack_generation_done and this branch unmounts entirely.
+    const indexReady = indexStatus?.status === 'ready';
+    const indexFailed = indexStatus?.status === 'failed';
     return (
       <Card withBorder p="lg">
         <Stack>
           <Group gap={8}>
             <Loader size="xs" />
             <Title order={5}>Generating pack</Title>
-            <Badge color="blue">Running</Badge>
+            <Badge color={indexFailed ? 'red' : 'blue'}>
+              {indexFailed ? 'Indexing failed' : indexReady ? 'Synthesising' : 'Indexing'}
+            </Badge>
           </Group>
           <Text size="sm" c="dimmed">
-            The agent is reading your knowledge sources and warehouse schema. This usually takes a few minutes — you can leave this page and come back. We&apos;ll update automatically when it&apos;s done.
+            The agent reads your warehouse schema and knowledge sources, then synthesises the pack. This usually takes a few minutes; you can leave this page and come back — we&apos;ll update automatically when it&apos;s done.
           </Text>
+
+          <Stack gap={6}>
+            <Text size="sm" fw={500}>Step 1 of 2 — Indexing schema</Text>
+            <SchemaIndexPanel
+              projectId={project.id}
+              hideActions
+              title="Schema index"
+              onStatusChange={setIndexStatus}
+            />
+          </Stack>
+
+          <Stack gap={6}>
+            <Group gap={6} align="center">
+              {indexReady ? <Loader size="xs" /> : <IconCircleDashed size={14} color="var(--mantine-color-gray-5)" />}
+              <Text size="sm" fw={500}>Step 2 of 2 — Synthesising pack</Text>
+              {indexReady && <Badge size="xs" color="blue">Running</Badge>}
+            </Group>
+            <Text size="xs" c="dimmed">
+              {indexReady
+                ? 'The agent is now feeding the indexed schema + your knowledge sources to the LLM. The retry loop validates the output up to 3 times before giving up.'
+                : 'Waits for schema indexing to finish.'}
+            </Text>
+          </Stack>
         </Stack>
       </Card>
     );
