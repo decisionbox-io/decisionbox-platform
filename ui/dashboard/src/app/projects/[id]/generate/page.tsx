@@ -12,8 +12,9 @@ import Shell from '@/components/layout/AppShell';
 import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
 import ProvidersPanel from '@/components/projects/ProvidersPanel';
 import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
+import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import {
-  api, Project, ProviderMeta,
+  api, Project, ProviderMeta, SchemaIndexStatus,
   PROJECT_STATE_PACK_GENERATION_PENDING,
   PROJECT_STATE_PACK_GENERATION,
   PROJECT_STATE_PACK_GENERATION_DONE,
@@ -69,6 +70,13 @@ export default function PackGenWizardPage() {
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
   const [savingBlurb, setSavingBlurb] = useState(false);
+  // Schema-index status drives the "can we generate yet?" gate on the
+  // Generate step. The orchestrator hard-rejects pack-gen when this
+  // isn't "ready" (an empty schema slice would otherwise produce a
+  // pack with hallucinated table names) so the wizard mirrors that
+  // gate visually instead of letting the user click into an error.
+  const [indexStatus, setIndexStatus] = useState<SchemaIndexStatus | null>(null);
+  const [kickingIndex, setKickingIndex] = useState(false);
 
   useEffect(() => {
     Promise.all([api.getProject(id), api.listLLMProviders()])
@@ -113,6 +121,27 @@ export default function PackGenWizardPage() {
   // (blurb.enabled === false → falls back to project.llm) or a fully-
   // chosen separate model.
   const blurbValid = !blurb.enabled || (Boolean(blurb.provider) && Boolean(blurb.model));
+  const indexReady = indexStatus?.status === 'ready';
+  const indexInFlight = indexStatus?.status === 'indexing' || indexStatus?.status === 'pending_indexing';
+  const indexNeedsTrigger = indexStatus !== null && !indexReady && !indexInFlight;
+
+  // Kick a fresh schema-index run. Used by the inline "Build / Re-index
+  // schema" button on the Generate step — the SchemaIndexPanel embedded
+  // below also exposes Cancel / Retry actions, so this is just the
+  // entry-point shortcut for users who land on the Generate step
+  // before the worker has touched the project.
+  const handleStartIndex = async () => {
+    if (!warehouseReady) return;
+    setKickingIndex(true);
+    try {
+      await api.reindexSchema(id);
+      notifications.show({ title: 'Indexing started', message: 'Schema indexing is running. Generate will unlock once it is ready.', color: 'blue' });
+    } catch (e: unknown) {
+      notifications.show({ title: 'Could not start indexing', message: (e as Error).message, color: 'red' });
+    } finally {
+      setKickingIndex(false);
+    }
+  };
 
   const handleSaveBlurb = async () => {
     if (!project) return;
@@ -315,13 +344,13 @@ export default function PackGenWizardPage() {
               <Stack>
                 <Title order={5}>Ready to generate</Title>
                 <Text size="sm" c="dimmed">
-                  When you click <b>Generate</b>, the agent reads your knowledge sources and warehouse schema and produces a complete domain pack. You&apos;ll review the result before discovery starts.
+                  Pack generation needs a fresh schema index of your warehouse — without it the LLM can only guess at table names. The panel below shows the current state; the <b>Generate pack</b> button unlocks once the index is ready.
                 </Text>
                 {project.pack_gen_last_error && (
                   <Alert color="red" icon={<IconAlertCircle size={16} />} title="Last attempt failed">
                     <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{project.pack_gen_last_error}</Text>
                     <Text size="xs" c="dimmed" mt={6}>
-                      The agent retried 3 times before giving up. Common fixes: add more focused knowledge sources, sharpen the pack description, or pick a more capable LLM.
+                      Common fixes: index the warehouse first if not already done, fix the warehouse configuration if indexing failed, sharpen the pack description, or pick a more capable LLM.
                     </Text>
                   </Alert>
                 )}
@@ -338,11 +367,59 @@ export default function PackGenWizardPage() {
                   }
                 />
                 <SummaryRow label="Warehouse" value={warehouseReady ? `${project.warehouse.provider} / ${(project.warehouse.datasets || []).join(', ')}` : 'Not configured'} ok={warehouseReady} />
+                <SummaryRow
+                  label="Schema index"
+                  value={
+                    indexStatus === null
+                      ? 'Loading…'
+                      : indexReady
+                        ? 'Ready'
+                        : indexInFlight
+                          ? `Building (${indexStatus?.status})`
+                          : indexStatus?.status
+                            ? `Not ready (${indexStatus.status})`
+                            : 'Not built yet'
+                  }
+                  ok={indexReady}
+                />
+
+                {/* Inline schema-index control. Same panel the discovery
+                    page uses — Build / Cancel / Retry / Re-index buttons
+                    appear depending on the current status. Wires
+                    onStatusChange so the Generate button below can gate
+                    on the same state without a separate poll. */}
+                {warehouseReady && (
+                  <SchemaIndexPanel
+                    projectId={id}
+                    title="Schema index"
+                    onStatusChange={setIndexStatus}
+                  />
+                )}
+
                 <Group justify="flex-end" mt="sm">
-                  <Button onClick={handleLaunch} loading={launching} disabled={!warehouseReady || !providersReady}>
+                  {indexNeedsTrigger && (
+                    <Button
+                      variant="default"
+                      onClick={handleStartIndex}
+                      loading={kickingIndex}
+                      disabled={!warehouseReady}
+                    >
+                      Build schema index
+                    </Button>
+                  )}
+                  <Button
+                    onClick={handleLaunch}
+                    loading={launching}
+                    disabled={!warehouseReady || !providersReady || !indexReady}
+                  >
                     Generate pack
                   </Button>
                 </Group>
+                {!indexReady && warehouseReady && (
+                  <Text size="xs" c="dimmed" ta="right">
+                    Generate is locked until <b>Schema index: Ready</b>. {indexInFlight && 'Indexing is running — the button will unlock automatically.'}
+                  </Text>
+                )}
               </Stack>
             </Card>
           </Stepper.Step>
