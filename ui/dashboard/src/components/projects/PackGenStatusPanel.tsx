@@ -286,12 +286,19 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
           <Group gap={8}>
             <IconWand size={18} />
             <Title order={5}>Draft pack saved</Title>
-            <Badge color="green">Saved — review and accept</Badge>
+            <Badge color="green">Saved</Badge>
           </Group>
-          <Button onClick={handleStartDiscovery} loading={starting}>Accept &amp; start discovery</Button>
+          <Group gap="xs">
+            <Button variant="default" onClick={handleStartDiscovery} loading={starting}>
+              Skip review
+            </Button>
+            <Button onClick={handleStartDiscovery} loading={starting}>
+              Accept and continue
+            </Button>
+          </Group>
         </Group>
         <Text size="sm" c="dimmed">
-          The pack is saved and you can keep iterating. Each <b>Regenerate</b> below rewrites that section inline — no manual save needed. When you&apos;re happy, click <b>Accept &amp; start discovery</b> to lock the pack in and unlock the discovery agent.
+          The pack is saved. Use the per-section <b>Regenerate</b> buttons below to iterate (each rewrite saves inline — no manual save needed) or skip straight to discovery. You can always come back to edit individual prompts later from <b>Project Settings → Prompts</b>.
         </Text>
 
         {packError && (
