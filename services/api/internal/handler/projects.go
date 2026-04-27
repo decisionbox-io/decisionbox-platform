@@ -392,6 +392,20 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// State: most lifecycle transitions go through dedicated endpoints
+	// (POST /pack-generate flips to pack_generation; the orchestrator
+	// flips to pack_generation_done; etc.). The ONE legitimate
+	// state-change-via-PUT is the user accepting a generated pack —
+	// pack_generation_done → ready — which the dashboard fires from
+	// the "Accept and continue" / "Skip review" buttons. Allowing
+	// arbitrary state writes would let any caller revert a project
+	// back into pack-gen mid-flight; locking it to this single
+	// transition keeps the state machine sound.
+	if incoming.State == models.ProjectStateReady &&
+		existing.State == models.ProjectStatePackGenerationDone {
+		existing.State = models.ProjectStateReady
+	}
+
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
 		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())
