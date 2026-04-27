@@ -55,6 +55,13 @@ export default function ProjectPage() {
     Promise.all([
       api.getProject(id).then((p) => {
         setProject(p);
+        // Skip analysis-area lookup when the project is mid-pack-gen
+        // (domain/category are empty strings until the agent finishes
+        // generating the pack). Without this guard the request hits
+        // /api/v1/domains//categories//areas, which the Go mux 301-
+        // redirects to a non-JSON HTML body and explodes with
+        // "Unexpected non-whitespace character after JSON at position 4".
+        if (!p.domain || !p.category) return;
         return api.getAnalysisAreas(p.domain, p.category)
           .then((areas) => setAnalysisAreas((areas || []).map((a) => ({ id: a.id, name: a.name }))));
       }),
