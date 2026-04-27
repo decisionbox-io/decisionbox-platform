@@ -35,6 +35,7 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   const [lastFeedback, setLastFeedback] = useState<Record<string, string>>({});
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [resetting, setResetting] = useState(false);
   // Schema-index status drives the "Step 1 / Step 2" progression in the
   // running-state UI. The agent builds the schema index first (which
   // can take many minutes on ERP-scale warehouses), then synthesises
@@ -145,29 +146,70 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
     //   - schema_index_status indexing/pending_indexing → step 1 active
     //   - schema_index_status ready                     → step 1 done,
     //                                                     step 2 active
+    //   - schema_index_status cancelled / failed        → recovery banner;
+    //                                                     user has to flip
+    //                                                     state back to
+    //                                                     pack_generation_pending
+    //                                                     to re-enter the
+    //                                                     wizard.
     // Once the orchestrator finishes synth, project.state moves to
     // pack_generation_done and this branch unmounts entirely.
     const indexReady = indexStatus?.status === 'ready';
     const indexFailed = indexStatus?.status === 'failed';
+    const indexCancelled = indexStatus?.status === 'cancelled';
+    const indexHalted = indexFailed || indexCancelled;
     return (
       <Card withBorder p="lg">
         <Stack>
           <Group gap={8}>
-            <Loader size="xs" />
+            {indexHalted ? <IconAlertCircle size={18} color="var(--mantine-color-red-6)" />
+              : <Loader size="xs" />}
             <Title order={5}>Generating pack</Title>
-            <Badge color={indexFailed ? 'red' : 'blue'}>
-              {indexFailed ? 'Indexing failed' : indexReady ? 'Synthesising' : 'Indexing'}
+            <Badge color={indexFailed ? 'red' : indexCancelled ? 'orange' : 'blue'}>
+              {indexFailed ? 'Indexing failed' : indexCancelled ? 'Cancelled' : indexReady ? 'Synthesising' : 'Indexing'}
             </Badge>
           </Group>
-          <Text size="sm" c="dimmed">
-            The agent reads your warehouse schema and knowledge sources, then synthesises the pack. This usually takes a few minutes; you can leave this page and come back — we&apos;ll update automatically when it&apos;s done.
-          </Text>
+
+          {indexHalted ? (
+            <Alert
+              color={indexFailed ? 'red' : 'orange'}
+              icon={<IconAlertCircle size={16} />}
+              title={indexFailed ? 'Schema indexing failed' : 'Schema indexing was cancelled'}
+            >
+              <Text size="sm">
+                Pack generation can&apos;t proceed without a fresh schema index. Click <b>Back to wizard</b> to adjust your blurb model / sources / warehouse and re-run, or use <b>Retry indexing</b> in the panel below to rebuild with the same configuration.
+              </Text>
+              <Group justify="flex-end" mt="sm">
+                <Button
+                  size="xs"
+                  loading={resetting}
+                  onClick={async () => {
+                    setResetting(true);
+                    try {
+                      const next = await api.updateProject(project.id, { state: PROJECT_STATE_PACK_GENERATION_PENDING });
+                      onProjectChanged(next);
+                      router.push(`/projects/${project.id}/generate`);
+                    } catch (e: unknown) {
+                      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+                    } finally {
+                      setResetting(false);
+                    }
+                  }}
+                >
+                  Back to wizard
+                </Button>
+              </Group>
+            </Alert>
+          ) : (
+            <Text size="sm" c="dimmed">
+              The agent reads your warehouse schema and knowledge sources, then synthesises the pack. This usually takes a few minutes; you can leave this page and come back — we&apos;ll update automatically when it&apos;s done.
+            </Text>
+          )}
 
           <Stack gap={6}>
             <Text size="sm" fw={500}>Step 1 of 2 — Indexing schema</Text>
             <SchemaIndexPanel
               projectId={project.id}
-              hideActions
               title="Schema index"
               onStatusChange={setIndexStatus}
             />
@@ -182,7 +224,9 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
             <Text size="xs" c="dimmed">
               {indexReady
                 ? 'The agent is now feeding the indexed schema + your knowledge sources to the LLM. The retry loop validates the output up to 3 times before giving up.'
-                : 'Waits for schema indexing to finish.'}
+                : indexHalted
+                  ? 'Skipped — schema indexing did not finish.'
+                  : 'Waits for schema indexing to finish.'}
             </Text>
           </Stack>
         </Stack>

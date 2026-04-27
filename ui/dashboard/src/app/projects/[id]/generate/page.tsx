@@ -11,8 +11,9 @@ import { IconAlertCircle, IconWand, IconUpload } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
 import ProvidersPanel from '@/components/projects/ProvidersPanel';
+import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import {
-  api, Project,
+  api, Project, ProviderMeta,
   PROJECT_STATE_PACK_GENERATION_PENDING,
   PROJECT_STATE_PACK_GENERATION,
   PROJECT_STATE_PACK_GENERATION_DONE,
@@ -59,10 +60,32 @@ export default function PackGenWizardPage() {
   const [discardOpened, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
   const KnowledgeSourcesPanel = useKnowledgeSourcesPanel();
 
+  // Blurb-model state — optional. Defaults to "use analysis LLM"; when
+  // the user enables it they pick a separate (typically cheaper +
+  // faster) model that the schema indexer uses to generate per-table
+  // descriptions. Without this step users were silently running blurb
+  // generation on their analysis LLM, which on ERP-scale warehouses
+  // (1k+ tables) burns serious tokens.
+  const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
+  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
+  const [savingBlurb, setSavingBlurb] = useState(false);
+
   useEffect(() => {
-    api.getProject(id)
-      .then((p) => {
+    Promise.all([api.getProject(id), api.listLLMProviders()])
+      .then(([p, llmProvs]) => {
         setProject(p);
+        setLlmProviders(llmProvs);
+        // Hydrate the blurb editor from any persisted blurb_llm so
+        // returning to the wizard mid-setup picks up the prior choice.
+        if (p.blurb_llm?.provider && p.blurb_llm?.model) {
+          setBlurb({
+            enabled: true,
+            provider: p.blurb_llm.provider,
+            model: p.blurb_llm.model,
+            config: p.blurb_llm.config || {},
+            apiKey: '',
+          });
+        }
         // Send the user back to the project page if there is no draft
         // pack-gen flow active. The project page renders its own state-
         // specific banners (running, draft preview, ready) so we don't
@@ -86,6 +109,46 @@ export default function PackGenWizardPage() {
   const llmReady = Boolean(project?.llm?.provider && project?.llm?.model);
   const embeddingReady = Boolean(project?.embedding?.provider && project?.embedding?.model);
   const providersReady = llmReady && embeddingReady;
+  // Blurb step is valid in either configuration: "use analysis LLM"
+  // (blurb.enabled === false → falls back to project.llm) or a fully-
+  // chosen separate model.
+  const blurbValid = !blurb.enabled || (Boolean(blurb.provider) && Boolean(blurb.model));
+
+  const handleSaveBlurb = async () => {
+    if (!project) return;
+    setSavingBlurb(true);
+    try {
+      const payload: Partial<Project> = blurb.enabled && blurb.provider && blurb.model
+        ? {
+            blurb_llm: {
+              provider: blurb.provider,
+              model: blurb.model,
+              config: Object.fromEntries(
+                Object.entries(blurb.config || {}).filter(([k]) => k !== 'model' && k !== 'api_key'),
+              ),
+            },
+          }
+        // Explicit null in the wire payload would be ideal but the API
+        // shape only treats omission as "no override". Leaving the
+        // existing blurb_llm in place when the user disables the
+        // switch is acceptable — the agent always falls back to the
+        // analysis LLM if blurb_llm is missing OR if the editor isn't
+        // enabled in the wizard.
+        : {};
+      const saved = await api.updateProject(project.id, payload);
+      if (blurb.enabled && blurb.apiKey) {
+        await api.setSecret(project.id, 'blurb-llm-api-key', blurb.apiKey);
+        setBlurb((prev) => ({ ...prev, apiKey: '' }));
+      }
+      setProject(saved);
+      notifications.show({ title: 'Saved', message: 'Blurb model updated', color: 'green' });
+      setActive(2);
+    } catch (e: unknown) {
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingBlurb(false);
+    }
+  };
 
   const handleLaunch = async () => {
     setLaunching(true);
@@ -181,6 +244,26 @@ export default function PackGenWizardPage() {
             </Card>
           </Stepper.Step>
 
+          <Stepper.Step label="Blurb model" description="Cheap model for schema descriptions">
+            <Card withBorder p="lg" mt="md">
+              <Stack>
+                <Text size="sm" c="dimmed">
+                  Schema indexing generates a one-line description (&quot;blurb&quot;) per warehouse table that the agent embeds into Qdrant for retrieval. On ERP-scale schemas (1k+ tables) this is the bulk of the indexing token spend, and your analysis LLM is overkill — pick a cheap+fast model here. Spike winners against a real 2K-table ERP: Bedrock <code>qwen.qwen3-32b-v1:0</code>, OpenAI <code>gpt-4.1-nano</code>. Leave the switch off to reuse the analysis LLM.
+                </Text>
+                <BlurbLLMEditor
+                  llmProviders={llmProviders}
+                  value={blurb}
+                  onChange={setBlurb}
+                />
+                <Group justify="flex-end">
+                  <Button onClick={handleSaveBlurb} loading={savingBlurb} disabled={!blurbValid}>
+                    Save and continue
+                  </Button>
+                </Group>
+              </Stack>
+            </Card>
+          </Stepper.Step>
+
           <Stepper.Step label="Knowledge sources" description="What the LLM will read">
             {!providersReady ? (
               <Card withBorder p="lg" mt="md">
@@ -221,7 +304,7 @@ export default function PackGenWizardPage() {
               <WarehouseConfigPanel projectId={id} variant="wizard" onSaved={(saved) => {
                 setProject(saved);
                 if (saved.warehouse?.provider && (saved.warehouse.datasets || []).length > 0) {
-                  setActive(3);
+                  setActive(4);
                 }
               }} />
             </Card>
@@ -246,6 +329,14 @@ export default function PackGenWizardPage() {
                 <SummaryRow label="Pack slug" value={project.generate_pack?.pack_slug || ''} />
                 <SummaryRow label="LLM" value={llmReady ? `${project.llm.provider} / ${project.llm.model}` : 'Not configured'} ok={llmReady} />
                 <SummaryRow label="Embedding" value={embeddingReady ? `${project.embedding.provider} / ${project.embedding.model}` : 'Not configured'} ok={embeddingReady} />
+                <SummaryRow
+                  label="Blurb model"
+                  value={
+                    project.blurb_llm?.provider && project.blurb_llm?.model
+                      ? `${project.blurb_llm.provider} / ${project.blurb_llm.model}`
+                      : 'Reuse analysis LLM'
+                  }
+                />
                 <SummaryRow label="Warehouse" value={warehouseReady ? `${project.warehouse.provider} / ${(project.warehouse.datasets || []).join(', ')}` : 'Not configured'} ok={warehouseReady} />
                 <Group justify="flex-end" mt="sm">
                   <Button onClick={handleLaunch} loading={launching} disabled={!warehouseReady || !providersReady}>
@@ -259,10 +350,14 @@ export default function PackGenWizardPage() {
 
         <Group justify="space-between">
           <Button variant="default" onClick={() => setActive((c) => Math.max(0, c - 1))} disabled={active === 0}>Back</Button>
-          {active < 3 && (
+          {active < 4 && (
             <Button
               onClick={() => setActive((c) => c + 1)}
-              disabled={(active === 0 && !providersReady) || (active === 2 && !warehouseReady)}
+              disabled={
+                (active === 0 && !providersReady) ||
+                (active === 1 && !blurbValid) ||
+                (active === 3 && !warehouseReady)
+              }
             >
               Next
             </Button>
