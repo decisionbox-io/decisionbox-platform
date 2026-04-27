@@ -22,6 +22,7 @@ import (
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
@@ -201,10 +202,11 @@ func Run() {
 	// then returns 404. Sources is configured first because the pack-gen
 	// Provider relies on the same retriever for its prompt context.
 	if err := packgen.Configure(ctx, packgen.Dependencies{
-		Mongo:          mongoClient.Database(),
-		Vectorstore:    qdrantProvider,
-		SecretProvider: secretProvider,
-		Sources:        gosources.GetProvider(),
+		Mongo:            mongoClient.Database(),
+		Vectorstore:      qdrantProvider,
+		SecretProvider:   secretProvider,
+		Sources:          gosources.GetProvider(),
+		EmbeddingFactory: goembedding.NewProvider,
 	}); err != nil {
 		apilog.WithError(err).Warn("Pack-generation provider configuration failed; pack-generate endpoints will return 404")
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/packgen"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
@@ -84,10 +85,11 @@ func runPackGen(cfg *config.Config, projectID, runID string) error {
 	// registered this is a no-op and GetProvider() returns the no-op
 	// implementation.
 	if err := packgen.Configure(ctx, packgen.Dependencies{
-		Mongo:          mongoClient.Database(),
-		Vectorstore:    qdrantProvider,
-		SecretProvider: secretProvider,
-		Sources:        gosources.GetProvider(),
+		Mongo:            mongoClient.Database(),
+		Vectorstore:      qdrantProvider,
+		SecretProvider:   secretProvider,
+		Sources:          gosources.GetProvider(),
+		EmbeddingFactory: goembedding.NewProvider,
 	}); err != nil {
 		return fmt.Errorf("configure pack-gen provider: %w", err)
 	}

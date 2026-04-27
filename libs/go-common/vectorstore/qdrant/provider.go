@@ -273,6 +273,69 @@ func (p *Provider) Delete(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// SearchSchemaIndex queries the per-project schema-blurb collection
+// (decisionbox_schema_{projectID}) and returns the top-K nearest
+// neighbours to the query vector. Returns (nil, nil) when the
+// collection does not yet exist (the project hasn't built a schema
+// index — callers should fall back to a non-semantic heuristic).
+func (p *Provider) SearchSchemaIndex(ctx context.Context, projectID string, vector []float64, topK int) ([]vectorstore.SearchResult, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("qdrant: projectID is required")
+	}
+	if len(vector) == 0 {
+		return nil, fmt.Errorf("qdrant: search vector is empty")
+	}
+	if topK <= 0 {
+		topK = 20
+	}
+
+	name := schemaCollectionName(projectID)
+	exists, err := p.client.CollectionExists(ctx, name)
+	if err != nil {
+		// Some Qdrant versions return "Not found" instead of (false,
+		// nil) — treat both the same way.
+		if strings.Contains(err.Error(), "Not found") || strings.Contains(err.Error(), "doesn't exist") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("qdrant: check schema collection %q: %w", name, err)
+	}
+	if !exists {
+		return nil, nil
+	}
+
+	limit := uint64(topK)
+	scored, err := p.client.Query(ctx, &pb.QueryPoints{
+		CollectionName: name,
+		Query:          pb.NewQueryDense(float64sToFloat32s(vector)),
+		Limit:          &limit,
+		WithPayload:    pb.NewWithPayload(true),
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "Not found") || strings.Contains(err.Error(), "doesn't exist") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("qdrant: search schema collection %q: %w", name, err)
+	}
+
+	results := make([]vectorstore.SearchResult, 0, len(scored))
+	for _, sp := range scored {
+		results = append(results, vectorstore.SearchResult{
+			ID:      pointIDToString(sp.Id),
+			Score:   float64(sp.Score),
+			Payload: payloadToMap(sp.Payload),
+		})
+	}
+	return results, nil
+}
+
+// schemaCollectionName mirrors the per-project naming the agent's
+// schema-indexer writes to. Kept here (rather than imported from the
+// agent package) because that lives in services/agent/internal and is
+// not importable.
+func schemaCollectionName(projectID string) string {
+	return "decisionbox_schema_" + projectID
+}
+
 // HealthCheck verifies the vector store is reachable.
 func (p *Provider) HealthCheck(ctx context.Context) error {
 	_, err := p.client.HealthCheck(ctx)

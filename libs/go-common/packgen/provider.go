@@ -17,11 +17,23 @@ import (
 	"context"
 	"errors"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// EmbeddingFactory constructs an embedding provider for a per-project
+// embedding configuration. Pack generation uses this to embed the
+// business summary / source chunks before querying the project's
+// schema-blurb Qdrant collection so the schema slice fed into synth
+// is semantically related to the customer's actual business, not
+// just the largest tables in their warehouse.
+//
+// Mirrors the EmbeddingFactory shape used by the sources worker so
+// callers configure the same factory for both call sites.
+type EmbeddingFactory func(provider string, cfg embedding.ProviderConfig) (embedding.Provider, error)
 
 // ErrNotConfigured is returned by every method of the no-op Provider.
 // Handlers MUST translate this into a "feature unavailable" response
@@ -157,6 +169,15 @@ type Dependencies struct {
 	// free text). Pack-gen uses the SAME store and retrieval path that
 	// exploration and /ask use — see sources.Provider.RetrieveContext.
 	Sources sources.Provider
+
+	// EmbeddingFactory builds a per-project embedding client (matching
+	// the project's embedding.provider / embedding.model). Used to
+	// embed the project's business summary so the orchestrator can
+	// query the per-project schema-blurb Qdrant collection for tables
+	// semantically related to the business. Optional — when nil the
+	// orchestrator falls back to a row-count + system-table-prefix
+	// exclusion heuristic.
+	EmbeddingFactory EmbeddingFactory
 }
 
 // ProviderFactory constructs a Provider from runtime dependencies.
