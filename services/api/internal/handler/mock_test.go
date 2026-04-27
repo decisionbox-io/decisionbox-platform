@@ -35,6 +35,7 @@ type mockProjectRepo struct {
 	updateErr        error
 	deleteErr        error
 	deleteCascadeErr error
+	setStatusErr     error
 	cascadeCalls     []string
 }
 
@@ -158,6 +159,9 @@ func (m *mockProjectRepo) Count(_ context.Context) (int, error) {
 // in-memory version for the handler unit tests. ready stamps UpdatedAt,
 // failed carries error, other statuses clear error.
 func (m *mockProjectRepo) SetSchemaIndexStatus(_ context.Context, id, status, errMsg string) error {
+	if m.setStatusErr != nil {
+		return m.setStatusErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	p, ok := m.projects[id]

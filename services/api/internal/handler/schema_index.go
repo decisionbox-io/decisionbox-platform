@@ -39,15 +39,23 @@ type SchemaCacheInvalidator interface {
 	LastCachedAt(ctx context.Context, projectID string) (time.Time, error)
 }
 
+// SchemaIndexLogLister is the minimum repo surface the /logs endpoint
+// needs. Concrete impl is *database.SchemaIndexLogRepository, which
+// satisfies it without changes — the in-package interface lets tests
+// inject a fake without standing up Mongo.
+type SchemaIndexLogLister interface {
+	List(ctx context.Context, projectID string, since time.Time, limit int) ([]database.SchemaIndexLog, error)
+}
+
 // SchemaIndexHandler serves the lifecycle endpoints the dashboard uses
 // to observe and drive schema indexing. Plan §8.4.
 type SchemaIndexHandler struct {
 	projects   database.ProjectRepo
 	progress   database.SchemaIndexProgressRepo
-	dropper    CollectionDropper                  // nullable — reindex works without it if no prior index exists
-	logs       *database.SchemaIndexLogRepository // nullable — log-tail endpoint returns empty when absent
-	canceller  IndexCanceller                     // nullable — cancel endpoint returns 503 when worker isn't wired
-	cacheRepo  SchemaCacheInvalidator             // nullable — invalidate-cache endpoint returns 503 when not wired
+	dropper    CollectionDropper      // nullable — reindex works without it if no prior index exists
+	logs       SchemaIndexLogLister   // nullable — log-tail endpoint returns empty when absent
+	canceller  IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
+	cacheRepo  SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
 }
 
 // NewSchemaIndexHandler constructs the handler. Pass a nil dropper when
@@ -57,7 +65,7 @@ type SchemaIndexHandler struct {
 // 503 (service unavailable) so the UI can hide the button gracefully.
 // cacheRepo is optional — when nil the /invalidate-cache endpoint
 // returns 503.
-func NewSchemaIndexHandler(projects database.ProjectRepo, progress database.SchemaIndexProgressRepo, dropper CollectionDropper, logs *database.SchemaIndexLogRepository, canceller IndexCanceller, cacheRepo SchemaCacheInvalidator) *SchemaIndexHandler {
+func NewSchemaIndexHandler(projects database.ProjectRepo, progress database.SchemaIndexProgressRepo, dropper CollectionDropper, logs SchemaIndexLogLister, canceller IndexCanceller, cacheRepo SchemaCacheInvalidator) *SchemaIndexHandler {
 	return &SchemaIndexHandler{projects: projects, progress: progress, dropper: dropper, logs: logs, canceller: canceller, cacheRepo: cacheRepo}
 }
 
