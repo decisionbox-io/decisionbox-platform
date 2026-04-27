@@ -55,7 +55,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	testServer = httptest.NewServer(server.New(testDB, nil, nil, auth.NewNoAuthProvider()))
+	// schemaCollectionDropper + indexCanceller are nil — this integration
+	// test doesn't exercise the schema-index lifecycle endpoints, and
+	// the handler treats nil deps as "feature unavailable" (returns 503).
+	testServer = httptest.NewServer(server.New(testDB, nil, nil, auth.NewNoAuthProvider(), nil, nil))
 	defer testServer.Close()
 
 	os.Exit(m.Run())
