@@ -42,6 +42,19 @@ type Project struct {
 	// and retry without leaving the page.
 	PackGenLastError string `bson:"pack_gen_last_error,omitempty" json:"pack_gen_last_error,omitempty"`
 
+	// BusinessSummary is an LLM-generated 2–4-paragraph summary of
+	// what the customer's business actually does, distilled from the
+	// indexed knowledge sources. Refreshed whenever a source goes to
+	// status=ready (so the summary stays current as users add or
+	// remove documents). Pack-generation, discovery, and /ask all
+	// pull this string in as the primary "what is this project"
+	// anchor — it dramatically outperforms passing raw chunks for
+	// LLMs that otherwise defer to a noisy ERP-framework schema.
+	// Empty until the first source is indexed.
+	BusinessSummary          string     `bson:"business_summary,omitempty" json:"business_summary,omitempty"`
+	BusinessSummaryUpdatedAt *time.Time `bson:"business_summary_updated_at,omitempty" json:"business_summary_updated_at,omitempty"`
+	BusinessSummaryError     string     `bson:"business_summary_error,omitempty" json:"business_summary_error,omitempty"`
+
 	Status        string     `bson:"status" json:"status"`
 	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 	LastRunStatus string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
