@@ -462,11 +462,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// crash mid-flight rely on the boot-time orphan sweep, but a
 	// clean exit (success or failure) cleans up immediately.
 	if o.runStepIndex != nil {
+		applog.WithField("run_id", o.runID).Debug("orchestrator: per-run step index wired; deferring Drop")
 		defer func() {
+			applog.WithField("run_id", o.runID).Debug("orchestrator: dropping per-run step index on exit")
 			if err := o.runStepIndex.Drop(ctx); err != nil {
 				applog.WithError(err).Warn("Failed to drop per-run step index; orphan sweep will retry on next agent boot")
 			}
 		}()
+	} else {
+		applog.WithField("run_id", o.runID).Warn("orchestrator: runStepIndex is nil — analysis will use empty vector hits")
 	}
 
 	explorationResult, err := o.explorationEngine.Explore(ctx, ai.ExplorationContext{
@@ -536,10 +540,31 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			o.statusReporter.IncrementAnalysisCounter(ctx, "steps_dropped", len(pickResult.Dropped))
 		}
 		if len(pickResult.Picked) == 0 {
-			applog.WithField("area", area.ID).Info("No relevant queries found, skipping")
+			applog.WithFields(applog.Fields{
+				"area":    area.ID,
+				"dropped": len(pickResult.Dropped),
+			}).Info("No relevant queries found, skipping")
 			continue
 		}
 		relevantSteps := stepsFromPickResult(pickResult)
+
+		// Per-area picked-step debug log — useful for diagnosing why
+		// the LLM produced (or didn't produce) insights for an area.
+		var pickedSummary []map[string]any
+		for _, p := range pickResult.Picked {
+			pickedSummary = append(pickedSummary, map[string]any{
+				"step":   p.Step.Step,
+				"score":  p.Score,
+				"source": string(p.Source),
+			})
+		}
+		applog.WithFields(applog.Fields{
+			"area":         area.ID,
+			"area_name":    area.Name,
+			"picked_count": len(relevantSteps),
+			"dropped_count": len(pickResult.Dropped),
+			"picked":       pickedSummary,
+		}).Debug("Analysis area: picked steps")
 
 		applog.WithFields(applog.Fields{
 			"area":    area.ID,
@@ -551,6 +576,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the old json.MarshalIndent of the full ExplorationStep,
 		// which on ERP-scale runs grew to >1M tokens.
 		queryResultsJSON := RenderCompactedSteps(relevantSteps)
+		applog.WithFields(applog.Fields{
+			"area":          area.ID,
+			"queries":       len(relevantSteps),
+			"results_chars": len(queryResultsJSON),
+			"prompt_chars":  len(baseContext) + len(areaPrompt) + len(queryResultsJSON),
+		}).Debug("Analysis area: rendered prompt sizing")
 		prompt := baseContext + "\n\n" + areaPrompt
 		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantSteps)))

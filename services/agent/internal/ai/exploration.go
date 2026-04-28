@@ -276,6 +276,17 @@ func (e *ExplorationEngine) Explore(
 		// the analysis selection back to keyword-only behaviour but
 		// must not abort exploration.
 		if e.stepIndexer != nil {
+			compactRowCount := 0
+			if explorationStep.CompactResult != nil {
+				compactRowCount = explorationStep.CompactResult.RowCount
+			}
+			logger.WithFields(logger.Fields{
+				"step":              step,
+				"action":            explorationStep.Action,
+				"row_count":         explorationStep.RowCount,
+				"compact_row_count": compactRowCount,
+				"has_error":         explorationStep.Error != "",
+			}).Debug("exploration: indexing step into per-run vector index")
 			if err := e.stepIndexer.Upsert(ctx, explorationStep); err != nil {
 				logger.WithFields(logger.Fields{
 					"step":  step,
@@ -792,6 +803,13 @@ func (e *ExplorationEngine) executeQuery(
 	// step.QueryResult — analysis no longer ships the raw blob.
 	compact := gomodels.BuildCompactResult(result.Data)
 	step.CompactResult = &compact
+	logger.WithFields(logger.Fields{
+		"step":     step.Step,
+		"row_count": compact.RowCount,
+		"columns":  len(compact.Columns),
+		"has_all_rows": compact.AllRows != nil,
+		"has_tail_rows": compact.TailRows != nil,
+	}).Debug("exploration: built compact digest for step")
 
 	// Format result for Claude
 	resultMsg := "Query executed successfully.\n\n"

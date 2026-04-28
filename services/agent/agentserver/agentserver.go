@@ -631,6 +631,12 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err != nil {
 		return fmt.Errorf("init run step index: %w", err)
 	}
+	applog.WithFields(applog.Fields{
+		"run_id":          runID,
+		"collection":      discovery.RunStepIndexCollectionName(runID),
+		"embedder_model":  embeddingProvider.ModelName(),
+		"embedder_dims":   embeddingProvider.Dimensions(),
+	}).Info("Run-step index ready")
 
 	// Boot-time orphan sweep: drop per-run collections from previous
 	// runs that crashed before reaching the deferred Drop. The
@@ -638,6 +644,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	sweepCtx, sweepCancel := context.WithTimeout(ctx, 30*time.Second)
 	keep := loadActiveRunIDs(sweepCtx, db)
 	keep[runID] = struct{}{}
+	applog.WithFields(applog.Fields{
+		"keep_count": len(keep),
+		"run_id":     runID,
+	}).Debug("Run-step-index orphan sweep starting")
 	if dropped, err := discovery.SweepOrphanRunStepIndexes(sweepCtx, runStepClient, keep); err != nil {
 		applog.WithError(err).Warn("Run-step-index orphan sweep failed; orphans will retry next boot")
 	} else if dropped > 0 {

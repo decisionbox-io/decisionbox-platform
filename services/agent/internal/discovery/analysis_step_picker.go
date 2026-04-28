@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -164,6 +165,15 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 
 	// 1. Vector hits.
 	areaQuery := buildAreaQueryText(area)
+	applog.WithFields(applog.Fields{
+		"area":         area.ID,
+		"area_keywords": len(area.Keywords),
+		"top_k":        topK,
+		"min_score":    minScore,
+		"budget_tokens": budgetTokens,
+		"total_steps":  len(allSteps),
+	}).Debug("analysis_step_picker: starting pick for area")
+
 	hits, err := p.Search(ctx, areaQuery, RunStepIndexSearchOpts{TopK: topK, MinScore: 0}) // we'll filter ourselves so we can record dropped
 	if err != nil {
 		return nil, fmt.Errorf("analysis_step_picker: vector search: %w", err)
@@ -258,6 +268,7 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 	if estimate == nil {
 		estimate = defaultRenderedSize
 	}
+	preTrimCount := len(pickedList)
 	for len(pickedList) > 1 {
 		stepsForEstimate := stepsFromPicked(pickedList)
 		size := estimate(stepsForEstimate)
@@ -267,6 +278,14 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 		}
 		// Drop the lowest-scored step (last after sort).
 		victim := pickedList[len(pickedList)-1]
+		applog.WithFields(applog.Fields{
+			"area":           area.ID,
+			"step":           victim.Step.Step,
+			"score":          victim.Score,
+			"size_chars":     size,
+			"tokens_estimate": tokens,
+			"budget_tokens":   budgetTokens,
+		}).Debug("analysis_step_picker: dropping step over budget")
 		dropped = append(dropped, DroppedStep{
 			StepNumber: victim.Step.Step,
 			Score:      victim.Score,
@@ -275,6 +294,16 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 		pickedList = pickedList[:len(pickedList)-1]
 	}
 
+	finalSize := estimate(stepsFromPicked(pickedList))
+	applog.WithFields(applog.Fields{
+		"area":             area.ID,
+		"vector_hits":      len(hits),
+		"picked":           len(pickedList),
+		"dropped":          len(dropped),
+		"trimmed_for_budget": preTrimCount - len(pickedList),
+		"rendered_chars":   finalSize,
+		"rendered_tokens":  finalSize / charsPerToken,
+	}).Info("analysis_step_picker: pick result")
 	return &PickResult{
 		Picked:  pickedList,
 		Dropped: dropped,

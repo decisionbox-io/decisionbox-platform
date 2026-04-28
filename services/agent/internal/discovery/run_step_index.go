@@ -24,9 +24,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	pb "github.com/qdrant/go-client/qdrant"
 
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -170,11 +172,22 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 	if text == "" {
 		// Nothing meaningful to embed (action with no SQL and no
 		// purpose); skip silently — the picker can't use it anyway.
+		applog.WithFields(applog.Fields{
+			"run_id": r.runID,
+			"step":   step.Step,
+			"action": step.Action,
+		}).Debug("run_step_index: skipping upsert — empty embed text")
 		return nil
 	}
 
+	embedStart := time.Now()
 	vectors, err := r.embedder.Embed(ctx, []string{text})
 	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": r.runID,
+			"step":   step.Step,
+			"error":  err.Error(),
+		}).Debug("run_step_index: embed call failed")
 		return fmt.Errorf("run_step_index: embed step %d: %w", step.Step, err)
 	}
 	if len(vectors) != 1 || len(vectors[0]) == 0 {
@@ -197,6 +210,7 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 	}
 
 	wait := true
+	upsertStart := time.Now()
 	_, err = r.client.Upsert(ctx, &pb.UpsertPoints{
 		CollectionName: RunStepIndexCollectionName(r.runID),
 		Wait:           &wait,
@@ -209,6 +223,16 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 	if err != nil {
 		return fmt.Errorf("run_step_index: upsert step %d: %w", step.Step, err)
 	}
+	applog.WithFields(applog.Fields{
+		"run_id":           r.runID,
+		"step":             step.Step,
+		"row_count":        step.RowCount,
+		"has_error":        step.Error != "",
+		"text_chars":       len(text),
+		"embed_dims":       len(vec),
+		"embed_ms":         upsertStart.Sub(embedStart).Milliseconds(),
+		"upsert_ms":        time.Since(upsertStart).Milliseconds(),
+	}).Debug("run_step_index: step indexed")
 	return nil
 }
 
@@ -222,6 +246,7 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		return nil, errors.New("run_step_index: TopK must be positive")
 	}
 
+	embedStart := time.Now()
 	vectors, err := r.embedder.Embed(ctx, []string{q})
 	if err != nil {
 		return nil, fmt.Errorf("run_step_index: embed area query: %w", err)
@@ -243,11 +268,16 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		req.ScoreThreshold = &threshold
 	}
 
+	queryStart := time.Now()
 	scored, err := r.client.Query(ctx, req)
 	if err != nil {
 		// Collection-missing → empty hits. Happens on first call when
 		// every prior Upsert failed before reaching the create path.
 		if isMissingCollectionErr(err) {
+			applog.WithFields(applog.Fields{
+				"run_id": r.runID,
+				"query":  truncateForLog(q, 80),
+			}).Debug("run_step_index: search hit a missing collection — returning empty")
 			return nil, nil
 		}
 		return nil, fmt.Errorf("run_step_index: search: %w", err)
@@ -272,6 +302,22 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		}
 		return hits[i].Step < hits[j].Step
 	})
+	var topScore, bottomScore float64
+	if len(hits) > 0 {
+		topScore = hits[0].Score
+		bottomScore = hits[len(hits)-1].Score
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":      r.runID,
+		"query":       truncateForLog(q, 80),
+		"top_k":       opts.TopK,
+		"min_score":   opts.MinScore,
+		"hits":        len(hits),
+		"top_score":   topScore,
+		"bottom_score": bottomScore,
+		"embed_ms":    queryStart.Sub(embedStart).Milliseconds(),
+		"query_ms":    time.Since(queryStart).Milliseconds(),
+	}).Debug("run_step_index: search completed")
 	return hits, nil
 }
 
@@ -281,16 +327,22 @@ func (r *runStepIndex) Drop(ctx context.Context) error {
 	exists, err := r.client.CollectionExists(ctx, name)
 	if err != nil {
 		if isMissingCollectionErr(err) {
+			applog.WithField("run_id", r.runID).Debug("run_step_index: drop — collection already missing, no-op")
 			return nil
 		}
 		return fmt.Errorf("run_step_index: check collection: %w", err)
 	}
 	if !exists {
+		applog.WithField("run_id", r.runID).Debug("run_step_index: drop — collection does not exist, no-op")
 		return nil
 	}
 	if err := r.client.DeleteCollection(ctx, name); err != nil {
 		return fmt.Errorf("run_step_index: delete collection: %w", err)
 	}
+	applog.WithFields(applog.Fields{
+		"run_id":     r.runID,
+		"collection": name,
+	}).Info("run_step_index: per-run collection dropped")
 	// Reset the once so a re-use of the same index after Drop
 	// (uncommon but allowed) re-creates the collection.
 	r.ensureMu.Lock()
@@ -348,6 +400,11 @@ func (r *runStepIndex) ensureCollection(ctx context.Context, dims int) error {
 	if err != nil {
 		return fmt.Errorf("run_step_index: create collection: %w", err)
 	}
+	applog.WithFields(applog.Fields{
+		"run_id":     r.runID,
+		"collection": name,
+		"dimensions": dims,
+	}).Info("run_step_index: per-run collection created")
 	return nil
 }
 
@@ -368,20 +425,35 @@ func SweepOrphanRunStepIndexes(ctx context.Context, client runStepClient, keepRu
 	if err != nil {
 		return 0, fmt.Errorf("run_step_index: list collections: %w", err)
 	}
+	candidates := 0
 	dropped := 0
 	for _, name := range collections {
 		if !strings.HasPrefix(name, RunStepIndexCollectionPrefix) {
 			continue
 		}
+		candidates++
 		runID := strings.TrimPrefix(name, RunStepIndexCollectionPrefix)
 		if _, keep := keepRunIDs[runID]; keep {
+			applog.WithFields(applog.Fields{
+				"collection": name,
+				"run_id":     runID,
+			}).Debug("run_step_index: sweep — keeping live run collection")
 			continue
 		}
 		if err := client.DeleteCollection(ctx, name); err != nil {
 			return dropped, fmt.Errorf("run_step_index: delete orphan %q: %w", name, err)
 		}
+		applog.WithFields(applog.Fields{
+			"collection": name,
+			"run_id":     runID,
+		}).Info("run_step_index: sweep — dropped orphan collection")
 		dropped++
 	}
+	applog.WithFields(applog.Fields{
+		"candidates": candidates,
+		"dropped":    dropped,
+		"kept":       len(keepRunIDs),
+	}).Info("run_step_index: orphan sweep finished")
 	return dropped, nil
 }
 
@@ -448,5 +520,16 @@ func boolValRSI(m map[string]*pb.Value, key string) bool {
 func isMissingCollectionErr(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "Not found") || strings.Contains(msg, "doesn't exist")
+}
+
+// truncateForLog clips a string to n characters with an ellipsis
+// suffix. Used to keep debug log lines bounded — the area query and
+// step purposes are normally short but a long pasted prompt should
+// not blow up the log.
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
