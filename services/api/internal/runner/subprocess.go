@@ -53,9 +53,14 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
 	)
 
-	// Capture stderr to get error messages from the agent
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// Live-tail the agent's stderr to the API stderr (so operators
+	// watching the API log see structured agent debug output in real
+	// time) while also keeping a rolling tail buffer so a non-zero
+	// exit can still surface the last error message.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("agent stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		apilog.WithFields(apilog.Fields{
@@ -76,15 +81,43 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	r.processes[opts.RunID] = cmd.Process
 	r.mu.Unlock()
 
+	// Rolling tail buffer — capped so a runaway log volume can't blow
+	// API memory while we still keep enough context for an
+	// extractErrorMessage call after a non-zero exit.
+	const tailCap = 64 * 1024
+	var tail bytes.Buffer
+	tail.Grow(tailCap)
+
+	prefix := fmt.Sprintf("[agent %s] ", opts.RunID)
+	pumpDone := make(chan struct{})
+	go func() {
+		defer close(pumpDone)
+		scanner := bufio.NewScanner(stderrPipe)
+		// Bump buffer for long zap JSON log lines (default is 64KiB).
+		scanner.Buffer(make([]byte, 0, 128*1024), 512*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			_, _ = io.WriteString(os.Stderr, prefix)
+			_, _ = os.Stderr.Write(line)
+			_, _ = os.Stderr.Write([]byte{'\n'})
+			if tail.Len()+len(line)+1 > tailCap {
+				tail.Reset()
+			}
+			tail.Write(line)
+			tail.WriteByte('\n')
+		}
+	}()
+
 	// Wait in background, handle failure
 	go func() {
 		err := cmd.Wait()
+		<-pumpDone
 		r.mu.Lock()
 		delete(r.processes, opts.RunID)
 		r.mu.Unlock()
 
 		if err != nil {
-			errMsg := extractErrorMessage(stderr.String(), err)
+			errMsg := extractErrorMessage(tail.String(), err)
 			apilog.WithFields(apilog.Fields{
 				"run_id": opts.RunID, "error": errMsg,
 			}).Warn("Agent subprocess exited with error")
