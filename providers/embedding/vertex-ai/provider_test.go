@@ -122,7 +122,7 @@ func TestEmbedSingleText(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	result, err := p.Embed(context.Background(), []string{"hello world"})
 	if err != nil {
 		t.Fatalf("Embed failed: %v", err)
@@ -153,7 +153,7 @@ func TestEmbedBatch(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	result, err := p.Embed(context.Background(), []string{"text1", "text2", "text3"})
 	if err != nil {
 		t.Fatalf("Embed failed: %v", err)
@@ -164,7 +164,7 @@ func TestEmbedBatch(t *testing.T) {
 }
 
 func TestEmbedEmpty(t *testing.T) {
-	p := newProvider("text-embedding-005", 768, "http://unused", &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, "http://unused", &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	result, err := p.Embed(context.Background(), []string{})
 	if err != nil {
 		t.Fatalf("Embed empty failed: %v", err)
@@ -191,7 +191,7 @@ func TestEmbedAPIError(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for API error")
@@ -211,7 +211,7 @@ func TestEmbedServerError(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for server error")
@@ -231,7 +231,7 @@ func TestEmbedMismatchedCount(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	_, err := p.Embed(context.Background(), []string{"text1", "text2"})
 	if err == nil {
 		t.Fatal("expected error for mismatched count")
@@ -244,7 +244,7 @@ func TestEmbedMismatchedCount(t *testing.T) {
 func TestEmbedAuthError(t *testing.T) {
 	p := newProvider("text-embedding-005", 768, "http://unused", &mockAuth{
 		err: fmt.Errorf("failed to get access token"),
-	})
+	}, "us-central1", "test-proj")
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for auth failure")
@@ -264,7 +264,7 @@ func TestValidate(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 	err := p.Validate(context.Background())
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
@@ -284,7 +284,7 @@ func TestValidateError(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "bad-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "bad-token"}, "us-central1", "test-proj")
 	err := p.Validate(context.Background())
 	if err == nil {
 		t.Fatal("expected validation error")
@@ -292,7 +292,7 @@ func TestValidateError(t *testing.T) {
 }
 
 func TestModelName(t *testing.T) {
-	p := newProvider("gemini-embedding-001", 3072, "http://unused", &mockAuth{tok: "t"})
+	p := newProvider("gemini-embedding-001", 3072, "http://unused", &mockAuth{tok: "t"}, "us-central1", "test-proj")
 	if p.ModelName() != "gemini-embedding-001" {
 		t.Errorf("expected gemini-embedding-001, got %s", p.ModelName())
 	}
@@ -308,7 +308,7 @@ func TestDimensions(t *testing.T) {
 		{"gemini-embedding-001", 3072},
 	}
 	for _, tt := range tests {
-		p := newProvider(tt.model, tt.dims, "http://unused", &mockAuth{tok: "t"})
+		p := newProvider(tt.model, tt.dims, "http://unused", &mockAuth{tok: "t"}, "us-central1", "test-proj")
 		if p.Dimensions() != tt.dims {
 			t.Errorf("model %s: expected %d dims, got %d", tt.model, tt.dims, p.Dimensions())
 		}
@@ -333,7 +333,7 @@ func TestEmbedAutoChunking(t *testing.T) {
 	})
 	defer server.Close()
 
-	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"})
+	p := newProvider("text-embedding-005", 768, server.URL, &mockAuth{tok: "test-token"}, "us-central1", "test-proj")
 
 	// 300 texts should be split into 2 chunks (250 + 50)
 	texts := make([]string, 300)

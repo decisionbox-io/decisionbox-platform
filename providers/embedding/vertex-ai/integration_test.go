@@ -29,7 +29,7 @@ func TestIntegration_EmbedSingleText(t *testing.T) {
 	endpoint := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 		location, projectID, location, model)
 
-	p := newProvider(model, 768, endpoint, auth)
+	p := newProvider(model, 768, endpoint, auth, location, projectID)
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -64,7 +64,7 @@ func TestIntegration_EmbedBatch(t *testing.T) {
 	endpoint := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 		location, projectID, location, model)
 
-	p := newProvider(model, 768, endpoint, auth)
+	p := newProvider(model, 768, endpoint, auth, location, projectID)
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -106,7 +106,7 @@ func TestIntegration_Validate(t *testing.T) {
 	endpoint := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 		location, projectID, location, model)
 
-	p := newProvider(model, 768, endpoint, auth)
+	p := newProvider(model, 768, endpoint, auth, location, projectID)
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
