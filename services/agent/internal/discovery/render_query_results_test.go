@@ -168,3 +168,28 @@ func TestEstimateCompactedRenderedSize_MatchesRender(t *testing.T) {
 		t.Errorf("estimator must equal len(render(...))")
 	}
 }
+
+func TestRender_PreservesThinking(t *testing.T) {
+	// Legacy MarshalIndent of the full ExplorationStep included the
+	// `thinking` field; the renderer keeps that contract so existing
+	// analysis prompts that may rely on it don't lose context.
+	cmp := gomodels.BuildCompactResult([]map[string]any{{"x": 1}})
+	step := models.ExplorationStep{
+		Step:          1,
+		Query:         "SELECT x",
+		QueryPurpose:  "p",
+		Thinking:      "exploring why x might be relevant",
+		CompactResult: &cmp,
+	}
+	out := RenderCompactedSteps([]models.ExplorationStep{step})
+	if !strings.Contains(out, "exploring why x might be relevant") {
+		t.Errorf("rendered output must include step.Thinking, got %s", out)
+	}
+}
+
+func TestRender_EmptySliceProducesEmptyArray(t *testing.T) {
+	out := RenderCompactedSteps(nil)
+	if out != "[]" {
+		t.Errorf("empty input must render as []; got %q", out)
+	}
+}

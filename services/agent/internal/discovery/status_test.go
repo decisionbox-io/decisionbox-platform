@@ -152,6 +152,12 @@ func TestStatusReporter_AllMethods_NoOp_WhenEmptyRunID(t *testing.T) {
 	sr.AddInsightStep(ctx, "Revenue Drop", "high", "monetization")
 	sr.AddValidationStep(ctx, "affected_count", "adjusted", 500, 350)
 	sr.AddValidationStep(ctx, "user_count", "confirmed", 0, 0)
+	sr.RecordSchemaTelemetry(ctx, 4096, 12)
+	sr.IncrementSchemaActionCalls(ctx, "lookup_schema", 1)
+	sr.IncrementAnalysisCounter(ctx, "step_index_upserts", 1)
+	sr.IncrementAnalysisCounter(ctx, "step_index_search_calls", 1)
+	sr.IncrementAnalysisCounter(ctx, "steps_dropped", 3)
+	sr.IncrementAnalysisCounter(ctx, "unknown_metric", 1)
 	sr.Complete(ctx, 3)
 	sr.Fail(ctx, "catastrophic failure")
 }

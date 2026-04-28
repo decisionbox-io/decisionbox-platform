@@ -10,9 +10,11 @@ import (
 // RenderCompactedSteps serializes the picked exploration steps for an
 // analysis prompt's {{QUERY_RESULTS}} placeholder. Compact-by-default:
 //
-//   - step number, action, query, query_purpose, analysis text,
-//     row_count, error — kept verbatim because the LLM cites these
-//     in its response (see analysis prompts' source_steps requirement)
+//   - step number, action, query, query_purpose, thinking, row_count,
+//     error — kept verbatim because the LLM cites these in its
+//     response (see analysis prompts' source_steps requirement) and
+//     because the legacy JSON-marshal-the-whole-struct path included
+//     the same fields, so prompt authors may already rely on them
 //   - query_result is REPLACED by a CompactResult digest. If the
 //     step already carries a CompactResult (computed at exploration
 //     time), it is reused as-is. Otherwise the digest is rebuilt
@@ -54,6 +56,7 @@ type compactedStep struct {
 	Action       string                 `json:"action,omitempty"`
 	Query        string                 `json:"query,omitempty"`
 	QueryPurpose string                 `json:"query_purpose,omitempty"`
+	Thinking     string                 `json:"thinking,omitempty"`
 	RowCount     int                    `json:"row_count"`
 	Error        string                 `json:"error,omitempty"`
 	Compact      gomodels.CompactResult `json:"query_result"`
@@ -76,6 +79,7 @@ func buildCompactedView(steps []models.ExplorationStep) []compactedStep {
 			Action:       s.Action,
 			Query:        s.Query,
 			QueryPurpose: s.QueryPurpose,
+			Thinking:     s.Thinking,
 			RowCount:     s.RowCount,
 			Error:        s.Error,
 			Compact:      compact,

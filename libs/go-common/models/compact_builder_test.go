@@ -459,6 +459,143 @@ func TestBuildCompactResult_ColumnOrderStableAcrossInputs(t *testing.T) {
 	}
 }
 
+func TestBuildCompactResult_BooleanOnlyTrue(t *testing.T) {
+	rows := []map[string]any{{"b": true}, {"b": true}}
+	got := BuildCompactResult(rows)
+	col := findColumn(t, got, "b")
+	if col.Kind != ColumnKindBoolean {
+		t.Errorf("Kind: got %q want boolean", col.Kind)
+	}
+	if col.Distinct != 1 {
+		t.Errorf("Distinct: got %d want 1 (only true seen)", col.Distinct)
+	}
+	if len(col.Top) != 1 || col.Top[0].Value != true || col.Top[0].Count != 2 {
+		t.Errorf("Top: got %+v want [{true, 2}]", col.Top)
+	}
+}
+
+func TestBuildCompactResult_BooleanTieFalseFirst(t *testing.T) {
+	// Equal counts: lexical "false" < "true" tie-break must put false first.
+	rows := []map[string]any{{"b": true}, {"b": false}}
+	got := BuildCompactResult(rows)
+	col := findColumn(t, got, "b")
+	if len(col.Top) != 2 {
+		t.Fatalf("Top: got %d want 2", len(col.Top))
+	}
+	if col.Top[0].Value != false || col.Top[1].Value != true {
+		t.Errorf("tie-break: got [%v %v] want [false true]", col.Top[0].Value, col.Top[1].Value)
+	}
+}
+
+func TestKindOf_UnsupportedTypePromotesToMixed(t *testing.T) {
+	// A column whose only value is a slice — not in the supported set —
+	// must surface as Mixed, not panic.
+	rows := []map[string]any{{"x": []int{1, 2, 3}}}
+	got := BuildCompactResult(rows)
+	col := findColumn(t, got, "x")
+	if col.Kind != ColumnKindMixed {
+		t.Errorf("Kind: got %q want mixed (unsupported type)", col.Kind)
+	}
+}
+
+func TestToFloat64_NonNumericReturnsFalse(t *testing.T) {
+	cases := []any{"42", true, time.Time{}, []byte{1}, nil, struct{}{}}
+	for _, v := range cases {
+		if _, ok := toFloat64(v); ok {
+			t.Errorf("toFloat64(%T) must return ok=false", v)
+		}
+	}
+}
+
+func TestToFloat64_AllNumericWidthsRoundTrip(t *testing.T) {
+	cases := []any{
+		int(3), int8(3), int16(3), int32(3), int64(3),
+		uint(3), uint8(3), uint16(3), uint32(3), uint64(3),
+		float32(3.0), float64(3.0),
+	}
+	for _, v := range cases {
+		f, ok := toFloat64(v)
+		if !ok || f != 3.0 {
+			t.Errorf("toFloat64(%T = %v) = (%v, %v); want (3, true)", v, v, f, ok)
+		}
+	}
+}
+
+func TestPercentile_Single(t *testing.T) {
+	got := percentile([]float64{42}, 0.5)
+	if got != 42 {
+		t.Errorf("percentile single: got %v want 42", got)
+	}
+}
+
+func TestPercentile_ExactPosition(t *testing.T) {
+	// Sorted slice with q*(n-1) landing exactly on an integer index;
+	// hits the low==high branch without interpolation.
+	sorted := []float64{0, 10, 20, 30, 40}
+	if got := percentile(sorted, 0.5); got != 20 {
+		t.Errorf("percentile exact: got %v want 20", got)
+	}
+}
+
+func TestSummarizeTimestamp_MixedNonTimeIsCountedAsNull(t *testing.T) {
+	// A column inferred as Timestamp can't have non-time.Time values
+	// in its non-nil set (inferKind would have flagged Mixed). To
+	// exercise the defensive nil branch in summarizeTimestamp we
+	// call it directly.
+	cs := ColumnSummary{Kind: ColumnKindTimestamp}
+	t1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	summarizeTimestamp(&cs, []any{t1, "not-a-time"})
+	if cs.NullCount != 1 {
+		t.Errorf("NullCount: got %d want 1 (defensive non-time path)", cs.NullCount)
+	}
+	if cs.MinTime == "" || cs.MaxTime == "" {
+		t.Errorf("MinTime/MaxTime should be populated from the one valid time, got %q/%q", cs.MinTime, cs.MaxTime)
+	}
+}
+
+func TestSummarizeBoolean_AllNonBoolIsNullCount(t *testing.T) {
+	// Defensive branch: kindOf would never produce ColumnKindBoolean
+	// for non-bool values, but exercise the `!ok` path directly.
+	cs := ColumnSummary{Kind: ColumnKindBoolean}
+	summarizeBoolean(&cs, []any{"true", 1})
+	if cs.NullCount != 2 {
+		t.Errorf("NullCount: got %d want 2", cs.NullCount)
+	}
+	if cs.Distinct != 0 || len(cs.Top) != 0 {
+		t.Errorf("no booleans seen → Distinct/Top should remain zero, got %d/%d", cs.Distinct, len(cs.Top))
+	}
+}
+
+func TestSummarizeString_NilColumnLeavesTopEmpty(t *testing.T) {
+	cs := ColumnSummary{}
+	summarizeString(&cs, []any{nil, nil})
+	if cs.Distinct != 0 || len(cs.Top) != 0 {
+		t.Errorf("all-nil string column: got distinct=%d top=%d", cs.Distinct, len(cs.Top))
+	}
+	if cs.NullCount != 2 {
+		t.Errorf("NullCount: got %d want 2", cs.NullCount)
+	}
+}
+
+func TestSummarizeNumeric_AllInfsLeaveStatsNil(t *testing.T) {
+	cs := ColumnSummary{}
+	summarizeNumeric(&cs, []any{math.Inf(1), math.Inf(-1), math.NaN()})
+	if cs.Min != nil || cs.Max != nil || cs.Median != nil {
+		t.Errorf("no finite values → all stats must be nil, got Min=%v Max=%v", cs.Min, cs.Max)
+	}
+	if cs.NullCount != 3 {
+		t.Errorf("NullCount: got %d want 3", cs.NullCount)
+	}
+}
+
+func TestInferKind_AllNilReturnsNull(t *testing.T) {
+	// Defensive path — summarizeColumn already filters nils before
+	// calling inferKind, but exercise the empty-slice branch directly.
+	if got := inferKind(nil); got != ColumnKindNull {
+		t.Errorf("inferKind(nil) = %q want null", got)
+	}
+}
+
 // --- helpers ---
 
 func numericRows(col string, n int) []map[string]any {

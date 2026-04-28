@@ -248,3 +248,68 @@ func TestNewAnalysisStepPicker_DefaultRenderer(t *testing.T) {
 		t.Errorf("default constructor must wire EstimateRenderedSize")
 	}
 }
+
+func TestPicker_ExactMatchBoost_SkipsBlankKeyword(t *testing.T) {
+	// Blank keyword must not match every step ("" is a substring of
+	// anything). The picker trims whitespace and skips empties.
+	area := AnalysisArea{ID: "x", Name: "X", Keywords: []string{"", "  ", "real_term"}}
+	steps := []models.ExplorationStep{
+		makeStep(1, "noise", "irrelevant"),
+		makeStep(2, "covers real_term well", "p2"),
+	}
+	picker := &AnalysisStepPicker{Search: searchFn(nil, nil)}
+	res, _ := picker.Pick(context.Background(), area, steps)
+	if len(res.Picked) != 1 || res.Picked[0].Step.Step != 2 {
+		t.Errorf("blank keywords must not match; expected only step 2, got %+v", res.Picked)
+	}
+}
+
+func TestPicker_PhantomHitFromIndexIgnored(t *testing.T) {
+	// Index returns a step number that the orchestrator did not
+	// supply (e.g. a stale index). The picker must skip it silently
+	// rather than crashing or surfacing a phantom step.
+	area := AnalysisArea{ID: "x", Name: "X"}
+	steps := []models.ExplorationStep{makeStep(1, "X", "p1")}
+	hits := []RunStepIndexHit{
+		{Step: 999, Score: 0.9}, // phantom
+		{Step: 1, Score: 0.7},
+	}
+	picker := &AnalysisStepPicker{Search: searchFn(hits, nil)}
+	res, _ := picker.Pick(context.Background(), area, steps)
+	if len(res.Picked) != 1 || res.Picked[0].Step.Step != 1 {
+		t.Errorf("phantom hit must be dropped silently, got %+v", res.Picked)
+	}
+}
+
+func TestPicker_ExactMatchOnLowVectorScoreBumpsToFloor(t *testing.T) {
+	// Step is in the vector hits with a low score; exact-match logic
+	// must promote its score to ExactMatchFloor (when below) without
+	// changing source.
+	area := AnalysisArea{ID: "x", Name: "X", Keywords: []string{"churn"}}
+	steps := []models.ExplorationStep{makeStep(1, "churn rate", "p1")}
+	hits := []RunStepIndexHit{{Step: 1, Score: 0.4}}
+	picker := &AnalysisStepPicker{Search: searchFn(hits, nil)}
+	res, _ := picker.Pick(context.Background(), area, steps)
+	if len(res.Picked) != 1 {
+		t.Fatalf("picked: got %d want 1", len(res.Picked))
+	}
+	if res.Picked[0].Score != ExactMatchFloor {
+		t.Errorf("score must be promoted to ExactMatchFloor=%v, got %v", ExactMatchFloor, res.Picked[0].Score)
+	}
+}
+
+func TestPicker_DefaultsAppliedWhenZero(t *testing.T) {
+	// Zero values for TopK/MinScore/Budget must fall back to defaults.
+	captured := RunStepIndexSearchOpts{}
+	search := func(_ context.Context, _ string, opts RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+		captured = opts
+		return nil, nil
+	}
+	picker := &AnalysisStepPicker{Search: search}
+	if _, err := picker.Pick(context.Background(), AnalysisArea{}, nil); err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if captured.TopK != AnalysisAreaTopK {
+		t.Errorf("default TopK: got %d want %d", captured.TopK, AnalysisAreaTopK)
+	}
+}
