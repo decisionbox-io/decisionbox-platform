@@ -62,6 +62,7 @@ type Orchestrator struct {
 	projectID      string
 	domain         string
 	category       string
+	language       string
 	profile        map[string]interface{}
 	projectPrompts *models.ProjectPrompts
 	datasets       []string
@@ -107,6 +108,11 @@ type OrchestratorOptions struct {
 	ProjectID         string
 	Domain            string
 	Category          string
+	// Language is the human-readable output language for narrative
+	// fields (insight names/descriptions, recommendation titles, etc).
+	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
+	// "English" so legacy projects keep their pre-feature behavior.
+	Language          string
 	Profile           map[string]interface{}
 	ProjectPrompts    *models.ProjectPrompts
 	Datasets          []string
@@ -198,6 +204,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		projectID:          opts.ProjectID,
 		domain:             opts.Domain,
 		category:           opts.Category,
+		language:           opts.Language,
 		profile:            opts.Profile,
 		projectPrompts:     opts.ProjectPrompts,
 		datasets:           opts.Datasets,
@@ -351,10 +358,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	areasDesc := o.buildAnalysisAreasDescription(analysisAreas)
 
-	// Prepare base context (shared across all prompts — substituted once)
+	// Prepare base context (shared across all prompts — substituted once).
+	// {{LANGUAGE}} resolves to the project's configured output language;
+	// empty falls back to "English" so legacy projects keep working.
+	// Per the keep-technical-fields-English clause in base_context.md, SQL,
+	// column names, JSON keys, severity values, and analysis_area values
+	// stay in English regardless of the chosen output language.
+	language := o.language
+	if language == "" {
+		language = "English"
+	}
 	baseContext := prompts.BaseContext
 	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
+	baseContext = strings.ReplaceAll(baseContext, "{{LANGUAGE}}", language)
 
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it

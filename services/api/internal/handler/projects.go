@@ -381,6 +381,12 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.Embedding.Provider != "" {
 		existing.Embedding = incoming.Embedding
 	}
+	// Language: empty means "field not present" (preserve existing) so a
+	// PUT that does not touch language never overwrites a configured
+	// value. To clear, send the literal "English" (which is the default).
+	if incoming.Language != "" {
+		existing.Language = incoming.Language
+	}
 	// BlurbLLM is a pointer — nil means "field not present in this
 	// request" (preserve existing), an empty-provider value means "user
 	// cleared the override" (so we clear it too).

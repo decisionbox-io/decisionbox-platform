@@ -14,6 +14,33 @@ import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
 import ProvidersPanel from '@/components/projects/ProvidersPanel';
 import { api, Project, ProviderMeta } from '@/lib/api';
 
+// Output language choices rendered into prompt {{LANGUAGE}} substitutions
+// on the agent + API side. The wire format is the human-readable name
+// (the agent splices it directly into prompt text), so the value strings
+// must match what the prompt directive expects.
+const OUTPUT_LANGUAGE_OPTIONS = [
+  { value: 'English',    label: 'English' },
+  { value: 'Turkish',    label: 'Türkçe (Turkish)' },
+  { value: 'German',     label: 'Deutsch (German)' },
+  { value: 'Spanish',    label: 'Español (Spanish)' },
+  { value: 'French',     label: 'Français (French)' },
+  { value: 'Italian',    label: 'Italiano (Italian)' },
+  { value: 'Portuguese', label: 'Português (Portuguese)' },
+  { value: 'Dutch',      label: 'Nederlands (Dutch)' },
+  { value: 'Polish',     label: 'Polski (Polish)' },
+  { value: 'Russian',    label: 'Русский (Russian)' },
+  { value: 'Arabic',     label: 'العربية (Arabic)' },
+  { value: 'Hebrew',     label: 'עברית (Hebrew)' },
+  { value: 'Japanese',   label: '日本語 (Japanese)' },
+  { value: 'Korean',     label: '한국어 (Korean)' },
+  { value: 'Chinese (Simplified)',   label: '简体中文 (Chinese — Simplified)' },
+  { value: 'Chinese (Traditional)',  label: '繁體中文 (Chinese — Traditional)' },
+  { value: 'Hindi',      label: 'हिन्दी (Hindi)' },
+  { value: 'Indonesian', label: 'Bahasa Indonesia (Indonesian)' },
+  { value: 'Vietnamese', label: 'Tiếng Việt (Vietnamese)' },
+  { value: 'Thai',       label: 'ไทย (Thai)' },
+];
+
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -26,6 +53,10 @@ export default function ProjectSettingsPage() {
   // General tab state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // Output language for narrative fields (insight names/descriptions,
+  // recommendation titles, /ask answers). Default "English" maps to the
+  // legacy behavior — empty Project.Language on the wire.
+  const [language, setLanguage] = useState<string>('English');
   const [savingGeneral, setSavingGeneral] = useState(false);
 
   // Schedule tab state
@@ -75,6 +106,7 @@ export default function ProjectSettingsPage() {
         setLlmProviders(llmProvs);
         setName(proj.name);
         setDescription(proj.description || '');
+        setLanguage(proj.language || 'English');
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -119,7 +151,7 @@ export default function ProjectSettingsPage() {
   const saveGeneral = async () => {
     setSavingGeneral(true);
     try {
-      const saved = await api.updateProject(id, { name, description });
+      const saved = await api.updateProject(id, { name, description, language });
       setProject(saved);
       notifications.show({ title: 'Saved', message: 'General settings updated', color: 'green' });
     } catch (e: unknown) {
@@ -209,6 +241,15 @@ export default function ProjectSettingsPage() {
               <TextInput label="Domain" value={project.domain} disabled style={{ flex: 1 }} />
               <TextInput label="Category" value={project.category} disabled style={{ flex: 1 }} />
             </Group>
+            <Select
+              label="Output language"
+              description="Language used for insight names, recommendations, summaries, and /ask answers. SQL, identifiers, and JSON keys stay in English regardless of choice."
+              value={language}
+              onChange={(v) => setLanguage(v || 'English')}
+              data={OUTPUT_LANGUAGE_OPTIONS}
+              allowDeselect={false}
+              searchable
+            />
             <Group justify="flex-end">
               <Button onClick={saveGeneral} loading={savingGeneral}>Save general</Button>
             </Group>

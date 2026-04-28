@@ -622,6 +622,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		ProjectID:       projectID,
 		Domain:          project.Domain,
 		Category:        project.Category,
+		Language:        project.Language,
 		Profile:         project.Profile,
 		ProjectPrompts:  project.Prompts,
 		Datasets:        datasets,

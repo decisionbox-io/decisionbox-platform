@@ -27,6 +27,13 @@ type Project struct {
 	// Agent reads prompts from here (not from the domain pack binary).
 	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`
 
+	// Language is the human-readable output language for narrative
+	// fields (insight names/descriptions, recommendation titles, etc).
+	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
+	// "English" via EffectiveLanguage so legacy projects keep their
+	// pre-feature behavior.
+	Language string `bson:"language,omitempty" json:"language,omitempty"`
+
 	// State tracks the project's lifecycle stage. Empty State is treated
 	// as ProjectStateReady — see EffectiveState.
 	State string `bson:"state,omitempty" json:"state,omitempty"`
@@ -133,6 +140,16 @@ func (p *Project) EffectiveState() string {
 		return ProjectStateReady
 	}
 	return p.State
+}
+
+// EffectiveLanguage returns the configured output language for narrative
+// fields. Empty is mapped to "English" so legacy projects keep their
+// pre-feature behavior without a backfill migration.
+func (p *Project) EffectiveLanguage() string {
+	if p.Language == "" {
+		return "English"
+	}
+	return p.Language
 }
 
 // GeneratePackConfig holds the user's pack-generation intent for a project.

@@ -127,6 +127,12 @@ export interface Project {
   blurb_llm?: BlurbLLMConfig;
   schedule: ScheduleConfig;
   profile: Record<string, unknown>;
+  // Output language for narrative fields (insight names/descriptions,
+  // recommendation titles, /ask answers). Empty = legacy project,
+  // treated as "English" by the agent and API. Allowed values are the
+  // human-readable names rendered into prompt {{LANGUAGE}} substitutions
+  // — e.g. "English", "Turkish", "German".
+  language?: string;
   // Project lifecycle state. Empty = legacy project, treated as "ready".
   // Pack-generation states: "pack_generation_pending", "pack_generation",
   // "pack_generation_done". Normal runtime: "ready".

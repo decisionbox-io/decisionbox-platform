@@ -556,7 +556,19 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	systemPrompt := "You are a data analyst assistant for DecisionBox. Answer questions using the provided insights, recommendations, and project knowledge sources. Cite insights and recommendations as [1], [2], etc. Cite knowledge sources as [s1], [s2], etc. If the provided context doesn't contain enough information, say so."
+	// Output language is driven by Project.Language (Empty falls back to
+	// "English" via EffectiveLanguage). The directive is explicit so the
+	// model translates context that may already be in another language
+	// rather than mirroring it. Technical fields (citation markers,
+	// SQL/identifiers if any leak into context) stay in English.
+	systemPrompt := fmt.Sprintf(
+		"You are a data analyst assistant for DecisionBox. Answer questions using the provided insights, recommendations, and project knowledge sources. "+
+			"Cite insights and recommendations as [1], [2], etc. Cite knowledge sources as [s1], [s2], etc. "+
+			"If the provided context doesn't contain enough information, say so. "+
+			"Write your answer in %s. The retrieved context may be in a different language — translate as needed and do not mirror it. "+
+			"Keep technical tokens (SQL, column names, identifiers, citation markers) in English.",
+		project.EffectiveLanguage(),
+	)
 
 	prompt := fmt.Sprintf("Context from %d relevant insights/recommendations:\n\n%s\n\n%s\nQuestion: %s", len(insights), contextStr, knowledgeSection, req.Question)
 

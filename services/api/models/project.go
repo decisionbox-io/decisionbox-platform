@@ -22,6 +22,14 @@ type Project struct {
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
 
+	// Language is the human-readable output language for insights,
+	// recommendations, and /ask answers. Substituted into prompts as
+	// {{LANGUAGE}}. Empty is treated as "English" by EffectiveLanguage —
+	// see the keep-technical-fields-English clause in domain pack
+	// base_context.md so SQL, column names, and JSON keys stay portable
+	// regardless of the chosen output language.
+	Language string `bson:"language,omitempty" json:"language,omitempty"`
+
 	// State tracks the project's lifecycle stage. Empty (the legacy
 	// default for projects created before pack generation existed) is
 	// equivalent to ProjectStateReady — see EffectiveState. New projects
@@ -159,6 +167,17 @@ func (p *Project) EffectiveState() string {
 		return ProjectStateReady
 	}
 	return p.State
+}
+
+// EffectiveLanguage returns the configured output language for narrative
+// fields (insight text, recommendation text, /ask answers). Empty is
+// mapped to "English" so legacy projects keep their pre-feature
+// behavior without a backfill migration.
+func (p *Project) EffectiveLanguage() string {
+	if p.Language == "" {
+		return "English"
+	}
+	return p.Language
 }
 
 // GeneratePackConfig holds the user's pack-generation intent for a project.

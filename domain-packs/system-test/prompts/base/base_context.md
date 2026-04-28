@@ -7,3 +7,7 @@
 ## Previous Discovery Context
 
 {{PREVIOUS_CONTEXT}}
+
+## Output Language
+
+Write all narrative text in **{{LANGUAGE}}**. Keep technical tokens in English: SQL, identifiers, column names, table names, JSON keys, severity values, analysis_area IDs.
