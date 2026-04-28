@@ -10,4 +10,6 @@
 
 ## Output Language
 
-Write all narrative text in **{{LANGUAGE}}**. Keep technical tokens in English: SQL, identifiers, column names, table names, JSON keys, severity values, analysis_area IDs.
+Write all narrative text in **{{LANGUAGE}}**. The previous discovery context may be in a different language; translate as needed and do not mirror it.
+
+Keep these in English regardless of the configured output language: SQL queries, column names, table names, identifiers, JSON keys, severity values, analysis_area IDs.

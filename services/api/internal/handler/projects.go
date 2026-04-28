@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
@@ -15,6 +17,48 @@ import (
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
+
+// languageMaxLen caps Project.Language to a value short enough that no
+// reasonable language name (English, Türkçe, Português, Bahasa Indonesia,
+// Chinese (Traditional), …) needs more space, while keeping the field
+// well below any prompt-injection-shaped payload size. The exact value
+// is also asserted by tests, so changing it is intentional.
+const languageMaxLen = 64
+
+// sanitizeLanguage normalizes and validates a Project.Language value
+// coming off the wire. The field is rendered into LLM system prompts
+// verbatim via {{LANGUAGE}}, so untrusted input could inject directives
+// like newlines + "ignore previous instructions" — we hard-reject any
+// control characters and cap length.
+//
+// Empty after trim returns ("", nil) — meaning "no value", which the
+// orchestrator's EffectiveLanguage falls back to "English" for. That
+// preserves the legacy semantics for projects that never set Language.
+//
+// Allowed values: any UTF-8 printable text up to languageMaxLen runes,
+// no control characters (including \n, \t, \r), no leading/trailing
+// whitespace. We deliberately do NOT enforce an allowlist — users can
+// pick any human language name (incl. dialects we haven't pre-listed)
+// and the LLM can interpret it; the constraint is structural, not
+// vocabulary-based.
+func sanitizeLanguage(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if !utf8.ValidString(s) {
+		return "", fmt.Errorf("language must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(s) > languageMaxLen {
+		return "", fmt.Errorf("language must be %d characters or fewer", languageMaxLen)
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("language must not contain control characters")
+		}
+	}
+	return s, nil
+}
 
 // validateLLMConfig surfaces malformed llm.config values at write time so a
 // typo like wire_override="antropik" is rejected by the API instead of
@@ -171,6 +215,15 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if msg := validateLLMConfig(p.LLM.Provider, p.LLM.Config); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
+	}
+
+	// Sanitize Language at create time too — the field flows into LLM
+	// system prompts, so the same prompt-injection guard applies.
+	if cleanLang, err := sanitizeLanguage(p.Language); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	} else {
+		p.Language = cleanLang
 	}
 
 	// Seed default prompts from domain pack — only for non-wizard
@@ -384,8 +437,16 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Language: empty means "field not present" (preserve existing) so a
 	// PUT that does not touch language never overwrites a configured
 	// value. To clear, send the literal "English" (which is the default).
+	// Sanitization rejects control characters and oversize values to close
+	// the prompt-injection vector — Language is rendered into LLM system
+	// prompts verbatim via {{LANGUAGE}}.
 	if incoming.Language != "" {
-		existing.Language = incoming.Language
+		clean, err := sanitizeLanguage(incoming.Language)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		existing.Language = clean
 	}
 	// BlurbLLM is a pointer — nil means "field not present in this
 	// request" (preserve existing), an empty-provider value means "user

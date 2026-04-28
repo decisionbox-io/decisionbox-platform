@@ -151,7 +151,20 @@ export default function ProjectSettingsPage() {
   const saveGeneral = async () => {
     setSavingGeneral(true);
     try {
-      const saved = await api.updateProject(id, { name, description, language });
+      // Only send language when it actually differs from what's
+      // currently stored. The server treats empty Language as "preserve
+      // existing" (see projects.go merge), so omitting it leaves legacy
+      // projects on their empty-Language => EffectiveLanguage()=English
+      // path instead of rewriting them with an explicit value. We
+      // compare against the displayed language (project.language ||
+      // 'English') so a user reverting an explicit Turkish project back
+      // to English does send 'English' and overwrites the stored value.
+      const displayed = project.language || 'English';
+      const payload: { name: string; description: string; language?: string } = { name, description };
+      if (language !== displayed) {
+        payload.language = language;
+      }
+      const saved = await api.updateProject(id, payload);
       setProject(saved);
       notifications.show({ title: 'Saved', message: 'General settings updated', color: 'green' });
     } catch (e: unknown) {

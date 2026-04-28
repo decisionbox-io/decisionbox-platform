@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,15 +139,52 @@ func init() {
 		},
 	})
 
-	// Register a mock LLM provider for Ask handler tests
+	// Register a mock LLM provider for Ask handler tests. The factory
+	// returns a fresh testLLMProvider per construction so each request
+	// gets its own request recorder — the /ask handler only constructs
+	// one provider per call, so per-request isolation is what we want
+	// for assertions on the captured ChatRequest.
 	gollm.Register("test-llm", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
-		return &testLLMProvider{}, nil
+		// Most tests don't read the recorder; the language test does.
+		// Storing the latest provider in lastTestLLM lets the language
+		// test pull the captured request without threading a recorder
+		// through every existing test that doesn't care.
+		p := &testLLMProvider{}
+		lastTestLLMMu.Lock()
+		lastTestLLM = p
+		lastTestLLMMu.Unlock()
+		return p, nil
 	})
 }
 
-type testLLMProvider struct{}
+// lastTestLLM exposes the most recently constructed testLLMProvider so
+// tests can assert on the ChatRequest the /ask handler sent without
+// having to inject a custom factory at every test site.
+var (
+	lastTestLLMMu sync.Mutex
+	lastTestLLM   *testLLMProvider
+)
+
+type testLLMProvider struct {
+	mu       sync.Mutex
+	requests []gollm.ChatRequest
+}
+
+// LastChatRequest returns the most recent ChatRequest captured by Chat,
+// or the zero ChatRequest if none has been called yet.
+func (t *testLLMProvider) LastChatRequest() gollm.ChatRequest {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.requests) == 0 {
+		return gollm.ChatRequest{}
+	}
+	return t.requests[len(t.requests)-1]
+}
 
 func (t *testLLMProvider) Chat(_ context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	t.mu.Lock()
+	t.requests = append(t.requests, req)
+	t.mu.Unlock()
 	return &gollm.ChatResponse{
 		Content: "Based on the insights [1], the answer is clear.",
 		Model:   "test-llm-model",
@@ -643,5 +682,84 @@ func TestAsk_SessionProjectMismatch(t *testing.T) {
 	h.Ask(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for session project mismatch, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAsk_SystemPromptIncludesLanguageDirective locks in PR #188's
+// language wiring: the /ask system prompt must (a) name the project's
+// effective language verbatim so the model writes the answer in it,
+// (b) explicitly tell the model not to mirror retrieved-context
+// language, and (c) keep technical-token / citation-marker instructions
+// intact. Without this contract, swapping Language has no observable
+// effect on /ask answers and the feature is silently broken.
+func TestAsk_SystemPromptIncludesLanguageDirective(t *testing.T) {
+	cases := []struct {
+		name     string
+		language string
+		expect   string // substring expected verbatim in SystemPrompt
+	}{
+		{name: "explicit Turkish", language: "Turkish", expect: "Turkish"},
+		{name: "explicit Japanese", language: "Japanese", expect: "Japanese"},
+		// Empty Language must resolve to "English" via EffectiveLanguage —
+		// legacy projects keep the default behavior.
+		{name: "legacy empty resolves English", language: "", expect: "English"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			insightID := "11111111-1111-4111-8111-111111111111"
+			projectRepo := &mockProjectRepoForSearch{
+				project: &models.Project{
+					ID: "proj-1", Name: "Test", Language: tc.language,
+					Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+					LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+				},
+			}
+			vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+				{ID: insightID, Score: 0.9, Payload: map[string]interface{}{"type": "insight"}},
+			}}
+			insightRepo := &mockInsightRepo{insights: []*commonmodels.StandaloneInsight{
+				{ID: insightID, ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "n", Description: "d", Severity: "high", DiscoveredAt: time.Now()},
+			}}
+			h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+
+			body, _ := json.Marshal(askRequest{Question: "why?"})
+			req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+			req.SetPathValue("id", "proj-1")
+			w := httptest.NewRecorder()
+			h.Ask(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+			}
+
+			lastTestLLMMu.Lock()
+			provider := lastTestLLM
+			lastTestLLMMu.Unlock()
+			if provider == nil {
+				t.Fatal("no testLLMProvider was constructed by /ask")
+			}
+			got := provider.LastChatRequest()
+			if got.SystemPrompt == "" {
+				t.Fatal("SystemPrompt was empty — handler did not pass a system prompt")
+			}
+			if !strings.Contains(got.SystemPrompt, tc.expect) {
+				t.Errorf("SystemPrompt missing language %q\nfull prompt: %q", tc.expect, got.SystemPrompt)
+			}
+			// Translate-don't-mirror clause: this is the key prompt-injection /
+			// cross-lingual-pollution guard. If a future refactor drops it,
+			// the model would mirror the retrieved context's language.
+			if !strings.Contains(got.SystemPrompt, "translate") || !strings.Contains(got.SystemPrompt, "do not mirror") {
+				t.Errorf("SystemPrompt missing translate/don't-mirror clause: %q", got.SystemPrompt)
+			}
+			// Citation contract must survive the language wiring.
+			if !strings.Contains(got.SystemPrompt, "[1]") || !strings.Contains(got.SystemPrompt, "[s1]") {
+				t.Errorf("SystemPrompt missing citation markers: %q", got.SystemPrompt)
+			}
+			// Technical-token English clause — ensures SQL/identifiers don't
+			// get translated when language is non-English.
+			if !strings.Contains(strings.ToLower(got.SystemPrompt), "english") {
+				t.Errorf("SystemPrompt missing keep-technical-tokens-English clause: %q", got.SystemPrompt)
+			}
+		})
 	}
 }
