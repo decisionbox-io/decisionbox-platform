@@ -595,12 +595,15 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 	messages = append(messages, gollm.Message{Role: "user", Content: prompt})
 
+	// Temperature omitted: Bedrock + direct Anthropic reject the field
+	// on Opus 4.x extended-thinking models. Synthesis already grounds the
+	// answer in cited insights/recommendations + knowledge chunks, so the
+	// model's default sampling is acceptable here.
 	chatResp, err := llmProvider.Chat(ctx, gollm.ChatRequest{
 		Model:        project.LLM.Model,
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
 		MaxTokens:    2048,
-		Temperature:  0.3,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LLM synthesis failed")
