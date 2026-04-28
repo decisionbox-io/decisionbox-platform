@@ -1,6 +1,10 @@
 # Agent On-Demand Schema Retrieval
 
 > **Version**: 0.4.0
+>
+> **See also**: [agent-analysis-compaction.md](agent-analysis-compaction.md)
+> applies the same prompt-bounding pattern to the analysis phase
+> (vector-ranked step selection + per-step compact digest).
 
 ## Why
 

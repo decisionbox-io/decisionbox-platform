@@ -252,6 +252,19 @@ func (s *StatusReporter) IncrementSchemaActionCalls(ctx context.Context, action 
 	}
 }
 
+// IncrementAnalysisCounter bumps one of the analysis-phase
+// compaction counters on the run doc. metric is one of
+// "step_index_upserts", "step_index_search_calls",
+// "steps_dropped"; other values no-op.
+func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric string, delta int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.IncrementAnalysisCounter(ctx, s.runID, metric, delta); err != nil {
+		logger.WithError(err).Warn("failed to increment analysis counter")
+	}
+}
+
 // Fail marks the run as failed.
 func (s *StatusReporter) Fail(ctx context.Context, errMsg string) {
 	if !s.enabled() {

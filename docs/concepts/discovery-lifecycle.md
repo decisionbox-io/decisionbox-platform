@@ -158,14 +158,23 @@ For each analysis area defined by the domain pack (e.g., churn, engagement, mone
 ```
 Load area-specific prompt (e.g., analysis_churn.md)
   ↓
-Filter exploration results to relevant queries (using area keywords)
+Pick relevant exploration steps:
+  - vector-rank against the per-run Qdrant index of every step
+    (embedding text = step purpose + SQL)
+  - promote any step whose text contains a verbatim area keyword
+  - drop the lowest-scored steps until the rendered prompt fits
+    the per-area token budget
+  ↓
+Render each picked step as a compact digest (per-column
+statistics + head/tail rows + small-result inlining), instead
+of inlining the raw row blob
   ↓
 Prepend base context (profile + previous context)
   ↓
 Substitute template variables:
   {{DATASET}} → dataset names
-  {{TOTAL_QUERIES}} → number of relevant queries
-  {{QUERY_RESULTS}} → JSON array of exploration results for this area
+  {{TOTAL_QUERIES}} → number of picked steps
+  {{QUERY_RESULTS}} → JSON array of compact digests for this area
   ↓
 Send to LLM
   ↓

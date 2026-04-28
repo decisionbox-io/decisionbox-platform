@@ -87,15 +87,37 @@ type ExplorationStep struct {
 }
 
 type AnalysisStep struct {
-	AreaID          string    `bson:"area_id" json:"area_id"`
-	AreaName        string    `bson:"area_name" json:"area_name"`
-	RunAt           time.Time `bson:"run_at" json:"run_at"`
-	RelevantQueries int       `bson:"relevant_queries" json:"relevant_queries"`
-	TokensIn        int       `bson:"tokens_in" json:"tokens_in"`
-	TokensOut       int       `bson:"tokens_out" json:"tokens_out"`
-	DurationMs      int64     `bson:"duration_ms" json:"duration_ms"`
-	InsightCount    int       `bson:"insight_count,omitempty" json:"insight_count,omitempty"`
-	Error           string    `bson:"error,omitempty" json:"error,omitempty"`
+	AreaID            string                `bson:"area_id" json:"area_id"`
+	AreaName          string                `bson:"area_name" json:"area_name"`
+	RunAt             time.Time             `bson:"run_at" json:"run_at"`
+	RelevantQueries   int                   `bson:"relevant_queries" json:"relevant_queries"`
+	QueryResultsChars int                   `bson:"query_results_chars,omitempty" json:"query_results_chars,omitempty"`
+	SelectedSteps     []SelectedStep        `bson:"selected_steps,omitempty" json:"selected_steps,omitempty"`
+	DroppedSteps      []DroppedAnalysisStep `bson:"dropped_steps,omitempty" json:"dropped_steps,omitempty"`
+	TokensIn          int                   `bson:"tokens_in" json:"tokens_in"`
+	TokensOut         int                   `bson:"tokens_out" json:"tokens_out"`
+	DurationMs        int64                 `bson:"duration_ms" json:"duration_ms"`
+	InsightCount      int                   `bson:"insight_count,omitempty" json:"insight_count,omitempty"`
+	Error             string                `bson:"error,omitempty" json:"error,omitempty"`
+}
+
+// SelectedStep mirrors the agent's struct: which exploration step
+// was picked for this analysis area, what score it got, and how
+// (vector vs. exact-match boost). Surfaces in the dashboard's
+// debug view.
+type SelectedStep struct {
+	Step   int     `bson:"step" json:"step"`
+	Score  float64 `bson:"score" json:"score"`
+	Source string  `bson:"source" json:"source"`
+}
+
+// DroppedAnalysisStep is the read-only view of a step the picker
+// excluded — either below the min-score floor or trimmed for the
+// per-area budget.
+type DroppedAnalysisStep struct {
+	Step   int     `bson:"step" json:"step"`
+	Score  float64 `bson:"score" json:"score"`
+	Reason string  `bson:"reason" json:"reason"`
 }
 
 type ValidationLogEntry struct {

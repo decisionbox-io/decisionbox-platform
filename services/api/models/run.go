@@ -33,6 +33,15 @@ type DiscoveryRun struct {
 	SchemaLookupCalls int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
 	SchemaSearchCalls int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
 
+	// Analysis-phase compaction telemetry. Mirrored on the agent
+	// model. Counts how many exploration steps were indexed for
+	// analysis selection, how many area-level vector searches the
+	// picker issued, and how many steps the picker dropped (sum
+	// across all areas in this run).
+	AnalysisStepIndexUpserts     int `bson:"analysis_step_index_upserts,omitempty" json:"analysis_step_index_upserts,omitempty"`
+	AnalysisStepIndexSearchCalls int `bson:"analysis_step_index_search_calls,omitempty" json:"analysis_step_index_search_calls,omitempty"`
+	AnalysisStepsDropped         int `bson:"analysis_steps_dropped,omitempty" json:"analysis_steps_dropped,omitempty"`
+
 	// PolicyReservationID is the reservation the API opened when the run
 	// was triggered (plan-gated concurrent-runs-per-project and
 	// runs-per-period counters). Empty when the policy Checker is Noop

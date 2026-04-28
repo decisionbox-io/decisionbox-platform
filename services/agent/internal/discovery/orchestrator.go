@@ -56,6 +56,14 @@ type Orchestrator struct {
 	userCountValidator   *validation.UserCountValidator
 	insightValidator     *validation.InsightValidator
 
+	// runStepIndex is the per-run Qdrant collection of exploration
+	// steps. Populated inline as exploration runs; queried by the
+	// analysis phase to rank steps per area; dropped on run
+	// completion. Must be non-nil for production runs — the
+	// orchestrator surfaces a clear error when it isn't.
+	runStepIndex RunStepIndex
+	runID        string
+
 	debugLogger    *debug.Logger
 	statusReporter *StatusReporter
 
@@ -151,6 +159,13 @@ type OrchestratorOptions struct {
 	// cache and surfaces the "re-index required" error rather than
 	// returning stale schemas.
 	WarehouseHash string
+
+	// RunStepIndex is the per-run vector index of exploration steps.
+	// Required — the analysis phase uses it to rank steps per area.
+	// A nil value here surfaces as a hard error when discovery
+	// starts so a misconfigured agent doesn't silently regress to
+	// the old keyword-only selection.
+	RunStepIndex RunStepIndex
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -219,6 +234,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		schemaRetriever:    opts.SchemaRetriever,
 		schemaCache:        opts.SchemaCache,
 		warehouseHash:      opts.WarehouseHash,
+		runStepIndex:       opts.RunStepIndex,
+		runID:              opts.RunID,
 	}
 }
 
@@ -415,6 +432,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, fmt.Errorf("build schema provider: %w", spErr)
 	}
 
+	// Counting decorator: every successful upsert bumps the
+	// run-level analysis_step_index_upserts counter so the dashboard
+	// can show "indexed N of M steps" without re-deriving from the
+	// step list.
+	var stepIndexer ai.StepIndexer
+	if o.runStepIndex != nil {
+		stepIndexer = countingStepIndexer{
+			inner:    o.runStepIndex,
+			reporter: o.statusReporter,
+			ctx:      ctx,
+		}
+	}
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:         o.aiClient,
 		Executor:       executor,
@@ -422,10 +452,22 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		MinSteps:       opts.MinSteps,
 		Dataset:        datasetsStr,
 		SchemaProvider: schemaProvider,
+		StepIndexer:    stepIndexer,
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
 		},
 	})
+
+	// Defer dropping the per-run Qdrant collection — runs that
+	// crash mid-flight rely on the boot-time orphan sweep, but a
+	// clean exit (success or failure) cleans up immediately.
+	if o.runStepIndex != nil {
+		defer func() {
+			if err := o.runStepIndex.Drop(ctx); err != nil {
+				applog.WithError(err).Warn("Failed to drop per-run step index; orphan sweep will retry on next agent boot")
+			}
+		}()
+	}
 
 	explorationResult, err := o.explorationEngine.Explore(ctx, ai.ExplorationContext{
 		ProjectID:     o.projectID,
@@ -465,6 +507,18 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
 
+	// Vector-ranked step picker for the analysis phase. The closure
+	// over runStepIndex.Search keeps the picker decoupled from the
+	// concrete index implementation — tests inject canned hits
+	// directly.
+	picker := NewAnalysisStepPicker(func(c context.Context, q string, sopts RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+		if o.runStepIndex == nil {
+			return nil, nil
+		}
+		return o.runStepIndex.Search(c, q, sopts)
+	})
+	picker.EstimateRenderedSize = EstimateCompactedRenderedSize
+
 	for _, area := range runAreas {
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
 		if !ok {
@@ -472,24 +526,35 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			continue
 		}
 
-		// Filter exploration queries relevant to this area
-		relevantQueries := o.filterQueriesByKeywords(explorationResult.Steps, area.Keywords)
-		if len(relevantQueries) == 0 {
+		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
+		if pickErr != nil {
+			applog.WithFields(applog.Fields{"area": area.ID, "error": pickErr.Error()}).Warn("Step picker failed; skipping area")
+			continue
+		}
+		o.statusReporter.IncrementAnalysisCounter(ctx, "step_index_search_calls", 1)
+		if len(pickResult.Dropped) > 0 {
+			o.statusReporter.IncrementAnalysisCounter(ctx, "steps_dropped", len(pickResult.Dropped))
+		}
+		if len(pickResult.Picked) == 0 {
 			applog.WithField("area", area.ID).Info("No relevant queries found, skipping")
 			continue
 		}
+		relevantSteps := stepsFromPickResult(pickResult)
 
 		applog.WithFields(applog.Fields{
 			"area":    area.ID,
-			"queries": len(relevantQueries),
+			"queries": len(relevantSteps),
+			"dropped": len(pickResult.Dropped),
 		}).Info("Analyzing area")
 
-		// Prepare analysis prompt: base context + area-specific prompt
-		queryResultsJSON, _ := json.MarshalIndent(relevantQueries, "", "  ")
+		// Render the compacted view into the prompt. This replaces
+		// the old json.MarshalIndent of the full ExplorationStep,
+		// which on ERP-scale runs grew to >1M tokens.
+		queryResultsJSON := RenderCompactedSteps(relevantSteps)
 		prompt := baseContext + "\n\n" + areaPrompt
 		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
-		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantQueries)))
-		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", string(queryResultsJSON))
+		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantSteps)))
+		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
 
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
@@ -497,11 +562,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Create analysis step to capture full dialog
 		step := models.AnalysisStep{
-			AreaID:          area.ID,
-			AreaName:        area.Name,
-			RunAt:           time.Now(),
-			Prompt:          prompt,
-			RelevantQueries: len(relevantQueries),
+			AreaID:             area.ID,
+			AreaName:           area.Name,
+			RunAt:              time.Now(),
+			Prompt:             prompt,
+			RelevantQueries:    len(relevantSteps),
+			QueryResultsChars:  len(queryResultsJSON),
+			SelectedSteps:      pickedToTelemetry(pickResult.Picked),
+			DroppedSteps:       droppedToTelemetry(pickResult.Dropped),
 		}
 
 		// Call LLM
@@ -1085,21 +1153,67 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 	return schemas, nil
 }
 
-func (o *Orchestrator) filterQueriesByKeywords(steps []models.ExplorationStep, keywords []string) []models.ExplorationStep {
-	var filtered []models.ExplorationStep
-	for _, step := range steps {
-		if step.Query == "" {
-			continue
-		}
-		text := strings.ToLower(step.Query + " " + step.QueryPurpose + " " + step.Thinking)
-		for _, kw := range keywords {
-			if strings.Contains(text, strings.ToLower(kw)) {
-				filtered = append(filtered, step)
-				break
-			}
-		}
+// countingStepIndexer wraps a RunStepIndex and bumps the run's
+// analysis_step_index_upserts counter on every successful upsert.
+// Lives next to the orchestrator because that is the only place the
+// StatusReporter and RunStepIndex come together — the engine itself
+// stays decoupled from telemetry plumbing.
+type countingStepIndexer struct {
+	inner    RunStepIndex
+	reporter *StatusReporter
+	ctx      context.Context
+}
+
+// Upsert delegates to the wrapped index; on success bumps the
+// per-run upsert counter. Errors from the inner Upsert propagate
+// untouched so the engine logs them.
+func (c countingStepIndexer) Upsert(ctx context.Context, step models.ExplorationStep) error {
+	if err := c.inner.Upsert(ctx, step); err != nil {
+		return err
 	}
-	return filtered
+	if c.reporter != nil {
+		c.reporter.IncrementAnalysisCounter(c.ctx, "step_index_upserts", 1)
+	}
+	return nil
+}
+
+// stepsFromPickResult flattens PickResult.Picked back to plain
+// ExplorationSteps so the renderer + the prompt counters can consume
+// them without knowing about pick scores.
+func stepsFromPickResult(pr *PickResult) []models.ExplorationStep {
+	out := make([]models.ExplorationStep, 0, len(pr.Picked))
+	for _, p := range pr.Picked {
+		out = append(out, p.Step)
+	}
+	return out
+}
+
+// pickedToTelemetry serialises PickedStep for the analysis-log
+// telemetry record. The dashboard's debug view surfaces it as a
+// per-area "what fed the LLM" breakdown.
+func pickedToTelemetry(picked []PickedStep) []models.SelectedStep {
+	out := make([]models.SelectedStep, 0, len(picked))
+	for _, p := range picked {
+		out = append(out, models.SelectedStep{
+			Step:   p.Step.Step,
+			Score:  p.Score,
+			Source: string(p.Source),
+		})
+	}
+	return out
+}
+
+// droppedToTelemetry mirrors pickedToTelemetry for the dropped list.
+func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
+	out := make([]models.DroppedAnalysisStep, 0, len(dropped))
+	for _, d := range dropped {
+		out = append(out, models.DroppedAnalysisStep{
+			Step:   d.StepNumber,
+			Score:  d.Score,
+			Reason: string(d.Reason),
+		})
+	}
+	return out
 }
 
 // executorAdapter adapts queryexec.QueryExecutor to validation.SelfHealingExecutor.

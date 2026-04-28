@@ -350,11 +350,26 @@ export interface AnalysisLogStep {
   area_name: string;
   run_at: string;
   relevant_queries: number;
+  query_results_chars?: number;
+  selected_steps?: SelectedStep[];
+  dropped_steps?: DroppedAnalysisStep[];
   tokens_in: number;
   tokens_out: number;
   duration_ms: number;
   insight_count: number;
   error: string;
+}
+
+export interface SelectedStep {
+  step: number;
+  score: number;
+  source: string; // "vector" | "exact_match"
+}
+
+export interface DroppedAnalysisStep {
+  step: number;
+  score: number;
+  reason: string; // "below_min_score" | "over_budget"
 }
 
 export interface ValidationLogEntry {
@@ -476,6 +491,13 @@ export interface DiscoveryRunStatus {
   successful_queries: number;
   failed_queries: number;
   insights_found: number;
+  schema_tokens?: number;
+  schema_table_count?: number;
+  schema_lookup_calls?: number;
+  schema_search_calls?: number;
+  analysis_step_index_upserts?: number;
+  analysis_step_index_search_calls?: number;
+  analysis_steps_dropped?: number;
 }
 
 export interface RunStep {

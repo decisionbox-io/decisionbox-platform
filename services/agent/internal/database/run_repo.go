@@ -112,6 +112,42 @@ func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, a
 	return err
 }
 
+// IncrementAnalysisCounter atomically bumps one of the analysis-
+// phase compaction counters on a run. metric is one of:
+//
+//   - "step_index_upserts"      → analysis_step_index_upserts
+//   - "step_index_search_calls" → analysis_step_index_search_calls
+//   - "steps_dropped"           → analysis_steps_dropped
+//
+// Any other value is a no-op so a future metric name doesn't roll
+// into the wrong field.
+func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, metric string, delta int) error {
+	if delta <= 0 {
+		return nil
+	}
+	var field string
+	switch metric {
+	case "step_index_upserts":
+		field = "analysis_step_index_upserts"
+	case "step_index_search_calls":
+		field = "analysis_step_index_search_calls"
+	case "steps_dropped":
+		field = "analysis_steps_dropped"
+	default:
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	update := bson.M{
+		"$inc": bson.M{field: delta},
+		"$set": bson.M{"updated_at": time.Now()},
+	}
+	_, err = r.col.UpdateByID(ctx, oid, update)
+	return err
+}
+
 // AddStep appends a step to the run's step log.
 func (r *RunRepository) AddStep(ctx context.Context, runID string, step models.RunStep) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
@@ -229,6 +265,54 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 		return nil, err
 	}
 	return &run, nil
+}
+
+// ListActiveRecent returns ids of runs that are currently in a non-
+// terminal status and were started within the given lookback window.
+// The boot-time per-run-collection orphan sweep treats these as
+// "live" (don't drop their Qdrant collections).
+//
+// Returns DiscoveryRun structs (id + status + started_at — the rest
+// of the fields are zero-value) so the caller can also log freshness.
+func (r *RunRepository) ListActiveRecent(ctx context.Context, lookback time.Duration) ([]models.DiscoveryRun, error) {
+	cutoff := time.Now().Add(-lookback)
+	filter := bson.M{
+		"started_at": bson.M{"$gte": cutoff},
+		"status": bson.M{"$in": []string{
+			models.RunStatusPending,
+			models.RunStatusRunning,
+		}},
+	}
+	cur, err := r.col.Find(ctx, filter, options.Find().SetProjection(bson.M{
+		"_id":        1,
+		"status":     1,
+		"started_at": 1,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("list active recent runs: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	out := make([]models.DiscoveryRun, 0)
+	for cur.Next(ctx) {
+		var doc struct {
+			ID        primitive.ObjectID `bson:"_id"`
+			Status    string             `bson:"status"`
+			StartedAt time.Time          `bson:"started_at"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode active run: %w", err)
+		}
+		out = append(out, models.DiscoveryRun{
+			ID:        doc.ID.Hex(),
+			Status:    doc.Status,
+			StartedAt: doc.StartedAt,
+		})
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("cursor active runs: %w", err)
+	}
+	return out, nil
 }
 
 // GetRunningByProject returns any currently running run for a project.

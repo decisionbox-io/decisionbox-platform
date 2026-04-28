@@ -232,6 +232,37 @@ This reads the file contents instead of using the env var value directly.
 2. **Defaults in code** — Used when env var is not set.
 3. **Project configuration** (MongoDB) — Per-project settings (warehouse, LLM, schedule) are stored in MongoDB and configured via the dashboard.
 
+## Analysis Phase Compaction Tunables
+
+Bounded analysis prompts via vector-ranked step selection + per-step
+compact digest. Algorithm parameters live in code, not env vars —
+edit and redeploy to change. See
+[agent-analysis-compaction.md](../architecture/agent-analysis-compaction.md)
+for the full design.
+
+| Constant                                                              | Default     | What it controls                                                                                                  |
+|-----------------------------------------------------------------------|-------------|-------------------------------------------------------------------------------------------------------------------|
+| `models.CompactInlineThreshold`                                       | `20`        | Row-count cap below which the digest stores every row verbatim (`AllRows`). Above the cap, only head + tail.      |
+| `models.TopValueCardinality`                                          | `20`        | Distinct-value cap above which a string column emits no `Top` list — guards against PII (user IDs / free text).   |
+| `models.HeadTailRowCount`                                             | `5`         | Rows in `HeadRows` and `TailRows` (the boundary samples for results above the inline threshold).                  |
+| `discovery.AnalysisAreaTopK`                                          | `24`        | Maximum vector hits per area before exact-match boost + budget trim.                                              |
+| `discovery.AnalysisAreaMinScore`                                      | `0.30`      | Cosine-similarity floor; vector hits below it are dropped (recorded as `below_min_score` in telemetry).           |
+| `discovery.ExactMatchFloor`                                           | `0.55`      | Score assigned to steps promoted via the keyword exact-match boost — set above the min-score floor.               |
+| `discovery.AnalysisQueryResultsBudgetTokens`                          | `200_000`   | Soft cap on the rendered `{{QUERY_RESULTS}}` block, in tokens. Picker drops lowest-scored steps until under cap.   |
+
+When to tune:
+
+- **`CompactInlineThreshold`** — Lower (10) if your domain produces
+  many 20-50 row aggregates and the head+tail summary loses too much
+  detail.
+- **`AnalysisAreaTopK`** — Lower if you regularly hit budget trimming;
+  higher if the picker is clearly missing relevant steps.
+- **`AnalysisAreaMinScore`** — Lower (0.20) for highly-multilingual runs
+  where cosine similarity is naturally smaller across languages.
+- **`AnalysisQueryResultsBudgetTokens`** — Lower if the surrounding
+  prompt grows; raise only on models with substantially-larger context
+  windows.
+
 ## Next Steps
 
 - [CLI Reference](cli.md) — Agent command-line flags

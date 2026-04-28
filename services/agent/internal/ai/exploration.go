@@ -7,10 +7,23 @@ import (
 	"strings"
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
+
+// StepIndexer captures one step's worth of "ship this to the run-
+// scoped vector index" work. Defined as an interface so the
+// exploration engine doesn't depend on the concrete
+// discovery.RunStepIndex type (which would create an import cycle).
+//
+// Implementations must be concurrency-safe — exploration calls Upsert
+// once per step, in sequence, so a simple wrapper around an HTTP /
+// gRPC client is enough.
+type StepIndexer interface {
+	Upsert(ctx context.Context, step models.ExplorationStep) error
+}
 
 // ExplorationEngine manages autonomous data exploration with LLM.
 type ExplorationEngine struct {
@@ -26,6 +39,13 @@ type ExplorationEngine struct {
 	// actions and reports a graceful "schema service unavailable" reply
 	// to the model so a misconfigured run doesn't crash the loop.
 	schemaProvider SchemaProvider
+
+	// stepIndexer ships each completed step to the run-scoped vector
+	// index. Optional — when nil the engine continues without
+	// indexing, which downgrades the analysis phase to keyword-only
+	// step selection. The orchestrator gates the run on a non-nil
+	// indexer in production wiring.
+	stepIndexer StepIndexer
 
 	// Per-run budgets for the on-demand schema actions. Initialized from
 	// ExplorationEngineOptions in NewExplorationEngine; decremented as
@@ -83,6 +103,12 @@ type ExplorationEngineOptions struct {
 	// MaxSearchesPerRun caps total search_tables actions across the
 	// whole run. 0 → DefaultMaxSearchesPerRun. Negative → 0 (off).
 	MaxSearchesPerRun int
+
+	// StepIndexer is the run-scoped vector index that receives one
+	// upsert per completed step. Optional in tests, required in
+	// production wiring (the orchestrator surfaces a clear error
+	// when it's nil at run start).
+	StepIndexer StepIndexer
 }
 
 // NewExplorationEngine creates a new exploration engine.
@@ -124,6 +150,7 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		dataset:           opts.Dataset,
 		onStep:            opts.OnStep,
 		schemaProvider:    opts.SchemaProvider,
+		stepIndexer:       opts.StepIndexer,
 		maxLookupsPerRun:  maxLookups,
 		maxSearchesPerRun: maxSearches,
 		fetchedTables:     make(map[string]struct{}),
@@ -242,6 +269,20 @@ func (e *ExplorationEngine) Explore(
 		}).Info("Executing exploration action")
 
 		actionResult := e.executeAction(ctx, action, &explorationStep)
+
+		// Index the completed step into the per-run vector index so
+		// the analysis phase can semantically rank steps against
+		// each area's identity. Failure is non-fatal — it degrades
+		// the analysis selection back to keyword-only behaviour but
+		// must not abort exploration.
+		if e.stepIndexer != nil {
+			if err := e.stepIndexer.Upsert(ctx, explorationStep); err != nil {
+				logger.WithFields(logger.Fields{
+					"step":  step,
+					"error": err.Error(),
+				}).Warn("Run-step index upsert failed; analysis ranking quality will degrade for this step")
+			}
+		}
 
 		// Add to results
 		result.Steps = append(result.Steps, explorationStep)
@@ -743,6 +784,14 @@ func (e *ExplorationEngine) executeQuery(
 	step.RowCount = result.RowCount
 	step.FixAttempts = result.FixAttempts
 	step.Fixed = result.Fixed
+
+	// Build the per-step compact digest exactly once. Storing it on
+	// the step means the analysis phase can render the digest into
+	// the prompt without re-walking the raw rows, and the legacy
+	// keyword-match selector path stops being the only consumer of
+	// step.QueryResult — analysis no longer ships the raw blob.
+	compact := gomodels.BuildCompactResult(result.Data)
+	step.CompactResult = &compact
 
 	// Format result for Claude
 	resultMsg := "Query executed successfully.\n\n"

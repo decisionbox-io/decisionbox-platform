@@ -229,9 +229,20 @@ For details on implementing providers, see:
    ↓
 9. Agent runs analysis per area:
    a. Loads area-specific prompt (e.g., analysis_churn.md)
-   b. Feeds relevant exploration results to LLM
-   c. LLM generates insights (JSON)
-   d. Agent parses and assigns IDs
+   b. Picker ranks exploration steps by vector similarity to the
+      area's identity (Name + Description + Keywords) against a
+      per-run Qdrant collection populated inline during exploration
+   c. Exact-match boost promotes any step whose text contains a
+      verbatim area keyword
+   d. Each picked step is rendered as a compact digest
+      (per-column statistics + head/tail rows) so the prompt stays
+      bounded even on thousand-row result sets
+   e. Picker drops the lowest-scored steps until the rendered
+      `{{QUERY_RESULTS}}` block fits the per-area token budget
+   f. LLM generates insights (JSON); agent parses and assigns IDs
+
+   See [agent-analysis-compaction.md](../architecture/agent-analysis-compaction.md)
+   for the full design.
    ↓
 10. Agent validates insights:
     a. For each insight with affected_count

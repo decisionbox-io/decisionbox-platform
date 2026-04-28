@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+)
 
 // DiscoveryResult represents the complete output of a discovery run.
 // Every LLM interaction is stored for traceability and fine-tuning.
@@ -160,6 +164,13 @@ type ExplorationStep struct {
 	RowCount        int                      `bson:"row_count,omitempty" json:"row_count,omitempty"`
 	ExecutionTimeMs int64                    `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
 
+	// CompactResult is the deterministic digest of QueryResult, built
+	// once at exploration time so the analysis phase can render a
+	// fixed-size summary instead of inlining every row. Pointer so a
+	// step that didn't run a query (lookup_schema, complete_rejected)
+	// serializes without an empty digest field.
+	CompactResult *gomodels.CompactResult `bson:"compact_result,omitempty" json:"compact_result,omitempty"`
+
 	// Error handling
 	Error       string `bson:"error,omitempty" json:"error,omitempty"`
 	FixAttempts int    `bson:"fix_attempts,omitempty" json:"fix_attempts,omitempty"`
@@ -186,6 +197,23 @@ type AnalysisStep struct {
 	Prompt          string `bson:"prompt" json:"prompt"`                     // full analysis prompt sent
 	RelevantQueries int    `bson:"relevant_queries" json:"relevant_queries"` // how many exploration queries fed in
 
+	// QueryResultsChars is the byte size of the rendered
+	// {{QUERY_RESULTS}} block. Useful for debugging prompt size and
+	// cross-checking the picker's budget logic against what was
+	// actually shipped.
+	QueryResultsChars int `bson:"query_results_chars,omitempty" json:"query_results_chars,omitempty"`
+
+	// SelectedSteps records which exploration steps fed this area's
+	// analysis prompt and how they were picked (vector vs.
+	// exact-match boost). One entry per picked step.
+	SelectedSteps []SelectedStep `bson:"selected_steps,omitempty" json:"selected_steps,omitempty"`
+
+	// DroppedSteps records steps the picker considered but excluded —
+	// either below the min-score floor or trimmed for budget. The
+	// dashboard's debug view surfaces this so a human reviewer can
+	// see what the LLM didn't get.
+	DroppedSteps []DroppedAnalysisStep `bson:"dropped_steps,omitempty" json:"dropped_steps,omitempty"`
+
 	// LLM output
 	Response  string `bson:"response" json:"response"` // full LLM response
 	TokensIn  int    `bson:"tokens_in" json:"tokens_in"`
@@ -199,6 +227,23 @@ type AnalysisStep struct {
 	ValidationResults []ValidationResult `bson:"validation_results,omitempty" json:"validation_results,omitempty"`
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
+}
+
+// SelectedStep is one step the analysis picker fed to the LLM. Source
+// is "vector" or "exact_match"; Score is the cosine similarity (or
+// the exact-match floor when promoted).
+type SelectedStep struct {
+	Step   int     `bson:"step" json:"step"`
+	Score  float64 `bson:"score" json:"score"`
+	Source string  `bson:"source" json:"source"`
+}
+
+// DroppedAnalysisStep is one step the picker excluded. Reason is
+// "below_min_score" or "over_budget".
+type DroppedAnalysisStep struct {
+	Step   int     `bson:"step" json:"step"`
+	Score  float64 `bson:"score" json:"score"`
+	Reason string  `bson:"reason" json:"reason"`
 }
 
 // RecommendationStep captures the complete LLM dialog for recommendation generation.

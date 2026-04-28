@@ -37,6 +37,14 @@ type DiscoveryRun struct {
 	SchemaTableCount  int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
 	SchemaLookupCalls int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
 	SchemaSearchCalls int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
+
+	// Analysis-phase compaction telemetry. Counts how many steps the
+	// run-scoped step index ingested, how many area-level searches
+	// the picker issued, and how many steps the picker dropped (sum
+	// across all areas in this run).
+	AnalysisStepIndexUpserts     int `bson:"analysis_step_index_upserts,omitempty" json:"analysis_step_index_upserts,omitempty"`
+	AnalysisStepIndexSearchCalls int `bson:"analysis_step_index_search_calls,omitempty" json:"analysis_step_index_search_calls,omitempty"`
+	AnalysisStepsDropped         int `bson:"analysis_steps_dropped,omitempty" json:"analysis_steps_dropped,omitempty"`
 }
 
 // RunStep is a single step in the discovery run log.

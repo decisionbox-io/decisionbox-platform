@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/qdrant/go-client/qdrant"
+
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
@@ -609,6 +611,40 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	defer func() { _ = schemaRetriever.Close() }()
 
+	// Run-scoped step index: separate Qdrant gRPC connection so the
+	// shared schema-retrieval client isn't tied up by the analysis
+	// path. Required for the run — analysis ranking depends on it,
+	// so a missing embedding provider here is a hard error rather
+	// than a silent regression to keyword-only selection.
+	runStepClient, runStepCloser, err := newRunStepIndexClient(cfg)
+	if err != nil {
+		return fmt.Errorf("connect run step index (Qdrant): %w", err)
+	}
+	defer runStepCloser()
+	if embeddingProvider == nil {
+		return fmt.Errorf("analysis ranking requires an embedding provider — configure one in project settings")
+	}
+	if runID == "" {
+		return fmt.Errorf("run id is required for run-scoped step index — caller must pass --run-id")
+	}
+	runStepIndex, err := discovery.NewRunStepIndex(runStepClient, embeddingProvider, runID)
+	if err != nil {
+		return fmt.Errorf("init run step index: %w", err)
+	}
+
+	// Boot-time orphan sweep: drop per-run collections from previous
+	// runs that crashed before reaching the deferred Drop. The
+	// orchestrator's Drop covers clean exits; this covers crashes.
+	sweepCtx, sweepCancel := context.WithTimeout(ctx, 30*time.Second)
+	keep := loadActiveRunIDs(sweepCtx, db)
+	keep[runID] = struct{}{}
+	if dropped, err := discovery.SweepOrphanRunStepIndexes(sweepCtx, runStepClient, keep); err != nil {
+		applog.WithError(err).Warn("Run-step-index orphan sweep failed; orphans will retry next boot")
+	} else if dropped > 0 {
+		applog.WithField("dropped", dropped).Info("Run-step-index orphan sweep dropped stale collections")
+	}
+	sweepCancel()
+
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:        aiClient,
@@ -638,6 +674,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		SchemaRetriever:   schemaRetriever,
 		SchemaCache:       schemaCache,
 		WarehouseHash:     warehouseHash,
+		RunStepIndex:      runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -785,6 +822,63 @@ func topRecommendationBriefs(recs []models.Recommendation, limit int) []notify.R
 		}
 	}
 	return briefs
+}
+
+// newRunStepIndexClient opens a gRPC connection to Qdrant for the
+// run-scoped step index. The returned closer must be invoked at end
+// of run — defer it.
+func newRunStepIndexClient(cfg *config.Config) (*pb.Client, func(), error) {
+	if cfg.Qdrant.URL == "" {
+		return nil, func() {}, fmt.Errorf("qdrant is required (set QDRANT_URL)")
+	}
+	host := cfg.Qdrant.URL
+	port := 6334
+	if parts := strings.SplitN(host, ":", 2); len(parts) == 2 {
+		host = parts[0]
+		if p, err := strconv.Atoi(parts[1]); err == nil {
+			port = p
+		}
+	}
+	client, err := pb.NewClient(&pb.Config{
+		Host:   host,
+		Port:   port,
+		APIKey: cfg.Qdrant.APIKey,
+	})
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("qdrant client: %w", err)
+	}
+	return client, func() {
+		if err := client.Close(); err != nil {
+			applog.WithError(err).Warn("Failed to close run-step-index Qdrant client")
+		}
+	}, nil
+}
+
+// loadActiveRunIDs returns the set of discovery_runs ids that are
+// considered "live" — recent and not in a terminal status. The
+// boot-time orphan sweep keeps these and drops every other per-run
+// Qdrant collection.
+//
+// Best-effort: a Mongo error returns an empty set, which is the safe
+// default (the sweep will leave possibly-live collections in place
+// rather than destroying ongoing work).
+func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} {
+	out := make(map[string]struct{})
+	if db == nil {
+		return out
+	}
+	repo := database.NewRunRepository(db)
+	runs, err := repo.ListActiveRecent(ctx, 24*time.Hour)
+	if err != nil {
+		applog.WithError(err).Warn("Could not list active runs for orphan sweep; sweep will be conservative")
+		return out
+	}
+	for _, r := range runs {
+		if r.ID != "" {
+			out[r.ID] = struct{}{}
+		}
+	}
+	return out
 }
 
 // classifyError returns a coarse error class for telemetry.

@@ -161,34 +161,6 @@ func TestSchemaContextBuilder_SingleTable(t *testing.T) {
 	}
 }
 
-func TestFilterQueriesByKeywords(t *testing.T) {
-	o := &Orchestrator{}
-	steps := []models.ExplorationStep{
-		{Query: "SELECT * FROM sessions WHERE retention > 0", Thinking: "check retention", QueryPurpose: "retention analysis"},
-		{Query: "SELECT * FROM levels WHERE quit_rate > 0.5", Thinking: "check level difficulty"},
-		{Query: "", Thinking: "no query here"}, // should be filtered out
-		{Query: "SELECT revenue FROM purchases", Thinking: "revenue check"},
-	}
-
-	// Filter for churn/retention keywords
-	filtered := o.filterQueriesByKeywords(steps, []string{"retention", "churn", "cohort"})
-	if len(filtered) != 1 {
-		t.Errorf("filtered = %d, want 1", len(filtered))
-	}
-
-	// Filter for level keywords
-	filtered = o.filterQueriesByKeywords(steps, []string{"level", "quit", "difficulty"})
-	if len(filtered) != 1 {
-		t.Errorf("filtered = %d, want 1", len(filtered))
-	}
-
-	// Filter for revenue keywords
-	filtered = o.filterQueriesByKeywords(steps, []string{"revenue", "purchase"})
-	if len(filtered) != 1 {
-		t.Errorf("filtered = %d, want 1", len(filtered))
-	}
-}
-
 func TestCleanJSONResponse(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -510,51 +482,6 @@ func TestBuildPreviousContext_NotesRelevanceFilter(t *testing.T) {
 	}
 	if contains(result, "low relevance note") {
 		t.Error("should NOT include low relevance note (< 0.5)")
-	}
-}
-
-// --- filterQueriesByKeywords: case insensitive ---
-
-func TestFilterQueriesByKeywords_CaseInsensitive(t *testing.T) {
-	o := &Orchestrator{}
-	steps := []models.ExplorationStep{
-		{Query: "SELECT * FROM SESSIONS WHERE RETENTION > 0", Thinking: "Check RETENTION"},
-	}
-
-	filtered := o.filterQueriesByKeywords(steps, []string{"retention"})
-	if len(filtered) != 1 {
-		t.Errorf("filtered = %d, want 1 (should be case insensitive)", len(filtered))
-	}
-}
-
-func TestFilterQueriesByKeywords_NoMatch(t *testing.T) {
-	o := &Orchestrator{}
-	steps := []models.ExplorationStep{
-		{Query: "SELECT * FROM sessions", Thinking: "general query"},
-	}
-
-	filtered := o.filterQueriesByKeywords(steps, []string{"churn", "retention"})
-	if len(filtered) != 0 {
-		t.Errorf("filtered = %d, want 0", len(filtered))
-	}
-}
-
-func TestFilterQueriesByKeywords_EmptySteps(t *testing.T) {
-	o := &Orchestrator{}
-	filtered := o.filterQueriesByKeywords(nil, []string{"churn"})
-	if len(filtered) != 0 {
-		t.Errorf("filtered = %d, want 0", len(filtered))
-	}
-}
-
-func TestFilterQueriesByKeywords_EmptyKeywords(t *testing.T) {
-	o := &Orchestrator{}
-	steps := []models.ExplorationStep{
-		{Query: "SELECT * FROM sessions"},
-	}
-	filtered := o.filterQueriesByKeywords(steps, nil)
-	if len(filtered) != 0 {
-		t.Errorf("filtered = %d, want 0 (no keywords match)", len(filtered))
 	}
 }
 
