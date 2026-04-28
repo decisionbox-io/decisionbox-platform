@@ -76,7 +76,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse' or 'llm'")
-		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit (default: run discovery).")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (enterprise feature). Default: run discovery.")
 	)
 
 	flag.Parse()
@@ -109,8 +109,20 @@ func Run() {
 		}
 		return
 	}
+	if *mode == "pack-gen" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		err := runPackGen(cfg, *projectID, *runID)
+		if err != nil {
+			applog.WithError(err).Error("Pack generation failed")
+		}
+		applog.Sync()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if *mode != "" {
-		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema' or empty)\n", *mode)
+		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'pack-gen', or empty)\n", *mode)
 		os.Exit(1)
 	}
 

@@ -74,6 +74,9 @@ func (m *mockVectorStoreForSearch) FindDuplicates(_ context.Context, _ []float64
 func (m *mockVectorStoreForSearch) Delete(_ context.Context, _ []string) error      { return nil }
 func (m *mockVectorStoreForSearch) HealthCheck(_ context.Context) error              { return nil }
 func (m *mockVectorStoreForSearch) EnsureCollection(_ context.Context, _ int) error  { return nil }
+func (m *mockVectorStoreForSearch) SearchSchemaIndex(_ context.Context, _ string, _ []float64, _ int) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
 
 // mockSearchHistoryRepo discards all saves.
 type mockSearchHistoryRepo struct{}

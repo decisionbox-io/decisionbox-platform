@@ -82,6 +82,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
 		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller)
+	packGenerate := handler.NewPackGenerateHandler(projectRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
@@ -151,6 +152,10 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("GET /api/v1/projects/{id}", withRole(viewer, projects.Get))
 	mux.HandleFunc("PUT /api/v1/projects/{id}", withRole(member, projects.Update))
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", withRole(admin, projects.Delete))
+
+	// Pack generation — handler returns 404 when no packgen provider is configured.
+	mux.HandleFunc("POST /api/v1/projects/{id}/pack-generate", withRole(member, packGenerate.Generate))
+	mux.HandleFunc("POST /api/v1/projects/{id}/pack-generate/regenerate", withRole(member, packGenerate.RegenerateSection))
 
 	// Schema-index lifecycle — viewer for status, member for retry/reindex
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/status", withRole(viewer, schemaIndex.GetStatus))

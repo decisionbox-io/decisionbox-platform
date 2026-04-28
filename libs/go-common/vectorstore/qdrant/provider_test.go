@@ -3,6 +3,7 @@ package qdrant
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -748,6 +749,103 @@ func TestClose(t *testing.T) {
 	err := p.Close()
 	if err != nil {
 		t.Fatalf("Close() error: %v", err)
+	}
+}
+
+// SearchSchemaIndex tests cover the per-project schema-blurb collection
+// (decisionbox_schema_{projectID}) lookup added for pack-gen. Without
+// these the unit-test signal for the new method was zero (the
+// integration test against a real qdrant container exercised it but
+// codecov runs unit tests only).
+
+func TestSearchSchemaIndex_HappyPath(t *testing.T) {
+	mock := newMockClient()
+	p := newWithClient(mock)
+	ctx := context.Background()
+
+	const projectID = "p1"
+	collName := schemaCollectionName(projectID)
+	mock.collections[collName] = true
+	mock.points[collName] = map[string]*pb.PointStruct{
+		"pt-1": {
+			Id: pb.NewID("pt-1"),
+			Payload: map[string]*pb.Value{
+				"schema_key": pb.NewValueString("dbo.orders"),
+				"blurb":      pb.NewValueString("Customer orders."),
+			},
+		},
+	}
+
+	hits, err := p.SearchSchemaIndex(ctx, projectID, []float64{1, 2, 3}, 5)
+	if err != nil {
+		t.Fatalf("SearchSchemaIndex: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits, want 1", len(hits))
+	}
+	if hits[0].Payload["schema_key"] != "dbo.orders" {
+		t.Errorf("schema_key payload = %v, want dbo.orders", hits[0].Payload["schema_key"])
+	}
+}
+
+func TestSearchSchemaIndex_RejectsMissingProjectID(t *testing.T) {
+	p := newWithClient(newMockClient())
+	if _, err := p.SearchSchemaIndex(context.Background(), "", []float64{1, 2, 3}, 5); err == nil {
+		t.Fatal("expected error for empty projectID")
+	}
+}
+
+func TestSearchSchemaIndex_RejectsEmptyVector(t *testing.T) {
+	p := newWithClient(newMockClient())
+	if _, err := p.SearchSchemaIndex(context.Background(), "p1", nil, 5); err == nil {
+		t.Fatal("expected error for empty vector")
+	}
+}
+
+func TestSearchSchemaIndex_DefaultsTopK(t *testing.T) {
+	mock := newMockClient()
+	p := newWithClient(mock)
+	const projectID = "p1"
+	mock.collections[schemaCollectionName(projectID)] = true
+	mock.points[schemaCollectionName(projectID)] = map[string]*pb.PointStruct{}
+	// topK=0 should default to 20 inside SearchSchemaIndex; just verify
+	// the call returns without error and does not panic on the empty
+	// collection.
+	if _, err := p.SearchSchemaIndex(context.Background(), projectID, []float64{1, 2, 3}, 0); err != nil {
+		t.Fatalf("topK=0 should default; got error %v", err)
+	}
+}
+
+func TestSearchSchemaIndex_ReturnsNilWhenCollectionAbsent(t *testing.T) {
+	// Project hasn't built a schema index yet — the per-project
+	// collection doesn't exist. Method must return (nil, nil) so
+	// callers fall back to a non-semantic heuristic instead of
+	// surfacing the underlying "not found" error.
+	mock := newMockClient()
+	p := newWithClient(mock)
+	hits, err := p.SearchSchemaIndex(context.Background(), "missing-proj", []float64{1, 2, 3}, 5)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if hits != nil {
+		t.Errorf("expected nil hits when collection is absent, got %v", hits)
+	}
+}
+
+func TestSearchSchemaIndex_PropagatesUnexpectedErrors(t *testing.T) {
+	// A non-"not found" client error must surface to the caller.
+	mock := newMockClient()
+	mock.err = errors.New("transient: connection refused")
+	p := newWithClient(mock)
+	if _, err := p.SearchSchemaIndex(context.Background(), "p1", []float64{1, 2, 3}, 5); err == nil {
+		t.Fatal("expected error to propagate")
+	}
+}
+
+func TestSchemaCollectionName(t *testing.T) {
+	want := "decisionbox_schema_abc123"
+	if got := schemaCollectionName("abc123"); got != want {
+		t.Errorf("schemaCollectionName(%q) = %q, want %q", "abc123", got, want)
 	}
 }
 

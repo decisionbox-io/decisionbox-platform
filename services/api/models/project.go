@@ -22,6 +22,39 @@ type Project struct {
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
 
+	// State tracks the project's lifecycle stage. Empty (the legacy
+	// default for projects created before pack generation existed) is
+	// equivalent to ProjectStateReady — see EffectiveState. New projects
+	// get a non-empty value at creation time.
+	State string `bson:"state,omitempty" json:"state,omitempty"`
+
+	// GeneratePack carries the user's intent to auto-generate a domain
+	// pack for this project. Only meaningful when State is one of the
+	// pack_generation_* values; cleared on transition to
+	// ProjectStateReady.
+	GeneratePack *GeneratePackConfig `bson:"generate_pack,omitempty" json:"generate_pack,omitempty"`
+
+	// PackGenLastError records the most recent generation failure
+	// (3-retry-exceeded validator failure or LLM error). Set when the
+	// orchestrator reverts state to pack_generation_pending after a
+	// failed Generate call; cleared on the next successful Generate.
+	// Surfaces in the dashboard wizard so users can adjust feedback
+	// and retry without leaving the page.
+	PackGenLastError string `bson:"pack_gen_last_error,omitempty" json:"pack_gen_last_error,omitempty"`
+
+	// BusinessSummary is an LLM-generated 2–4-paragraph summary of
+	// what the customer's business actually does, distilled from the
+	// indexed knowledge sources. Refreshed whenever a source goes to
+	// status=ready (so the summary stays current as users add or
+	// remove documents). Pack-generation, discovery, and /ask all
+	// pull this string in as the primary "what is this project"
+	// anchor — it dramatically outperforms passing raw chunks for
+	// LLMs that otherwise defer to a noisy ERP-framework schema.
+	// Empty until the first source is indexed.
+	BusinessSummary          string     `bson:"business_summary,omitempty" json:"business_summary,omitempty"`
+	BusinessSummaryUpdatedAt *time.Time `bson:"business_summary_updated_at,omitempty" json:"business_summary_updated_at,omitempty"`
+	BusinessSummaryError     string     `bson:"business_summary_error,omitempty" json:"business_summary_error,omitempty"`
+
 	Status        string     `bson:"status" json:"status"`
 	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 	LastRunStatus string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
@@ -73,4 +106,81 @@ type ScheduleConfig struct {
 	Enabled  bool   `bson:"enabled" json:"enabled"`
 	CronExpr string `bson:"cron_expr" json:"cron_expr"`
 	MaxSteps int    `bson:"max_steps" json:"max_steps"`
+}
+
+// Project lifecycle states. The state machine for the pack-generation
+// flow is:
+//
+//	   create with generate_pack.enabled=true
+//	    │
+//	    ▼
+//	pack_generation_pending ── user fills wizard ──▶ pack_generation
+//	    │                                              │
+//	 cancelled (DELETE)                          generation done
+//	                                                   │
+//	                                                   ▼
+//	                                        pack_generation_done
+//	                                                   │
+//	                                       user clicks "Start discovery"
+//	                                                   │
+//	                                                   ▼
+//	                                                ready
+//
+// Existing projects created before this feature have State == "" and are
+// treated as ready by EffectiveState. New non-pack-gen projects get
+// State == "ready" explicitly so the value is always meaningful for
+// future code paths.
+const (
+	// ProjectStatePackGenerationPending — the wizard has created the
+	// project shell; the user is filling in knowledge sources, warehouse
+	// config, and providers. Discovery cannot run in this state.
+	ProjectStatePackGenerationPending = "pack_generation_pending"
+
+	// ProjectStatePackGeneration — the agent is actively generating the
+	// domain pack (--mode=pack-gen). Discovery cannot run in this state.
+	ProjectStatePackGeneration = "pack_generation"
+
+	// ProjectStatePackGenerationDone — generation finished; the draft
+	// pack is awaiting the user's "Start discovery" gate. Discovery
+	// cannot run in this state.
+	ProjectStatePackGenerationDone = "pack_generation_done"
+
+	// ProjectStateReady — normal project, discovery + analysis flows
+	// behave the same as for any other project.
+	ProjectStateReady = "ready"
+)
+
+// EffectiveState returns the state the runtime should treat the project
+// as being in. Empty State is mapped to ProjectStateReady so legacy
+// projects (created before this feature shipped) continue to work
+// without a backfill migration.
+func (p *Project) EffectiveState() string {
+	if p.State == "" {
+		return ProjectStateReady
+	}
+	return p.State
+}
+
+// GeneratePackConfig holds the user's pack-generation intent for a project.
+//
+// Carried as a pointer on Project so the field is omitted from documents
+// where it doesn't apply rather than serialized as a zero value.
+type GeneratePackConfig struct {
+	// Enabled is the discriminator. When false (or the field is nil),
+	// the project is a regular project and the generator never runs.
+	Enabled bool `bson:"enabled" json:"enabled"`
+
+	// PackName is the human-readable name of the pack to be generated
+	// ("Acme Gaming"). Required when Enabled is true.
+	PackName string `bson:"pack_name" json:"pack_name"`
+
+	// PackSlug is the unique slug of the pack to be generated
+	// ("acme-gaming"). Required when Enabled is true. Must match
+	// ^[a-z][a-z0-9-]*$ and must not collide with an existing pack.
+	PackSlug string `bson:"pack_slug" json:"pack_slug"`
+
+	// Description is an optional one-paragraph user-supplied summary of
+	// the customer's domain. Empty string when the user did not supply
+	// one.
+	Description string `bson:"description,omitempty" json:"description,omitempty"`
 }

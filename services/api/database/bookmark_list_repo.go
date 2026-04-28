@@ -160,16 +160,16 @@ func (r *BookmarkListRepository) Delete(ctx context.Context, projectID, userID, 
 	return nil
 }
 
-// listFilter builds a (project_id, user_id, _id) filter, handling hex vs raw _id.
+// listFilter builds a (project_id, user_id, _id) filter. listID must be a
+// 24-char hex ObjectId — bookmark lists are always created with a
+// Mongo-generated ObjectID.
 func listFilter(projectID, userID, listID string) (bson.M, error) {
-	filter := bson.M{"project_id": projectID, "user_id": userID}
-	if oid, err := primitive.ObjectIDFromHex(listID); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = listID
-	}
 	if listID == "" {
 		return nil, errors.New("empty list id")
 	}
-	return filter, nil
+	oid, err := primitive.ObjectIDFromHex(listID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid list id %q: %w", listID, err)
+	}
+	return bson.M{"project_id": projectID, "user_id": userID, "_id": oid}, nil
 }

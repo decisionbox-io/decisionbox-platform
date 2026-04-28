@@ -68,7 +68,8 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--project-id` | Yes | — | Project ID to run discovery for. |
+| `--mode` | No | `run` | Agent mode. `run` performs discovery (default). `pack-gen` synthesizes a domain pack from the project's knowledge sources + warehouse schema and saves it to MongoDB. `pack-gen` requires a registered pack-generation provider; the stock community build exits with an error. |
+| `--project-id` | Yes | — | Project ID to run discovery (or pack generation) for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
 | `--max-steps` | No | `100` | Maximum exploration steps. More steps = more comprehensive but slower and more expensive. |

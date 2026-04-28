@@ -69,6 +69,10 @@ func (m *mockVectorStore) EnsureCollection(_ context.Context, _ int) error {
 	return nil
 }
 
+func (m *mockVectorStore) SearchSchemaIndex(_ context.Context, _ string, _ []float64, _ int) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
 func TestDenormalizeInsights(t *testing.T) {
 	o := &Orchestrator{
 		projectID: "proj-1",

@@ -19,20 +19,19 @@ func NewProjectRepository(db *DB) *ProjectRepository {
 	return &ProjectRepository{db: db}
 }
 
-// GetByID returns a project by its ID.
+// GetByID returns a project by its hex ObjectId. Every project document
+// in Mongo is stored with `_id: ObjectId(...)`; we accept only that shape
+// (matching the API's ProjectRepository.GetByID).
 func (r *ProjectRepository) GetByID(ctx context.Context, id string) (*models.Project, error) {
 	col := r.db.Collection(CollectionProjects)
 
-	// Try as ObjectID first, then as string
-	filter := bson.M{}
-	if oid, err := primitive.ObjectIDFromHex(id); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = id
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
 	var project models.Project
-	if err := col.FindOne(ctx, filter).Decode(&project); err != nil {
+	if err := col.FindOne(ctx, bson.M{"_id": oid}).Decode(&project); err != nil {
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
 

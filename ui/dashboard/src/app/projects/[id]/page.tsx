@@ -15,7 +15,13 @@ import {
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
-import { api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus } from '@/lib/api';
+import PackGenStatusPanel from '@/components/projects/PackGenStatusPanel';
+import {
+  api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
+  PROJECT_STATE_PACK_GENERATION,
+  PROJECT_STATE_PACK_GENERATION_DONE,
+  PROJECT_STATE_PACK_GENERATION_PENDING,
+} from '@/lib/api';
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +55,13 @@ export default function ProjectPage() {
     Promise.all([
       api.getProject(id).then((p) => {
         setProject(p);
+        // Skip analysis-area lookup when the project is mid-pack-gen
+        // (domain/category are empty strings until the agent finishes
+        // generating the pack). Without this guard the request hits
+        // /api/v1/domains//categories//areas, which the Go mux 301-
+        // redirects to a non-JSON HTML body and explodes with
+        // "Unexpected non-whitespace character after JSON at position 4".
+        if (!p.domain || !p.category) return;
         return api.getAnalysisAreas(p.domain, p.category)
           .then((areas) => setAnalysisAreas((areas || []).map((a) => ({ id: a.id, name: a.name }))));
       }),
@@ -139,6 +152,25 @@ export default function ProjectPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
   if (!project) return <Shell><Text>Project not found</Text></Shell>;
+
+  // Projects in any pack-generation state hide the discovery UI and
+  // delegate to the pack-gen panel — discovery isn't valid until the
+  // user has accepted the generated pack.
+  const inPackGen = project.state === PROJECT_STATE_PACK_GENERATION_PENDING
+    || project.state === PROJECT_STATE_PACK_GENERATION
+    || project.state === PROJECT_STATE_PACK_GENERATION_DONE;
+
+  if (inPackGen) {
+    const breadcrumbPg = [
+      { label: 'Projects', href: '/' },
+      { label: project.name },
+    ];
+    return (
+      <Shell breadcrumb={breadcrumbPg}>
+        <PackGenStatusPanel project={project} onProjectChanged={setProject} />
+      </Shell>
+    );
+  }
 
   const isRunning = run && (run.status === 'running' || run.status === 'pending');
   // Schema index must be "ready" (or legacy ready-by-default with a

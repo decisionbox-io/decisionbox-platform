@@ -10,6 +10,8 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func setupMongoDB(t *testing.T) (*DB, func()) {
@@ -50,34 +52,35 @@ func TestProjectRepository_CRUD(t *testing.T) {
 
 	repo := NewProjectRepository(db)
 
-	// Insert a project document directly
-	project := models.Project{
-		ID:       "test-project-1",
-		Name:     "Test Game",
-		Domain:   "gaming",
-		Category: "match3",
-		Warehouse: models.WarehouseConfig{
-			Provider: "bigquery",
-			Datasets: []string{"test_dataset"},
+	// Insert a project the production way: `_id` is a Mongo-generated
+	// ObjectId. The agent's GetByID accepts only the hex form of that
+	// ObjectId — same shape the API writes when handling POST /projects.
+	oid := primitive.NewObjectID()
+	doc := bson.M{
+		"_id":      oid,
+		"name":     "Test Game",
+		"domain":   "gaming",
+		"category": "match3",
+		"warehouse": bson.M{
+			"provider": "bigquery",
+			"datasets": []string{"test_dataset"},
 		},
-		LLM: models.LLMConfig{
-			Provider: "claude",
-			Model:    "claude-sonnet-4-20250514",
+		"llm": bson.M{
+			"provider": "claude",
+			"model":    "claude-sonnet-4-20250514",
 		},
-		Status:    "active",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		"status":     "active",
+		"created_at": time.Now(),
+		"updated_at": time.Now(),
 	}
 
-	// Insert directly
 	col := db.Collection(CollectionProjects)
-	_, err := col.InsertOne(ctx, project)
-	if err != nil {
+	if _, err := col.InsertOne(ctx, doc); err != nil {
 		t.Fatalf("failed to insert project: %v", err)
 	}
 
 	// Get by ID
-	got, err := repo.GetByID(ctx, "test-project-1")
+	got, err := repo.GetByID(ctx, oid.Hex())
 	if err != nil {
 		t.Fatalf("GetByID error: %v", err)
 	}
@@ -99,9 +102,23 @@ func TestProjectRepository_NotFound(t *testing.T) {
 
 	repo := NewProjectRepository(db)
 
-	_, err := repo.GetByID(ctx, "nonexistent")
+	// Well-formed hex but no matching document.
+	_, err := repo.GetByID(ctx, primitive.NewObjectID().Hex())
 	if err == nil {
 		t.Error("should error for nonexistent project")
+	}
+}
+
+// Non-hex IDs are rejected at the boundary. Production data always uses
+// ObjectId — any string that can't be parsed as 24-char hex is a typo,
+// stale URL, or misrouted request, and we want it to fail fast.
+func TestProjectRepository_RejectsNonHexID(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewProjectRepository(db)
+	if _, err := repo.GetByID(context.Background(), "test-project-1"); err == nil {
+		t.Error("should error for non-hex project id")
 	}
 }
 

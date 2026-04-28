@@ -231,8 +231,13 @@ The agent reads only from `project.prompts` at runtime.
 
 See the [Creating Domain Packs](../guides/creating-domain-packs.md) guide for a step-by-step tutorial on building a domain pack for your industry.
 
+## Generation
+
+If you'd rather not author a pack by hand, DecisionBox can synthesize one from your knowledge sources and warehouse schema. See the [Generating Domain Packs](../guides/generating-domain-packs.md) guide. Generation is implemented in an enterprise plugin; the community build exposes the API surface but returns `404` until that plugin is loaded.
+
 ## Next Steps
 
 - [Providers](providers.md) — Plugin architecture for LLM, warehouse, and secrets
 - [Prompts](prompts.md) — Template variables and prompt customization
 - [Creating Domain Packs](../guides/creating-domain-packs.md) — Build your own
+- [Generating Domain Packs](../guides/generating-domain-packs.md) — Have the agent author one for you

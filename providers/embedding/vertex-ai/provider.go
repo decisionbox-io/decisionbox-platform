@@ -62,7 +62,7 @@ func init() {
 		endpoint := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 			location, projectID, location, model)
 
-		return newProvider(model, dims, endpoint, auth), nil
+		return newProvider(model, dims, endpoint, auth, location, projectID), nil
 	}, goembedding.ProviderMeta{
 		Name:        "Vertex AI (GCP)",
 		Description: "Google Cloud embedding models — ADC auth, no API key needed",
@@ -81,11 +81,13 @@ func init() {
 
 // provider implements embedding.Provider using Vertex AI.
 type provider struct {
-	model    string
-	dims     int
-	endpoint string
-	auth     tokenProvider
-	client   *http.Client
+	model     string
+	dims      int
+	endpoint  string
+	location  string
+	projectID string
+	auth      tokenProvider
+	client    *http.Client
 }
 
 // tokenProvider abstracts GCP token retrieval for testing.
@@ -93,12 +95,14 @@ type tokenProvider interface {
 	token(ctx context.Context) (string, error)
 }
 
-func newProvider(model string, dims int, endpoint string, auth tokenProvider) *provider {
+func newProvider(model string, dims int, endpoint string, auth tokenProvider, location, projectID string) *provider {
 	return &provider{
-		model:    model,
-		dims:     dims,
-		endpoint: endpoint,
-		auth:     auth,
+		model:     model,
+		dims:      dims,
+		endpoint:  endpoint,
+		location:  location,
+		projectID: projectID,
+		auth:      auth,
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},

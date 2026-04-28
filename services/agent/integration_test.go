@@ -24,6 +24,8 @@ import (
 
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"github.com/testcontainers/testcontainers-go/modules/gcloud"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -396,17 +398,20 @@ func TestInteg_InsightValidator_WithBigQuery(t *testing.T) {
 // =====================================================================
 
 func TestInteg_ProjectRepo(t *testing.T) {
+	// Production shape: `_id` is an ObjectId. The agent's GetByID
+	// accepts only the hex form.
+	oid := primitive.NewObjectID()
 	col := testDB.Collection("projects")
-	_, err := col.InsertOne(context.Background(), models.Project{
-		ID: "integ-proj-1", Name: "Test Game", Domain: "gaming", Category: "match3",
-		Status: "active", CreatedAt: time.Now(),
+	_, err := col.InsertOne(context.Background(), bson.M{
+		"_id": oid, "name": "Test Game", "domain": "gaming", "category": "match3",
+		"status": "active", "created_at": time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
 	repo := database.NewProjectRepository(testDB)
-	got, err := repo.GetByID(context.Background(), "integ-proj-1")
+	got, err := repo.GetByID(context.Background(), oid.Hex())
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}

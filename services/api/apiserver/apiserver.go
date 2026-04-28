@@ -17,10 +17,12 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/packgen"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
@@ -193,6 +195,20 @@ func Run() {
 		SecretProvider: secretProvider,
 	}); err != nil {
 		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
+	}
+
+	// Activate the pack-generation provider if a plugin registered a
+	// factory. No-op otherwise — POST /api/v1/projects/{id}/pack-generate
+	// then returns 404. Sources is configured first because the pack-gen
+	// Provider relies on the same retriever for its prompt context.
+	if err := packgen.Configure(ctx, packgen.Dependencies{
+		Mongo:            mongoClient.Database(),
+		Vectorstore:      qdrantProvider,
+		SecretProvider:   secretProvider,
+		Sources:          gosources.GetProvider(),
+		EmbeddingFactory: goembedding.NewProvider,
+	}); err != nil {
+		apilog.WithError(err).Warn("Pack-generation provider configuration failed; pack-generate endpoints will return 404")
 	}
 
 	// Schema-index worker + /reindex dropper: both need Qdrant. Without

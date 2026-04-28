@@ -401,6 +401,86 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// TestProjectsHandler_Update_AcceptsPackGenDoneToReady covers the
+// only state transition the PUT /projects/{id} endpoint allows on the
+// state field — the wizard's "Accept and continue" / "Skip review"
+// buttons fire this when the user is happy with the generated pack
+// and wants the discovery UI to take over the project page. Without
+// this transition the merge silently drops `state: "ready"` from the
+// request body and the project is stuck on pack_generation_done
+// forever (regression: fizbot project on 2026-04-27 sat in
+// pack_generation_done after the user clicked Accept because the
+// merge had no state branch).
+func TestProjectsHandler_Update_AcceptsPackGenDoneToReady(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:  "Done Project",
+		State: models.ProjectStatePackGenerationDone,
+		LLM:   models.LLMConfig{Provider: "openai", Model: "gpt-test"},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"state":"ready"}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.State != models.ProjectStateReady {
+		t.Errorf("state = %q, want %q", updated.State, models.ProjectStateReady)
+	}
+}
+
+// TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
+// flip side: any state-write attempt that ISN'T the
+// pack_generation_done → ready transition is silently dropped (the
+// merge ignores it). Critical so a stale dashboard or curl can't
+// roll a project back into pack-gen mid-flight.
+func TestProjectsHandler_Update_DropsArbitraryStateWrites(t *testing.T) {
+	cases := []struct {
+		name         string
+		startState   string
+		incomingBody string
+		wantState    string
+	}{
+		{"ready → pack_generation refused", models.ProjectStateReady, `{"state":"pack_generation"}`, models.ProjectStateReady},
+		{"ready → pack_generation_pending refused", models.ProjectStateReady, `{"state":"pack_generation_pending"}`, models.ProjectStateReady},
+		{"pack_generation_pending → ready refused", models.ProjectStatePackGenerationPending, `{"state":"ready"}`, models.ProjectStatePackGenerationPending},
+		{"pack_generation → ready refused", models.ProjectStatePackGeneration, `{"state":"ready"}`, models.ProjectStatePackGeneration},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMockProjectRepo()
+			h := NewProjectsHandler(repo, nil)
+			p := &models.Project{
+				Name:  "Guarded",
+				State: tc.startState,
+				LLM:   models.LLMConfig{Provider: "openai", Model: "gpt-test"},
+			}
+			repo.Create(context.Background(), p)
+			req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(tc.incomingBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.SetPathValue("id", p.ID)
+			w := httptest.NewRecorder()
+			h.Update(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			updated, _ := repo.GetByID(context.Background(), p.ID)
+			if updated.State != tc.wantState {
+				t.Errorf("state = %q, want %q (%s)", updated.State, tc.wantState, tc.name)
+			}
+		})
+	}
+}
+
 func TestProjectsHandler_Update_NotFound_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	h := NewProjectsHandler(repo, nil)

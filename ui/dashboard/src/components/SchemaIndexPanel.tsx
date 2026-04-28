@@ -27,6 +27,12 @@ import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
 interface Props {
   projectId: string;
   onStatusChange?: (status: SchemaIndexStatus) => void;
+  /**
+   * Optional override for the heading. Defaults to "Schema index".
+   * Used by the pack-gen panel which wraps this component as
+   * "Step 1 of 2 — Indexing schema".
+   */
+  title?: string;
 }
 
 const POLL_MS = 2000;
@@ -39,7 +45,7 @@ const PHASE_LABELS: Record<string, string> = {
   embedding: 'Building vector index',
 };
 
-export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
+export function SchemaIndexPanel({ projectId, onStatusChange, title }: Props) {
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -295,7 +301,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange }: Props) {
         <Stack gap={6}>
           <Group justify="space-between" wrap="nowrap">
             <Text size="sm" fw={500}>
-              Schema index: {phaseLabel}
+              {title || 'Schema index'}: {phaseLabel}
               {status.status === 'ready' && updatedDate && (
                 <Text component="span" size="xs" c="dimmed" ml="sm">last built {updatedDate}</Text>
               )}

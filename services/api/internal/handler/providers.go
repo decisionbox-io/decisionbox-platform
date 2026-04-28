@@ -390,11 +390,15 @@ func fetchLiveEmbeddingModels(ctx context.Context, providerID string, cfg map[st
 		cfg = map[string]string{}
 	}
 	// Every registered embedding provider factory validates required
-	// config fields up-front; supply a harmless model default so the
-	// factory doesn't reject a list-only call. ListModels never reads
-	// cfg["model"].
+	// config fields up-front, and most reject anything not on a strict
+	// model allowlist (Bedrock's modelDimensions, Voyage's, etc.). For
+	// a list-only call we just need the factory to succeed so
+	// ListModels can run — supply the first catalogued model id as a
+	// placeholder. ListModels never reads cfg["model"].
 	if cfg["model"] == "" {
-		cfg["model"] = "list-only-placeholder"
+		if meta, ok := goembedding.GetProviderMeta(providerID); ok && len(meta.Models) > 0 {
+			cfg["model"] = meta.Models[0].ID
+		}
 	}
 	prov, err := goembedding.NewProvider(providerID, goembedding.ProviderConfig(cfg))
 	if err != nil {

@@ -96,15 +96,15 @@ func (r *BookmarkRepository) ListByList(ctx context.Context, listID string) ([]*
 // Delete removes a bookmark by its ID, scoped by (project_id, user_id, list_id).
 // Returns ErrBookmarkNotFound when nothing matches.
 func (r *BookmarkRepository) Delete(ctx context.Context, projectID, userID, listID, bookmarkID string) error {
+	oid, err := primitive.ObjectIDFromHex(bookmarkID)
+	if err != nil {
+		return fmt.Errorf("invalid bookmark id %q: %w", bookmarkID, err)
+	}
 	filter := bson.M{
 		"project_id": projectID,
 		"user_id":    userID,
 		"list_id":    listID,
-	}
-	if oid, err := primitive.ObjectIDFromHex(bookmarkID); err == nil {
-		filter["_id"] = oid
-	} else {
-		filter["_id"] = bookmarkID
+		"_id":        oid,
 	}
 
 	result, err := r.col.DeleteOne(ctx, filter)

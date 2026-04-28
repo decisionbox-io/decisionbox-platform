@@ -9,6 +9,8 @@ ignore:
   - "services/agent/main.go"
   - "services/agent/agentserver/agentserver.go" # startup/wiring — tested by integration tests
   - "services/agent/agentserver/index_schema.go" # startup/wiring (--mode index-schema) — covered by integration tests
+  - "services/agent/agentserver/run_pack_gen.go" # startup/wiring (--mode pack-gen) — covered by enterprise/packgen integration tests
+  - "services/api/internal/server/server.go"     # HTTP routing/wiring — covered by integration tests
   - "services/api/internal/backfill/"           # CLI tool — tested manually
   - "services/api/database/*_repo.go"           # MongoDB repos — covered by integration tests
   - "services/api/database/database.go"         # DB connection/index init — covered by integration tests
