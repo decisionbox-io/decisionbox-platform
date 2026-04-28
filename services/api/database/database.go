@@ -111,11 +111,18 @@ func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Pro
 		return fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
-	p.ID = "" // don't attempt to update _id
+	// Zero p.ID so Mongo's $set doesn't try to update the immutable
+	// _id field, but restore it on the way out — handlers reuse the
+	// passed-in struct as their JSON response, and a wiped id leaks
+	// to the dashboard as "" causing the next PUT to /api/v1/projects/
+	// → 405. Saw this bite the pack-gen wizard's blurb step on
+	// 2026-04-28.
+	p.ID = ""
 	p.UpdatedAt = time.Now()
 	update := bson.M{"$set": p}
 
 	result, err := r.col.UpdateOne(ctx, bson.M{"_id": oid}, update)
+	p.ID = id
 	if err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
