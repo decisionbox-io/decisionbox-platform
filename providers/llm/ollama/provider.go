@@ -114,17 +114,32 @@ func init() {
 			"llama4:maverick": 8192,
 
 			// Llama 3.x — 128K context, 8K is the common practical generation cap.
+			// GetMaxOutputTokens is exact-match, so each documented Ollama size tag
+			// must be listed explicitly — otherwise it falls through to the 16384
+			// default, which is above this family's true cap.
 			"llama3.3":        8192,
 			"llama3.3:latest": 8192,
 			"llama3.3:70b":    8192,
+			"llama3.2":        8192,
+			"llama3.2:latest": 8192,
+			"llama3.2:1b":     8192,
+			"llama3.2:3b":     8192,
 			"llama3.1":        8192,
 			"llama3.1:latest": 8192,
+			"llama3.1:8b":     8192,
 			"llama3.1:70b":    8192,
 			"llama3.1:405b":   8192,
+			"llama3":          8192,
+			"llama3:latest":   8192,
+			"llama3:8b":       8192,
+			"llama3:70b":      8192,
 
-			// Gemma 2 — 8K context, so output caps at 8K.
+			// Gemma 2 — 8K context, so output caps at 8K. Smaller sizes must be
+			// listed explicitly because the new 16384 default would over-promise.
 			"gemma2":        8192,
 			"gemma2:latest": 8192,
+			"gemma2:2b":     8192,
+			"gemma2:9b":     8192,
 			"gemma2:27b":    8192,
 
 			// Modern floor for any Ollama model not listed above. Raised from 8192

@@ -62,9 +62,13 @@ func TestOllamaProvider_Registered(t *testing.T) {
 		// Llama 4 / Llama 3.x — 8K practical generation cap.
 		{"llama4:maverick", 8192},
 		{"llama3.3:70b", 8192},
+		{"llama3.1:8b", 8192}, // documented in docs/guides/configuring-llm.md
 		{"llama3.1:405b", 8192},
+		{"llama3.2:3b", 8192},
+		{"llama3:8b", 8192},
 
 		// Gemma 2 — 8K context.
+		{"gemma2:9b", 8192},
 		{"gemma2:27b", 8192},
 
 		// Fallback to _default for unrecognized model tags.
