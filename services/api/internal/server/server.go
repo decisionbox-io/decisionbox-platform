@@ -122,6 +122,11 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		healthMux.HandleFunc("GET /api/v1/health", handler.HealthCheck)
 	}
 
+	// Authenticated principal — any authenticated user can ask "who am I".
+	// Any auth backend works identically: the middleware writes the
+	// principal into the request context, this handler reads it back.
+	mux.HandleFunc("GET /api/v1/me", withRole(viewer, handler.Me))
+
 	// Providers — viewer
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))
