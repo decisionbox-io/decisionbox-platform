@@ -294,7 +294,20 @@ jobs:
             services/agent/go.sum
 
       - name: Install Grant
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/grant/main/install.sh | sh -s -- -b /usr/local/bin
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "Install attempt ${attempt}/3"
+            curl -sSfL https://raw.githubusercontent.com/anchore/grant/main/install.sh | sh -s -- -b /usr/local/bin || true
+            if command -v grant >/dev/null 2>&1; then
+              echo "grant installed at $(command -v grant)"
+              exit 0
+            fi
+            echo "grant not on PATH after install; retrying in 10s"
+            sleep 10
+          done
+          echo "Failed to install grant after 3 attempts" >&2
+          exit 1
 
       - name: Check Agent licenses
         run: grant check dir:services/agent -c .grant.yaml
