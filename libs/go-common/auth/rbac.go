@@ -25,7 +25,11 @@ func RequireRole(minRole string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := FromContext(r.Context())
-			if !ok {
+			// `ok` is true even when WithUser explicitly stored a nil
+			// pointer (the type assertion succeeds on a nil
+			// *UserPrincipal). Dereferencing user.Roles below would
+			// panic; treat nil exactly like a missing principal.
+			if !ok || user == nil {
 				WriteJSONError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}

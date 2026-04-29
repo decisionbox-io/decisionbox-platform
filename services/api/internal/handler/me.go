@@ -7,9 +7,10 @@ import (
 )
 
 // Me returns the authenticated principal that the auth middleware
-// attached to the request context. The JSON shape mirrors
-// libs/go-common/auth.UserPrincipal so any consumer that already
-// knows that struct can decode the response without a separate type.
+// attached to the request context. The handler writes the standard
+// APIResponse envelope (`{"data": {...}}`), so a typed consumer
+// decodes the response into a struct with a single `Data UserPrincipal`
+// field — same wrapper every other endpoint in this server uses.
 //
 // All authenticated dashboards reach this endpoint to populate "who
 // am I" surfaces (sidebar avatar, account menu, audit metadata for

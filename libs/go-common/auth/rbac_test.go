@@ -96,6 +96,30 @@ func TestRequireRole_NoUserInContext(t *testing.T) {
 	}
 }
 
+// TestRequireRole_NilPrincipalInContext guards against the pathological
+// case where WithUser explicitly stores a nil *UserPrincipal. The type
+// assertion in FromContext returns ok=true with a nil pointer — without
+// the explicit nil check in RequireRole the next line would dereference
+// it and panic before the request even reaches the handler.
+func TestRequireRole_NilPrincipalInContext(t *testing.T) {
+	middleware := RequireRole("viewer")
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not run when context holds a nil principal")
+	})
+	handler := middleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req = req.WithContext(WithUser(context.Background(), nil))
+	w := httptest.NewRecorder()
+
+	// Must not panic and must return 401, not 500 / dropped connection.
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
 func TestRequireRole_EmptyRoles(t *testing.T) {
 	w := rbacHandler(t, "viewer", &UserPrincipal{Sub: "u9", Roles: []string{}})
 	if w.Code != http.StatusForbidden {
