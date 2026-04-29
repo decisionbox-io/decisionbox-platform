@@ -26,9 +26,9 @@ func GetProvider() Provider {
 }
 
 // PeekProvider returns the currently registered auth provider, or nil if no
-// plugin has called RegisterProvider yet. Unlike GetProvider it does not fall
-// back to NoAuthProvider — chain plugins use this to detect whether to wrap
-// an existing provider versus register themselves as the sole authority.
+// provider is currently registered. Unlike GetProvider it does not fall back
+// to NoAuthProvider — chain plugins use this to detect whether to wrap an
+// existing provider versus register themselves as the sole authority.
 func PeekProvider() Provider {
 	registryMu.Lock()
 	defer registryMu.Unlock()
