@@ -57,3 +57,31 @@ func TestRegisterProvider_NilFallsBackToNoAuth(t *testing.T) {
 		t.Fatal("GetProvider() should never return nil")
 	}
 }
+
+func TestPeekProvider_ReturnsNilWhenUnregistered(t *testing.T) {
+	registryMu.Lock()
+	registeredProvider = nil
+	registryMu.Unlock()
+
+	if p := PeekProvider(); p != nil {
+		t.Errorf("PeekProvider() = %v, want nil before any registration", p)
+	}
+}
+
+func TestPeekProvider_ReturnsRegisteredWithoutFallback(t *testing.T) {
+	registryMu.Lock()
+	registeredProvider = nil
+	registryMu.Unlock()
+
+	custom := &NoAuthProvider{}
+	RegisterProvider(custom)
+	t.Cleanup(func() {
+		registryMu.Lock()
+		registeredProvider = nil
+		registryMu.Unlock()
+	})
+
+	if p := PeekProvider(); p != custom {
+		t.Errorf("PeekProvider() = %v, want %v (the registered provider)", p, custom)
+	}
+}
