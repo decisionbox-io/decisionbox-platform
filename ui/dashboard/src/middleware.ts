@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Agent, fetch as undiciFetch } from 'undici';
+import {
+  Agent,
+  fetch as undiciFetch,
+  type BodyInit as UndiciBodyInit,
+  type HeadersInit as UndiciHeadersInit,
+} from 'undici';
 
 // Runtime API proxy — reads API_URL env var at request time (not build
 // time). Proxies all /api/* requests to the backend API server-side
@@ -48,21 +53,27 @@ export async function middleware(request: NextRequest) {
   // Remove host header (will be set by fetch to the target)
   headers.delete('host');
 
-  // undici's BodyInit type does not unify with the global Web
-  // ReadableStream type the way Node's global fetch does, so the
-  // request body crosses the boundary as `unknown`. Same shape, just
-  // missing the structural matchup TS needs.
+  // undici's HeadersInit / BodyInit types are nominally distinct
+  // from the global lib.dom equivalents even though they accept the
+  // same runtime values. The casts narrow the type mismatch only —
+  // we pass the `Headers` instance and the original `ReadableStream`
+  // (or `null` → `undefined` for body-less methods) verbatim so
+  // multi-value headers (cookies in, `Set-Cookie` out) and streamed
+  // request bodies (POST/PUT/PATCH) round-trip without lossy
+  // conversion.
   const response = await undiciFetch(targetUrl, {
     method: request.method,
-    headers: Object.fromEntries(headers),
-    body: request.body as unknown as undefined,
+    headers: headers as unknown as UndiciHeadersInit,
+    body: (request.body ?? undefined) as unknown as UndiciBodyInit | undefined,
     duplex: 'half',
     dispatcher: longRunningProxy,
   });
 
-  // Forward the response back to the client
+  // Forward the response back to the client. Construct the Headers
+  // from the undici response directly so repeated headers (Set-Cookie
+  // is the canonical case) preserve every value.
   const responseHeaders = new Headers(
-    Object.fromEntries(response.headers.entries()),
+    response.headers as unknown as HeadersInit,
   );
   // Remove transfer-encoding to avoid issues with Next.js
   responseHeaders.delete('transfer-encoding');

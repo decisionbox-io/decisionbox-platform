@@ -15,7 +15,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 // short-Agent assertion below.
 const PROXY_TIMEOUT_MS = 20 * 60_000;
 
-type SlowServer = { url: string; close: () => void };
+type SlowServer = { url: string; close: () => Promise<void> };
 
 function startSlowServer(headersDelayMs: number): Promise<SlowServer> {
   return new Promise((resolve) => {
@@ -32,7 +32,13 @@ function startSlowServer(headersDelayMs: number): Promise<SlowServer> {
       }
       resolve({
         url: `http://127.0.0.1:${addr.port}/`,
-        close: () => server.close(),
+        // server.close fires its callback after every active socket
+        // closes — await this so jest's open-handle detector doesn't
+        // see leftover keep-alive sockets between cases.
+        close: () =>
+          new Promise<void>((res) => {
+            server.close(() => res());
+          }),
       });
     });
   });
@@ -50,7 +56,7 @@ describe('dashboard API proxy timeout', () => {
       caught = err;
     }
     const elapsed = Date.now() - start;
-    srv.close();
+    await srv.close();
     await shortAgent.close();
 
     expect(caught).toBeInstanceOf(Error);
@@ -75,7 +81,7 @@ describe('dashboard API proxy timeout', () => {
     const resp = await undiciFetch(srv.url, { dispatcher: longAgent });
     const body = (await resp.json()) as { ok: boolean };
     const elapsed = Date.now() - start;
-    srv.close();
+    await srv.close();
     await longAgent.close();
 
     expect(resp.status).toBe(200);
@@ -89,5 +95,62 @@ describe('dashboard API proxy timeout', () => {
     // headroom for a future revision, while still catching a
     // regression to undici's 5-minute default.
     expect(PROXY_TIMEOUT_MS).toBeGreaterThanOrEqual(15 * 60_000);
+  });
+
+  // Regression: middleware.ts must forward POST/PUT/PATCH bodies to
+  // the upstream API verbatim. An earlier revision cast the body to
+  // `undefined`, which silently dropped JSON payloads.
+  it('forwards a POST body through undici fetch + dispatcher', async () => {
+    type EchoBody = {
+      sentinel: string;
+      number: number;
+    };
+    let received: EchoBody | { error: string } = { error: 'not-set' };
+
+    const echoSrv = await new Promise<SlowServer>((resolve) => {
+      const server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          try {
+            received = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          } catch (err) {
+            received = { error: String(err) };
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') {
+          throw new Error('failed to start echo server');
+        }
+        resolve({
+          url: `http://127.0.0.1:${addr.port}/echo`,
+          close: () =>
+            new Promise<void>((res) => {
+              server.close(() => res());
+            }),
+        });
+      });
+    });
+
+    const longAgent = new Agent({
+      headersTimeout: PROXY_TIMEOUT_MS,
+      bodyTimeout: PROXY_TIMEOUT_MS,
+    });
+    const payload: EchoBody = { sentinel: 'proxy-body-roundtrip', number: 42 };
+    const resp = await undiciFetch(echoSrv.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      dispatcher: longAgent,
+    });
+    await resp.json();
+    await echoSrv.close();
+    await longAgent.close();
+
+    expect(received).toEqual(payload);
   });
 });
