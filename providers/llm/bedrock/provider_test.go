@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
 func TestBedrockProvider_Dispatch_CatalogAnthropic(t *testing.T) {
@@ -28,6 +27,50 @@ func TestBedrockProvider_Dispatch_CatalogAnthropic(t *testing.T) {
 	}
 	if resp.Content != "ok" {
 		t.Errorf("content = %q", resp.Content)
+	}
+}
+
+// TestBedrockProvider_Dispatch_CatalogAnthropicViaCrossRegionAlias is
+// the regression test for the Opus 4.7 pack-gen incident: the user
+// pastes a cross-region inference profile ID (us./eu./apac./global.),
+// which is *not* the canonical catalog ID, but the resolver must
+// still find the entry via the Aliases list and dispatch on the
+// Anthropic wire.
+func TestBedrockProvider_Dispatch_CatalogAnthropicViaCrossRegionAlias(t *testing.T) {
+	for _, model := range []string{
+		"us.anthropic.claude-opus-4-7-v1:0",
+		"eu.anthropic.claude-opus-4-7-v1:0",
+		"apac.anthropic.claude-opus-4-7-v1:0",
+		"jp.anthropic.claude-opus-4-7-v1:0",
+		"au.anthropic.claude-opus-4-7-v1:0",
+		"global.anthropic.claude-opus-4-7-v1:0",
+		// Short forms users may paste from console UIs / docs.
+		"us.anthropic.claude-opus-4-7",
+		"global.anthropic.claude-opus-4-7-v1",
+		"global.anthropic.claude-opus-4-7",
+		// Family-only forms.
+		"claude-opus-4-7",
+		"opus-4-7",
+	} {
+		t.Run(model, func(t *testing.T) {
+			mock := &mockBedrockClient{
+				responseBody: buildAnthropicResponse("ok", model, "end_turn", 1, 1),
+			}
+			p := &BedrockProvider{
+				client:     mock,
+				model:      model,
+				httpClient: &http.Client{},
+			}
+			resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+				Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error for alias %q: %v", model, err)
+			}
+			if resp.Content != "ok" {
+				t.Errorf("content = %q", resp.Content)
+			}
+		})
 	}
 }
 
@@ -56,9 +99,38 @@ func TestBedrockProvider_Dispatch_CatalogOpenAICompat(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_Dispatch_CatalogOpenAICompatViaCrossRegionAlias(t *testing.T) {
+	openaiBody := []byte(`{"id":"x","model":"deepseek.r1-v1:0",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"r1 ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	for _, model := range []string{
+		"us.deepseek.r1-v1:0",
+		"global.deepseek.r1-v1:0",
+		"deepseek.r1",
+	} {
+		t.Run(model, func(t *testing.T) {
+			p := &BedrockProvider{
+				client:     &mockBedrockClient{responseBody: openaiBody},
+				model:      model,
+				httpClient: &http.Client{},
+			}
+			resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+				Messages: []gollm.Message{{Role: "user", Content: "ping"}},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error for alias %q: %v", model, err)
+			}
+			if resp.Content != "r1 ok" {
+				t.Errorf("content = %q", resp.Content)
+			}
+		})
+	}
+}
+
 func TestBedrockProvider_Dispatch_UncataloguedActionableError(t *testing.T) {
-	// An uncatalogued model without a wire_override must return an error
-	// that names the provider, the model, and the wire_override hint.
+	// An uncatalogued model without a wire_override and without a
+	// recognisable family-prefix must return an error that names the
+	// provider, the model, and the wire_override hint.
 	p := &BedrockProvider{
 		model:      "vendor.future-model-2099",
 		httpClient: &http.Client{},
@@ -87,7 +159,7 @@ func TestBedrockProvider_Dispatch_WireOverrideWhenUncatalogued(t *testing.T) {
 	p := &BedrockProvider{
 		client:       mock,
 		model:        "vendor.future-2099",
-		wireOverride: modelcatalog.OpenAICompat,
+		wireOverride: gollm.WireOpenAICompat,
 		httpClient:   &http.Client{},
 	}
 	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
@@ -117,26 +189,6 @@ func TestBedrockProvider_Factory_RejectsGoogleNativeWireOverride(t *testing.T) {
 	}
 }
 
-func TestBedrockProvider_DefaultModel_UsedWhenRequestOmits(t *testing.T) {
-	mock := &mockBedrockClient{
-		responseBody: buildAnthropicResponse("ok", "anthropic.claude-sonnet-4-20250514-v1:0", "end_turn", 1, 1),
-	}
-	p := &BedrockProvider{
-		client:     mock,
-		model:      "anthropic.claude-sonnet-4-20250514-v1:0",
-		httpClient: &http.Client{},
-	}
-	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Content != "ok" {
-		t.Errorf("content = %q", resp.Content)
-	}
-}
-
 func TestBedrockProvider_Factory_MissingModel(t *testing.T) {
 	_, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{})
 	if err == nil {
@@ -158,9 +210,6 @@ func TestBedrockProvider_Factory_InvalidWireOverride(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid wire_override") {
 		t.Errorf("error = %q", err.Error())
 	}
-	// The message should list the Bedrock-supported choices so users
-	// can self-serve. google-native is intentionally omitted because
-	// Bedrock has no implementation for it.
 	for _, want := range []string{"anthropic", "openai-compat"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should list wire %q", err.Error(), want)
@@ -196,26 +245,42 @@ func TestBedrockProvider_Factory_EmptyWireOverrideAllowed(t *testing.T) {
 }
 
 func TestBedrockProvider_Registered(t *testing.T) {
-	meta, ok := gollm.GetProviderMeta("bedrock")
+	meta, ok := gollm.GetProviderMeta(providerName)
 	if !ok {
 		t.Fatal("bedrock not registered")
 	}
 	if meta.Description == "" {
 		t.Error("missing provider description")
 	}
-	if len(meta.DefaultPricing) == 0 {
-		t.Error("no default pricing")
+	if len(meta.Models) == 0 {
+		t.Fatal("catalog empty")
 	}
-	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
-		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d", meta.MaxOutputTokens["claude-opus-4-6"])
+	if meta.DefaultMaxOutputTokens != 16384 {
+		t.Errorf("DefaultMaxOutputTokens = %d, want 16384", meta.DefaultMaxOutputTokens)
 	}
-	if got := gollm.GetMaxOutputTokens("bedrock", "claude-unknown"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens default = %d", got)
+	// Spot-check the regression: every cross-region alias of Opus
+	// 4.7 should resolve to the 128k cap, and the legacy provider
+	// _default of 16384 should never apply to a catalogued Claude.
+	for _, model := range []string{
+		"anthropic.claude-opus-4-7-v1:0",
+		"us.anthropic.claude-opus-4-7-v1:0",
+		"us.anthropic.claude-opus-4-7",
+		"global.anthropic.claude-opus-4-7",
+		"opus-4-7",
+		"claude-opus-4-7",
+	} {
+		if got := gollm.GetMaxOutputTokens(providerName, model); got != opus47Max {
+			t.Errorf("GetMaxOutputTokens(%q) = %d, want %d", model, got, opus47Max)
+		}
+	}
+	// Unknown model falls back to the provider default.
+	if got := gollm.GetMaxOutputTokens(providerName, "vendor.unknown-2099"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens default = %d, want 16384", got)
 	}
 }
 
 func TestBedrockProvider_ConfigFields(t *testing.T) {
-	meta, _ := gollm.GetProviderMeta("bedrock")
+	meta, _ := gollm.GetProviderMeta(providerName)
 
 	keys := make(map[string]bool)
 	for _, f := range meta.ConfigFields {
@@ -228,11 +293,43 @@ func TestBedrockProvider_ConfigFields(t *testing.T) {
 	}
 }
 
+// TestBedrockProvider_Catalog_PricingMatches confirms each shipped
+// Anthropic Claude model carries its current Anthropic-published list
+// price. Catches a class of regressions where a copy-paste during a
+// catalog update grafts the wrong pricing onto a new entry.
+func TestBedrockProvider_Catalog_PricingMatches(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta(providerName)
+	cases := []struct {
+		model string
+		in    float64
+		out   float64
+	}{
+		{"anthropic.claude-opus-4-7-v1:0", opus47In, opus47Out},
+		{"anthropic.claude-opus-4-6-v1:0", opus46In, opus46Out},
+		{"anthropic.claude-opus-4-5-20251101-v1:0", opus45In, opus45Out},
+		{"anthropic.claude-opus-4-1-20250805-v1:0", opus41In, opus41Out},
+		{"anthropic.claude-opus-4-20250514-v1:0", opus4In, opus4Out},
+		{"anthropic.claude-sonnet-4-6-v1:0", sonnetIn, sonnetOut},
+		{"anthropic.claude-sonnet-4-5-20250929-v1:0", sonnetIn, sonnetOut},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", haikuIn, haikuOut},
+	}
+	for _, tc := range cases {
+		p, ok := meta.PricingFor(tc.model)
+		if !ok {
+			t.Errorf("%s: no pricing in catalog", tc.model)
+			continue
+		}
+		if p.InputPerMillion != tc.in || p.OutputPerMillion != tc.out {
+			t.Errorf("%s pricing = $%v/$%v, want $%v/$%v",
+				tc.model, p.InputPerMillion, p.OutputPerMillion, tc.in, tc.out)
+		}
+	}
+}
+
 func TestBedrockProvider_Validate_UncataloguedUninferableModel(t *testing.T) {
-	// Use a model ID whose prefix doesn't match any entry in the
-	// bedrockWireByPrefix table (amazon.nova-* and cohere.* are in the
-	// live-returned list but no wire implementation exists for them).
-	// Validate must hit the "not in catalog" error before any AWS call.
+	// amazon.nova-* has no wire implementation on Bedrock and the
+	// FamilyInferrer does not recognise it. Validate must hit the
+	// "not in catalog" error before any AWS call.
 	p := &BedrockProvider{
 		model:      "amazon.nova-2-lite-v1:0",
 		httpClient: &http.Client{},

@@ -24,16 +24,22 @@ func SeedPricingFromProviders(ctx context.Context, repo database.PricingRepo) {
 		Warehouse: make(map[string]models.WarehousePrice),
 	}
 
-	// Collect LLM provider pricing
+	// Collect LLM provider pricing — keyed by canonical model ID
+	// from the catalog. Aliases are not seeded individually; the
+	// pricing lookup at request time uses the same alias-aware
+	// resolver via meta.PricingFor, so aliases stay consistent.
 	for _, meta := range gollm.RegisteredProvidersMeta() {
-		if len(meta.DefaultPricing) > 0 {
-			providerPricing := make(map[string]models.TokenPrice)
-			for model, tp := range meta.DefaultPricing {
-				providerPricing[model] = models.TokenPrice{
-					InputPerMillion:  tp.InputPerMillion,
-					OutputPerMillion: tp.OutputPerMillion,
-				}
+		providerPricing := make(map[string]models.TokenPrice)
+		for _, e := range meta.Models {
+			if e.Pricing.InputPerMillion == 0 && e.Pricing.OutputPerMillion == 0 {
+				continue
 			}
+			providerPricing[e.ID] = models.TokenPrice{
+				InputPerMillion:  e.Pricing.InputPerMillion,
+				OutputPerMillion: e.Pricing.OutputPerMillion,
+			}
+		}
+		if len(providerPricing) > 0 {
 			pricing.LLM[meta.ID] = providerPricing
 		}
 	}

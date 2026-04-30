@@ -8,11 +8,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
-
-// alias to keep the long name from dominating the test body
-var modelcatalog_OpenAICompat = modelcatalog.OpenAICompat
 
 // Dispatch is now catalog-driven — see modelcatalog registry tests for
 // (cloud, model) → wire coverage. The provider-level check that used to
@@ -92,7 +88,7 @@ func TestAzureFoundryProvider_Dispatch_WireOverrideOpenAICompat(t *testing.T) {
 		endpoint:     "http://127.0.0.1:1",
 		apiKey:       "test-key",
 		model:        "custom-ft-model",
-		wireOverride: modelcatalog_OpenAICompat,
+		wireOverride: gollm.WireOpenAICompat,
 		httpClient:   &http.Client{Timeout: 200 * time.Millisecond},
 	}
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
@@ -130,7 +126,7 @@ func TestAzureFoundryProvider_ChatDefaultModel(t *testing.T) {
 }
 
 func TestAzureFoundryProvider_Registered(t *testing.T) {
-	meta, ok := gollm.GetProviderMeta("azure-foundry")
+	meta, ok := gollm.GetProviderMeta(providerName)
 	if !ok {
 		t.Fatal("azure-foundry not registered")
 	}
@@ -140,37 +136,33 @@ func TestAzureFoundryProvider_Registered(t *testing.T) {
 	if meta.Description == "" {
 		t.Error("missing description")
 	}
-	if len(meta.DefaultPricing) == 0 {
-		t.Error("no default pricing")
+	if len(meta.Models) == 0 {
+		t.Fatal("catalog empty")
 	}
-	if _, ok := meta.DefaultPricing["claude-sonnet-4-6"]; !ok {
-		t.Error("missing claude-sonnet-4-6 pricing")
+	if p, ok := meta.PricingFor("claude-sonnet-4-6"); !ok || p.InputPerMillion != sonnetIn {
+		t.Errorf("claude-sonnet-4-6 pricing = %+v ok=%v", p, ok)
 	}
-	if _, ok := meta.DefaultPricing["gpt-4o"]; !ok {
-		t.Error("missing gpt-4o pricing")
+	if p, ok := meta.PricingFor("gpt-4o"); !ok || p.InputPerMillion == 0 {
+		t.Errorf("gpt-4o pricing = %+v ok=%v", p, ok)
 	}
-
-	// MaxOutputTokens
-	if meta.MaxOutputTokens == nil {
-		t.Fatal("MaxOutputTokens should not be nil")
+	if got := gollm.GetMaxOutputTokens(providerName, "claude-opus-4-6"); got != opus46Max {
+		t.Errorf("GetMaxOutputTokens(claude-opus-4-6) = %d, want %d", got, opus46Max)
 	}
-	if len(meta.MaxOutputTokens) != 9 {
-		t.Errorf("MaxOutputTokens has %d entries, want 9", len(meta.MaxOutputTokens))
+	if got := gollm.GetMaxOutputTokens(providerName, "claude-opus-4-7"); got != opus47Max {
+		t.Errorf("GetMaxOutputTokens(claude-opus-4-7) = %d, want %d", got, opus47Max)
 	}
-	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
-		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d, want 128000", meta.MaxOutputTokens["claude-opus-4-6"])
+	if got := gollm.GetMaxOutputTokens(providerName, "opus-4-7"); got != opus47Max {
+		t.Errorf("GetMaxOutputTokens(opus-4-7 alias) = %d, want %d", got, opus47Max)
 	}
-	if meta.MaxOutputTokens["claude-haiku-4-5"] != 64000 {
-		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 64000", meta.MaxOutputTokens["claude-haiku-4-5"])
+	if got := gollm.GetMaxOutputTokens(providerName, "claude-haiku-4-5"); got != haiku4Max {
+		t.Errorf("GetMaxOutputTokens(claude-haiku-4-5) = %d, want %d", got, haiku4Max)
 	}
-
-	// Verify GetMaxOutputTokens helper
-	if got := gollm.GetMaxOutputTokens("azure-foundry", "gpt-4o"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(azure-foundry, gpt-4o) = %d, want 16384", got)
+	if got := gollm.GetMaxOutputTokens(providerName, "gpt-4o"); got != gpt4oMax {
+		t.Errorf("GetMaxOutputTokens(gpt-4o) = %d, want %d", got, gpt4oMax)
 	}
-	// Verify _default fallback
-	if got := gollm.GetMaxOutputTokens("azure-foundry", "unknown-model"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(azure-foundry, unknown-model) = %d, want 16384 (_default)", got)
+	// Default fallback for unknown model.
+	if got := gollm.GetMaxOutputTokens(providerName, "unknown-model"); got != 16384 {
+		t.Errorf("GetMaxOutputTokens(unknown-model) = %d, want 16384", got)
 	}
 }
 

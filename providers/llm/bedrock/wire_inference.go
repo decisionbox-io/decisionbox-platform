@@ -3,49 +3,46 @@ package bedrock
 import (
 	"strings"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
-// bedrockWireByPrefix maps a Bedrock model-ID prefix to the wire that
-// model family speaks. Order matters: longer / more-specific prefixes
-// come first. Unlisted families (amazon.nova-*, amazon.titan-*,
-// cohere.*, ai21.*) have no compatible wire implementation today and
-// stay unknown — the UI marks them non-dispatchable.
-var bedrockWireByPrefix = []struct {
-	prefix string
-	wire   modelcatalog.Wire
-}{
-	{"us.anthropic.", modelcatalog.Anthropic},
-	{"eu.anthropic.", modelcatalog.Anthropic},
-	{"apac.anthropic.", modelcatalog.Anthropic},
-	{"global.anthropic.", modelcatalog.Anthropic},
-	{"anthropic.", modelcatalog.Anthropic},
-
-	// Every Qwen / DeepSeek / Mistral / Llama variant on Bedrock today
-	// uses the OpenAI Chat Completions body shape.
-	{"qwen.", modelcatalog.OpenAICompat},
-	{"deepseek.", modelcatalog.OpenAICompat},
-	{"mistral.", modelcatalog.OpenAICompat},
-	{"meta.", modelcatalog.OpenAICompat},
-	// Regional inference profile prefixes for the same families.
-	{"us.meta.", modelcatalog.OpenAICompat},
-	{"us.mistral.", modelcatalog.OpenAICompat},
-	{"us.qwen.", modelcatalog.OpenAICompat},
-	{"us.deepseek.", modelcatalog.OpenAICompat},
-}
-
-// inferBedrockWire returns the wire a Bedrock model speaks based on its
-// ID prefix, or Unknown when the family is not one DecisionBox can
-// dispatch with its current wire implementations.
-func inferBedrockWire(id string) modelcatalog.Wire {
-	for _, p := range bedrockWireByPrefix {
-		if strings.HasPrefix(id, p.prefix) {
-			return p.wire
+// inferBedrockWire is the FamilyInferrer wired into ProviderMeta as
+// the third resolution tier after the catalog and wire_override.
+// Recognises a Bedrock model ID by its publisher prefix so that a
+// freshly-released Claude / Qwen / DeepSeek / Mistral / Llama variant
+// dispatches correctly even when the catalog has no row for it yet.
+//
+// Unlisted families (amazon.nova-*, amazon.titan-*, cohere.*, ai21.*)
+// have no compatible wire on Bedrock and stay WireUnknown — the UI
+// marks them non-dispatchable rather than guessing a wrong wire.
+//
+// Order matters: cross-region prefixes (us./eu./apac./jp./au./global.)
+// are checked first so e.g. "us.anthropic." is recognised before the
+// bare "anthropic." prefix.
+func inferBedrockWire(model string) gollm.Wire {
+	for _, prefix := range claudeRegionPrefixes {
+		if strings.HasPrefix(model, prefix+"anthropic.") {
+			return gollm.WireAnthropic
+		}
+		for _, openSource := range bedrockOpenSourcePrefixes {
+			if strings.HasPrefix(model, prefix+openSource) {
+				return gollm.WireOpenAICompat
+			}
 		}
 	}
-	return modelcatalog.Unknown
+	if strings.HasPrefix(model, "anthropic.") {
+		return gollm.WireAnthropic
+	}
+	for _, openSource := range bedrockOpenSourcePrefixes {
+		if strings.HasPrefix(model, openSource) {
+			return gollm.WireOpenAICompat
+		}
+	}
+	return gollm.WireUnknown
 }
 
-func init() {
-	modelcatalog.SetWireInferrer("bedrock", inferBedrockWire)
-}
+// bedrockOpenSourcePrefixes are the publisher prefixes Bedrock uses
+// for non-Anthropic foundation models that speak the OpenAI Chat
+// Completions wire today. Matches what AWS exposes via
+// ListFoundationModels.
+var bedrockOpenSourcePrefixes = []string{"qwen.", "deepseek.", "mistral.", "meta."}

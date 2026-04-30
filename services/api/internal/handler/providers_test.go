@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 
 	// Register real providers so GetProviderMeta finds them.
@@ -259,7 +258,7 @@ func TestProvidersHandler_Merge_CatalogOnlyRowsKeptWithNoLive(t *testing.T) {
 			t.Errorf("unexpected source %q for %s when live failed", m.Source, m.ID)
 		}
 		// Every OpenAI catalog row is wire=openai-compat → dispatchable
-		if m.Wire == string(modelcatalog.OpenAICompat) && !m.Dispatchable {
+		if m.Wire == string(gollm.WireOpenAICompat) && !m.Dispatchable {
 			t.Errorf("row %s has wire=openai-compat but dispatchable=false", m.ID)
 		}
 		if m.Dispatchable {

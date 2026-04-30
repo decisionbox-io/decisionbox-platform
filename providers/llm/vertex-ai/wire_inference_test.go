@@ -3,52 +3,59 @@ package vertexai
 import (
 	"testing"
 
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
 func TestInferVertexWire(t *testing.T) {
 	tests := []struct {
 		id   string
-		want modelcatalog.Wire
+		want gollm.Wire
 	}{
 		// Google-native Gemini
-		{"gemini-2.5-pro", modelcatalog.GoogleNative},
-		{"gemini-2.5-flash", modelcatalog.GoogleNative},
-		{"gemini-1.5-pro", modelcatalog.GoogleNative},
+		{"gemini-2.5-pro", gollm.WireGoogleNative},
+		{"gemini-2.5-flash", gollm.WireGoogleNative},
+		{"gemini-1.5-pro", gollm.WireGoogleNative},
 		// Unseen future Gemini variant
-		{"gemini-3.0-xl", modelcatalog.GoogleNative},
+		{"gemini-3.0-xl", gollm.WireGoogleNative},
 
 		// Anthropic Claude on Vertex
-		{"claude-opus-4-6@20251101", modelcatalog.Anthropic},
-		{"claude-sonnet-4-6@20251101", modelcatalog.Anthropic},
-		{"claude-haiku-4-5@20251001", modelcatalog.Anthropic},
-		{"claude-sonnet-4-20250514", modelcatalog.Anthropic},
+		{"claude-opus-4-6@20251101", gollm.WireAnthropic},
+		{"claude-sonnet-4-6@20251101", gollm.WireAnthropic},
+		{"claude-haiku-4-5@20251001", gollm.WireAnthropic},
+		{"claude-sonnet-4-20250514", gollm.WireAnthropic},
+		// Future unseen Claude variant
+		{"claude-99-new@20991231", gollm.WireAnthropic},
 
 		// Model-Garden MaaS — OpenAI-compat (require -maas suffix)
-		{"meta/llama-3.3-70b-instruct-maas", modelcatalog.OpenAICompat},
-		{"qwen/qwen3-coder-480b-a35b-instruct-maas", modelcatalog.OpenAICompat},
-		{"deepseek-ai/deepseek-r1-0528-maas", modelcatalog.OpenAICompat},
-		{"mistral-ai/mistral-large-2411-001-maas", modelcatalog.OpenAICompat},
+		{"meta/llama-3.3-70b-instruct-maas", gollm.WireOpenAICompat},
+		{"qwen/qwen3-coder-480b-a35b-instruct-maas", gollm.WireOpenAICompat},
+		{"deepseek-ai/deepseek-r1-0528-maas", gollm.WireOpenAICompat},
+		{"mistral-ai/mistral-large-2411-001-maas", gollm.WireOpenAICompat},
+		// Future unseen MaaS variant from a known publisher
+		{"meta/llama-6-new-maas", gollm.WireOpenAICompat},
 
 		// Non-chat models sharing the same publishers: computer
 		// vision, embeddings, OCR — must NOT be marked dispatchable.
-		{"meta/sam3", modelcatalog.Unknown},
-		{"meta/faster-r-cnn", modelcatalog.Unknown},
-		{"meta/imagebind", modelcatalog.Unknown},
-		{"qwen/qwen-image", modelcatalog.Unknown},
-		{"qwen/qwen3-embedding", modelcatalog.Unknown},
-		{"deepseek-ai/deepseek-ocr", modelcatalog.Unknown},
+		{"meta/sam3", gollm.WireUnknown},
+		{"meta/faster-r-cnn", gollm.WireUnknown},
+		{"meta/imagebind", gollm.WireUnknown},
+		{"qwen/qwen-image", gollm.WireUnknown},
+		{"qwen/qwen3-embedding", gollm.WireUnknown},
+		{"deepseek-ai/deepseek-ocr", gollm.WireUnknown},
 		// No -maas on plain chat variants published under Model Garden
-		{"mistral-ai/mistral-large-2411-001", modelcatalog.Unknown},
-		{"deepseek-ai/deepseek-r1", modelcatalog.Unknown},
+		{"mistral-ai/mistral-large-2411-001", gollm.WireUnknown},
+		{"deepseek-ai/deepseek-r1", gollm.WireUnknown},
 
 		// Unlisted publishers
-		{"cohere/command-r-plus", modelcatalog.Unknown},
-		{"aws/titan-text", modelcatalog.Unknown},
+		{"cohere/command-r-plus", gollm.WireUnknown},
+		{"aws/titan-text", gollm.WireUnknown},
 
 		// Empty / garbage
-		{"", modelcatalog.Unknown},
-		{"random-id", modelcatalog.Unknown},
+		{"", gollm.WireUnknown},
+		{"random-id", gollm.WireUnknown},
+		// Family-only short forms — must NOT be inferred (resolved
+		// via catalog alias instead, so the right wire+cap binds).
+		{"opus-4-7", gollm.WireUnknown},
 	}
 	for _, tt := range tests {
 		if got := inferVertexWire(tt.id); got != tt.want {
@@ -57,18 +64,29 @@ func TestInferVertexWire(t *testing.T) {
 	}
 }
 
-func TestInferVertexWire_RegisteredIntoCatalog(t *testing.T) {
-	if got := modelcatalog.InferWire("vertex-ai", "gemini-99-new"); got != modelcatalog.GoogleNative {
-		t.Errorf("InferWire(vertex-ai, gemini-99-new) = %q", got)
+func TestInferVertexWire_WiredIntoProviderMeta(t *testing.T) {
+	meta, ok := gollm.GetProviderMeta(providerName)
+	if !ok {
+		t.Fatal("vertex-ai not registered")
 	}
-	if got := modelcatalog.InferWire("vertex-ai", "meta/llama-6-new-maas"); got != modelcatalog.OpenAICompat {
-		t.Errorf("InferWire(vertex-ai, meta/llama-6-new-maas) = %q", got)
+	if meta.FamilyInferrer == nil {
+		t.Fatal("FamilyInferrer is nil")
 	}
-	// Same publisher without -maas must be Unknown (not chat).
-	if got := modelcatalog.InferWire("vertex-ai", "meta/sam3"); got != modelcatalog.Unknown {
-		t.Errorf("InferWire(vertex-ai, meta/sam3) = %q, want Unknown", got)
+
+	wire, err := meta.ResolveWire("gemini-99-new", gollm.WireUnknown)
+	if err != nil || wire != gollm.WireGoogleNative {
+		t.Errorf("ResolveWire(gemini-99-new) = (%q, %v)", wire, err)
 	}
-	if got := modelcatalog.InferWire("vertex-ai", "cohere/anything"); got != modelcatalog.Unknown {
-		t.Errorf("InferWire(vertex-ai, cohere/anything) = %q, want Unknown", got)
+	wire, err = meta.ResolveWire("meta/llama-6-new-maas", gollm.WireUnknown)
+	if err != nil || wire != gollm.WireOpenAICompat {
+		t.Errorf("ResolveWire(meta/llama-6-new-maas) = (%q, %v)", wire, err)
+	}
+	// Same publisher without -maas: catalog miss, inferrer returns
+	// Unknown, no wire_override → error.
+	if _, err := meta.ResolveWire("meta/sam3", gollm.WireUnknown); err == nil {
+		t.Error("ResolveWire(meta/sam3) should error — non-chat MaaS publisher row")
+	}
+	if _, err := meta.ResolveWire("cohere/anything", gollm.WireUnknown); err == nil {
+		t.Error("ResolveWire(cohere/anything) should error — unlisted publisher")
 	}
 }

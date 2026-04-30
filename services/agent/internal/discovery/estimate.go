@@ -133,23 +133,16 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	totalOutputTokens := explorationOutputTokens + analysisOutputTokens + validationOutputTokens + recsOutputTokens
 
 	// --- Get LLM pricing ---
+	// PricingFor resolves the model against the catalog (canonical
+	// ID + aliases) so cross-region inference profiles, date-stamped
+	// snapshots, and family-only short forms all hit the same row.
+	// Returns ok=false when the model is not in the catalog — we
+	// emit no cost estimate in that case rather than show a $0 line.
 	llmProvider := o.llmProvider
 	llmModel := o.llmModel
 	llmMeta, _ := gollm.GetProviderMeta(llmProvider)
 	var llmCostUSD float64
-
-	pricing, ok := llmMeta.DefaultPricing[llmModel]
-	if !ok {
-		// Try _default or partial match
-		for model, p := range llmMeta.DefaultPricing {
-			if model == "_default" || strings.Contains(llmModel, model) {
-				pricing = p
-				ok = true
-				break
-			}
-		}
-	}
-	if ok {
+	if pricing, ok := llmMeta.PricingFor(llmModel); ok {
 		llmCostUSD = float64(totalInputTokens)/1_000_000*pricing.InputPerMillion +
 			float64(totalOutputTokens)/1_000_000*pricing.OutputPerMillion
 	}

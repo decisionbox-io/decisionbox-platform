@@ -1,35 +1,36 @@
 # Adding LLM Providers
 
-> **Version**: 0.4.0
+> **Version**: 0.5.0
 
-There are two kinds of "adding": adding a **new model** to an existing cloud, which is one line in the catalog; and adding a **new cloud**, which is a full Go package. Pick the right one.
+There are two kinds of "adding": adding a **new model** to an existing cloud, which is one `ModelEntry` in that provider's catalog; and adding a **new cloud**, which is a full Go package. Pick the right one.
 
 ## Adding a new model to an existing cloud
 
-If the new model speaks a wire format the cloud provider already implements (Anthropic, OpenAI-compat, or Google-native), you do not touch provider code at all.
+If the new model speaks a wire format the cloud provider already implements (Anthropic, OpenAI-compat, or Google-native), you do not touch dispatch code at all.
 
-Add one `Register` call in `libs/go-common/llm/modelcatalog/catalog.go`:
+Add one `ModelEntry` to the provider's `catalog.go` (e.g. `providers/llm/bedrock/catalog.go`):
 
 ```go
 // Bedrock newly released a model that speaks the OpenAI chat-completions wire.
-Register(Entry{
-    Cloud:                 "bedrock",
-    ID:                    "vendor.new-model-2027-v1:0",
-    Wire:                  OpenAICompat,
-    DisplayName:           "New Model 2027 (Bedrock)",
-    MaxOutputTokens:       32768,
-    InputPricePerMillion:  0.50,
-    OutputPricePerMillion: 1.50,
-})
+{
+    ID:              "vendor.new-model-2027-v1:0",
+    Aliases:         openSourceAliasesFor("vendor.new-model-2027-v1:0"),
+    DisplayName:     "New Model 2027 (Bedrock)",
+    Wire:            gollm.WireOpenAICompat,
+    MaxOutputTokens: 32768,
+    Pricing:         gollm.TokenPricing{InputPerMillion: 0.50, OutputPerMillion: 1.50},
+},
 ```
 
-Then add a test in `registry_test.go` to pin the row, and you are done — the dashboard picks it up automatically.
+The bedrock package's alias helpers (`claudeAliasesFor`, `openSourceAliasesFor`) generate the cross-region inference profile + suffix-stripped variants automatically; for other clouds list aliases inline.
+
+Then add a test that pins the entry's wire / cap / pricing, and you are done — the dashboard picks it up automatically.
 
 If you do not want to wait for the catalog to be updated, users can set `llm.config.wire_override` on their project to route uncatalogued models at their own risk. See [Configuring LLM Providers](configuring-llm.md#wire_override--for-uncatalogued-models).
 
 ## Adding a new wire format
 
-If the new cloud speaks a wire that no existing provider implements (say, a native Cohere wire or AI21), add a value to the `Wire` enum in `libs/go-common/llm/modelcatalog/registry.go` (including `Valid()`, `ParseWire()`) and implement a handler in every provider that will host models on that wire. This is rare.
+If the new cloud speaks a wire that no existing provider implements (say, a native Cohere wire or AI21), add a value to the `Wire` constants in `libs/go-common/llm/registry.go` (including `Valid()`, `ParseWire()`) and implement a handler in every provider that will host models on that wire. This is rare.
 
 ## Adding a whole new cloud
 
@@ -102,43 +103,13 @@ import (
     "time"
 
     gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-    "github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
     "github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
+const providerName = "myprovider"
+
 func init() {
-    gollm.RegisterWithMeta("myprovider", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
-        apiKey := cfg["api_key"]
-        if apiKey == "" {
-            return nil, fmt.Errorf("myprovider: api_key is required")
-        }
-        model := cfg["model"]
-        if model == "" {
-            return nil, fmt.Errorf("myprovider: model is required")
-        }
-
-        // If the provider hosts models of different wires, parse wire_override here.
-        wireOverride := modelcatalog.Unknown
-        if raw := cfg["wire_override"]; raw != "" {
-            parsed := modelcatalog.ParseWire(raw)
-            if !parsed.Valid() {
-                return nil, fmt.Errorf("myprovider: invalid wire_override %q", raw)
-            }
-            wireOverride = parsed
-        }
-
-        timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-        if timeoutSec == 0 {
-            timeoutSec = 300
-        }
-
-        return &MyProvider{
-            apiKey:       apiKey,
-            model:        model,
-            wireOverride: wireOverride,
-            httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-        }, nil
-    }, gollm.ProviderMeta{
+    gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
         Name:        "My LLM Provider",
         Description: "Description shown in the dashboard",
         ConfigFields: []gollm.ConfigField{
@@ -146,13 +117,60 @@ func init() {
             {Key: "model", Label: "Model", Required: true, Type: "string"},
             {Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog."},
         },
+        Models: []gollm.ModelEntry{
+            {
+                ID:              "myprovider-flagship",
+                Aliases:         []string{"flagship-2025"},
+                DisplayName:     "Flagship 2025",
+                Wire:            gollm.WireOpenAICompat,
+                MaxOutputTokens: 32768,
+                Pricing:         gollm.TokenPricing{InputPerMillion: 1.0, OutputPerMillion: 5.0},
+            },
+        },
+        DefaultMaxOutputTokens: 16384,
+        // Optional: provider-local prefix table to recognise unseen
+        // models in a known family. Skip when the catalog is closed.
+        // FamilyInferrer: inferMyProviderWire,
     })
+}
+
+func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+    apiKey := cfg["api_key"]
+    if apiKey == "" {
+        return nil, fmt.Errorf("myprovider: api_key is required")
+    }
+    model := cfg["model"]
+    if model == "" {
+        return nil, fmt.Errorf("myprovider: model is required")
+    }
+
+    // If the provider hosts models of different wires, parse wire_override here.
+    wireOverride := gollm.WireUnknown
+    if raw := cfg["wire_override"]; raw != "" {
+        parsed := gollm.ParseWire(raw)
+        if !parsed.Valid() {
+            return nil, fmt.Errorf("myprovider: invalid wire_override %q", raw)
+        }
+        wireOverride = parsed
+    }
+
+    timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
+    if timeoutSec == 0 {
+        timeoutSec = 300
+    }
+
+    return &MyProvider{
+        apiKey:       apiKey,
+        model:        model,
+        wireOverride: wireOverride,
+        httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+    }, nil
 }
 
 type MyProvider struct {
     apiKey       string
     model        string
-    wireOverride modelcatalog.Wire
+    wireOverride gollm.Wire
     httpClient   *http.Client
 }
 
@@ -168,12 +186,14 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
         req.Model = p.model
     }
 
-    // If you support multiple wires, resolve and dispatch:
-    wire, err := modelcatalog.ResolveWire("myprovider", req.Model, p.wireOverride)
+    // If you support multiple wires, resolve and dispatch via the
+    // provider's own catalog metadata:
+    meta, _ := gollm.GetProviderMeta(providerName)
+    wire, err := meta.ResolveWire(req.Model, p.wireOverride)
     if err != nil {
         return nil, err
     }
-    if wire != modelcatalog.OpenAICompat {
+    if wire != gollm.WireOpenAICompat {
         return nil, fmt.Errorf("myprovider: wire %q not implemented", wire)
     }
 
@@ -217,7 +237,7 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 - **Support model override** — `req.Model` may differ from the provider default (per-request override).
 - **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object.
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
-- **Register models in the catalog** — For every model the provider supports, add a row in `libs/go-common/llm/modelcatalog/catalog.go` with `Wire`, `MaxOutputTokens` and pricing. The agent uses `MaxOutputTokens` to cap completions during phases that need long output (recommendation generation).
+- **Populate the catalog** — For every model the provider supports, add a `ModelEntry` to your provider's `ProviderMeta.Models`. Each entry's `Wire`, `MaxOutputTokens`, and `Pricing` is the authoritative record. The agent uses `gollm.GetMaxOutputTokens(provider, model)` to cap completions during phases that need long output (recommendation generation, pack-gen synth). Use `Aliases` for cross-region inference profiles, date-stamped variants, and family-only short forms (`opus-4-7`, `sonnet-4-6`).
 
 ## Step 3: Register in Services
 
@@ -342,7 +362,7 @@ cd providers/llm/myprovider && go test -tags=integration -count=1 -timeout=2m -v
 
 - [ ] `init()` registers with `RegisterWithMeta` (name, factory, metadata)
 - [ ] `ConfigFields` includes all user-configurable fields (including `wire_override` if multi-wire)
-- [ ] Every supported model is registered in `libs/go-common/llm/modelcatalog/catalog.go` with Wire and MaxOutputTokens
+- [ ] Every supported model is in `ProviderMeta.Models` with `Wire`, `MaxOutputTokens`, `Pricing`, and `Aliases` for known ID variants
 - [ ] `timeout_seconds` read from config (not hardcoded)
 - [ ] Model override supported (`req.Model` takes priority)
 - [ ] Token usage returned accurately (via `openaicompat.ParseResponseBody` if OpenAI-compat)

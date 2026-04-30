@@ -9,7 +9,6 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -230,21 +229,40 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 //     family we don't implement (Nova, Titan, Cohere, …) go out with
 //     dispatchable=false so the UI can grey them out.
 func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, live []gollm.RemoteModel, liveErr error) {
-	catalog := make(map[string]gollm.ModelInfo, len(meta.Models))
-	for _, m := range meta.Models {
-		catalog[m.ID] = m
+	// CatalogModels() flattens the provider's []ModelEntry to one
+	// ModelInfo row per canonical ID — aliases stay internal so the
+	// combobox isn't doubled. Matching against the catalog uses the
+	// full ModelEntry list (including aliases) so a live row whose ID
+	// is registered as an alias gets merged onto its canonical row.
+	catalog := meta.CatalogModels()
+	canonicalByID := make(map[string]string, len(meta.Models))
+	for _, e := range meta.Models {
+		canonicalByID[e.ID] = e.ID
+		for _, a := range e.Aliases {
+			canonicalByID[a] = e.ID
+		}
+	}
+	catalogByID := make(map[string]gollm.ModelInfo, len(catalog))
+	for _, m := range catalog {
+		catalogByID[m.ID] = m
 	}
 
-	merged := make(map[string]liveModelsResponse, len(catalog)+len(live))
-	for id, m := range catalog {
+	merged := make(map[string]liveModelsResponse, len(catalogByID)+len(live))
+	for id, m := range catalogByID {
 		merged[id] = liveModelsResponse{
 			Source:       "catalog",
-			Dispatchable: m.Wire != "" && m.Wire != string(modelcatalog.Unknown),
+			Dispatchable: m.Wire != "" && m.Wire != string(gollm.WireUnknown),
 			ModelInfo:    m,
 		}
 	}
 	for _, lm := range live {
-		row, ok := merged[lm.ID]
+		// If the live ID matches an alias, project onto the canonical
+		// row so we don't double-list the same model.
+		canonical := lm.ID
+		if c, ok := canonicalByID[lm.ID]; ok {
+			canonical = c
+		}
+		row, ok := merged[canonical]
 		if ok {
 			row.Source = "both"
 			if lm.DisplayName != "" {
@@ -253,12 +271,15 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			if lm.Lifecycle != "" {
 				row.Lifecycle = lm.Lifecycle
 			}
-			merged[lm.ID] = row
+			merged[canonical] = row
 		} else {
-			inferred := string(modelcatalog.InferWire(meta.ID, lm.ID))
+			inferred := ""
+			if meta.FamilyInferrer != nil {
+				inferred = string(meta.FamilyInferrer(lm.ID))
+			}
 			merged[lm.ID] = liveModelsResponse{
 				Source:       "live",
-				Dispatchable: inferred != "" && inferred != string(modelcatalog.Unknown),
+				Dispatchable: inferred != "" && inferred != string(gollm.WireUnknown),
 				ModelInfo: gollm.ModelInfo{
 					ID:          lm.ID,
 					DisplayName: displayOr(lm.DisplayName, lm.ID),

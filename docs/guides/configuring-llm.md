@@ -2,7 +2,7 @@
 
 > **Version**: 0.4.0
 
-DecisionBox supports six LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through a central model catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
+DecisionBox supports six LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through their inline catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
 
 ## Provider Comparison
 
@@ -203,7 +203,7 @@ Billing goes through your Azure subscription via the Microsoft Marketplace.
 | GPT-4o | `gpt-4o` | OpenAI-compat |
 | Mistral Large 2411 | `mistral-large-2411` | OpenAI-compat |
 
-The provider looks the deployment name up in the model catalog and routes to the right wire.
+The provider looks the deployment name up in its catalog (canonical ID, then aliases, then prefix-based family inferrer) and routes to the right wire.
 
 ### 4. Authentication
 
@@ -214,15 +214,17 @@ For production on AKS, you can also use Entra ID (Azure AD) with managed identit
 
 ## Model catalog and wire formats
 
-Every cloud provider carries a central model catalog (`libs/go-common/llm/modelcatalog`) that maps `(cloud, model-id)` to a **wire format** — the request/response schema the model expects:
+Every LLM provider declares its catalog inline as `ProviderMeta.Models []ModelEntry`. Each entry carries a **wire format** — the request/response schema the model expects:
 
 | Wire | What it is | Used by |
 |---|---|---|
-| `anthropic` | Anthropic Messages API (`{messages, system, max_tokens}` → `{content[], stop_reason, usage}`) | Claude on Anthropic API, Bedrock, Vertex, Azure |
-| `openai-compat` | OpenAI `/chat/completions` (`{model, messages, max_tokens}` → `{choices[], usage}`) | OpenAI direct, Azure GPT, Bedrock Qwen/DeepSeek/Mistral/Llama, Vertex MaaS |
+| `anthropic` | Anthropic Messages API (`{messages, system, max_tokens}` → `{content[], stop_reason, usage}`) | Claude direct, Claude on Bedrock, Claude on Vertex, Claude on Azure Foundry |
+| `openai-compat` | OpenAI `/chat/completions` (`{model, messages, max_tokens}` → `{choices[], usage}`) | OpenAI direct, Azure Foundry GPT, Bedrock Qwen/DeepSeek/Mistral/Llama, Vertex MaaS |
 | `google-native` | Vertex `generateContent` (`{contents[{parts}], generationConfig}` → `{candidates[], usageMetadata}`) | Gemini on Vertex |
 
-You do **not** pick the wire — the provider looks up the model in the catalog. Adding a new model that uses an existing wire requires a single `Register` call in `libs/go-common/llm/modelcatalog/catalog.go`; no provider code change.
+You do **not** pick the wire — the provider looks up the model in its catalog. Each `ModelEntry` can be reached by its canonical ID *or* any of its registered aliases, so the same row covers cross-region inference profiles (`us.` / `eu.` / `apac.` / `jp.` / `au.` / `global.` on Bedrock), date-stamped snapshot variants (`@20251101` on Vertex), and family-only short forms (`opus-4-7`, `sonnet-4-6`).
+
+Adding a new model that uses an existing wire is one `ModelEntry` in the provider's `catalog.go`; no provider code change.
 
 ### `wire_override` — for uncatalogued models
 

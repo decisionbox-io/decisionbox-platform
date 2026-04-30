@@ -79,7 +79,8 @@ test(llm): add Claude integration tests with error paths
 
 - [ ] Provider registered via `init()` with `RegisterWithMeta()`
 - [ ] ConfigFields defined for dashboard form rendering
-- [ ] DefaultPricing set (LLM/warehouse)
+- [ ] LLM providers: `ProviderMeta.Models` populated with `Wire`, `MaxOutputTokens`, `Pricing`, plus `Aliases` covering every cross-region / suffix / short-form variant; `DefaultMaxOutputTokens` set
+- [ ] Warehouse providers: `DefaultPricing` set
 - [ ] Imported in both `services/agent/main.go` and `services/api/main.go`
 - [ ] `replace` directive in both service go.mod files
 - [ ] Dockerfile COPY line for go.mod/go.sum

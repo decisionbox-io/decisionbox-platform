@@ -70,34 +70,44 @@ func TestProviderRegistered(t *testing.T) {
 	if meta.Description == "" {
 		t.Error("missing description")
 	}
-	if len(meta.DefaultPricing) == 0 {
-		t.Error("no default pricing")
+	if len(meta.Models) == 0 {
+		t.Fatal("catalog is empty")
+	}
+	if p, ok := meta.PricingFor("claude-opus-4-7"); !ok || p.InputPerMillion == 0 {
+		t.Errorf("missing claude-opus-4-7 pricing: %+v ok=%v", p, ok)
 	}
 
-	// MaxOutputTokens
-	if meta.MaxOutputTokens == nil {
-		t.Fatal("MaxOutputTokens should not be nil")
+	// Every shipped Anthropic Claude model resolves to its published cap.
+	caps := map[string]int{
+		"claude-opus-4-7":            128000,
+		"claude-opus-4-6":            128000,
+		"claude-opus-4-5":            64000,
+		"claude-opus-4-5-20251101":   64000,
+		"claude-opus-4-1":            32000,
+		"claude-opus-4-1-20250805":   32000,
+		"claude-opus-4-20250514":     32000,
+		"claude-opus-4-0":            32000, // legacy alias for opus-4
+		"claude-sonnet-4-6":          64000,
+		"claude-sonnet-4-5":          64000,
+		"claude-sonnet-4-5-20250929": 64000,
+		"claude-sonnet-4-20250514":   64000,
+		"claude-sonnet-4-0":          64000,
+		"claude-haiku-4-5":           64000,
+		"claude-haiku-4-5-20251001":  64000,
+		// Family-only short forms (per the alias rule).
+		"opus-4-7": 128000,
+		"opus-4-6": 128000,
+		"sonnet-4-6": 64000,
+		"haiku-4-5":  64000,
 	}
-	if len(meta.MaxOutputTokens) != 9 {
-		t.Errorf("MaxOutputTokens has %d entries, want 9", len(meta.MaxOutputTokens))
+	for model, want := range caps {
+		if got := gollm.GetMaxOutputTokens("claude", model); got != want {
+			t.Errorf("GetMaxOutputTokens(claude, %q) = %d, want %d", model, got, want)
+		}
 	}
-	if meta.MaxOutputTokens["claude-opus-4-6"] != 128000 {
-		t.Errorf("MaxOutputTokens[claude-opus-4-6] = %d, want 128000", meta.MaxOutputTokens["claude-opus-4-6"])
-	}
-	if meta.MaxOutputTokens["claude-sonnet-4-6"] != 64000 {
-		t.Errorf("MaxOutputTokens[claude-sonnet-4-6] = %d, want 64000", meta.MaxOutputTokens["claude-sonnet-4-6"])
-	}
-	if meta.MaxOutputTokens["claude-haiku-4-5"] != 64000 {
-		t.Errorf("MaxOutputTokens[claude-haiku-4-5] = %d, want 64000", meta.MaxOutputTokens["claude-haiku-4-5"])
-	}
-
-	// Verify GetMaxOutputTokens helper
-	if got := gollm.GetMaxOutputTokens("claude", "claude-opus-4"); got != 32000 {
-		t.Errorf("GetMaxOutputTokens(claude, claude-opus-4) = %d, want 32000", got)
-	}
-	// Verify _default fallback for unknown models
+	// Default fallback for unknown models.
 	if got := gollm.GetMaxOutputTokens("claude", "claude-unknown-model"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(claude, claude-unknown-model) = %d, want 16384 (_default)", got)
+		t.Errorf("GetMaxOutputTokens(claude, claude-unknown-model) = %d, want 16384", got)
 	}
 }
 
@@ -220,9 +230,9 @@ func TestValidate_InvalidKey(t *testing.T) {
 func TestDefaultPricing(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("claude")
 
-	models := []string{"claude-sonnet-4", "claude-opus-4", "claude-haiku-4-5"}
+	models := []string{"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"}
 	for _, m := range models {
-		pricing, ok := meta.DefaultPricing[m]
+		pricing, ok := meta.PricingFor(m)
 		if !ok {
 			t.Errorf("missing pricing for %s", m)
 			continue

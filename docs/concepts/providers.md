@@ -52,25 +52,38 @@ llm.RegisterWithMeta("claude", factory, llm.ProviderMeta{
     Description: "Anthropic Claude API - direct access",
     ConfigFields: []llm.ConfigField{
         {Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-ant-..."},
-        {Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-20250514"},
+        {Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-6"},
     },
-    DefaultPricing: map[string]llm.TokenPricing{
-        "claude-sonnet-4": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
+    Models: []llm.ModelEntry{
+        {
+            ID:              "claude-opus-4-7",
+            Aliases:         []string{"opus-4-7"},
+            DisplayName:     "Claude Opus 4.7",
+            Wire:            llm.WireAnthropic,
+            MaxOutputTokens: 128000,
+            Pricing:         llm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
+        },
+        {
+            ID:              "claude-sonnet-4-6",
+            Aliases:         []string{"sonnet-4-6"},
+            DisplayName:     "Claude Sonnet 4.6",
+            Wire:            llm.WireAnthropic,
+            MaxOutputTokens: 64000,
+            Pricing:         llm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 15.0},
+        },
     },
-    MaxOutputTokens: map[string]int{
-        "claude-sonnet-4":   16384,
-        "claude-opus-4":     16384,
-        "claude-haiku-4-5":  8192,
-    },
+    DefaultMaxOutputTokens: 16384,
+    SupportsTools:          true,
 })
 ```
 
 The API returns this metadata via `GET /api/v1/providers/llm` and `GET /api/v1/providers/warehouse`. The dashboard renders dynamic configuration forms from the `ConfigFields` array — no UI code changes needed when a new provider is added.
 
-`MaxOutputTokens` declares the maximum output tokens each model supports.
-The agent uses this via `gollm.GetMaxOutputTokens(providerName, model)` when making LLM calls (e.g., recommendation generation) so it requests the model's full output capacity instead of a fixed limit.
-The lookup checks for an exact model match first, then falls back to a `_default` key, then to 8192 if neither is found.
-For Ollama and other providers with variable model support, use the `_default` key to set a reasonable fallback.
+Each `ModelEntry` is the single source of truth for the model's wire format, output-token cap, list pricing, and dashboard display name. **`Aliases`** lets one entry be reached by many ID strings — used to capture every cloud-side variant of the same underlying model. On Bedrock for example a single Opus 4.7 entry has its canonical `anthropic.claude-opus-4-7-v1:0` plus 21 aliases covering every cross-region inference profile (`us.` / `eu.` / `apac.` / `jp.` / `au.` / `global.`), every Bedrock version-suffix variant (`-v1:0`, `-v1`, no suffix), and the family-only short forms (`claude-opus-4-7`, `opus-4-7`).
+
+The agent uses `gollm.GetMaxOutputTokens(providerName, model)` to cap completions at the model's published output limit. The lookup walks the catalog matching against ID and aliases; misses fall back to `DefaultMaxOutputTokens`, then to a global 8192 floor.
+
+The dashboard combobox shows one row per canonical ID — aliases stay internal to the resolver so the picker isn't doubled.
 
 ## Three Provider Types
 
@@ -93,17 +106,17 @@ Used by the "Test Connection" button in the dashboard.
 
 ### Model catalog and wire dispatch
 
-Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) serve many models behind a single endpoint — but different model families speak different wire formats. DecisionBox centralises this in `libs/go-common/llm/modelcatalog`:
+Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) serve many models behind a single endpoint — but different model families speak different wire formats. Each provider owns its catalog inline as `ProviderMeta.Models []ModelEntry`:
 
-- Every shipped model is registered with its **wire** (`anthropic`, `openai-compat`, or `google-native`), max output tokens, and list pricing.
-- Provider `Chat()` looks up the model and dispatches to the matching internal path — no pattern matching on model names.
-- Models not in the catalog return a clear error. Users can override at project level via `llm.config.wire_override`.
+- Every shipped model is registered with its **wire** (`WireAnthropic`, `WireOpenAICompat`, or `WireGoogleNative`), max output tokens, list pricing, and aliases.
+- Provider `Chat()` calls `meta.ResolveWire(model, wireOverride)` which walks the catalog (canonical ID + aliases), then falls back to project-level `llm.config.wire_override`, then to a per-provider `FamilyInferrer` (prefix table) for newly-released models in known families. No pattern matching on model names in the dispatch path.
+- Models that miss every tier return an actionable error naming the provider, the model, and the supported wires for that cloud.
 
 Shared helpers live alongside the catalog:
 
 - `libs/go-common/llm/openaicompat` — request/response types + typed `APIError` for any provider speaking the OpenAI `/chat/completions` wire. Used by `openai`, `azure-foundry` (OpenAI path), `bedrock` (non-Anthropic path), and `vertex-ai` (MaaS path).
 
-Adding a new model to an existing cloud is one `Register` call in `catalog.go` — no provider code change. See [Adding LLM Providers](../guides/adding-llm-providers.md#adding-a-new-model-to-an-existing-cloud).
+Adding a new model to an existing cloud is a single `ModelEntry` in the provider's `catalog.go` — no provider code change. See [Adding LLM Providers](../guides/adding-llm-providers.md#adding-a-new-model-to-an-existing-cloud).
 
 **Location:** `providers/llm/{provider-name}/`
 

@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
@@ -105,10 +104,10 @@ func validateLLMConfig(provider string, cfg map[string]string) string {
 	}
 
 	// Fallback: generic wire-syntax check.
-	if !modelcatalog.ParseWire(raw).Valid() {
+	if !gollm.ParseWire(raw).Valid() {
 		return fmt.Sprintf(
 			"llm.config.wire_override: %q is not a valid wire; use one of %s, %s, %s",
-			raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat, modelcatalog.GoogleNative,
+			raw, gollm.WireAnthropic, gollm.WireOpenAICompat, gollm.WireGoogleNative,
 		)
 	}
 	return ""

@@ -2,18 +2,19 @@
 // Bedrock hosts Claude, Llama, Mistral, Qwen, DeepSeek, and other models
 // behind a single IAM-authenticated endpoint.
 //
-// Dispatch is catalog-driven: each model's wire (Anthropic Messages vs.
-// OpenAI /chat/completions) is looked up in libs/go-common/llm/modelcatalog
-// at request time. Models not in the catalog can be routed explicitly via
-// the optional wire_override config key (project.llm.wire_override).
+// Dispatch is catalog-driven: each model in the provider's catalog
+// declares its wire (Anthropic Messages vs. OpenAI /chat/completions),
+// and the dispatch switch routes the request accordingly. Models not
+// in the catalog can be routed via the optional wire_override config
+// key (project.llm.config.wire_override); newly-released models in a
+// known family fall through to the prefix-based FamilyInferrer.
 //
 // Configuration:
 //
 //	LLM_PROVIDER=bedrock
-//	LLM_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
+//	LLM_MODEL=us.anthropic.claude-opus-4-7-v1:0  (or any catalog alias)
 //	region in project LLM config (default: us-east-1)
-//	wire_override=anthropic|openai-compat  (optional; required for models
-//	                                        that are not yet in the catalog)
+//	wire_override=anthropic|openai-compat  (optional)
 //
 // Authentication: AWS credentials (IAM role, env vars, or ~/.aws/credentials).
 package bedrock
@@ -28,58 +29,14 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/modelcatalog"
 )
 
+// providerName is the registry key. Kept as a constant so dispatch
+// errors and meta lookups all read from one place.
+const providerName = "bedrock"
+
 func init() {
-	gollm.RegisterWithMeta("bedrock", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
-		region := cfg["region"]
-		if region == "" {
-			region = "us-east-1"
-		}
-		model := cfg["model"]
-		if model == "" {
-			return nil, fmt.Errorf("bedrock: model is required")
-		}
-
-		wireOverride := modelcatalog.Unknown
-		if raw := cfg["wire_override"]; raw != "" {
-			parsed := modelcatalog.ParseWire(raw)
-			// Bedrock dispatches on Anthropic and OpenAICompat only.
-			// google-native parses as a valid Wire but there's no
-			// implementation on Bedrock, so reject it here rather
-			// than failing at first Chat.
-			if parsed != modelcatalog.Anthropic && parsed != modelcatalog.OpenAICompat {
-				return nil, fmt.Errorf(
-					"bedrock: invalid wire_override %q; use one of: %s, %s",
-					raw, modelcatalog.Anthropic, modelcatalog.OpenAICompat,
-				)
-			}
-			wireOverride = parsed
-		}
-
-		timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-		if timeoutSec == 0 {
-			timeoutSec = 300
-		}
-
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(region),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("bedrock: failed to load AWS config: %w", err)
-		}
-
-		client := bedrockruntime.NewFromConfig(awsCfg)
-
-		return &BedrockProvider{
-			client:       client,
-			region:       region,
-			model:        model,
-			wireOverride: wireOverride,
-			httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-		}, nil
-	}, gollm.ProviderMeta{
+	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "AWS Bedrock",
 		Description: "AWS-managed AI platform — Claude, Qwen, DeepSeek, Mistral, Llama with IAM auth",
 		ConfigFields: []gollm.ConfigField{
@@ -90,9 +47,9 @@ func init() {
 				Required:    true,
 				Type:        "string",
 				FreeText:    true,
-				Default:     "anthropic.claude-sonnet-4-20250514-v1:0",
-				Placeholder: "anthropic.claude-sonnet-4-20250514-v1:0",
-				Description: "Pick a catalogued model or type any Bedrock model ID.",
+				Default:     "us.anthropic.claude-sonnet-4-6-v1:0",
+				Placeholder: "us.anthropic.claude-sonnet-4-6-v1:0",
+				Description: "Pick a catalogued model or type any Bedrock model ID. Cross-region inference profiles (us./eu./apac./global.) are recognised automatically.",
 			},
 			{
 				Key:   "wire_override",
@@ -102,50 +59,82 @@ func init() {
 					"Bedrock supports Anthropic (Claude) and OpenAI Chat Completions (Qwen/DeepSeek/Mistral/Llama).",
 				Options: []gollm.ConfigOption{
 					{Value: "", Label: "Auto — use model catalog"},
-					{Value: "anthropic", Label: "Anthropic Messages (Claude)"},
-					{Value: "openai-compat", Label: "OpenAI Chat Completions"},
+					{Value: string(gollm.WireAnthropic), Label: "Anthropic Messages (Claude)"},
+					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
 		},
-		DefaultPricing: map[string]gollm.TokenPricing{
-			"claude-opus-4-6":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
-			"claude-sonnet-4-6": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
-			"claude-sonnet-4-5": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
-			"claude-opus-4-5":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
-			"claude-opus-4-1":   {InputPerMillion: 15.0, OutputPerMillion: 75.0},
-			"claude-sonnet-4":   {InputPerMillion: 3.0, OutputPerMillion: 15.0},
-			"claude-opus-4":     {InputPerMillion: 15.0, OutputPerMillion: 75.0},
-			"claude-haiku-4-5":  {InputPerMillion: 0.80, OutputPerMillion: 4.0},
-		},
-		MaxOutputTokens: map[string]int{
-			"claude-opus-4-6":   128000,
-			"claude-sonnet-4-6": 64000,
-			"claude-sonnet-4-5": 64000,
-			"claude-opus-4-5":   64000,
-			"claude-opus-4-1":   32000,
-			"claude-sonnet-4":   64000,
-			"claude-opus-4":     32000,
-			"claude-haiku-4-5":  64000,
-			"_default":          16384,
-		},
+		Models:                 buildBedrockCatalog(),
+		DefaultMaxOutputTokens: 16384,
+		FamilyInferrer:         inferBedrockWire,
 		// Bedrock supports tool_use natively on the Anthropic wire.
-		// OpenAI-compat Bedrock models (Qwen, DeepSeek, Llama, Mistral)
-		// inherit tool support from the openaicompat helper, but whether
-		// the upstream *model* implements function calling reliably
-		// varies — callers should stick to Claude or gpt-4o-class models
-		// for tool-dependent flows. The blurb-generation flow never sets
-		// Tools so this is safe to advertise unconditionally.
+		// OpenAI-compat Bedrock models inherit tool support from the
+		// openaicompat helper; whether the upstream *model* implements
+		// function calling reliably varies, but the catalog flag is
+		// per-provider not per-model.
 		SupportsTools: true,
 	})
 }
 
-// BedrockProvider implements llm.Provider for AWS Bedrock.
-// Routes to different wire formats based on the model catalog.
+// factory is split out from init() so provider_test can call it
+// directly with a synthetic config without going through
+// gollm.NewProvider.
+func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+	region := cfg["region"]
+	if region == "" {
+		region = "us-east-1"
+	}
+	model := cfg["model"]
+	if model == "" {
+		return nil, fmt.Errorf("bedrock: model is required")
+	}
+
+	wireOverride := gollm.WireUnknown
+	if raw := cfg["wire_override"]; raw != "" {
+		parsed := gollm.ParseWire(raw)
+		// Bedrock dispatches on Anthropic and OpenAICompat only.
+		// google-native parses as a valid Wire but there's no
+		// implementation on Bedrock, so reject it here rather than
+		// failing at first Chat.
+		if parsed != gollm.WireAnthropic && parsed != gollm.WireOpenAICompat {
+			return nil, fmt.Errorf(
+				"bedrock: invalid wire_override %q; use one of: %s, %s",
+				raw, gollm.WireAnthropic, gollm.WireOpenAICompat,
+			)
+		}
+		wireOverride = parsed
+	}
+
+	timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
+	if timeoutSec == 0 {
+		timeoutSec = 300
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: failed to load AWS config: %w", err)
+	}
+
+	client := bedrockruntime.NewFromConfig(awsCfg)
+
+	return &BedrockProvider{
+		client:       client,
+		region:       region,
+		model:        model,
+		wireOverride: wireOverride,
+		httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+	}, nil
+}
+
+// BedrockProvider implements llm.Provider for AWS Bedrock. Routes per
+// wire resolved from the registered ProviderMeta catalog.
 type BedrockProvider struct {
 	client       bedrockClient
 	region       string
 	model        string
-	wireOverride modelcatalog.Wire
+	wireOverride gollm.Wire
 	httpClient   *http.Client
 }
 
@@ -165,10 +154,11 @@ func (p *BedrockProvider) Validate(ctx context.Context) error {
 }
 
 // Chat sends a conversation to AWS Bedrock, dispatching on the wire format
-// resolved from the model catalog (or the configured wire_override).
+// resolved from the catalog (or the configured wire_override).
 func (p *BedrockProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = p.model
 	}
 	return p.dispatch(ctx, req)
 }
+

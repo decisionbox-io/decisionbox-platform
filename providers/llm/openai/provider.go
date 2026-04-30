@@ -61,23 +61,8 @@ func init() {
 			},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
 		},
-		DefaultPricing: map[string]gollm.TokenPricing{
-			"gpt-4o":      {InputPerMillion: 2.50, OutputPerMillion: 10.0},
-			"gpt-4o-mini": {InputPerMillion: 0.15, OutputPerMillion: 0.60},
-			"gpt-4.1":     {InputPerMillion: 2.0, OutputPerMillion: 8.0},
-			"gpt-4.1-mini": {InputPerMillion: 0.40, OutputPerMillion: 1.60},
-			"o3":          {InputPerMillion: 2.0, OutputPerMillion: 8.0},
-			"o4-mini":     {InputPerMillion: 1.10, OutputPerMillion: 4.40},
-		},
-		MaxOutputTokens: map[string]int{
-			"gpt-4o":       16384,
-			"gpt-4o-mini":  16384,
-			"gpt-4.1":      32768,
-			"gpt-4.1-mini": 32768,
-			"o3":           100000,
-			"o4-mini":      100000,
-			"_default":     16384,
-		},
+		Models:                 buildOpenAICatalog(),
+		DefaultMaxOutputTokens: 16384,
 		// OpenAI's chat-completions endpoint supports function calling on
 		// gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini. Reasoning models
 		// (o3, o4-mini) do not expose tool_use through Converse-style

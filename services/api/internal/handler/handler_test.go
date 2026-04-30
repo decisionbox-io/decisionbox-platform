@@ -289,9 +289,22 @@ func TestDiscoveriesHandler_HasRunner(t *testing.T) {
 }
 
 func TestLLMProviders_HavePricing(t *testing.T) {
+	// Every shipped LLM provider except Ollama (local runtime, free)
+	// must carry pricing on at least one catalog entry. PricingFor on
+	// any catalog ID returns ok=true with a non-zero value.
 	for _, meta := range gollm.RegisteredProvidersMeta() {
-		if len(meta.DefaultPricing) == 0 {
-			t.Errorf("LLM provider %q has no DefaultPricing", meta.ID)
+		if meta.ID == "ollama" {
+			continue
+		}
+		hasPricing := false
+		for _, e := range meta.Models {
+			if e.Pricing.InputPerMillion > 0 || e.Pricing.OutputPerMillion > 0 {
+				hasPricing = true
+				break
+			}
+		}
+		if !hasPricing {
+			t.Errorf("LLM provider %q has no Pricing on any catalog entry", meta.ID)
 		}
 	}
 }
@@ -309,14 +322,14 @@ func TestLLMProvider_ClaudePricing(t *testing.T) {
 	if !ok {
 		t.Fatal("claude provider not registered")
 	}
-	if _, ok := meta.DefaultPricing["claude-sonnet-4"]; !ok {
-		t.Error("claude-sonnet-4 pricing missing")
-	}
-	if _, ok := meta.DefaultPricing["claude-opus-4"]; !ok {
-		t.Error("claude-opus-4 pricing missing")
-	}
-	sonnet := meta.DefaultPricing["claude-sonnet-4"]
-	if sonnet.InputPerMillion <= 0 || sonnet.OutputPerMillion <= 0 {
-		t.Errorf("sonnet pricing invalid: %+v", sonnet)
+	for _, model := range []string{"claude-sonnet-4-6", "claude-opus-4-7"} {
+		p, ok := meta.PricingFor(model)
+		if !ok {
+			t.Errorf("%s: pricing missing", model)
+			continue
+		}
+		if p.InputPerMillion <= 0 || p.OutputPerMillion <= 0 {
+			t.Errorf("%s pricing invalid: %+v", model, p)
+		}
 	}
 }

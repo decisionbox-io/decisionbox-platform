@@ -19,12 +19,11 @@ func TestOllamaProvider_Registered(t *testing.T) {
 		t.Error("missing description")
 	}
 
-	// MaxOutputTokens
-	if meta.MaxOutputTokens == nil {
-		t.Fatal("MaxOutputTokens should not be nil")
+	if len(meta.Models) == 0 {
+		t.Fatal("catalog is empty")
 	}
-	if meta.MaxOutputTokens["_default"] != 16384 {
-		t.Errorf("MaxOutputTokens[_default] = %d, want 16384", meta.MaxOutputTokens["_default"])
+	if meta.DefaultMaxOutputTokens != 16384 {
+		t.Errorf("DefaultMaxOutputTokens = %d, want 16384", meta.DefaultMaxOutputTokens)
 	}
 
 	// Per-model caps for the biggest Qwen / Gemma / DeepSeek / Meta models.
@@ -103,14 +102,13 @@ func TestOllamaProvider_ConfigFields(t *testing.T) {
 
 func TestOllamaProvider_ZeroPricing(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("ollama")
-
-	pricing, ok := meta.DefaultPricing["_default"]
-	if !ok {
-		t.Fatal("missing _default pricing")
-	}
-	if pricing.InputPerMillion != 0 || pricing.OutputPerMillion != 0 {
-		t.Errorf("ollama pricing should be zero, got in=%f out=%f",
-			pricing.InputPerMillion, pricing.OutputPerMillion)
+	// Ollama runs locally — every catalog entry must carry zero
+	// pricing so the dashboard's cost estimate row stays at $0.
+	for _, e := range meta.Models {
+		if e.Pricing.InputPerMillion != 0 || e.Pricing.OutputPerMillion != 0 {
+			t.Errorf("%s: pricing should be zero, got in=%f out=%f",
+				e.ID, e.Pricing.InputPerMillion, e.Pricing.OutputPerMillion)
+		}
 	}
 }
 

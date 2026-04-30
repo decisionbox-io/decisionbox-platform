@@ -299,27 +299,29 @@ func TestProviderRegistered(t *testing.T) {
 		t.Error("missing provider name")
 	}
 
-	// MaxOutputTokens
-	if meta.MaxOutputTokens == nil {
-		t.Fatal("MaxOutputTokens should not be nil")
+	if len(meta.Models) == 0 {
+		t.Fatal("catalog is empty")
 	}
-	if len(meta.MaxOutputTokens) != 7 {
-		t.Errorf("MaxOutputTokens has %d entries, want 7", len(meta.MaxOutputTokens))
+	caps := map[string]int{
+		"gpt-5":              16384,
+		"gpt-5-mini":         16384,
+		"gpt-4.1":            32768,
+		"gpt-4.1-mini":       32768,
+		"gpt-4o":             16384,
+		"gpt-4o-2024-08-06":  16384, // alias of gpt-4o
+		"gpt-4o-mini":        16384,
+		"o3":                 100000,
+		"o3-2025-04-16":      100000, // alias
+		"o4-mini":            100000,
 	}
-	if meta.MaxOutputTokens["gpt-4o"] != 16384 {
-		t.Errorf("MaxOutputTokens[gpt-4o] = %d, want 16384", meta.MaxOutputTokens["gpt-4o"])
+	for model, want := range caps {
+		if got := gollm.GetMaxOutputTokens("openai", model); got != want {
+			t.Errorf("GetMaxOutputTokens(openai, %q) = %d, want %d", model, got, want)
+		}
 	}
-	if meta.MaxOutputTokens["o3"] != 100000 {
-		t.Errorf("MaxOutputTokens[o3] = %d, want 100000", meta.MaxOutputTokens["o3"])
-	}
-
-	// Verify GetMaxOutputTokens helper
-	if got := gollm.GetMaxOutputTokens("openai", "gpt-4.1"); got != 32768 {
-		t.Errorf("GetMaxOutputTokens(openai, gpt-4.1) = %d, want 32768", got)
-	}
-	// Verify _default fallback
+	// Default fallback for unknown models.
 	if got := gollm.GetMaxOutputTokens("openai", "gpt-future"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(openai, gpt-future) = %d, want 16384 (_default)", got)
+		t.Errorf("GetMaxOutputTokens(openai, gpt-future) = %d, want 16384", got)
 	}
 }
 
