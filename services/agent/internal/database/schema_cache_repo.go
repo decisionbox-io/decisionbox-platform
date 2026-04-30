@@ -2,9 +2,11 @@ package database
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -143,21 +145,29 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHa
 // more risk of tripping the 16 MB BSON doc cap on wide DW tables.
 const schemaCacheSampleRowLimit = 3
 
-// schemaCacheSampleValueMaxChars caps the rendered length of any
-// string-typed sample value before it goes into the cache. Wide MSSQL
-// tables backed by VARCHAR(MAX) / XML / JSON commonly carry multi-MB
-// values that destroy the 16 MB doc budget on their own. 256 chars is
-// long enough to convey shape (URL prefix, format, key fragment) and
-// short enough that a 3-row × 200-column table caps at well under 1
-// MB per cached doc.
-const schemaCacheSampleValueMaxChars = 256
+// schemaCacheSampleValueMaxRunes caps the rune count of any string-typed
+// sample value before it goes into the cache. Wide MSSQL tables backed
+// by VARCHAR(MAX) / XML / JSON commonly carry multi-MB values that
+// destroy the 16 MB doc budget on their own. 256 runes is long enough
+// to convey shape (URL prefix, format, key fragment) and short enough
+// that a 3-row × 200-column table caps at well under 1 MB per cached
+// doc. Counted in runes (not bytes) so multi-byte UTF-8 sequences
+// are never split mid-codepoint — BSON strings must be valid UTF-8,
+// and a byte-length truncation can leave a partial rune at the tail.
+const schemaCacheSampleValueMaxRunes = 256
+
+// schemaCacheSampleBinaryMaxBytes caps the byte count of any non-UTF-8
+// []byte sample value before it goes into the cache. Binary values
+// (VARBINARY, BLOB, FILESTREAM) are base64-encoded after truncation —
+// 256 bytes encodes to ~344 chars, still tiny.
+const schemaCacheSampleBinaryMaxBytes = 256
 
 // capSampleData returns a copy of rows with the row count capped at
 // schemaCacheSampleRowLimit and each string / []byte value truncated
-// to schemaCacheSampleValueMaxChars characters. Non-string values
-// (numbers, bools, time.Time) pass through untouched. Empty input
-// returns nil so the BSON `omitempty` tag drops the field from the
-// stored doc entirely.
+// per the rune / byte limits below. Non-string values (numbers,
+// bools, time.Time) pass through untouched. Empty input returns nil
+// so the BSON `omitempty` tag drops the field from the stored doc
+// entirely.
 func capSampleData(rows []map[string]interface{}) []map[string]interface{} {
 	if len(rows) == 0 {
 		return nil
@@ -177,25 +187,74 @@ func capSampleData(rows []map[string]interface{}) []map[string]interface{} {
 }
 
 // capSampleValue truncates a single sample-row value when it is a
-// long string or byte slice. The truncation marker
-// "…(truncated, original N chars)" tells downstream consumers (blurb
-// generator, discovery LLM) the value is incomplete so the truncated
-// form is not treated as the real value to match against.
+// long string or byte slice. Strings (and UTF-8 []byte) are truncated
+// at a rune boundary so the result is always valid UTF-8 — required
+// because BSON rejects strings with invalid UTF-8. Non-UTF-8 byte
+// slices are base64-encoded after truncation so they can be stored
+// as a BSON string without losing fidelity.
+//
+// Truncation markers tell downstream consumers (blurb generator,
+// discovery LLM) the value is incomplete so the truncated form is
+// not treated as the real value to match against:
+//
+//   - text:     "…(truncated, original N chars)"
+//   - binary:   "…(truncated binary, original N bytes, base64)"
 func capSampleValue(v interface{}) interface{} {
 	switch x := v.(type) {
 	case string:
-		if len(x) <= schemaCacheSampleValueMaxChars {
-			return x
-		}
-		return x[:schemaCacheSampleValueMaxChars] + fmt.Sprintf("…(truncated, original %d chars)", len(x))
+		return capSampleString(x)
 	case []byte:
-		if len(x) <= schemaCacheSampleValueMaxChars {
-			return x
+		// MSSQL / Postgres drivers usually return CHAR / VARCHAR /
+		// TEXT data as Go strings; []byte typically means VARBINARY,
+		// BLOB, or text columns the driver couldn't decode. Treat as
+		// text iff the bytes are valid UTF-8, otherwise base64.
+		if utf8.Valid(x) {
+			return capSampleString(string(x))
 		}
-		return string(x[:schemaCacheSampleValueMaxChars]) + fmt.Sprintf("…(truncated, original %d bytes)", len(x))
+		return capSampleBinary(x)
 	default:
 		return v
 	}
+}
+
+// capSampleString returns s truncated at a rune boundary so it never
+// exceeds schemaCacheSampleValueMaxRunes runes. The original rune
+// count is reported in the marker so downstream consumers know how
+// much was dropped.
+func capSampleString(s string) string {
+	runeCount := utf8.RuneCountInString(s)
+	if runeCount <= schemaCacheSampleValueMaxRunes {
+		return s
+	}
+	// Walk by rune so the byte slice ends on a codepoint boundary.
+	byteEnd := len(s)
+	runesSeen := 0
+	for i := range s {
+		if runesSeen >= schemaCacheSampleValueMaxRunes {
+			byteEnd = i
+			break
+		}
+		runesSeen++
+	}
+	return s[:byteEnd] + fmt.Sprintf("…(truncated, original %d chars)", runeCount)
+}
+
+// capSampleBinary returns a base64 representation of b's prefix, with
+// a marker noting the original byte length. Used when raw bytes are
+// not valid UTF-8 (typical for VARBINARY / BLOB / FILESTREAM columns)
+// since BSON strings must be valid UTF-8 and []byte stored as Binary
+// would not survive the LLM-facing string serialization downstream.
+func capSampleBinary(b []byte) string {
+	origLen := len(b)
+	prefix := b
+	if origLen > schemaCacheSampleBinaryMaxBytes {
+		prefix = b[:schemaCacheSampleBinaryMaxBytes]
+	}
+	encoded := base64.StdEncoding.EncodeToString(prefix)
+	if origLen <= schemaCacheSampleBinaryMaxBytes {
+		return encoded
+	}
+	return encoded + fmt.Sprintf("…(truncated binary, original %d bytes, base64)", origLen)
 }
 
 // Invalidate drops every cache row for a project. Exposed for the API's
