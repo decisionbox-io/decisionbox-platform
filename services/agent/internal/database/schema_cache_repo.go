@@ -90,6 +90,17 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseHa
 // prior row for this project — including those tagged with a different
 // hash — is dropped so stale warehouses don't accumulate. TTL handles
 // absolute-age cleanup if the project is abandoned.
+//
+// SampleData is the only unbounded field on a TableSchema — every
+// other field has natural per-table caps (column count, dataset name,
+// …). On data-warehouse-class MSSQL / BigQuery tables with VARCHAR(MAX),
+// XML, JSON, or wide nested struct columns, a single SELECT TOP 5 *
+// sample can run into multiple MB per row and trip Mongo's hard 16 MB
+// BSON document limit. capSampleData below caps row count and
+// truncates per-value strings / bytes before insertion so a fat
+// table's schema row stays well inside the limit while still
+// preserving shape information for blurb generation and on-demand
+// schema lookup.
 func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHash string, schemas map[string]models.TableSchema) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
@@ -108,6 +119,7 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHa
 	now := time.Now().UTC()
 	docs := make([]interface{}, 0, len(schemas))
 	for key, sch := range schemas {
+		sch.SampleData = capSampleData(sch.SampleData)
 		docs = append(docs, SchemaCacheEntry{
 			ProjectID:     projectID,
 			WarehouseHash: warehouseHash,
@@ -123,6 +135,67 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHa
 		return fmt.Errorf("schema cache save: %w", err)
 	}
 	return nil
+}
+
+// schemaCacheSampleRowLimit caps how many sample rows the cache stores
+// per table. The discovery on-demand lookup and blurb generation only
+// need a few examples to pick out the value shape; more rows mean
+// more risk of tripping the 16 MB BSON doc cap on wide DW tables.
+const schemaCacheSampleRowLimit = 3
+
+// schemaCacheSampleValueMaxChars caps the rendered length of any
+// string-typed sample value before it goes into the cache. Wide MSSQL
+// tables backed by VARCHAR(MAX) / XML / JSON commonly carry multi-MB
+// values that destroy the 16 MB doc budget on their own. 256 chars is
+// long enough to convey shape (URL prefix, format, key fragment) and
+// short enough that a 3-row × 200-column table caps at well under 1
+// MB per cached doc.
+const schemaCacheSampleValueMaxChars = 256
+
+// capSampleData returns a copy of rows with the row count capped at
+// schemaCacheSampleRowLimit and each string / []byte value truncated
+// to schemaCacheSampleValueMaxChars characters. Non-string values
+// (numbers, bools, time.Time) pass through untouched. Empty input
+// returns nil so the BSON `omitempty` tag drops the field from the
+// stored doc entirely.
+func capSampleData(rows []map[string]interface{}) []map[string]interface{} {
+	if len(rows) == 0 {
+		return nil
+	}
+	if len(rows) > schemaCacheSampleRowLimit {
+		rows = rows[:schemaCacheSampleRowLimit]
+	}
+	out := make([]map[string]interface{}, len(rows))
+	for i, r := range rows {
+		capped := make(map[string]interface{}, len(r))
+		for k, v := range r {
+			capped[k] = capSampleValue(v)
+		}
+		out[i] = capped
+	}
+	return out
+}
+
+// capSampleValue truncates a single sample-row value when it is a
+// long string or byte slice. The truncation marker
+// "…(truncated, original N chars)" tells downstream consumers (blurb
+// generator, discovery LLM) the value is incomplete so the truncated
+// form is not treated as the real value to match against.
+func capSampleValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case string:
+		if len(x) <= schemaCacheSampleValueMaxChars {
+			return x
+		}
+		return x[:schemaCacheSampleValueMaxChars] + fmt.Sprintf("…(truncated, original %d chars)", len(x))
+	case []byte:
+		if len(x) <= schemaCacheSampleValueMaxChars {
+			return x
+		}
+		return string(x[:schemaCacheSampleValueMaxChars]) + fmt.Sprintf("…(truncated, original %d bytes)", len(x))
+	default:
+		return v
+	}
 }
 
 // Invalidate drops every cache row for a project. Exposed for the API's
