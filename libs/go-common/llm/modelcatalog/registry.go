@@ -193,13 +193,56 @@ func Register(e Entry) {
 	entries[e.Key()] = e
 }
 
+// bedrockRegionPrefixes are the leading geo qualifiers Bedrock prepends
+// to a foundation model ID to form a cross-region inference profile
+// (e.g. "us.anthropic.claude-opus-4-7-v1:0"). New Anthropic models on
+// Bedrock are no longer invokable via the bare model ID — callers must
+// hit the regional profile — so a catalog seeded only with bare IDs
+// silently falls through to the provider's _default token cap and
+// truncates output. Stripping the prefix at lookup time keeps the seed
+// region-agnostic: one row per model covers every geo AWS later adds.
+//
+// Order matters only for the longest-prefix-first scan in
+// stripBedrockRegionPrefix; entries do not need to be sorted.
+var bedrockRegionPrefixes = []string{
+	"us.", "eu.", "apac.", "jp.", "au.", "global.",
+}
+
+// stripBedrockRegionPrefix returns id with a known cross-region geo
+// qualifier removed, and ok=true when one was stripped. Returns the
+// original id and ok=false otherwise. Only used for cloud=="bedrock".
+func stripBedrockRegionPrefix(id string) (string, bool) {
+	for _, p := range bedrockRegionPrefixes {
+		if strings.HasPrefix(id, p) {
+			return strings.TrimPrefix(id, p), true
+		}
+	}
+	return id, false
+}
+
 // Lookup returns the catalog entry for (cloud, id), or ok=false if not
 // registered. Callers should not mutate the returned Entry.
+//
+// On Bedrock, when the exact id misses, Lookup retries with a known
+// region prefix stripped (us./eu./apac./jp./au./global.). This lets
+// the seed register one row per Anthropic / Meta / etc. model and have
+// every cross-region inference profile resolve to it automatically —
+// without that fallback, "us.anthropic.claude-opus-4-7-v1:0" would
+// miss and the agent would cap output at the 16k provider default.
 func Lookup(cloud, id string) (Entry, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	e, ok := entries[cloud+"/"+id]
-	return e, ok
+	if e, ok := entries[cloud+"/"+id]; ok {
+		return e, true
+	}
+	if cloud == "bedrock" {
+		if stripped, ok := stripBedrockRegionPrefix(id); ok {
+			if e, ok := entries[cloud+"/"+stripped]; ok {
+				return e, true
+			}
+		}
+	}
+	return Entry{}, false
 }
 
 // LookupWire is a convenience wrapper over Lookup that returns only the

@@ -607,3 +607,94 @@ func TestGetMaxOutputTokens_UltimateFallback(t *testing.T) {
 		t.Errorf("GetMaxOutputTokens unknown/unknown = %d, want 8192", got)
 	}
 }
+
+func TestStripBedrockRegionPrefix(t *testing.T) {
+	cases := []struct {
+		in        string
+		want      string
+		stripped  bool
+	}{
+		{"us.anthropic.claude-opus-4-7-v1:0", "anthropic.claude-opus-4-7-v1:0", true},
+		{"eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{"apac.anthropic.claude-3-haiku-20240307-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", true},
+		{"jp.anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0", true},
+		{"au.anthropic.claude-sonnet-4-5-20250929-v1:0", "anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{"global.anthropic.claude-opus-4-5-20251101-v1:0", "anthropic.claude-opus-4-5-20251101-v1:0", true},
+		// Bare ID, no geo prefix → unchanged.
+		{"anthropic.claude-opus-4-7-v1:0", "anthropic.claude-opus-4-7-v1:0", false},
+		// Unrelated prefixes are left alone.
+		{"meta.llama3-3-70b-instruct-v1:0", "meta.llama3-3-70b-instruct-v1:0", false},
+		// Empty string is a degenerate but well-defined case.
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, stripped := stripBedrockRegionPrefix(tc.in)
+		if got != tc.want || stripped != tc.stripped {
+			t.Errorf("stripBedrockRegionPrefix(%q) = (%q, %v), want (%q, %v)",
+				tc.in, got, stripped, tc.want, tc.stripped)
+		}
+	}
+}
+
+func TestLookup_BedrockCrossRegionInferenceProfile(t *testing.T) {
+	// Cross-region inference profile IDs should resolve to the same
+	// catalog entry as the bare model ID — guards against the silent
+	// 16k-default truncation for newer Anthropic models on Bedrock.
+	bare, ok := Lookup("bedrock", "anthropic.claude-opus-4-7-v1:0")
+	if !ok {
+		t.Fatal("bare anthropic.claude-opus-4-7-v1:0 missing from catalog — seed regression")
+	}
+	for _, prefix := range []string{"us.", "eu.", "apac.", "jp.", "au.", "global."} {
+		t.Run(strings.TrimSuffix(prefix, "."), func(t *testing.T) {
+			profileID := prefix + "anthropic.claude-opus-4-7-v1:0"
+			got, ok := Lookup("bedrock", profileID)
+			if !ok {
+				t.Fatalf("Lookup(bedrock, %q) miss — region prefix not stripped", profileID)
+			}
+			if got.MaxOutputTokens != bare.MaxOutputTokens {
+				t.Errorf("MaxOutputTokens for %q = %d, want %d (matches bare)", profileID, got.MaxOutputTokens, bare.MaxOutputTokens)
+			}
+			if got.Wire != bare.Wire {
+				t.Errorf("Wire for %q = %q, want %q (matches bare)", profileID, got.Wire, bare.Wire)
+			}
+			if got.InputPricePerMillion != bare.InputPricePerMillion || got.OutputPricePerMillion != bare.OutputPricePerMillion {
+				t.Errorf("Pricing for %q does not match bare model", profileID)
+			}
+		})
+	}
+}
+
+func TestLookup_PrefixStripDoesNotApplyToOtherClouds(t *testing.T) {
+	// Vertex / Azure model IDs that happen to start with "us." or
+	// "global." must not be silently rewritten — the strip is Bedrock-
+	// specific because only Bedrock uses that scheme for inference
+	// profiles.
+	if _, ok := Lookup("vertex-ai", "us.gemini-1.5-pro"); ok {
+		t.Error("vertex-ai prefix-strip leaked: us.gemini-1.5-pro should not resolve")
+	}
+	if _, ok := Lookup("azure-foundry", "us.gpt-5"); ok {
+		t.Error("azure-foundry prefix-strip leaked: us.gpt-5 should not resolve")
+	}
+}
+
+func TestGetMaxOutputTokens_BedrockCrossRegionMatchesBare(t *testing.T) {
+	// End-to-end: the agent calls llm.GetMaxOutputTokens(provider, model)
+	// with the model ID a customer has set in project.llm.model. For a
+	// cross-region inference profile that must yield the real ceiling
+	// (e.g. 128k for Opus 4.7), not the provider's 16k _default.
+	bare := gollm.GetMaxOutputTokens("bedrock", "anthropic.claude-opus-4-7-v1:0")
+	if bare == 0 {
+		t.Skip("bare claude-opus-4-7 not registered yet — skipping cross-region check")
+	}
+	for _, profileID := range []string{
+		"us.anthropic.claude-opus-4-7-v1:0",
+		"eu.anthropic.claude-opus-4-7-v1:0",
+		"apac.anthropic.claude-opus-4-7-v1:0",
+		"global.anthropic.claude-opus-4-7-v1:0",
+	} {
+		got := gollm.GetMaxOutputTokens("bedrock", profileID)
+		if got != bare {
+			t.Errorf("GetMaxOutputTokens(bedrock, %q) = %d, want %d (matches bare)", profileID, got, bare)
+		}
+	}
+}
