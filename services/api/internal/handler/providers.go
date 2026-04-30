@@ -249,9 +249,14 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 
 	merged := make(map[string]liveModelsResponse, len(catalogByID)+len(live))
 	for id, m := range catalogByID {
+		// Catalog rows are dispatchable by construction — the
+		// provider curated them and knows how to call them. The
+		// wire field may be WireUnknown for single-wire providers
+		// (Ollama) where dispatch has no wire switch; that does not
+		// imply non-dispatchability.
 		merged[id] = liveModelsResponse{
 			Source:       "catalog",
-			Dispatchable: m.Wire != "" && m.Wire != string(gollm.WireUnknown),
+			Dispatchable: true,
 			ModelInfo:    m,
 		}
 	}

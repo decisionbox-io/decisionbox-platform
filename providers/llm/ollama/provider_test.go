@@ -100,6 +100,24 @@ func TestOllamaProvider_ConfigFields(t *testing.T) {
 	}
 }
 
+// TestOllamaProvider_CatalogModels_Dispatchable confirms that the
+// JSON shape exposed via /api/v1/providers/llm marks every Ollama
+// catalog row as a real model — even though entries leave Wire blank
+// (single-wire provider, no dispatch switch). The handler's
+// `Dispatchable` derivation must not assume "no wire == not
+// dispatchable".
+func TestOllamaProvider_CatalogModels_HaveBlankWire(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("ollama")
+	for _, m := range meta.CatalogModels() {
+		// Ollama models intentionally leave Wire as "" (WireUnknown)
+		// because Chat() does not dispatch on wire — the provider
+		// has only one path through ollamaapi.
+		if m.Wire != "" {
+			t.Errorf("%s: Wire = %q, expected empty for Ollama", m.ID, m.Wire)
+		}
+	}
+}
+
 func TestOllamaProvider_ZeroPricing(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("ollama")
 	// Ollama runs locally — every catalog entry must carry zero

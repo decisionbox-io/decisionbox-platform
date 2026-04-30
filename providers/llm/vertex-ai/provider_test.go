@@ -10,6 +10,30 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
+// TestVertexAIProvider_MaaSCatalog_UsesMaaSSuffix is the regression
+// for the issue Copilot flagged on PR #193: Vertex Model Garden
+// chat-capable endpoints require a "-maas" suffix; the bare
+// publisher ID (e.g. "mistral-ai/mistral-large-2411-001") is not the
+// chat endpoint. Every MaaS row in the catalog must use the suffixed
+// ID as canonical so the live-list merge and dispatch agree.
+func TestVertexAIProvider_MaaSCatalog_UsesMaaSSuffix(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta(providerName)
+	for _, e := range meta.Models {
+		if e.Wire != gollm.WireOpenAICompat {
+			continue
+		}
+		// MaaS publishers we ship with — every chat-capable entry
+		// must carry the -maas suffix on the canonical ID.
+		for _, prefix := range []string{
+			"meta/", "mistral-ai/", "qwen/", "deepseek-ai/",
+		} {
+			if strings.HasPrefix(e.ID, prefix) && !strings.HasSuffix(e.ID, "-maas") {
+				t.Errorf("MaaS canonical ID %q is missing the -maas suffix; bare publisher IDs are not chat-capable", e.ID)
+			}
+		}
+	}
+}
+
 func TestVertexAIProvider_Dispatch_UncataloguedActionableError(t *testing.T) {
 	p := &VertexAIProvider{
 		projectID:  "test-project",

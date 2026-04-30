@@ -195,14 +195,22 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			Pricing:         gollm.TokenPricing{InputPerMillion: 2.0, OutputPerMillion: 8.0},
 		},
 		{
-			ID:              "mistral-ai/mistral-large-2411-001",
+			// Vertex Model Garden MaaS chat-capable endpoint for
+			// Mistral Large requires the "-maas" suffix; the bare
+			// `mistral-ai/mistral-large-2411-001` ID is the publisher
+			// listing, not the chat endpoint.
+			ID:              "mistral-ai/mistral-large-2411-001-maas",
+			Aliases:         []string{"mistral-ai/mistral-large-2411-001"},
 			DisplayName:     "Mistral Large 2411 (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 4096,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 9.0},
 		},
 		{
-			ID:              "deepseek-ai/deepseek-r1",
+			// Same: DeepSeek R1's chat-capable MaaS endpoint is the
+			// "-maas"-suffixed snapshot ID.
+			ID:              "deepseek-ai/deepseek-r1-0528-maas",
+			Aliases:         []string{"deepseek-ai/deepseek-r1"},
 			DisplayName:     "DeepSeek R1 (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
