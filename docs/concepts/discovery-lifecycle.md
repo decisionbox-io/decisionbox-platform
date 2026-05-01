@@ -209,20 +209,31 @@ Each insight with an `affected_count` is verified:
 For each insight with affected_count > 0:
   ↓
   Generate a verification SQL query
-  (e.g., COUNT(DISTINCT user_id) with the same filters)
+    Grounded on the SQL of the exploration steps the analyst LLM cited as
+    `source_steps` — those queries already executed successfully against the
+    warehouse, so their column references are authoritative. The verifier is
+    instructed to adapt one of them into a SELECT COUNT(...) AS count rather
+    than invent column names from the table catalog. The compact catalog
+    (one line per table) is supplied as supplementary context for tables the
+    source steps didn't touch.
   ↓
-  Execute against warehouse
+  Execute against warehouse (self-healing retry on dialect errors)
   ↓
   Compare claimed count vs verified count
   ↓
   Status:
     - "confirmed" — within 20% tolerance
-    - "adjusted" — count differs, insight updated
-    - "rejected" — count is drastically different
-    - "error" — verification query failed
+    - "adjusted" — count differs, validator records the verified value
+    - "rejected" — verification query returned 0
+    - "error" — verification query failed even after retries
 ```
 
 Validation results are stored on each insight and shown in the dashboard.
+
+The validator does NOT overwrite the original `affected_count` — only the
+`Validation` block (`verified_count`, `original_count`, `status`, `query`,
+`reasoning`) is written. The dashboard surfaces the verification badge
+alongside the analysis-claimed count.
 
 ## Phase 7: Recommendations
 

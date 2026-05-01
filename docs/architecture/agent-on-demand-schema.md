@@ -118,3 +118,38 @@ DecisionBox is pre-1.0; no backwards-compatibility shims were carried.
 Existing customised prompts on existing projects must be re-saved from the
 new domain-pack defaults to pick up the action contract — see the runbook
 in `PLAN-SCHEMA-RETRIEVAL.md` for the migration script.
+
+## Verification phase column grounding
+
+The same "catalog alone is not enough" pressure that drove the on-demand
+schema retrieval design above hits the verification phase too. The verifier
+is a single LLM call per insight (no exploration tool loop), so it cannot
+issue `lookup_schema` mid-prompt. On warehouses with non-English /
+abbreviated column names a customer report against an MSSQL Netsis-style
+warehouse on 2026-04-30 saw 9 of 10 insights end with
+`validation.status = "error"` and `Invalid column name 'TARIiH' /
+'STHAR_SUBE' / 'SUBEKODU' / …` — the verifier had no column information,
+so it guessed.
+
+The verification-grounding fix layers in three steps; **Layer 1 is in
+v0.4**:
+
+| Layer | Mechanism | Status |
+|-------|-----------|--------|
+| 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). | Shipped in v0.4 |
+| 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. | Planned |
+| 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop for cross-table cases that source steps don't cover. | Planned |
+
+Layer 1 is implemented in `services/agent/internal/validation/render` (the
+`RenderVerificationContext` helper) and consumed by
+`services/agent/internal/validation/insight_validator.go`. The orchestrator
+wires the full `explorationResult.Steps` into the validator via
+`SetExplorationLog` after the exploration phase completes and before the
+analysis loop runs — `ValidateInsights` panics if this wiring is missing,
+by design (no-backward-compat stance,
+`plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md` §1.1).
+
+When an insight cites no `source_steps` (older Mongo-stored insights or a
+malformed analysis-phase JSON), Layer 1 contributes nothing and the
+verifier falls through to the catalog-only path. Layer 3 will replace that
+fallback with on-demand schema lookups in the verifier's tool loop.

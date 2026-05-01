@@ -11,18 +11,29 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/render"
 )
 
 // InsightValidator verifies LLM-generated insights by querying the warehouse.
 // For each insight, it asks the LLM to generate a verification query,
-// runs it (with self-healing SQL fix), and compares the result with the claimed numbers.
+// runs it (with self-healing SQL fix), and compares the result with the
+// claimed numbers.
+//
+// The verifier is single-run-scoped: the orchestrator constructs a fresh
+// instance per discovery run and wires the exploration log between the
+// exploration and analysis phases via SetExplorationLog. It is NOT safe for
+// concurrent use across runs (the analysis loop is sequential today, so this
+// is not a current constraint to relax). Background and design discussion in
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §6.9.
 type InsightValidator struct {
-	aiClient  *ai.Client
-	warehouse gowarehouse.Provider
-	executor  SelfHealingExecutor
-	dataset   string
-	filter    string
-	schemaCtx string
+	aiClient          *ai.Client
+	warehouse         gowarehouse.Provider
+	executor          SelfHealingExecutor
+	dataset           string
+	filter            string
+	schemaCtx         string
+	explorationLog    []models.ExplorationStep
+	explorationLogSet bool
 }
 
 // SelfHealingExecutor executes queries with automatic SQL fix + retry.
@@ -55,12 +66,38 @@ func (v *InsightValidator) SetSchemaContext(schemaJSON string) {
 	v.schemaCtx = schemaJSON
 }
 
+// SetExplorationLog wires the exploration steps captured during the
+// exploration phase. The verifier renders the SQL of each cited
+// `source_steps` entry into the verification prompt so the LLM can adapt a
+// known-good query into a `SELECT COUNT(...)` shape rather than inventing
+// column names.
+//
+// MUST be called before ValidateInsights. Pass an empty slice (NOT nil) when
+// the run produced no steps — passing nil is treated as a wiring bug and
+// panics. The validator does not retain or copy the slice header; callers
+// should not mutate the slice afterwards.
+func (v *InsightValidator) SetExplorationLog(log []models.ExplorationStep) {
+	if log == nil {
+		panic("validation.InsightValidator: SetExplorationLog called with nil log; pass []models.ExplorationStep{} for empty-run cases")
+	}
+	v.explorationLog = log
+	v.explorationLogSet = true
+}
+
 // ValidateInsights verifies each insight by running a warehouse query.
 // Updates the insight's Validation field in-place and returns full results.
+//
+// Panics if SetExplorationLog was never called — the verifier's column
+// grounding depends on the exploration log being wired by the orchestrator
+// between the exploration and analysis phases. See plans/PLAN-INSIGHT-
+// VERIFICATION-GROUNDING.md §1.1 (no-backward-compat stance).
 func (v *InsightValidator) ValidateInsights(
 	ctx context.Context,
 	insights []models.Insight,
 ) []models.ValidationResult {
+	if !v.explorationLogSet {
+		panic("validation.InsightValidator: ValidateInsights called before SetExplorationLog; the orchestrator must wire the exploration log between the exploration and analysis phases")
+	}
 	results := make([]models.ValidationResult, 0, len(insights))
 
 	for i, insight := range insights {
@@ -212,7 +249,23 @@ func (v *InsightValidator) validateSingleInsight(
 	return vr
 }
 
-// generateVerificationQuery asks the LLM to create a SQL query that verifies the insight.
+// generateVerificationQuery asks the LLM to create a SQL query that verifies
+// the insight. The prompt is layered, in priority order:
+//
+//   1. Source exploration queries — the SQL of the steps the analyst LLM cited
+//      as `source_steps`. These are the highest-priority evidence: the queries
+//      already executed successfully against this warehouse, so their column
+//      references are authoritative. Rendered above the catalog so the LLM
+//      sees them first.
+//   2. Available table schemas — the catalog (one line per table). Used as
+//      supplementary context for tables that were not touched by source steps.
+//
+// Background: prior to this layering the verifier received only the catalog,
+// and on warehouses with non-English / abbreviated columns the model hallucin-
+// ated names (customer ticket 2026-04-30, plans/PLAN-INSIGHT-VERIFICATION-
+// GROUNDING.md). Source-step grounding closes that gap for single-table
+// insights — Layer 3 (lookup_schema in the verifier) closes the cross-table
+// gap in a follow-up PR.
 func (v *InsightValidator) generateVerificationQuery(
 	ctx context.Context,
 	insight *models.Insight,
@@ -224,33 +277,43 @@ func (v *InsightValidator) generateVerificationQuery(
 		schemaSection = fmt.Sprintf("\n**Available Table Schemas**:\n%s\n", v.schemaCtx)
 	}
 
+	sourceQueries := render.RenderVerificationContext(
+		v.explorationLog,
+		insight.SourceSteps,
+		render.DefaultBudgetChars,
+	)
+	sourceSection := ""
+	if sourceQueries != "" {
+		sourceSection = "\n" + sourceQueries + render.RuleInstruction + "\n"
+	}
+
 	prompt := fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
 
 **Available Datasets**: %s
 **SQL Dialect**: %s
 **Filter**: %s
-%s
+%s%s
 **CRITICAL TABLE NAME RULES**:
 - ALWAYS use fully qualified table names with backticks: `+"`dataset_name.table_name`"+`
 - Example: `+"`events_prod.sessions`"+` NOT just `+"`sessions`"+`
 - The dataset name MUST be included in every table reference
-- ONLY use column names that exist in the table schemas above
+- Reference only column names that appear in the source exploration queries (when shown) or in the table schemas section. Do not invent column names that are not documented above.
 
 **Insight to verify**:
 %s
 
 Generate a single SQL query that:
 1. Counts the affected users/entities described in this insight
-2. Uses COUNT(DISTINCT user_id) for user counts
+2. For user counts, prefer COUNT(DISTINCT user_id) — but only when a `+"`user_id`"+` (or the project's filter field) column is documented in the source queries or schemas above. Substitute the column name that actually exists; do not assume `+"`user_id`"+` is the right name.
 3. Uses FULLY QUALIFIED table names: `+"`dataset.table`"+`
-4. ONLY references columns that exist in the provided table schemas
-5. Includes the filter clause if provided
-6. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
+4. Includes the filter clause if provided
+5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
 
 Return ONLY the raw SQL query, no explanations, no markdown.`,
 		v.dataset,
 		v.warehouse.SQLDialect(),
 		v.filter,
+		sourceSection,
 		schemaSection,
 		string(insightJSON),
 	)

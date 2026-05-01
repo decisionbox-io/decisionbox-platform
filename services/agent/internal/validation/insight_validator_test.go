@@ -27,6 +27,9 @@ func newTestInsightValidator(t *testing.T) (*InsightValidator, *testutil.MockWar
 		Warehouse: wh,
 		Dataset:   "test_dataset",
 	})
+	// All ValidateInsights calls require an exploration log to be wired —
+	// tests that don't care about source-step rendering pass an empty slice.
+	v.SetExplorationLog([]models.ExplorationStep{})
 
 	return v, wh, llmProvider
 }

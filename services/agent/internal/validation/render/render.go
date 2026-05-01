@@ -1,0 +1,219 @@
+// Package render builds the "verification context" block — the column-grounded
+// evidence the insight verifier (and, in a later PR, the SQL fixer) inserts
+// into LLM prompts so the model sees real warehouse column names instead of
+// having to guess them.
+//
+// Background: the verification phase used to receive only a table-level catalog
+// (one line per table, no column names). On warehouses with non-English /
+// non-obvious column conventions (the customer at 192.1.0.157 ran into this
+// against an MSSQL Netsis-style schema on 2026-04-30 — every insight came back
+// with `validation.status = "error"` and `Invalid column name 'TARIiH' /
+// 'STHAR_SUBE' / …`), the model invented columns. This package renders the
+// authoritative grounding evidence — the SQL of the exploration steps the
+// analyst LLM cited as `source_steps` — so the verifier can adapt the existing,
+// already-successfully-executed SQL into a `SELECT COUNT(...)` shape without
+// inventing names.
+//
+// The full design lives in plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md; this
+// package implements §4.1 (Layer 1) and is reused by §4.2 (Layer 2 fixer) and
+// §4.3 (Layer 3 lookup_schema results).
+package render
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+)
+
+// DefaultBudgetChars is the soft cap for the rendered VerificationContext
+// section. Pathological CTE-heavy ERP SQL is ~5–10k chars per step; 32k fits
+// 4–6 steps comfortably plus framing overhead.
+const DefaultBudgetChars = 32_000
+
+// SectionHeader is the header that prefixes the rendered evidence block.
+// Exported so tests (and the surrounding prompt) can detect the section
+// boundary deterministically.
+const SectionHeader = "## Source Exploration Queries"
+
+// RuleInstruction is the column-grounding rule that follows the rendered
+// evidence in the verifier's generation prompt. Exported so the verifier
+// generation prompt can include it verbatim and tests can assert it didn't
+// drift. Phrasing reconciles "use only columns from source queries" with
+// the standard `COUNT(DISTINCT user_id)` shape when the project's filter
+// field is documented elsewhere — the model gets a clear precedence rule.
+const RuleInstruction = `**COLUMN GROUNDING — STRICT**:
+- Prefer column names that appear in the source exploration queries above. Those queries already executed successfully against this warehouse, so their column references are authoritative.
+- Do not invent new column names. If a column you would like to reference is not present in the source queries, fall back to a column documented in the table schemas section.
+- Adapt one of the source queries into a SELECT COUNT(...) AS count over the same table(s). Do not query a table that does not appear above unless it is required for an aggregation that is impossible against the source tables alone.`
+
+// RenderVerificationContext returns a markdown-formatted block of the source
+// exploration queries that the insight cites, in the order the insight cited
+// them. Returns the empty string when no cited step has executable SQL — the
+// caller is expected to omit the surrounding section in that case.
+//
+// budgetChars caps the total rendered length. Pass DefaultBudgetChars unless
+// the caller has a reason to tighten or relax the budget. When the rendered
+// block would exceed the budget, drop the OLDEST cited step first (keeping the
+// most recent — typically the LLM's narrowest-focused query that produced the
+// numeric finding).
+//
+// Steps that don't appear in `log` are silently skipped (the analysis-step
+// picker may have dropped a step but the insight still cited the index;
+// silently skipping mirrors what `models.Insight.SourceSteps` is documented to
+// allow). Steps whose Action is not "query_data" or whose Query is empty are
+// also skipped — there's nothing to verify from a lookup_schema cycle.
+func RenderVerificationContext(
+	log []models.ExplorationStep,
+	sourceStepIDs []int,
+	budgetChars int,
+) string {
+	if budgetChars <= 0 {
+		budgetChars = DefaultBudgetChars
+	}
+
+	indexed := indexLog(log)
+	steps := pickCitedSteps(indexed, sourceStepIDs)
+	if len(steps) == 0 {
+		return ""
+	}
+
+	steps = trimToBudget(steps, budgetChars)
+	if len(steps) == 0 {
+		return ""
+	}
+
+	return renderSection(steps)
+}
+
+func indexLog(log []models.ExplorationStep) map[int]models.ExplorationStep {
+	out := make(map[int]models.ExplorationStep, len(log))
+	for _, s := range log {
+		out[s.Step] = s
+	}
+	return out
+}
+
+// pickCitedSteps walks `sourceStepIDs` (the order the insight cited them) and
+// returns matching log entries that actually executed a query. Order is the
+// citation order — duplicates are de-duped, the first occurrence wins.
+func pickCitedSteps(indexed map[int]models.ExplorationStep, ids []int) []models.ExplorationStep {
+	seen := make(map[int]bool, len(ids))
+	out := make([]models.ExplorationStep, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		s, ok := indexed[id]
+		if !ok {
+			continue
+		}
+		if !isExecutableQueryStep(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func isExecutableQueryStep(s models.ExplorationStep) bool {
+	if strings.TrimSpace(s.Query) == "" {
+		return false
+	}
+	if s.Action != "" && s.Action != "query_data" {
+		return false
+	}
+	return true
+}
+
+// trimToBudget returns the subset of `steps` whose total rendered size is
+// within budget, dropping the OLDEST step number first (lowest Step value)
+// when the budget is exceeded. Citation order within the kept set is
+// preserved.
+func trimToBudget(steps []models.ExplorationStep, budgetChars int) []models.ExplorationStep {
+	if len(steps) == 0 {
+		return steps
+	}
+
+	if totalRenderedSize(steps) <= budgetChars {
+		return steps
+	}
+
+	// We need to drop the OLDEST step number first. Sort by Step ascending
+	// to identify drop candidates without disturbing citation order.
+	bySize := make([]models.ExplorationStep, len(steps))
+	copy(bySize, steps)
+	sort.SliceStable(bySize, func(i, j int) bool {
+		return bySize[i].Step < bySize[j].Step
+	})
+
+	dropped := make(map[int]bool)
+	for totalRenderedSizeFiltered(steps, dropped) > budgetChars && len(dropped) < len(steps) {
+		// Drop the oldest step number that hasn't been dropped yet.
+		for _, candidate := range bySize {
+			if !dropped[candidate.Step] {
+				dropped[candidate.Step] = true
+				break
+			}
+		}
+	}
+
+	out := make([]models.ExplorationStep, 0, len(steps)-len(dropped))
+	for _, s := range steps {
+		if dropped[s.Step] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func totalRenderedSize(steps []models.ExplorationStep) int {
+	return len(renderSection(steps))
+}
+
+func totalRenderedSizeFiltered(steps []models.ExplorationStep, dropped map[int]bool) int {
+	if len(dropped) == 0 {
+		return totalRenderedSize(steps)
+	}
+	kept := make([]models.ExplorationStep, 0, len(steps)-len(dropped))
+	for _, s := range steps {
+		if dropped[s.Step] {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return totalRenderedSize(kept)
+}
+
+func renderSection(steps []models.ExplorationStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString(SectionHeader)
+	b.WriteString("\n\n")
+	for _, s := range steps {
+		writeStep(&b, s)
+	}
+	return b.String()
+}
+
+func writeStep(b *strings.Builder, s models.ExplorationStep) {
+	purpose := strings.TrimSpace(s.QueryPurpose)
+	if purpose == "" {
+		purpose = "(no purpose recorded)"
+	}
+	fmt.Fprintf(b, "### Step %d — %s\n\n", s.Step, purpose)
+	b.WriteString("```sql\n")
+	b.WriteString(strings.TrimRight(s.Query, "\n"))
+	b.WriteString("\n```\n\n")
+	if s.Error != "" {
+		fmt.Fprintf(b, "Returned an error: %s\n\n", s.Error)
+		return
+	}
+	fmt.Fprintf(b, "Returned %d row(s).\n\n", s.RowCount)
+}

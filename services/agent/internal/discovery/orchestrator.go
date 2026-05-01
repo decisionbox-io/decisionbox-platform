@@ -483,6 +483,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 
+	// Wire the exploration log into the verifier before the analysis loop
+	// runs. The verifier renders the SQL of cited source_steps into its
+	// generation prompt as authoritative column-grounding evidence — without
+	// this wiring it would hallucinate column names on warehouses with
+	// non-English / abbreviated columns (customer ticket 2026-04-30, see
+	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). ValidateInsights
+	// panics if this wiring is missing, by design.
+	if o.insightValidator != nil {
+		steps := explorationResult.Steps
+		if steps == nil {
+			steps = []models.ExplorationStep{}
+		}
+		o.insightValidator.SetExplorationLog(steps)
+	}
+
 	// Phase 4: Analysis by area (dynamic from domain pack)
 	// Filter areas if selective run requested
 	runAreas := analysisAreas
