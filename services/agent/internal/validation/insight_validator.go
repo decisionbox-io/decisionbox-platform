@@ -74,8 +74,8 @@ func (v *InsightValidator) SetSchemaContext(schemaJSON string) {
 //
 // MUST be called before ValidateInsights. Pass an empty slice (NOT nil) when
 // the run produced no steps — passing nil is treated as a wiring bug and
-// panics. The validator does not retain or copy the slice header; callers
-// should not mutate the slice afterwards.
+// panics. The validator retains the provided slice and does not copy its
+// elements or backing array; callers must not mutate the slice afterwards.
 func (v *InsightValidator) SetExplorationLog(log []models.ExplorationStep) {
 	if log == nil {
 		panic("validation.InsightValidator: SetExplorationLog called with nil log; pass []models.ExplorationStep{} for empty-run cases")

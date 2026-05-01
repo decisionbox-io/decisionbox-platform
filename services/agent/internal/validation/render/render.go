@@ -5,14 +5,13 @@
 //
 // Background: the verification phase used to receive only a table-level catalog
 // (one line per table, no column names). On warehouses with non-English /
-// non-obvious column conventions (the customer at 192.1.0.157 ran into this
-// against an MSSQL Netsis-style schema on 2026-04-30 — every insight came back
-// with `validation.status = "error"` and `Invalid column name 'TARIiH' /
-// 'STHAR_SUBE' / …`), the model invented columns. This package renders the
-// authoritative grounding evidence — the SQL of the exploration steps the
-// analyst LLM cited as `source_steps` — so the verifier can adapt the existing,
-// already-successfully-executed SQL into a `SELECT COUNT(...)` shape without
-// inventing names.
+// non-obvious column conventions (e.g. an MSSQL Netsis-style ERP schema where
+// every insight came back with `validation.status = "error"` and `Invalid
+// column name 'TARIiH' / 'STHAR_SUBE' / …`), the model invented columns. This
+// package renders the authoritative grounding evidence — the SQL of the
+// exploration steps the analyst LLM cited as `source_steps` — so the verifier
+// can adapt the existing, already-successfully-executed SQL into a
+// `SELECT COUNT(...)` shape without inventing names.
 //
 // The full design lives in plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md; this
 // package implements §4.1 (Layer 1) and is reused by §4.2 (Layer 2 fixer) and
@@ -132,31 +131,46 @@ func isExecutableQueryStep(s models.ExplorationStep) bool {
 // within budget, dropping the OLDEST step number first (lowest Step value)
 // when the budget is exceeded. Citation order within the kept set is
 // preserved.
+//
+// The size accounting is precomputed once per step and the running total is
+// updated in place each time a step is dropped, so the loop runs in O(n log n)
+// (the sort) instead of re-rendering the entire section per drop iteration.
 func trimToBudget(steps []models.ExplorationStep, budgetChars int) []models.ExplorationStep {
 	if len(steps) == 0 {
 		return steps
 	}
 
-	if totalRenderedSize(steps) <= budgetChars {
+	headerSize := len(SectionHeader) + len("\n\n")
+	perStepSize := make(map[int]int, len(steps))
+	total := headerSize
+	for _, s := range steps {
+		var b strings.Builder
+		writeStep(&b, s)
+		sz := b.Len()
+		perStepSize[s.Step] = sz
+		total += sz
+	}
+	if total <= budgetChars {
 		return steps
 	}
 
-	// We need to drop the OLDEST step number first. Sort by Step ascending
-	// to identify drop candidates without disturbing citation order.
-	bySize := make([]models.ExplorationStep, len(steps))
-	copy(bySize, steps)
-	sort.SliceStable(bySize, func(i, j int) bool {
-		return bySize[i].Step < bySize[j].Step
+	// Drop oldest Step first. Sort a copy ascending; citation order in the
+	// returned slice is preserved by walking the original `steps`.
+	byStepAsc := make([]models.ExplorationStep, len(steps))
+	copy(byStepAsc, steps)
+	sort.SliceStable(byStepAsc, func(i, j int) bool {
+		return byStepAsc[i].Step < byStepAsc[j].Step
 	})
 
-	dropped := make(map[int]bool)
-	for totalRenderedSizeFiltered(steps, dropped) > budgetChars && len(dropped) < len(steps) {
-		// Drop the oldest step number that hasn't been dropped yet.
-		for _, candidate := range bySize {
-			if !dropped[candidate.Step] {
-				dropped[candidate.Step] = true
-				break
+	dropped := make(map[int]bool, len(steps))
+	for total > budgetChars && len(dropped) < len(steps) {
+		for _, candidate := range byStepAsc {
+			if dropped[candidate.Step] {
+				continue
 			}
+			dropped[candidate.Step] = true
+			total -= perStepSize[candidate.Step]
+			break
 		}
 	}
 
@@ -168,24 +182,6 @@ func trimToBudget(steps []models.ExplorationStep, budgetChars int) []models.Expl
 		out = append(out, s)
 	}
 	return out
-}
-
-func totalRenderedSize(steps []models.ExplorationStep) int {
-	return len(renderSection(steps))
-}
-
-func totalRenderedSizeFiltered(steps []models.ExplorationStep, dropped map[int]bool) int {
-	if len(dropped) == 0 {
-		return totalRenderedSize(steps)
-	}
-	kept := make([]models.ExplorationStep, 0, len(steps)-len(dropped))
-	for _, s := range steps {
-		if dropped[s.Step] {
-			continue
-		}
-		kept = append(kept, s)
-	}
-	return totalRenderedSize(kept)
 }
 
 func renderSection(steps []models.ExplorationStep) string {
