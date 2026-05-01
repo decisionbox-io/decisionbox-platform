@@ -453,13 +453,19 @@ func TestInteg_DiscoveryRepo(t *testing.T) {
 		ProjectID: "integ-disc-1", Domain: "gaming", Category: "match3",
 		DiscoveryDate: time.Now(), TotalSteps: 42,
 		Insights: []models.Insight{{ID: "i1", AnalysisArea: "churn", Name: "Test"}},
-		AnalysisLog: []models.AnalysisStep{
-			{AreaID: "churn", Prompt: "test prompt", Response: "{}", TokensIn: 500, TokensOut: 200},
-		},
 	}
 
 	if err := repo.Save(context.Background(), result); err != nil {
 		t.Fatalf("Save: %v", err)
+	}
+	// Per-area analysis dialog moved to discovery_analysis_steps; persist
+	// it via the DiscoveryLogRepository (the orchestrator calls this after
+	// the parent doc save in production).
+	logRepo := database.NewDiscoveryLogRepository(testDB)
+	if err := logRepo.SaveAnalysisSteps(context.Background(), result.ProjectID, result.ID, "", []models.AnalysisStep{
+		{AreaID: "churn", Prompt: "test prompt", Response: "{}", TokensIn: 500, TokensOut: 200},
+	}); err != nil {
+		t.Fatalf("SaveAnalysisSteps: %v", err)
 	}
 
 	got, err := repo.GetLatest(context.Background(), "integ-disc-1")
@@ -469,10 +475,14 @@ func TestInteg_DiscoveryRepo(t *testing.T) {
 	if got.TotalSteps != 42 {
 		t.Errorf("TotalSteps = %d", got.TotalSteps)
 	}
-	if len(got.AnalysisLog) != 1 {
-		t.Errorf("AnalysisLog = %d", len(got.AnalysisLog))
+	steps, err := logRepo.ListAnalysisStepsByDiscovery(context.Background(), got.ID)
+	if err != nil {
+		t.Fatalf("ListAnalysisStepsByDiscovery: %v", err)
 	}
-	if got.AnalysisLog[0].TokensIn != 500 {
-		t.Errorf("TokensIn = %d", got.AnalysisLog[0].TokensIn)
+	if len(steps) != 1 {
+		t.Errorf("AnalysisSteps = %d, want 1", len(steps))
+	}
+	if steps[0].TokensIn != 500 {
+		t.Errorf("TokensIn = %d", steps[0].TokensIn)
 	}
 }

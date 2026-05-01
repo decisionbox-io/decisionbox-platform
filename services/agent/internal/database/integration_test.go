@@ -204,9 +204,6 @@ func TestDiscoveryRepository_SaveAndGet(t *testing.T) {
 		Recommendations: []models.Recommendation{
 			{ID: "r1", Title: "Fix Churn", Priority: 5},
 		},
-		AnalysisLog: []models.AnalysisStep{
-			{AreaID: "churn", Prompt: "analyze...", Response: "{}", TokensIn: 500, TokensOut: 200},
-		},
 	}
 
 	err := repo.Save(ctx, result)
@@ -214,7 +211,15 @@ func TestDiscoveryRepository_SaveAndGet(t *testing.T) {
 		t.Fatalf("Save error: %v", err)
 	}
 
-	// Get latest
+	// Per-area dialog persists into discovery_analysis_steps now (the
+	// orchestrator calls SaveAnalysisSteps after the parent doc save).
+	logRepo := NewDiscoveryLogRepository(db)
+	if err := logRepo.SaveAnalysisSteps(ctx, result.ProjectID, result.ID, "", []models.AnalysisStep{
+		{AreaID: "churn", Prompt: "analyze...", Response: "{}", TokensIn: 500, TokensOut: 200},
+	}); err != nil {
+		t.Fatalf("SaveAnalysisSteps: %v", err)
+	}
+
 	got, err := repo.GetLatest(ctx, "proj-1")
 	if err != nil {
 		t.Fatalf("GetLatest error: %v", err)
@@ -228,11 +233,15 @@ func TestDiscoveryRepository_SaveAndGet(t *testing.T) {
 	if len(got.Recommendations) != 1 {
 		t.Errorf("Recommendations = %d, want 1", len(got.Recommendations))
 	}
-	if len(got.AnalysisLog) != 1 {
-		t.Errorf("AnalysisLog = %d, want 1", len(got.AnalysisLog))
+	steps, err := logRepo.ListAnalysisStepsByDiscovery(ctx, got.ID)
+	if err != nil {
+		t.Fatalf("ListAnalysisStepsByDiscovery: %v", err)
 	}
-	if got.AnalysisLog[0].TokensIn != 500 {
-		t.Errorf("TokensIn = %d, want 500", got.AnalysisLog[0].TokensIn)
+	if len(steps) != 1 {
+		t.Errorf("AnalysisSteps = %d, want 1", len(steps))
+	}
+	if steps[0].TokensIn != 500 {
+		t.Errorf("TokensIn = %d, want 500", steps[0].TokensIn)
 	}
 }
 
