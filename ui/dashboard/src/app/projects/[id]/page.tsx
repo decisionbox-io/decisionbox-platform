@@ -522,38 +522,56 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
-  // run is live and stop after it terminates.
+  // run is live and stop after it terminates. Polling is self-scheduling
+  // (await-then-schedule) rather than setInterval, so a slow network
+  // can never overlap two `since`-equal requests and produce duplicate
+  // rows.
   const [steps, setSteps] = useState<RunStep[]>([]);
   const lastIDRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
+  // When run.id flips (a new run started while the panel stayed
+  // mounted), the cursor and accumulated steps from the previous run
+  // must be cleared before the next effect tick fires its first poll.
+  // Otherwise the new run's steps would render appended to the old
+  // run's tail, and the cursor would skip rows whose ObjectIDs sit
+  // below the previous run's last id.
+  useEffect(() => {
+    setSteps([]);
+    lastIDRef.current = '';
+    prevStepCount.current = 0;
+  }, [run.id]);
+
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
     const isTerminal = (s: string) => s === 'completed' || s === 'failed' || s === 'cancelled';
-    const poll = async () => {
+    const tick = async () => {
       try {
         const next = await api.listRunSteps(run.id, lastIDRef.current || undefined);
-        if (cancelled || !next.length) return;
-        lastIDRef.current = next[next.length - 1].id;
-        setSteps(prev => prev.concat(next));
+        if (cancelled) return;
+        if (next.length) {
+          lastIDRef.current = next[next.length - 1].id;
+          setSteps(prev => prev.concat(next));
+        }
       } catch {
         // Network blips are tolerable — the next tick will retry.
       }
-    };
-    // Prime once, then poll until the run terminates. After terminal,
-    // do one final fetch to flush any rows that landed in the gap.
-    poll();
-    const id = window.setInterval(() => {
-      if (isTerminal(run.status)) {
-        window.clearInterval(id);
-        poll();
-        return;
+      if (cancelled) return;
+      // Self-scheduling: only arm the next poll AFTER this one
+      // resolves, so we never have two listRunSteps calls in flight
+      // sharing the same cursor.
+      if (!isTerminal(run.status)) {
+        timer = window.setTimeout(tick, 1500);
       }
-      poll();
-    }, 1500);
-    return () => { cancelled = true; window.clearInterval(id); };
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [run.id, run.status]);
 
   useEffect(() => {
