@@ -21,7 +21,9 @@ func NewRunRepository(db *DB) *RunRepository {
 	return &RunRepository{col: db.Collection("discovery_runs")}
 }
 
-// Create creates a new discovery run record.
+// Create creates a new discovery run record. Per-step rows live in the
+// discovery_run_steps collection (RunStepRepository) — no embedded
+// `steps` slice initialisation here.
 func (r *RunRepository) Create(ctx context.Context, projectID string) (string, error) {
 	run := models.DiscoveryRun{
 		ProjectID: projectID,
@@ -30,7 +32,6 @@ func (r *RunRepository) Create(ctx context.Context, projectID string) (string, e
 		Progress:  0,
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		Steps:     make([]models.RunStep, 0),
 	}
 
 	result, err := r.col.InsertOne(ctx, run)

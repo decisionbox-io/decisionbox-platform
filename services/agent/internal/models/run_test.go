@@ -63,20 +63,8 @@ func TestRun_JSONRoundTrip(t *testing.T) {
 		StartedAt:   now,
 		UpdatedAt:   completedAt,
 		CompletedAt: &completedAt,
-		Steps: []RunStep{
-			{
-				Phase:   PhaseExploration,
-				StepNum: 1,
-				Type:    "query",
-				Message: "Step 1: checking retention",
-				Query:   "SELECT COUNT(*) FROM sessions",
-			},
-			{
-				Phase:   PhaseAnalysis,
-				Type:    "insight",
-				Message: "Found: High Churn (critical)",
-			},
-		},
+		// Per-step rows live in discovery_run_steps now (RunStepRepository).
+		// The DiscoveryRun struct itself only carries summary state.
 		TotalQueries:      20,
 		SuccessfulQueries: 18,
 		FailedQueries:     2,
@@ -110,9 +98,6 @@ func TestRun_JSONRoundTrip(t *testing.T) {
 	}
 	if parsed.CompletedAt == nil {
 		t.Fatal("CompletedAt should not be nil")
-	}
-	if len(parsed.Steps) != 2 {
-		t.Errorf("Steps = %d, want 2", len(parsed.Steps))
 	}
 	if parsed.TotalQueries != 20 {
 		t.Errorf("TotalQueries = %d, want 20", parsed.TotalQueries)

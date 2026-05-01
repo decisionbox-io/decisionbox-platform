@@ -14,7 +14,7 @@ import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
 import { markRead } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, SearchResultItem } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
@@ -81,6 +81,11 @@ export default function InsightDetailPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
+  // Per-step / per-area / per-result logs are no longer embedded on the
+  // discovery doc — fetch them from the dedicated split-log endpoints.
+  const [explorationLog, setExplorationLog] = useState<ExplorationStep[]>([]);
+  const [analysisLog, setAnalysisLog] = useState<AnalysisLogStep[]>([]);
+  const [validationLog, setValidationLog] = useState<ValidationLogEntry[]>([]);
   // Technical details (SQL queries, exploration steps, token counts) are
   // opened explicitly via a button in the sidebar. The Drawer gets the full
   // viewport width, so code blocks don't have to squeeze into the sidebar.
@@ -103,6 +108,9 @@ export default function InsightDetailPage() {
         const match = (fb || []).find((f) => f.target_type === 'insight' && f.target_id === insightId);
         if (match) setFeedback(match);
       }).catch(() => {}),
+      api.listExplorationSteps(runId).then((s) => setExplorationLog(s || [])).catch(() => {}),
+      api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
+      api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
@@ -132,14 +140,14 @@ export default function InsightDetailPage() {
 
   // Get the exploration steps this insight is based on (cited by the LLM)
   const sourceSteps = (insight.source_steps || [])
-    .map((stepNum) => (discovery?.exploration_log || []).find((s) => s.step === stepNum))
+    .map((stepNum) => explorationLog.find((s) => s.step === stepNum))
     .filter(Boolean);
 
   // Get the analysis step for this insight's area
-  const analysisStep = discovery?.analysis_log?.find((a) => a.area_id === insight.analysis_area);
+  const analysisStep = analysisLog.find((a) => a.area_id === insight.analysis_area);
 
   // Get validation entries for this insight's area
-  const validationEntries = (discovery?.validation_log || []).filter(
+  const validationEntries = validationLog.filter(
     (v) => v.analysis_area === insight.analysis_area
   );
 

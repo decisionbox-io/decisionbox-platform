@@ -278,9 +278,10 @@ export interface DiscoveryResult {
   insights: Insight[];
   recommendations: Recommendation[];
   summary: Summary;
-  exploration_log?: ExplorationStep[];
-  analysis_log?: AnalysisLogStep[];
-  validation_log?: ValidationLogEntry[];
+  // Logs are no longer embedded — fetch them from the dedicated endpoints
+  // when needed (each has its own GET under /api/v1/discoveries/{id}/...).
+  // The previous embedded arrays hit the 16MB BSON document limit on long
+  // runs and killed the discovery save.
   created_at: string;
 }
 
@@ -952,6 +953,29 @@ export const api = {
     request<DiscoveryResult>(`/api/v1/projects/${projectId}/discoveries/latest`),
   getDiscoveryById: (discoveryId: string) =>
     request<DiscoveryResult>(`/api/v1/discoveries/${discoveryId}`),
+  // Per-discovery split-log endpoints. The previous embedded
+  // exploration_log / analysis_log / validation_log arrays were removed
+  // from the DiscoveryResult document to keep it under Mongo's 16MB
+  // limit; these are how the dashboard rehydrates the LLM dialog.
+  listExplorationSteps: (discoveryId: string, limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<ExplorationStep[]>(`/api/v1/discoveries/${discoveryId}/exploration-steps${qs}`);
+  },
+  listAnalysisSteps: (discoveryId: string) =>
+    request<AnalysisLogStep[]>(`/api/v1/discoveries/${discoveryId}/analysis-steps`),
+  listValidationResults: (discoveryId: string) =>
+    request<ValidationLogEntry[]>(`/api/v1/discoveries/${discoveryId}/validation-results`),
+  getRecommendationLog: (discoveryId: string) =>
+    request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
+  // Live run-step stream. The dashboard polls with the most recent
+  // timestamp it has rendered so each call only returns new rows.
+  listRunSteps: (runId: string, since?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<RunStep[]>(`/api/v1/runs/${runId}/steps${qs ? '?' + qs : ''}`);
+  },
   getDiscoveryByDate: (projectId: string, date: string) =>
     request<DiscoveryResult>(`/api/v1/projects/${projectId}/discoveries/${date}`),
   getProjectStatus: (projectId: string) =>

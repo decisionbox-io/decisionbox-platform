@@ -365,100 +365,31 @@ func TestDiscoveryResult_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDiscoveryResult_WithLogs(t *testing.T) {
-	now := time.Now().Truncate(time.Millisecond)
-	result := DiscoveryResult{
-		ID: "disc-logs",
-		ExplorationLog: []ExplorationStep{
-			{
-				Step:         1,
-				Timestamp:    now,
-				Action:       "query",
-				Thinking:     "checking user counts",
-				QueryPurpose: "count users",
-				Query:        "SELECT COUNT(*) FROM users",
-				RowCount:     1,
-				ExecutionMs:  45,
-			},
-		},
-		AnalysisLog: []AnalysisStep{
-			{
-				AreaID:          "churn",
-				AreaName:        "Churn Analysis",
-				RunAt:           now,
-				RelevantQueries: 5,
-				TokensIn:        1000,
-				TokensOut:       500,
-				DurationMs:      3000,
-				InsightCount:    2,
-			},
-		},
-		ValidationLog: []ValidationLogEntry{
-			{
-				InsightID:     "ins-1",
-				AnalysisArea:  "churn",
-				ClaimedCount:  1500,
-				VerifiedCount: 1480,
-				Status:        "verified",
-				Reasoning:     "count matches within tolerance",
-				Query:         "SELECT COUNT(DISTINCT user_id) FROM churned",
-				ValidatedAt:   now,
-			},
-		},
-	}
+// The previous TestDiscoveryResult_WithLogs / TestDiscoveryResult_OmitEmptyLogs
+// tests round-tripped log fields (exploration_log, analysis_log,
+// validation_log) embedded on DiscoveryResult. Those fields are gone — the
+// logs now live in per-step collections (DiscoveryLogRepository) and are
+// served by paginated endpoints. The split-collection persistence + read
+// path is exercised by the integration test against Mongo testcontainers in
+// services/agent/internal/database/discovery_log_repo_integration_test.go.
 
+func TestDiscoveryResult_NoEmbeddedLogFields(t *testing.T) {
+	// Regression guard: serialising a DiscoveryResult must not surface any
+	// of the legacy log fields. If a future edit re-adds them, this test
+	// catches it before it lands in the wire format.
+	result := DiscoveryResult{ID: "disc-no-logs", ProjectID: "proj-1"}
 	data, err := json.Marshal(result)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("marshal: %v", err)
 	}
-
-	var decoded DiscoveryResult
-	json.Unmarshal(data, &decoded)
-
-	if len(decoded.ExplorationLog) != 1 {
-		t.Fatalf("ExplorationLog len = %d", len(decoded.ExplorationLog))
-	}
-	if decoded.ExplorationLog[0].Step != 1 {
-		t.Errorf("ExplorationLog[0].Step = %d", decoded.ExplorationLog[0].Step)
-	}
-	if decoded.ExplorationLog[0].ExecutionMs != 45 {
-		t.Errorf("ExplorationLog[0].ExecutionMs = %d", decoded.ExplorationLog[0].ExecutionMs)
-	}
-
-	if len(decoded.AnalysisLog) != 1 {
-		t.Fatalf("AnalysisLog len = %d", len(decoded.AnalysisLog))
-	}
-	if decoded.AnalysisLog[0].TokensIn != 1000 {
-		t.Errorf("AnalysisLog[0].TokensIn = %d", decoded.AnalysisLog[0].TokensIn)
-	}
-
-	if len(decoded.ValidationLog) != 1 {
-		t.Fatalf("ValidationLog len = %d", len(decoded.ValidationLog))
-	}
-	if decoded.ValidationLog[0].Status != "verified" {
-		t.Errorf("ValidationLog[0].Status = %q", decoded.ValidationLog[0].Status)
-	}
-}
-
-func TestDiscoveryResult_OmitEmptyLogs(t *testing.T) {
-	result := DiscoveryResult{
-		ID:        "disc-no-logs",
-		ProjectID: "proj-1",
-	}
-
-	data, _ := json.Marshal(result)
 	var raw map[string]interface{}
-	json.Unmarshal(data, &raw)
-
-	// Logs should be omitted when empty
-	if _, ok := raw["exploration_log"]; ok {
-		t.Error("nil exploration_log should be omitted")
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := raw["analysis_log"]; ok {
-		t.Error("nil analysis_log should be omitted")
-	}
-	if _, ok := raw["validation_log"]; ok {
-		t.Error("nil validation_log should be omitted")
+	for _, k := range []string{"exploration_log", "analysis_log", "validation_log", "recommendation_log"} {
+		if _, ok := raw[k]; ok {
+			t.Errorf("DiscoveryResult must not expose %q in its wire format (logs live in split collections)", k)
+		}
 	}
 }
 
@@ -523,28 +454,8 @@ func TestDiscoveryRun_JSONRoundTrip(t *testing.T) {
 		StartedAt:   now,
 		UpdatedAt:   now,
 		CompletedAt: &completed,
-		Steps: []RunStep{
-			{
-				Phase:     "exploration",
-				StepNum:   1,
-				Timestamp: now,
-				Type:      "query",
-				Message:   "Executing schema query",
-				Query:     "SELECT * FROM INFORMATION_SCHEMA.TABLES",
-				RowCount:  10,
-				QueryTimeMs: 150,
-			},
-			{
-				Phase:           "analysis",
-				StepNum:         2,
-				Timestamp:       now,
-				Type:            "insight",
-				Message:         "Found churn pattern",
-				InsightName:     "D1 Churn",
-				InsightSeverity: "high",
-				DurationMs:      3000,
-			},
-		},
+		// Per-step rows live in discovery_run_steps now (RunStepRepository).
+		// The DiscoveryRun struct itself only carries summary + counters.
 		TotalQueries:      50,
 		SuccessfulQueries: 48,
 		FailedQueries:     2,
@@ -591,16 +502,8 @@ func TestDiscoveryRun_JSONRoundTrip(t *testing.T) {
 	if decoded.InsightsFound != 5 {
 		t.Errorf("InsightsFound = %d", decoded.InsightsFound)
 	}
-
-	if len(decoded.Steps) != 2 {
-		t.Fatalf("Steps len = %d", len(decoded.Steps))
-	}
-	if decoded.Steps[0].Query != "SELECT * FROM INFORMATION_SCHEMA.TABLES" {
-		t.Errorf("Steps[0].Query = %q", decoded.Steps[0].Query)
-	}
-	if decoded.Steps[1].InsightName != "D1 Churn" {
-		t.Errorf("Steps[1].InsightName = %q", decoded.Steps[1].InsightName)
-	}
+	// Step persistence is exercised by the RunStepRepository integration
+	// test in services/agent/internal/database/run_step_repo_integration_test.go.
 }
 
 func TestDiscoveryRun_OmitEmptyCompletedAt(t *testing.T) {

@@ -18,9 +18,12 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
-	// Live step log — each step the agent takes is appended here.
-	// The dashboard can show this as a real-time conversation/activity feed.
-	Steps []RunStep `bson:"steps" json:"steps"`
+	// Live step log used to be embedded here as `Steps []RunStep`. The
+	// $push streaming pattern produced unbounded growth on long runs and
+	// hit the same 16MB BSON limit that killed discovery saves. Each
+	// RunStep now lands in the discovery_run_steps collection
+	// (RunStepRepository) keyed by run_id; the dashboard pulls them via
+	// GET /api/v1/runs/{id}/steps with a `since` cursor for streaming.
 
 	// Summary stats (updated as run progresses)
 	TotalQueries     int `bson:"total_queries" json:"total_queries"`

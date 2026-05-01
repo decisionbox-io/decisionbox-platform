@@ -47,10 +47,11 @@ type Orchestrator struct {
 	aiClient      *ai.Client
 	warehouse     gowarehouse.Provider
 
-	contextRepo   *database.ContextRepository
-	discoveryRepo *database.DiscoveryRepository
-	feedbackRepo  *database.FeedbackRepository
-	debugLogRepo  *database.DebugLogRepository
+	contextRepo      *database.ContextRepository
+	discoveryRepo    *database.DiscoveryRepository
+	discoveryLogRepo *database.DiscoveryLogRepository
+	feedbackRepo     *database.FeedbackRepository
+	debugLogRepo     *database.DebugLogRepository
 
 	explorationEngine    *ai.ExplorationEngine
 	userCountValidator   *validation.UserCountValidator
@@ -105,13 +106,24 @@ type OrchestratorOptions struct {
 	AIClient      *ai.Client
 	Warehouse     gowarehouse.Provider
 
-	ContextRepo   *database.ContextRepository
-	DiscoveryRepo *database.DiscoveryRepository
-	FeedbackRepo  *database.FeedbackRepository
-	DebugLogRepo  *database.DebugLogRepository
+	ContextRepo      *database.ContextRepository
+	DiscoveryRepo    *database.DiscoveryRepository
+	// DiscoveryLogRepo persists the per-step / per-area / per-result rows
+	// (exploration_steps, analysis_steps, validation_results,
+	// recommendation_log) that used to be embedded arrays inside the
+	// discoveries document. Required — the orchestrator panics at run
+	// start when missing rather than silently dropping the LLM dialog.
+	DiscoveryLogRepo *database.DiscoveryLogRepository
+	FeedbackRepo     *database.FeedbackRepository
+	DebugLogRepo     *database.DebugLogRepository
 
-	RunRepo         *database.RunRepository
-	RunID           string
+	RunRepo      *database.RunRepository
+	// RunStepRepo persists the per-step rows that used to live as an
+	// embedded `steps` array on the discovery_runs document. Required —
+	// without it the status reporter has nowhere to write the live step
+	// stream and the dashboard's progress feed goes dark.
+	RunStepRepo  *database.RunStepRepository
+	RunID        string
 
 	ProjectID         string
 	Domain            string
@@ -203,14 +215,18 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 
 	// InsightValidator created in RunDiscovery where QueryExecutor is available
 
-	// Status reporter for live updates
-	statusReporter := NewStatusReporter(opts.RunRepo, opts.RunID, 0)
+	// Status reporter for live updates. Per-step rows go to the
+	// discovery_run_steps collection via RunStepRepo (split out of the
+	// run doc to avoid the 16MB-array problem); run-doc-level updates
+	// (status / phase / counters) stay on RunRepo.
+	statusReporter := NewStatusReporter(opts.RunRepo, opts.RunStepRepo, opts.ProjectID, opts.RunID, 0)
 
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
+		discoveryLogRepo:   opts.DiscoveryLogRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
@@ -781,16 +797,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			QueriesExecuted:      explorationResult.TotalSteps,
 			Errors:               analysisErrors,
 		},
-		ExplorationLog:    explorationResult.Steps,
-		AnalysisLog:       analysisLog,
-		RecommendationLog: recStep,
-		ValidationLog:     allValidation,
-		CreatedAt:         time.Now(),
-		UpdatedAt:         time.Now(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	if err := o.discoveryRepo.Save(ctx, result); err != nil {
 		return nil, fmt.Errorf("failed to save discovery result: %w", err)
+	}
+
+	// Persist the per-step / per-area / per-result rows into their split
+	// collections. Failures here are logged but do not roll back the
+	// discovery — the parent doc + structured outputs (insights,
+	// recommendations, summary) are already persisted, and re-deriving
+	// the LLM dialog from a partial save would be worse than losing it.
+	// Background: the embedded arrays previously here blew past the 16MB
+	// BSON document limit on long runs. See database/discovery_log_repo.go.
+	if o.discoveryLogRepo != nil {
+		if err := o.discoveryLogRepo.SaveExplorationSteps(ctx, o.projectID, result.ID, o.runID, explorationResult.Steps); err != nil {
+			applog.WithError(err).Warn("Failed to persist exploration steps to split collection")
+		}
+		if err := o.discoveryLogRepo.SaveAnalysisSteps(ctx, o.projectID, result.ID, o.runID, analysisLog); err != nil {
+			applog.WithError(err).Warn("Failed to persist analysis steps to split collection")
+		}
+		if err := o.discoveryLogRepo.SaveValidationResults(ctx, o.projectID, result.ID, o.runID, allValidation); err != nil {
+			applog.WithError(err).Warn("Failed to persist validation results to split collection")
+		}
+		if err := o.discoveryLogRepo.SaveRecommendationLog(ctx, o.projectID, result.ID, o.runID, recStep); err != nil {
+			applog.WithError(err).Warn("Failed to persist recommendation log to split collection")
+		}
 	}
 
 	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)

@@ -35,6 +35,11 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	discoveryRepo := database.NewDiscoveryRepository(db)
 	runRepo := database.NewRunRepository(db)
 	debugLogRepo := database.NewDebugLogRepository(db)
+	// Per-step / per-area / per-result repositories that back the
+	// paginated split-log endpoints. The agent owns the writers; here
+	// they're read-only.
+	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
+	runStepRepo := database.NewRunStepRepository(db)
 	feedbackRepo := database.NewFeedbackRepository(db)
 	pricingRepo := database.NewPricingRepository(db)
 	insightRepo := database.NewInsightRepository(db)
@@ -83,7 +88,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
 		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller)
 	packGenerate := handler.NewPackGenerateHandler(projectRepo)
-	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, agentRunner)
+	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
@@ -188,6 +193,11 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	// Runs — viewer for read, admin for cancel
 	mux.HandleFunc("GET /api/v1/runs/{runId}", withRole(viewer, discoveries.GetRun))
 	mux.HandleFunc("GET /api/v1/runs/{runId}/debug-logs", withRole(viewer, discoveries.GetDebugLogs))
+	mux.HandleFunc("GET /api/v1/runs/{runId}/steps", withRole(viewer, discoveries.ListRunSteps))
+	mux.HandleFunc("GET /api/v1/discoveries/{id}/exploration-steps", withRole(viewer, discoveries.ListExplorationSteps))
+	mux.HandleFunc("GET /api/v1/discoveries/{id}/analysis-steps", withRole(viewer, discoveries.ListAnalysisSteps))
+	mux.HandleFunc("GET /api/v1/discoveries/{id}/validation-results", withRole(viewer, discoveries.ListValidationResults))
+	mux.HandleFunc("GET /api/v1/discoveries/{id}/recommendation-log", withRole(viewer, discoveries.GetRecommendationLog))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
 
 	// Feedback — member for submit, viewer for read, admin for delete

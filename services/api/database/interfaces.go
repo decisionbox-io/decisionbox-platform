@@ -56,6 +56,21 @@ type DebugLogRepo interface {
 	ListByRun(ctx context.Context, runID string, since time.Time, limit int) ([]models.DebugLogEntry, error)
 }
 
+// DiscoveryLogRepo abstracts the per-step / per-area / per-result split-log
+// read paths for handler unit testing. Backed by DiscoveryLogRepository.
+type DiscoveryLogRepo interface {
+	ListExplorationSteps(ctx context.Context, discoveryID string, limit int) ([]models.ExplorationStep, error)
+	ListAnalysisSteps(ctx context.Context, discoveryID string) ([]models.AnalysisStep, error)
+	ListValidationResults(ctx context.Context, discoveryID string) ([]models.ValidationLogEntry, error)
+	GetRecommendationLog(ctx context.Context, discoveryID string) (*RecommendationLogEntry, error)
+}
+
+// RunStepRepo abstracts the per-step run-log read path for handler unit
+// testing. Backed by RunStepRepository.
+type RunStepRepo interface {
+	ListByRun(ctx context.Context, runID string, since time.Time, limit int) ([]models.RunStep, error)
+}
+
 // FeedbackRepo abstracts feedback operations for handler unit testing.
 type FeedbackRepo interface {
 	Upsert(ctx context.Context, fb *models.Feedback) (*models.Feedback, error)
@@ -162,6 +177,8 @@ var (
 	_ ProjectRepo        = (*ProjectRepository)(nil)
 	_ DiscoveryRepo      = (*DiscoveryRepository)(nil)
 	_ RunRepo            = (*RunRepository)(nil)
+	_ DiscoveryLogRepo   = (*DiscoveryLogRepository)(nil)
+	_ RunStepRepo        = (*RunStepRepository)(nil)
 	_ FeedbackRepo       = (*FeedbackRepository)(nil)
 	_ PricingRepo        = (*PricingRepository)(nil)
 	_ InsightRepo        = (*InsightRepository)(nil)

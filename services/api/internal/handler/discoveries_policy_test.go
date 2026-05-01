@@ -56,7 +56,7 @@ func TestDiscoveriesHandler_Trigger_PolicyDeniesStart(t *testing.T) {
 	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, quietRunner{})
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, quietRunner{})
 
 	req := newTriggerRequest("p1")
 	w := httptest.NewRecorder()
@@ -88,7 +88,7 @@ func TestDiscoveriesHandler_Trigger_RunnerFailure_ReleasesReservation(t *testing
 	discRepo := newMockDiscoveryRepo()
 
 	spawn := &spawnFailError{msg: "spawn failed"}
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, failingRunner{err: spawn})
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, failingRunner{err: spawn})
 
 	req := newTriggerRequest("p1")
 	w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestDiscoveriesHandler_CancelRun_ConfirmsReservation(t *testing.T) {
 		PolicyReservationID: "res-run-42",
 	})
 	discRepo := newMockDiscoveryRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, quietRunner{})
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, quietRunner{})
 
 	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-42", nil)
 	req.SetPathValue("runId", "run-42")
@@ -149,7 +149,7 @@ func TestDiscoveriesHandler_Trigger_LimitError_BodyIncludesStructuredFields(t *t
 	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, quietRunner{})
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, quietRunner{})
 
 	req := newTriggerRequest("p1")
 	w := httptest.NewRecorder()

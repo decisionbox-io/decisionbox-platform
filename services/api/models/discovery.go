@@ -20,10 +20,10 @@ type DiscoveryResult struct {
 	Recommendations []Recommendation `bson:"recommendations" json:"recommendations"`
 	Summary         Summary          `bson:"summary" json:"summary"`
 
-	// Logs — available on single discovery endpoint, excluded from list
-	ExplorationLog []ExplorationStep      `bson:"exploration_log,omitempty" json:"exploration_log,omitempty"`
-	AnalysisLog    []AnalysisStep         `bson:"analysis_log,omitempty" json:"analysis_log,omitempty"`
-	ValidationLog  []ValidationLogEntry   `bson:"validation_log,omitempty" json:"validation_log,omitempty"`
+	// Logs are no longer embedded — they live in per-step collections
+	// (discovery_exploration_steps, discovery_analysis_steps,
+	// discovery_validation_results, discovery_recommendation_log) and are
+	// served by paginated endpoints under /api/v1/discoveries/{id}/...
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 }

@@ -88,9 +88,6 @@ func TestDiscoveryResultStructure(t *testing.T) {
 		Recommendations: []Recommendation{
 			{ID: "r1", Title: "Fix Level 42", Priority: 5, RelatedInsightIDs: []string{"1", "2"}},
 		},
-		AnalysisLog: []AnalysisStep{
-			{AreaID: "churn", Prompt: "analyze churn", Response: "{}"},
-		},
 	}
 
 	if len(result.Insights) != 2 {
@@ -99,9 +96,10 @@ func TestDiscoveryResultStructure(t *testing.T) {
 	if len(result.Recommendations) != 1 {
 		t.Errorf("Recommendations = %d, want 1", len(result.Recommendations))
 	}
-	if len(result.AnalysisLog) != 1 {
-		t.Errorf("AnalysisLog = %d, want 1", len(result.AnalysisLog))
-	}
+	// AnalysisLog used to be embedded on DiscoveryResult; it now lives in
+	// the discovery_analysis_steps collection (DiscoveryLogRepository).
+	// Per-step persistence is exercised by the integration test against
+	// Mongo testcontainers in services/agent/internal/database.
 }
 
 func TestAnalysisStepCapture(t *testing.T) {

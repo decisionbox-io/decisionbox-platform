@@ -24,18 +24,38 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo         database.DiscoveryRepo
-	projectRepo  database.ProjectRepo
-	runRepo      database.RunRepo
-	debugLogRepo database.DebugLogRepo
-	agentRunner  runner.Runner
+	repo            database.DiscoveryRepo
+	projectRepo     database.ProjectRepo
+	runRepo         database.RunRepo
+	debugLogRepo    database.DebugLogRepo
+	discoveryLogRepo database.DiscoveryLogRepo
+	runStepRepo     database.RunStepRepo
+	agentRunner     runner.Runner
 }
 
 // NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
 // that case the debug-logs endpoint returns an empty list (useful for tests
 // and for builds that ship without the agent's debug log collection).
-func NewDiscoveriesHandler(repo database.DiscoveryRepo, projectRepo database.ProjectRepo, runRepo database.RunRepo, debugLogRepo database.DebugLogRepo, r runner.Runner) *DiscoveriesHandler {
-	return &DiscoveriesHandler{repo: repo, projectRepo: projectRepo, runRepo: runRepo, debugLogRepo: debugLogRepo, agentRunner: r}
+// discoveryLogRepo and runStepRepo back the paginated split-log endpoints
+// (the embedded log fields are gone — see services/api/database/discovery_log_repo.go).
+func NewDiscoveriesHandler(
+	repo database.DiscoveryRepo,
+	projectRepo database.ProjectRepo,
+	runRepo database.RunRepo,
+	debugLogRepo database.DebugLogRepo,
+	discoveryLogRepo database.DiscoveryLogRepo,
+	runStepRepo database.RunStepRepo,
+	r runner.Runner,
+) *DiscoveriesHandler {
+	return &DiscoveriesHandler{
+		repo:             repo,
+		projectRepo:      projectRepo,
+		runRepo:          runRepo,
+		debugLogRepo:     debugLogRepo,
+		discoveryLogRepo: discoveryLogRepo,
+		runStepRepo:      runStepRepo,
+		agentRunner:      r,
+	}
 }
 
 // List returns discovery results for a project.
@@ -454,4 +474,133 @@ func (h *DiscoveriesHandler) GetDebugLogs(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// ListExplorationSteps returns the per-step exploration log for a single
+// discovery. Backed by the discovery_exploration_steps collection (split
+// out of the discoveries doc to dodge the 16MB BSON limit).
+//
+// GET /api/v1/discoveries/{id}/exploration-steps?limit=<n>
+func (h *DiscoveriesHandler) ListExplorationSteps(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "discovery id is required")
+		return
+	}
+	if h.discoveryLogRepo == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	steps, err := h.discoveryLogRepo.ListExplorationSteps(r.Context(), id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list exploration steps: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, steps)
+}
+
+// ListAnalysisSteps returns the per-area analysis log for a discovery.
+//
+// GET /api/v1/discoveries/{id}/analysis-steps
+func (h *DiscoveriesHandler) ListAnalysisSteps(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "discovery id is required")
+		return
+	}
+	if h.discoveryLogRepo == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	steps, err := h.discoveryLogRepo.ListAnalysisSteps(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list analysis steps: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, steps)
+}
+
+// ListValidationResults returns the warehouse-verification rows for a
+// discovery.
+//
+// GET /api/v1/discoveries/{id}/validation-results
+func (h *DiscoveriesHandler) ListValidationResults(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "discovery id is required")
+		return
+	}
+	if h.discoveryLogRepo == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	results, err := h.discoveryLogRepo.ListValidationResults(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list validation results: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// GetRecommendationLog returns the recommendation-phase summary row for a
+// discovery (or 404 when the run produced no recommendations).
+//
+// GET /api/v1/discoveries/{id}/recommendation-log
+func (h *DiscoveriesHandler) GetRecommendationLog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "discovery id is required")
+		return
+	}
+	if h.discoveryLogRepo == nil {
+		writeError(w, http.StatusNotFound, "recommendation log not found")
+		return
+	}
+	entry, err := h.discoveryLogRepo.GetRecommendationLog(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get recommendation log: "+err.Error())
+		return
+	}
+	if entry == nil {
+		writeError(w, http.StatusNotFound, "recommendation log not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
+}
+
+// ListRunSteps returns the live run-step log for a discovery run, with a
+// `since` cursor for streaming polls. Replaces the embedded `steps` array
+// that previously lived on the discovery_runs document.
+//
+// GET /api/v1/runs/{runId}/steps?since=<RFC3339>&limit=<n>
+func (h *DiscoveriesHandler) ListRunSteps(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "runId is required")
+		return
+	}
+	if h.runStepRepo == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	var since time.Time
+	if s := r.URL.Query().Get("since"); s != "" {
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'since' timestamp (expected RFC3339): "+err.Error())
+			return
+		}
+		since = t
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit > 5000 {
+		limit = 5000
+	}
+	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, since, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list run steps: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, steps)
 }

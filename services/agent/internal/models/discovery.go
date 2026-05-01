@@ -28,11 +28,16 @@ type DiscoveryResult struct {
 	Recommendations []Recommendation `bson:"recommendations" json:"recommendations"`
 	Summary         Summary          `bson:"summary" json:"summary"`
 
-	// Complete LLM dialog logs (for traceability and fine-tuning)
-	ExplorationLog    []ExplorationStep  `bson:"exploration_log" json:"exploration_log"`
-	AnalysisLog       []AnalysisStep     `bson:"analysis_log" json:"analysis_log"`
-	RecommendationLog *RecommendationStep `bson:"recommendation_log,omitempty" json:"recommendation_log,omitempty"`
-	ValidationLog     []ValidationResult `bson:"validation_log,omitempty" json:"validation_log,omitempty"`
+	// Complete LLM dialog logs were previously embedded here as
+	// ExplorationLog / AnalysisLog / RecommendationLog / ValidationLog
+	// arrays. A 97-step run on a wide warehouse blew past the 16MB BSON
+	// document limit ("an inserted document is too large"), killing the
+	// discovery save. The logs now live in dedicated per-step
+	// collections — see DiscoveryLogRepository (discovery_exploration_steps,
+	// discovery_analysis_steps, discovery_validation_results,
+	// discovery_recommendation_log) — keyed by this discovery's _id. The
+	// dashboard hydrates them through paginated GET endpoints rather than
+	// re-reading the parent doc.
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`

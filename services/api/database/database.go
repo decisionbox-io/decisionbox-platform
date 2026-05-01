@@ -477,15 +477,11 @@ func (r *DiscoveryRepository) List(ctx context.Context, projectID string, limit 
 	}
 
 	filter := bson.M{"project_id": projectID}
+	// No need to project log fields out — they live in their own
+	// collections now (see services/api/database/discovery_log_repo.go).
 	opts := options.Find().
 		SetSort(bson.D{{Key: "discovery_date", Value: -1}}).
-		SetLimit(int64(limit)).
-		SetProjection(bson.M{
-			"exploration_log":    0,
-			"analysis_log":      0,
-			"recommendation_log": 0,
-			"validation_log":    0,
-		})
+		SetLimit(int64(limit))
 
 	cursor, err := r.col.Find(ctx, filter, opts)
 	if err != nil {

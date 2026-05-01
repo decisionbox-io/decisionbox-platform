@@ -17,7 +17,9 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
-	Steps []RunStep `bson:"steps" json:"steps"`
+	// Steps used to be embedded here. They now live in the
+	// discovery_run_steps collection (RunStepRepository); the dashboard
+	// pulls them via GET /api/v1/runs/{id}/steps with a `since` cursor.
 
 	TotalQueries      int `bson:"total_queries" json:"total_queries"`
 	SuccessfulQueries int `bson:"successful_queries" json:"successful_queries"`

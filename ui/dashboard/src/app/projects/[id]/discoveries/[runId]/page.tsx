@@ -17,7 +17,7 @@ import {
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -28,6 +28,13 @@ export default function DiscoveryDetailPage() {
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [project, setProject] = useState<{ name: string; domain: string; category: string } | null>(null);
   const [feedbackMap, setFeedbackMap] = useState<Record<string, Feedback>>({});
+  // Per-step / per-area / per-result logs are no longer embedded on the
+  // discovery doc — fetch them from the dedicated split-log endpoints. Each
+  // is independently optional (the panels render only when populated), so
+  // a single failed split-log fetch shouldn't blank the whole page.
+  const [explorationLog, setExplorationLog] = useState<ExplorationStep[]>([]);
+  const [analysisLog, setAnalysisLog] = useState<AnalysisLogStep[]>([]);
+  const [validationLog, setValidationLog] = useState<ValidationLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('Severity');
@@ -44,6 +51,9 @@ export default function DiscoveryDetailPage() {
         (fb || []).forEach((f) => { map[`${f.target_type}:${f.target_id}`] = f; });
         setFeedbackMap(map);
       }).catch(() => {}),
+      api.listExplorationSteps(runId).then((s) => setExplorationLog(s || [])).catch(() => {}),
+      api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
+      api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
@@ -255,25 +265,25 @@ export default function DiscoveryDetailPage() {
       )}
 
       {/* Transparency: How the AI Found This */}
-      {((discovery.exploration_log && discovery.exploration_log.length > 0) ||
-        (discovery.analysis_log && discovery.analysis_log.length > 0)) && (
+      {((explorationLog && explorationLog.length > 0) ||
+        (analysisLog && analysisLog.length > 0)) && (
         <div style={{ marginTop: '2.5rem' }}>
           <SectionHeader title="How the AI Found This" />
           <Accordion variant="separated" styles={{
             item: { borderColor: 'var(--db-border-default)' },
             control: { fontSize: 13 },
           }}>
-            {discovery.exploration_log && discovery.exploration_log.length > 0 && (
+            {explorationLog && explorationLog.length > 0 && (
               <Accordion.Item value="exploration">
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconDatabase size={16} />
-                    <span style={{ fontWeight: 500 }}>Exploration Steps ({discovery.exploration_log.length})</span>
+                    <span style={{ fontWeight: 500 }}>Exploration Steps ({explorationLog.length})</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {discovery.exploration_log.map((step, idx) => (
+                    {explorationLog.map((step, idx) => (
                       <div key={idx} style={{
                         border: '1px solid var(--db-border-default)',
                         borderRadius: 'var(--db-radius)',
@@ -308,17 +318,17 @@ export default function DiscoveryDetailPage() {
               </Accordion.Item>
             )}
 
-            {discovery.analysis_log && discovery.analysis_log.length > 0 && (
+            {analysisLog && analysisLog.length > 0 && (
               <Accordion.Item value="analysis">
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconBulb size={16} />
-                    <span style={{ fontWeight: 500 }}>Analysis by Area ({discovery.analysis_log.length})</span>
+                    <span style={{ fontWeight: 500 }}>Analysis by Area ({analysisLog.length})</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {discovery.analysis_log.map((step, idx) => (
+                    {analysisLog.map((step, idx) => (
                       <div key={idx} style={{
                         border: '1px solid var(--db-border-default)',
                         borderRadius: 'var(--db-radius)',
@@ -341,17 +351,17 @@ export default function DiscoveryDetailPage() {
               </Accordion.Item>
             )}
 
-            {discovery.validation_log && discovery.validation_log.length > 0 && (
+            {validationLog && validationLog.length > 0 && (
               <Accordion.Item value="validation">
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconSearch size={16} />
-                    <span style={{ fontWeight: 500 }}>Validation ({discovery.validation_log.length})</span>
+                    <span style={{ fontWeight: 500 }}>Validation ({validationLog.length})</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {discovery.validation_log.map((v, idx) => (
+                    {validationLog.map((v, idx) => (
                       <div key={idx} style={{
                         border: '1px solid var(--db-border-default)',
                         borderRadius: 'var(--db-radius)',

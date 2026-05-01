@@ -11,22 +11,40 @@ import (
 
 // StatusReporter writes live status updates to MongoDB during a discovery run.
 // If runID is empty, status reporting is disabled (agent run without API).
+//
+// runStepRepo persists individual step rows into the discovery_run_steps
+// collection; repo handles the run-document-level updates (status, phase,
+// progress, counters). The split exists because the previous design pushed
+// step rows into an embedded `steps` array on the discovery_runs doc, which
+// grew unbounded under streaming and ran into the same 16MB BSON limit
+// that killed discovery saves.
 type StatusReporter struct {
-	repo     *database.RunRepository
-	runID    string
-	maxSteps int
+	repo         *database.RunRepository
+	runStepRepo  *database.RunStepRepository
+	projectID    string
+	runID        string
+	maxSteps     int
 }
 
 // NewStatusReporter creates a status reporter. Pass empty runID to disable.
-func NewStatusReporter(repo *database.RunRepository, runID string, maxSteps int) *StatusReporter {
+// runStepRepo MUST be provided when runID is non-empty — without it the
+// status reporter would silently drop every per-step update. projectID is
+// stamped on each step doc so per-project filters work without a join.
+func NewStatusReporter(repo *database.RunRepository, runStepRepo *database.RunStepRepository, projectID, runID string, maxSteps int) *StatusReporter {
 	if maxSteps <= 0 {
 		maxSteps = 100
 	}
-	return &StatusReporter{repo: repo, runID: runID, maxSteps: maxSteps}
+	return &StatusReporter{
+		repo:        repo,
+		runStepRepo: runStepRepo,
+		projectID:   projectID,
+		runID:       runID,
+		maxSteps:    maxSteps,
+	}
 }
 
 func (s *StatusReporter) enabled() bool {
-	return s.runID != "" && s.repo != nil
+	return s.runID != "" && s.repo != nil && s.runStepRepo != nil
 }
 
 // SetPhase updates the current phase and progress.
@@ -39,12 +57,14 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 	}
 }
 
-// AddStep appends a step to the live log.
+// AddStep appends a step to the live log via the discovery_run_steps
+// collection. Each call is one InsertOne — no $push, no embedded array
+// growth on the run doc.
 func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
 		logger.WithError(err).Warn("failed to add run step")
 	}
 }
@@ -93,7 +113,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		Error:       errStr,
 	}
 
-	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
 		logger.WithError(err).Warn("failed to add exploration step")
 	}
 
@@ -171,7 +191,7 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 		Error:   errStr,
 	}
 
-	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
 		logger.WithError(err).Warn("failed to add analysis step")
 	}
 }
@@ -190,7 +210,7 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 		InsightSeverity: severity,
 	}
 
-	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
 		logger.WithError(err).Warn("failed to add insight step")
 	}
 }
@@ -212,7 +232,7 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 		Message: msg,
 	}
 
-	if err := s.repo.AddStep(ctx, s.runID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
 		logger.WithError(err).Warn("failed to add validation step")
 	}
 }

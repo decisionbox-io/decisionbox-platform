@@ -17,7 +17,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Gate_PendingIndexing_Returns409(t *
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	p := &models.Project{Name: "pending", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusPendingIndexing}
 	_ = projRepo.Create(context.Background(), p)
@@ -39,7 +39,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Gate_Indexing_Returns409(t *testing
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	p := &models.Project{Name: "indexing", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
 	_ = projRepo.Create(context.Background(), p)
@@ -58,7 +58,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Gate_Failed_Returns409WithError(t *
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	p := &models.Project{
 		Name: "failed", Domain: "gaming", Category: "match3",
@@ -85,7 +85,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Gate_EmptyStatus_Returns409(t *test
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
 	runRepo := newMockRunRepo()
-	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, newMockRunner())
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	p := &models.Project{ID: "legacy-1", Name: "legacy", Domain: "gaming", Category: "match3"}
 	projRepo.projects[p.ID] = p // bypass Create so SchemaIndexStatus stays ""

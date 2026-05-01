@@ -48,7 +48,7 @@ func TestDiscoveriesHandler_GetDebugLogs_EmptyRepo(t *testing.T) {
 	// Handler must not panic when no debug log repo is configured. It should
 	// return 200 with an empty array so the UI can render a "no logs yet"
 	// state instead of an error.
-	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil, nil, nil)
 	req, w := newDebugLogsRequest("run-1", "")
 
 	h.GetDebugLogs(w, req)
@@ -77,7 +77,7 @@ func decodeDebugLogsBody(t *testing.T, w *httptest.ResponseRecorder) []models.De
 }
 
 func TestDiscoveriesHandler_GetDebugLogs_MissingRunID(t *testing.T) {
-	h := NewDiscoveriesHandler(nil, nil, nil, &mockDebugLogRepo{}, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, &mockDebugLogRepo{}, nil, nil, nil)
 	req := httptest.NewRequest("GET", "/api/v1/runs//debug-logs", nil)
 	req.SetPathValue("runId", "")
 	w := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestDiscoveriesHandler_GetDebugLogs_MissingRunID(t *testing.T) {
 
 func TestDiscoveriesHandler_GetDebugLogs_InvalidSince(t *testing.T) {
 	repo := &mockDebugLogRepo{}
-	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil, nil, nil)
 	req, w := newDebugLogsRequest("run-1", "since=not-a-date")
 
 	h.GetDebugLogs(w, req)
@@ -118,7 +118,7 @@ func TestDiscoveriesHandler_GetDebugLogs_ForwardsQueryParams(t *testing.T) {
 		SQLQuery:       "SELECT 1",
 	}
 	repo := &mockDebugLogRepo{entries: []models.DebugLogEntry{entry}}
-	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil, nil, nil)
 
 	req, w := newDebugLogsRequest("run-abc", "since="+since.Format(time.RFC3339Nano)+"&limit=50")
 	h.GetDebugLogs(w, req)
@@ -146,7 +146,7 @@ func TestDiscoveriesHandler_GetDebugLogs_CapsLimit(t *testing.T) {
 	// The endpoint caps `limit` at 1000 to prevent a single request from
 	// pulling the entire collection. Any larger value is silently clamped.
 	repo := &mockDebugLogRepo{}
-	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil)
+	h := NewDiscoveriesHandler(nil, nil, nil, repo, nil, nil, nil)
 
 	req, w := newDebugLogsRequest("run-1", "limit=99999")
 	h.GetDebugLogs(w, req)

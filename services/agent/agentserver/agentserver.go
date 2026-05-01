@@ -581,6 +581,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	contextRepo := database.NewContextRepository(db)
 	discoveryRepo := database.NewDiscoveryRepository(db)
 	debugLogRepo := database.NewDebugLogRepository(db, enableDebugLogs)
+	// Per-step / per-area / per-result rows live in their own collections
+	// (see database/discovery_log_repo.go). The previous embedded arrays
+	// hit the 16MB BSON limit on long runs.
+	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
 
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure context indexes")
@@ -588,14 +592,23 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err := discoveryRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery indexes")
 	}
+	if err := discoveryLogRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure discovery log split-collection indexes")
+	}
 	if enableDebugLogs {
 		if err := debugLogRepo.EnsureIndexes(ctx); err != nil {
 			applog.WithError(err).Warn("Failed to ensure debug log indexes")
 		}
 	}
 
-	// Initialize run repository for status updates
+	// Initialize run repositories for status updates. RunStepRepo
+	// persists the per-step log rows that used to live in the embedded
+	// `steps` array on the run document.
 	runRepo := database.NewRunRepository(db)
+	runStepRepo := database.NewRunStepRepository(db)
+	if err := runStepRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure run step indexes")
+	}
 
 	datasets := project.Warehouse.GetDatasets()
 
@@ -659,12 +672,14 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:        aiClient,
 		Warehouse:       warehouseProvider,
-		ContextRepo:     contextRepo,
-		DiscoveryRepo:   discoveryRepo,
-		FeedbackRepo:    database.NewFeedbackRepository(db),
-		DebugLogRepo:    debugLogRepo,
-		RunRepo:         runRepo,
-		RunID:           runID,
+		ContextRepo:      contextRepo,
+		DiscoveryRepo:    discoveryRepo,
+		DiscoveryLogRepo: discoveryLogRepo,
+		FeedbackRepo:     database.NewFeedbackRepository(db),
+		DebugLogRepo:     debugLogRepo,
+		RunRepo:          runRepo,
+		RunStepRepo:      runStepRepo,
+		RunID:            runID,
 		ProjectID:       projectID,
 		Domain:          project.Domain,
 		Category:        project.Category,
