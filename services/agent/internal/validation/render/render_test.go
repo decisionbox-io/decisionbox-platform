@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -280,6 +281,111 @@ func TestTrimToBudget_EmptyStepsEarlyReturn(t *testing.T) {
 func TestRenderSection_EmptyStepsEarlyReturn(t *testing.T) {
 	if got := renderSection(nil); got != "" {
 		t.Errorf("renderSection(nil) = %q, want empty", got)
+	}
+}
+
+// renderLookupSection coverage: empty input, single + multi-table render,
+// type-vs-untyped columns, hidden row count when negative.
+func TestRenderLookupSection_Empty(t *testing.T) {
+	if got := renderLookupSection(nil); got != "" {
+		t.Errorf("renderLookupSection(nil) = %q, want empty", got)
+	}
+	if got := renderLookupSection([]ai.LookupTable{}); got != "" {
+		t.Errorf("renderLookupSection([]) = %q, want empty", got)
+	}
+}
+
+func TestRenderLookupSection_TypedColumnsAndRowCount(t *testing.T) {
+	got := renderLookupSection([]ai.LookupTable{
+		{
+			Table:    "ds.events",
+			RowCount: 1234,
+			Columns: []ai.LookupColumn{
+				{Name: "user_id", Type: "INT64"},
+				{Name: "country", Type: "STRING"},
+			},
+		},
+	})
+	if !strings.Contains(got, LookupSectionHeader) {
+		t.Errorf("missing section header:\n%s", got)
+	}
+	if !strings.Contains(got, "`ds.events`") {
+		t.Errorf("missing fully-qualified table name:\n%s", got)
+	}
+	if !strings.Contains(got, "user_id INT64, country STRING") {
+		t.Errorf("typed columns mis-rendered:\n%s", got)
+	}
+	if !strings.Contains(got, "Approximate row count: 1234") {
+		t.Errorf("row count mis-rendered:\n%s", got)
+	}
+}
+
+func TestRenderLookupSection_BareColumnsNoType(t *testing.T) {
+	got := renderLookupSection([]ai.LookupTable{
+		{Table: "ds.t", Columns: []ai.LookupColumn{{Name: "id"}, {Name: "name"}}, RowCount: -1},
+	})
+	if !strings.Contains(got, "Columns: id, name.") {
+		t.Errorf("bare columns mis-rendered:\n%s", got)
+	}
+	if strings.Contains(got, "Approximate row count") {
+		t.Errorf("RowCount=-1 should hide the row count line, got:\n%s", got)
+	}
+}
+
+func TestRenderLookupSection_NoColumns(t *testing.T) {
+	got := renderLookupSection([]ai.LookupTable{
+		{Table: "ds.t", RowCount: 0},
+	})
+	if strings.Contains(got, "Columns:") {
+		t.Errorf("empty columns shouldn't render Columns line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Approximate row count: 0") {
+		t.Errorf("RowCount=0 should still render (nonneg is the cutoff), got:\n%s", got)
+	}
+}
+
+func TestRenderLookupSection_MultipleTables(t *testing.T) {
+	got := renderLookupSection([]ai.LookupTable{
+		{Table: "ds.t1", Columns: []ai.LookupColumn{{Name: "a"}}, RowCount: 1},
+		{Table: "ds.t2", Columns: []ai.LookupColumn{{Name: "b"}}, RowCount: 2},
+	})
+	if !strings.Contains(got, "`ds.t1`") || !strings.Contains(got, "`ds.t2`") {
+		t.Errorf("both tables should appear, got:\n%s", got)
+	}
+}
+
+// RenderVerificationContextWithLookups coverage: lookups-only path (no source
+// steps) and combined paths.
+func TestRenderVerificationContextWithLookups_LookupsOnly(t *testing.T) {
+	got := RenderVerificationContextWithLookups(
+		nil, nil,
+		[]ai.LookupTable{{Table: "ds.t", Columns: []ai.LookupColumn{{Name: "x"}}, RowCount: 1}},
+		DefaultBudgetChars,
+	)
+	if !strings.Contains(got, LookupSectionHeader) {
+		t.Errorf("expected lookup section, got:\n%s", got)
+	}
+	if strings.Contains(got, SectionHeader) {
+		t.Errorf("source-queries header should not appear when only lookups present, got:\n%s", got)
+	}
+}
+
+func TestRenderVerificationContextWithLookups_BothPresent(t *testing.T) {
+	log := []models.ExplorationStep{
+		{Step: 1, Action: "query_data", QueryPurpose: "p", Query: "SELECT 1", RowCount: 1},
+	}
+	got := RenderVerificationContextWithLookups(
+		log, []int{1},
+		[]ai.LookupTable{{Table: "ds.t", Columns: []ai.LookupColumn{{Name: "x"}}, RowCount: 1}},
+		DefaultBudgetChars,
+	)
+	idxSrc := strings.Index(got, SectionHeader)
+	idxLookup := strings.Index(got, LookupSectionHeader)
+	if idxSrc == -1 || idxLookup == -1 {
+		t.Fatalf("both sections should be present: src=%d lookup=%d", idxSrc, idxLookup)
+	}
+	if idxSrc >= idxLookup {
+		t.Errorf("source-queries section should come before lookup section (src=%d, lookup=%d)", idxSrc, idxLookup)
 	}
 }
 

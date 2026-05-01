@@ -330,6 +330,47 @@ func TestInsightValidator_LookupResultsLandInFixOpts(t *testing.T) {
 	}
 }
 
+// TestInsightValidator_SetSchemaProviderEnablesToolLoop — wiring contract
+// for the orchestrator's construct-then-set pattern. Asserts the toggle
+// works: a validator built without a SchemaProvider can have one wired
+// later via SetSchemaProvider, and the next ValidateInsights call exercises
+// the tool loop instead of the single-shot path.
+func TestInsightValidator_SetSchemaProviderEnablesToolLoop(t *testing.T) {
+	llm := testutil.NewMockLLMProvider()
+	llm.ResponseQueue = []*gollm.ChatResponse{
+		{Content: `{"lookup_schema": ["ds.events"]}`, Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
+		{Content: `{"query": "SELECT COUNT(*) AS count FROM ds.events"}`, Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
+	}
+	provider := &stubSchemaProvider{
+		tables: map[string]ai.LookupTable{
+			"ds.events": {Table: "ds.events", RowCount: 1},
+		},
+	}
+	exec := &captureExecutor{rows: []map[string]interface{}{{"count": int64(1)}}}
+	aiClient, _ := ai.New(llm, "test-model")
+	v := NewInsightValidator(InsightValidatorOptions{
+		AIClient:  aiClient,
+		Warehouse: testutil.NewMockWarehouseProvider("ds"),
+		Executor:  exec,
+		Dataset:   "ds",
+		// SchemaProvider intentionally nil at construction.
+	})
+	v.SetExplorationLog([]models.ExplorationStep{})
+	v.SetSchemaProvider(provider) // toggle on after construction
+
+	insights := []models.Insight{
+		{ID: "1", Name: "n", AffectedCount: 1, AnalysisArea: "x"},
+	}
+	v.ValidateInsights(context.Background(), insights)
+
+	if provider.lookups != 1 {
+		t.Errorf("expected 1 lookup after SetSchemaProvider toggled on the loop, got %d", provider.lookups)
+	}
+	if len(llm.Calls) != 2 {
+		t.Errorf("expected 2 LLM calls (lookup + query), got %d", len(llm.Calls))
+	}
+}
+
 // Sanity: the parser allow-list rejects "complete" responses from the
 // verifier loop — the model isn't allowed to "complete" mid-verify.
 func TestParseAction_VerifierAllowListRejectsComplete(t *testing.T) {
