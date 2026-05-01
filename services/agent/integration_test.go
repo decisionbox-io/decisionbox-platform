@@ -373,6 +373,10 @@ func TestInteg_InsightValidator_WithBigQuery(t *testing.T) {
 		Dataset:   testBQDataset,
 		Filter:    "WHERE app_id = 'test-app'",
 	})
+	// The validator requires the orchestrator to wire the exploration log
+	// before validating insights — this happy-path integration test does not
+	// rely on source-step grounding, so an empty log satisfies the contract.
+	v.SetExplorationLog([]models.ExplorationStep{})
 
 	insights := []models.Insight{
 		{ID: "1", Name: "Test Churn", AffectedCount: 5, AnalysisArea: "churn"},
