@@ -8,6 +8,17 @@ You are a Snowflake SQL expert. Fix the failed query below.
 **Filter**: {{FILTER}}
 **Table Schemas**: {{SCHEMA_INFO}}
 
+
+{{#VERIFICATION_CONTEXT}}
+## Verification Evidence
+
+The verification query was built from these exploration steps that already executed successfully against this warehouse. Their column references are authoritative — prefer adapting them over inventing new column names.
+
+{{VERIFICATION_CONTEXT}}
+
+When fixing the failed query, only reference columns that appear in the evidence above (or in the table schemas section). Do not introduce column names that are not documented.
+
+{{/VERIFICATION_CONTEXT}}
 ## Failed Query
 
 ```sql

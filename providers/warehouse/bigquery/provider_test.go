@@ -154,6 +154,11 @@ func TestBigQueryProvider_SQLFixPrompt(t *testing.T) {
 	if !bqContains(prompt, "{{ERROR_MESSAGE}}") {
 		t.Error("SQLFixPrompt should contain {{ERROR_MESSAGE}} template variable")
 	}
+	for _, marker := range []string{"{{#VERIFICATION_CONTEXT}}", "{{VERIFICATION_CONTEXT}}", "{{/VERIFICATION_CONTEXT}}"} {
+		if !bqContains(prompt, marker) {
+			t.Errorf("SQLFixPrompt should contain %s for column-grounded retries", marker)
+		}
+	}
 	// Verify BigQuery-specific content
 	if !bqContains(prompt, "BigQuery") {
 		t.Error("SQLFixPrompt should mention BigQuery")

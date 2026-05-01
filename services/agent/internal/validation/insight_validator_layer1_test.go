@@ -8,9 +8,101 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/render"
 )
+
+// captureExecutor is a SelfHealingExecutor that records the FixOpts forwarded
+// by ValidateInsights so tests can assert per-call propagation of the
+// rendered VerificationContext into the SQL fixer's downstream prompt.
+type captureExecutor struct {
+	rows     []map[string]interface{}
+	lastOpts queryexec.FixOpts
+	calls    int
+}
+
+func (c *captureExecutor) Execute(_ context.Context, _ string, _ string, opts queryexec.FixOpts) ([]map[string]interface{}, error) {
+	c.calls++
+	c.lastOpts = opts
+	return c.rows, nil
+}
+
+// TestInsightValidator_ForwardsRenderedVerificationContextToExecutor is the
+// PR-2 wiring contract: when the validator runs an insight with cited
+// source_steps, the rendered VerificationContext lands in FixOpts so the SQL
+// fixer can ground its retry on the same evidence the generation prompt was
+// built on.
+func TestInsightValidator_ForwardsRenderedVerificationContextToExecutor(t *testing.T) {
+	llm := testutil.NewMockLLMProvider()
+	llm.DefaultResponse.Content = "SELECT COUNT(*) AS count FROM dbo.STHAR"
+	aiClient, err := ai.New(llm, "test-model")
+	if err != nil {
+		t.Fatalf("ai.New: %v", err)
+	}
+	exec := &captureExecutor{rows: []map[string]interface{}{{"count": int64(5)}}}
+	v := NewInsightValidator(InsightValidatorOptions{
+		AIClient:  aiClient,
+		Warehouse: testutil.NewMockWarehouseProvider("test_dataset"),
+		Executor:  exec,
+		Dataset:   "test_dataset",
+	})
+
+	log := []models.ExplorationStep{
+		{
+			Step:         3,
+			Action:       "query_data",
+			QueryPurpose: "scan Turkish columns",
+			Query:        "SELECT COUNT(*) FROM dbo.STHAR WHERE STHAR_TARIH > '2026-01-01'",
+			RowCount:     5,
+		},
+	}
+	v.SetExplorationLog(log)
+
+	insights := []models.Insight{
+		{ID: "1", Name: "T", AffectedCount: 5, AnalysisArea: "churn", SourceSteps: []int{3}},
+	}
+	v.ValidateInsights(context.Background(), insights)
+
+	if exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", exec.calls)
+	}
+	if exec.lastOpts.VerificationContext == "" {
+		t.Fatal("FixOpts.VerificationContext should be populated when source_steps is non-empty")
+	}
+	if !strings.Contains(exec.lastOpts.VerificationContext, "STHAR_TARIH") {
+		t.Errorf("VerificationContext missing the cited source SQL column, got:\n%s", exec.lastOpts.VerificationContext)
+	}
+	if !strings.Contains(exec.lastOpts.VerificationContext, render.SectionHeader) {
+		t.Errorf("VerificationContext missing the section header, got:\n%s", exec.lastOpts.VerificationContext)
+	}
+}
+
+// TestInsightValidator_ForwardsEmptyFixOpts_WhenInsightHasNoSourceSteps
+// pins the no-cited-steps branch — Layer 1 contributes nothing and the fixer
+// must see an empty VerificationContext (the conditional section in the fixer
+// prompt template will then be stripped).
+func TestInsightValidator_ForwardsEmptyFixOpts_WhenInsightHasNoSourceSteps(t *testing.T) {
+	llm := testutil.NewMockLLMProvider()
+	llm.DefaultResponse.Content = "SELECT COUNT(*) AS count FROM t"
+	aiClient, _ := ai.New(llm, "test-model")
+	exec := &captureExecutor{rows: []map[string]interface{}{{"count": int64(0)}}}
+	v := NewInsightValidator(InsightValidatorOptions{
+		AIClient:  aiClient,
+		Warehouse: testutil.NewMockWarehouseProvider("ds"),
+		Executor:  exec,
+	})
+	v.SetExplorationLog([]models.ExplorationStep{
+		{Step: 1, Action: "query_data", Query: "SELECT 1", RowCount: 1},
+	})
+	insights := []models.Insight{
+		{ID: "1", Name: "T", AffectedCount: 1, AnalysisArea: "x" /* no SourceSteps */},
+	}
+	v.ValidateInsights(context.Background(), insights)
+	if exec.lastOpts.VerificationContext != "" {
+		t.Errorf("VerificationContext should be empty when SourceSteps is empty, got:\n%s", exec.lastOpts.VerificationContext)
+	}
+}
 
 // captureLastPrompt returns the last user-side prompt string passed to the
 // mock LLM. Layer-1 tests assert the source-queries block is (or isn't) in

@@ -8,6 +8,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
 // SQLFixer uses LLM to fix SQL query errors.
@@ -37,19 +38,27 @@ func NewSQLFixer(opts SQLFixerOptions) *SQLFixer {
 	}
 }
 
-// FixSQL attempts to fix a SQL query based on the error message.
-func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, attempt int) (string, error) {
+// FixSQL attempts to fix a SQL query based on the error message. Per-call
+// `opts` carry context that varies per request — currently the rendered
+// VerificationContext that the validator wants the fixer to ground on.
+// Exploration callers pass an empty FixOpts and the
+// {{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}} section is stripped
+// from the rendered prompt. Background:
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
+func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, attempt int, opts queryexec.FixOpts) (string, error) {
 	logger.WithFields(logger.Fields{
 		"attempt": attempt,
 		"error":   errorMsg,
 	}).Info("Attempting to fix SQL query")
 
 	systemPrompt := f.sqlFixPrompt
+	systemPrompt = applySection(systemPrompt, "VERIFICATION_CONTEXT", opts.VerificationContext)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{DATASET}}", f.dataset)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{FILTER}}", f.filter)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{SCHEMA_INFO}}", f.schemaCtx)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{ORIGINAL_SQL}}", query)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{ERROR_MESSAGE}}", errorMsg)
+	systemPrompt = strings.ReplaceAll(systemPrompt, "{{VERIFICATION_CONTEXT}}", opts.VerificationContext)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{CONVERSATION_HISTORY}}", "")
 
 	userMessage := fmt.Sprintf("Fix this SQL query (attempt %d). Return ONLY the corrected SQL.\n\nQuery:\n```sql\n%s\n```\n\nError:\n```\n%s\n```", attempt+1, query, errorMsg)
@@ -78,6 +87,45 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 // SetSchemaContext updates the schema context.
 func (f *SQLFixer) SetSchemaContext(schemaJSON string) {
 	f.schemaCtx = schemaJSON
+}
+
+// applySection processes a mustache-style {{#NAME}}…{{/NAME}} conditional
+// section in the template. When `value` is empty (after trimming whitespace)
+// the entire block — markers and inner content — is removed, so prompt
+// templates can declare a header + reusable framing for an optional section
+// without leaving an empty header in the rendered output. When `value` is
+// non-empty the markers are stripped but the inner content is kept verbatim;
+// the inner `{{NAME}}` placeholder is then substituted by the surrounding
+// caller via strings.ReplaceAll.
+//
+// Handles multiple occurrences and nested-by-different-name sections; nested
+// sections of the SAME name are not supported (we don't have a use case for
+// them and the simpler scanner is easier to reason about).
+func applySection(template, name, value string) string {
+	open := "{{#" + name + "}}"
+	close := "{{/" + name + "}}"
+	keep := strings.TrimSpace(value) != ""
+
+	for {
+		oi := strings.Index(template, open)
+		if oi == -1 {
+			return template
+		}
+		ci := strings.Index(template[oi:], close)
+		if ci == -1 {
+			// Unterminated block — leave the rest of the template alone so
+			// the caller can spot the malformed marker in their prompt.
+			return template
+		}
+		ci += oi
+		end := ci + len(close)
+		if keep {
+			inner := template[oi+len(open) : ci]
+			template = template[:oi] + inner + template[end:]
+		} else {
+			template = template[:oi] + template[end:]
+		}
+	}
 }
 
 func extractFixedSQL(response *gollm.ChatResponse) (string, error) {

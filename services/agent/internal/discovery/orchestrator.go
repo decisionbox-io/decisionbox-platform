@@ -1263,12 +1263,14 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 }
 
 // executorAdapter adapts queryexec.QueryExecutor to validation.SelfHealingExecutor.
+// It forwards per-call FixOpts via ExecuteWithFixOpts so the validator's
+// rendered VerificationContext reaches the SQL fixer on every retry attempt.
 type executorAdapter struct {
 	executor *queryexec.QueryExecutor
 }
 
-func (a *executorAdapter) Execute(ctx context.Context, query string, purpose string) ([]map[string]interface{}, error) {
-	result, err := a.executor.Execute(ctx, query, purpose)
+func (a *executorAdapter) Execute(ctx context.Context, query string, purpose string, opts queryexec.FixOpts) ([]map[string]interface{}, error) {
+	result, err := a.executor.ExecuteWithFixOpts(ctx, query, purpose, opts)
 	if err != nil {
 		return nil, err
 	}

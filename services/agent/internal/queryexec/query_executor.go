@@ -24,9 +24,26 @@ type QueryExecutor struct {
 	currentPhase string
 }
 
+// FixOpts carries per-call context for the SQL fixer that does not belong on
+// the fixer instance because it varies per request — verification SQL has
+// different column-grounding evidence per insight, while exploration queries
+// have none. Empty by default; exploration callers pass FixOpts{}, the
+// validator passes a rendered VerificationContext so the fixer does not
+// re-emit the same hallucinated column on retry. Background:
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
+type FixOpts struct {
+	// VerificationContext is the same string the verifier renders into its
+	// own generation prompt: source-step SQL + (in a later layer) lookup_schema
+	// results, in priority order. Inserted into the fixer prompt verbatim via
+	// the {{VERIFICATION_CONTEXT}} placeholder; an empty value strips the
+	// surrounding {{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}} section
+	// from the rendered prompt.
+	VerificationContext string
+}
+
 // SQLFixer defines the interface for fixing SQL queries.
 type SQLFixer interface {
-	FixSQL(ctx context.Context, query string, error string, attempt int) (string, error)
+	FixSQL(ctx context.Context, query string, error string, attempt int, opts FixOpts) (string, error)
 }
 
 // QueryExecutorOptions configures the query executor.
@@ -71,8 +88,21 @@ type ExecuteResult struct {
 	Errors          []string
 }
 
-// Execute executes a query with automatic self-healing.
+// Execute executes a query with automatic self-healing. It forwards to
+// ExecuteWithFixOpts with an empty FixOpts — exploration callers (the only
+// other consumer) have no per-call grounding context to forward. Validator
+// callers should call ExecuteWithFixOpts directly so the SQL fixer sees the
+// same column-grounding evidence the verification prompt was built on.
 func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose string) (*ExecuteResult, error) {
+	return e.ExecuteWithFixOpts(ctx, query, purpose, FixOpts{})
+}
+
+// ExecuteWithFixOpts is Execute plus per-call FixOpts that propagate to the
+// SQL fixer on every retry. The opts are forwarded unchanged on each retry
+// attempt — the fixer is expected to substitute them into its prompt template
+// each time, so the LLM sees the same evidence regardless of which retry
+// attempt is in flight.
+func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, purpose string, opts FixOpts) (*ExecuteResult, error) {
 	startTime := time.Now()
 
 	result := &ExecuteResult{
@@ -162,7 +192,7 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 			"error":   err.Error(),
 		}).Info("Attempting SQL fix via LLM")
 
-		fixedQuery, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt)
+		fixedQuery, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt, opts)
 		if fixErr != nil {
 			applog.WithError(fixErr).Error("SQL fixer failed")
 			return nil, fmt.Errorf("failed to fix SQL query: %w", fixErr)

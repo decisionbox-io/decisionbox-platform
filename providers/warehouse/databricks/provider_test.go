@@ -349,7 +349,7 @@ func TestSQLFixPrompt(t *testing.T) {
 		t.Error("expected non-empty SQL fix prompt")
 	}
 	for _, required := range []string{
-		"{{DATASET}}", "{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{SCHEMA_INFO}}",
+		"{{DATASET}}", "{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{SCHEMA_INFO}}", "{{#VERIFICATION_CONTEXT}}", "{{VERIFICATION_CONTEXT}}", "{{/VERIFICATION_CONTEXT}}",
 		"QUALIFY", "PIVOT", "UNPIVOT", "explode", "explode_outer",
 		"collect_list", "collect_set", "any_value", "TRY_CAST", "NULLIF",
 		"yyyy-MM-dd", "YYYY", "TABLE_OR_VIEW_NOT_FOUND", "UNRESOLVED_COLUMN",

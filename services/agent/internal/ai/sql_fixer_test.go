@@ -3,9 +3,11 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
@@ -243,7 +245,7 @@ func TestSQLFixer_FixSQL_Success(t *testing.T) {
 		Filter:       "",
 	})
 
-	fixed, err := fixer.FixSQL(context.Background(), "SELECT BAD FROM sessions", "column BAD not found", 0)
+	fixed, err := fixer.FixSQL(context.Background(), "SELECT BAD FROM sessions", "column BAD not found", 0, queryexec.FixOpts{})
 	if err != nil {
 		t.Fatalf("FixSQL error: %v", err)
 	}
@@ -267,7 +269,7 @@ func TestSQLFixer_FixSQL_LLMError(t *testing.T) {
 		Dataset:      "ds",
 	})
 
-	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0)
+	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0, queryexec.FixOpts{})
 	if err == nil {
 		t.Error("should return error when LLM fails")
 	}
@@ -290,7 +292,7 @@ func TestSQLFixer_FixSQL_NotSQLResponse(t *testing.T) {
 		Dataset:      "ds",
 	})
 
-	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0)
+	_, err := fixer.FixSQL(context.Background(), "SELECT 1", "error", 0, queryexec.FixOpts{})
 	if err == nil {
 		t.Error("should return error when response is not SQL")
 	}
@@ -309,6 +311,142 @@ func TestSQLFixer_SetSchemaContext(t *testing.T) {
 
 	if fixer.schemaCtx != `{"sessions": {"columns": ["user_id"]}}` {
 		t.Errorf("schemaCtx = %q", fixer.schemaCtx)
+	}
+}
+
+func TestSQLFixer_FixSQL_VerificationContextSectionKept(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content: "SELECT COUNT(*) AS count FROM `ds.t`",
+		Model:   "mock-model",
+		Usage:   gollm.Usage{InputTokens: 1, OutputTokens: 1},
+	}
+	client, _ := New(provider, "mock-model")
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client: client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}{{#VERIFICATION_CONTEXT}}\nEVIDENCE_BLOCK\n{{VERIFICATION_CONTEXT}}\n/EVIDENCE_BLOCK{{/VERIFICATION_CONTEXT}}",
+	})
+
+	_, err := fixer.FixSQL(
+		context.Background(),
+		"SELECT bad FROM t",
+		"col not found",
+		0,
+		queryexec.FixOpts{VerificationContext: "Step 7: SELECT real_col FROM t"},
+	)
+	if err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	if len(provider.Calls) == 0 {
+		t.Fatal("LLM should have been called")
+	}
+	systemPrompt := provider.Calls[len(provider.Calls)-1].Request.SystemPrompt
+	if !strings.Contains(systemPrompt, "EVIDENCE_BLOCK") {
+		t.Errorf("verification-context section should be kept when opts.VerificationContext is non-empty, got prompt:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Step 7: SELECT real_col FROM t") {
+		t.Errorf("VerificationContext value should be substituted, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "{{#VERIFICATION_CONTEXT}}") || strings.Contains(systemPrompt, "{{/VERIFICATION_CONTEXT}}") {
+		t.Errorf("section markers should be stripped, got:\n%s", systemPrompt)
+	}
+}
+
+func TestSQLFixer_FixSQL_VerificationContextSectionStrippedWhenEmpty(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content: "SELECT COUNT(*) AS count FROM `ds.t`",
+		Model:   "mock-model",
+		Usage:   gollm.Usage{InputTokens: 1, OutputTokens: 1},
+	}
+	client, _ := New(provider, "mock-model")
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client: client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}{{#VERIFICATION_CONTEXT}}\nEVIDENCE_BLOCK\n{{VERIFICATION_CONTEXT}}\n/EVIDENCE_BLOCK{{/VERIFICATION_CONTEXT}}",
+	})
+
+	_, err := fixer.FixSQL(
+		context.Background(),
+		"SELECT bad FROM t",
+		"col not found",
+		0,
+		queryexec.FixOpts{}, // empty
+	)
+	if err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	systemPrompt := provider.Calls[len(provider.Calls)-1].Request.SystemPrompt
+	if strings.Contains(systemPrompt, "EVIDENCE_BLOCK") {
+		t.Errorf("verification-context section should be removed when opts.VerificationContext is empty, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "{{#VERIFICATION_CONTEXT}}") || strings.Contains(systemPrompt, "{{/VERIFICATION_CONTEXT}}") {
+		t.Errorf("section markers should be stripped, got:\n%s", systemPrompt)
+	}
+}
+
+func TestApplySection(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		value    string
+		want     string
+	}{
+		{
+			name:     "kept when value non-empty",
+			template: "before {{#X}}inner{{/X}} after",
+			value:    "v",
+			want:     "before inner after",
+		},
+		{
+			name:     "removed when value empty",
+			template: "before {{#X}}inner{{/X}} after",
+			value:    "",
+			want:     "before  after",
+		},
+		{
+			name:     "removed when value whitespace only",
+			template: "before {{#X}}inner{{/X}} after",
+			value:    "   \n  ",
+			want:     "before  after",
+		},
+		{
+			name:     "multiple occurrences kept",
+			template: "{{#X}}A{{/X}} mid {{#X}}B{{/X}}",
+			value:    "v",
+			want:     "A mid B",
+		},
+		{
+			name:     "multiple occurrences removed",
+			template: "{{#X}}A{{/X}} mid {{#X}}B{{/X}}",
+			value:    "",
+			want:     " mid ",
+		},
+		{
+			name:     "no markers — unchanged",
+			template: "no markers here",
+			value:    "v",
+			want:     "no markers here",
+		},
+		{
+			name:     "unterminated open marker — leaves rest of template alone",
+			template: "before {{#X}}inner without close",
+			value:    "v",
+			want:     "before {{#X}}inner without close",
+		},
+		{
+			name:     "different-named section unaffected",
+			template: "{{#Y}}keep{{/Y}} {{#X}}remove{{/X}}",
+			value:    "",
+			want:     "{{#Y}}keep{{/Y}} ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applySection(tt.template, "X", tt.value)
+			if got != tt.want {
+				t.Errorf("applySection(%q, %q) = %q, want %q", tt.template, tt.value, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -331,7 +469,7 @@ func TestSQLFixer_FixSQL_TemplateSubstitution(t *testing.T) {
 	})
 	fixer.SetSchemaContext("schema_info_here")
 
-	fixed, err := fixer.FixSQL(context.Background(), "BAD SQL", "syntax error", 0)
+	fixed, err := fixer.FixSQL(context.Background(), "BAD SQL", "syntax error", 0, queryexec.FixOpts{})
 	if err != nil {
 		t.Fatalf("FixSQL error: %v", err)
 	}

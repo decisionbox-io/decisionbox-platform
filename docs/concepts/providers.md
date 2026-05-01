@@ -156,7 +156,7 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | `GetTableSchemaInDataset(ctx, dataset, table)` | Get schema for a specific dataset.table |
 | `GetDataset()` | Return default dataset name |
 | `SQLDialect()` | Return SQL dialect description |
-| `SQLFixPrompt()` | Return warehouse-specific SQL fix instructions |
+| `SQLFixPrompt()` | Return warehouse-specific SQL fix instructions. The template must declare the `{{DATASET}}`, `{{ORIGINAL_SQL}}`, `{{ERROR_MESSAGE}}`, `{{SCHEMA_INFO}}`, `{{FILTER}}`, and `{{CONVERSATION_HISTORY}}` placeholders, plus a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` block carrying any warehouse-specific phrasing of the column-grounding rule (the section is stripped from the rendered prompt when the validator-side fixer call passes empty `FixOpts`). The provider's `provider_test.go` should assert all these markers are present so a missed template never silently strips column grounding for that warehouse. |
 | `ValidateReadOnly(ctx)` | Verify read-only access works |
 | `HealthCheck(ctx)` | Check warehouse connectivity |
 | `Close()` | Clean up connections |

@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/render"
 )
 
@@ -36,9 +37,14 @@ type InsightValidator struct {
 	explorationLogSet bool
 }
 
-// SelfHealingExecutor executes queries with automatic SQL fix + retry.
+// SelfHealingExecutor executes queries with automatic SQL fix + retry. The
+// validator forwards a FixOpts on every call so the SQL fixer sees the same
+// column-grounding evidence the verification prompt was built on; on retries
+// the fixer uses that evidence to substitute real column names rather than
+// re-emit the hallucination that triggered the failure. Background:
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
 type SelfHealingExecutor interface {
-	Execute(ctx context.Context, query string, purpose string) (rows []map[string]interface{}, err error)
+	Execute(ctx context.Context, query string, purpose string, opts queryexec.FixOpts) (rows []map[string]interface{}, err error)
 }
 
 // InsightValidatorOptions configures the insight validator.
@@ -179,10 +185,21 @@ func (v *InsightValidator) validateSingleInsight(
 
 	vr.Query = verificationQuery
 
-	// Run the verification query with self-healing (retry + SQL fix)
+	// Run the verification query with self-healing (retry + SQL fix). The
+	// FixOpts forward the same source-step evidence the generation prompt
+	// was built on, so when the warehouse rejects the SQL with a column
+	// error the fixer has authoritative names to substitute rather than
+	// re-emitting the hallucination.
+	fixOpts := queryexec.FixOpts{
+		VerificationContext: render.RenderVerificationContext(
+			v.explorationLog,
+			insight.SourceSteps,
+			render.DefaultBudgetChars,
+		),
+	}
 	var verifiedCount int
 	if v.executor != nil {
-		rows, err := v.executor.Execute(ctx, verificationQuery, "validate insight: "+insight.Name)
+		rows, err := v.executor.Execute(ctx, verificationQuery, "validate insight: "+insight.Name, fixOpts)
 		if err != nil {
 			applog.WithFields(applog.Fields{
 				"insight": insight.Name,

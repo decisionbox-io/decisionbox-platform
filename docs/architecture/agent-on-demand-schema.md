@@ -131,13 +131,13 @@ warehouse on 2026-04-30 saw 9 of 10 insights end with
 'STHAR_SUBE' / 'SUBEKODU' / …` — the verifier had no column information,
 so it guessed.
 
-The verification-grounding fix layers in three steps; **Layer 1 is in
-v0.4**:
+The verification-grounding fix layers in three steps; **Layers 1 and 2 are
+in v0.4**:
 
 | Layer | Mechanism | Status |
 |-------|-----------|--------|
 | 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). | Shipped in v0.4 |
-| 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. | Planned |
+| 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. Per-warehouse `prompts/sql_fix.md` templates gain a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` section that's stripped on the explore path (zero opts) and populated on the validate path. | Shipped in v0.4 |
 | 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop for cross-table cases that source steps don't cover. | Planned |
 
 Layer 1 is implemented in `services/agent/internal/validation/render` (the
@@ -148,6 +148,17 @@ wires the full `explorationResult.Steps` into the validator via
 analysis loop runs — `ValidateInsights` panics if this wiring is missing,
 by design (no-backward-compat stance,
 `plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md` §1.1).
+
+Layer 2 lives in `services/agent/internal/queryexec` (`FixOpts`, the new
+`ExecuteWithFixOpts` entry point, and the `Execute` shim that calls it with
+empty opts) and `services/agent/internal/ai/sql_fixer.go` (`applySection`
+mustache-style conditional helper, `{{VERIFICATION_CONTEXT}}` substitution).
+Each per-warehouse `prompts/sql_fix.md` declares a
+`{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` block that can host
+warehouse-specific phrasing of the column-grounding rule alongside the
+shared evidence. Adding a new warehouse means keeping that contract — the
+provider's `provider_test.go` asserts the markers are present so a missed
+template never silently strips the layer's evidence.
 
 When an insight cites no `source_steps` (older Mongo-stored insights or a
 malformed analysis-phase JSON), Layer 1 contributes nothing and the

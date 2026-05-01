@@ -355,6 +355,7 @@ func TestRedshiftProvider_SQLFixPrompt(t *testing.T) {
 	for _, v := range []string{
 		"{{DATASET}}", "{{FILTER}}", "{{SCHEMA_INFO}}",
 		"{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{CONVERSATION_HISTORY}}",
+		"{{#VERIFICATION_CONTEXT}}", "{{VERIFICATION_CONTEXT}}", "{{/VERIFICATION_CONTEXT}}",
 	} {
 		if !strings.Contains(prompt, v) {
 			t.Errorf("SQL fix prompt should contain template variable %s", v)

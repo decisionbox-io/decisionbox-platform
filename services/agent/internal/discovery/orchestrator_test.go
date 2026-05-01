@@ -802,7 +802,7 @@ func TestExecutorAdapter(t *testing.T) {
 
 	adapter := &executorAdapter{executor: executor}
 
-	data, err := adapter.Execute(context.Background(), "SELECT 1", "test")
+	data, err := adapter.Execute(context.Background(), "SELECT 1", "test", queryexec.FixOpts{})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestExecutorAdapter_Error(t *testing.T) {
 
 	adapter := &executorAdapter{executor: executor}
 
-	_, err := adapter.Execute(context.Background(), "SELECT 1", "test")
+	_, err := adapter.Execute(context.Background(), "SELECT 1", "test", queryexec.FixOpts{})
 	if err == nil {
 		t.Error("should return error when executor fails")
 	}

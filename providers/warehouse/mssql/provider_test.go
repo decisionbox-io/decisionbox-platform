@@ -474,7 +474,7 @@ func TestSQLFixPrompt(t *testing.T) {
 	}
 	for _, required := range []string{
 		// Template variables the caller expects
-		"{{DATASET}}", "{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{SCHEMA_INFO}}", "{{FILTER}}", "{{CONVERSATION_HISTORY}}",
+		"{{DATASET}}", "{{ORIGINAL_SQL}}", "{{ERROR_MESSAGE}}", "{{SCHEMA_INFO}}", "{{#VERIFICATION_CONTEXT}}", "{{VERIFICATION_CONTEXT}}", "{{/VERIFICATION_CONTEXT}}", "{{FILTER}}", "{{CONVERSATION_HISTORY}}",
 		// T-SQL-specific constructs
 		"TOP", "OFFSET", "FETCH NEXT", "CROSS APPLY", "OUTER APPLY", "PIVOT",
 		"SYSUTCDATETIME", "TRY_CAST", "TRY_CONVERT", "NULLIF", "COALESCE", "ISNULL",

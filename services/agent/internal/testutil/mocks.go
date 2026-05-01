@@ -180,20 +180,3 @@ func (m *MockWarehouseProvider) ValidateReadOnly(ctx context.Context) error { re
 func (m *MockWarehouseProvider) HealthCheck(ctx context.Context) error { return nil }
 func (m *MockWarehouseProvider) Close() error                         { return nil }
 
-// MockSQLFixer implements queryexec.SQLFixer for testing.
-type MockSQLFixer struct {
-	FixedQuery string
-	Error      error
-	Calls      int
-}
-
-func (m *MockSQLFixer) FixSQL(ctx context.Context, query string, errMsg string, attempt int) (string, error) {
-	m.Calls++
-	if m.Error != nil {
-		return "", m.Error
-	}
-	if m.FixedQuery != "" {
-		return m.FixedQuery, nil
-	}
-	return "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'", nil
-}

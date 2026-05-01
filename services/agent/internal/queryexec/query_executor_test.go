@@ -9,6 +9,28 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
+// mockFixer implements the SQLFixer interface for the queryexec tests. It
+// lives here rather than in testutil so testutil does not need to import
+// queryexec (avoiding the cycle queryexec_test → testutil → queryexec).
+type mockFixer struct {
+	FixedQuery string
+	Error      error
+	Calls      int
+	LastOpts   FixOpts
+}
+
+func (m *mockFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts FixOpts) (string, error) {
+	m.Calls++
+	m.LastOpts = opts
+	if m.Error != nil {
+		return "", m.Error
+	}
+	if m.FixedQuery != "" {
+		return m.FixedQuery, nil
+	}
+	return "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'", nil
+}
+
 func TestExecuteSuccess(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	executor := NewQueryExecutor(QueryExecutorOptions{
@@ -86,7 +108,7 @@ func TestExecuteRetryWithFix(t *testing.T) {
 	// Override Query method via a wrapper
 	wrapper := &queryWrapper{fn: origQuery, provider: wh}
 
-	fixer := &testutil.MockSQLFixer{
+	fixer := &mockFixer{
 		FixedQuery: "SELECT count(*) as count FROM `test_dataset.table` WHERE app_id = 'test'",
 	}
 
@@ -118,7 +140,7 @@ func TestExecuteMaxRetries(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	wh.QueryError = fmt.Errorf("persistent error")
 
-	fixer := &testutil.MockSQLFixer{}
+	fixer := &mockFixer{}
 
 	executor := NewQueryExecutor(QueryExecutorOptions{
 		Warehouse:  wh,
@@ -412,7 +434,7 @@ func TestExecute_FixerFailure(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	wh.QueryError = fmt.Errorf("table not found")
 
-	fixer := &testutil.MockSQLFixer{
+	fixer := &mockFixer{
 		Error: fmt.Errorf("fixer broke"),
 	}
 
@@ -435,7 +457,7 @@ func TestExecute_FixedQueryFailsFilterCheck(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	wh.QueryError = fmt.Errorf("syntax error")
 
-	fixer := &testutil.MockSQLFixer{
+	fixer := &mockFixer{
 		// Returns a fixed query that doesn't include the required filter field
 		FixedQuery: "SELECT * FROM users",
 	}
