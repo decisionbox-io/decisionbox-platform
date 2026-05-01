@@ -35,6 +35,13 @@ type discoveryLogPersister interface {
 	SaveRecommendationLog(ctx context.Context, projectID, discoveryID, runID string, step *models.RecommendationStep) error
 }
 
+// runDiscoveryIDSetter is the slice of *database.RunRepository the
+// orchestrator needs to stamp the parent DiscoveryResult ID onto the run
+// doc post-save. Held as an interface so the wiring is unit-testable.
+type runDiscoveryIDSetter interface {
+	SetDiscoveryID(ctx context.Context, runID, discoveryID string) error
+}
+
 // AnalysisArea defines an analysis area resolved from project prompts.
 type AnalysisArea struct {
 	ID          string
@@ -65,8 +72,13 @@ type Orchestrator struct {
 	// *database.DiscoveryLogRepository, wired in production by
 	// agentserver.go.
 	discoveryLogRepo discoveryLogPersister
-	feedbackRepo     *database.FeedbackRepository
-	debugLogRepo     *database.DebugLogRepository
+	// runRepo is held here so the orchestrator can stamp the parent
+	// DiscoveryResult ID onto the run doc (SetDiscoveryID) at end-of-run.
+	// StatusReporter handles the per-step writes; this pointer is for
+	// the one-shot post-save linkage update.
+	runRepo      runDiscoveryIDSetter
+	feedbackRepo *database.FeedbackRepository
+	debugLogRepo *database.DebugLogRepository
 
 	explorationEngine    *ai.ExplorationEngine
 	userCountValidator   *validation.UserCountValidator
@@ -250,12 +262,22 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryLogRepo = opts.DiscoveryLogRepo
 	}
 
+	// Same typed-nil → interface guard for runRepo. The orchestrator only
+	// uses it for the post-save SetDiscoveryID stamp; tests that don't
+	// bring up MongoDB must be able to leave it nil without producing a
+	// non-nil interface value with a nil concrete pointer underneath.
+	var runRepo runDiscoveryIDSetter
+	if opts.RunRepo != nil {
+		runRepo = opts.RunRepo
+	}
+
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
 		discoveryLogRepo:   discoveryLogRepo,
+		runRepo:            runRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
@@ -832,6 +854,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	if err := o.discoveryRepo.Save(ctx, result); err != nil {
 		return nil, fmt.Errorf("failed to save discovery result: %w", err)
+	}
+
+	// Stamp the parent discovery's _id onto the run doc so the dashboard
+	// can jump from a run row to its parent without scanning by
+	// (project_id, completed_at). Best-effort — the discovery is already
+	// on disk, and timestamp-fallback resolution is acceptable.
+	if o.runRepo != nil && o.runID != "" {
+		if err := o.runRepo.SetDiscoveryID(ctx, o.runID, result.ID); err != nil {
+			applog.WithError(err).Warn("Failed to stamp discovery_id on run doc")
+		}
 	}
 
 	o.persistSplitLogs(ctx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)

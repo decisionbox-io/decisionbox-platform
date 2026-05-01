@@ -18,6 +18,16 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
+	// DiscoveryID points at the parent DiscoveryResult document this run
+	// produced. Populated by the agent at end-of-run via
+	// RunRepository.SetDiscoveryID, immediately after
+	// DiscoveryRepository.Save returns. Empty until the run completes —
+	// in-flight or failed runs that never reached the save phase have no
+	// discovery doc to point at. The dashboard uses this to jump from a
+	// run row to its parent discovery without scanning by
+	// (project_id, completed_at).
+	DiscoveryID string `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+
 	// Live step log used to be embedded here as `Steps []RunStep`. The
 	// $push streaming pattern produced unbounded growth on long runs and
 	// hit the same 16MB BSON limit that killed discovery saves. Each

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -210,7 +211,7 @@ func (e *ExplorationEngine) Explore(
 			"messages": len(conversation.GetMessages()),
 		}).Info("Exploration step starting")
 
-		action, err := e.runStepWithRetry(ctx, conversation, step)
+		action, dialog, err := e.runStepWithRetry(ctx, conversation, step)
 		if err != nil {
 			result.Error = err
 			result.Duration = time.Since(startTime)
@@ -239,11 +240,16 @@ func (e *ExplorationEngine) Explore(
 			// Record the rejected completion as a step so it's visible in logs / UI
 			// without short-circuiting the run.
 			result.Steps = append(result.Steps, models.ExplorationStep{
-				Step:      step,
-				Timestamp: time.Now(),
-				Action:    "complete_rejected",
-				Thinking:  action.Thinking,
-				Error:     fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps),
+				Step:        step,
+				Timestamp:   time.Now(),
+				Action:      "complete_rejected",
+				Thinking:    action.Thinking,
+				Error:       fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps),
+				LLMRequest:  dialog.Request,
+				LLMResponse: dialog.Response,
+				TokensIn:    dialog.TokensIn,
+				TokensOut:   dialog.TokensOut,
+				DurationMs:  dialog.DurationMs,
 			})
 			result.TotalSteps = step
 
@@ -253,12 +259,21 @@ func (e *ExplorationEngine) Explore(
 			continue
 		}
 
-		// Create exploration step
+		// Create exploration step. Stamp the per-turn LLM dialog
+		// (request snapshot + response + tokens + duration) onto every
+		// step so the discovery_exploration_steps row is a
+		// self-contained fine-tuning sample as the model docstring
+		// promises. Pre-fix these fields were left empty.
 		explorationStep := models.ExplorationStep{
-			Step:      step,
-			Timestamp: time.Now(),
-			Action:    action.Action,
-			Thinking:  action.Thinking,
+			Step:        step,
+			Timestamp:   time.Now(),
+			Action:      action.Action,
+			Thinking:    action.Thinking,
+			LLMRequest:  dialog.Request,
+			LLMResponse: dialog.Response,
+			TokensIn:    dialog.TokensIn,
+			TokensOut:   dialog.TokensOut,
+			DurationMs:  dialog.DurationMs,
 		}
 
 		// Execute the action
@@ -385,6 +400,20 @@ type ExplorationAction struct {
 	Reason       string `json:"reason"`
 }
 
+// stepLLMDialog captures the per-turn LLM exchange so the caller can
+// stamp it onto the ExplorationStep doc. The fields mirror the
+// models.ExplorationStep dialog fields verbatim. Empty when the LLM
+// call itself failed (no exchange to record); populated even on the
+// final parse-failure attempt so we keep the dialog that produced the
+// unparseable response — useful for fine-tuning + post-mortem.
+type stepLLMDialog struct {
+	Request    string
+	Response   string
+	TokensIn   int
+	TokensOut  int
+	DurationMs int64
+}
+
 // runStepWithRetry calls the LLM for one exploration step and parses the
 // response. If the response can't be parsed into an ExplorationAction the
 // conversation is nudged to reformat and the turn retries up to
@@ -392,10 +421,25 @@ type ExplorationAction struct {
 // previous behaviour where an unparseable response silently terminated the
 // run as "complete" — the main cause of short-runs on reasoning models like
 // Qwen3 and DeepSeek R1.
-func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *Conversation, step int) (*ExplorationAction, error) {
+//
+// Returns the parsed action plus the LLM dialog snapshot from the *last*
+// (successful or final-failed) attempt — the caller writes the snapshot
+// onto the ExplorationStep doc so the discovery_exploration_steps
+// collection actually carries the LLM dialog the model docstring promises.
+// Pre-fix the dialog fields were left empty, gutting the
+// "Complete LLM dialog (for fine-tuning)" purpose of the rows.
+func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *Conversation, step int) (*ExplorationAction, stepLLMDialog, error) {
 	var lastParseErr error
+	var dialog stepLLMDialog
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
+		// Snapshot the input that produced this turn before the call
+		// runs. The "request" we record is the conversation as the LLM
+		// will see it: system prompt + every user/assistant turn so
+		// far. Captured per-attempt so a re-prompt's nudge is included
+		// in the dialog of the retry that produced the eventual reply.
+		requestSnapshot := snapshotConversation(conversation.GetSystemPrompt(), conversation.GetMessages())
+
 		llmStart := time.Now()
 		response, err := e.client.CreateMessage(
 			ctx,
@@ -409,15 +453,16 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 				"attempt": attempt,
 				"error":   err.Error(),
 			}).Error("LLM call failed during exploration")
-			return nil, fmt.Errorf("step %d: failed to get LLM response: %w", step, err)
+			return nil, dialog, fmt.Errorf("step %d: failed to get LLM response: %w", step, err)
 		}
 
+		durationMs := time.Since(llmStart).Milliseconds()
 		logger.WithFields(logger.Fields{
 			"step":       step,
 			"attempt":    attempt,
 			"tokens_in":  response.Usage.InputTokens,
 			"tokens_out": response.Usage.OutputTokens,
-			"llm_ms":     time.Since(llmStart).Milliseconds(),
+			"llm_ms":     durationMs,
 		}).Debug("LLM response received")
 
 		responseText := ""
@@ -425,11 +470,19 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			responseText = response.Content
 		}
 
+		dialog = stepLLMDialog{
+			Request:    requestSnapshot,
+			Response:   responseText,
+			TokensIn:   response.Usage.InputTokens,
+			TokensOut:  response.Usage.OutputTokens,
+			DurationMs: durationMs,
+		}
+
 		conversation.AddAssistantMessage(responseText)
 
 		action, err := e.parseAction(responseText)
 		if err == nil {
-			return action, nil
+			return action, dialog, nil
 		}
 
 		lastParseErr = err
@@ -457,7 +510,29 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 		)
 	}
 
-	return nil, fmt.Errorf("step %d: unable to parse LLM response after %d attempts: %w", step, maxParseRetries+1, lastParseErr)
+	return nil, dialog, fmt.Errorf("step %d: unable to parse LLM response after %d attempts: %w", step, maxParseRetries+1, lastParseErr)
+}
+
+// snapshotConversation renders the system prompt + message history into
+// a single deterministic string. Stored verbatim on each
+// ExplorationStep so the row is a self-contained fine-tuning sample
+// (input/output pair) — no need to reconstruct the prompt by walking
+// every prior step.
+func snapshotConversation(systemPrompt string, messages []gollm.Message) string {
+	var b strings.Builder
+	if systemPrompt != "" {
+		b.WriteString("[system]\n")
+		b.WriteString(systemPrompt)
+		b.WriteString("\n")
+	}
+	for _, m := range messages {
+		b.WriteString("[")
+		b.WriteString(m.Role)
+		b.WriteString("]\n")
+		b.WriteString(m.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // ParseAction parses the LLM's response into an ExplorationAction, restricted

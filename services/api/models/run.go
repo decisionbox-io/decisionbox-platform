@@ -17,6 +17,13 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
+	// DiscoveryID points at the parent DiscoveryResult document this run
+	// produced. Populated by the agent at end-of-run; empty until the
+	// run reaches the save phase. Lets the dashboard jump from a run
+	// row to its parent discovery without scanning by
+	// (project_id, completed_at).
+	DiscoveryID string `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+
 	// Steps used to be embedded here. They now live in the
 	// discovery_run_steps collection (RunStepRepository); the dashboard
 	// pulls them via GET /api/v1/runs/{id}/steps with a `since` cursor.

@@ -176,6 +176,29 @@ func (r *RunRepository) Complete(ctx context.Context, runID string, insightsFoun
 	return err
 }
 
+// SetDiscoveryID stamps the parent DiscoveryResult ID on the run doc so
+// the dashboard can jump from a run row to its parent discovery without
+// scanning by (project_id, completed_at). Called once per run, right
+// after DiscoveryRepository.Save returns. Best-effort: an error here
+// must not roll back the discovery — the parent doc is already on disk
+// and re-deriving the linkage from timestamps is acceptable degradation.
+func (r *RunRepository) SetDiscoveryID(ctx context.Context, runID, discoveryID string) error {
+	if runID == "" || discoveryID == "" {
+		return fmt.Errorf("runID and discoveryID are both required")
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{
+			"discovery_id": discoveryID,
+			"updated_at":   time.Now(),
+		},
+	})
+	return err
+}
+
 // Fail marks a run as failed.
 func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
