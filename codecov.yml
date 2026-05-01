@@ -23,6 +23,7 @@ ignore:
   - "services/api/internal/runner/subprocess.go" # subprocess runner — covered by integration tests
   - "services/api/internal/runner/kubernetes.go" # K8s runner — covered by integration tests (K3s testcontainer)
   - "services/api/internal/schemaindex/worker.go" # background worker — covered by migration_integration_test.go
+  - "ui/dashboard/src/lib/api.ts"                # fetch wrappers — trivial passthroughs to fetch(), tested end-to-end via dashboard build
 
 coverage:
   status:

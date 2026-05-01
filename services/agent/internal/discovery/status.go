@@ -9,6 +9,13 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
+// runStepWriter is the slice of *database.RunStepRepository that
+// StatusReporter actually calls. Held as an interface so unit tests can
+// inject a fake without bringing up MongoDB.
+type runStepWriter interface {
+	AddStep(ctx context.Context, runID, projectID string, step models.RunStep) error
+}
+
 // StatusReporter writes live status updates to MongoDB during a discovery run.
 // If runID is empty, status reporting is disabled (agent run without API).
 //
@@ -19,11 +26,11 @@ import (
 // grew unbounded under streaming and ran into the same 16MB BSON limit
 // that killed discovery saves.
 type StatusReporter struct {
-	repo         *database.RunRepository
-	runStepRepo  *database.RunStepRepository
-	projectID    string
-	runID        string
-	maxSteps     int
+	repo        *database.RunRepository
+	runStepRepo runStepWriter
+	projectID   string
+	runID       string
+	maxSteps    int
 }
 
 // NewStatusReporter creates a status reporter. Pass empty runID to disable.
@@ -33,6 +40,18 @@ type StatusReporter struct {
 func NewStatusReporter(repo *database.RunRepository, runStepRepo *database.RunStepRepository, projectID, runID string, maxSteps int) *StatusReporter {
 	if maxSteps <= 0 {
 		maxSteps = 100
+	}
+	return newStatusReporter(repo, runStepRepo, projectID, runID, maxSteps)
+}
+
+// newStatusReporter is the internal constructor that takes the runStepRepo
+// as the interface type so unit tests can wire a fake. It also normalises
+// a typed-nil concrete pointer back to an untyped-nil interface so the
+// `s.runStepRepo != nil` check in enabled() does not get fooled by Go's
+// interface-conversion semantics.
+func newStatusReporter(repo *database.RunRepository, runStepRepo runStepWriter, projectID, runID string, maxSteps int) *StatusReporter {
+	if rs, ok := runStepRepo.(*database.RunStepRepository); ok && rs == nil {
+		runStepRepo = nil
 	}
 	return &StatusReporter{
 		repo:        repo,

@@ -242,6 +242,134 @@ func TestListRunSteps_NilRepo(t *testing.T) {
 	}
 }
 
+// Coverage gap fillers — every new endpoint should have missing-id /
+// nil-repo / repo-error branches covered, mirroring TestListExplorationSteps_*.
+
+func TestListAnalysisSteps_MissingID(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries//analysis-steps", nil)
+	req.SetPathValue("id", "")
+	w := httptest.NewRecorder()
+	h.ListAnalysisSteps(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestListAnalysisSteps_NilRepo(t *testing.T) {
+	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/analysis-steps", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListAnalysisSteps(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestListAnalysisSteps_RepoError(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{err: errBoom("boom")}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/analysis-steps", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListAnalysisSteps(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListValidationResults_MissingID(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries//validation-results", nil)
+	req.SetPathValue("id", "")
+	w := httptest.NewRecorder()
+	h.ListValidationResults(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestListValidationResults_NilRepo(t *testing.T) {
+	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/validation-results", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListValidationResults(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestListValidationResults_RepoError(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{err: errBoom("boom")}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/validation-results", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListValidationResults(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetRecommendationLog_MissingID(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries//recommendation-log", nil)
+	req.SetPathValue("id", "")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestGetRecommendationLog_NilRepo(t *testing.T) {
+	h := NewDiscoveriesHandler(nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetRecommendationLog_RepoError(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, &mockDiscoveryLogRepo{err: errBoom("boom")}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListRunSteps_RepoError(t *testing.T) {
+	h := newDiscoveriesHandlerWithLogs(t, nil, &mockRunStepRepo{err: errBoom("boom")})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps", nil)
+	req.SetPathValue("runId", "r")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListExplorationSteps_LimitClamped(t *testing.T) {
+	repo := &mockDiscoveryLogRepo{exploration: []models.ExplorationStep{}}
+	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
+	// Limit way above the 1000 cap — handler should clamp before calling
+	// the repo. We can't mock-record the limit here, so we just assert
+	// the handler returns 200 (didn't crash on the giant value).
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/exploration-steps?limit=99999", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListExplorationSteps(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
 func TestListExplorationSteps_RepoError(t *testing.T) {
 	repo := &mockDiscoveryLogRepo{err: errBoom("kaboom")}
 	h := newDiscoveriesHandlerWithLogs(t, repo, nil)

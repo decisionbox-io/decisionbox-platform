@@ -24,6 +24,17 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation"
 )
 
+// discoveryLogPersister is the slice of *database.DiscoveryLogRepository
+// the orchestrator actually calls during a run. Defined as an interface so
+// the persistence wiring (Save{Exploration,Analysis,Validation,Recommendation}*)
+// can be exercised by a unit-level mock instead of requiring MongoDB.
+type discoveryLogPersister interface {
+	SaveExplorationSteps(ctx context.Context, projectID, discoveryID, runID string, steps []models.ExplorationStep) error
+	SaveAnalysisSteps(ctx context.Context, projectID, discoveryID, runID string, steps []models.AnalysisStep) error
+	SaveValidationResults(ctx context.Context, projectID, discoveryID, runID string, results []models.ValidationResult) error
+	SaveRecommendationLog(ctx context.Context, projectID, discoveryID, runID string, step *models.RecommendationStep) error
+}
+
 // AnalysisArea defines an analysis area resolved from project prompts.
 type AnalysisArea struct {
 	ID          string
@@ -49,7 +60,11 @@ type Orchestrator struct {
 
 	contextRepo      *database.ContextRepository
 	discoveryRepo    *database.DiscoveryRepository
-	discoveryLogRepo *database.DiscoveryLogRepository
+	// discoveryLogRepo is held as an interface so unit tests can inject
+	// a mock without having to spin up MongoDB. The concrete writer is
+	// *database.DiscoveryLogRepository, wired in production by
+	// agentserver.go.
+	discoveryLogRepo discoveryLogPersister
 	feedbackRepo     *database.FeedbackRepository
 	debugLogRepo     *database.DebugLogRepository
 
@@ -807,27 +822,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, fmt.Errorf("failed to save discovery result: %w", err)
 	}
 
-	// Persist the per-step / per-area / per-result rows into their split
-	// collections. Failures here are logged but do not roll back the
-	// discovery — the parent doc + structured outputs (insights,
-	// recommendations, summary) are already persisted, and re-deriving
-	// the LLM dialog from a partial save would be worse than losing it.
-	// Background: the embedded arrays previously here blew past the 16MB
-	// BSON document limit on long runs. See database/discovery_log_repo.go.
-	if o.discoveryLogRepo != nil {
-		if err := o.discoveryLogRepo.SaveExplorationSteps(ctx, o.projectID, result.ID, o.runID, explorationResult.Steps); err != nil {
-			applog.WithError(err).Warn("Failed to persist exploration steps to split collection")
-		}
-		if err := o.discoveryLogRepo.SaveAnalysisSteps(ctx, o.projectID, result.ID, o.runID, analysisLog); err != nil {
-			applog.WithError(err).Warn("Failed to persist analysis steps to split collection")
-		}
-		if err := o.discoveryLogRepo.SaveValidationResults(ctx, o.projectID, result.ID, o.runID, allValidation); err != nil {
-			applog.WithError(err).Warn("Failed to persist validation results to split collection")
-		}
-		if err := o.discoveryLogRepo.SaveRecommendationLog(ctx, o.projectID, result.ID, o.runID, recStep); err != nil {
-			applog.WithError(err).Warn("Failed to persist recommendation log to split collection")
-		}
-	}
+	o.persistSplitLogs(ctx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
 	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)
 	if o.embedIndexStore != nil {
@@ -846,6 +841,40 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}).Info("Discovery run completed")
 
 	return result, nil
+}
+
+// persistSplitLogs writes the per-step / per-area / per-result rows into
+// their dedicated collections. Failures are logged and swallowed: the parent
+// DiscoveryResult is already persisted, and rolling back over a log-write
+// hiccup would lose the structured outputs (insights, recommendations,
+// summary). Background: embedded arrays previously here blew past the 16MB
+// BSON document limit on long runs. See database/discovery_log_repo.go.
+//
+// When discoveryLogRepo is nil (test or single-binary builds without
+// MongoDB), this is a no-op.
+func (o *Orchestrator) persistSplitLogs(
+	ctx context.Context,
+	discoveryID string,
+	explorationSteps []models.ExplorationStep,
+	analysisSteps []models.AnalysisStep,
+	validations []models.ValidationResult,
+	recStep *models.RecommendationStep,
+) {
+	if o.discoveryLogRepo == nil {
+		return
+	}
+	if err := o.discoveryLogRepo.SaveExplorationSteps(ctx, o.projectID, discoveryID, o.runID, explorationSteps); err != nil {
+		applog.WithError(err).Warn("Failed to persist exploration steps to split collection")
+	}
+	if err := o.discoveryLogRepo.SaveAnalysisSteps(ctx, o.projectID, discoveryID, o.runID, analysisSteps); err != nil {
+		applog.WithError(err).Warn("Failed to persist analysis steps to split collection")
+	}
+	if err := o.discoveryLogRepo.SaveValidationResults(ctx, o.projectID, discoveryID, o.runID, validations); err != nil {
+		applog.WithError(err).Warn("Failed to persist validation results to split collection")
+	}
+	if err := o.discoveryLogRepo.SaveRecommendationLog(ctx, o.projectID, discoveryID, o.runID, recStep); err != nil {
+		applog.WithError(err).Warn("Failed to persist recommendation log to split collection")
+	}
 }
 
 // parseInsights parses LLM response JSON into Insight structs.
