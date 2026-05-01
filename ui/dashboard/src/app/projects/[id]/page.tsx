@@ -347,9 +347,11 @@ export default function ProjectPage() {
         </div>
       )}
 
-      {/* Live Run Panel */}
+      {/* Live Run Panel — keyed on run.id so a new run cleanly remounts
+          the panel (fresh steps state + cursor) instead of needing an
+          in-component reset effect. */}
       {showRunPanel && run && (
-        <LiveRunPanel run={run} onCancel={async () => {
+        <LiveRunPanel key={run.id} run={run} onCancel={async () => {
           if (justFinished) {
             dismissedRunId.current = run.id;
             setRun(null);
@@ -532,17 +534,11 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
-  // When run.id flips (a new run started while the panel stayed
-  // mounted), the cursor and accumulated steps from the previous run
-  // must be cleared before the next effect tick fires its first poll.
-  // Otherwise the new run's steps would render appended to the old
-  // run's tail, and the cursor would skip rows whose ObjectIDs sit
-  // below the previous run's last id.
-  useEffect(() => {
-    setSteps([]);
-    lastIDRef.current = '';
-    prevStepCount.current = 0;
-  }, [run.id]);
+  // The parent renders <LiveRunPanel key={run.id}> so a new run
+  // remounts this component with fresh `steps` / `lastIDRef` state
+  // automatically — no in-component reset effect needed (which the
+  // react-hooks/set-state-in-effect lint rule rightly flags as a
+  // cascading-render anti-pattern).
 
   useEffect(() => {
     let cancelled = false;
