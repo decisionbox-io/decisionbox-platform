@@ -9,18 +9,13 @@ package database
 import (
 	"context"
 	"fmt"
+	"time"
 
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-)
-
-const (
-	collectionDiscoveryExplorationSteps  = "discovery_exploration_steps"
-	collectionDiscoveryAnalysisSteps     = "discovery_analysis_steps"
-	collectionDiscoveryValidationResults = "discovery_validation_results"
-	collectionDiscoveryRecommendationLog = "discovery_recommendation_log"
 )
 
 // DiscoveryLogRepository surfaces the four split log collections to the
@@ -42,7 +37,7 @@ func (r *DiscoveryLogRepository) ListExplorationSteps(ctx context.Context, disco
 	if limit > 0 {
 		opts = opts.SetLimit(int64(limit))
 	}
-	cur, err := r.db.Collection(collectionDiscoveryExplorationSteps).Find(ctx, filter, opts)
+	cur, err := r.db.Collection(gomongo.CollectionDiscoveryExplorationSteps).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list exploration steps: %w", err)
 	}
@@ -60,7 +55,7 @@ func (r *DiscoveryLogRepository) ListExplorationSteps(ctx context.Context, disco
 func (r *DiscoveryLogRepository) ListAnalysisSteps(ctx context.Context, discoveryID string) ([]models.AnalysisStep, error) {
 	filter := bson.M{"discovery_id": discoveryID}
 	opts := options.Find().SetSort(bson.D{{Key: "run_at", Value: 1}})
-	cur, err := r.db.Collection(collectionDiscoveryAnalysisSteps).Find(ctx, filter, opts)
+	cur, err := r.db.Collection(gomongo.CollectionDiscoveryAnalysisSteps).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list analysis steps: %w", err)
 	}
@@ -78,7 +73,7 @@ func (r *DiscoveryLogRepository) ListAnalysisSteps(ctx context.Context, discover
 func (r *DiscoveryLogRepository) ListValidationResults(ctx context.Context, discoveryID string) ([]models.ValidationLogEntry, error) {
 	filter := bson.M{"discovery_id": discoveryID}
 	opts := options.Find().SetSort(bson.D{{Key: "validated_at", Value: 1}})
-	cur, err := r.db.Collection(collectionDiscoveryValidationResults).Find(ctx, filter, opts)
+	cur, err := r.db.Collection(gomongo.CollectionDiscoveryValidationResults).Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list validation results: %w", err)
 	}
@@ -96,20 +91,25 @@ func (r *DiscoveryLogRepository) ListValidationResults(ctx context.Context, disc
 // of the agent's RecommendationStep — full LLM dialog (Prompt / Response)
 // stays out by default to keep the dashboard payload bounded; the agent's
 // full tooling can fall back to the underlying collection directly.
+//
+// RunAt is time.Time (not string) because the agent persists `run_at` as a
+// BSON datetime. Decoding a datetime into a string would fail at read time
+// and return 500s on the endpoint; JSON marshalling a time.Time emits an
+// RFC3339 string, so the dashboard sees the same wire shape.
 type RecommendationLogEntry struct {
-	RunAt        string `bson:"run_at" json:"run_at"`
-	InsightCount int    `bson:"insight_count" json:"insight_count"`
-	TokensIn     int    `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
-	TokensOut    int    `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
-	DurationMs   int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
-	Error        string `bson:"error,omitempty" json:"error,omitempty"`
+	RunAt        time.Time `bson:"run_at" json:"run_at"`
+	InsightCount int       `bson:"insight_count" json:"insight_count"`
+	TokensIn     int       `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
+	TokensOut    int       `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
+	DurationMs   int64     `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+	Error        string    `bson:"error,omitempty" json:"error,omitempty"`
 }
 
 // GetRecommendationLog returns the recommendation-phase row for a
 // discovery, or nil if there isn't one.
 func (r *DiscoveryLogRepository) GetRecommendationLog(ctx context.Context, discoveryID string) (*RecommendationLogEntry, error) {
 	var entry RecommendationLogEntry
-	err := r.db.Collection(collectionDiscoveryRecommendationLog).FindOne(ctx, bson.M{"discovery_id": discoveryID}).Decode(&entry)
+	err := r.db.Collection(gomongo.CollectionDiscoveryRecommendationLog).FindOne(ctx, bson.M{"discovery_id": discoveryID}).Decode(&entry)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil

@@ -7,27 +7,31 @@ import (
 
 // Collection names shared between agent and API.
 // Both services read/write the same MongoDB database.
+//
+// Discovery / discovery-run / split-log collection names live in
+// libs/go-common/mongodb/collections.go so the api side can reference the
+// same constants without restating string literals. Agent-internal
+// collections (debug logs, feedback, schema-index progress, schema cache)
+// stay here — they're written by the agent only.
 const (
-	CollectionProjects                  = "projects"
-	CollectionDiscoveries               = "discoveries"
-	CollectionProjectContext            = "project_context"
-	CollectionDebugLogs                 = "discovery_debug_logs"
-	CollectionFeedback                  = "feedback"
-	CollectionSchemaIndexProgress       = "project_schema_index_progress"
-	CollectionSchemaCache               = "project_schema_cache"
-	// Per-step / per-area / per-result collections — split out of the
-	// discoveries doc so a 100+ step run cannot blow past the 16MB BSON
-	// document limit. Each row carries discovery_id (the parent
-	// DiscoveryResult's _id) so the API can rehydrate the logs on demand.
-	CollectionDiscoveryExplorationSteps = "discovery_exploration_steps"
-	CollectionDiscoveryAnalysisSteps    = "discovery_analysis_steps"
-	CollectionDiscoveryValidationResults = "discovery_validation_results"
-	CollectionDiscoveryRecommendationLog = "discovery_recommendation_log"
-	// Live status updates for a run (StatusReporter $push target). One
-	// doc per RunStep keyed by run_id; replaces the previous embedded
-	// `steps` array on discovery_runs which had the same unbounded-growth
-	// problem as the discoveries log fields.
-	CollectionDiscoveryRunSteps = "discovery_run_steps"
+	CollectionProjects            = "projects"
+	CollectionProjectContext      = "project_context"
+	CollectionDebugLogs           = "discovery_debug_logs"
+	CollectionFeedback            = "feedback"
+	CollectionSchemaIndexProgress = "project_schema_index_progress"
+	CollectionSchemaCache         = "project_schema_cache"
+
+	// Re-exports from libs/go-common/mongodb so existing call sites in
+	// the agent module (database/discovery_repo.go, run_repo.go,
+	// discovery_log_repo.go, run_step_repo.go) keep using the same
+	// `database.Collection*` namespace they always have.
+	CollectionDiscoveries                = gomongo.CollectionDiscoveries
+	CollectionDiscoveryRuns              = gomongo.CollectionDiscoveryRuns
+	CollectionDiscoveryExplorationSteps  = gomongo.CollectionDiscoveryExplorationSteps
+	CollectionDiscoveryAnalysisSteps     = gomongo.CollectionDiscoveryAnalysisSteps
+	CollectionDiscoveryValidationResults = gomongo.CollectionDiscoveryValidationResults
+	CollectionDiscoveryRecommendationLog = gomongo.CollectionDiscoveryRecommendationLog
+	CollectionDiscoveryRunSteps          = gomongo.CollectionDiscoveryRunSteps
 )
 
 // DB wraps go-common's MongoDB client.

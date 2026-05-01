@@ -476,11 +476,22 @@ func (h *DiscoveriesHandler) GetDebugLogs(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, entries)
 }
 
+// maxExplorationStepsPerRequest caps how many exploration step rows a
+// single GET /exploration-steps response may carry. Each row holds a
+// full LLM request/response pair plus query results — the whole point
+// of the split is to keep individual responses bounded.
+const maxExplorationStepsPerRequest = 1000
+
 // ListExplorationSteps returns the per-step exploration log for a single
 // discovery. Backed by the discovery_exploration_steps collection (split
 // out of the discoveries doc to dodge the 16MB BSON limit).
 //
 // GET /api/v1/discoveries/{id}/exploration-steps?limit=<n>
+//
+// `limit` defaults to maxExplorationStepsPerRequest and is clamped to
+// the same value — exploration step rows are large (full LLM dialog +
+// query results), and an unbounded request defeats the purpose of the
+// split.
 func (h *DiscoveriesHandler) ListExplorationSteps(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -492,6 +503,9 @@ func (h *DiscoveriesHandler) ListExplorationSteps(w http.ResponseWriter, r *http
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > maxExplorationStepsPerRequest {
+		limit = maxExplorationStepsPerRequest
+	}
 	steps, err := h.discoveryLogRepo.ListExplorationSteps(r.Context(), id, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list exploration steps: "+err.Error())

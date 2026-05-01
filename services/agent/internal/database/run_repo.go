@@ -12,9 +12,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const CollectionDiscoveryRuns = "discovery_runs"
-
-// RunRepository manages DiscoveryRun status documents.
+// RunRepository manages DiscoveryRun status documents. Collection name
+// lives in mongodb.go (sourced from libs/go-common/mongodb).
 type RunRepository struct {
 	col *mongo.Collection
 }

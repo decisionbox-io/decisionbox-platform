@@ -111,8 +111,10 @@ type OrchestratorOptions struct {
 	// DiscoveryLogRepo persists the per-step / per-area / per-result rows
 	// (exploration_steps, analysis_steps, validation_results,
 	// recommendation_log) that used to be embedded arrays inside the
-	// discoveries document. Required — the orchestrator panics at run
-	// start when missing rather than silently dropping the LLM dialog.
+	// discoveries document. Optional — when nil the orchestrator skips
+	// the per-step persistence and only the parent DiscoveryResult lands
+	// in Mongo. Production builds always wire this; the nil branch exists
+	// for unit tests that don't bring up MongoDB.
 	DiscoveryLogRepo *database.DiscoveryLogRepository
 	FeedbackRepo     *database.FeedbackRepository
 	DebugLogRepo     *database.DebugLogRepository
