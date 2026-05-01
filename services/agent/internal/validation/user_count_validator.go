@@ -3,6 +3,7 @@ package validation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -66,13 +67,21 @@ func NewUserCountValidator(opts UserCountValidatorOptions) *UserCountValidator {
 // SetExplorationLog wires the exploration steps captured during the
 // exploration phase. The log is rendered into `FixOpts.VerificationContext`
 // when the executor self-heals a probe query, so the SQL fixer can
-// substitute the real user-id column name on retry. MUST be called before
-// ValidateInsights when an Executor is wired; passing nil panics.
+// substitute the real user-id column name on retry. Calling this is
+// optional — when the log is unset or empty the executor still receives
+// a valid (empty) FixOpts and the SQL fixer just operates without
+// column-grounding evidence. Passing nil panics (use an empty slice for
+// "no steps" — nil is treated as a wiring bug).
+//
+// Invalidates the cached total-users count, since the next probe should
+// use the new evidence.
 func (v *UserCountValidator) SetExplorationLog(log []models.ExplorationStep) {
 	if log == nil {
 		panic("validation.UserCountValidator: SetExplorationLog called with nil log; pass []models.ExplorationStep{} for empty-run cases")
 	}
 	v.explorationLog = log
+	v.totalUsersCached = false
+	v.totalUsers = 0
 }
 
 // SetExecutor wires the self-healing query executor. Mirror of the
@@ -80,8 +89,14 @@ func (v *UserCountValidator) SetExplorationLog(log []models.ExplorationStep) {
 // RunDiscovery, after the validator's options are populated, so this setter
 // exists rather than a constructor field). Pass nil to disable self-healing
 // and fall back to direct warehouse.Query calls.
+//
+// Invalidates the cached total-users count so subsequent calls route through
+// the new executor — otherwise a swap mid-run would silently keep returning
+// the stale value via the prior path.
 func (v *UserCountValidator) SetExecutor(exec SelfHealingExecutor) {
 	v.executor = exec
+	v.totalUsersCached = false
+	v.totalUsers = 0
 }
 
 // GetTotalUsers fetches the total unique users from the warehouse. When an
@@ -108,18 +123,22 @@ func (v *UserCountValidator) GetTotalUsers(ctx context.Context) (int, error) {
 		fmt.Sprintf("SELECT COUNT(*) as total_users FROM `%s.app_users` %s", v.dataset, filterClause),
 	}
 
-	// The probe is run-wide (no per-insight source_steps), so we render the
-	// union of ALL `query_data` step IDs in the exploration log. This gives
-	// the SQL fixer the broadest column-grounding evidence available — the
+	// The probe is run-wide (no per-insight source_steps), so when an
+	// executor is wired we render the union of ALL `query_data` step IDs
+	// from the exploration log into FixOpts.VerificationContext. The
 	// budget cap inside RenderVerificationContext drops the oldest steps
-	// when the rendered block would exceed the limit.
-	allSourceStepIDs := collectQueryStepIDs(v.explorationLog)
-	fixOpts := queryexec.FixOpts{
-		VerificationContext: render.RenderVerificationContext(
-			v.explorationLog,
-			allSourceStepIDs,
-			render.DefaultBudgetChars,
-		),
+	// when the rendered block would exceed the limit. Built lazily — the
+	// no-executor path doesn't use FixOpts and rendering is the most
+	// expensive thing in this function.
+	var fixOpts queryexec.FixOpts
+	if v.executor != nil {
+		fixOpts = queryexec.FixOpts{
+			VerificationContext: render.RenderVerificationContext(
+				v.explorationLog,
+				collectQueryStepIDs(v.explorationLog),
+				render.DefaultBudgetChars,
+			),
+		}
 	}
 
 	var lastErr error
@@ -172,8 +191,18 @@ func extractTotalUsersFromRows(rows []map[string]interface{}) int {
 	if len(rows) == 0 {
 		return 0
 	}
-	totalUsers, ok := rows[0]["total_users"]
-	if !ok {
+	// Snowflake (and a few other warehouses) return unquoted column aliases
+	// folded to upper case — `total_users` becomes `TOTAL_USERS` in the row
+	// map. Match the column key case-insensitively so the probe is portable
+	// without forcing every dialect-specific probe to double-quote the alias.
+	var totalUsers interface{}
+	for k, v := range rows[0] {
+		if strings.EqualFold(k, "total_users") {
+			totalUsers = v
+			break
+		}
+	}
+	if totalUsers == nil {
 		return 0
 	}
 	switch t := totalUsers.(type) {
@@ -189,15 +218,19 @@ func extractTotalUsersFromRows(rows []map[string]interface{}) int {
 
 // collectQueryStepIDs returns the Step number of every entry in `log` whose
 // Action is "query_data" (or empty — early steps may have been written before
-// the Action field was added). The user-count probe is run-wide so we cite
-// the broadest evidence available.
+// the Action field was added) and whose Query carries actual SQL. The user-
+// count probe is run-wide so we cite the broadest evidence available.
+//
+// Whitespace-only Query strings are skipped to stay consistent with
+// render.isExecutableQueryStep — including such IDs would just inflate the
+// list with steps that contribute no rendered evidence anyway.
 func collectQueryStepIDs(log []models.ExplorationStep) []int {
 	out := make([]int, 0, len(log))
 	for _, s := range log {
 		if s.Action != "" && s.Action != "query_data" {
 			continue
 		}
-		if s.Query == "" {
+		if strings.TrimSpace(s.Query) == "" {
 			continue
 		}
 		out = append(out, s.Step)
