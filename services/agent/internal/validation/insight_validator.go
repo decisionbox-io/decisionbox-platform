@@ -329,7 +329,7 @@ func (v *InsightValidator) generateSingleShotQuery(
 	insight *models.Insight,
 	lookups []ai.LookupTable,
 ) (string, error) {
-	prompt := v.buildVerificationPrompt(insight, lookups, false)
+	prompt := v.buildVerificationPrompt(insight, lookups, nil, false, false)
 	chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
 	if err != nil {
 		return "", err
@@ -348,11 +348,15 @@ func (v *InsightValidator) runVerificationLoop(
 	ctx context.Context,
 	insight *models.Insight,
 ) (string, []ai.LookupTable, error) {
-	var lookups []ai.LookupTable
+	var (
+		lookups   []ai.LookupTable
+		notFound  []string // refs the SchemaProvider could not resolve, accumulated across rounds
+		truncated bool     // true when any round returned res.Truncated
+	)
 	allowed := []string{"lookup_schema", "query_data"}
 
 	for attempt := 0; attempt < MaxLookupsPerVerification; attempt++ {
-		prompt := v.buildVerificationPrompt(insight, lookups, true)
+		prompt := v.buildVerificationPrompt(insight, lookups, notFound, truncated, true)
 		chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
 		if err != nil {
 			return "", lookups, err
@@ -382,12 +386,17 @@ func (v *InsightValidator) runVerificationLoop(
 				return "", lookups, fmt.Errorf("schema lookup failed: %w", lerr)
 			}
 			lookups = mergeLookups(lookups, res.Tables)
+			notFound = appendUniqueStrings(notFound, res.NotFound)
+			if res.Truncated {
+				truncated = true
+			}
 			applog.WithFields(applog.Fields{
-				"insight":    insight.Name,
-				"attempt":    attempt,
-				"tables":     len(res.Tables),
-				"not_found":  len(res.NotFound),
-				"acc_total":  len(lookups),
+				"insight":   insight.Name,
+				"attempt":   attempt,
+				"tables":    len(res.Tables),
+				"not_found": len(res.NotFound),
+				"truncated": res.Truncated,
+				"acc_total": len(lookups),
 			}).Debug("Verifier lookup_schema served")
 		}
 	}
@@ -396,11 +405,12 @@ func (v *InsightValidator) runVerificationLoop(
 	// per-insight budget; this matches the exploration engine's "complete-now"
 	// final turn.
 	applog.WithFields(applog.Fields{
-		"insight": insight.Name,
-		"lookups": len(lookups),
+		"insight":   insight.Name,
+		"lookups":   len(lookups),
+		"not_found": len(notFound),
 	}).Info("Verifier lookup budget exhausted; forcing final query round")
 
-	forcedPrompt := v.buildVerificationPrompt(insight, lookups, false) +
+	forcedPrompt := v.buildVerificationPrompt(insight, lookups, notFound, truncated, false) +
 		"\n\nYou have exhausted your lookup_schema budget. Produce the verification query NOW using the evidence already gathered. Return ONLY the raw SQL query, no explanations, no markdown."
 
 	chatResult, err := v.aiClient.Chat(ctx, forcedPrompt, "", 2000)
@@ -415,6 +425,27 @@ func (v *InsightValidator) runVerificationLoop(
 		return action.Query, lookups, nil
 	}
 	return "", lookups, fmt.Errorf("verifier exhausted lookup budget without emitting a query")
+}
+
+// appendUniqueStrings appends `additions` to `acc` skipping values already
+// present (case-sensitive). Used to dedupe accumulators where the model
+// might re-issue the same NotFound ref across rounds.
+func appendUniqueStrings(acc, additions []string) []string {
+	if len(additions) == 0 {
+		return acc
+	}
+	seen := make(map[string]bool, len(acc))
+	for _, s := range acc {
+		seen[s] = true
+	}
+	for _, s := range additions {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		acc = append(acc, s)
+	}
+	return acc
 }
 
 // mergeLookups appends new lookup tables to the accumulator, deduplicating
@@ -438,10 +469,16 @@ func mergeLookups(acc, newly []ai.LookupTable) []ai.LookupTable {
 // buildVerificationPrompt renders the prompt for one round of the verifier.
 // loopMode=true asks the LLM to choose between lookup_schema and query
 // actions; loopMode=false expects raw SQL only (single-shot path or the
-// forced final round of the loop).
+// forced final round of the loop). notFound and truncated come from
+// previous-round LookupResults — surfaced to the model as a "Lookup
+// Notices" section so it can self-correct (e.g. retry a misspelled
+// dataset.table or stop re-requesting a known-missing ref). Both nil
+// (the single-shot path) renders no notices section.
 func (v *InsightValidator) buildVerificationPrompt(
 	insight *models.Insight,
 	lookups []ai.LookupTable,
+	notFound []string,
+	truncated bool,
 	loopMode bool,
 ) string {
 	insightJSON, _ := json.MarshalIndent(insight, "", "  ")
@@ -462,6 +499,23 @@ func (v *InsightValidator) buildVerificationPrompt(
 		evidenceSection = "\n" + evidence + render.RuleInstruction + "\n"
 	}
 
+	noticesSection := ""
+	if len(notFound) > 0 || truncated {
+		var b strings.Builder
+		b.WriteString("\n## Lookup Notices\n\n")
+		if len(notFound) > 0 {
+			b.WriteString("These refs were not found in the schema cache (verify the `dataset.table` name, or query without these tables):\n")
+			for _, ref := range notFound {
+				fmt.Fprintf(&b, "- `%s`\n", ref)
+			}
+			b.WriteString("\n")
+		}
+		if truncated {
+			fmt.Fprintf(&b, "A previous lookup_schema call requested more tables than the per-call cap (%d) allows; only the first batch was returned. Issue follow-up calls for the remainder if you still need them.\n\n", ai.MaxLookupTablesPerCall)
+		}
+		noticesSection = b.String()
+	}
+
 	actionInstructions := `Return ONLY the raw SQL query, no explanations, no markdown.`
 	if loopMode {
 		actionInstructions = `Return ONE JSON object on a line by itself with EITHER:
@@ -476,7 +530,7 @@ Use lookup_schema when you need column information that is not already shown in 
 **Available Datasets**: %s
 **SQL Dialect**: %s
 **Filter**: %s
-%s%s
+%s%s%s
 **CRITICAL TABLE NAME RULES**:
 - ALWAYS use fully qualified table names with backticks: `+"`dataset_name.table_name`"+`
 - Example: `+"`events_prod.sessions`"+` NOT just `+"`sessions`"+`
@@ -499,6 +553,7 @@ Generate a single SQL query that:
 		v.filter,
 		evidenceSection,
 		schemaSection,
+		noticesSection,
 		string(insightJSON),
 		actionInstructions,
 	)

@@ -150,9 +150,11 @@ func TestInsightValidator_LookupSchemaBudgetExceeded(t *testing.T) {
 	if results[0].Status == "error" {
 		t.Fatalf("forced final round should produce SQL; status=%s reason=%s", results[0].Status, results[0].Reasoning)
 	}
-	// First call dedupes the same table on every round, so lookups == 1 even
-	// though the LLM "asked" 6 times. What matters: the validator did not loop
-	// forever and produced a query in the end.
+	// Repeated lookup_schema requests still invoke SchemaProvider.Lookup on
+	// every round — `mergeLookups` only dedupes the rendered accumulator, not
+	// the upstream provider call. What matters here is that the validator
+	// stays within the lookup budget, does not loop forever, and eventually
+	// produces a query.
 	if provider.lookups < 1 || provider.lookups > MaxLookupsPerVerification {
 		t.Errorf("lookups = %d, want 1..%d", provider.lookups, MaxLookupsPerVerification)
 	}
@@ -192,6 +194,42 @@ func TestInsightValidator_LookupSchemaForcedRound_NoQueryEmitted(t *testing.T) {
 	}
 	if !strings.Contains(results[0].Reasoning, "exhausted lookup budget") {
 		t.Errorf("reasoning should mention exhausted lookup budget, got: %s", results[0].Reasoning)
+	}
+}
+
+// TestInsightValidator_NotFoundFedBackToModel — when a SchemaProvider lookup
+// reports NotFound, the next round's prompt must explicitly tell the model
+// which refs were missing, so it can self-correct (retry a misspelled name,
+// query without that table, etc). Without this signal the model has no way
+// to recover on the next round and the loop wastes its budget.
+func TestInsightValidator_NotFoundFedBackToModel(t *testing.T) {
+	llm := testutil.NewMockLLMProvider()
+	llm.ResponseQueue = []*gollm.ChatResponse{
+		{Content: `{"lookup_schema": ["test_dataset.does_not_exist"]}`, Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
+		{Content: `{"query": "SELECT COUNT(*) AS count FROM test_dataset.events"}`, Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
+	}
+	provider := &stubSchemaProvider{tables: map[string]ai.LookupTable{}}
+	exec := &captureExecutor{rows: []map[string]interface{}{{"count": int64(1)}}}
+	v := newValidatorWithSchemaProvider(t, provider, llm, exec)
+
+	insights := []models.Insight{
+		{ID: "1", Name: "n", AffectedCount: 1, AnalysisArea: "x"},
+	}
+	v.ValidateInsights(context.Background(), insights)
+
+	// Second LLM call's prompt should mention the not-found ref.
+	if len(llm.Calls) < 2 {
+		t.Fatalf("expected at least 2 LLM calls, got %d", len(llm.Calls))
+	}
+	secondPrompt := ""
+	for _, m := range llm.Calls[1].Request.Messages {
+		secondPrompt += m.Content
+	}
+	if !strings.Contains(secondPrompt, "test_dataset.does_not_exist") {
+		t.Errorf("second-round prompt should surface the not-found ref so the model can self-correct, got:\n%s", secondPrompt)
+	}
+	if !strings.Contains(secondPrompt, "Lookup Notices") {
+		t.Errorf("second-round prompt should include the Lookup Notices section, got:\n%s", secondPrompt)
 	}
 }
 

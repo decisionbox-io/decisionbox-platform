@@ -463,8 +463,8 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 // ParseAction parses the LLM's response into an ExplorationAction, restricted
 // to the action types in `allowed`. Pass nil or empty for "any action" — the
 // explorer's full set. The verifier (insight validation) passes
-// {"lookup_schema", "search_tables", "query_data"} to keep the model from
-// "completing" mid-verify. Background:
+// {"lookup_schema", "query_data"} to keep the model from "completing"
+// mid-verify. Background:
 // plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.3 / §6.6.
 //
 // The response must contain a JSON object with ONE of:
