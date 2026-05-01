@@ -302,6 +302,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		})
 	}
 
+	// Wire the self-healing executor into the user-count validator (Layer 4).
+	// The validator's hardcoded user_id probes hallucinate on warehouses with
+	// non-`user_id` user-id columns; routing through the executor with
+	// FixOpts lets the SQL fixer substitute the real column name on retry
+	// using the same source-step grounding evidence the insight verifier
+	// uses. plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.4.
+	if o.userCountValidator != nil {
+		o.userCountValidator.SetExecutor(&executorAdapter{executor: executor})
+	}
+
 	// Note: live SchemaDiscovery is intentionally NOT constructed here.
 	// Discovery runs require a ready schema index (API gates on
 	// schema_index_status == "ready"), so o.schemaCache.Find returns
@@ -499,12 +509,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// non-English / abbreviated columns (customer ticket 2026-04-30, see
 	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). ValidateInsights
 	// panics if this wiring is missing, by design.
-	if o.insightValidator != nil {
+	{
 		steps := explorationResult.Steps
 		if steps == nil {
 			steps = []models.ExplorationStep{}
 		}
-		o.insightValidator.SetExplorationLog(steps)
+		if o.insightValidator != nil {
+			o.insightValidator.SetExplorationLog(steps)
+		}
+		if o.userCountValidator != nil {
+			o.userCountValidator.SetExplorationLog(steps)
+		}
 	}
 
 	// Phase 4: Analysis by area (dynamic from domain pack)

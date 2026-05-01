@@ -9,14 +9,29 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/render"
 )
 
-// UserCountValidator validates user counts in discovery insights against warehouse totals.
+// UserCountValidator validates user counts in discovery insights against
+// warehouse totals.
+//
+// Layer 4 of the verification-grounding fix: the validator's total-users
+// probe used to fail silently on warehouses where the user-identifier column
+// isn't named `user_id` — the hardcoded `COUNT(DISTINCT user_id) FROM
+// sessions/events/app_users` queries returned `Invalid column` errors and
+// every insight's affected_count claim went through unverified. The probe
+// now runs through the self-healing executor with `FixOpts` carrying the
+// source-step grounding evidence, so the SQL fixer can substitute the
+// real column name (e.g. `KULLANICI_ID`, `customer_id`) on retry.
+// Background: plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.4.
 type UserCountValidator struct {
-	warehouse   gowarehouse.Provider
-	debugLogger *debug.Logger
-	dataset     string
-	filter      string // e.g., "WHERE app_id = 'xyz'" or ""
+	warehouse      gowarehouse.Provider
+	executor       SelfHealingExecutor // optional; when set, probe queries are self-healing
+	debugLogger    *debug.Logger
+	dataset        string
+	filter         string // e.g., "WHERE app_id = 'xyz'" or ""
+	explorationLog []models.ExplorationStep
 
 	totalUsers       int
 	totalUsersCached bool
@@ -24,7 +39,14 @@ type UserCountValidator struct {
 
 // UserCountValidatorOptions configures the validator.
 type UserCountValidatorOptions struct {
-	Warehouse   gowarehouse.Provider
+	Warehouse gowarehouse.Provider
+	// Executor, when non-nil, routes the user-count probe through the self-
+	// healing query executor. The validator forwards the rendered
+	// `VerificationContext` (source-step SQL from `explorationLog`) via
+	// `FixOpts` so the SQL fixer can ground retries in real warehouse
+	// column names — closing the gap on warehouses where the user-id
+	// column isn't named `user_id`.
+	Executor    SelfHealingExecutor
 	DebugLogger *debug.Logger
 	Dataset     string
 	Filter      string
@@ -34,13 +56,41 @@ type UserCountValidatorOptions struct {
 func NewUserCountValidator(opts UserCountValidatorOptions) *UserCountValidator {
 	return &UserCountValidator{
 		warehouse:   opts.Warehouse,
+		executor:    opts.Executor,
 		debugLogger: opts.DebugLogger,
 		dataset:     opts.Dataset,
 		filter:      opts.Filter,
 	}
 }
 
-// GetTotalUsers fetches the total unique users from the warehouse.
+// SetExplorationLog wires the exploration steps captured during the
+// exploration phase. The log is rendered into `FixOpts.VerificationContext`
+// when the executor self-heals a probe query, so the SQL fixer can
+// substitute the real user-id column name on retry. MUST be called before
+// ValidateInsights when an Executor is wired; passing nil panics.
+func (v *UserCountValidator) SetExplorationLog(log []models.ExplorationStep) {
+	if log == nil {
+		panic("validation.UserCountValidator: SetExplorationLog called with nil log; pass []models.ExplorationStep{} for empty-run cases")
+	}
+	v.explorationLog = log
+}
+
+// SetExecutor wires the self-healing query executor. Mirror of the
+// orchestrator's construct-then-set pattern (the executor is built inside
+// RunDiscovery, after the validator's options are populated, so this setter
+// exists rather than a constructor field). Pass nil to disable self-healing
+// and fall back to direct warehouse.Query calls.
+func (v *UserCountValidator) SetExecutor(exec SelfHealingExecutor) {
+	v.executor = exec
+}
+
+// GetTotalUsers fetches the total unique users from the warehouse. When an
+// `Executor` is wired, each probe runs through the self-healing path with
+// `FixOpts.VerificationContext` carrying the rendered source-step SQL — so a
+// `user_id`-column hallucination on a warehouse using `KULLANICI_ID` or
+// `customer_id` is repaired by the SQL fixer on retry rather than failing
+// silently. Without an Executor the validator falls through to direct
+// `warehouse.Query` calls (legacy behaviour).
 func (v *UserCountValidator) GetTotalUsers(ctx context.Context) (int, error) {
 	if v.totalUsersCached {
 		return v.totalUsers, nil
@@ -58,37 +108,34 @@ func (v *UserCountValidator) GetTotalUsers(ctx context.Context) (int, error) {
 		fmt.Sprintf("SELECT COUNT(*) as total_users FROM `%s.app_users` %s", v.dataset, filterClause),
 	}
 
+	// The probe is run-wide (no per-insight source_steps), so we render the
+	// union of ALL `query_data` step IDs in the exploration log. This gives
+	// the SQL fixer the broadest column-grounding evidence available — the
+	// budget cap inside RenderVerificationContext drops the oldest steps
+	// when the rendered block would exceed the limit.
+	allSourceStepIDs := collectQueryStepIDs(v.explorationLog)
+	fixOpts := queryexec.FixOpts{
+		VerificationContext: render.RenderVerificationContext(
+			v.explorationLog,
+			allSourceStepIDs,
+			render.DefaultBudgetChars,
+		),
+	}
+
 	var lastErr error
 	for _, query := range queries {
-		results, err := v.warehouse.Query(ctx, query, nil)
+		count, err := v.runProbeQuery(ctx, query, fixOpts)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-
-		if len(results.Rows) > 0 {
-			if totalUsers, ok := results.Rows[0]["total_users"]; ok {
-				var count int
-				switch t := totalUsers.(type) {
-				case int:
-					count = t
-				case int64:
-					count = int(t)
-				case float64:
-					count = int(t)
-				}
-
-				if count > 0 {
-					v.totalUsers = count
-					v.totalUsersCached = true
-
-					applog.WithFields(applog.Fields{
-						"total_users": count,
-					}).Info("Total unique users fetched")
-
-					return count, nil
-				}
-			}
+		if count > 0 {
+			v.totalUsers = count
+			v.totalUsersCached = true
+			applog.WithFields(applog.Fields{
+				"total_users": count,
+			}).Info("Total unique users fetched")
+			return count, nil
 		}
 	}
 
@@ -97,6 +144,65 @@ func (v *UserCountValidator) GetTotalUsers(ctx context.Context) (int, error) {
 	}
 
 	return 0, fmt.Errorf("could not determine total users")
+}
+
+// runProbeQuery dispatches a single probe via the self-healing executor when
+// one is wired, falling back to a direct warehouse call otherwise. Returns
+// the extracted total_users count (or 0 if the row is missing the field).
+func (v *UserCountValidator) runProbeQuery(ctx context.Context, query string, opts queryexec.FixOpts) (int, error) {
+	if v.executor != nil {
+		rows, err := v.executor.Execute(ctx, query, "user-count probe", opts)
+		if err != nil {
+			return 0, err
+		}
+		return extractTotalUsersFromRows(rows), nil
+	}
+
+	results, err := v.warehouse.Query(ctx, query, nil)
+	if err != nil {
+		return 0, err
+	}
+	if results == nil {
+		return 0, nil
+	}
+	return extractTotalUsersFromRows(results.Rows), nil
+}
+
+func extractTotalUsersFromRows(rows []map[string]interface{}) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	totalUsers, ok := rows[0]["total_users"]
+	if !ok {
+		return 0
+	}
+	switch t := totalUsers.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	}
+	return 0
+}
+
+// collectQueryStepIDs returns the Step number of every entry in `log` whose
+// Action is "query_data" (or empty — early steps may have been written before
+// the Action field was added). The user-count probe is run-wide so we cite
+// the broadest evidence available.
+func collectQueryStepIDs(log []models.ExplorationStep) []int {
+	out := make([]int, 0, len(log))
+	for _, s := range log {
+		if s.Action != "" && s.Action != "query_data" {
+			continue
+		}
+		if s.Query == "" {
+			continue
+		}
+		out = append(out, s.Step)
+	}
+	return out
 }
 
 // ValidateInsights validates affected counts in insights against total users.
