@@ -63,8 +63,6 @@ func TestParseActionQueryFormat(t *testing.T) {
 }
 
 func TestExtractJSON(t *testing.T) {
-	engine := &ExplorationEngine{}
-
 	tests := []struct {
 		name  string
 		input string
@@ -104,7 +102,7 @@ func TestExtractJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := engine.extractJSON(tt.input)
+			got := extractJSON(tt.input)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -737,8 +735,6 @@ func containsStr(s, substr string) bool {
 // -----------------------------------------------------------------------------
 
 func TestExtractJSON_Comprehensive(t *testing.T) {
-	engine := &ExplorationEngine{}
-
 	tests := []struct {
 		name  string
 		input string
@@ -830,7 +826,7 @@ func TestExtractJSON_Comprehensive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := engine.extractJSON(tt.input)
+			got := extractJSON(tt.input)
 			if got != tt.want {
 				t.Errorf("extractJSON()\n  got:  %q\n  want: %q", got, tt.want)
 			}

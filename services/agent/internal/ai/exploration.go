@@ -460,19 +460,25 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	return nil, fmt.Errorf("step %d: unable to parse LLM response after %d attempts: %w", step, maxParseRetries+1, lastParseErr)
 }
 
-// parseAction parses the LLM's response into an ExplorationAction.
+// ParseAction parses the LLM's response into an ExplorationAction, restricted
+// to the action types in `allowed`. Pass nil or empty for "any action" — the
+// explorer's full set. The verifier (insight validation) passes
+// {"lookup_schema", "search_tables", "query_data"} to keep the model from
+// "completing" mid-verify. Background:
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.3 / §6.6.
 //
 // The response must contain a JSON object with ONE of:
 //   - {"query": "SELECT ..."}              → execute the query
 //   - {"done": true, "summary": "..."}     → exploration finished
 //   - {"action": "query_data" | "complete" | ...}  (legacy)
 //
-// A response with no parseable action JSON is an error. The caller retries
-// the turn rather than silently treating it as "complete" — early exploration
-// termination (previously caused by prose matching "done"/"finished" or
-// missing fields) is the bug this parser is designed to prevent.
-func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, error) {
-	jsonStr := e.extractJSON(response)
+// A response with no parseable action JSON, or one whose dispatched action is
+// not in `allowed`, is an error. Callers retry the turn rather than silently
+// treating it as "complete" — early termination (previously caused by prose
+// matching "done"/"finished" or missing fields) is the bug this parser is
+// designed to prevent.
+func ParseAction(response string, allowed []string) (*ExplorationAction, error) {
+	jsonStr := extractJSON(response)
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no action JSON object found in response")
 	}
@@ -518,7 +524,27 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, done flag, or recognized action (got action=%q)", action.Action)
 	}
 
+	if len(allowed) > 0 && !actionAllowed(action.Action, allowed) {
+		return nil, fmt.Errorf("action %q is not in this caller's allow-list (allowed: %v)", action.Action, allowed)
+	}
+
 	return &action, nil
+}
+
+func actionAllowed(action string, allowed []string) bool {
+	for _, a := range allowed {
+		if a == action {
+			return true
+		}
+	}
+	return false
+}
+
+// parseAction is the explorer's thin wrapper that delegates to ParseAction
+// with the explorer's full action set (nil = any). Kept as a method so
+// existing exploration tests don't need refactoring.
+func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, error) {
+	return ParseAction(response, nil)
 }
 
 // normaliseToolEnvelope detects an Anthropic / OpenAI tool-use call
@@ -624,7 +650,11 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // no candidate has an action key, we fall back to the last balanced
 // object overall. This way a fenced preamble without an action key
 // cannot hijack parsing when the real action lives later outside fences.
-func (e *ExplorationEngine) extractJSON(text string) string {
+// extractJSON is a free function — the body never uses *ExplorationEngine
+// state. Lifting it to package level lets the verifier reuse the same parser
+// without depending on the engine. See plans/PLAN-INSIGHT-VERIFICATION-
+// GROUNDING.md §4.3 / §6.6 for the shared-parser rationale.
+func extractJSON(text string) string {
 	candidates := collectJSONCandidates(text)
 	if len(candidates) == 0 {
 		return ""

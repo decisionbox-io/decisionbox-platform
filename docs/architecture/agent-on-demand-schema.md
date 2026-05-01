@@ -131,14 +131,14 @@ warehouse on 2026-04-30 saw 9 of 10 insights end with
 'STHAR_SUBE' / 'SUBEKODU' / …` — the verifier had no column information,
 so it guessed.
 
-The verification-grounding fix layers in three steps; **Layers 1 and 2 are
+The verification-grounding fix layers in three steps; **all three are
 in v0.4**:
 
 | Layer | Mechanism | Status |
 |-------|-----------|--------|
 | 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). | Shipped in v0.4 |
 | 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. Per-warehouse `prompts/sql_fix.md` templates gain a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` section that's stripped on the explore path (zero opts) and populated on the validate path. | Shipped in v0.4 |
-| 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop for cross-table cases that source steps don't cover. | Planned |
+| 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop (up to `MaxLookupsPerVerification = 6` rounds per insight) for cross-table cases that source steps don't cover. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. A shared action parser (`ai.ParseAction(response, allowed)`) takes an allow-list so the verifier loop accepts only `lookup_schema` and `query_data` — `complete` and other explorer-only actions are rejected. When the lookup budget is exhausted before the model emits a query, one forced final round (NOT counted against the budget) is allowed; failure to emit a query after that surfaces as `validation.status="error"` with a clear telemetry signal. | Shipped in v0.4 |
 
 Layer 1 is implemented in `services/agent/internal/validation/render` (the
 `RenderVerificationContext` helper) and consumed by
@@ -160,7 +160,20 @@ shared evidence. Adding a new warehouse means keeping that contract — the
 provider's `provider_test.go` asserts the markers are present so a missed
 template never silently strips the layer's evidence.
 
-When an insight cites no `source_steps` (older Mongo-stored insights or a
-malformed analysis-phase JSON), Layer 1 contributes nothing and the
-verifier falls through to the catalog-only path. Layer 3 will replace that
-fallback with on-demand schema lookups in the verifier's tool loop.
+Layer 3 lives in `services/agent/internal/validation/insight_validator.go`
+(`runVerificationLoop`, `MaxLookupsPerVerification`, `mergeLookups`) and
+reuses the catalog/Qdrant `CacheSchemaProvider` the explorer already uses —
+the orchestrator forwards the same instance via `SetSchemaProvider` after
+exploration completes. The shared parser is `ai.ParseAction(response,
+allowed)` with the explorer wrapping it via `(e *ExplorationEngine).
+parseAction(response)` (full allow-list = nil) and the verifier passing
+`[]string{"lookup_schema", "query_data"}`. Drift between the two callers is
+prevented by a single source-of-truth parser; new explorer-only actions
+(e.g. `summarize_table`) are rejected by the verifier rather than silently
+mishandled (plan §6.6).
+
+When an insight cites no `source_steps` AND no SchemaProvider is wired,
+Layer 1 contributes nothing and the verifier falls through to a single-shot
+catalog-only generation. With a SchemaProvider wired, the verifier's first
+round can issue `lookup_schema` to fetch the column detail it needs; this
+is the "Layer-1.5" fallback described in plan §10.5 / §10.18 fix #4.

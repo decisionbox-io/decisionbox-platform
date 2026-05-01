@@ -432,6 +432,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, fmt.Errorf("build schema provider: %w", spErr)
 	}
 
+	// Share the SchemaProvider with the verifier so its Layer 3 tool loop
+	// can issue lookup_schema actions for tables source_steps did not cover.
+	// Without this wiring the verifier falls through to single-shot
+	// generation (Layer 1 + 2 only). Background:
+	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.3.
+	if o.insightValidator != nil {
+		o.insightValidator.SetSchemaProvider(schemaProvider)
+	}
+
 	// Counting decorator: every successful upsert bumps the
 	// run-level analysis_step_index_upserts counter so the dashboard
 	// can show "indexed N of M steps" without re-deriving from the

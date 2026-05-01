@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -31,10 +32,17 @@ import (
 // 4–6 steps comfortably plus framing overhead.
 const DefaultBudgetChars = 32_000
 
-// SectionHeader is the header that prefixes the rendered evidence block.
-// Exported so tests (and the surrounding prompt) can detect the section
-// boundary deterministically.
+// SectionHeader is the header that prefixes the source-queries block. Exported
+// so tests (and the surrounding prompt) can detect the section boundary
+// deterministically.
 const SectionHeader = "## Source Exploration Queries"
+
+// LookupSectionHeader is the header that prefixes the on-demand schema lookup
+// block — populated by the verifier's tool loop in Layer 3 when the LLM asks
+// `lookup_schema` to fetch column detail for tables the source-step queries
+// did not touch. Rendered AFTER the source-queries section because Layer 1's
+// evidence is more current than the cache (see §6.10 / §6.12 of the plan).
+const LookupSectionHeader = "## On-Demand Schema Lookups"
 
 // RuleInstruction is the column-grounding rule that follows the rendered
 // evidence in the verifier's generation prompt. Exported so the verifier
@@ -68,22 +76,81 @@ func RenderVerificationContext(
 	sourceStepIDs []int,
 	budgetChars int,
 ) string {
+	return RenderVerificationContextWithLookups(log, sourceStepIDs, nil, budgetChars)
+}
+
+// RenderVerificationContextWithLookups extends RenderVerificationContext with
+// on-demand `lookup_schema` results gathered by the verifier's tool loop
+// (Layer 3). The lookup block follows the source-queries block — Layer 1's
+// SQL is more current than the cache, so when both are present the verifier
+// is told to prefer source-query columns. Either or both inputs may be empty;
+// when both are empty the function returns "" and the caller is expected to
+// strip the surrounding section header.
+//
+// budgetChars caps the source-queries block (Layer 1). Lookup detail is
+// rendered after with its own framing — its size is bounded indirectly by
+// MaxLookupTablesPerCall on the SchemaProvider side, which keeps single
+// lookups within ~1–2k tokens. We do not re-budget the lookup block here.
+func RenderVerificationContextWithLookups(
+	log []models.ExplorationStep,
+	sourceStepIDs []int,
+	lookups []ai.LookupTable,
+	budgetChars int,
+) string {
 	if budgetChars <= 0 {
 		budgetChars = DefaultBudgetChars
 	}
 
 	indexed := indexLog(log)
 	steps := pickCitedSteps(indexed, sourceStepIDs)
-	if len(steps) == 0 {
-		return ""
-	}
-
 	steps = trimToBudget(steps, budgetChars)
-	if len(steps) == 0 {
-		return ""
+
+	sourceBlock := ""
+	if len(steps) > 0 {
+		sourceBlock = renderSection(steps)
 	}
 
-	return renderSection(steps)
+	lookupBlock := renderLookupSection(lookups)
+
+	switch {
+	case sourceBlock == "" && lookupBlock == "":
+		return ""
+	case sourceBlock == "":
+		return lookupBlock
+	case lookupBlock == "":
+		return sourceBlock
+	default:
+		return sourceBlock + lookupBlock
+	}
+}
+
+func renderLookupSection(lookups []ai.LookupTable) string {
+	if len(lookups) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(LookupSectionHeader)
+	b.WriteString("\n\n")
+	for _, t := range lookups {
+		fmt.Fprintf(&b, "### `%s`\n\n", t.Table)
+		if len(t.Columns) > 0 {
+			b.WriteString("Columns: ")
+			cols := make([]string, 0, len(t.Columns))
+			for _, c := range t.Columns {
+				if c.Type != "" {
+					cols = append(cols, fmt.Sprintf("%s %s", c.Name, c.Type))
+				} else {
+					cols = append(cols, c.Name)
+				}
+			}
+			b.WriteString(strings.Join(cols, ", "))
+			b.WriteString(".\n\n")
+		}
+		if t.RowCount >= 0 {
+			fmt.Fprintf(&b, "Approximate row count: %d.\n\n", t.RowCount)
+		}
+	}
+	return b.String()
 }
 
 func indexLog(log []models.ExplorationStep) map[int]models.ExplorationStep {

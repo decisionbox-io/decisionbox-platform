@@ -30,12 +30,20 @@ type InsightValidator struct {
 	aiClient          *ai.Client
 	warehouse         gowarehouse.Provider
 	executor          SelfHealingExecutor
+	schemaProvider    ai.SchemaProvider
 	dataset           string
 	filter            string
 	schemaCtx         string
 	explorationLog    []models.ExplorationStep
 	explorationLogSet bool
 }
+
+// MaxLookupsPerVerification caps the number of `lookup_schema` actions the
+// verifier's tool loop may issue per insight. The plan §4.3 settles on 6:
+// generous enough for cross-table verifications (single insight rarely needs
+// more than 2–3 tables) and bounded so a misbehaving model can't spam lookups
+// instead of producing the verification SELECT COUNT.
+const MaxLookupsPerVerification = 6
 
 // SelfHealingExecutor executes queries with automatic SQL fix + retry. The
 // validator forwards a FixOpts on every call so the SQL fixer sees the same
@@ -52,24 +60,44 @@ type InsightValidatorOptions struct {
 	AIClient  *ai.Client
 	Warehouse gowarehouse.Provider
 	Executor  SelfHealingExecutor // if set, uses self-healing query execution
-	Dataset   string
-	Filter    string
+	// SchemaProvider, when non-nil, enables the verifier's `lookup_schema`
+	// tool loop (Layer 3). The verifier issues up to
+	// MaxLookupsPerVerification on-demand schema lookups before producing
+	// the final verification SQL — the LLM uses these to ground cross-table
+	// verifications when source_steps does not cover every relevant
+	// column. When nil, the verifier falls back to a single-shot generation
+	// using only source steps + the catalog (Layer 1 + 2 only).
+	SchemaProvider ai.SchemaProvider
+	Dataset        string
+	Filter         string
 }
 
 // NewInsightValidator creates a new insight validator.
 func NewInsightValidator(opts InsightValidatorOptions) *InsightValidator {
 	return &InsightValidator{
-		aiClient:  opts.AIClient,
-		warehouse: opts.Warehouse,
-		executor:  opts.Executor,
-		dataset:   opts.Dataset,
-		filter:    opts.Filter,
+		aiClient:       opts.AIClient,
+		warehouse:      opts.Warehouse,
+		executor:       opts.Executor,
+		schemaProvider: opts.SchemaProvider,
+		dataset:        opts.Dataset,
+		filter:         opts.Filter,
 	}
 }
 
 // SetSchemaContext provides table schema information for verification query generation.
 func (v *InsightValidator) SetSchemaContext(schemaJSON string) {
 	v.schemaCtx = schemaJSON
+}
+
+// SetSchemaProvider enables the verifier's `lookup_schema` tool loop (Layer 3).
+// When wired the validator runs up to MaxLookupsPerVerification rounds per
+// insight to fetch column detail for tables source_steps does not cover; when
+// nil the validator falls through to a single-shot generation. Mirror of the
+// orchestrator's construction-then-set pattern (the SchemaProvider is built
+// after the validator's options are populated, so this setter exists rather
+// than a constructor field).
+func (v *InsightValidator) SetSchemaProvider(p ai.SchemaProvider) {
+	v.schemaProvider = p
 }
 
 // SetExplorationLog wires the exploration steps captured during the
@@ -164,9 +192,13 @@ func (v *InsightValidator) validateSingleInsight(
 		ClaimedMetric: insight.Name,
 	}
 
-	// Ask LLM to generate a verification query
+	// Ask LLM to generate a verification query. When a SchemaProvider is
+	// wired the verifier runs a small tool loop (Layer 3) that lets the
+	// model issue lookup_schema actions before producing the final SELECT
+	// COUNT — its results are returned alongside the SQL so the SQL fixer
+	// receives the same evidence on retry.
 	applog.WithField("insight", insight.Name).Debug("Generating verification query via LLM")
-	verificationQuery, err := v.generateVerificationQuery(ctx, insight)
+	verificationQuery, lookups, err := v.generateVerificationQuery(ctx, insight)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"insight": insight.Name,
@@ -174,26 +206,28 @@ func (v *InsightValidator) validateSingleInsight(
 		}).Warn("Failed to generate verification query")
 		vr.Status = "error"
 		vr.QueryError = fmt.Sprintf("failed to generate verification query: %s", err.Error())
-		vr.Reasoning = "Could not generate a verification query for this insight"
+		vr.Reasoning = fmt.Sprintf("Could not generate a verification query: %s", err.Error())
 		return vr
 	}
 
 	applog.WithFields(applog.Fields{
 		"insight":   insight.Name,
 		"query_len": len(verificationQuery),
+		"lookups":   len(lookups),
 	}).Debug("Verification query generated")
 
 	vr.Query = verificationQuery
 
 	// Run the verification query with self-healing (retry + SQL fix). The
-	// FixOpts forward the same source-step evidence the generation prompt
-	// was built on, so when the warehouse rejects the SQL with a column
-	// error the fixer has authoritative names to substitute rather than
-	// re-emitting the hallucination.
+	// FixOpts forward the same source-step evidence + any on-demand schema
+	// lookups the verifier gathered, so when the warehouse rejects the SQL
+	// with a column error the fixer has authoritative names to substitute
+	// rather than re-emitting the hallucination.
 	fixOpts := queryexec.FixOpts{
-		VerificationContext: render.RenderVerificationContext(
+		VerificationContext: render.RenderVerificationContextWithLookups(
 			v.explorationLog,
 			insight.SourceSteps,
+			lookups,
 			render.DefaultBudgetChars,
 		),
 	}
@@ -266,27 +300,150 @@ func (v *InsightValidator) validateSingleInsight(
 	return vr
 }
 
-// generateVerificationQuery asks the LLM to create a SQL query that verifies
-// the insight. The prompt is layered, in priority order:
+// generateVerificationQuery is the verifier's entry point. With a SchemaProvider
+// wired (Layer 3) it runs a small tool loop: the LLM may issue lookup_schema
+// actions to fetch column detail for tables source_steps does not cover, then
+// emit the final SELECT COUNT. The gathered lookup detail is returned
+// alongside the SQL so the SQL fixer receives the same evidence on retry.
 //
-//   1. Source exploration queries — the SQL of the steps the analyst LLM cited
-//      as `source_steps`. These are the highest-priority evidence: the queries
-//      already executed successfully against this warehouse, so their column
-//      references are authoritative. Rendered above the catalog so the LLM
-//      sees them first.
-//   2. Available table schemas — the catalog (one line per table). Used as
-//      supplementary context for tables that were not touched by source steps.
-//
-// Background: prior to this layering the verifier received only the catalog,
-// and on warehouses with non-English / abbreviated columns the model hallucin-
-// ated names (customer ticket 2026-04-30, plans/PLAN-INSIGHT-VERIFICATION-
-// GROUNDING.md). Source-step grounding closes that gap for single-table
-// insights — Layer 3 (lookup_schema in the verifier) closes the cross-table
-// gap in a follow-up PR.
+// Without a SchemaProvider the function falls through to a single-shot
+// generation (Layer 1 + 2 only) — the prompt still carries the source-step
+// rendered evidence and the catalog.
 func (v *InsightValidator) generateVerificationQuery(
 	ctx context.Context,
 	insight *models.Insight,
+) (string, []ai.LookupTable, error) {
+	if v.schemaProvider == nil {
+		sql, err := v.generateSingleShotQuery(ctx, insight, nil)
+		return sql, nil, err
+	}
+	return v.runVerificationLoop(ctx, insight)
+}
+
+// generateSingleShotQuery sends one prompt and returns the SQL. lookups, when
+// non-empty, are folded into the rendered evidence block — the verifier loop
+// passes the accumulated set on its forced final round so the model can adapt
+// what it has gathered into a SELECT COUNT.
+func (v *InsightValidator) generateSingleShotQuery(
+	ctx context.Context,
+	insight *models.Insight,
+	lookups []ai.LookupTable,
 ) (string, error) {
+	prompt := v.buildVerificationPrompt(insight, lookups, false)
+	chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
+	if err != nil {
+		return "", err
+	}
+	return cleanGeneratedSQL(chatResult.Content)
+}
+
+// runVerificationLoop drives the LLM through up to MaxLookupsPerVerification
+// `lookup_schema` rounds before emitting the final query. If the budget is
+// exhausted before the model emits a query, one final "you must produce a
+// query NOW" round is allowed (NOT counted against the budget — same pattern
+// the exploration engine uses on its complete-now turn). A failure to emit
+// a query after the forced round is a hard error so the validator can
+// surface a clear telemetry signal rather than re-using an arbitrary fallback.
+func (v *InsightValidator) runVerificationLoop(
+	ctx context.Context,
+	insight *models.Insight,
+) (string, []ai.LookupTable, error) {
+	var lookups []ai.LookupTable
+	allowed := []string{"lookup_schema", "query_data"}
+
+	for attempt := 0; attempt < MaxLookupsPerVerification; attempt++ {
+		prompt := v.buildVerificationPrompt(insight, lookups, true)
+		chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
+		if err != nil {
+			return "", lookups, err
+		}
+
+		action, parseErr := ai.ParseAction(chatResult.Content, allowed)
+		if parseErr != nil {
+			// Treat a bare SELECT response as a query — a common LLM
+			// shape when the model "forgets" to wrap in JSON.
+			if sql, ok := bareSQLFallback(chatResult.Content); ok {
+				return sql, lookups, nil
+			}
+			applog.WithFields(applog.Fields{
+				"insight": insight.Name,
+				"attempt": attempt,
+				"error":   parseErr.Error(),
+			}).Warn("Verifier action parse failed; forcing query round")
+			break
+		}
+
+		switch action.Action {
+		case "query_data":
+			return action.Query, lookups, nil
+		case "lookup_schema":
+			res, lerr := v.schemaProvider.Lookup(ctx, action.LookupSchema)
+			if lerr != nil {
+				return "", lookups, fmt.Errorf("schema lookup failed: %w", lerr)
+			}
+			lookups = mergeLookups(lookups, res.Tables)
+			applog.WithFields(applog.Fields{
+				"insight":    insight.Name,
+				"attempt":    attempt,
+				"tables":     len(res.Tables),
+				"not_found":  len(res.NotFound),
+				"acc_total":  len(lookups),
+			}).Debug("Verifier lookup_schema served")
+		}
+	}
+
+	// Budget exhausted — force one final query round. NOT counted against the
+	// per-insight budget; this matches the exploration engine's "complete-now"
+	// final turn.
+	applog.WithFields(applog.Fields{
+		"insight": insight.Name,
+		"lookups": len(lookups),
+	}).Info("Verifier lookup budget exhausted; forcing final query round")
+
+	forcedPrompt := v.buildVerificationPrompt(insight, lookups, false) +
+		"\n\nYou have exhausted your lookup_schema budget. Produce the verification query NOW using the evidence already gathered. Return ONLY the raw SQL query, no explanations, no markdown."
+
+	chatResult, err := v.aiClient.Chat(ctx, forcedPrompt, "", 2000)
+	if err != nil {
+		return "", lookups, err
+	}
+	if sql, ok := bareSQLFallback(chatResult.Content); ok {
+		return sql, lookups, nil
+	}
+	action, parseErr := ai.ParseAction(chatResult.Content, []string{"query_data"})
+	if parseErr == nil && action.Query != "" {
+		return action.Query, lookups, nil
+	}
+	return "", lookups, fmt.Errorf("verifier exhausted lookup budget without emitting a query")
+}
+
+// mergeLookups appends new lookup tables to the accumulator, deduplicating
+// by qualified table name — the LLM sometimes re-requests a table it already
+// has, and there's no reason to re-render the same columns twice.
+func mergeLookups(acc, newly []ai.LookupTable) []ai.LookupTable {
+	seen := make(map[string]bool, len(acc))
+	for _, t := range acc {
+		seen[t.Table] = true
+	}
+	for _, t := range newly {
+		if seen[t.Table] {
+			continue
+		}
+		seen[t.Table] = true
+		acc = append(acc, t)
+	}
+	return acc
+}
+
+// buildVerificationPrompt renders the prompt for one round of the verifier.
+// loopMode=true asks the LLM to choose between lookup_schema and query
+// actions; loopMode=false expects raw SQL only (single-shot path or the
+// forced final round of the loop).
+func (v *InsightValidator) buildVerificationPrompt(
+	insight *models.Insight,
+	lookups []ai.LookupTable,
+	loopMode bool,
+) string {
 	insightJSON, _ := json.MarshalIndent(insight, "", "  ")
 
 	schemaSection := ""
@@ -294,17 +451,27 @@ func (v *InsightValidator) generateVerificationQuery(
 		schemaSection = fmt.Sprintf("\n**Available Table Schemas**:\n%s\n", v.schemaCtx)
 	}
 
-	sourceQueries := render.RenderVerificationContext(
+	evidence := render.RenderVerificationContextWithLookups(
 		v.explorationLog,
 		insight.SourceSteps,
+		lookups,
 		render.DefaultBudgetChars,
 	)
-	sourceSection := ""
-	if sourceQueries != "" {
-		sourceSection = "\n" + sourceQueries + render.RuleInstruction + "\n"
+	evidenceSection := ""
+	if evidence != "" {
+		evidenceSection = "\n" + evidence + render.RuleInstruction + "\n"
 	}
 
-	prompt := fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
+	actionInstructions := `Return ONLY the raw SQL query, no explanations, no markdown.`
+	if loopMode {
+		actionInstructions = `Return ONE JSON object on a line by itself with EITHER:
+  {"lookup_schema": ["dataset.table", ...]}  — to fetch column detail for additional tables (up to ` + fmt.Sprintf("%d", ai.MaxLookupTablesPerCall) + ` per call, ` + fmt.Sprintf("%d", MaxLookupsPerVerification) + ` rounds total per insight), OR
+  {"query": "SELECT COUNT(...) AS count FROM dataset.table ..."}  — to run the verification query.
+
+Use lookup_schema when you need column information that is not already shown in the evidence above (typical when the insight needs to JOIN or reference a table the source_steps did not query). Otherwise issue the query directly.`
+	}
+
+	return fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
 
 **Available Datasets**: %s
 **SQL Dialect**: %s
@@ -314,7 +481,7 @@ func (v *InsightValidator) generateVerificationQuery(
 - ALWAYS use fully qualified table names with backticks: `+"`dataset_name.table_name`"+`
 - Example: `+"`events_prod.sessions`"+` NOT just `+"`sessions`"+`
 - The dataset name MUST be included in every table reference
-- Reference only column names that appear in the source exploration queries (when shown) or in the table schemas section. Do not invent column names that are not documented above.
+- Reference only column names that appear in the source exploration queries / lookup detail (when shown) or in the table schemas section. Do not invent column names that are not documented above.
 
 **Insight to verify**:
 %s
@@ -326,40 +493,49 @@ Generate a single SQL query that:
 4. Includes the filter clause if provided
 5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
 
-Return ONLY the raw SQL query, no explanations, no markdown.`,
+%s`,
 		v.dataset,
 		v.warehouse.SQLDialect(),
 		v.filter,
-		sourceSection,
+		evidenceSection,
 		schemaSection,
 		string(insightJSON),
+		actionInstructions,
 	)
+}
 
-	chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
+// bareSQLFallback handles the common case where the LLM ignores the JSON
+// envelope rule and returns raw SQL (with or without code fences). When the
+// content unambiguously parses as SELECT we accept it rather than retry — the
+// LLM's intent is clear. Returns ("", false) when there is no SELECT in the
+// content.
+func bareSQLFallback(content string) (string, bool) {
+	sql, err := cleanGeneratedSQL(content)
 	if err != nil {
-		return "", err
+		return "", false
 	}
+	return sql, true
+}
 
-	sql := strings.TrimSpace(chatResult.Content)
+// cleanGeneratedSQL strips markdown code fences and language tags from a raw
+// LLM response and returns the embedded SQL. Errors when no SELECT is found —
+// the caller surfaces that as a hard validation failure.
+func cleanGeneratedSQL(content string) (string, error) {
+	sql := strings.TrimSpace(content)
 
-	// Clean up markdown code blocks (handles ```sql, ```json, ```, etc.)
 	if strings.Contains(sql, "```") {
-		// Extract content between first ``` and last ```
 		start := strings.Index(sql, "```")
 		end := strings.LastIndex(sql, "```")
 		if start != end {
 			inner := sql[start+3 : end]
-			// Strip language tag on first line (sql, json, etc.)
 			if nl := strings.Index(inner, "\n"); nl != -1 {
 				firstLine := strings.TrimSpace(inner[:nl])
-				// If first line is just a language tag (no spaces, short), skip it
 				if len(firstLine) <= 10 && !strings.Contains(firstLine, " ") {
 					inner = inner[nl+1:]
 				}
 			}
 			sql = strings.TrimSpace(inner)
 		} else {
-			// Single ``` — just strip it
 			sql = strings.TrimPrefix(sql, "```sql")
 			sql = strings.TrimPrefix(sql, "```json")
 			sql = strings.TrimPrefix(sql, "```")
