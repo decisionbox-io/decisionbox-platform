@@ -250,6 +250,39 @@ func TestRenderVerificationContext_ContainsSectionHeader(t *testing.T) {
 	}
 }
 
+// TestIsExecutableQueryStep_NonQueryActionWithSQL covers the rare case where
+// a step has a non-empty Query but a non-`query_data` Action — the Action
+// check is the gating reason it's skipped, not the empty-query short circuit.
+func TestIsExecutableQueryStep_NonQueryActionWithSQL(t *testing.T) {
+	log := []models.ExplorationStep{
+		// Action is "complete" but somehow Query was populated. Should not render.
+		{Step: 1, Action: "complete", QueryPurpose: "wrap-up", Query: "SELECT 1"},
+	}
+	got := RenderVerificationContext(log, []int{1}, DefaultBudgetChars)
+	if got != "" {
+		t.Errorf("non-query_data action with SQL should still be skipped, got:\n%s", got)
+	}
+}
+
+// TestTrimToBudget_EmptyStepsEarlyReturn calls the unexported helper to cover
+// its defensive empty-input branch. Reachable from any future caller that
+// might bypass RenderVerificationContext's pre-filter.
+func TestTrimToBudget_EmptyStepsEarlyReturn(t *testing.T) {
+	got := trimToBudget(nil, DefaultBudgetChars)
+	if len(got) != 0 {
+		t.Errorf("trimToBudget(nil) = %v, want empty", got)
+	}
+}
+
+// TestRenderSection_EmptyStepsEarlyReturn covers renderSection's defensive
+// empty-input branch (RenderVerificationContext's pre-filter normally avoids
+// the call, but the helper must still behave for direct callers).
+func TestRenderSection_EmptyStepsEarlyReturn(t *testing.T) {
+	if got := renderSection(nil); got != "" {
+		t.Errorf("renderSection(nil) = %q, want empty", got)
+	}
+}
+
 func TestRuleInstructionMentionsSourceQueryPrecedence(t *testing.T) {
 	// Regression on the central instruction — drift here is a real bug.
 	if !strings.Contains(RuleInstruction, "source exploration queries") {
