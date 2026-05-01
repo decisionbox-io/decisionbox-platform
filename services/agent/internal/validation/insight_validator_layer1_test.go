@@ -99,6 +99,9 @@ func TestInsightValidator_ForwardsEmptyFixOpts_WhenInsightHasNoSourceSteps(t *te
 		{ID: "1", Name: "T", AffectedCount: 1, AnalysisArea: "x" /* no SourceSteps */},
 	}
 	v.ValidateInsights(context.Background(), insights)
+	if exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1 — empty-opts assertion is meaningless if the executor was never invoked", exec.calls)
+	}
 	if exec.lastOpts.VerificationContext != "" {
 		t.Errorf("VerificationContext should be empty when SourceSteps is empty, got:\n%s", exec.lastOpts.VerificationContext)
 	}

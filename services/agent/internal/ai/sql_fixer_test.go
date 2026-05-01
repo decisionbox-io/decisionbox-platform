@@ -444,7 +444,7 @@ func TestApplySection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := applySection(tt.template, "X", tt.value)
 			if got != tt.want {
-				t.Errorf("applySection(%q, %q) = %q, want %q", tt.template, tt.value, got, tt.want)
+				t.Errorf("applySection(template=%q, name=%q, value=%q) = %q, want %q", tt.template, "X", tt.value, got, tt.want)
 			}
 		})
 	}

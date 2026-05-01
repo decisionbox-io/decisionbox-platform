@@ -488,3 +488,62 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// TestExecuteWithFixOpts_ForwardsOptsToFixerOnRetry pins the per-call FixOpts
+// propagation: the validator's rendered VerificationContext must reach the
+// SQL fixer on every retry attempt so the LLM sees the same column-grounding
+// evidence the verification prompt was built on. Background:
+// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
+func TestExecuteWithFixOpts_ForwardsOptsToFixerOnRetry(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("Invalid column name 'TARIiH'")
+
+	fixer := &mockFixer{
+		FixedQuery: "SELECT COUNT(*) AS count FROM `test_dataset.t` WHERE app_id = 'test'",
+	}
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		SQLFixer:   fixer,
+		MaxRetries: 1,
+	})
+
+	opts := FixOpts{VerificationContext: "## Source Exploration Queries\n\nStep 7: SELECT TARIH FROM dbo.STHAR"}
+	_, err := executor.ExecuteWithFixOpts(context.Background(), "SELECT bad FROM t", "verify", opts)
+	if err == nil {
+		// The mock keeps returning the same error so retries exhaust;
+		// what we care about is the LastOpts the fixer captured.
+		_ = err
+	}
+	if fixer.Calls < 1 {
+		t.Fatalf("fixer should be called on retry, got %d calls", fixer.Calls)
+	}
+	if fixer.LastOpts.VerificationContext != opts.VerificationContext {
+		t.Errorf("FixOpts.VerificationContext not forwarded: got %q, want %q", fixer.LastOpts.VerificationContext, opts.VerificationContext)
+	}
+}
+
+// TestExecute_ShimAlwaysPassesEmptyFixOpts pins the explore-path contract:
+// callers using the legacy Execute method must never accidentally leak
+// per-call grounding context — the fixer should see FixOpts{} on every retry,
+// otherwise the conditional {{#VERIFICATION_CONTEXT}} section in the
+// per-warehouse fixer prompt would render with stale or irrelevant evidence.
+func TestExecute_ShimAlwaysPassesEmptyFixOpts(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("syntax error")
+
+	fixer := &mockFixer{
+		FixedQuery: "SELECT 1 FROM `test_dataset.t` WHERE app_id = 'test'",
+		// Pre-populate to a sentinel so we can detect if Execute leaks state.
+		LastOpts: FixOpts{VerificationContext: "<should be cleared>"},
+	}
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		SQLFixer:   fixer,
+		MaxRetries: 1,
+	})
+
+	_, _ = executor.Execute(context.Background(), "SELECT bad FROM t", "explore")
+	if fixer.LastOpts.VerificationContext != "" {
+		t.Errorf("Execute shim must forward empty FixOpts, fixer saw VerificationContext=%q", fixer.LastOpts.VerificationContext)
+	}
+}
