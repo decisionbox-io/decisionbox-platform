@@ -51,7 +51,7 @@ ran into the same ceiling under streaming live-status updates.
 | `discovery_validation_results`      | one per `ValidationResult`        | `(discovery_id, validated_at)` | agent writes / api reads |
 | `discovery_recommendation_log`      | one per discovery (singular)      | `(discovery_id)` unique | agent writes / api reads |
 | `discovery_runs`                    | one per run (no `steps` field)    | `(project_id, started_at)` | agent writes / api reads |
-| `discovery_run_steps`               | one per live `RunStep`            | `(run_id, timestamp)` | agent writes / api reads |
+| `discovery_run_steps`               | one per live `RunStep`            | `(run_id, _id)`       | agent writes / api reads |
 
 Every per-step / per-area / per-result row carries `project_id`,
 `discovery_id` (or `run_id`), and `created_at` so cross-collection
@@ -99,12 +99,23 @@ GET /api/v1/discoveries/{id}/exploration-steps[?limit=N]
 GET /api/v1/discoveries/{id}/analysis-steps
 GET /api/v1/discoveries/{id}/validation-results
 GET /api/v1/discoveries/{id}/recommendation-log
-GET /api/v1/runs/{runId}/steps[?since=<RFC3339>&limit=N]
+GET /api/v1/runs/{runId}/steps[?since=<id>&limit=N]
 ```
 
-The `since` cursor on `/runs/{runId}/steps` mirrors the existing
-`/debug-logs` shape: the dashboard sends the timestamp of the most
-recent row it has rendered and the server returns only what's new.
+The `since` cursor on `/runs/{runId}/steps` is the opaque `id` field
+of the last row the dashboard has rendered (the document's ObjectID
+rendered as a hex string). On the next poll, the server filters
+`_id > ObjectID(since)` and sorts ascending.
+
+ObjectID, not timestamp: BSON datetimes are millisecond-precision, so
+two `AddStep` calls inside the same ms produce two rows with the same
+`timestamp`. A `timestamp > since` cursor would silently drop any
+later row that fell in that ms — the dashboard's live panel would
+permanently lose step rows. ObjectIDs are monotonic per writer process
+(timestamp + counter), so the `_id`-based cursor is collision-free for
+the agent's single-process-per-run model. The dashboard treats `id`
+as opaque and just echoes it back. A malformed cursor surfaces as
+`database.ErrInvalidCursor` and the handler maps it to `400`.
 
 ## Migration
 
