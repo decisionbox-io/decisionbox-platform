@@ -11,22 +11,23 @@ import (
 	"fmt"
 	"time"
 
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const collectionDiscoveryRunSteps = "discovery_run_steps"
-
 // RunStepRepository reads per-step rows for a discovery run.
 type RunStepRepository struct {
 	col *mongo.Collection
 }
 
-// NewRunStepRepository wraps the discovery_run_steps collection.
+// NewRunStepRepository wraps the discovery_run_steps collection. The
+// collection name lives in libs/go-common/mongodb so agent (writer) and
+// api (reader) stay in lockstep on rename.
 func NewRunStepRepository(db *DB) *RunStepRepository {
-	return &RunStepRepository{col: db.Collection(collectionDiscoveryRunSteps)}
+	return &RunStepRepository{col: db.Collection(gomongo.CollectionDiscoveryRunSteps)}
 }
 
 // ListByRun returns the steps for a run, ordered by timestamp ascending.

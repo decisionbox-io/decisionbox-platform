@@ -220,6 +220,42 @@ func TestListRunSteps_LimitClamped(t *testing.T) {
 	}
 }
 
+func TestListRunSteps_MissingLimitDefaults(t *testing.T) {
+	// No `limit` query param — handler must fall back to the cap so a
+	// caller can't accidentally pull the full history of a long run by
+	// omitting the parameter.
+	stepRepo := &mockRunStepRepo{}
+	h := newDiscoveriesHandlerWithLogs(t, nil, stepRepo)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps", nil)
+	req.SetPathValue("runId", "r")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if stepRepo.gotLimit != 5000 {
+		t.Errorf("limit default not applied: got %d, want 5000", stepRepo.gotLimit)
+	}
+}
+
+func TestListRunSteps_NegativeLimitDefaults(t *testing.T) {
+	// Negative `limit=-1` was previously forwarded verbatim, which the
+	// repo treats as "no limit" — same accidental unbounded read as the
+	// missing-limit case. Must clamp to the cap.
+	stepRepo := &mockRunStepRepo{}
+	h := newDiscoveriesHandlerWithLogs(t, nil, stepRepo)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps?limit=-1", nil)
+	req.SetPathValue("runId", "r")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if stepRepo.gotLimit != 5000 {
+		t.Errorf("limit not clamped on negative input: got %d, want 5000", stepRepo.gotLimit)
+	}
+}
+
 func TestListRunSteps_MissingRunID(t *testing.T) {
 	h := newDiscoveriesHandlerWithLogs(t, nil, &mockRunStepRepo{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs//steps", nil)

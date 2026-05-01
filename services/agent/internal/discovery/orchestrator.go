@@ -238,12 +238,24 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	// (status / phase / counters) stay on RunRepo.
 	statusReporter := NewStatusReporter(opts.RunRepo, opts.RunStepRepo, opts.ProjectID, opts.RunID, 0)
 
+	// Normalize a typed-nil concrete pointer back to an untyped-nil
+	// interface so the `o.discoveryLogRepo == nil` guard in
+	// persistSplitLogs is not fooled by Go's interface-conversion
+	// semantics: passing a nil *DiscoveryLogRepository through a
+	// concrete-pointer field would otherwise produce a non-nil
+	// interface value with a nil concrete pointer, and the persistence
+	// branch would dereference it.
+	var discoveryLogRepo discoveryLogPersister
+	if opts.DiscoveryLogRepo != nil {
+		discoveryLogRepo = opts.DiscoveryLogRepo
+	}
+
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
-		discoveryLogRepo:   opts.DiscoveryLogRepo,
+		discoveryLogRepo:   discoveryLogRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,

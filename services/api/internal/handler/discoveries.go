@@ -482,6 +482,13 @@ func (h *DiscoveriesHandler) GetDebugLogs(w http.ResponseWriter, r *http.Request
 // of the split is to keep individual responses bounded.
 const maxExplorationStepsPerRequest = 1000
 
+// maxRunStepsPerRequest caps how many live run-step rows a single GET
+// /runs/{runId}/steps response may carry. Run-step docs are smaller than
+// exploration steps (no LLM dialog), so the cap is higher — but we still
+// clamp on missing/zero/negative limits so a long-running discovery
+// can't surface its full history in one shot.
+const maxRunStepsPerRequest = 5000
+
 // ListExplorationSteps returns the per-step exploration log for a single
 // discovery. Backed by the discovery_exploration_steps collection (split
 // out of the discoveries doc to dodge the 16MB BSON limit).
@@ -608,8 +615,8 @@ func (h *DiscoveriesHandler) ListRunSteps(w http.ResponseWriter, r *http.Request
 		since = t
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit > 5000 {
-		limit = 5000
+	if limit <= 0 || limit > maxRunStepsPerRequest {
+		limit = maxRunStepsPerRequest
 	}
 	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, since, limit)
 	if err != nil {

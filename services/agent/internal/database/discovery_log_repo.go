@@ -12,7 +12,7 @@
 //   - discovery_exploration_steps   — one doc per ExplorationStep
 //   - discovery_analysis_steps      — one doc per AnalysisStep
 //   - discovery_validation_results  — one doc per ValidationResult
-//   - discovery_recommendation_log  — one doc per recommendation phase (one per run)
+//   - discovery_recommendation_log  — exactly one doc per discovery (unique index on discovery_id; SaveRecommendationLog inserts once per discovery save)
 //
 // Indexed by (project_id, discovery_id, step / area_id / validated_at) so the
 // dashboard can list them lean. The agent inserts via SaveExplorationSteps /
@@ -84,9 +84,11 @@ type ValidationResultDoc struct {
 	models.ValidationResult `bson:",inline" json:",inline"`
 }
 
-// RecommendationLogDoc — one row per run in discovery_recommendation_log.
-// Single doc per discovery (mirrors the singular RecommendationLog field
-// the parent struct used to embed).
+// RecommendationLogDoc — exactly one row per discovery in
+// discovery_recommendation_log. The collection has a unique index on
+// discovery_id (enforced in EnsureIndexes), and SaveRecommendationLog
+// inserts once when the orchestrator finishes a discovery — mirroring
+// the singular RecommendationLog field the parent doc used to embed.
 type RecommendationLogDoc struct {
 	ProjectID   string    `bson:"project_id" json:"project_id"`
 	DiscoveryID string    `bson:"discovery_id" json:"discovery_id"`

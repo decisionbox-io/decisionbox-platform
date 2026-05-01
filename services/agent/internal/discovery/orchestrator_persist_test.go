@@ -161,3 +161,26 @@ var (
 	_ discoveryLogPersister = (*database.DiscoveryLogRepository)(nil)
 	_ discoveryLogPersister = (*fakeDiscoveryLogPersister)(nil)
 )
+
+func TestNewOrchestrator_TypedNilDiscoveryLogRepoNormalizes(t *testing.T) {
+	// Regression — a caller passing a typed-nil
+	// *database.DiscoveryLogRepository must not produce a non-nil
+	// interface field on the orchestrator. Without the guard, the
+	// `o.discoveryLogRepo == nil` check in persistSplitLogs returns
+	// false (interface holds a nil concrete pointer), and the next
+	// call dereferences it and panics.
+	var typedNil *database.DiscoveryLogRepository
+	o := NewOrchestrator(OrchestratorOptions{
+		DiscoveryLogRepo: typedNil,
+		ProjectID:        "p",
+		RunID:            "r",
+	})
+
+	if o.discoveryLogRepo != nil {
+		t.Fatalf("typed-nil DiscoveryLogRepo must be normalized to nil interface; got %#v", o.discoveryLogRepo)
+	}
+
+	// Sanity — the guarded path must be a clean no-op (no panic, no
+	// dereference of the nil concrete pointer).
+	o.persistSplitLogs(context.Background(), "d", nil, nil, nil, nil)
+}
