@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -590,11 +591,17 @@ func (h *DiscoveriesHandler) GetRecommendationLog(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, entry)
 }
 
-// ListRunSteps returns the live run-step log for a discovery run, with a
-// `since` cursor for streaming polls. Replaces the embedded `steps` array
-// that previously lived on the discovery_runs document.
+// ListRunSteps returns the live run-step log for a discovery run with an
+// opaque cursor (`since` = last row's `id`) for streaming polls. Replaces
+// the embedded `steps` array that previously lived on the
+// discovery_runs document.
 //
-// GET /api/v1/runs/{runId}/steps?since=<RFC3339>&limit=<n>
+// GET /api/v1/runs/{runId}/steps?since=<id>&limit=<n>
+//
+// `since` is the `id` field of the last row the caller has already
+// rendered; the dashboard treats it as opaque and just echoes it back.
+// See run_step_repo.go for why ObjectID, not timestamp — ms-precision
+// timestamp cursors silently drop colliding rows.
 func (h *DiscoveriesHandler) ListRunSteps(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	if runID == "" {
@@ -605,21 +612,17 @@ func (h *DiscoveriesHandler) ListRunSteps(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	var since time.Time
-	if s := r.URL.Query().Get("since"); s != "" {
-		t, err := time.Parse(time.RFC3339Nano, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'since' timestamp (expected RFC3339): "+err.Error())
-			return
-		}
-		since = t
-	}
+	sinceID := r.URL.Query().Get("since")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > maxRunStepsPerRequest {
 		limit = maxRunStepsPerRequest
 	}
-	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, since, limit)
+	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, sinceID, limit)
 	if err != nil {
+		if errors.Is(err, database.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "invalid 'since' cursor (expected an opaque id from a prior response)")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to list run steps: "+err.Error())
 		return
 	}

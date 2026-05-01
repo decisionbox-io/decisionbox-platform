@@ -14,10 +14,19 @@
 //   - discovery_validation_results  — one doc per ValidationResult
 //   - discovery_recommendation_log  — exactly one doc per discovery (unique index on discovery_id; SaveRecommendationLog inserts once per discovery save)
 //
-// Indexed by (project_id, discovery_id, step / area_id / validated_at) so the
-// dashboard can list them lean. The agent inserts via SaveExplorationSteps /
-// SaveAnalysisSteps / SaveValidationResults / SaveRecommendationLog after the
-// parent DiscoveryResult is saved — those calls are best-effort: a partial
+// Indexes (see EnsureIndexes for the source of truth):
+//   - discovery_exploration_steps:   (discovery_id, step)        + (project_id, created_at desc)
+//   - discovery_analysis_steps:      (discovery_id, run_at)
+//   - discovery_validation_results:  (discovery_id, validated_at)
+//   - discovery_recommendation_log:  (discovery_id) — unique
+//
+// The dashboard reads by discovery_id, so every list-side index leads
+// with discovery_id. The exploration collection has a second
+// (project_id, created_at desc) index for the per-project recent-rows
+// view; the other collections don't currently need that view. The
+// agent inserts via SaveExplorationSteps / SaveAnalysisSteps /
+// SaveValidationResults / SaveRecommendationLog after the parent
+// DiscoveryResult is saved — those calls are best-effort: a partial
 // log persistence failure logs the error but does not roll back the
 // discovery.
 package database

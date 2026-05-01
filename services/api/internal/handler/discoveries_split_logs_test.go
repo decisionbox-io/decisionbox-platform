@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
@@ -51,19 +50,19 @@ func (m *mockDiscoveryLogRepo) GetRecommendationLog(_ context.Context, _ string)
 
 // mockRunStepRepo implements database.RunStepRepo for handler tests.
 type mockRunStepRepo struct {
-	steps    []models.RunStep
-	err      error
-	gotSince time.Time
-	gotLimit int
+	docs       []database.RunStepDoc
+	err        error
+	gotSinceID string
+	gotLimit   int
 }
 
-func (m *mockRunStepRepo) ListByRun(_ context.Context, _ string, since time.Time, limit int) ([]models.RunStep, error) {
-	m.gotSince = since
+func (m *mockRunStepRepo) ListByRun(_ context.Context, _, sinceID string, limit int) ([]database.RunStepDoc, error) {
+	m.gotSinceID = sinceID
 	m.gotLimit = limit
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.steps, nil
+	return m.docs, nil
 }
 
 // newDiscoveriesHandlerWithLogs constructs a handler wired with the two
@@ -175,28 +174,32 @@ func TestGetRecommendationLog_NotFound(t *testing.T) {
 }
 
 func TestListRunSteps_SinceCursorParsedAndForwarded(t *testing.T) {
-	stepRepo := &mockRunStepRepo{steps: []models.RunStep{{Type: "info"}}}
+	stepRepo := &mockRunStepRepo{docs: []database.RunStepDoc{{IDHex: "65000000000000000000000a", RunStep: models.RunStep{Type: "info"}}}}
 	h := newDiscoveriesHandlerWithLogs(t, nil, stepRepo)
 
-	since := time.Date(2026, 5, 1, 14, 0, 0, 0, time.UTC)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps?since="+since.Format(time.RFC3339Nano)+"&limit=10", nil)
+	const sinceID = "650000000000000000000001"
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps?since="+sinceID+"&limit=10", nil)
 	req.SetPathValue("runId", "r")
 	w := httptest.NewRecorder()
 	h.ListRunSteps(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if !stepRepo.gotSince.Equal(since) {
-		t.Errorf("since cursor not forwarded: got %v, want %v", stepRepo.gotSince, since)
+	if stepRepo.gotSinceID != sinceID {
+		t.Errorf("since cursor not forwarded: got %q, want %q", stepRepo.gotSinceID, sinceID)
 	}
 	if stepRepo.gotLimit != 10 {
 		t.Errorf("limit not forwarded: got %d, want 10", stepRepo.gotLimit)
 	}
 }
 
-func TestListRunSteps_InvalidSince(t *testing.T) {
-	h := newDiscoveriesHandlerWithLogs(t, nil, &mockRunStepRepo{})
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps?since=not-a-time", nil)
+func TestListRunSteps_InvalidSinceCursor(t *testing.T) {
+	// Repo surfaces ErrInvalidCursor; handler must map to 400 (caller
+	// supplied bad input) and NOT 500. We exercise this via the mock —
+	// the real repo also returns ErrInvalidCursor on a malformed hex.
+	stepRepo := &mockRunStepRepo{err: database.ErrInvalidCursor}
+	h := newDiscoveriesHandlerWithLogs(t, nil, stepRepo)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/r/steps?since=not-an-objectid", nil)
 	req.SetPathValue("runId", "r")
 	w := httptest.NewRecorder()
 	h.ListRunSteps(w, req)

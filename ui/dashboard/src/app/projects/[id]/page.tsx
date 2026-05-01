@@ -519,10 +519,42 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 /* ========== Live Run Panel ========== */
 
 function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
-  const steps = run.steps || [];
+  // Per-step rows are no longer embedded in the run doc — they live in
+  // discovery_run_steps and are streamed via api.listRunSteps with an
+  // opaque ObjectID cursor (the last `id` we have). We poll while the
+  // run is live and stop after it terminates.
+  const [steps, setSteps] = useState<RunStep[]>([]);
+  const lastIDRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const isTerminal = (s: string) => s === 'completed' || s === 'failed' || s === 'cancelled';
+    const poll = async () => {
+      try {
+        const next = await api.listRunSteps(run.id, lastIDRef.current || undefined);
+        if (cancelled || !next.length) return;
+        lastIDRef.current = next[next.length - 1].id;
+        setSteps(prev => prev.concat(next));
+      } catch {
+        // Network blips are tolerable — the next tick will retry.
+      }
+    };
+    // Prime once, then poll until the run terminates. After terminal,
+    // do one final fetch to flush any rows that landed in the gap.
+    poll();
+    const id = window.setInterval(() => {
+      if (isTerminal(run.status)) {
+        window.clearInterval(id);
+        poll();
+        return;
+      }
+      poll();
+    }, 1500);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [run.id, run.status]);
 
   useEffect(() => {
     if (steps.length > prevStepCount.current && !userScrolledUp.current && scrollRef.current) {
