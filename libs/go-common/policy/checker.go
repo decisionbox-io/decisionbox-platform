@@ -103,6 +103,9 @@ const (
 	FeatureRunScheduling  = "run_scheduling_enabled"
 	FeatureAPIAccess      = "api_access_enabled"
 	FeatureBYOKEmbedding  = "byok_embedding_enabled"
+	FeatureSlack          = "slack_enabled"
+	FeatureSources        = "sources_enabled"
+	FeaturePackGen        = "pack_gen_enabled"
 )
 
 // AllFeatures is the canonical, ordered list of wire flag names.
@@ -118,6 +121,9 @@ var AllFeatures = []string{
 	FeatureRunScheduling,
 	FeatureAPIAccess,
 	FeatureBYOKEmbedding,
+	FeatureSlack,
+	FeatureSources,
+	FeaturePackGen,
 }
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}

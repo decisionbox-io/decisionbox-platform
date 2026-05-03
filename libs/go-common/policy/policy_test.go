@@ -224,6 +224,57 @@ func TestRegisterChecker_ConcurrentSafe(t *testing.T) {
 	// No assertion beyond "doesn't race / doesn't deadlock".
 }
 
+func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
+	want := []string{
+		FeatureAudit,
+		FeatureGovernance,
+		FeatureCustomDomain,
+		FeatureSSOCustomerIdP,
+		FeatureModelTraining,
+		FeatureRunScheduling,
+		FeatureAPIAccess,
+		FeatureBYOKEmbedding,
+		FeatureSlack,
+		FeatureSources,
+		FeaturePackGen,
+	}
+	if len(AllFeatures) != len(want) {
+		t.Fatalf("AllFeatures length = %d, want %d", len(AllFeatures), len(want))
+	}
+	got := map[string]bool{}
+	for _, f := range AllFeatures {
+		got[f] = true
+	}
+	for _, f := range want {
+		if !got[f] {
+			t.Errorf("AllFeatures missing %q", f)
+		}
+	}
+}
+
+func TestAllFeatures_NoDuplicates(t *testing.T) {
+	seen := map[string]bool{}
+	for _, f := range AllFeatures {
+		if seen[f] {
+			t.Errorf("AllFeatures has duplicate wire string %q", f)
+		}
+		seen[f] = true
+	}
+}
+
+func TestNewFeatureConstants_WireStrings(t *testing.T) {
+	cases := map[string]string{
+		FeatureSlack:   "slack_enabled",
+		FeatureSources: "sources_enabled",
+		FeaturePackGen: "pack_gen_enabled",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("wire string mismatch: got %q, want %q", got, want)
+		}
+	}
+}
+
 // --- helpers ---
 
 type fakeChecker struct{ NoopChecker }
