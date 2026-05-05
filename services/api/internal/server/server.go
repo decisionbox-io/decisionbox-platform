@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/askoverride"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
@@ -208,7 +209,11 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	// Search — viewer
 	mux.HandleFunc("POST /api/v1/projects/{id}/search", withRole(viewer, search.Search))
 	mux.HandleFunc("POST /api/v1/search", withRole(viewer, search.CrossProjectSearch))
-	mux.HandleFunc("POST /api/v1/projects/{id}/ask", withRole(viewer, search.Ask))
+	// /ask defers to a registered override (e.g. an agentic plugin) when
+	// one is set; otherwise the community RAG handler runs. The override
+	// slot is read at request time so plugins can register at any point
+	// during startup, including from init() before Run() builds the mux.
+	mux.HandleFunc("POST /api/v1/projects/{id}/ask", withRole(viewer, askWithOverride(search.Ask)))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions", withRole(viewer, search.ListAskSessions))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.GetAskSession))
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(admin, search.DeleteAskSession))
@@ -374,6 +379,22 @@ func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 			apilog.WithFields(apilog.Fields{"run_id": run.ID, "error": err.Error()}).
 				Warn("run confirmer: clearing reservation id failed; may double-confirm on next tick")
 		}
+	}
+}
+
+// askWithOverride routes Ask requests to a registered override handler
+// when one is installed (apiserver.RegisterAskOverride). With no override
+// the community fallback runs unchanged.
+//
+// The override slot is read on every request so plugins can register at
+// any point during startup, not just before the mux is built.
+func askWithOverride(fallback http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := askoverride.Get(); ok {
+			h.ServeHTTP(w, r)
+			return
+		}
+		fallback(w, r)
 	}
 }
 

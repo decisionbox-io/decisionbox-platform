@@ -473,7 +473,7 @@ func TestBuildPreviousContext_NotesRelevanceFilter(t *testing.T) {
 
 	result := o.buildPreviousContext(ctx, nil, nil, nil)
 
-	// Only notes with relevance >= 0.5 should appear in Key Learnings
+	// Only notes with relevance >= 0.5 should appear under "Agent observations"
 	if !contains(result, "high relevance note") {
 		t.Error("should include high relevance note")
 	}

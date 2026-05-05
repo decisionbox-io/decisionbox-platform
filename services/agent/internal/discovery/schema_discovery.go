@@ -76,6 +76,29 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 			continue
 		}
 
+		// Run any registered ListTables filters (e.g. discovery-scope
+		// plugins) before per-table schema discovery so plugins can
+		// shrink the set. A filter error fails the dataset just like a
+		// list-tables error — schema discovery skips it but other
+		// datasets continue.
+		preFilter := len(tables)
+		filtered, ferr := ApplyListTablesFilters(ctx, s.projectID, dataset, tables)
+		if ferr != nil {
+			logger.WithFields(logger.Fields{
+				"dataset": dataset,
+				"error":   ferr.Error(),
+			}).Warn("ListTables filter failed, skipping dataset")
+			continue
+		}
+		tables = filtered
+		if len(tables) != preFilter {
+			logger.WithFields(logger.Fields{
+				"dataset": dataset,
+				"before":  preFilter,
+				"after":   len(tables),
+			}).Info("ListTables filter applied")
+		}
+
 		logger.WithFields(logger.Fields{"dataset": dataset, "tables": len(tables)}).Info("Listed tables, now pulling schema per-table")
 		if s.onTablesListed != nil {
 			s.onTablesListed(dataset, len(tables))

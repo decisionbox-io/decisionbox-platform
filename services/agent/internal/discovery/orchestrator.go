@@ -9,9 +9,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
-	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
+	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -1140,9 +1141,11 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("\n")
 	}
 
-	// Key learnings from notes
+	// Agent observations are auto-learnings the orchestrator records during
+	// discovery (separate from user-authored knowledge sources, which render
+	// under "## Project Knowledge").
 	if len(pctx.Notes) > 0 {
-		sb.WriteString("### Key Learnings\n")
+		sb.WriteString("### Agent observations\n")
 		shown := 0
 		for i := len(pctx.Notes) - 1; i >= 0 && shown < 10; i-- {
 			note := pctx.Notes[i]
@@ -1421,12 +1424,15 @@ const (
 	knowledgeMaxRetrievalPerPhase  = 3 * time.Second
 )
 
-// injectKnowledgeSources retrieves relevant chunks from project knowledge
-// sources and prepends them as a "## Project Knowledge" section to the prompt.
+// injectKnowledgeSources walks every registered agentplugin context provider
+// (knowledge sources today; column hints / area priority later) and prepends
+// their concatenated markdown sections to the prompt.
 //
-// The hook is always called; without an enterprise plugin loaded the registered
-// provider is a no-op and the prompt is returned unchanged. Errors are logged
-// but never returned — failure to retrieve knowledge must not abort discovery.
+// The hook is always called; with no providers loaded — or when every
+// provider returns an empty section — the prompt is returned unchanged.
+// Per-provider errors are logged but never returned: failure inside one
+// provider must not abort discovery, and must not suppress sections from
+// other providers.
 func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int) string {
 	if query == "" || topK <= 0 {
 		return prompt
@@ -1436,23 +1442,24 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	retrieveCtx, cancel := context.WithTimeout(ctx, knowledgeMaxRetrievalPerPhase)
 	defer cancel()
 
-	chunks, err := gosources.GetProvider().RetrieveContext(retrieveCtx, o.projectID, query, gosources.RetrieveOpts{
+	section := agentplugin.RenderSections(retrieveCtx, o.projectID, query, agentplugin.ContextProviderOpts{
 		Limit:    topK,
 		MinScore: knowledgeMinScore,
-	})
-	if err != nil {
+	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
-			"project_id": o.projectID,
-			"error":      err.Error(),
-		}).Warn("Knowledge source retrieval failed; continuing without project knowledge")
-		return prompt
-	}
+			"project_id":        o.projectID,
+			"context_provider":  name,
+			"error":             err.Error(),
+		}).Warn("Context provider failed; continuing without its section")
+	})
 
-	section := gosources.FormatPromptSection(chunks)
 	if section == "" {
 		return prompt
 	}
 
+	// agentplugin.RenderSections appends a single trailing newline. Preserve
+	// the historical "section + blank line + prompt" layout the orchestrator
+	// produced before the registry refactor.
 	return section + "\n" + prompt
 }
 
