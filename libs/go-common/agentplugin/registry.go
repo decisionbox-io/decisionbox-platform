@@ -35,6 +35,36 @@ func RegisterContextProvider(p ContextProvider) {
 	providers = append(providers, p)
 }
 
+// ReplaceContextProvider atomically replaces the provider whose Name()
+// equals the new provider's Name() — keeping its slot in registration
+// order — or appends p when no provider with that name is registered.
+//
+// Use this when a plugin needs to override an init()-registered default
+// (for example: an enterprise feature that wants to format the
+// "knowledge-sources" section differently than the community default).
+// The semantics are intentionally idempotent so a plugin that imports
+// itself twice still ends up with one registration.
+//
+// Panics on nil p or empty p.Name().
+func ReplaceContextProvider(p ContextProvider) {
+	if p == nil {
+		panic("agentplugin: ReplaceContextProvider called with nil provider")
+	}
+	name := p.Name()
+	if name == "" {
+		panic("agentplugin: ContextProvider.Name() returned empty string")
+	}
+	providersMu.Lock()
+	defer providersMu.Unlock()
+	for i, existing := range providers {
+		if existing.Name() == name {
+			providers[i] = p
+			return
+		}
+	}
+	providers = append(providers, p)
+}
+
 // GetAllContextProviders returns the registered providers in registration
 // order. The returned slice is a copy — callers may mutate it freely.
 func GetAllContextProviders() []ContextProvider {

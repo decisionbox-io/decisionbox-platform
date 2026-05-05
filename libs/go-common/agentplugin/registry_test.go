@@ -54,6 +54,71 @@ func TestRegisterContextProvider_DoubleRegisterPanics(t *testing.T) {
 	RegisterContextProvider(ContextProviderFunc{ProviderName: "knowledge", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "", nil }})
 }
 
+func TestReplaceContextProvider_NilPanics(t *testing.T) {
+	resetForTest()
+	defer resetForTest()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("ReplaceContextProvider(nil) must panic")
+		}
+	}()
+	ReplaceContextProvider(nil)
+}
+
+func TestReplaceContextProvider_EmptyNamePanics(t *testing.T) {
+	resetForTest()
+	defer resetForTest()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("ReplaceContextProvider with empty name must panic")
+		}
+	}()
+	ReplaceContextProvider(ContextProviderFunc{ProviderName: "", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "", nil }})
+}
+
+func TestReplaceContextProvider_AddsWhenAbsent(t *testing.T) {
+	resetForTest()
+	defer resetForTest()
+
+	ReplaceContextProvider(ContextProviderFunc{ProviderName: "fresh", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "x", nil }})
+
+	provs := GetAllContextProviders()
+	if len(provs) != 1 || provs[0].Name() != "fresh" {
+		t.Fatalf("Replace on empty registry should append; got %v", providerNamesIn(provs))
+	}
+}
+
+func TestReplaceContextProvider_SwapsKeepingOrder(t *testing.T) {
+	resetForTest()
+	defer resetForTest()
+
+	RegisterContextProvider(ContextProviderFunc{ProviderName: "first", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "A", nil }})
+	RegisterContextProvider(ContextProviderFunc{ProviderName: "knowledge", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "DEFAULT", nil }})
+	RegisterContextProvider(ContextProviderFunc{ProviderName: "third", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "C", nil }})
+
+	ReplaceContextProvider(ContextProviderFunc{ProviderName: "knowledge", Fn: func(_ context.Context, _, _ string, _ ContextProviderOpts) (string, error) { return "OVERRIDE", nil }})
+
+	got := RenderSections(context.Background(), "p1", "q", ContextProviderOpts{}, nil)
+	want := "A\n\nOVERRIDE\n\nC\n"
+	if got != want {
+		t.Fatalf("Replace did not preserve slot order:\n got=%q\nwant=%q", got, want)
+	}
+	provs := GetAllContextProviders()
+	if len(provs) != 3 || provs[1].Name() != "knowledge" {
+		t.Fatalf("Replace should keep slot count and position; got %v", providerNamesIn(provs))
+	}
+}
+
+func providerNamesIn(provs []ContextProvider) []string {
+	out := make([]string, len(provs))
+	for i, p := range provs {
+		out[i] = p.Name()
+	}
+	return out
+}
+
 func TestRegisterContextProvider_OrderPreserved(t *testing.T) {
 	resetForTest()
 	defer resetForTest()
