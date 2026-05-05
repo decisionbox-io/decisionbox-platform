@@ -153,24 +153,6 @@ mongodb:
     size: 1Gi
 
 # ---------------------------------------------------------------------------
-# Notes — inline knowledge-source notes (top-level key namespace, new in
-# v0.5.0). The deployment template wires these to NOTES_INLINE_CAP and
-# NOTES_RAG_TOPK env vars on the API container; the enterprise sources
-# plugin reads them at startup. Operators with custom values that
-# already use a `notes` key need to merge — the namespace is owned by
-# this chart starting in v0.5.0.
-# ---------------------------------------------------------------------------
-notes:
-  # inlineCap is the per-project note count below which the retriever
-  # bypasses RAG and includes every note's chunks unconditionally
-  # (small-corpus fast path). Above the cap, notes fall back to
-  # ragTopK-bounded vector search.
-  inlineCap: 20
-  # ragTopK caps the number of note chunks the RAG pass returns when
-  # the inline-cap is exceeded.
-  ragTopK: 15
-
-# ---------------------------------------------------------------------------
 # Vector Search (Qdrant)
 # ---------------------------------------------------------------------------
 qdrant:
