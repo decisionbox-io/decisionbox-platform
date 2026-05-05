@@ -100,6 +100,12 @@ spec:
                   key: api-key
             {{- end }}
             {{- end }}
+            {{- if .Values.notes }}
+            - name: NOTES_INLINE_CAP
+              value: {{ .Values.notes.inlineCap | default 20 | quote }}
+            - name: NOTES_RAG_TOPK
+              value: {{ .Values.notes.ragTopK | default 15 | quote }}
+            {{- end }}
             {{- if index .Values "mongodb" "enabled" }}
             - name: MONGODB_URI
               {{- if index .Values "mongodb" "auth" "enabled" }}
