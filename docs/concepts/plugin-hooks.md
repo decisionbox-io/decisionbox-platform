@@ -53,11 +53,11 @@ Use it to implement allow / deny lists, regex denylists, or any policy that maps
 import (
     "context"
 
-    "github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
+    "github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 )
 
 func init() {
-    discovery.RegisterListTablesFilter("my-scope", func(ctx context.Context, projectID, dataset string, in []string) ([]string, error) {
+    agentplugin.RegisterListTablesFilter("my-scope", func(ctx context.Context, projectID, dataset string, in []string) ([]string, error) {
         out := in[:0:0]
         for _, t := range in {
             if t != "deprecated_table" {
@@ -74,7 +74,7 @@ Rules:
 - Filters MUST NOT add tables to the input. The warehouse's exposed list is the upper bound.
 - Filters run in registration order. The output of one filter is the input to the next.
 - A filter that returns an error fails the dataset; the agent logs and skips it, same as a `ListTablesInDataset` failure.
-- Empty / nil names panic. Re-registering the same name panics.
+- Empty names or nil functions panic. Re-registering the same name panics.
 
 ## Hook 3 — Ask handler override
 

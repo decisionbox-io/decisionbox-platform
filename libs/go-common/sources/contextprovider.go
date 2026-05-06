@@ -14,12 +14,16 @@ const ContextProviderName = "knowledge-sources"
 // init registers the knowledge-sources provider with agentplugin so the
 // agent's prompt-assembly layer doesn't have to hardcode this package.
 //
-// Registration is unconditional: when no enterprise plugin is loaded,
-// GetProvider() returns the NoOp implementation, RetrieveContext returns
-// zero chunks, and Section returns "" — the agent's renderer drops empty
-// sections, so behavior is identical to the pre-registry call site.
+// Registration uses RegisterDefaultContextProvider so an overriding
+// plugin (e.g. an enterprise notes-aware retriever) that calls
+// ReplaceContextProvider("knowledge-sources") wins regardless of Go's
+// init order — if the plugin runs first it appends, and our register
+// here becomes a no-op; if we run first the plugin's Replace swaps us
+// out. With no plugin loaded, GetProvider() returns the NoOp impl
+// and Section returns "" — the renderer drops empty sections, so
+// behavior matches the pre-registry call site.
 func init() {
-	agentplugin.RegisterContextProvider(knowledgeSourcesProvider{})
+	agentplugin.RegisterDefaultContextProvider(knowledgeSourcesProvider{})
 }
 
 // knowledgeSourcesProvider adapts the in-package Provider to the

@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -41,14 +43,34 @@ func (r *AskSessionRepository) Create(ctx context.Context, session *commonmodels
 	return nil
 }
 
-// AppendMessage appends a Q&A turn to an existing session. Uses an
-// aggregation-pipeline update so the messages field is coerced to an
-// array via $ifNull before the new message is concatenated — this
-// tolerates legacy rows whose `messages` is null (created by older
-// builds that did not normalise on insert) without a one-off
-// migration.
+// AppendMessage appends a Q&A turn to an existing session. Uses
+// $push for the steady-state O(1) append; falls back to an
+// aggregation-pipeline rewrite once when the document was created by
+// an older build whose Insert left messages as null (Mongo's $push
+// refuses to apply to a non-array field with a "Cannot apply $push"
+// error). The fallback rewrites the field once, after which every
+// subsequent append takes the fast path.
 func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error {
-	_, err := r.db.Collection("ask_sessions").UpdateOne(ctx,
+	col := r.db.Collection("ask_sessions")
+	now := time.Now()
+	_, err := col.UpdateOne(ctx,
+		bson.M{"_id": sessionID},
+		bson.M{
+			"$push": bson.M{"messages": msg},
+			"$inc":  bson.M{"message_count": 1},
+			"$set":  bson.M{"updated_at": now},
+		},
+	)
+	if err == nil {
+		return nil
+	}
+	if !isLegacyNullFieldError(err) {
+		return fmt.Errorf("append message to session %s: %w", sessionID, err)
+	}
+	// Legacy doc: messages == null. Repair via aggregation pipeline so
+	// the array is coerced into existence; subsequent appends use $push
+	// without re-tripping this branch.
+	_, err = col.UpdateOne(ctx,
 		bson.M{"_id": sessionID},
 		mongo.Pipeline{
 			{{Key: "$set", Value: bson.M{
@@ -60,14 +82,47 @@ func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID stri
 					bson.M{"$ifNull": bson.A{"$message_count", 0}},
 					1,
 				}},
-				"updated_at": time.Now(),
+				"updated_at": now,
 			}}},
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("append message to session %s: %w", sessionID, err)
+		return fmt.Errorf("append message (legacy repair) to session %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// isLegacyNullFieldError matches the Mongo write errors that surface
+// on a legacy session document whose Insert left messages and / or
+// message_count as null. Two operator paths can trip first depending
+// on validation order:
+//
+//   - $push refuses to apply to a non-array field
+//     ("Cannot apply $push to a non-array field", code 2 BadValue).
+//   - $inc refuses to apply to a non-numeric field
+//     ("Cannot apply $inc to a value of non-numeric type", code 14
+//     TypeMismatch).
+//
+// Both are recoverable in the same way: rewrite the document via the
+// aggregation pipeline repair branch. Pinning on message text is
+// brittle but the wire surface here is stable across recent Mongo
+// majors and an unexpected match just causes the caller to fall
+// through to the already-tested aggregation path.
+func isLegacyNullFieldError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var we mongo.WriteException
+	if !errors.As(err, &we) {
+		return false
+	}
+	for _, e := range we.WriteErrors {
+		if strings.Contains(e.Message, "Cannot apply $push") ||
+			strings.Contains(e.Message, "Cannot apply $inc") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *AskSessionRepository) GetByID(ctx context.Context, sessionID string) (*commonmodels.AskSession, error) {

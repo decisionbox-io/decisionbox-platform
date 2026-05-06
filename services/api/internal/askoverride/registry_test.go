@@ -45,6 +45,23 @@ func TestRegister_DoubleRegisterPanics(t *testing.T) {
 	}))
 }
 
+// TestResetForTest_ExportedHelperClearsSlot covers the exported
+// ResetForTest wrapper that callers outside this package use (the
+// apiserver tests, in particular). The unexported resetForTest is
+// already exercised throughout this file's setup.
+func TestResetForTest_ExportedHelperClearsSlot(t *testing.T) {
+	resetForTest()
+	defer resetForTest()
+	Register(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	if _, ok := Get(); !ok {
+		t.Fatal("setup: expected Register to install handler")
+	}
+	ResetForTest()
+	if _, ok := Get(); ok {
+		t.Fatal("ResetForTest did not clear the slot")
+	}
+}
+
 func TestGet_ReturnsRegisteredHandler(t *testing.T) {
 	resetForTest()
 	defer resetForTest()
