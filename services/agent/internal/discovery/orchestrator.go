@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -1307,13 +1308,34 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 	// registered, or scope mode == none); when they shrink the set we
 	// log before/after so an operator who set a scope can confirm it
 	// took effect for this run without grepping.
+	//
+	// Sort the keys before invoking filters so input order is
+	// deterministic across runs — Go map iteration is randomised, and
+	// downstream filters (or their logs / metrics) shouldn't see a
+	// different order each time the same set of tables flows through.
 	keys := make([]string, 0, len(schemas))
 	for k := range schemas {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	kept, ferr := agentplugin.ApplyCachedSchemaFilters(ctx, o.projectID, keys)
 	if ferr != nil {
 		return nil, fmt.Errorf("cached-schema filter: %w", ferr)
+	}
+	// Subset validation: a filter is allowed to shrink the input but
+	// MUST NOT add tables we never had in the cache. Catching this
+	// here prevents a misbehaving plugin from inventing a key that
+	// looks the right shape but has no schema attached, which would
+	// surface to the LLM as a "schema for X" prompt with no X in the
+	// catalog.
+	inputSet := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		inputSet[k] = struct{}{}
+	}
+	for _, k := range kept {
+		if _, ok := inputSet[k]; !ok {
+			return nil, fmt.Errorf("cached-schema filter returned %q which was not in the input set; filters may only shrink the catalog", k)
+		}
 	}
 	if len(kept) != len(keys) {
 		keptSet := make(map[string]struct{}, len(kept))

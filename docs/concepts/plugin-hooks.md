@@ -5,7 +5,7 @@
 DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the community code.
 Each hook is a leaf-level registry: a plugin imports it (often with a blank import) and calls `Register*` from `init()`; the platform consults the registry at the right moment in its normal flow.
 
-This page documents the three hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
+This page documents the four hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
 
 ## Hook 1 — Context providers
 
@@ -104,6 +104,40 @@ Behavior:
 - With no override registered the community RAG handler runs unchanged.
 - Calling `RegisterAskOverride` with `nil` or twice panics — the override is process-global and silent shadowing would be a footgun.
 - The override receives the raw `*http.Request` after RBAC middleware (the route is gated at `viewer`); it is responsible for any further role checks (e.g. requiring `member` to mutate state).
+
+## Hook 4 — Cached-schema filter
+
+Plugins can shrink the catalog the agent loads from `project_schema_cache` at the start of a discovery run.
+Different trigger point from Hook 2: `ListTablesFilter` runs during a fresh schema-index pass (constraining what gets cached); `CachedSchemaFilter` runs every discovery run after the cache load (constraining what the LLM sees this run).
+Together they let an allow-/deny-list save take effect for both already-indexed and freshly-indexed projects without re-indexing.
+
+```go
+import (
+    "context"
+
+    "github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+)
+
+func init() {
+    agentplugin.RegisterCachedSchemaFilter("my-scope", func(ctx context.Context, projectID string, qualified []string) ([]string, error) {
+        out := qualified[:0:0]
+        for _, t := range qualified {
+            if t != "demo.deprecated" {
+                out = append(out, t)
+            }
+        }
+        return out, nil
+    })
+}
+```
+
+Rules:
+
+- Input is a slice of qualified table names (`<dataset>.<table>`, `<schema>.<table>`, etc. — whatever shape the warehouse provider canonicalised on when it wrote the schema cache). Sorted ascending so filter behavior and downstream logs are deterministic across runs.
+- Filters MUST NOT add tables. The orchestrator validates the output is a subset of the input and aborts the run with an explicit error if a filter invents a key, so a misbehaving plugin can't surface phantom tables to the LLM.
+- A filter that drops every table aborts the run with a "review the discovery scope" error rather than letting an empty catalog hit the LLM.
+- A non-nil error from any filter aborts the run; the chain stops on the first error and the orchestrator surfaces the wrapped reason.
+- Empty names or nil functions panic. Re-registering the same name panics.
 
 ## Migration & compatibility
 

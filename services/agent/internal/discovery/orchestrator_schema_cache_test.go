@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // Unit tests for Orchestrator.discoverSchemas — the single entry point
@@ -90,6 +93,125 @@ func TestOrchestrator_discoverSchemas_NilCache_Errors(t *testing.T) {
 	if !strings.Contains(err.Error(), "programmer error") {
 		t.Errorf("nil-cache should surface as programmer error, got: %v", err)
 	}
+}
+
+// fakeSchemasMulti returns a multi-table schemas map so cached-schema
+// filter tests have something to shrink.
+func fakeSchemasMulti() map[string]models.TableSchema {
+	return map[string]models.TableSchema{
+		"dbo.orders":    {TableName: "dbo.orders"},
+		"dbo.customers": {TableName: "dbo.customers"},
+		"dbo.products":  {TableName: "dbo.products"},
+	}
+}
+
+func TestOrchestrator_discoverSchemas_CachedSchemaFilter_ShrinksCatalog(t *testing.T) {
+	defer agentplugin.ResetCachedSchemaFiltersForTest()
+	agentplugin.ResetCachedSchemaFiltersForTest()
+	// Filter keeps only dbo.orders.
+	agentplugin.RegisterCachedSchemaFilter("test-shrink", func(_ context.Context, _ string, in []string) ([]string, error) {
+		out := in[:0:0]
+		for _, t := range in {
+			if t == "dbo.orders" {
+				out = append(out, t)
+			}
+		}
+		return out, nil
+	})
+
+	o := &Orchestrator{
+		projectID:     "proj-1",
+		schemaCache:   &stubCache{hit: fakeSchemasMulti()},
+		warehouseHash: "hash-abc",
+	}
+	got, err := o.discoverSchemas(context.Background())
+	if err != nil {
+		t.Fatalf("discoverSchemas: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("schemas len = %d, want 1 (filter should have shrunk to dbo.orders)", len(got))
+	}
+	if _, ok := got["dbo.orders"]; !ok {
+		t.Fatalf("schemas = %v, want dbo.orders kept", keysOf(got))
+	}
+}
+
+func TestOrchestrator_discoverSchemas_CachedSchemaFilter_ErrorSurfaces(t *testing.T) {
+	defer agentplugin.ResetCachedSchemaFiltersForTest()
+	agentplugin.ResetCachedSchemaFiltersForTest()
+	boom := errors.New("filter blew up")
+	agentplugin.RegisterCachedSchemaFilter("test-err", func(context.Context, string, []string) ([]string, error) {
+		return nil, boom
+	})
+
+	o := &Orchestrator{
+		projectID:     "proj-1",
+		schemaCache:   &stubCache{hit: fakeSchemasMulti()},
+		warehouseHash: "hash-abc",
+	}
+	_, err := o.discoverSchemas(context.Background())
+	if err == nil {
+		t.Fatal("expected filter error to surface, got nil")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected wrapped boom, got: %v", err)
+	}
+}
+
+func TestOrchestrator_discoverSchemas_CachedSchemaFilter_DropsAllReturnsExplicitError(t *testing.T) {
+	defer agentplugin.ResetCachedSchemaFiltersForTest()
+	agentplugin.ResetCachedSchemaFiltersForTest()
+	// Drop everything — discovery has nothing to run on, must surface
+	// a clear "review the discovery scope" error rather than letting
+	// an empty catalog hit the LLM.
+	agentplugin.RegisterCachedSchemaFilter("test-drop-all", func(context.Context, string, []string) ([]string, error) {
+		return nil, nil
+	})
+
+	o := &Orchestrator{
+		projectID:     "proj-zeroed",
+		schemaCache:   &stubCache{hit: fakeSchemasMulti()},
+		warehouseHash: "hash-abc",
+	}
+	_, err := o.discoverSchemas(context.Background())
+	if err == nil {
+		t.Fatal("expected explicit empty-set error, got nil")
+	}
+	if !strings.Contains(err.Error(), "discovery-scope") {
+		t.Fatalf("error should reference the discovery-scope endpoint, got: %v", err)
+	}
+}
+
+func TestOrchestrator_discoverSchemas_CachedSchemaFilter_RejectsInvented(t *testing.T) {
+	defer agentplugin.ResetCachedSchemaFiltersForTest()
+	agentplugin.ResetCachedSchemaFiltersForTest()
+	// Misbehaving filter returns a key not in the input. The
+	// orchestrator's subset check must catch this so a fabricated
+	// key never reaches the LLM as a "schema for X" prompt with no X.
+	agentplugin.RegisterCachedSchemaFilter("test-invent", func(_ context.Context, _ string, in []string) ([]string, error) {
+		return append([]string{"dbo.invented"}, in...), nil
+	})
+
+	o := &Orchestrator{
+		projectID:     "proj-1",
+		schemaCache:   &stubCache{hit: fakeSchemasMulti()},
+		warehouseHash: "hash-abc",
+	}
+	_, err := o.discoverSchemas(context.Background())
+	if err == nil {
+		t.Fatal("expected error on invented key, got nil")
+	}
+	if !strings.Contains(err.Error(), "dbo.invented") {
+		t.Fatalf("error should name the invented key, got: %v", err)
+	}
+}
+
+func keysOf(m map[string]models.TableSchema) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestOrchestrator_discoverSchemas_EmptyHash_Errors(t *testing.T) {
