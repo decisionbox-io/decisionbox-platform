@@ -76,8 +76,15 @@ func TestAskWithOverride_RequestPlumbing(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
+	// Pass an explicit fallback that fails the test if invoked. If the
+	// override is set, the wrapper must never reach the fallback —
+	// passing nil here would silently rely on that contract and panic
+	// with a less actionable error if the wrapper changed.
+	fallback := func(http.ResponseWriter, *http.Request) {
+		t.Fatal("fallback handler invoked despite registered override")
+	}
 	rec := httptest.NewRecorder()
-	askWithOverride(nil)(rec, httptest.NewRequest("POST", "/api/v1/projects/p1/ask", nil))
+	askWithOverride(fallback)(rec, httptest.NewRequest("POST", "/api/v1/projects/p1/ask", nil))
 
 	if gotMethod != "POST" || gotPath != "/api/v1/projects/p1/ask" {
 		t.Fatalf("override saw (%q, %q), want (POST, /api/v1/projects/p1/ask)", gotMethod, gotPath)

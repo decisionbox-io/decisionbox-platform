@@ -121,10 +121,16 @@ func RenderSections(ctx context.Context, projectID string, query string, opts Co
 	}
 	sections := make([]string, 0, len(provs))
 	for _, p := range provs {
-		section, err := safeSection(ctx, p, projectID, query, opts)
+		// Capture the name once via the panic-safe helper so neither
+		// the error message in safeSection nor the onError callback
+		// re-invokes a misbehaving Name() — that would leak a panic
+		// out of RenderSections and contradict the "one bad provider
+		// can never abort prompt assembly" guarantee.
+		name := safeName(p)
+		section, err := safeSection(ctx, p, name, projectID, query, opts)
 		if err != nil {
 			if onError != nil {
-				onError(p.Name(), err)
+				onError(name, err)
 			}
 			continue
 		}
@@ -139,11 +145,29 @@ func RenderSections(ctx context.Context, projectID string, query string, opts Co
 	return strings.Join(sections, "\n\n") + "\n"
 }
 
-// safeSection invokes p.Section and converts a panic into an error.
-func safeSection(ctx context.Context, p ContextProvider, projectID, query string, opts ContextProviderOpts) (out string, err error) {
+// safeName returns p.Name(), recovering from a panic in the
+// Name() implementation and returning a placeholder. ContextProvider
+// authors are expected to make Name() trivial and side-effect-free,
+// but we don't trust that — a single misbehaving plugin must never
+// abort prompt assembly through any path, including the one used to
+// build error messages about it.
+func safeName(p ContextProvider) (name string) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("agentplugin: provider %q panicked: %v", p.Name(), r)
+			name = "<unknown:Name() panicked>"
+		}
+	}()
+	return p.Name()
+}
+
+// safeSection invokes p.Section and converts a panic into an error.
+// The provider name is passed in (already captured via safeName) so
+// neither this function nor its deferred handler can panic during
+// error reporting.
+func safeSection(ctx context.Context, p ContextProvider, name, projectID, query string, opts ContextProviderOpts) (out string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("agentplugin: provider %q panicked: %v", name, r)
 		}
 	}()
 	return p.Section(ctx, projectID, query, opts)
