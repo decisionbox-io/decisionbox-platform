@@ -409,10 +409,13 @@ func (h *SchemaIndexHandler) GetCacheInfo(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ListCachedTables returns the qualified table names the agent has
-// cached for a project (one entry per dataset.table). Used by the
-// discovery-scope page's table picker so the user picks from what the
-// agent actually sees, not a free-form text input.
+// ListCachedTables returns the distinct cached schema_key values
+// the agent has stored for a project — one entry per qualified table
+// (the exact form is provider-dependent: e.g. "<dataset>.<table>"
+// for BigQuery, "<schema>.<table>" for Postgres / Snowflake /
+// Databricks, "dbo.orders" for MSSQL). Used by the discovery-scope
+// page's table picker so the user picks from what the agent actually
+// sees, not a free-form text input.
 //
 // GET /api/v1/projects/{id}/schema-cache/tables
 //

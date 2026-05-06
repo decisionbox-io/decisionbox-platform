@@ -244,3 +244,105 @@ func TestInteg_SchemaCacheRepo_LastCachedAt_RejectsEmptyProjectID(t *testing.T) 
 		t.Error("expected error for empty projectID, got nil")
 	}
 }
+
+// --- ListTables ---
+
+// seedCacheRowsWithKeys writes raw rows with explicit schema_key
+// values so the ListTables test can verify distinct + sort semantics
+// against a known input set (not the strconv-formatted defaults
+// seedCacheRows produces).
+func seedCacheRowsWithKeys(t *testing.T, projectID, hash string, keys []string) {
+	t.Helper()
+	col := testDB.Collection("project_schema_cache")
+	now := time.Now().UTC()
+	docs := make([]interface{}, 0, len(keys))
+	for _, k := range keys {
+		docs = append(docs, bson.M{
+			"project_id":     projectID,
+			"warehouse_hash": hash,
+			"schema_key":     k,
+			"schema":         bson.M{"name": "t"},
+			"cached_at":      now,
+		})
+	}
+	if _, err := col.InsertMany(context.Background(), docs); err != nil {
+		t.Fatalf("seed keys: %v", err)
+	}
+}
+
+func TestInteg_SchemaCacheRepo_ListTables_DistinctAndSorted(t *testing.T) {
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(testDB)
+
+	projectID := "proj-list-tables-distinct"
+	t.Cleanup(func() { _ = r.Invalidate(ctx, projectID) })
+
+	// Two warehouse_hash generations — same project — and a duplicate
+	// key across them. ListTables must dedup on schema_key and return
+	// values sorted ascending.
+	seedCacheRowsWithKeys(t, projectID, "h1", []string{"dbo.orders", "dbo.customers"})
+	seedCacheRowsWithKeys(t, projectID, "h2", []string{"dbo.orders", "dbo.products", "demo.events"})
+
+	got, err := r.ListTables(ctx, projectID)
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	want := []string{"dbo.customers", "dbo.orders", "dbo.products", "demo.events"}
+	if len(got) != len(want) {
+		t.Fatalf("ListTables = %v, want %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("ListTables[%d] = %q, want %q (got=%v)", i, got[i], v, got)
+		}
+	}
+}
+
+func TestInteg_SchemaCacheRepo_ListTables_EmptyCacheReturnsEmptySlice(t *testing.T) {
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(testDB)
+
+	got, err := r.ListTables(ctx, "proj-list-tables-empty")
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	// JSON marshaling depends on this being an allocated slice (so it
+	// renders as `[]`) rather than nil (`null`). Assert both length and
+	// nil-ness.
+	if got == nil {
+		t.Fatal("ListTables returned nil; want an empty allocated slice so JSON renders as []")
+	}
+	if len(got) != 0 {
+		t.Errorf("ListTables = %v, want empty", got)
+	}
+}
+
+func TestInteg_SchemaCacheRepo_ListTables_IsolatedAcrossProjects(t *testing.T) {
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(testDB)
+
+	target := "proj-list-tables-target"
+	bystander := "proj-list-tables-bystander"
+	t.Cleanup(func() {
+		_ = r.Invalidate(ctx, target)
+		_ = r.Invalidate(ctx, bystander)
+	})
+
+	seedCacheRowsWithKeys(t, target, "h", []string{"a.x", "a.y"})
+	seedCacheRowsWithKeys(t, bystander, "h", []string{"b.shouldnt_appear"})
+
+	got, err := r.ListTables(ctx, target)
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	if len(got) != 2 || got[0] != "a.x" || got[1] != "a.y" {
+		t.Errorf("ListTables(target) = %v, want [a.x a.y] — must not include bystander rows", got)
+	}
+}
+
+func TestInteg_SchemaCacheRepo_ListTables_RejectsEmptyProjectID(t *testing.T) {
+	r := NewSchemaCacheRepository(testDB)
+	if _, err := r.ListTables(context.Background(), ""); err == nil {
+		t.Error("expected error for empty projectID, got nil")
+	}
+}

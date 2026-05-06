@@ -779,6 +779,118 @@ func TestSchemaIndex_GetCacheInfo_RepoError_500(t *testing.T) {
 	}
 }
 
+// --- ListCachedTables ---
+
+// decodeListCachedTables decodes the {"data": {"tables": [...]}}
+// response envelope returned by the ListCachedTables handler. The
+// outer "data" wrap is added by writeJSON.
+func decodeListCachedTables(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var got struct {
+		Data struct {
+			Tables []string `json:"tables"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	return got.Data.Tables
+}
+
+func TestSchemaIndex_ListCachedTables_HappyPath(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"a.x", "a.y", "b.z"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 3 || got[0] != "a.x" || got[1] != "a.y" || got[2] != "b.z" {
+		t.Errorf("tables = %v, want [a.x a.y b.z]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_EmptyCache(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // tables nil → empty list, not null
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	// JSON must serialise an empty list as `[]`, not `null`, so the
+	// dashboard's mapping helpers don't need to special-case nil.
+	if !strings.Contains(w.Body.String(), `"tables":[]`) {
+		t.Errorf("body = %s, want tables:[]", w.Body.String())
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 0 {
+		t.Errorf("tables = %v, want empty", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_NoRepo_OK_Empty(t *testing.T) {
+	// Smoke build without the cache repo wired returns the empty shape
+	// instead of 503 — same contract as GetCacheInfo.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 0 {
+		t.Errorf("tables = %v, want empty when repo not wired", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_MissingProject_404(t *testing.T) {
+	ci := &mockCacheInvalidator{}
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", "nope", ""))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_EmptyProjectID_400(t *testing.T) {
+	ci := &mockCacheInvalidator{}
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", "", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_RepoError_500(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tablesErr: errors.New("mongo down")}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
 // --- GetStatus error branches ---
 
 func TestSchemaIndex_GetStatus_ProjectGetError_500(t *testing.T) {

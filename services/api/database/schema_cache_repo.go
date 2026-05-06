@@ -43,8 +43,12 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 	return nil
 }
 
-// ListTables returns the qualified table names (dataset.table) the
-// agent has cached for a project, sorted ascending. Empty slice (not
+// ListTables returns the distinct cached schema_key values for a
+// project, sorted ascending. Each schema_key is the qualified table
+// name the agent stored — typically "<dataset>.<table>" for BigQuery,
+// "<schema>.<table>" for Postgres / Redshift / Snowflake / Databricks,
+// or "<schema>.<table>" (e.g. "dbo.orders") for MSSQL — i.e. whatever
+// the warehouse provider chose to canonicalise on. Empty slice (not
 // nil) when the cache is empty so JSON marshals it as `[]`. Read-only
 // — the agent owns writes; this method exists so dashboard pages
 // (discovery scope picker, governance allow-lists) can show what the
