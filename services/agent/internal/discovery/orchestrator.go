@@ -1300,6 +1300,41 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
 	}
 	applog.WithField("cached_tables", len(schemas)).Info("Loaded schemas from cache")
+
+	// Run any registered cached-schema filters (e.g. discovery-scope)
+	// so per-project allow / deny lists shrink the catalog the LLM
+	// sees on this run. Filters are silent on no-op (zero filters
+	// registered, or scope mode == none); when they shrink the set we
+	// log before/after so an operator who set a scope can confirm it
+	// took effect for this run without grepping.
+	keys := make([]string, 0, len(schemas))
+	for k := range schemas {
+		keys = append(keys, k)
+	}
+	kept, ferr := agentplugin.ApplyCachedSchemaFilters(ctx, o.projectID, keys)
+	if ferr != nil {
+		return nil, fmt.Errorf("cached-schema filter: %w", ferr)
+	}
+	if len(kept) != len(keys) {
+		keptSet := make(map[string]struct{}, len(kept))
+		for _, k := range kept {
+			keptSet[k] = struct{}{}
+		}
+		filtered := make(map[string]models.TableSchema, len(kept))
+		for k, v := range schemas {
+			if _, ok := keptSet[k]; ok {
+				filtered[k] = v
+			}
+		}
+		applog.WithFields(applog.Fields{
+			"before": len(keys),
+			"after":  len(filtered),
+		}).Info("Cached-schema filter applied")
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("cached-schema filter dropped every table for this project — review the discovery scope (POST /api/v1/projects/%s/discovery-scope) or set mode=none", o.projectID)
+		}
+		return filtered, nil
+	}
 	return schemas, nil
 }
 

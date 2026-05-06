@@ -217,6 +217,18 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 
 	out := make([]ai.SearchHit, 0, len(hits))
 	for _, h := range hits {
+		// Drop hits for tables not in the cached schemas map. The
+		// vector index is rebuilt on every full schema-index pass so
+		// it's usually in sync, but the cached schemas map can be
+		// further constrained at run-time by plugin filters
+		// (discovery scope, governance allow-lists). When that
+		// happens, surfacing tables here that lookup_schema then
+		// reports as "not found" leaks scope and confuses the model.
+		// Treating the schemas map as the authority keeps the two
+		// surfaces consistent.
+		if _, ok := p.schemas[h.Blurb.Table]; !ok {
+			continue
+		}
 		out = append(out, ai.SearchHit{
 			Table:    h.Blurb.Table,
 			Blurb:    h.Blurb.Blurb,
