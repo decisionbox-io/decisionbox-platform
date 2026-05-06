@@ -12,6 +12,7 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 var testDB *DB
@@ -417,6 +418,94 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	_, err = repo.GetByID(ctx, "session-integ-1")
 	if err == nil {
 		t.Error("expected error after delete")
+	}
+}
+
+// TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend pins the
+// contract that an agentic flow can create a session before knowing
+// the first message and persist via AppendMessage afterwards. Before
+// the fix, Create({Messages: nil}) wrote `messages: null` to Mongo
+// and the subsequent AppendMessage's `$push` failed with "the field
+// 'messages' must be an array but is of type null".
+func TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAskSessionRepository(testDB)
+
+	session := &commonmodels.AskSession{
+		ID:        "session-nil-msgs",
+		ProjectID: "proj-nil-msgs",
+		UserID:    "user-1",
+		Title:     "Empty on create",
+		Messages:  nil, // intentional — agentic handler creates session first, persists later
+	}
+	if err := repo.Create(ctx, session); err != nil {
+		t.Fatalf("Create with nil Messages: %v", err)
+	}
+
+	// AppendMessage must succeed even though the session was created
+	// with no messages — the repository normalises nil → [] on insert.
+	err := repo.AppendMessage(ctx, "session-nil-msgs", commonmodels.AskSessionMessage{
+		Question: "first turn",
+		Answer:   "ok",
+		Model:    "claude",
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage on nil-Messages session: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, "session-nil-msgs")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.MessageCount != 1 || len(got.Messages) != 1 {
+		t.Fatalf("expected 1 message after append; got count=%d len=%d", got.MessageCount, len(got.Messages))
+	}
+	if got.Messages[0].Question != "first turn" {
+		t.Fatalf("Messages[0].Question = %q", got.Messages[0].Question)
+	}
+
+	_ = repo.Delete(ctx, "session-nil-msgs")
+}
+
+// TestInteg_AskSessionRepo_AppendToLegacyNullSession is the
+// backward-compat half: a row written by an older build that left
+// `messages: null` must still be appendable via the new aggregation-
+// pipeline AppendMessage. We can't get the BSON encoder to produce
+// `null` through the Go API any more (Create now normalises), so the
+// test seeds the document directly.
+func TestInteg_AskSessionRepo_AppendToLegacyNullSession(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAskSessionRepository(testDB)
+
+	if _, err := testDB.Collection("ask_sessions").InsertOne(ctx, bson.M{
+		"_id":           "session-legacy-null",
+		"project_id":    "proj-legacy",
+		"user_id":       "user-1",
+		"title":         "legacy",
+		"messages":      nil,
+		"message_count": nil,
+		"created_at":    time.Now(),
+		"updated_at":    time.Now(),
+	}); err != nil {
+		t.Fatalf("seed legacy doc: %v", err)
+	}
+	t.Cleanup(func() { _ = repo.Delete(ctx, "session-legacy-null") })
+
+	if err := repo.AppendMessage(ctx, "session-legacy-null", commonmodels.AskSessionMessage{
+		Question: "first turn after legacy null",
+		Answer:   "ok",
+		Model:    "claude",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMessage on legacy null session: %v", err)
+	}
+	got, err := repo.GetByID(ctx, "session-legacy-null")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.MessageCount != 1 || len(got.Messages) != 1 {
+		t.Fatalf("legacy null append: count=%d len=%d, want 1/1", got.MessageCount, len(got.Messages))
 	}
 }
 

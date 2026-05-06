@@ -7,6 +7,7 @@ import (
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -19,7 +20,17 @@ func NewAskSessionRepository(db *DB) *AskSessionRepository {
 	return &AskSessionRepository{db: db}
 }
 
+// Create inserts a new ask session. Normalises Messages to an empty
+// slice when the caller passes nil so BSON serialises the field as
+// `[]` rather than `null` — Mongo's `$push` refuses to append to a
+// null field, and AppendMessage relied on the field already being an
+// array. This was a footgun for any caller that wanted to create a
+// session before knowing the first message (e.g. an agentic flow that
+// runs a tool loop and only persists the message at the end).
 func (r *AskSessionRepository) Create(ctx context.Context, session *commonmodels.AskSession) error {
+	if session.Messages == nil {
+		session.Messages = []commonmodels.AskSessionMessage{}
+	}
 	session.MessageCount = len(session.Messages)
 	session.CreatedAt = time.Now()
 	session.UpdatedAt = time.Now()
@@ -30,13 +41,27 @@ func (r *AskSessionRepository) Create(ctx context.Context, session *commonmodels
 	return nil
 }
 
+// AppendMessage appends a Q&A turn to an existing session. Uses an
+// aggregation-pipeline update so the messages field is coerced to an
+// array via $ifNull before the new message is concatenated — this
+// tolerates legacy rows whose `messages` is null (created by older
+// builds that did not normalise on insert) without a one-off
+// migration.
 func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error {
 	_, err := r.db.Collection("ask_sessions").UpdateOne(ctx,
 		bson.M{"_id": sessionID},
-		bson.M{
-			"$push": bson.M{"messages": msg},
-			"$inc":  bson.M{"message_count": 1},
-			"$set":  bson.M{"updated_at": time.Now()},
+		mongo.Pipeline{
+			{{Key: "$set", Value: bson.M{
+				"messages": bson.M{"$concatArrays": bson.A{
+					bson.M{"$ifNull": bson.A{"$messages", bson.A{}}},
+					bson.A{msg},
+				}},
+				"message_count": bson.M{"$add": bson.A{
+					bson.M{"$ifNull": bson.A{"$message_count", 0}},
+					1,
+				}},
+				"updated_at": time.Now(),
+			}}},
 		},
 	)
 	if err != nil {
