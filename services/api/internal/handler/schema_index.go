@@ -31,12 +31,15 @@ type IndexCanceller interface {
 
 // SchemaCacheInvalidator is the minimum repo surface the
 // /invalidate-cache endpoint needs, plus the LastCachedAt query that
-// /cache-info uses to render "Last cached: …" in the dashboard.
+// /cache-info uses to render "Last cached: …" in the dashboard, and
+// the ListTables query that the dashboard's discovery-scope picker
+// uses to render the warehouse table list.
 // Concrete impl is database.SchemaCacheRepository; the in-package
 // interface keeps tests from depending on Mongo.
 type SchemaCacheInvalidator interface {
 	Invalidate(ctx context.Context, projectID string) error
 	LastCachedAt(ctx context.Context, projectID string) (time.Time, error)
+	ListTables(ctx context.Context, projectID string) ([]string, error)
 }
 
 // SchemaIndexLogLister is the minimum repo surface the /logs endpoint
@@ -404,6 +407,48 @@ func (h *SchemaIndexHandler) GetCacheInfo(w http.ResponseWriter, r *http.Request
 		resp.LastCachedAt = last.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ListCachedTables returns the qualified table names the agent has
+// cached for a project (one entry per dataset.table). Used by the
+// discovery-scope page's table picker so the user picks from what the
+// agent actually sees, not a free-form text input.
+//
+// GET /api/v1/projects/{id}/schema-cache/tables
+//
+// When the schema cache repository isn't wired, or no rows exist yet,
+// returns an empty list — the UI's empty-state render is fine.
+func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
+		return
+	}
+	type response struct {
+		Tables []string `json:"tables"`
+	}
+	if h.cacheRepo == nil {
+		writeJSON(w, http.StatusOK, response{Tables: []string{}})
+		return
+	}
+	p, err := h.projects.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get project: "+err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	tables, err := h.cacheRepo.ListTables(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
+		return
+	}
+	if tables == nil {
+		tables = []string{}
+	}
+	writeJSON(w, http.StatusOK, response{Tables: tables})
 }
 
 // SchemaIndexLogLine is one line the dashboard tail renders.

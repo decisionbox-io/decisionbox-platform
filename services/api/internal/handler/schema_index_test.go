@@ -469,6 +469,8 @@ type mockCacheInvalidator struct {
 	err          error
 	lastCachedAt time.Time
 	lastErr      error
+	tables       []string
+	tablesErr    error
 }
 
 func (m *mockCacheInvalidator) Invalidate(_ context.Context, projectID string) error {
@@ -478,6 +480,10 @@ func (m *mockCacheInvalidator) Invalidate(_ context.Context, projectID string) e
 
 func (m *mockCacheInvalidator) LastCachedAt(_ context.Context, _ string) (time.Time, error) {
 	return m.lastCachedAt, m.lastErr
+}
+
+func (m *mockCacheInvalidator) ListTables(_ context.Context, _ string) ([]string, error) {
+	return m.tables, m.tablesErr
 }
 
 func TestSchemaIndex_InvalidateCache_HappyPath(t *testing.T) {

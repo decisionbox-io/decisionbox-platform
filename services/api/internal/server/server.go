@@ -175,6 +175,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/cancel", withRole(member, schemaIndex.Cancel))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/invalidate-cache", withRole(member, schemaIndex.InvalidateCache))
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/cache-info", withRole(viewer, schemaIndex.GetCacheInfo))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-cache/tables", withRole(viewer, schemaIndex.ListCachedTables))
 	mux.HandleFunc("POST /api/v1/projects/{id}/reindex", withRole(member, schemaIndex.Reindex))
 
 	// Prompts — viewer for read, member for write

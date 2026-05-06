@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -40,6 +41,30 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 		return fmt.Errorf("schema cache invalidate: %w", err)
 	}
 	return nil
+}
+
+// ListTables returns the qualified table names (dataset.table) the
+// agent has cached for a project, sorted ascending. Empty slice (not
+// nil) when the cache is empty so JSON marshals it as `[]`. Read-only
+// — the agent owns writes; this method exists so dashboard pages
+// (discovery scope picker, governance allow-lists) can show what the
+// agent actually sees without reaching into the warehouse driver.
+func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID string) ([]string, error) {
+	if projectID == "" {
+		return nil, errors.New("projectID is required")
+	}
+	values, err := r.col.Distinct(ctx, "schema_key", bson.M{"project_id": projectID})
+	if err != nil {
+		return nil, fmt.Errorf("schema cache list tables: %w", err)
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // LastCachedAt returns the most recent cached_at timestamp across all
