@@ -77,6 +77,67 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
+// ListTerminalWithoutCompletionHook returns runs that have terminated
+// (status in {completed, failed, cancelled}) and have not had their
+// completion hooks fired yet. The run-completion dispatcher consumes
+// this list and invokes every registered hook for each row — see
+// plugin-hooks.md Hook 5.
+//
+// limit caps the per-tick batch. A small value (default 50) keeps each
+// tick bounded and lets the dispatcher catch up gradually after a long
+// API outage without monopolising a Mongo connection.
+func (r *RunRepository) ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	filter := bson.M{
+		"status": bson.M{"$in": []string{"completed", "failed", "cancelled"}},
+		// A run is dispatch-pending when the field is missing OR explicitly
+		// null. The MongoDB equality `{field: null}` predicate matches both
+		// shapes natively, so a single key suffices — keeping the index
+		// `(status, completion_hooks_fired_at, started_at)` usable rather
+		// than forcing the planner to merge two index scans behind an $or.
+		"completion_hooks_fired_at": nil,
+	}
+	// Sort by started_at ascending so the oldest pending run is dispatched
+	// first. FIFO order bounds tail latency when many runs land in the
+	// same window (e.g. after an API restart drains the backlog).
+	opts := options.Find().
+		SetLimit(int64(limit)).
+		SetSort(bson.D{{Key: "started_at", Value: 1}})
+	cursor, err := r.col.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list terminal runs without completion hook: %w", err)
+	}
+	defer cursor.Close(ctx) //nolint:errcheck
+	var runs []*models.DiscoveryRun
+	if err := cursor.All(ctx, &runs); err != nil {
+		return nil, fmt.Errorf("decode terminal runs: %w", err)
+	}
+	return runs, nil
+}
+
+// MarkCompletionHooksFired stamps completion_hooks_fired_at on the run
+// so the dispatcher's next scan skips it. Called by the dispatcher
+// after every registered hook returned without error.
+func (r *RunRepository) MarkCompletionHooksFired(ctx context.Context, runID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	now := time.Now()
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{
+			"completion_hooks_fired_at": now,
+			"updated_at":                now,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mark completion hooks fired: %w", err)
+	}
+	return nil
+}
+
 // ListTerminalWithReservation returns runs that have ended (succeeded,
 // failed, or cancelled) AND still carry a non-empty policy reservation.
 // Used by the post-completion confirmer goroutine so discovery runs

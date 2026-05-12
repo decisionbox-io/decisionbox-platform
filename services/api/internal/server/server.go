@@ -14,6 +14,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/askoverride"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runhooks"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
 
@@ -74,6 +75,15 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	if policy.HasRegisteredChecker() {
 		startCounterReconciliation(projectRepo)
 		startRunConfirmer(runRepo)
+	}
+
+	// Run completion hook dispatcher (plugin-hooks.md Hook 5). Only
+	// spin up when at least one hook is registered — with zero hooks
+	// the dispatcher would issue Mongo scans for no benefit. Plugins
+	// register from init() which runs before New(), so checking here
+	// captures every binary that links a hook in.
+	if runhooks.HasRegistered() {
+		startRunCompletionDispatcher(context.Background(), runRepo)
 	}
 
 	// Seed pricing from registered providers (if not yet in MongoDB)

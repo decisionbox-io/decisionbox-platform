@@ -49,6 +49,8 @@ type RunRepo interface {
 	SetPolicyReservationID(ctx context.Context, runID, reservationID string) error
 	ListTerminalWithReservation(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	ClearPolicyReservationID(ctx context.Context, runID string) error
+	ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
+	MarkCompletionHooksFired(ctx context.Context, runID string) error
 }
 
 // DebugLogRepo abstracts debug log read operations for handler unit testing.

@@ -66,6 +66,18 @@ var schema = []struct {
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "started_at", Value: -1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
+			// Supports the run-completion dispatcher's FIFO scan
+			// (status terminal, completion_hooks_fired_at unset,
+			// ordered by started_at ascending). Compound index keeps
+			// the per-tick query bounded even when the collection
+			// has tens of thousands of historical runs.
+			{
+				Keys: bson.D{
+					{Key: "status", Value: 1},
+					{Key: "completion_hooks_fired_at", Value: 1},
+					{Key: "started_at", Value: 1},
+				},
+			},
 		},
 	},
 	{

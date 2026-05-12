@@ -48,6 +48,13 @@ type DiscoveryRun struct {
 	AnalysisStepIndexUpserts     int `bson:"analysis_step_index_upserts,omitempty" json:"analysis_step_index_upserts,omitempty"`
 	AnalysisStepIndexSearchCalls int `bson:"analysis_step_index_search_calls,omitempty" json:"analysis_step_index_search_calls,omitempty"`
 	AnalysisStepsDropped         int `bson:"analysis_steps_dropped,omitempty" json:"analysis_steps_dropped,omitempty"`
+
+	// CompletionHooksFiredAt mirrors the API-side field. The agent does
+	// not read or write it (only the API's run-completion dispatcher
+	// does), but it lives on the shared schema so the Mongo document
+	// shape stays consistent and a hand-edited document with the field
+	// set survives an agent rewrite.
+	CompletionHooksFiredAt *time.Time `bson:"completion_hooks_fired_at,omitempty" json:"-"`
 }
 
 // RunStep is a single step in the discovery run log.

@@ -52,6 +52,14 @@ type DiscoveryRun struct {
 	// request scope (cancel, agent-completion callback, crash sweeper)
 	// can resolve it back to the control plane.
 	PolicyReservationID string `bson:"policy_reservation_id,omitempty" json:"-"`
+
+	// CompletionHooksFiredAt records the moment the API's run-completion
+	// dispatcher fired the registered completion hooks for this run
+	// (plugin-hooks.md, Hook 5). Nil until every hook has returned nil.
+	// The dispatcher uses this field to find runs that have terminated
+	// (status in {completed, failed, cancelled}) but still need hook
+	// dispatch, so the work is idempotent across API restarts and ticks.
+	CompletionHooksFiredAt *time.Time `bson:"completion_hooks_fired_at,omitempty" json:"-"`
 }
 
 type RunStep struct {
