@@ -79,6 +79,40 @@ func TestIntegration_SQLDialect(t *testing.T) {
 	t.Logf("SQLDialect: %q", dialect)
 }
 
+// TestIntegration_QuoteRef_RoundTrip confirms that the double-quoted
+// identifier shape Snowflake's QuoteRef emits is accepted by a real
+// Snowflake account. The schema TPCDS_SF100TCL.CUSTOMER is part of
+// the SNOWFLAKE_SAMPLE_DATA share and is always present in any new
+// Snowflake trial / paid account, so the query needs no seed step.
+func TestIntegration_QuoteRef_RoundTrip(t *testing.T) {
+	cfg := getIntegrationConfig(t)
+	provider, err := gowarehouse.NewProvider("snowflake", cfg)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	defer provider.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ref := provider.QuoteRef("TPCDS_SF100TCL", "CUSTOMER")
+	if ref != `"TPCDS_SF100TCL"."CUSTOMER"` {
+		t.Fatalf("QuoteRef returned unexpected shape: %q", ref)
+	}
+
+	// SELECT 1 instead of COUNT(*) keeps the warehouse cost minimal on
+	// the 100-TB TPC-DS sample table; we only need to prove the bytes
+	// parse against the live engine.
+	query := "SELECT 1 AS one FROM " + ref + " LIMIT 1"
+	result, err := provider.Query(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("QuoteRef'd query failed against live Snowflake: %v\nquery: %s", err, query)
+	}
+	if result == nil || len(result.Rows) == 0 {
+		t.Fatalf("expected at least one result row, got %#v", result)
+	}
+}
+
 func TestIntegration_GetDataset(t *testing.T) {
 	cfg := getIntegrationConfig(t)
 	provider, err := gowarehouse.NewProvider("snowflake", cfg)

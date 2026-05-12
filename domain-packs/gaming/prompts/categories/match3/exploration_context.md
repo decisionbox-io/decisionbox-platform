@@ -17,7 +17,7 @@ This is a **match-3 puzzle game**. Key aspects to explore:
 ```sql
 SELECT level_number, quit_rate, success_rate, avg_attempts_per_player,
        COUNT(DISTINCT user_id) as unique_players
-FROM `{{DATASET}}.level_performance_weekly_trends`
+FROM {{REF:level_performance_weekly_trends}}
 {{FILTER}}
   AND week_start_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY level_number, quit_rate, success_rate, avg_attempts_per_player
@@ -32,7 +32,7 @@ SELECT booster_name,
        COUNT(DISTINCT user_id) as unique_users,
        COUNT(*) as total_uses,
        AVG(level_number) as avg_level_used
-FROM `{{DATASET}}.booster_usage`
+FROM {{REF:booster_usage}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY booster_name
@@ -45,7 +45,7 @@ SELECT
   CAST(FLOOR((level_number - 1) / 20) + 1 AS INT64) as chapter,
   COUNT(DISTINCT user_id) as players_reached,
   MIN(level_number) as chapter_start_level
-FROM `{{DATASET}}.user_level_progress`
+FROM {{REF:user_level_progress}}
 {{FILTER}}
 GROUP BY chapter
 ORDER BY chapter
@@ -58,7 +58,7 @@ SELECT
   SUM(CASE WHEN transaction_type = 'earn' THEN quantity ELSE 0 END) as total_earned,
   SUM(CASE WHEN transaction_type = 'spend' THEN quantity ELSE 0 END) as total_spent,
   COUNT(DISTINCT user_id) as unique_users
-FROM `{{DATASET}}.economy_transactions`
+FROM {{REF:economy_transactions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY booster_name
@@ -70,7 +70,7 @@ ORDER BY total_spent DESC
 SELECT level_number,
        stars_earned,
        COUNT(DISTINCT user_id) as player_count
-FROM `{{DATASET}}.level_completions`
+FROM {{REF:level_completions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY level_number, stars_earned

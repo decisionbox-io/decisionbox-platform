@@ -78,6 +78,65 @@ func TestIntegration_ADC_ListTables(t *testing.T) {
 	}
 }
 
+// TestIntegration_ADC_QuoteRef_RoundTrip confirms the backtick-quoted
+// per-part shape BigQuery's QuoteRef emits is accepted verbatim by a
+// real BigQuery dataset. Picks the first table ListTables returns
+// (avoiding a hardcoded table name that may not exist in every
+// configured test dataset).
+func TestIntegration_ADC_QuoteRef_RoundTrip(t *testing.T) {
+	cfg := getIntegrationConfig(t)
+	cfg["auth_method"] = "adc"
+
+	provider, err := gowarehouse.NewProvider("bigquery", cfg)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	defer provider.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tables, err := provider.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("ListTables failed: %v", err)
+	}
+	if len(tables) == 0 {
+		t.Skip("dataset has no tables — cannot exercise QuoteRef round-trip")
+	}
+
+	// ListTables returns fully qualified `dataset.table` strings on BQ;
+	// split to feed QuoteRef as discrete parts so the helper renders
+	// the per-part backtick shape (`dataset`.`table`).
+	qualified := tables[0]
+	dot := -1
+	for i := 0; i < len(qualified); i++ {
+		if qualified[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot == -1 {
+		t.Fatalf("expected ListTables entry to be qualified dataset.table, got %q", qualified)
+	}
+	dataset := qualified[:dot]
+	table := qualified[dot+1:]
+
+	ref := provider.QuoteRef(dataset, table)
+	expected := "`" + dataset + "`.`" + table + "`"
+	if ref != expected {
+		t.Fatalf("QuoteRef shape mismatch: got %q, want %q", ref, expected)
+	}
+
+	query := "SELECT 1 AS one FROM " + ref + " LIMIT 1"
+	result, err := provider.Query(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("QuoteRef'd query failed against live BigQuery: %v\nquery: %s", err, query)
+	}
+	if result == nil || len(result.Rows) == 0 {
+		t.Fatalf("expected at least one result row, got %#v", result)
+	}
+}
+
 // --- Service Account Key auth ---
 
 func TestIntegration_SAKey_HealthCheck(t *testing.T) {

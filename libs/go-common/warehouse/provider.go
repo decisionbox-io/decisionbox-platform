@@ -1,6 +1,9 @@
 package warehouse
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Provider abstracts data warehouse query operations.
 // Implement this interface to add support for a new data warehouse
@@ -35,6 +38,23 @@ type Provider interface {
 	//   PostgreSQL: "PostgreSQL"
 	//   ClickHouse: "ClickHouse SQL"
 	SQLDialect() string
+
+	// QuoteRef returns a dialect-correct fully-qualified identifier built
+	// from the given parts (typically dataset + table, or catalog +
+	// schema + table). Each part is quoted individually using the
+	// dialect's identifier-quoting convention, then joined with dots.
+	//   BigQuery / Databricks: `dataset`.`table`
+	//   PostgreSQL / Redshift / Snowflake: "dataset"."table"
+	//   SQL Server (MSSQL):    [dataset].[table]
+	// Callers must validate parts are plain identifiers before calling;
+	// this method does not sanitise its inputs (e.g., does not escape
+	// embedded quote characters).
+	//
+	// Used by the discovery agent to render dialect-correct table refs
+	// into exploration prompts so the LLM emits SQL the warehouse
+	// accepts on the first try, instead of generating BigQuery-style
+	// backticks and round-tripping through the SQL-fix LLM call.
+	QuoteRef(parts ...string) string
 
 	// SQLFixPrompt returns a prompt template for fixing SQL errors in this
 	// warehouse's dialect. The prompt contains common error patterns and
@@ -114,4 +134,31 @@ type ColumnSchema struct {
 	Name     string
 	Type     string // Normalized type: "STRING", "INT64", "FLOAT64", "BOOL", "TIMESTAMP", "DATE", "BYTES", "RECORD"
 	Nullable bool
+}
+
+// QuotePartsWith builds a fully-qualified identifier by wrapping each
+// non-empty part with the given open / close strings and joining the
+// quoted parts with dots. Empty / whitespace-only parts are skipped;
+// if all parts are empty the function returns "".
+//
+// Providers compose their dialect-specific QuoteRef on top of this
+// helper to avoid duplicating the filter-and-join loop:
+//
+//	BigQuery / Databricks:               QuotePartsWith("`", "`", parts)
+//	PostgreSQL / Redshift / Snowflake:   QuotePartsWith(`"`, `"`, parts)
+//	SQL Server (MSSQL):                  QuotePartsWith("[", "]", parts)
+//
+// The helper does NOT escape embedded delimiter characters — the
+// Provider.QuoteRef contract requires callers to pass plain
+// identifiers, and warehouse identifier validation runs at each
+// provider's request boundary.
+func QuotePartsWith(open, close string, parts []string) string {
+	quoted := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		quoted = append(quoted, open+p+close)
+	}
+	return strings.Join(quoted, ".")
 }

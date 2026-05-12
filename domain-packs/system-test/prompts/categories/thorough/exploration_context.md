@@ -19,7 +19,7 @@ WITH table_stats AS (
   SELECT
     COUNT(*) AS total_rows,
     COUNT(DISTINCT column_name) AS distinct_values
-  FROM `{{DATASET}}.example_table`
+  FROM {{REF:example_table}}
   {{FILTER}}
 )
 SELECT * FROM table_stats
@@ -32,7 +32,7 @@ SELECT
   column_b,
   ROW_NUMBER() OVER (PARTITION BY column_a ORDER BY column_b) AS row_num,
   RANK() OVER (ORDER BY column_b DESC) AS rank_val
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 {{FILTER}}
 LIMIT 20
 ```
@@ -40,8 +40,8 @@ LIMIT 20
 **JOIN Between Tables**:
 ```sql
 SELECT a.id, a.name, b.value
-FROM `{{DATASET}}.table_a` a
-JOIN `{{DATASET}}.table_b` b ON a.id = b.foreign_id
+FROM {{REF:table_a}} a
+JOIN {{REF:table_b}} b ON a.id = b.foreign_id
 {{FILTER}}
 LIMIT 10
 ```
@@ -58,10 +58,10 @@ SELECT
 **Subquery**:
 ```sql
 SELECT *
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 WHERE column_name IN (
   SELECT DISTINCT column_name
-  FROM `{{DATASET}}.another_table`
+  FROM {{REF:another_table}}
   {{FILTER}}
 )
 {{FILTER}}

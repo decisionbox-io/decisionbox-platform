@@ -108,6 +108,28 @@ func TestRedshiftProvider_SQLDialect(t *testing.T) {
 	}
 }
 
+func TestRedshiftProvider_QuoteRef(t *testing.T) {
+	p := &RedshiftProvider{}
+	cases := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{name: "schema.table", parts: []string{"public", "events"}, want: `"public"."events"`},
+		{name: "single part", parts: []string{"events"}, want: `"events"`},
+		{name: "empty parts", parts: nil, want: ""},
+		{name: "case preserved", parts: []string{"Public", "Events"}, want: `"Public"."Events"`},
+		{name: "empty middle part skipped", parts: []string{"public", "", "events"}, want: `"public"."events"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.QuoteRef(tc.parts...); got != tc.want {
+				t.Errorf("QuoteRef(%v) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractFieldValue_Nil(t *testing.T) {
 	result := extractFieldValue(nil, types.ColumnMetadata{})
 	if result != nil {

@@ -155,7 +155,8 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | `GetTableSchema(ctx, table)` | Get column names, types, nullable |
 | `GetTableSchemaInDataset(ctx, dataset, table)` | Get schema for a specific dataset.table |
 | `GetDataset()` | Return default dataset name |
-| `SQLDialect()` | Return SQL dialect description |
+| `SQLDialect()` | Return SQL dialect description (rendered into exploration / verification prompts via the `{{DIALECT}}` placeholder so the LLM emits dialect-correct SQL on the first try). |
+| `QuoteRef(parts...)` | Return a dialect-correct fully-qualified identifier (e.g. `` `dataset`.`table` `` for BigQuery / Databricks, `"dataset"."table"` for PostgreSQL / Redshift / Snowflake, `[dataset].[table]` for SQL Server). Used by the orchestrator to render `{{REF:tablename}}` placeholders in prompts, by `schema_discovery.go`'s fallback sample query, and by the insight validator to render example table refs. Each part is quoted individually with the dialect's native delimiter; the helper `warehouse.QuotePartsWith(open, close, parts)` colocated in `provider.go` is the recommended implementation. |
 | `SQLFixPrompt()` | Return warehouse-specific SQL fix instructions. The template must declare the `{{DATASET}}`, `{{ORIGINAL_SQL}}`, `{{ERROR_MESSAGE}}`, `{{SCHEMA_INFO}}`, `{{FILTER}}`, and `{{CONVERSATION_HISTORY}}` placeholders, plus a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` block carrying any warehouse-specific phrasing of the column-grounding rule (the section is stripped from the rendered prompt when the validator-side fixer call passes empty `FixOpts`). The provider's `provider_test.go` should assert all these markers are present so a missed template never silently strips column grounding for that warehouse. |
 | `ValidateReadOnly(ctx)` | Verify read-only access works |
 | `HealthCheck(ctx)` | Check warehouse connectivity |

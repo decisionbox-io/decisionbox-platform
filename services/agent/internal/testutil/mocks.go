@@ -166,6 +166,10 @@ func (m *MockWarehouseProvider) GetDataset() string { return m.Dataset }
 
 func (m *MockWarehouseProvider) SQLDialect() string { return "Mock SQL" }
 
+func (m *MockWarehouseProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith("`", "`", parts)
+}
+
 func (m *MockWarehouseProvider) SQLFixPrompt() string {
 	return "Fix this {{ORIGINAL_SQL}} query. Error: {{ERROR_MESSAGE}}"
 }

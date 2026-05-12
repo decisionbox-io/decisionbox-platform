@@ -291,6 +291,36 @@ func TestIntegration_SQLDialect(t *testing.T) {
 	}
 }
 
+// TestIntegration_QuoteRef_RoundTrip confirms that the string the
+// PostgreSQL provider's QuoteRef emits is accepted verbatim by a real
+// PostgreSQL instance — i.e. the double-quoted, dot-joined form
+// `"public"."all_types"` parses against the seeded test schema. This
+// is the contract the orchestrator's `{{REF:table}}` substitution
+// relies on; if QuoteRef ever produced a delimiter that PostgreSQL
+// rejected, every dialect-correct exploration query on Postgres would
+// silently fall back to the SQL-fix LLM call.
+func TestIntegration_QuoteRef_RoundTrip(t *testing.T) {
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ref := provider.QuoteRef("public", "all_types")
+	if ref != `"public"."all_types"` {
+		t.Fatalf("QuoteRef returned unexpected shape: %q", ref)
+	}
+
+	query := "SELECT COUNT(*) AS row_count FROM " + ref
+	result, err := provider.Query(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("QuoteRef'd query failed against live database: %v\nquery: %s", err, query)
+	}
+	if result == nil || len(result.Rows) == 0 {
+		t.Fatalf("expected at least one result row, got %#v", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListTables / GetTableSchema
 // ---------------------------------------------------------------------------

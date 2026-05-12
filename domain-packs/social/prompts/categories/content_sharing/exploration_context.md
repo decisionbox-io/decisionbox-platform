@@ -24,7 +24,7 @@ SELECT
     COUNT(DISTINCT CASE WHEN posts_this_week > 0 THEN user_id END),
     COUNT(DISTINCT user_id)
   ) as creator_ratio
-FROM `{{DATASET}}.weekly_user_activity`
+FROM {{REF:weekly_user_activity}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 WEEK)
 GROUP BY week
@@ -41,7 +41,7 @@ SELECT
   AVG(comments_count) as avg_comments,
   AVG(shares_count) as avg_shares,
   AVG(SAFE_DIVIDE(likes_count + comments_count + shares_count, views_count)) as avg_engagement_rate
-FROM `{{DATASET}}.content_posts`
+FROM {{REF:content_posts}}
 {{FILTER}}
   AND created_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY content_type
@@ -56,7 +56,7 @@ SELECT
   SUM(revenue_usd) as total_revenue,
   AVG(revenue_usd) as avg_transaction,
   COUNT(*) as total_transactions
-FROM `{{DATASET}}.iap_transactions`
+FROM {{REF:iap_transactions}}
 {{FILTER}}
   AND purchase_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY feature_name
@@ -75,7 +75,7 @@ SELECT
   COUNT(DISTINCT user_id) as users,
   AVG(days_active_last_30d) as avg_days_active,
   AVG(sessions_last_30d) as avg_sessions
-FROM `{{DATASET}}.user_social_graph`
+FROM {{REF:user_social_graph}}
 {{FILTER}}
 GROUP BY connection_segment
 ORDER BY users DESC
@@ -88,7 +88,7 @@ SELECT
   COUNT(DISTINCT user_id) as unique_users,
   SUM(coin_amount) as total_coins,
   AVG(coin_amount) as avg_per_transaction
-FROM `{{DATASET}}.virtual_currency_transactions`
+FROM {{REF:virtual_currency_transactions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY transaction_type
@@ -108,7 +108,7 @@ SELECT
   COUNT(DISTINCT user_id) as creators,
   SUM(total_earnings_usd) as total_earnings,
   AVG(posts_last_30d) as avg_posts
-FROM `{{DATASET}}.creator_earnings`
+FROM {{REF:creator_earnings}}
 {{FILTER}}
   AND period_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY earnings_tier

@@ -369,6 +369,14 @@ func (p *MSSQLProvider) SQLDialect() string {
 	return "Microsoft SQL Server T-SQL (ANSI SQL with extensions: TOP, OFFSET/FETCH, CTEs, window functions, PIVOT/UNPIVOT, MERGE, CROSS APPLY, OUTER APPLY, XML/JSON functions)"
 }
 
+// QuoteRef returns a bracket-quoted, dot-joined identifier in T-SQL
+// form, e.g. [schema].[table]. Square brackets are T-SQL's native
+// identifier delimiter — they survive reserved-word collisions,
+// leading underscores, and embedded dots without escaping.
+func (p *MSSQLProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith("[", "]", parts)
+}
+
 // SampleQuery builds a T-SQL "sample N rows" query: `SELECT TOP N * FROM
 // [schema].[table] <filter>`. T-SQL does not support LIMIT — TOP N must
 // follow SELECT. Square brackets quote identifiers so names with reserved

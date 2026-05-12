@@ -112,6 +112,8 @@ The most commonly used:
 | `{{PREVIOUS_CONTEXT}}` | base_context.md | Previous insights + feedback |
 | `{{QUERY_RESULTS}}` | analysis_*.md | Exploration data for this area |
 | `{{DATASET}}` | exploration.md, analysis_*.md | Dataset names |
+| `{{DIALECT}}` | any prompt | Warehouse SQL dialect name (e.g. `"BigQuery Standard SQL"`, `"Microsoft SQL Server T-SQL …"`) returned by the connected provider |
+| `{{REF:tablename}}` | any prompt | Dialect-correct fully-qualified table reference (`` `ds`.`tablename` `` on BigQuery, `[ds].[tablename]` on SQL Server, `"ds"."tablename"` on PostgreSQL/Redshift/Snowflake). Use this for every SQL table reference in example queries; the orchestrator renders it with the connected warehouse's native quoting. |
 | `{{INSIGHTS_DATA}}` | recommendations.md | All insights as JSON (for linking) |
 
 ## Tips for Better Prompts

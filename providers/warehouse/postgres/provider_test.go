@@ -384,6 +384,29 @@ func TestSQLDialect(t *testing.T) {
 	}
 }
 
+func TestQuoteRef(t *testing.T) {
+	p := &PostgresProvider{}
+	cases := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{name: "schema.table", parts: []string{"public", "users"}, want: `"public"."users"`},
+		{name: "db.schema.table", parts: []string{"app", "public", "users"}, want: `"app"."public"."users"`},
+		{name: "single part", parts: []string{"users"}, want: `"users"`},
+		{name: "empty parts", parts: nil, want: ""},
+		{name: "case is preserved when quoted", parts: []string{"PublicSchema", "Users"}, want: `"PublicSchema"."Users"`},
+		{name: "empty middle part skipped", parts: []string{"public", "", "users"}, want: `"public"."users"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.QuoteRef(tc.parts...); got != tc.want {
+				t.Errorf("QuoteRef(%v) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSQLFixPrompt(t *testing.T) {
 	p := &PostgresProvider{}
 	prompt := p.SQLFixPrompt()

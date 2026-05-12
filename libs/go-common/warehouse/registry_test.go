@@ -39,6 +39,10 @@ func (m *mockWarehouseProvider) SQLDialect() string {
 	return "Mock SQL"
 }
 
+func (m *mockWarehouseProvider) QuoteRef(parts ...string) string {
+	return QuotePartsWith("`", "`", parts)
+}
+
 func (m *mockWarehouseProvider) SQLFixPrompt() string {
 	return ""
 }

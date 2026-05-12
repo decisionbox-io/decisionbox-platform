@@ -111,10 +111,13 @@ func TestSchemaDiscovery_SampleQuery_UsesBuilderWhenProviderImplements(t *testin
 
 func TestSchemaDiscovery_SampleQuery_FallsBackWhenProviderDoesNotImplement(t *testing.T) {
 	// When the provider does NOT implement SampleQueryBuilder, schema
-	// discovery emits the legacy BigQuery-style query
-	// (`SELECT * FROM `ds.tab` <filter> LIMIT 5`). This keeps behaviour
-	// identical to main for any provider that hasn't been updated yet —
-	// the SQL fixer will rewrite it on first use if the dialect differs.
+	// discovery emits a generic SELECT … LIMIT N. The qualified table
+	// ref is rendered via the provider's QuoteRef so the fallback uses
+	// the dialect's identifier-quoting convention (per-part quoting
+	// joined by dots) rather than BigQuery's single-backtick form.
+	// The shipped MockWarehouseProvider returns backtick-per-part
+	// quoting (matching BQ / Databricks); other dialects render with
+	// square brackets or double quotes.
 	wh := testutil.NewMockWarehouseProvider("dbo")
 	wh.Tables = []string{"orders"}
 
@@ -124,8 +127,8 @@ func TestSchemaDiscovery_SampleQuery_FallsBackWhenProviderDoesNotImplement(t *te
 	}
 
 	got := lastSampleQuery(wh)
-	if !strings.Contains(got, "`dbo.orders`") {
-		t.Errorf("fallback query should use backtick quoting; got %q", got)
+	if !strings.Contains(got, "`dbo`.`orders`") {
+		t.Errorf("fallback query should use dialect-quoted qualified name; got %q", got)
 	}
 	if !strings.Contains(got, "LIMIT 5") {
 		t.Errorf("fallback query should use LIMIT 5; got %q", got)

@@ -25,7 +25,7 @@ SELECT
   top_level_category,
   COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) as viewers,
   COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN customer_id END) as buyers
-FROM `{{DATASET}}.events`
+FROM {{REF:events}}
 {{FILTER}}
   AND top_level_category IS NOT NULL
 GROUP BY top_level_category
@@ -46,7 +46,7 @@ FROM (
     COUNT(DISTINCT top_level_category) as categories_browsed,
     COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN product_id END) as total_purchases,
     SUM(CASE WHEN event_type = 'purchase' THEN price ELSE 0 END) as total_spent
-  FROM `{{DATASET}}.events`
+  FROM {{REF:events}}
   {{FILTER}}
     AND top_level_category IS NOT NULL
   GROUP BY customer_id
@@ -63,7 +63,7 @@ SELECT
   brand,
   COUNT(DISTINCT CASE WHEN event_type = 'view' THEN customer_id END) as viewers,
   COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN customer_id END) as buyers
-FROM `{{DATASET}}.events`
+FROM {{REF:events}}
 {{FILTER}}
   AND category = 'example_category'
   AND brand IS NOT NULL
@@ -91,7 +91,7 @@ FROM (
     session_id,
     COUNT(CASE WHEN event_type = 'view' THEN 1 END) as views_in_session,
     MAX(CASE WHEN event_type = 'purchase' THEN 1 ELSE 0 END) as has_purchase
-  FROM `{{DATASET}}.events`
+  FROM {{REF:events}}
   {{FILTER}}
   GROUP BY session_id
 ) sub
@@ -106,6 +106,6 @@ SELECT
   COUNT(*) as total_events,
   COUNT(CASE WHEN category IS NULL THEN 1 END) as null_category,
   COUNT(CASE WHEN brand IS NULL THEN 1 END) as null_brand
-FROM `{{DATASET}}.events`
+FROM {{REF:events}}
 {{FILTER}}
 ```

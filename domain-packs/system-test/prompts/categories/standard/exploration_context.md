@@ -26,7 +26,7 @@ SELECT
   COUNT(column_name) AS non_null_count,
   COUNT(*) - COUNT(column_name) AS null_count,
   ROUND((COUNT(*) - COUNT(column_name)) * 100.0 / NULLIF(COUNT(*), 0), 2) AS null_percentage
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 {{FILTER}}
 ```
 
@@ -37,7 +37,7 @@ SELECT
   MAX(numeric_column) AS max_val,
   AVG(numeric_column) AS avg_val,
   COUNT(DISTINCT numeric_column) AS distinct_count
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 {{FILTER}}
 ```
 
@@ -47,7 +47,7 @@ SELECT
   MIN(date_column) AS earliest,
   MAX(date_column) AS latest,
   COUNT(DISTINCT date_column) AS distinct_dates
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 {{FILTER}}
 ```
 
@@ -56,6 +56,6 @@ FROM `{{DATASET}}.example_table`
 SELECT
   COUNT(DISTINCT string_column) AS distinct_values,
   COUNT(*) AS total_rows
-FROM `{{DATASET}}.example_table`
+FROM {{REF:example_table}}
 {{FILTER}}
 ```

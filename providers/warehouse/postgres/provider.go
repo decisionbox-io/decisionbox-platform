@@ -293,6 +293,13 @@ func (p *PostgresProvider) SQLDialect() string {
 	return "PostgreSQL (ANSI SQL with extensions: DISTINCT ON, CTEs, window functions, JSON operators, array types)"
 }
 
+// QuoteRef returns a double-quoted, dot-joined identifier in
+// PostgreSQL form, e.g. "schema"."table". Double quotes preserve
+// case and allow reserved-word identifiers.
+func (p *PostgresProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith(`"`, `"`, parts)
+}
+
 // SampleQuery builds a PostgreSQL "sample N rows" query: `SELECT * FROM
 // "schema"."table" <filter> LIMIT n`. Double-quoted identifiers preserve
 // case and let reserved words through. `filterClause` is either empty or

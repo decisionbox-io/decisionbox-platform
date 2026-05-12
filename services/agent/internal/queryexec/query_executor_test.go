@@ -238,6 +238,9 @@ func (w *queryWrapper) GetTableSchema(ctx context.Context, table string) (*gowar
 }
 func (w *queryWrapper) GetDataset() string      { return w.provider.GetDataset() }
 func (w *queryWrapper) SQLDialect() string      { return w.provider.SQLDialect() }
+func (w *queryWrapper) QuoteRef(parts ...string) string {
+	return w.provider.QuoteRef(parts...)
+}
 func (w *queryWrapper) SQLFixPrompt() string    { return w.provider.SQLFixPrompt() }
 func (w *queryWrapper) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
 	return w.provider.ListTables(ctx)

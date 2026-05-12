@@ -32,6 +32,13 @@ type InsightValidator struct {
 	executor          SelfHealingExecutor
 	schemaProvider    ai.SchemaProvider
 	dataset           string
+	// refDataset is the single dataset name used to qualify example
+	// table refs in the verification prompt. The `dataset` field stores
+	// a human-readable comma-joined list when the project spans
+	// multiple datasets, which is unusable as input to QuoteRef — so
+	// NewInsightValidator extracts the first segment here at
+	// construction time and the example rendering uses this field.
+	refDataset        string
 	filter            string
 	schemaCtx         string
 	explorationLog    []models.ExplorationStep
@@ -74,12 +81,23 @@ type InsightValidatorOptions struct {
 
 // NewInsightValidator creates a new insight validator.
 func NewInsightValidator(opts InsightValidatorOptions) *InsightValidator {
+	// Extract the first comma-separated dataset for QuoteRef example
+	// rendering. Projects with a single dataset pass it through
+	// unchanged; multi-dataset projects use the first one as the
+	// representative dataset for prompt examples — the LLM applies
+	// the same dialect-correct quoting convention to refs against the
+	// other datasets.
+	refDataset := opts.Dataset
+	if idx := strings.IndexByte(refDataset, ','); idx != -1 {
+		refDataset = strings.TrimSpace(refDataset[:idx])
+	}
 	return &InsightValidator{
 		aiClient:       opts.AIClient,
 		warehouse:      opts.Warehouse,
 		executor:       opts.Executor,
 		schemaProvider: opts.SchemaProvider,
 		dataset:        opts.Dataset,
+		refDataset:     refDataset,
 		filter:         opts.Filter,
 	}
 }
@@ -525,6 +543,10 @@ func (v *InsightValidator) buildVerificationPrompt(
 Use lookup_schema when you need column information that is not already shown in the evidence above (typical when the insight needs to JOIN or reference a table the source_steps did not query). Otherwise issue the query directly.`
 	}
 
+	exampleRef := v.warehouse.QuoteRef(v.refDataset, "sessions")
+	shortRef := v.warehouse.QuoteRef("sessions")
+	userIDIdent := v.warehouse.QuoteRef("user_id")
+
 	return fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
 
 **Available Datasets**: %s
@@ -532,9 +554,9 @@ Use lookup_schema when you need column information that is not already shown in 
 **Filter**: %s
 %s%s%s
 **CRITICAL TABLE NAME RULES**:
-- ALWAYS use fully qualified table names with backticks: `+"`dataset_name.table_name`"+`
-- Example: `+"`events_prod.sessions`"+` NOT just `+"`sessions`"+`
-- The dataset name MUST be included in every table reference
+- ALWAYS use fully qualified table names quoted per the dialect above. Example: %s — NOT just %s.
+- The dataset name MUST be included in every table reference.
+- Quote identifiers with the dialect's native delimiter (backticks for BigQuery/Databricks, double quotes for PostgreSQL/Redshift/Snowflake, square brackets for SQL Server).
 - Reference only column names that appear in the source exploration queries / lookup detail (when shown) or in the table schemas section. Do not invent column names that are not documented above.
 
 **Insight to verify**:
@@ -542,8 +564,8 @@ Use lookup_schema when you need column information that is not already shown in 
 
 Generate a single SQL query that:
 1. Counts the affected users/entities described in this insight
-2. For user counts, prefer COUNT(DISTINCT user_id) — but only when a `+"`user_id`"+` (or the project's filter field) column is documented in the source queries or schemas above. Substitute the column name that actually exists; do not assume `+"`user_id`"+` is the right name.
-3. Uses FULLY QUALIFIED table names: `+"`dataset.table`"+`
+2. For user counts, prefer COUNT(DISTINCT user_id) — but only when a %s (or the project's filter field) column is documented in the source queries or schemas above. Substitute the column name that actually exists; do not assume %s is the right name.
+3. Uses FULLY QUALIFIED table names with dialect-correct quoting (see example above).
 4. Includes the filter clause if provided
 5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
 
@@ -554,7 +576,11 @@ Generate a single SQL query that:
 		evidenceSection,
 		schemaSection,
 		noticesSection,
+		exampleRef,
+		shortRef,
 		string(insightJSON),
+		userIDIdent,
+		userIDIdent,
 		actionInstructions,
 	)
 }

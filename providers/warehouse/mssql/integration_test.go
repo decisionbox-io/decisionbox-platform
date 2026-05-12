@@ -299,6 +299,38 @@ func TestIntegration_SimpleQuery(t *testing.T) {
 	}
 }
 
+// TestIntegration_QuoteRef_RoundTrip confirms that the bracket-quoted
+// identifier the MSSQL provider's QuoteRef emits is accepted verbatim
+// by a real SQL Server instance. The orchestrator relies on this
+// contract to render `{{REF:table}}` placeholders in exploration
+// prompts — if QuoteRef ever produced a delimiter T-SQL rejected,
+// every dialect-correct query on MSSQL would silently fall back to
+// the SQL-fix LLM call (the original bug this fix closes).
+func TestIntegration_QuoteRef_RoundTrip(t *testing.T) {
+	f := setupMSSQLContainer(t)
+	defer f.teardown()
+
+	p := f.newProvider(t)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ref := p.QuoteRef("analytics", "events")
+	if ref != "[analytics].[events]" {
+		t.Fatalf("QuoteRef returned unexpected shape: %q", ref)
+	}
+
+	query := "SELECT COUNT(*) AS row_count FROM " + ref
+	result, err := p.Query(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("QuoteRef'd query failed against live SQL Server: %v\nquery: %s", err, query)
+	}
+	if result == nil || len(result.Rows) == 0 {
+		t.Fatalf("expected at least one result row, got %#v", result)
+	}
+}
+
 func TestIntegration_GetDatasetAndDialect(t *testing.T) {
 	f := setupMSSQLContainer(t)
 	defer f.teardown()

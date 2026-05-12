@@ -19,7 +19,7 @@ SELECT
   COUNT(DISTINCT user_id) as players,
   AVG(time_to_prestige_hours) as avg_hours_to_prestige,
   AVG(prestige_multiplier_gained) as avg_multiplier
-FROM `{{DATASET}}.prestige_events`
+FROM {{REF:prestige_events}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY prestige_count
@@ -38,7 +38,7 @@ SELECT
   COUNT(DISTINCT user_id) as players,
   AVG(offline_earnings_collected) as avg_earnings,
   AVG(session_duration_seconds) as avg_session_after_return
-FROM `{{DATASET}}.sessions`
+FROM {{REF:sessions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
   AND offline_duration_hours > 0
@@ -54,7 +54,7 @@ SELECT
   COUNT(DISTINCT user_id) as purchasers,
   AVG(player_day) as avg_day_purchased,
   AVG(cost) as avg_cost
-FROM `{{DATASET}}.upgrade_purchases`
+FROM {{REF:upgrade_purchases}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY upgrade_name, upgrade_tier
@@ -68,7 +68,7 @@ SELECT
   COUNT(*) as sessions_per_day,
   AVG(session_duration_seconds) as avg_session_seconds,
   MAX(highest_stage_reached) as max_stage
-FROM `{{DATASET}}.sessions`
+FROM {{REF:sessions}}
 {{FILTER}}
   AND event_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
 GROUP BY user_id

@@ -16,6 +16,7 @@ type Provider interface {
     GetTableSchemaInDataset(ctx context.Context, dataset, table string) (*TableSchema, error)
     GetDataset() string
     SQLDialect() string
+    QuoteRef(parts ...string) string
     SQLFixPrompt() string
     ValidateReadOnly(ctx context.Context) error
     HealthCheck(ctx context.Context) error
@@ -33,7 +34,8 @@ type Provider interface {
 | `GetTableSchema` | Get column definitions | Return column name, normalized type, nullable |
 | `GetTableSchemaInDataset` | Get schema for dataset.table | For multi-dataset projects |
 | `GetDataset` | Return default dataset name | Used in prompts |
-| `SQLDialect` | Return SQL dialect description | E.g., `"PostgreSQL 15"`, `"Snowflake SQL"` |
+| `SQLDialect` | Return SQL dialect description | E.g., `"PostgreSQL 15"`, `"Snowflake SQL"`. Rendered into exploration / verification prompts via `{{DIALECT}}` so the LLM emits SQL the warehouse accepts on the first try. |
+| `QuoteRef` | Return a dialect-correct fully-qualified identifier | Quote each part with the dialect's native delimiter and join with dots: BigQuery / Databricks use backticks, PostgreSQL / Redshift / Snowflake use double quotes, SQL Server uses square brackets. Delegate to the colocated helper `warehouse.QuotePartsWith(open, close, parts)`. Used by the orchestrator to render `{{REF:table}}` placeholders in prompts. |
 | `SQLFixPrompt` | Return warehouse-specific SQL fix prompt | Instructions for the AI to fix SQL errors |
 | `ValidateReadOnly` | Verify read access works | Run a simple query to confirm connectivity |
 | `HealthCheck` | Quick connectivity check | Used by health endpoints |
@@ -200,6 +202,12 @@ func (p *SnowflakeProvider) GetDataset() string {
 
 func (p *SnowflakeProvider) SQLDialect() string {
     return "Snowflake SQL"
+}
+
+func (p *SnowflakeProvider) QuoteRef(parts ...string) string {
+    // Snowflake double-quotes identifiers; quoting preserves the exact case
+    // the catalog stores. Compose from the shared helper.
+    return gowarehouse.QuotePartsWith(`"`, `"`, parts)
 }
 
 func (p *SnowflakeProvider) SQLFixPrompt() string {

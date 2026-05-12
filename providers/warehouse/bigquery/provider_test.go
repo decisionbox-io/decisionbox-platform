@@ -138,6 +138,29 @@ func TestBigQueryProvider_SQLDialect(t *testing.T) {
 	}
 }
 
+func TestBigQueryProvider_QuoteRef(t *testing.T) {
+	p := &BigQueryProvider{dataset: "test_dataset"}
+	cases := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{name: "dataset.table", parts: []string{"events_prod", "sessions"}, want: "`events_prod`.`sessions`"},
+		{name: "catalog.dataset.table", parts: []string{"main", "events_prod", "sessions"}, want: "`main`.`events_prod`.`sessions`"},
+		{name: "single part", parts: []string{"sessions"}, want: "`sessions`"},
+		{name: "empty parts", parts: nil, want: ""},
+		{name: "empty middle part skipped", parts: []string{"events_prod", "", "sessions"}, want: "`events_prod`.`sessions`"},
+		{name: "all empty", parts: []string{"", "  "}, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.QuoteRef(tc.parts...); got != tc.want {
+				t.Errorf("QuoteRef(%v) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBigQueryProvider_SQLFixPrompt(t *testing.T) {
 	p := &BigQueryProvider{dataset: "test_dataset"}
 	prompt := p.SQLFixPrompt()

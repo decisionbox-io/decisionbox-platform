@@ -364,6 +364,14 @@ func (p *DatabricksProvider) SQLDialect() string {
 	return "Databricks SQL (ANSI SQL with extensions: QUALIFY, PIVOT, UNPIVOT, LATERAL VIEW, Delta time travel, STRUCT/ARRAY/MAP types)"
 }
 
+// QuoteRef returns a backtick-quoted, dot-joined identifier in
+// Databricks SQL form, e.g. `catalog`.`schema`.`table`. Backticks
+// inherit Spark SQL's identifier-quoting convention and tolerate
+// reserved words, leading underscores, and special characters.
+func (p *DatabricksProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith("`", "`", parts)
+}
+
 // SampleQuery builds a Databricks SQL "sample N rows" query. Databricks
 // accepts backtick-quoted identifiers for names with reserved words,
 // special characters, or leading underscores — matching the Spark SQL

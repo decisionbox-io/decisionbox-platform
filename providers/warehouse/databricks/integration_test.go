@@ -102,6 +102,49 @@ func TestIntegration_Query(t *testing.T) {
 	t.Logf("Query OK: %v", result.Rows)
 }
 
+// TestIntegration_QuoteRef_RoundTrip confirms that the backtick-quoted
+// per-part shape Databricks' QuoteRef emits is accepted verbatim by a
+// real Databricks SQL warehouse. Picks the first table ListTables
+// returns rather than hardcoding a name that might not be present.
+func TestIntegration_QuoteRef_RoundTrip(t *testing.T) {
+	cfg := getIntegrationConfig(t)
+	provider, err := gowarehouse.NewProvider("databricks", cfg)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	defer provider.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tables, err := provider.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("ListTables failed: %v", err)
+	}
+	if len(tables) == 0 {
+		t.Skip("schema has no tables — cannot exercise QuoteRef round-trip")
+	}
+
+	schema := provider.GetDataset()
+	if schema == "" {
+		schema = "default"
+	}
+	ref := provider.QuoteRef(schema, tables[0])
+	expected := "`" + schema + "`.`" + tables[0] + "`"
+	if ref != expected {
+		t.Fatalf("QuoteRef shape mismatch: got %q, want %q", ref, expected)
+	}
+
+	query := "SELECT 1 AS one FROM " + ref + " LIMIT 1"
+	result, err := provider.Query(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("QuoteRef'd query failed against live Databricks: %v\nquery: %s", err, query)
+	}
+	if result == nil || len(result.Rows) == 0 {
+		t.Fatalf("expected at least one result row, got %#v", result)
+	}
+}
+
 func TestIntegration_ListTables(t *testing.T) {
 	cfg := getIntegrationConfig(t)
 	provider, err := gowarehouse.NewProvider("databricks", cfg)

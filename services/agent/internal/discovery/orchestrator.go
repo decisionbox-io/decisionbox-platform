@@ -442,10 +442,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if language == "" {
 		language = "English"
 	}
+	// refDataset is the dataset name used to qualify {{REF:table}}
+	// placeholders. We pick the first dataset because example SQL
+	// snippets in domain-pack prompts target a single dataset (a
+	// multi-dataset project still gets dialect-correct refs against
+	// its primary dataset, which is what those examples need).
+	refDataset := ""
+	if len(o.datasets) > 0 {
+		refDataset = o.datasets[0]
+	}
+
 	baseContext := prompts.BaseContext
 	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{LANGUAGE}}", language)
+	baseContext = substituteDialectTokens(baseContext, o.warehouse, refDataset)
 
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
@@ -459,6 +470,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_CONTEXT}}", o.buildFilterContext())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
+	explorationPrompt = substituteDialectTokens(explorationPrompt, o.warehouse, refDataset)
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
 	// or no sources indexed). Query phrased to surface broad domain context
@@ -672,6 +684,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantSteps)))
 		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
+		prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
@@ -953,10 +966,16 @@ func (o *Orchestrator) generateRecommendations(
 	}
 	summary := fmt.Sprintf("Total: %d insights (%s)", len(insights), strings.Join(parts, ", "))
 
+	refDataset := ""
+	if len(o.datasets) > 0 {
+		refDataset = o.datasets[0]
+	}
+
 	prompt := baseContext + "\n\n" + promptTemplate
 	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", summary)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", string(insightsJSON))
+	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 
 	// Inject project knowledge sources relevant to the discovered insights.
 	// Recommendations often need broader business context (constraints, prior

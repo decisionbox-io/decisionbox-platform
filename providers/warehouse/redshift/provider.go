@@ -374,6 +374,13 @@ func (p *RedshiftProvider) SQLDialect() string {
 	return "Amazon Redshift SQL (PostgreSQL-compatible)"
 }
 
+// QuoteRef returns a double-quoted, dot-joined identifier in
+// Redshift form, e.g. "schema"."table". Redshift inherits
+// PostgreSQL's double-quoted identifier convention.
+func (p *RedshiftProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith(`"`, `"`, parts)
+}
+
 // SampleQuery builds a Redshift "sample N rows" query. Redshift is wire-
 // compatible with PostgreSQL — double-quoted identifiers + LIMIT n.
 // `filterClause` is either empty or a full `WHERE ...` fragment; it goes

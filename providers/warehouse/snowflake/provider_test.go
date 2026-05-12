@@ -214,6 +214,29 @@ func TestSQLDialect(t *testing.T) {
 	}
 }
 
+func TestQuoteRef(t *testing.T) {
+	p := &SnowflakeProvider{}
+	cases := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{name: "database.schema.table", parts: []string{"SNOWFLAKE_SAMPLE_DATA", "TPCDS_SF100TCL", "CUSTOMER"}, want: `"SNOWFLAKE_SAMPLE_DATA"."TPCDS_SF100TCL"."CUSTOMER"`},
+		{name: "schema.table", parts: []string{"PUBLIC", "USERS"}, want: `"PUBLIC"."USERS"`},
+		{name: "single part", parts: []string{"USERS"}, want: `"USERS"`},
+		{name: "empty parts", parts: nil, want: ""},
+		{name: "lowercase preserved when quoted", parts: []string{"public", "users"}, want: `"public"."users"`},
+		{name: "empty middle part skipped", parts: []string{"DB", "", "T"}, want: `"DB"."T"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.QuoteRef(tc.parts...); got != tc.want {
+				t.Errorf("QuoteRef(%v) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSQLFixPrompt(t *testing.T) {
 	p := &SnowflakeProvider{}
 	prompt := p.SQLFixPrompt()

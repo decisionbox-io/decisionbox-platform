@@ -19,7 +19,7 @@ SELECT
   onboarding_step,
   COUNT(DISTINCT user_id) as players_reached,
   COUNT(DISTINCT CASE WHEN completed = true THEN user_id END) as players_completed
-FROM `{{DATASET}}.onboarding_events`
+FROM {{REF:onboarding_events}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY onboarding_step
@@ -39,7 +39,7 @@ SELECT
   COUNT(DISTINCT user_id) as unique_players,
   COUNT(*) as total_sessions,
   AVG(core_loops_completed) as avg_loops
-FROM `{{DATASET}}.sessions`
+FROM {{REF:sessions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 GROUP BY duration_bucket
@@ -57,7 +57,7 @@ SELECT
   COUNT(DISTINCT user_id) as players,
   AVG(day_1_returned) as d1_retention,
   AVG(day_7_returned) as d7_retention
-FROM `{{DATASET}}.user_ad_exposure`
+FROM {{REF:user_ad_exposure}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY ad_frequency
@@ -70,7 +70,7 @@ SELECT
   AVG(core_loops_completed) as avg_loops,
   AVG(session_duration_seconds) as avg_duration,
   COUNT(DISTINCT user_id) as players
-FROM `{{DATASET}}.sessions`
+FROM {{REF:sessions}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
   AND session_number <= 10
@@ -85,7 +85,7 @@ SELECT
   COUNT(DISTINCT user_id) as users_discovered,
   AVG(session_number_discovered) as avg_session_discovered,
   AVG(CASE WHEN day_7_retained = true THEN 1.0 ELSE 0.0 END) as d7_retention_if_discovered
-FROM `{{DATASET}}.feature_discovery`
+FROM {{REF:feature_discovery}}
 {{FILTER}}
   AND event_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
 GROUP BY feature_name

@@ -308,6 +308,15 @@ func (p *SnowflakeProvider) SQLDialect() string {
 	return "Snowflake SQL (ANSI-based with extensions: QUALIFY, FLATTEN, VARIANT, ILIKE, LATERAL)"
 }
 
+// QuoteRef returns a double-quoted, dot-joined identifier in
+// Snowflake form, e.g. "DATABASE"."SCHEMA"."TABLE". Double-quoting
+// preserves the exact case Snowflake stores in its catalog (unquoted
+// identifiers are silently uppercased), so quoted refs match
+// whatever case ListTablesInDataset / GetTableSchema returned.
+func (p *SnowflakeProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith(`"`, `"`, parts)
+}
+
 // SampleQuery builds a Snowflake "sample N rows" query. Snowflake uppercases
 // unquoted identifiers; we double-quote so the names configured by the user
 // (and returned by ListTablesInDataset) match the stored-case form in the

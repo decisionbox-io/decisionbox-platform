@@ -282,6 +282,15 @@ func (p *BigQueryProvider) SQLDialect() string {
 	return "BigQuery Standard SQL"
 }
 
+// QuoteRef returns a backtick-quoted, dot-joined identifier in
+// BigQuery Standard SQL form, e.g. `dataset`.`table`. BigQuery also
+// accepts `dataset.table` (single backtick pair around the whole ref);
+// the per-part form chosen here is equivalent and produces a uniform
+// shape across providers.
+func (p *BigQueryProvider) QuoteRef(parts ...string) string {
+	return gowarehouse.QuotePartsWith("`", "`", parts)
+}
+
 // SampleQuery builds a BigQuery-native "sample N rows" query — backtick-
 // quoted qualified name + LIMIT n. The filter clause (either empty or a
 // full WHERE fragment) is inlined between FROM and LIMIT.

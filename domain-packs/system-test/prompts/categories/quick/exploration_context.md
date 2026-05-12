@@ -27,7 +27,7 @@ ORDER BY table_name
 **Quick Sample** (pick the first table you find):
 ```sql
 SELECT *
-FROM `{{DATASET}}.first_table`
+FROM {{REF:first_table}}
 {{FILTER}}
 LIMIT 5
 ```

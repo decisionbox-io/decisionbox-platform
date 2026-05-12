@@ -16,6 +16,8 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 | `{{FILTER_CONTEXT}}` | `exploration.md` | Human-readable filter description | Text |
 | `{{FILTER_RULE}}` | `exploration.md` | SQL construction rule for the filter | Text |
 | `{{ANALYSIS_AREAS}}` | `exploration.md` | List of analysis areas with descriptions | Multi-line text |
+| `{{DIALECT}}` | `base_context.md`, `exploration.md`, `analysis_*.md`, `recommendations.md` | Warehouse SQL dialect name returned by `provider.SQLDialect()` (e.g. `"BigQuery Standard SQL"`, `"Microsoft SQL Server T-SQL …"`, `"PostgreSQL …"`). | Plain text |
+| `{{REF:tablename}}` | any prompt | Dialect-correct fully-qualified table reference produced by `provider.QuoteRef(refDataset, "tablename")` — e.g. `` `events_prod`.`sessions` `` on BigQuery, `[dbo].[sessions]` on SQL Server, `"public"."sessions"` on PostgreSQL. The identifier must match `[A-Za-z_][A-Za-z0-9_]*`; placeholders that don't match (empty name, embedded dot, leading digit) are passed through unchanged so a malformed marker is visible in the rendered prompt. | Plain text |
 | `{{TOTAL_QUERIES}}` | `analysis_*.md` | Count of relevant exploration queries | Integer |
 | `{{QUERY_RESULTS}}` | `analysis_*.md` | Exploration query results for this area | JSON array |
 | `{{DISCOVERY_DATE}}` | `recommendations.md` | Current date (ISO format) | Date string |
@@ -163,6 +165,36 @@ SQL construction rule.
 
 **Example value:** `"Always include: WHERE app_id = '68a42f378e3b227c8e41b0e5' in all queries."`
 
+### {{DIALECT}}
+
+**Source:** `provider.SQLDialect()` on the project's connected warehouse provider.
+
+The SQL dialect description rendered into every prompt so the LLM emits dialect-correct SQL on the first generation rather than round-tripping through the SQL-fix LLM call. Mirrored into the insight validator's verification prompt via the `**SQL Dialect**: %s` line.
+
+**Example values:**
+- BigQuery: `"BigQuery Standard SQL"`
+- PostgreSQL: `"PostgreSQL (ANSI SQL with extensions: DISTINCT ON, CTEs, window functions, JSON operators, array types)"`
+- SQL Server: `"Microsoft SQL Server T-SQL (ANSI SQL with extensions: TOP, OFFSET/FETCH, CTEs, window functions, PIVOT/UNPIVOT, MERGE, CROSS APPLY, OUTER APPLY, XML/JSON functions)"`
+
+### {{REF:tablename}}
+
+**Source:** `provider.QuoteRef(refDataset, "tablename")` on the project's connected warehouse provider, where `refDataset` is the first dataset in `project.warehouse.datasets`.
+
+A dialect-correct fully-qualified table reference rendered with the dialect's native identifier-quoting convention. Use this placeholder in every SQL example you author in `exploration.md`, `analysis_*.md`, or any custom prompt — the orchestrator substitutes it with the warehouse-specific shape so the LLM sees an example it can copy verbatim. The placeholder name must match `[A-Za-z_][A-Za-z0-9_]*` (a single SQL-style identifier; no embedded dots, no leading digit). Malformed placeholders pass through unchanged so the typo is visible in the rendered output rather than silently dropped.
+
+**Example values** (for `refDataset = "events_prod"`):
+- BigQuery / Databricks: `` `events_prod`.`sessions` ``
+- PostgreSQL / Redshift / Snowflake: `"events_prod"."sessions"`
+- SQL Server (MSSQL): `[events_prod].[sessions]`
+
+**Usage in prompts:**
+```
+SELECT user_id FROM {{REF:sessions}}
+JOIN {{REF:user_engagement_summary}} USING (user_id)
+```
+
+The agent's internal `lookup_schema` array continues to take the unquoted `dataset.table` form (`["{{DATASET}}.users", ...]`) — that's not warehouse SQL, so it doesn't need dialect-correct quoting.
+
 ### {{ANALYSIS_AREAS}}
 
 **Source:** Domain pack analysis areas
@@ -257,6 +289,8 @@ Full JSON array of all insights, including their IDs. The LLM uses insight IDs t
 ## Variable Substitution Code
 
 Variables are substituted in `services/agent/internal/discovery/orchestrator.go` using `strings.ReplaceAll()`. The substitution happens at runtime, just before sending prompts to the LLM.
+
+The two dialect-aware tokens (`{{DIALECT}}` and `{{REF:tablename}}`) are applied by the shared `substituteDialectTokens` helper in `services/agent/internal/discovery/prompt_subs.go`. Every prompt site (exploration, analysis area, recommendations, base context) calls the helper after the regular `ReplaceAll` chain so dialect awareness is wired in one place. The helper reads `provider.SQLDialect()` and `provider.QuoteRef(...)` on the warehouse provider — adding a new warehouse provider therefore inherits dialect-aware prompt rendering for free.
 
 ## Next Steps
 

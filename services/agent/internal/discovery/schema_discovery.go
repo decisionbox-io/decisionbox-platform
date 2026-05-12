@@ -221,13 +221,16 @@ func (s *SchemaDiscovery) getSampleData(ctx context.Context, dataset, tableName 
 	// Redshift, Postgres, Databricks), which is particularly expensive
 	// during schema discovery on large warehouses (~1 LLM call + ~5s +
 	// ~8KB tokens per table). Providers that haven't implemented the
-	// builder fall back to the legacy BigQuery/MySQL-style query below,
-	// which the SQL fixer will rewrite on first use.
+	// builder fall back to a generic SELECT … LIMIT N. The qualified
+	// table ref is rendered via the provider's QuoteRef so the fallback
+	// still uses the dialect's identifier-quoting convention; only LIMIT
+	// remains potentially non-portable (T-SQL uses TOP — providers that
+	// need it implement SampleQueryBuilder explicitly).
 	var query string
 	if b, ok := s.warehouse.(gowarehouse.SampleQueryBuilder); ok {
 		query = b.SampleQuery(dataset, tableName, s.filter, sampleRowLimit)
 	} else {
-		query = fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT %d", dataset, tableName, s.filter, sampleRowLimit)
+		query = fmt.Sprintf("SELECT * FROM %s %s LIMIT %d", s.warehouse.QuoteRef(dataset, tableName), s.filter, sampleRowLimit)
 	}
 
 	result, err := s.executor.Execute(ctx, query, "sample data for "+dataset+"."+tableName)
