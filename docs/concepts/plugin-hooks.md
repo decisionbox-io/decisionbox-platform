@@ -5,7 +5,7 @@
 DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the community code.
 Each hook is a leaf-level registry: a plugin imports it (often with a blank import) and calls `Register*` from `init()`; the platform consults the registry at the right moment in its normal flow.
 
-This page documents the four hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
+This page documents the five hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
 
 ## Hook 1 — Context providers
 
@@ -138,6 +138,38 @@ Rules:
 - A filter that drops every table aborts the run with a "review the discovery scope" error rather than letting an empty catalog hit the LLM.
 - A non-nil error from any filter aborts the run; the chain stops on the first error and the orchestrator surfaces the wrapped reason.
 - Empty names or nil functions panic. Re-registering the same name panics.
+
+## Hook 5 — Discovery run completion
+
+Plugins can react to every discovery run that reaches a terminal state (`completed`, `failed`, or `cancelled`).
+Use it to enqueue a downstream side effect — generate an executive summary, post a Slack notification, write an audit record — without patching the agent or the run-completion path.
+
+```go
+import (
+    "context"
+
+    "github.com/decisionbox-io/decisionbox/services/api/apiserver"
+)
+
+func init() {
+    apiserver.RegisterRunCompletionHook("exec-summary", func(ctx context.Context, run apiserver.RunCompletion) error {
+        if run.Status != "completed" {
+            return nil
+        }
+        // Enqueue executive-summary generation for the discovery.
+        return enqueueExecSummary(ctx, run.RunID, run.ProjectID)
+    })
+}
+```
+
+Behavior:
+
+- Each registered hook is named; registering with an empty name, a `nil` function, or a duplicate name panics — silent shadowing in a process-global registry would be a footgun.
+- The API spins up a 15-second-tick background dispatcher only when at least one hook is registered. The dispatcher scans for runs in a terminal state (`completed` / `failed` / `cancelled`) whose `completion_hooks_fired_at` field is unset, fires every hook in registration order, and stamps the field once every hook returns `nil`.
+- A non-nil return from any hook leaves the run unmarked so every hook re-fires on the next tick. Hooks MUST therefore be idempotent — a peer hook failing on the same run will cause successful peers to be invoked again.
+- A hook that panics is recovered; its result records a panic-tagged error and subsequent hooks still run.
+- Hook execution is sequential within one run so an upstream hook (e.g. an audit record) finishes before a downstream one (e.g. a Slack notification) observes its side effect.
+- The `RunCompletion` payload carries `RunID`, `ProjectID`, `Status`, `CompletedAt`, and `Error` (set only for `failed` runs). The agent persists insights and recommendations before flipping the run to `completed`, so consumers may rely on those collections being readable when the hook fires for a successful run.
 
 ## Migration & compatibility
 
