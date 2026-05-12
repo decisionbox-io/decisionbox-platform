@@ -92,14 +92,12 @@ func (r *RunRepository) ListTerminalWithoutCompletionHook(ctx context.Context, l
 	}
 	filter := bson.M{
 		"status": bson.M{"$in": []string{"completed", "failed", "cancelled"}},
-		// A run is dispatch-pending when the field is absent OR explicitly
-		// null. New documents never write the field; explicit nulls are
-		// theoretically reachable via a hand-edited document, and we want
-		// to treat both shapes identically so a backfill is unnecessary.
-		"$or": []bson.M{
-			{"completion_hooks_fired_at": bson.M{"$exists": false}},
-			{"completion_hooks_fired_at": nil},
-		},
+		// A run is dispatch-pending when the field is missing OR explicitly
+		// null. The MongoDB equality `{field: null}` predicate matches both
+		// shapes natively, so a single key suffices — keeping the index
+		// `(status, completion_hooks_fired_at, started_at)` usable rather
+		// than forcing the planner to merge two index scans behind an $or.
+		"completion_hooks_fired_at": nil,
 	}
 	// Sort by started_at ascending so the oldest pending run is dispatched
 	// first. FIFO order bounds tail latency when many runs land in the

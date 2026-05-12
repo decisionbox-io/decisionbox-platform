@@ -32,8 +32,16 @@ const runCompletionDispatcherBatch = 50
 // process-lifetime context today; future shutdown wiring will plumb a
 // cancellable one through.
 func startRunCompletionDispatcher(ctx context.Context, runRepo database.RunRepo) {
+	startRunCompletionDispatcherWithInterval(ctx, runRepo, runCompletionDispatcherInterval)
+}
+
+// startRunCompletionDispatcherWithInterval is the parameterised entry
+// point. Production code uses the const-based wrapper; tests override
+// the interval to drive the ticker branch without sleeping the full
+// 15-second cadence.
+func startRunCompletionDispatcherWithInterval(ctx context.Context, runRepo database.RunRepo, interval time.Duration) {
 	go func() {
-		ticker := time.NewTicker(runCompletionDispatcherInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		dispatchTerminalRuns(ctx, runRepo)
 		for {

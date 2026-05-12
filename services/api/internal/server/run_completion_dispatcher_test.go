@@ -322,6 +322,37 @@ func TestDispatchTerminalRuns_NoHooksRegistered_StillCallsRepo(t *testing.T) {
 	}
 }
 
+func TestStartRunCompletionDispatcher_TickerFires(t *testing.T) {
+	// Exercise the ticker branch with a short interval so the goroutine
+	// re-enters dispatchTerminalRuns at least once before cancel. With
+	// the production 15s interval the test would only exercise the
+	// initial pre-loop dispatch.
+	resetHooks(t)
+	now := time.Now()
+	repo := newMockRunRepo(
+		makeRun("run-1", "p", "completed", "", now),
+		makeRun("run-2", "p", "completed", "", now),
+	)
+	runhooks.Register("counter", func(context.Context, runhooks.RunCompletion) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// 20ms interval: well under any production cadence, easily detected
+	// by polling for >=2 ListTerminalWithoutCompletionHook calls.
+	startRunCompletionDispatcherWithInterval(ctx, repo, 20*time.Millisecond)
+
+	// Wait for the ticker to fire at least twice (initial dispatch + 1
+	// tick). Generous timeout to keep this stable on slow CI.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&repo.listCalls) >= 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("dispatcher only called list %d times within 2s, want >=2 — ticker branch may not have fired", atomic.LoadInt32(&repo.listCalls))
+}
+
 func TestStartRunCompletionDispatcher_CancelsOnContext(t *testing.T) {
 	resetHooks(t)
 	repo := newMockRunRepo()
