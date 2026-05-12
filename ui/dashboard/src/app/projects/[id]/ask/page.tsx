@@ -386,14 +386,12 @@ function processChildren(children: React.ReactNode, sources: SearchResultItem[],
           <span key={i}>
             {nums.map((num, j) => {
               const src = sources[num - 1];
-              const href = src ? sourceHref(src.project_id || projectId, src) : '#';
-              const name = src ? (src.name || src.title || undefined) : undefined;
               return (
                 <CitationLink
                   key={j}
                   number={num}
-                  href={href}
-                  name={name}
+                  href={src ? sourceHref(src.project_id || projectId, src) : undefined}
+                  name={src ? (src.name || src.title || undefined) : undefined}
                   severity={src?.severity}
                   description={src?.description}
                 />

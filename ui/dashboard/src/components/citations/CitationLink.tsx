@@ -2,8 +2,8 @@
 
 /**
  * CitationLink renders one citation number — a small badge that
- * links to the source and reveals a CSS-only hover tooltip with the
- * source name, severity, and description.
+ * links to the source and reveals a CSS-only hover/focus tooltip
+ * with the source name, severity, and description.
  *
  * Two callers share it today:
  *
@@ -15,19 +15,29 @@
  *    bar / action arrays.
  *
  * Owning the badge + tooltip in one place means both surfaces look,
- * hover, and link the same way, and a future change to the tooltip
- * (mobile tap support, different palette) updates everything.
+ * hover, and link the same way, and a future change (mobile tap
+ * support, palette tweak) updates everything.
+ *
+ * `href` is optional: when undefined (the source couldn't be
+ * resolved in the project's insight/recommendation list) the badge
+ * renders as a non-interactive `<span>` rather than a `<Link>` to
+ * "#" — clicking a stale citation should never scroll the page to
+ * the top.
  */
 
 import React from 'react';
 import Link from 'next/link';
-import './CitationLink.css';
+import styles from './CitationLink.module.css';
 
 export interface CitationLinkProps {
   /** The number shown inside the badge. 1-based, in reading order. */
   number: number;
-  /** Deep link the badge points at (insight / recommendation page). */
-  href: string;
+  /**
+   * Deep link the badge points at (insight / recommendation page).
+   * Omit when the citation is unresolved — the badge renders as
+   * static text with the same visual styling.
+   */
+  href?: string;
   /**
    * The source title shown bold in the tooltip. Falls back to
    * "Source N" when the citation can't be resolved against the
@@ -59,12 +69,19 @@ export function CitationLink({
   description,
 }: CitationLinkProps): React.JSX.Element {
   const display = name ? truncate(name, NAME_MAX) : `Source ${number}`;
+  const badge = href ? (
+    <Link href={href} className={styles.citeBadge}>
+      {number}
+    </Link>
+  ) : (
+    <span className={styles.citeBadge} role="text">
+      {number}
+    </span>
+  );
   return (
-    <span className="cite-ref">
-      <Link href={href} className="cite-badge">
-        {number}
-      </Link>
-      <span className="cite-tooltip">
+    <span className={styles.citeRef}>
+      {badge}
+      <span className={styles.citeTooltip}>
         <strong>{display}</strong>
         {severity && (
           <span style={{ marginLeft: 6, opacity: 0.7 }}>{severity}</span>

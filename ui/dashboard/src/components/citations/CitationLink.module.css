@@ -1,21 +1,20 @@
 /*
- * CitationLink — shared hover tooltip styles used by the Ask page and
- * the enterprise executive-summary newspaper. The CSS is loaded once
- * (auto-imported by the .tsx file) so any component that drops a
- * <CitationLink/> gets the badge + hover tooltip for free.
+ * CitationLink — hover/focus tooltip styles, loaded as a CSS Module
+ * so class names stay scoped to the component (no global leakage,
+ * App Router-safe). Class names are imported as `styles.citeRef`
+ * etc. inside CitationLink.tsx.
  *
- * The .cite-ref wrapper owns the hover state and the tooltip sits
- * above it via absolute positioning. Display: none → display: block
- * on hover keeps it CSS-only; no JavaScript state, no portal, works
- * in static markdown output as well as React component output.
+ * Visibility triggers on both :hover and :focus-within so the
+ * tooltip is reachable from a keyboard. The badge itself takes a
+ * :focus-visible outline for the same reason.
  */
 
-.cite-ref {
+.citeRef {
   position: relative;
   display: inline;
 }
 
-.cite-ref .cite-badge {
+.citeBadge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -31,16 +30,25 @@
   vertical-align: super;
   line-height: 1;
   text-decoration: none;
-  transition: background 100ms ease;
+  transition: background 100ms ease, outline-offset 100ms ease;
   margin: 0 1px;
+  outline: none;
+  border: 0;
+  font-family: inherit;
 }
 
-.cite-ref .cite-badge:hover {
+.citeBadge:hover,
+.citeBadge:focus-visible {
   background: var(--db-blue-text);
   color: white;
 }
 
-.cite-ref .cite-tooltip {
+.citeBadge:focus-visible {
+  outline: 2px solid var(--db-blue-text);
+  outline-offset: 2px;
+}
+
+.citeTooltip {
   display: none;
   position: absolute;
   bottom: calc(100% + 6px);
@@ -58,7 +66,7 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-.cite-ref .cite-tooltip::after {
+.citeTooltip::after {
   content: '';
   position: absolute;
   top: 100%;
@@ -68,6 +76,7 @@
   border-top-color: var(--db-text-primary);
 }
 
-.cite-ref:hover .cite-tooltip {
+.citeRef:hover .citeTooltip,
+.citeRef:focus-within .citeTooltip {
   display: block;
 }
