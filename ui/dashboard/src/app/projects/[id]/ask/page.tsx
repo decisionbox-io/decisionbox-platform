@@ -3,12 +3,12 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { Loader, TextInput, ActionIcon } from '@mantine/core';
-import { IconMessageCircle, IconSend, IconBulb, IconStarFilled, IconHistory, IconClock, IconPlus, IconTrash } from '@tabler/icons-react';
+import { IconMessageCircle, IconSend, IconHistory, IconClock, IconPlus, IconTrash } from '@tabler/icons-react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Shell from '@/components/layout/AppShell';
-import { SeverityBadge } from '@/components/common/UIComponents';
+import CitationsFooter, { sourceHref } from '@/components/citations/CitationsFooter';
 import { api, AskSession, SearchResultItem } from '@/lib/api';
 
 interface DisplayMessage {
@@ -17,14 +17,6 @@ interface DisplayMessage {
   sources: SearchResultItem[];
   model: string;
   timestamp: string;
-}
-
-function sourceHref(projectId: string, src: SearchResultItem): string {
-  const type = src.type === 'insight' ? 'insights' : 'recommendations';
-  if (src.discovery_id) {
-    return `/projects/${projectId}/discoveries/${src.discovery_id}/${type}/${src.id}`;
-  }
-  return `/projects/${projectId}/${type}`;
 }
 
 export default function AskPage() {
@@ -201,27 +193,7 @@ export default function AskPage() {
                 }}>
                   <AnswerContent answer={entry.answer} sources={entry.sources} projectId={id} />
 
-                  {entry.sources.length > 0 && (
-                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--db-border-default)' }}>
-                      <h4 style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)', marginBottom: 8 }}>Sources</h4>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {entry.sources.map((src, j) => (
-                          <Link key={src.id} href={sourceHref(id, src)}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
-                              color: 'var(--db-text-link)', textDecoration: 'none',
-                              padding: '3px 6px', borderRadius: 4,
-                              background: j % 2 === 0 ? 'var(--db-bg-muted)' : 'transparent',
-                            }}>
-                            {src.type === 'insight' ? <IconBulb size={12} color="var(--db-amber-text)" /> : <IconStarFilled size={12} color="var(--db-purple-text)" />}
-                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>[{j + 1}] {src.name || src.title}</span>
-                            {src.severity && <SeverityBadge severity={src.severity} type="severity" />}
-                            <span style={{ fontSize: 10, color: 'var(--db-text-tertiary)' }}>{Math.round(src.score * 100)}%</span>
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <CitationsFooter projectId={id} sources={entry.sources} />
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                     {entry.model && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{entry.model}</span>}
