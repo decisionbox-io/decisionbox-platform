@@ -26,14 +26,21 @@ describe('CitationLink', () => {
     expect(anchor?.textContent).toBe('1');
   });
 
-  it('renders a non-interactive span when href is omitted (unresolved citation)', () => {
+  it('renders a focusable static span when href is omitted (unresolved citation)', () => {
     // The Ask page passes href=undefined when sources[idx] is missing.
     // Rendering an <a href="#"> would scroll the page to top on click;
-    // a <span> badge keeps the visual but does nothing.
+    // a non-interactive <span> keeps the visual without that side effect.
+    // The span carries tabIndex=0 so keyboard users can reach it and the
+    // CSS :focus-within selector can still reveal the tooltip.
     const { container } = render(<CitationLink number={3} name="Stale Insight" />);
     expect(container.querySelector('a')).toBeNull();
-    const span = container.querySelector('span > span');
-    expect(span?.textContent).toBe('3');
+    // The static badge is the inner span carrying the number text.
+    const badge = Array.from(container.querySelectorAll('span')).find(
+      (el) => el.textContent === '3',
+    );
+    expect(badge).toBeDefined();
+    expect(badge?.getAttribute('tabindex')).toBe('0');
+    expect(badge?.getAttribute('role')).toBe('note');
   });
 
   it('puts the source name in the tooltip', () => {

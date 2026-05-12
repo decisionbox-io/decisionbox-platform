@@ -26,7 +26,6 @@
   padding: 0 4px;
   min-width: 16px;
   height: 16px;
-  cursor: pointer;
   vertical-align: super;
   line-height: 1;
   text-decoration: none;
@@ -35,6 +34,19 @@
   outline: none;
   border: 0;
   font-family: inherit;
+}
+
+/*
+ * Cursor differs by interactivity: the linked badge promises a
+ * navigation (pointer); the static badge only reveals the tooltip
+ * on hover/focus (help).
+ */
+.citeBadgeLink {
+  cursor: pointer;
+}
+
+.citeBadgeStatic {
+  cursor: help;
 }
 
 .citeBadge:hover,
@@ -79,4 +91,20 @@
 .citeRef:hover .citeTooltip,
 .citeRef:focus-within .citeTooltip {
   display: block;
+}
+
+/*
+ * Tooltip content blocks — kept as classes (not inline styles) so
+ * the tooltip's visual is owned entirely by this stylesheet.
+ */
+.tooltipSeverity {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+
+.tooltipDescription {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.8;
+  font-size: 11px;
 }

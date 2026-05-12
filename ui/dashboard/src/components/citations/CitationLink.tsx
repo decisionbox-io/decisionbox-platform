@@ -70,11 +70,19 @@ export function CitationLink({
 }: CitationLinkProps): React.JSX.Element {
   const display = name ? truncate(name, NAME_MAX) : `Source ${number}`;
   const badge = href ? (
-    <Link href={href} className={styles.citeBadge}>
+    <Link href={href} className={`${styles.citeBadge} ${styles.citeBadgeLink}`}>
       {number}
     </Link>
   ) : (
-    <span className={styles.citeBadge} role="text">
+    // tabIndex=0 keeps the badge in the tab order so :focus-within
+    // can reveal the tooltip for keyboard users. The "note" role
+    // tells assistive tech the element is informational, not an
+    // action surface.
+    <span
+      className={`${styles.citeBadge} ${styles.citeBadgeStatic}`}
+      role="note"
+      tabIndex={0}
+    >
       {number}
     </span>
   );
@@ -83,11 +91,9 @@ export function CitationLink({
       {badge}
       <span className={styles.citeTooltip}>
         <strong>{display}</strong>
-        {severity && (
-          <span style={{ marginLeft: 6, opacity: 0.7 }}>{severity}</span>
-        )}
+        {severity && <span className={styles.tooltipSeverity}>{severity}</span>}
         {description && (
-          <span style={{ display: 'block', marginTop: 4, opacity: 0.8, fontSize: 11 }}>
+          <span className={styles.tooltipDescription}>
             {truncate(description, DESCRIPTION_MAX)}
           </span>
         )}
