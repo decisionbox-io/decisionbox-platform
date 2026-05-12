@@ -256,12 +256,15 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 	}
 }
 
-// Complete marks the run as completed.
-func (s *StatusReporter) Complete(ctx context.Context, insightsFound int) {
+// Complete marks the run as completed and stamps the discovery_id
+// the run produced. discoveryID must be the `_id` of the
+// `discoveries` document the orchestrator just saved — see
+// RunRepository.Complete for why the back-reference matters.
+func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.Complete(ctx, s.runID, insightsFound); err != nil {
+	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound); err != nil {
 		logger.WithError(err).Warn("failed to complete run")
 	}
 }

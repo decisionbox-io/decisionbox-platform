@@ -69,9 +69,10 @@ func dispatchTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 	}
 	for _, run := range runs {
 		completion := runhooks.RunCompletion{
-			RunID:     run.ID,
-			ProjectID: run.ProjectID,
-			Status:    run.Status,
+			RunID:       run.ID,
+			DiscoveryID: run.DiscoveryID,
+			ProjectID:   run.ProjectID,
+			Status:      run.Status,
 			Error:     run.Error,
 		}
 		if run.CompletedAt != nil {

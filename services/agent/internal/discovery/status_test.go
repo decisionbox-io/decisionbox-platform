@@ -76,7 +76,7 @@ func TestStatusReporter_AddValidationStep_NoOp_WhenDisabled(t *testing.T) {
 func TestStatusReporter_Complete_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, nil, "", "", 10)
 	// Should not panic when disabled
-	sr.Complete(context.TODO(), 5)
+	sr.Complete(context.TODO(), "disc-1", 5)
 }
 
 func TestStatusReporter_Fail_NoOp_WhenDisabled(t *testing.T) {
@@ -158,6 +158,6 @@ func TestStatusReporter_AllMethods_NoOp_WhenEmptyRunID(t *testing.T) {
 	sr.IncrementAnalysisCounter(ctx, "step_index_search_calls", 1)
 	sr.IncrementAnalysisCounter(ctx, "steps_dropped", 3)
 	sr.IncrementAnalysisCounter(ctx, "unknown_metric", 1)
-	sr.Complete(ctx, 3)
+	sr.Complete(ctx, "disc-1", 3)
 	sr.Fail(ctx, "catastrophic failure")
 }

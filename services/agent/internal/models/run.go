@@ -18,6 +18,16 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
+	// DiscoveryID is the `_id` of the `discoveries` document this run
+	// produced. Stamped by the agent in RunRepository.Complete
+	// immediately before the status flip, so a run with
+	// status="completed" always has it set. Run-completion hook
+	// consumers (plugin-hooks.md Hook 5) read it to query insights
+	// / recommendations / any collection keyed on discovery_id —
+	// without this back-reference the link between run and
+	// discovery is implicit and fragile.
+	DiscoveryID string `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+
 	// Live step log used to be embedded here as `Steps []RunStep`. The
 	// $push streaming pattern produced unbounded growth on long runs and
 	// hit the same 16MB BSON limit that killed discovery saves. Each

@@ -22,10 +22,21 @@ import (
 // dispatcher passes to each hook. Hooks receive a copy — mutating the
 // struct does not affect the persisted run or other hooks.
 type RunCompletion struct {
-	// RunID is the discovery run identifier (DiscoveryRun._id, hex form).
-	// Also serves as the discovery ID consumers reference (insights /
-	// recommendations / executive summaries all key off the same value).
+	// RunID is the discovery_runs._id (hex form). Identifies the run
+	// the dispatcher fired this hook for.
 	RunID string
+
+	// DiscoveryID is the discoveries._id the run produced. The agent
+	// stamps it in RunRepository.Complete before flipping the run to
+	// `completed`, so successful runs always carry it. Hooks read it
+	// to query insights / recommendations / any collection keyed on
+	// discovery_id.
+	//
+	// Empty for runs with Status != "completed" (the agent doesn't
+	// produce a discovery for failed / cancelled runs), and empty
+	// for completed runs that pre-date this field (legacy data — a
+	// one-off backfill is the supported recovery path).
+	DiscoveryID string
 
 	// ProjectID is the project that owns the run.
 	ProjectID string

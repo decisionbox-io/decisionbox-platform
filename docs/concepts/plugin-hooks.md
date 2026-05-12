@@ -169,7 +169,7 @@ Behavior:
 - A non-nil return from any hook leaves the run unmarked so every hook re-fires on the next tick. Hooks MUST therefore be idempotent — a peer hook failing on the same run will cause successful peers to be invoked again.
 - A hook that panics is recovered; its result records a panic-tagged error and subsequent hooks still run.
 - Hook execution is sequential within one run so an upstream hook (e.g. an audit record) finishes before a downstream one (e.g. a Slack notification) observes its side effect.
-- The `RunCompletion` payload carries `RunID`, `ProjectID`, `Status`, `CompletedAt`, and `Error` (set only for `failed` runs). The agent persists insights and recommendations before flipping the run to `completed`, so consumers may rely on those collections being readable when the hook fires for a successful run.
+- The `RunCompletion` payload carries `RunID`, `DiscoveryID`, `ProjectID`, `Status`, `CompletedAt`, and `Error` (set only for `failed` runs). `RunID` is the `discovery_runs._id`; `DiscoveryID` is the `discoveries._id` the run produced and is what consumers should use to query `insights` / `recommendations` / `executive_summaries` / any collection keyed on `discovery_id`. The agent stamps `DiscoveryID` in `RunRepository.Complete` immediately before flipping the run to `completed`, so successful runs always carry it. `DiscoveryID` is empty for `failed` / `cancelled` runs (no discovery was produced) and for completed runs that pre-date the field (legacy data — a one-off backfill is the supported recovery path; a hook seeing an empty value should treat it as a hard error rather than guess).
 
 ## Migration & compatibility
 

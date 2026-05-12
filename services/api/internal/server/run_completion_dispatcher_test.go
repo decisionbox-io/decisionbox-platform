@@ -155,7 +155,9 @@ func TestDispatchTerminalRuns_ListError_IsLoggedAndSkipsTick(t *testing.T) {
 func TestDispatchTerminalRuns_HookSeesCompletionPayload(t *testing.T) {
 	resetHooks(t)
 	completedAt := time.Date(2026, 5, 12, 10, 30, 0, 0, time.UTC)
-	repo := newMockRunRepo(makeRun("run-1", "proj-1", "completed", "", completedAt))
+	run := makeRun("run-1", "proj-1", "completed", "", completedAt)
+	run.DiscoveryID = "disc-1"
+	repo := newMockRunRepo(run)
 
 	var got runhooks.RunCompletion
 	runhooks.Register("capture", func(_ context.Context, r runhooks.RunCompletion) error {
@@ -167,12 +169,38 @@ func TestDispatchTerminalRuns_HookSeesCompletionPayload(t *testing.T) {
 
 	want := runhooks.RunCompletion{
 		RunID:       "run-1",
+		DiscoveryID: "disc-1",
 		ProjectID:   "proj-1",
 		Status:      "completed",
 		CompletedAt: completedAt,
 	}
 	if got != want {
 		t.Fatalf("hook received %+v, want %+v", got, want)
+	}
+}
+
+func TestDispatchTerminalRuns_DiscoveryIDEmptyForLegacyRun(t *testing.T) {
+	// Runs that completed before the discovery_id stamp landed don't
+	// carry the field. The dispatcher still fires the hook (so plugins
+	// can decide what to do — e.g. the exec-summary plugin treats
+	// empty as a hard error and skips). Confirms the dispatcher
+	// doesn't silently substitute or guess.
+	resetHooks(t)
+	repo := newMockRunRepo(makeRun("run-legacy", "proj-1", "completed", "", time.Now()))
+
+	var got runhooks.RunCompletion
+	runhooks.Register("capture", func(_ context.Context, r runhooks.RunCompletion) error {
+		got = r
+		return nil
+	})
+
+	dispatchTerminalRuns(context.Background(), repo)
+
+	if got.DiscoveryID != "" {
+		t.Errorf("DiscoveryID = %q, want empty for legacy run", got.DiscoveryID)
+	}
+	if got.RunID != "run-legacy" {
+		t.Errorf("RunID = %q, want run-legacy", got.RunID)
 	}
 }
 

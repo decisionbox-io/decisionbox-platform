@@ -152,11 +152,24 @@ func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, met
 // collection via RunStepRepository. The previous $push into the embedded
 // steps array hit the 16MB BSON limit on long runs.
 
-// Complete marks a run as completed with stats.
-func (r *RunRepository) Complete(ctx context.Context, runID string, insightsFound int) error {
+// Complete marks a run as completed and stamps the discovery_id
+// the run produced. The link is critical for run-completion hook
+// consumers (plugin-hooks.md Hook 5) — without it they can't query
+// insights / recommendations (both keyed on discovery_id), and the
+// implicit "run and discovery created around the same time" linkage
+// is fragile when concurrent runs land in the same project.
+//
+// discoveryID is required: a run that completes without producing a
+// discovery is a contract violation the caller must surface. An
+// empty string returns an error rather than silently writing a
+// half-state.
+func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string, insightsFound int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	if discoveryID == "" {
+		return fmt.Errorf("run %s: complete requires a discovery_id", runID)
 	}
 
 	now := time.Now()
@@ -169,6 +182,7 @@ func (r *RunRepository) Complete(ctx context.Context, runID string, insightsFoun
 			"completed_at":   now,
 			"updated_at":     now,
 			"insights_found": insightsFound,
+			"discovery_id":   discoveryID,
 		},
 	}
 

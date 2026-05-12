@@ -17,6 +17,16 @@ type DiscoveryRun struct {
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
 	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
 
+	// DiscoveryID is the `_id` of the `discoveries` document this run
+	// produced. Stamped by the agent immediately before it flips the
+	// run to `completed`, so a run with status="completed" has this
+	// field set. Run-completion hook consumers read it to query
+	// `insights` / `recommendations` / any other collection keyed on
+	// `discovery_id` — without this back-reference the link between
+	// the run and its discovery is implicit (created-around-the-same-
+	// time-for-the-same-project) and fragile.
+	DiscoveryID string `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+
 	// Steps used to be embedded here. They now live in the
 	// discovery_run_steps collection (RunStepRepository); the dashboard
 	// pulls them via GET /api/v1/runs/{id}/steps with a `since` cursor.

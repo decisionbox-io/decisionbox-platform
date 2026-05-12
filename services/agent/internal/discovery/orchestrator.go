@@ -843,8 +843,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.runPhaseEmbedIndex(ctx, result)
 	}
 
-	// Mark run as completed
-	o.statusReporter.Complete(ctx, len(allInsights))
+	// Mark run as completed. Pass the discovery's _id so the run
+	// document carries the back-reference run-completion hook
+	// consumers depend on (plugin-hooks.md Hook 5).
+	o.statusReporter.Complete(ctx, result.ID, len(allInsights))
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,
