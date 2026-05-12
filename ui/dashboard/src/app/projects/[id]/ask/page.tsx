@@ -4,11 +4,11 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { Loader, TextInput, ActionIcon } from '@mantine/core';
 import { IconMessageCircle, IconSend, IconHistory, IconClock, IconPlus, IconTrash } from '@tabler/icons-react';
-import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Shell from '@/components/layout/AppShell';
 import CitationsFooter, { sourceHref } from '@/components/citations/CitationsFooter';
+import { CitationLink } from '@/components/citations/CitationLink';
 import { api, AskSession, SearchResultItem } from '@/lib/api';
 
 interface DisplayMessage {
@@ -367,26 +367,6 @@ function AnswerContent({ answer, sources, projectId }: { answer: string; sources
         .ask-answer { font-size: 14px; color: var(--db-text-primary); }
         .ask-answer > *:first-child { margin-top: 0; }
         .ask-answer > *:last-child { margin-bottom: 0; }
-        .cite-ref { position: relative; display: inline; }
-        .cite-ref .cite-badge {
-          display: inline-flex; align-items: center; justify-content: center;
-          font-size: 10px; font-weight: 700; color: var(--db-blue-text);
-          background: var(--db-blue-bg); border-radius: 4px; padding: 0 4px;
-          min-width: 16px; height: 16px; cursor: pointer; vertical-align: super;
-          line-height: 1; text-decoration: none; transition: background 100ms ease; margin: 0 1px;
-        }
-        .cite-ref .cite-badge:hover { background: var(--db-blue-text); color: white; }
-        .cite-ref .cite-tooltip {
-          display: none; position: absolute; bottom: calc(100% + 6px); left: 50%;
-          transform: translateX(-50%); background: var(--db-text-primary); color: white;
-          padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.4;
-          width: 280px; z-index: 50; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        }
-        .cite-ref .cite-tooltip::after {
-          content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
-          border: 5px solid transparent; border-top-color: var(--db-text-primary);
-        }
-        .cite-ref:hover .cite-tooltip { display: block; }
       `}</style>
     </div>
   );
@@ -405,24 +385,18 @@ function processChildren(children: React.ReactNode, sources: SearchResultItem[],
         return (
           <span key={i}>
             {nums.map((num, j) => {
-              const idx = num - 1;
-              const src = sources[idx];
-              if (!src) return <span key={j} className="cite-ref"><span className="cite-badge">{num}</span></span>;
-              const name = src.name || src.title || '';
-              const href = sourceHref(src.project_id || projectId, src);
+              const src = sources[num - 1];
+              const href = src ? sourceHref(src.project_id || projectId, src) : '#';
+              const name = src ? (src.name || src.title || undefined) : undefined;
               return (
-                <span key={j} className="cite-ref">
-                  <Link href={href} className="cite-badge">{num}</Link>
-                  <span className="cite-tooltip">
-                    <strong>{name.length > 80 ? name.slice(0, 80) + '...' : name}</strong>
-                    {src.severity && <span style={{ marginLeft: 6, opacity: 0.7 }}>{src.severity}</span>}
-                    {src.description && (
-                      <span style={{ display: 'block', marginTop: 4, opacity: 0.8, fontSize: 11 }}>
-                        {src.description.slice(0, 120)}{src.description.length > 120 ? '...' : ''}
-                      </span>
-                    )}
-                  </span>
-                </span>
+                <CitationLink
+                  key={j}
+                  number={num}
+                  href={href}
+                  name={name}
+                  severity={src?.severity}
+                  description={src?.description}
+                />
               );
             })}
           </span>

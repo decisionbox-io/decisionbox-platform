@@ -1,0 +1,73 @@
+/*
+ * CitationLink — shared hover tooltip styles used by the Ask page and
+ * the enterprise executive-summary newspaper. The CSS is loaded once
+ * (auto-imported by the .tsx file) so any component that drops a
+ * <CitationLink/> gets the badge + hover tooltip for free.
+ *
+ * The .cite-ref wrapper owns the hover state and the tooltip sits
+ * above it via absolute positioning. Display: none → display: block
+ * on hover keeps it CSS-only; no JavaScript state, no portal, works
+ * in static markdown output as well as React component output.
+ */
+
+.cite-ref {
+  position: relative;
+  display: inline;
+}
+
+.cite-ref .cite-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--db-blue-text);
+  background: var(--db-blue-bg);
+  border-radius: 4px;
+  padding: 0 4px;
+  min-width: 16px;
+  height: 16px;
+  cursor: pointer;
+  vertical-align: super;
+  line-height: 1;
+  text-decoration: none;
+  transition: background 100ms ease;
+  margin: 0 1px;
+}
+
+.cite-ref .cite-badge:hover {
+  background: var(--db-blue-text);
+  color: white;
+}
+
+.cite-ref .cite-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--db-text-primary);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  width: 280px;
+  z-index: 50;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.cite-ref .cite-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--db-text-primary);
+}
+
+.cite-ref:hover .cite-tooltip {
+  display: block;
+}
