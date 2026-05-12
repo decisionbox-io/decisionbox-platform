@@ -128,6 +128,13 @@ func TestSubstituteDialectTokens(t *testing.T) {
 			want:       "FROM {{REF:}} something",
 		},
 		{
+			name:       "matched placeholder always exposes its capture group — exercises the regex contract assumed in the impl",
+			template:   "FROM {{REF:a_table_with_a_long_name_42}}",
+			provider:   bq,
+			refDataset: "ds",
+			want:       "FROM `ds`.`a_table_with_a_long_name_42`",
+		},
+		{
 			name:       "ref placeholder with leading digit does not match — left intact",
 			template:   "FROM {{REF:1events}}",
 			provider:   bq,

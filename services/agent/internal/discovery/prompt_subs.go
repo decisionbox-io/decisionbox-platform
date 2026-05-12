@@ -43,14 +43,15 @@ func substituteDialectTokens(template string, provider gowarehouse.Provider, ref
 	}
 	template = strings.ReplaceAll(template, "{{DIALECT}}", provider.SQLDialect())
 	template = refPlaceholderPattern.ReplaceAllStringFunc(template, func(match string) string {
-		sub := refPlaceholderPattern.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return match
-		}
+		// FindStringSubmatch is guaranteed to return [full match, group 1]
+		// because ReplaceAllStringFunc only invokes us on a successful
+		// match against refPlaceholderPattern (which always has exactly
+		// one capture group). No defensive length check needed.
+		ident := refPlaceholderPattern.FindStringSubmatch(match)[1]
 		if refDataset == "" {
-			return provider.QuoteRef(sub[1])
+			return provider.QuoteRef(ident)
 		}
-		return provider.QuoteRef(refDataset, sub[1])
+		return provider.QuoteRef(refDataset, ident)
 	})
 	return template
 }

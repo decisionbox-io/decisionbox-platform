@@ -17,6 +17,7 @@ ignore:
   - "services/api/database/init.go"             # DB init — covered by integration tests
   - "services/api/database/schema_index_progress.go" # MongoDB repo — covered by integration tests
   - "services/agent/internal/database/*_repo.go" # MongoDB repos — covered by integration tests
+  - "services/agent/internal/testutil/"          # test-only utilities (mocks used from *_test.go) — exists solely to be called from tests, never from production code paths
   - "services/agent/internal/discovery/embed_index_store.go" # store adapter — covered by integration tests
   - "services/agent/internal/discovery/embed_index_repo.go"  # repo interface — covered by integration tests
   - "services/agent/internal/discovery/schema_indexer.go" # indexer pipeline — covered by integration test (Qdrant container)

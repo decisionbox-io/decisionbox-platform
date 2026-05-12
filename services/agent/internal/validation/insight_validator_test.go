@@ -11,6 +11,46 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
+// TestNewInsightValidator_RefDatasetExtraction locks in the
+// dataset-splitting behaviour: a single-dataset project keeps the
+// whole Dataset string as refDataset (which is what verification
+// example refs render against), while a multi-dataset project — whose
+// orchestrator builds a comma-joined `datasetsStr` — extracts just
+// the first segment so QuoteRef receives a single identifier and
+// produces a legible example. Without the split, multi-dataset
+// projects would render examples like `"ds1, ds2"."sessions"` which
+// would mislead the verification LLM.
+func TestNewInsightValidator_RefDatasetExtraction(t *testing.T) {
+	cases := []struct {
+		name           string
+		dataset        string
+		wantRefDataset string
+	}{
+		{name: "single dataset is used verbatim", dataset: "events_prod", wantRefDataset: "events_prod"},
+		{name: "multi-dataset extracts first segment", dataset: "events_prod, features_prod, archive_2024", wantRefDataset: "events_prod"},
+		{name: "multi-dataset without space after comma still extracts first", dataset: "ds1,ds2", wantRefDataset: "ds1"},
+		{name: "multi-dataset trims whitespace around first segment", dataset: "  events_prod  , features_prod", wantRefDataset: "events_prod"},
+		{name: "empty dataset stays empty", dataset: "", wantRefDataset: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := NewInsightValidator(InsightValidatorOptions{
+				Warehouse: testutil.NewMockWarehouseProvider(tc.dataset),
+				Dataset:   tc.dataset,
+			})
+			if v.refDataset != tc.wantRefDataset {
+				t.Errorf("refDataset = %q, want %q", v.refDataset, tc.wantRefDataset)
+			}
+			// dataset field is preserved verbatim — only refDataset extracts
+			// the first segment. This guard catches a refactor that
+			// accidentally collapses the two fields.
+			if v.dataset != tc.dataset {
+				t.Errorf("dataset field clobbered: got %q, want %q", v.dataset, tc.dataset)
+			}
+		})
+	}
+}
+
 func newTestInsightValidator(t *testing.T) (*InsightValidator, *testutil.MockWarehouseProvider, *testutil.MockLLMProvider) {
 	t.Helper()
 
