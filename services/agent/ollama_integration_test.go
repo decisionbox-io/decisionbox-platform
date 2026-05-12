@@ -48,7 +48,7 @@ func setupOllama(t *testing.T) (gollm.Provider, func()) {
 	}
 
 	// Create provider
-	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel)
+	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 5*time.Minute)
 	if err != nil {
 		container.Terminate(ctx)
 		t.Fatalf("Failed to create Ollama provider: %v", err)
