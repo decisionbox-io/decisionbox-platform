@@ -543,9 +543,12 @@ func (v *InsightValidator) buildVerificationPrompt(
 Use lookup_schema when you need column information that is not already shown in the evidence above (typical when the insight needs to JOIN or reference a table the source_steps did not query). Otherwise issue the query directly.`
 	}
 
+	// Example refs use the connected provider's native quoting so the
+	// dialect line above + the example agree. `exampleRef` shows the
+	// fully-qualified form the LLM must emit; `shortRef` is the
+	// unqualified single-part form we tell the model NOT to use.
 	exampleRef := v.warehouse.QuoteRef(v.refDataset, "sessions")
 	shortRef := v.warehouse.QuoteRef("sessions")
-	userIDIdent := v.warehouse.QuoteRef("user_id")
 
 	return fmt.Sprintf(`Generate a SQL verification query for this insight. The query must verify the claimed numbers.
 
@@ -556,15 +559,15 @@ Use lookup_schema when you need column information that is not already shown in 
 **CRITICAL TABLE NAME RULES**:
 - ALWAYS use fully qualified table names quoted per the dialect above. Example: %s — NOT just %s.
 - The dataset name MUST be included in every table reference.
-- Quote identifiers with the dialect's native delimiter (backticks for BigQuery/Databricks, double quotes for PostgreSQL/Redshift/Snowflake, square brackets for SQL Server).
-- Reference only column names that appear in the source exploration queries / lookup detail (when shown) or in the table schemas section. Do not invent column names that are not documented above.
+- Quote identifiers using the dialect's native convention (the dialect line above is the source of truth — match its quoting style for every table reference).
+- Reference only column names that appear in the source exploration queries / lookup detail (when shown) or in the table schemas section. Do not invent column names that are not documented above. When citing a column in prose, write it unquoted (e.g. user_id) so the case-folded form the dialect expects is unambiguous.
 
 **Insight to verify**:
 %s
 
 Generate a single SQL query that:
 1. Counts the affected users/entities described in this insight
-2. For user counts, prefer COUNT(DISTINCT user_id) — but only when a %s (or the project's filter field) column is documented in the source queries or schemas above. Substitute the column name that actually exists; do not assume %s is the right name.
+2. For user counts, prefer COUNT(DISTINCT user_id) — but only when a `+"`user_id`"+` (or the project's filter field) column is documented in the source queries or schemas above. Substitute the column name that actually exists; do not assume `+"`user_id`"+` is the right name.
 3. Uses FULLY QUALIFIED table names with dialect-correct quoting (see example above).
 4. Includes the filter clause if provided
 5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
@@ -579,8 +582,6 @@ Generate a single SQL query that:
 		exampleRef,
 		shortRef,
 		string(insightJSON),
-		userIDIdent,
-		userIDIdent,
 		actionInstructions,
 	)
 }

@@ -78,7 +78,7 @@ Rules:
 
 ## Critical Rules
 
-1. **ALWAYS use fully qualified table names quoted per the dialect**: e.g. `{{REF:table_name}}`. The example renders with the connected warehouse's native identifier quoting — match that style for every table reference you emit.
+1. **ALWAYS use fully qualified table names quoted per the dialect**: e.g. {{REF:table_name}} — the placeholder renders with the connected warehouse's native identifier quoting at runtime; match that style for every table reference you emit.
 2. {{FILTER_RULE}}
 3. **ALWAYS use COUNT(DISTINCT ...) when counting customers**: Never use COUNT(*) or COUNT(column) without DISTINCT when reporting customer counts. E-commerce data has many events per customer — distinct counts prevent inflated numbers.
 4. **`lookup_schema` before SELECTing from new tables**: column names in your example queries below are illustrative — your warehouse may use different names. Inspect first, then query.

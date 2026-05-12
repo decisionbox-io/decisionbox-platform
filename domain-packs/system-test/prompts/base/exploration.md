@@ -72,7 +72,7 @@ Per-run budget: **30 searches**.
 
 ## Critical Rules
 
-1. **ALWAYS use fully qualified table names quoted per the dialect**: e.g. `{{REF:table_name}}`. The example renders with the connected warehouse's native identifier quoting — match that style for every table reference you emit.
+1. **ALWAYS use fully qualified table names quoted per the dialect**: e.g. {{REF:table_name}} — the placeholder renders with the connected warehouse's native identifier quoting at runtime; match that style for every table reference you emit.
 2. {{FILTER_RULE}}
 3. **`lookup_schema` before sampling**: column types are part of validation — fetch them first.
 4. **Report failures explicitly**: If a query fails, that IS the finding — record the error message and what it means for provider compatibility.
