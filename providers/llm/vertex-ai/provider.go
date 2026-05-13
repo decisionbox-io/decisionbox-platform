@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -38,6 +37,12 @@ import (
 
 // providerName is the registry key.
 const providerName = "vertex-ai"
+
+// vertexDefaultTimeout is the historical default HTTP timeout. Long
+// Gemini / Claude generations on Vertex easily blow past the net/http
+// 60s default, so 5 minutes is the floor; operators raise it via
+// LLM_TIMEOUT or per-project timeout_seconds.
+const vertexDefaultTimeout = 300 * time.Second
 
 func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
@@ -102,10 +107,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride = parsed
 	}
 
-	timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-	if timeoutSec == 0 {
-		timeoutSec = 300 // Opus + large contexts can exceed the 60s default
-	}
+	timeout := gollm.ResolveHTTPTimeout(cfg, vertexDefaultTimeout)
 	ctx := context.Background()
 
 	auth, err := newGCPAuth(ctx)
@@ -119,7 +121,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		model:        model,
 		wireOverride: wireOverride,
 		auth:         auth,
-		httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		httpClient:   &http.Client{Timeout: timeout},
 	}, nil
 }
 

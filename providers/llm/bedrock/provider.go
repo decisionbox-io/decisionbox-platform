@@ -23,7 +23,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -34,6 +33,12 @@ import (
 // providerName is the registry key. Kept as a constant so dispatch
 // errors and meta lookups all read from one place.
 const providerName = "bedrock"
+
+// bedrockDefaultTimeout is the historical default HTTP timeout for the
+// Bedrock InvokeModel call. Five minutes covers Claude Opus on
+// reasonably-sized prompts; longer generations should opt in via the
+// LLM_TIMEOUT env var or per-project timeout_seconds.
+const bedrockDefaultTimeout = 300 * time.Second
 
 func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
@@ -105,10 +110,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride = parsed
 	}
 
-	timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-	if timeoutSec == 0 {
-		timeoutSec = 300
-	}
+	timeout := gollm.ResolveHTTPTimeout(cfg, bedrockDefaultTimeout)
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(region),
@@ -124,7 +126,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		region:       region,
 		model:        model,
 		wireOverride: wireOverride,
-		httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		httpClient:   &http.Client{Timeout: timeout},
 	}, nil
 }
 

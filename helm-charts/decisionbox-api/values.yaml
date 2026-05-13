@@ -51,6 +51,11 @@ env:
   AGENT_NAMESPACE: "decisionbox"
   AGENT_SERVICE_ACCOUNT: "decisionbox-agent"
   AGENT_JOB_TIMEOUT_HOURS: "6"
+  # LLM_TIMEOUT — HTTP timeout per LLM API call. Go duration format (e.g. "5m", "15m").
+  # Set this when long-form generations (executive summary on Opus, large ask responses)
+  # need more than the provider default of 5 minutes. Per-project timeout_seconds
+  # overrides this. Set the same value on the agent chart so discovery matches.
+  # LLM_TIMEOUT: "15m"
 
 extraEnv: {}
 

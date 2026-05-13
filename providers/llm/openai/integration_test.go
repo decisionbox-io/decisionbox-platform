@@ -18,7 +18,7 @@ func TestIntegration_BasicChat(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -52,7 +52,7 @@ func TestIntegration_SystemPrompt(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -77,7 +77,7 @@ func TestIntegration_ModelOverride(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-4o", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-4o", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -132,7 +132,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 // --- Error path tests ---
 
 func TestIntegration_InvalidAPIKey(t *testing.T) {
-	provider := NewOpenAIProvider("sk-invalid-key-12345", "gpt-4o-mini", "")
+	provider := NewOpenAIProvider("sk-invalid-key-12345", "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -156,7 +156,7 @@ func TestIntegration_InvalidModel(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-nonexistent-999", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-nonexistent-999", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -177,7 +177,7 @@ func TestIntegration_Validate_Success(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -189,7 +189,7 @@ func TestIntegration_Validate_Success(t *testing.T) {
 }
 
 func TestIntegration_Validate_InvalidKey(t *testing.T) {
-	provider := NewOpenAIProvider("sk-invalid-key-12345", "gpt-4o-mini", "")
+	provider := NewOpenAIProvider("sk-invalid-key-12345", "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -228,7 +228,7 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_OPENAI_API_KEY not set")
 	}
 
-	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "")
+	provider := NewOpenAIProvider(apiKey, "gpt-4o-mini", "", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately

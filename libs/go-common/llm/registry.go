@@ -397,7 +397,8 @@ var (
 //
 //	func init() {
 //	    llm.Register("openai", func(cfg llm.ProviderConfig) (llm.Provider, error) {
-//	        return NewOpenAIProvider(cfg["api_key"], cfg["model"]), nil
+//	        timeout := llm.ResolveHTTPTimeout(cfg, 5*time.Minute)
+//	        return NewOpenAIProvider(cfg["api_key"], cfg["model"], cfg["base_url"], timeout), nil
 //	    })
 //	}
 //

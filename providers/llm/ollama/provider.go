@@ -24,6 +24,12 @@ import (
 	ollamaapi "github.com/ollama/ollama/api"
 )
 
+// ollamaDefaultTimeout is the historical default HTTP timeout for
+// Ollama calls. Local inference on consumer hardware regularly exceeds
+// 60 s, so 5 minutes is the floor; operators raise it via
+// LLM_TIMEOUT or per-project timeout_seconds.
+const ollamaDefaultTimeout = 5 * time.Minute
+
 func init() {
 	gollm.RegisterWithMeta("ollama", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		host := cfg["host"]
@@ -36,7 +42,7 @@ func init() {
 			return nil, fmt.Errorf("ollama: model is required")
 		}
 
-		return NewOllamaProvider(host, model)
+		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout))
 	}, gollm.ProviderMeta{
 		Name:        "Ollama (Local)",
 		Description: "Run open-source models locally via Ollama",
@@ -59,23 +65,33 @@ func init() {
 }
 
 // OllamaProvider implements llm.Provider using a local Ollama instance.
+// httpTimeout is retained on the provider so callers and tests can
+// inspect the effective deadline — the ollama SDK's *api.Client wraps
+// the underlying *http.Client behind unexported fields.
 type OllamaProvider struct {
-	client ollamaClient
-	model  string
+	client      ollamaClient
+	model       string
+	httpTimeout time.Duration
 }
 
-// NewOllamaProvider creates a new Ollama LLM provider.
-func NewOllamaProvider(host, model string) (*OllamaProvider, error) {
+// NewOllamaProvider creates a new Ollama LLM provider. A zero or
+// negative timeout falls back to ollamaDefaultTimeout so callers that
+// don't care (mainly tests) don't have to think about it.
+func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvider, error) {
 	parsedURL, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: invalid host URL: %w", err)
 	}
 
-	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: 5 * time.Minute})
+	if timeout <= 0 {
+		timeout = ollamaDefaultTimeout
+	}
+	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: timeout})
 
 	return &OllamaProvider{
-		client: client,
-		model:  model,
+		client:      client,
+		model:       model,
+		httpTimeout: timeout,
 	}, nil
 }
 

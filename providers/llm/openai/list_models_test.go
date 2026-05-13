@@ -26,7 +26,7 @@ func TestListModels_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	p := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 	models, err := p.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -52,7 +52,7 @@ func TestListModels_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewOpenAIProvider("bad", "gpt-4o", server.URL)
+	p := NewOpenAIProvider("bad", "gpt-4o", server.URL, 0)
 	_, err := p.ListModels(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 401")
@@ -68,7 +68,7 @@ func TestListModels_MalformedBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewOpenAIProvider("k", "m", server.URL)
+	p := NewOpenAIProvider("k", "m", server.URL, 0)
 	_, err := p.ListModels(context.Background())
 	if err == nil {
 		t.Fatal("expected parse error")
@@ -76,7 +76,7 @@ func TestListModels_MalformedBody(t *testing.T) {
 }
 
 func TestListModels_ServerDown(t *testing.T) {
-	p := NewOpenAIProvider("k", "m", "http://127.0.0.1:1")
+	p := NewOpenAIProvider("k", "m", "http://127.0.0.1:1", 0)
 	_, err := p.ListModels(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -89,7 +89,7 @@ func TestListModels_EmptyData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewOpenAIProvider("k", "m", server.URL)
+	p := NewOpenAIProvider("k", "m", server.URL, 0)
 	models, err := p.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

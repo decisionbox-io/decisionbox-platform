@@ -33,7 +33,7 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MAX_RETRIES` | `3` | Number of retries on LLM API errors (rate limits, timeouts). Set to `0` for no retries. |
-| `LLM_TIMEOUT` | `300s` | Timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Increased from 120s because large prompts on Opus-class models need more time. |
+| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by **both** the agent process (discovery) and the API process (executive summary, ask, pack-gen). Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall through to the provider's hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
 ### Vector Search (Qdrant)
@@ -114,6 +114,14 @@ The API uses Qdrant to perform semantic searches and retrieval of indexed data.
 |----------|---------|-------------|
 | `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector search is disabled. |
 | `QDRANT_API_KEY` | *(empty)* | Optional API key. |
+
+### LLM Behavior
+
+The API talks to LLMs for `/ask`, pack-gen, and the enterprise executive-summary feature. Per-project LLM credentials and `timeout_seconds` are read from the project's LLM config (set in the dashboard); these env vars are deployment-wide defaults.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_TIMEOUT` | *(provider-specific)* | HTTP timeout per LLM API call, applied to every registered provider. Go duration format: `30s`, `2m`, `15m`. Per-project `timeout_seconds` overrides this when set. When unset, providers use their hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). Raise this when long-form generations (e.g. executive summaries on Opus-class models) exceed 5 minutes. Same env var the agent reads — set it once on both containers. |
 
 ### Agent Runner
 

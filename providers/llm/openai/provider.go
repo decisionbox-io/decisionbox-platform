@@ -27,6 +27,12 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
+// openaiDefaultTimeout is the historical default HTTP timeout for the
+// OpenAI chat-completions call. Operators raise it via the
+// LLM_TIMEOUT env var or per-project timeout_seconds when
+// long-form generations run past 5 minutes.
+const openaiDefaultTimeout = 5 * time.Minute
+
 func init() {
 	gollm.RegisterWithMeta("openai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		apiKey := cfg["api_key"]
@@ -44,7 +50,8 @@ func init() {
 			baseURL = defaultBaseURL
 		}
 
-		return NewOpenAIProvider(apiKey, model, baseURL), nil
+		timeout := gollm.ResolveHTTPTimeout(cfg, openaiDefaultTimeout)
+		return NewOpenAIProvider(apiKey, model, baseURL, timeout), nil
 	}, gollm.ProviderMeta{
 		Name:        "OpenAI",
 		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
@@ -80,16 +87,21 @@ type OpenAIProvider struct {
 	client  *http.Client
 }
 
-// NewOpenAIProvider creates a new OpenAI LLM provider.
-func NewOpenAIProvider(apiKey, model, baseURL string) *OpenAIProvider {
+// NewOpenAIProvider creates a new OpenAI LLM provider. A zero or
+// negative timeout falls back to openaiDefaultTimeout so callers that
+// don't care (mainly tests) don't have to think about it.
+func NewOpenAIProvider(apiKey, model, baseURL string, timeout time.Duration) *OpenAIProvider {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
+	}
+	if timeout <= 0 {
+		timeout = openaiDefaultTimeout
 	}
 	return &OpenAIProvider{
 		apiKey:  apiKey,
 		model:   model,
 		baseURL: baseURL,
-		client:  &http.Client{Timeout: 5 * time.Minute},
+		client:  &http.Client{Timeout: timeout},
 	}
 }
 

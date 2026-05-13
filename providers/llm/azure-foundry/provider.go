@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +38,12 @@ import (
 
 // providerName is the registry key.
 const providerName = "azure-foundry"
+
+// azureFoundryDefaultTimeout is the historical default HTTP timeout
+// for Azure Foundry calls. Operators raise it via the
+// LLM_TIMEOUT env var or per-project timeout_seconds when
+// long-form generations run past 5 minutes.
+const azureFoundryDefaultTimeout = 300 * time.Second
 
 func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
@@ -107,17 +112,14 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride = parsed
 	}
 
-	timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-	if timeoutSec == 0 {
-		timeoutSec = 300
-	}
+	timeout := gollm.ResolveHTTPTimeout(cfg, azureFoundryDefaultTimeout)
 
 	return &AzureFoundryProvider{
 		endpoint:     endpoint,
 		apiKey:       apiKey,
 		model:        model,
 		wireOverride: wireOverride,
-		httpClient:   &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		httpClient:   &http.Client{Timeout: timeout},
 	}, nil
 }
 

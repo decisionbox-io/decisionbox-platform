@@ -57,7 +57,7 @@ func TestChat_Success(t *testing.T) {
 	server := mockOpenAIServer(t, defaultHandler(t))
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 
 	resp, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hello"}},
@@ -101,7 +101,7 @@ func TestChat_SystemPrompt(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		SystemPrompt: "You are a test assistant",
@@ -141,7 +141,7 @@ func TestChat_ModelOverride(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Model:    "gpt-4o-mini",
@@ -168,7 +168,7 @@ func TestChat_APIError_Typed(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("bad-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("bad-key", "gpt-4o", server.URL, 0)
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
@@ -191,7 +191,7 @@ func TestChat_APIError_RawBodyFallback(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
@@ -214,7 +214,7 @@ func TestChat_EmptyChoices(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
@@ -230,7 +230,7 @@ func TestChat_MalformedJSON(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
@@ -256,7 +256,7 @@ func TestChat_MaxTokensAndTemperature(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 
 	_, _ = provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages:    []gollm.Message{{Role: "user", Content: "hi"}},
@@ -273,7 +273,7 @@ func TestChat_MaxTokensAndTemperature(t *testing.T) {
 }
 
 func TestChat_ServerDown(t *testing.T) {
-	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1")
+	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1", 0)
 
 	_, err := provider.Chat(context.Background(), gollm.ChatRequest{
 		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
@@ -284,7 +284,7 @@ func TestChat_ServerDown(t *testing.T) {
 }
 
 func TestNewOpenAIProvider_Defaults(t *testing.T) {
-	p := NewOpenAIProvider("key", "model", "")
+	p := NewOpenAIProvider("key", "model", "", 0)
 	if p.baseURL != defaultBaseURL {
 		t.Errorf("baseURL = %q, want %q", p.baseURL, defaultBaseURL)
 	}
@@ -350,7 +350,7 @@ func TestValidate_Success(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("test-key", "gpt-4o", server.URL, 0)
 	if err := provider.Validate(context.Background()); err != nil {
 		t.Fatalf("Validate should succeed: %v", err)
 	}
@@ -363,14 +363,14 @@ func TestValidate_Unauthorized(t *testing.T) {
 	})
 	defer server.Close()
 
-	provider := NewOpenAIProvider("bad-key", "gpt-4o", server.URL)
+	provider := NewOpenAIProvider("bad-key", "gpt-4o", server.URL, 0)
 	if err := provider.Validate(context.Background()); err == nil {
 		t.Error("Validate should fail with bad key")
 	}
 }
 
 func TestValidate_ServerDown(t *testing.T) {
-	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1")
+	provider := NewOpenAIProvider("test-key", "gpt-4o", "http://127.0.0.1:1", 0)
 	if err := provider.Validate(context.Background()); err == nil {
 		t.Error("Validate should fail when server is unreachable")
 	}

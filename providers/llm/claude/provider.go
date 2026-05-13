@@ -21,15 +21,17 @@ const (
 	anthropicAPIVersion = "2023-06-01"
 )
 
+// claudeDefaultTimeout is Claude's historical hard-coded HTTP timeout.
+// Kept tight because the direct Anthropic API is fast on small prompts;
+// operators raise it via LLM_TIMEOUT or the per-project
+// timeout_seconds config when they switch to longer-running models.
+const claudeDefaultTimeout = 60 * time.Second
+
 func init() {
 	gollm.RegisterWithMeta("claude", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		maxRetries, _ := strconv.Atoi(cfg["max_retries"])
 		if maxRetries == 0 {
 			maxRetries = 3
-		}
-		timeoutSec, _ := strconv.Atoi(cfg["timeout_seconds"])
-		if timeoutSec == 0 {
-			timeoutSec = 60
 		}
 		delayMs, _ := strconv.Atoi(cfg["request_delay_ms"])
 
@@ -37,7 +39,7 @@ func init() {
 			APIKey:         cfg["api_key"],
 			Model:          cfg["model"],
 			MaxRetries:     maxRetries,
-			Timeout:        time.Duration(timeoutSec) * time.Second,
+			Timeout:        gollm.ResolveHTTPTimeout(cfg, claudeDefaultTimeout),
 			RequestDelayMs: delayMs,
 		})
 	}, gollm.ProviderMeta{
@@ -93,7 +95,7 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 		cfg.MaxRetries = 3
 	}
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 60 * time.Second
+		cfg.Timeout = claudeDefaultTimeout
 	}
 
 	return &ClaudeProvider{
