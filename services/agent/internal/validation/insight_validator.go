@@ -9,6 +9,7 @@ import (
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discipline"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -572,6 +573,8 @@ Generate a single SQL query that:
 4. Includes the filter clause if provided
 5. ALWAYS alias the result as "count": SELECT COUNT(...) AS count
 
+%s
+
 %s`,
 		v.dataset,
 		v.warehouse.SQLDialect(),
@@ -582,6 +585,7 @@ Generate a single SQL query that:
 		exampleRef,
 		shortRef,
 		string(insightJSON),
+		discipline.VerifierRules(),
 		actionInstructions,
 	)
 }

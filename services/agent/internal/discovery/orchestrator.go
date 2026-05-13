@@ -20,6 +20,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discipline"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -457,6 +458,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
 	baseContext = strings.ReplaceAll(baseContext, "{{LANGUAGE}}", language)
 	baseContext = substituteDialectTokens(baseContext, o.warehouse, refDataset)
+	// Platform-enforced claim-discipline rules (rules 1, 2, 7, 8). Cascades
+	// into every downstream prompt because the orchestrator prepends
+	// baseContext to exploration, analysis, and recommendations.
+	baseContext = discipline.AppendBaseContextRules(baseContext)
 
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
@@ -685,6 +690,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantSteps)))
 		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
 		prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
+		// Platform-enforced insight-writing discipline (rules 3, 4, 5, 6).
+		// Applied after assembly so user-supplied custom analysis areas
+		// inherit the rules regardless of their pack-level prompt content.
+		prompt = discipline.AppendAnalysisRules(prompt)
 
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
@@ -976,6 +985,9 @@ func (o *Orchestrator) generateRecommendations(
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", summary)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", string(insightsJSON))
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
+	// Platform-enforced recommendation discipline (rules 3, 4, 5, 6 framed
+	// for the recommendation schema + non-dramatic-language reiteration).
+	prompt = discipline.AppendRecommendationsRules(prompt)
 
 	// Inject project knowledge sources relevant to the discovered insights.
 	// Recommendations often need broader business context (constraints, prior

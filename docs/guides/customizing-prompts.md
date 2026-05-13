@@ -10,6 +10,30 @@ When a project is created, the domain pack's default prompts are **copied** into
 
 **Important:** Updating the `.md` files in the domain pack on disk does NOT update existing projects. It only affects newly created projects. To update an existing project's prompts, edit them via the dashboard or the API.
 
+## Platform-Enforced Claim Discipline Rules
+
+In addition to the pack-supplied and project-supplied prompts above, DecisionBox appends a set of **platform-enforced claim-discipline rules** to every writer and verifier prompt at runtime. These rules are NOT part of any pack file and cannot be edited away through the dashboard or the API — they are applied in code (`services/agent/internal/discipline/rules.go`) immediately before the prompt is sent to the LLM.
+
+The rules cover:
+
+- **Scope-binding superlatives** — every "highest" / "lowest" / "all-time" claim must name the exact data window it was derived from.
+- **No claim beyond the query window** — if your widest query covers 11 weeks, you may not speak of "last year" or "ever".
+- **Re-ranking from raw rows** — when writing a top-N claim, the LLM must walk the actual result rows, not its earlier prose summaries.
+- **Addressing counter-evidence** — silent dismissal of contradicting rows as "outlier" or "holiday" is forbidden.
+- **Cross-field self-consistency** — `description`, `indicators`, `metrics`, and `name` must agree on quantifier and window.
+- **Citing the step for every number** — every quantitative figure must trace to a row in `source_steps`.
+- **Partial-period hygiene** — partial periods may not enter a ranking unless normalized.
+- **Non-dramatic prose** — describe findings via numbers; encode importance in the structured `severity` field, not in prose adjectives.
+
+The verifier prompt additionally carries V1–V4 rules that test the headline claim against the warehouse (not just the affected count).
+
+**Implications when customizing prompts:**
+
+- The prompt you see in the dashboard editor is NOT the full prompt the LLM receives. The platform appends the discipline rules below your content before sending.
+- These rules apply across **all output languages**. The rules themselves explicitly tell the LLM to apply the constraints to whatever language the project is configured to emit insights in — the English examples in the rule text are illustrations of the principle, not the principle itself.
+- You do not need to (and should not) re-implement these rules in your pack prompts. Editing your `base_context.md` to add "no dramatic words" is redundant; the platform already enforces it.
+- If you want to inspect or update the canonical rule text, the source of truth is `services/agent/internal/discipline/rules.go` in the platform repository.
+
 ## Editing Prompts via Dashboard
 
 Go to your project's **Prompts** page (left sidebar → Prompts). You'll see tabs:
