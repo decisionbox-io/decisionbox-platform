@@ -8,6 +8,7 @@ import {
 } from '@tabler/icons-react';
 import { SeverityBadge } from './UIComponents';
 import { api, SearchResultItem, SearchHistoryEntry } from '@/lib/api';
+import { searchResultHref } from '@/lib/searchNav';
 
 const EXAMPLE_QUERIES = [
   { text: 'Why are users churning?', icon: IconTrendingUp },
@@ -84,7 +85,7 @@ export default function SpotlightSearch() {
   const navigate = useCallback((item: SearchResultItem) => {
     setOpen(false);
     setQuery('');
-    router.push(`/projects/${item.project_id || projectId}/discoveries/${item.discovery_id}`);
+    router.push(searchResultHref(item, projectId ?? ''));
   }, [router, projectId]);
 
   const goToSearch = useCallback((q: string) => {
