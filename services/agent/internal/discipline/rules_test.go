@@ -202,6 +202,35 @@ func TestVerifierRules_ContainsV1V4(t *testing.T) {
 	})
 }
 
+func TestVerifierRules_V1RequiresActualAggregateNotClaimedValue(t *testing.T) {
+	// V1's THEN branch must run an independent aggregate against the
+	// warehouse — substituting the literal claimed-count number would
+	// make the verification self-confirming (the ratio check compares
+	// claimed against itself → always 1.0). This test pins the
+	// anti-pattern callout so a future edit that "simplifies" the
+	// example back to <claimed_affected_count> in the THEN branch is
+	// caught by failing tests.
+	text := VerifierRules()
+	requiredCallouts := []string{
+		"BOTH the ranking AND the affected",
+		"actual aggregate",
+		"self-confirming",
+		"COUNT(DISTINCT user_id)",
+	}
+	for _, want := range requiredCallouts {
+		if !strings.Contains(text, want) {
+			t.Errorf("V1 framing regressed — missing required callout %q. V1 must instruct the LLM to run an independent aggregate in the THEN branch, not substitute the claimed value.", want)
+		}
+	}
+	// The Bad-shape — using the literal <claimed_affected_count>
+	// placeholder in the THEN branch — must NOT appear, because that
+	// is the failure mode V1 is supposed to prevent.
+	forbiddenShape := "THEN <claimed_affected_count>"
+	if strings.Contains(text, forbiddenShape) {
+		t.Errorf("V1 example regressed to the self-confirming shape %q — must use a subquery returning the actual aggregate", forbiddenShape)
+	}
+}
+
 func TestAllRulesReturnNonEmpty(t *testing.T) {
 	cases := map[string]string{
 		"BaseContextRules":     BaseContextRules(),

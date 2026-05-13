@@ -167,13 +167,18 @@ func TestBuildVerificationPrompt_RegressionCaseStudy(t *testing.T) {
 		t.Fatalf("regression fixture: VerifierRules() not injected into the prompt")
 	}
 
-	// 2. The V1 mechanism (CASE WHEN ... THEN claimed ELSE 0) must be
-	//    described so the LLM constructs ranking SQL rather than a
-	//    plain count.
+	// 2. The V1 mechanism (CASE WHEN ranking matches THEN run actual
+	//    count ELSE 0) must be described so the LLM constructs SQL
+	//    that verifies BOTH the ranking AND the affected count in one
+	//    statement. The THEN branch must run an independent aggregate
+	//    (not just return the claimed number) so the ratio check still
+	//    catches inflated/deflated counts.
 	mustDescribeV1 := []string{
 		"V1. RE-VERIFY THE HEADLINE SUPERLATIVE",
 		"CASE",
 		"ELSE 0",
+		"actual aggregate",
+		"self-confirming",
 	}
 	for _, want := range mustDescribeV1 {
 		if !strings.Contains(got, want) {

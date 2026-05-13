@@ -453,15 +453,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		refDataset = o.datasets[0]
 	}
 
-	baseContext := prompts.BaseContext
-	baseContext = strings.ReplaceAll(baseContext, "{{PROFILE}}", profileStr)
-	baseContext = strings.ReplaceAll(baseContext, "{{PREVIOUS_CONTEXT}}", previousContextStr)
-	baseContext = strings.ReplaceAll(baseContext, "{{LANGUAGE}}", language)
-	baseContext = substituteDialectTokens(baseContext, o.warehouse, refDataset)
-	// Platform-enforced claim-discipline rules (rules 1, 2, 7, 8). Cascades
-	// into every downstream prompt because the orchestrator prepends
-	// baseContext to exploration, analysis, and recommendations.
-	baseContext = discipline.AppendBaseContextRules(baseContext)
+	baseContext := o.buildBaseContext(prompts.BaseContext, profileStr, previousContextStr, language, refDataset)
 
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
@@ -685,15 +677,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"results_chars": len(queryResultsJSON),
 			"prompt_chars":  len(baseContext) + len(areaPrompt) + len(queryResultsJSON),
 		}).Debug("Analysis area: rendered prompt sizing")
-		prompt := baseContext + "\n\n" + areaPrompt
-		prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
-		prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", len(relevantSteps)))
-		prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
-		prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
-		// Platform-enforced insight-writing discipline (rules 3, 4, 5, 6).
-		// Applied after assembly so user-supplied custom analysis areas
-		// inherit the rules regardless of their pack-level prompt content.
-		prompt = discipline.AppendAnalysisRules(prompt)
+		prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
 
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
@@ -980,14 +964,7 @@ func (o *Orchestrator) generateRecommendations(
 		refDataset = o.datasets[0]
 	}
 
-	prompt := baseContext + "\n\n" + promptTemplate
-	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
-	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", summary)
-	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", string(insightsJSON))
-	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
-	// Platform-enforced recommendation discipline (rules 3, 4, 5, 6 framed
-	// for the recommendation schema + non-dramatic-language reiteration).
-	prompt = discipline.AppendRecommendationsRules(prompt)
+	prompt := o.buildRecommendationsPrompt(baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 
 	// Inject project knowledge sources relevant to the discovered insights.
 	// Recommendations often need broader business context (constraints, prior
@@ -1073,6 +1050,49 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 	}
 
 	return resolved, areas
+}
+
+// buildBaseContext renders the per-run base context: applies template
+// substitutions, dialect tokens, and the platform-enforced claim-discipline
+// rules (rules 1, 2, 7, 8). The returned string is prepended to every
+// downstream prompt, so the rule cascade reaches exploration, analysis
+// areas, and recommendations through this single function.
+func (o *Orchestrator) buildBaseContext(template, profileStr, previousContext, language, refDataset string) string {
+	base := template
+	base = strings.ReplaceAll(base, "{{PROFILE}}", profileStr)
+	base = strings.ReplaceAll(base, "{{PREVIOUS_CONTEXT}}", previousContext)
+	base = strings.ReplaceAll(base, "{{LANGUAGE}}", language)
+	base = substituteDialectTokens(base, o.warehouse, refDataset)
+	return discipline.AppendBaseContextRules(base)
+}
+
+// buildAnalysisAreaPrompt renders one analysis-area prompt: combines the
+// already-built base context with the area's content, substitutes per-area
+// template variables, and appends the platform-enforced insight-writing
+// discipline rules (3, 4, 5, 6). Called once per analysis area inside the
+// run loop — user-added custom areas flow through the same path, so they
+// inherit the rules regardless of pack content.
+func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr string, totalQueries int, queryResultsJSON, refDataset string) string {
+	prompt := baseContext + "\n\n" + areaPrompt
+	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
+	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
+	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
+	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
+	return discipline.AppendAnalysisRules(prompt)
+}
+
+// buildRecommendationsPrompt renders the recommendations prompt: combines
+// the already-built base context with the recommendations template,
+// substitutes recommendation-specific template variables, and appends the
+// platform-enforced recommendation discipline rules (3, 4, 5, 6 framed for
+// the recommendation schema + non-dramatic-language reiteration).
+func (o *Orchestrator) buildRecommendationsPrompt(baseContext, template, insightsSummary, insightsJSON, refDataset string) string {
+	prompt := baseContext + "\n\n" + template
+	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
+	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", insightsSummary)
+	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", insightsJSON)
+	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
+	return discipline.AppendRecommendationsRules(prompt)
 }
 
 func (o *Orchestrator) buildFilterClause() string {

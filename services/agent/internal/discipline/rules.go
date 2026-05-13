@@ -300,20 +300,39 @@ V1. RE-VERIFY THE HEADLINE SUPERLATIVE, NOT JUST THE COUNT
     If the insight's description or name contains a superlative or
     universal quantifier ("highest", "lowest", "first", "all-time",
     "ever", "record", "unique" — or any translation thereof), the
-    verification query MUST test that ranking directly. Construct
-    the SQL so the returned ` + "`count`" + ` reflects whether the claim
-    holds. Example:
+    verification query MUST test BOTH the ranking AND the affected
+    count in a single statement. Construct the SQL so the returned
+    ` + "`count`" + ` is:
+      - the actual aggregate (e.g. COUNT(DISTINCT user_id)) over the
+        claimed entity's rows when the claimed entity IS the
+        ranking winner, AND
+      - 0 when the claimed entity is NOT the ranking winner.
+    Do NOT substitute the literal claimed-count value as the THEN
+    branch — that would make the verification self-confirming (the
+    ratio check would compare the claimed number against itself and
+    always pass when the ranking is true). The THEN branch must run
+    an independent aggregate over the warehouse so the existing
+    ratio check (verified vs. claimed, ±20%) still catches an
+    inflated or deflated count even when the ranking is correct.
+    Example pattern:
       SELECT CASE
         WHEN (SELECT week_id FROM dataset.table
               WHERE <filter>
               GROUP BY week_id
               ORDER BY <metric> DESC
               LIMIT 1) = '<claimed_week>'
-        THEN <claimed_affected_count>
+        THEN (SELECT COUNT(DISTINCT user_id) FROM dataset.table
+              WHERE <filter> AND week_id = '<claimed_week>')
         ELSE 0
       END AS count
-    A returned 0 means the claimed extremum is wrong and the insight
-    is rejected by the existing pipeline.
+    Outcomes:
+      - Claimed entity is the ranking winner AND its count matches
+        the claim within 20%: existing pipeline confirms.
+      - Claimed entity is the ranking winner BUT its count differs
+        materially: existing pipeline marks adjusted with the
+        verified count.
+      - Claimed entity is NOT the ranking winner: returned 0 →
+        existing pipeline rejects.
 
 V2. REJECT QUANTIFIER-SCOPE MISMATCH
     If the description uses "all-time" / "lifetime" / "ever" /
