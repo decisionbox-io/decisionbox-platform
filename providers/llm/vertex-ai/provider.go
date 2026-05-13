@@ -44,6 +44,12 @@ const providerName = "vertex-ai"
 // LLM_TIMEOUT or per-project timeout_seconds.
 const vertexDefaultTimeout = 300 * time.Second
 
+// newAuth is the constructor seam tests stub to bypass ADC. Production
+// builds use newGCPAuth; tests swap in a fake that returns a fully
+// formed *gcpAuth without touching Application Default Credentials so
+// the factory's downstream code path is exercised.
+var newAuth = newGCPAuth
+
 func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Google Vertex AI",
@@ -110,7 +116,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	timeout := gollm.ResolveHTTPTimeout(cfg, vertexDefaultTimeout)
 	ctx := context.Background()
 
-	auth, err := newGCPAuth(ctx)
+	auth, err := newAuth(ctx)
 	if err != nil {
 		return nil, err
 	}

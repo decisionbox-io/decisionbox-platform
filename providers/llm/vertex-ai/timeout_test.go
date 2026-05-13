@@ -1,6 +1,7 @@
 package vertexai
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,9 +9,9 @@ import (
 )
 
 // TestVertex_FactoryWiresTimeout asserts ResolveHTTPTimeout is wired
-// through the registered factory for every resolution branch. Skips
-// when ADC is unavailable so a developer without GCP creds can still
-// run the rest of the package's tests.
+// through the registered factory for every resolution branch. Stubs
+// the GCP auth constructor via the package-level `newAuth` seam so the
+// factory's downstream code path executes on hosts without ADC.
 func TestVertex_FactoryWiresTimeout(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -25,13 +26,12 @@ func TestVertex_FactoryWiresTimeout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(gollm.HTTPTimeoutEnvVar, tc.envVal)
+			restore := stubAuth(&gcpAuth{tokenSource: &mockTokenSource{token: "test"}}, nil)
+			defer restore()
+
 			p, err := factory(tc.cfg)
 			if err != nil {
-				// newGCPAuth fails without Application Default
-				// Credentials. The timeout-wiring assertion still
-				// belongs in this package; skip the env without ADC
-				// rather than papering over a real factory bug.
-				t.Skipf("factory requires GCP ADC: %v", err)
+				t.Fatalf("factory: %v", err)
 			}
 			vp, ok := p.(*VertexAIProvider)
 			if !ok {
@@ -42,4 +42,15 @@ func TestVertex_FactoryWiresTimeout(t *testing.T) {
 			}
 		})
 	}
+}
+
+// stubAuth replaces newAuth with a fake that returns the supplied
+// values, restoring the original on cleanup. Returning a closure keeps
+// the test's defer site honest about scope.
+func stubAuth(a *gcpAuth, err error) func() {
+	prev := newAuth
+	newAuth = func(_ context.Context) (*gcpAuth, error) {
+		return a, err
+	}
+	return func() { newAuth = prev }
 }
