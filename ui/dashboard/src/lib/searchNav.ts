@@ -1,4 +1,4 @@
-import type { SearchResultItem } from './api';
+import type { SearchResultItem } from '@/lib/api';
 
 // Maps a SearchResultItem's discriminator to the URL segment used by the
 // detail routes under /projects/[id]/discoveries/[runId]/.

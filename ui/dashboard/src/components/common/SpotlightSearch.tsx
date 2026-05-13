@@ -85,7 +85,11 @@ export default function SpotlightSearch() {
   const navigate = useCallback((item: SearchResultItem) => {
     setOpen(false);
     setQuery('');
-    router.push(searchResultHref(item, projectId ?? ''));
+    // `navigate` is only reachable through dropdown rows, which only
+    // render when `projectId` is truthy (showDropdown gate below) — so
+    // the non-null assertion matches a real invariant rather than
+    // papering over an unhandled case.
+    router.push(searchResultHref(item, projectId!));
   }, [router, projectId]);
 
   const goToSearch = useCallback((q: string) => {
