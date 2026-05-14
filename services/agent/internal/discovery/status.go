@@ -250,9 +250,9 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 }
 
 // AddRecommendationStep logs the recommendation-phase LLM call as a single
-// RunStep row, so the live UI carries its per-step token usage and duration
-// alongside exploration and analysis steps. When errStr is non-empty the row
-// is written with Type="error" so the dashboard renders the failure.
+// RunStep row, so the live UI carries its per-step token usage alongside
+// exploration and analysis steps. When errStr is non-empty the row is
+// written with Type="error" so the dashboard renders the failure.
 func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendationCount int, errStr string, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return

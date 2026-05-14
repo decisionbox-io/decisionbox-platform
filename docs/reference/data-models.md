@@ -111,7 +111,7 @@ token usage is summed onto the same step.
 |-------|------|-------------|
 | `step` | int | Step number (1-based) |
 | `timestamp` | timestamp | When this step ran |
-| `action` | string | Always `query_data` |
+| `action` | string | One of `query_data`, `lookup_schema`, `search_tables`, `complete`, `complete_rejected` |
 | `thinking` | string | AI's reasoning for this query |
 | `query_purpose` | string | Short description of query intent |
 | `query` | string | The SQL query executed |
