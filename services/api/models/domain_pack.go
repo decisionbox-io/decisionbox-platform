@@ -20,6 +20,16 @@ type DomainPack struct {
 	AnalysisAreas PackAnalysisAreas `bson:"analysis_areas" json:"analysis_areas"`
 	ProfileSchema PackProfileSchema `bson:"profile_schema" json:"profile_schema"`
 
+	// Per-pack LLM token usage, summed across every generation attempt
+	// (initial + auto-fix retries) the synthesiser made for this pack.
+	// Populated by the enterprise pack generator when a pack is first
+	// persisted; community filesystem-loaded packs leave it absent.
+	// omitempty so packs that pre-date this tracking render as absent
+	// rather than zero, preserving the "unknown vs. zero spent"
+	// distinction.
+	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
