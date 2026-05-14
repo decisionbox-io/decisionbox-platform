@@ -16,6 +16,8 @@ interface DisplayMessage {
   answer: string;
   sources: SearchResultItem[];
   model: string;
+  input_tokens?: number;
+  output_tokens?: number;
   timestamp: string;
 }
 
@@ -68,6 +70,8 @@ export default function AskPage() {
         answer: resp.answer,
         sources: resp.sources,
         model: resp.model,
+        input_tokens: resp.input_tokens,
+        output_tokens: resp.output_tokens,
         timestamp: new Date().toISOString(),
       }]);
       loadSessions();
@@ -109,6 +113,8 @@ export default function AskPage() {
           discovered_at: '',
         })),
         model: m.model,
+        input_tokens: m.input_tokens,
+        output_tokens: m.output_tokens,
         timestamp: m.created_at,
       })));
     } catch {
@@ -197,6 +203,11 @@ export default function AskPage() {
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                     {entry.model && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{entry.model}</span>}
+                    {((entry.input_tokens ?? 0) > 0 || (entry.output_tokens ?? 0) > 0) && (
+                      <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>
+                        In {entry.input_tokens ?? 0} · Out {entry.output_tokens ?? 0}
+                      </span>
+                    )}
                     {entry.timestamp && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
                   </div>
                 </div>

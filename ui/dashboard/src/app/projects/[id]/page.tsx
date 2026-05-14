@@ -1079,6 +1079,11 @@ function StepRow({ step, index, isLast, isActive }: {
           {isActive && <ResultBadge type="running">Running…</ResultBadge>}
           {isDone && step.row_count > 0 && <ResultBadge type="rows">{step.row_count} rows</ResultBadge>}
           {isDone && step.query_time_ms > 0 && <ResultBadge type="duration">{(step.query_time_ms / 1000).toFixed(2)}s</ResultBadge>}
+          {isDone && ((step.input_tokens ?? 0) > 0 || (step.output_tokens ?? 0) > 0) && (
+            <ResultBadge type="duration">
+              In {step.input_tokens ?? 0} · Out {step.output_tokens ?? 0}
+            </ResultBadge>
+          )}
           {isDone && step.type === 'insight' && step.insight_severity && (
             <ResultBadge type="insight">{step.insight_severity}</ResultBadge>
           )}

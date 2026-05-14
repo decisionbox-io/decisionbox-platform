@@ -525,6 +525,8 @@ export interface RunStep {
   insight_name: string;
   insight_severity: string;
   error: string;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 // DebugLogEntry mirrors services/api/models/DebugLogEntry — the lean,
@@ -665,6 +667,8 @@ export interface AskResponse {
   sources: SearchResultItem[];
   model: string;
   session_id: string;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 export interface AskSession {

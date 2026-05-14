@@ -415,10 +415,12 @@ type askRequest struct {
 }
 
 type askResponse struct {
-	Answer    string             `json:"answer"`
-	Sources   []searchResultItem `json:"sources"`
-	Model     string             `json:"model"`
-	SessionID string             `json:"session_id"`
+	Answer       string             `json:"answer"`
+	Sources      []searchResultItem `json:"sources"`
+	Model        string             `json:"model"`
+	SessionID    string             `json:"session_id"`
+	InputTokens  int                `json:"input_tokens,omitempty"`
+	OutputTokens int                `json:"output_tokens,omitempty"`
 }
 
 // Ask performs RAG Q&A: search + LLM synthesis.
@@ -675,10 +677,12 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, askResponse{
-		Answer:    chatResp.Content,
-		Sources:   respSources,
-		Model:     chatResp.Model,
-		SessionID: sessionID,
+		Answer:       chatResp.Content,
+		Sources:      respSources,
+		Model:        chatResp.Model,
+		SessionID:    sessionID,
+		InputTokens:  chatResp.Usage.InputTokens,
+		OutputTokens: chatResp.Usage.OutputTokens,
 	})
 }
 

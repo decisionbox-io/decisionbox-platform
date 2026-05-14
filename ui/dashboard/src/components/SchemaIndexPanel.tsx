@@ -325,6 +325,12 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title }: Props) {
               {' '}— you can close this tab, indexing continues in the background.
             </Text>
           )}
+          {(status.status === 'ready' || status.status === 'failed' || status.status === 'cancelled') &&
+            ((progress?.input_tokens ?? 0) > 0 || (progress?.output_tokens ?? 0) > 0) && (
+              <Text size="xs" c="dimmed">
+                Blurb LLM tokens — In {progress?.input_tokens ?? 0} · Out {progress?.output_tokens ?? 0}
+              </Text>
+            )}
           {status.status === 'failed' && status.error && (
             <Text size="xs" c="red">{status.error}</Text>
           )}
