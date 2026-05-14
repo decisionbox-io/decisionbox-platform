@@ -31,8 +31,8 @@ func (r *SchemaIndexProgressRepository) col() *mongo.Collection {
 
 // Reset upserts a fresh progress doc at the start of a new indexing run.
 // Clears prior tables_total / tables_done / error_message and zeroes the
-// blurb-LLM token totals (PLAN-TOKEN-TRACKING §4.4 — the totals are
-// per-build, not cumulative across builds).
+// blurb-LLM token totals (the totals are per-build, not cumulative
+// across builds).
 func (r *SchemaIndexProgressRepository) Reset(ctx context.Context, projectID, runID string) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
@@ -134,9 +134,9 @@ func (r *SchemaIndexProgressRepository) SetCounters(ctx context.Context, project
 }
 
 // IncrementTokens atomically adds inputDelta / outputDelta onto the per-build
-// blurb-LLM token totals (PLAN-TOKEN-TRACKING §4.4). Safe under concurrent
-// worker goroutines because the writes use $inc. Negative or zero deltas
-// no-op so a misreporting provider can't drive totals backwards.
+// blurb-LLM token totals. Safe under concurrent worker goroutines because
+// the writes use $inc. Negative or zero deltas no-op so a misreporting
+// provider can't drive totals backwards.
 func (r *SchemaIndexProgressRepository) IncrementTokens(ctx context.Context, projectID string, inputDelta, outputDelta int) error {
 	if projectID == "" {
 		return errors.New("projectID is required")

@@ -151,9 +151,9 @@ func TestAgentInteg_SchemaIndexProgress_NoDocPropagatesError(t *testing.T) {
 	}
 }
 
-// TestAgentInteg_SchemaIndexProgress_IncrementTokens — PLAN-TOKEN-TRACKING §4.4.
-// Reset() must zero token totals; IncrementTokens must sum atomically; the
-// values must round-trip back through the typed model.
+// TestAgentInteg_SchemaIndexProgress_IncrementTokens — Reset() must zero
+// token totals; IncrementTokens must sum atomically; the values must
+// round-trip back through the typed model.
 func TestAgentInteg_SchemaIndexProgress_IncrementTokens(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()

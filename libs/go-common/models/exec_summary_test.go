@@ -27,7 +27,7 @@ func TestExecutiveSummary_JSONRoundTrip_PopulatesEveryField(t *testing.T) {
 	if !got.GeneratedAt.Equal(want.GeneratedAt) {
 		t.Errorf("GeneratedAt: got %v want %v", got.GeneratedAt, want.GeneratedAt)
 	}
-	// PLAN-TOKEN-TRACKING §4.6: TokensUsed → InputTokens / OutputTokens.
+	// TokensUsed → InputTokens / OutputTokens split.
 	if got.InputTokens != want.InputTokens || got.OutputTokens != want.OutputTokens || got.DurationMS != want.DurationMS {
 		t.Errorf("telemetry lost: got %+v want %+v", got, want)
 	}
@@ -187,9 +187,9 @@ func TestExecutiveSummary_OmitemptyOnZeroValueDocument(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	s := string(blob)
-	// Verify the typical bloat fields aren't present. PLAN-TOKEN-TRACKING §4.6
-	// dropped `tokens_used`; the new `input_tokens` / `output_tokens` must
-	// also omit on a near-empty doc.
+	// Verify the typical bloat fields aren't present. `tokens_used` is
+	// gone and the new `input_tokens` / `output_tokens` must also omit
+	// on a near-empty doc.
 	for _, key := range []string{"prompt_version", "tokens_used", "input_tokens", "output_tokens", "duration_ms", "error", "sections", "pull_quote", "cited_insight_ids", "cited_rec_ids", "stat_row", "stories"} {
 		if contains(s, `"`+key+`":`) {
 			t.Errorf("omitempty broken: field %q present on near-empty document", key)

@@ -18,10 +18,8 @@ type SearchHistory struct {
 	AnswerSummary string   `bson:"answer_summary,omitempty" json:"answer_summary,omitempty"`
 	SourceIDs     []string `bson:"source_ids,omitempty" json:"source_ids,omitempty"`
 	LLMModel      string   `bson:"llm_model,omitempty" json:"llm_model,omitempty"`
-	// Per-request LLM token usage (PLAN-TOKEN-TRACKING §4.3). The pre-1.0
-	// aggregate `tokens_used` is replaced with the split pair to match
-	// every other home doc. omitempty so legacy rows (and search-type
-	// entries that never make an LLM call) render absent rather than 0.
+	// omitempty so legacy rows and search-type entries (which never
+	// make an LLM call) render absent rather than 0.
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 

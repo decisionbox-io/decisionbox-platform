@@ -105,9 +105,9 @@ type InsightValidation struct {
 	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
 	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
 
-	// Per-insight LLM token usage, summed across the verifier's three
-	// possible LLM calls (initial verification, lookup-loop rounds,
-	// forced final round) per PLAN-TOKEN-TRACKING §4.5.
+	// Per-insight LLM token usage, summed across every verifier LLM
+	// call for this insight (initial verification, lookup-loop rounds,
+	// forced final round).
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }
@@ -296,9 +296,9 @@ type ValidationResult struct {
 	Status    string `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "error"
 	Reasoning string `bson:"reasoning" json:"reasoning"`
 
-	// Per-insight LLM token usage, summed across the verifier's three
-	// possible LLM calls (initial verification, lookup-loop rounds,
-	// forced final round) per PLAN-TOKEN-TRACKING §4.5.
+	// Per-insight LLM token usage, summed across every verifier LLM
+	// call for this insight (initial verification, lookup-loop rounds,
+	// forced final round).
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }

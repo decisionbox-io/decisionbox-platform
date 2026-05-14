@@ -207,11 +207,10 @@ func (v *InsightValidator) ValidateInsights(
 //
 // The returned ValidationResult carries summed input/output token counts
 // across every LLM call the verifier issued for this insight — initial
-// verification, lookup-loop rounds, and the forced final round
-// (PLAN-TOKEN-TRACKING §4.5). A deferred stamp guarantees the totals are
-// applied regardless of which early-return path triggered, so partial
-// runs (LLM error, warehouse error) still expose the tokens they spent
-// before the failure.
+// verification, lookup-loop rounds, and the forced final round. A
+// deferred stamp guarantees the totals are applied regardless of which
+// early-return path triggered, so partial runs (LLM error, warehouse
+// error) still expose the tokens they spent before the failure.
 func (v *InsightValidator) validateSingleInsight(
 	ctx context.Context,
 	insight *models.Insight,
@@ -348,8 +347,7 @@ func (v *InsightValidator) validateSingleInsight(
 // rendered evidence and the catalog.
 //
 // `usage` accumulates per-LLM-call tokens across whichever path runs so the
-// caller can stamp one summed pair onto the ValidationResult home doc
-// (PLAN-TOKEN-TRACKING §4.5).
+// caller can stamp one summed pair onto the ValidationResult home doc.
 func (v *InsightValidator) generateVerificationQuery(
 	ctx context.Context,
 	insight *models.Insight,
@@ -368,8 +366,7 @@ func (v *InsightValidator) generateVerificationQuery(
 // what it has gathered into a SELECT COUNT.
 //
 // `usage` accumulates the LLM call's input/output tokens onto the caller's
-// per-insight running totals (PLAN-TOKEN-TRACKING §4.5). Pass nil when no
-// home document needs them.
+// per-insight running totals. Pass nil when no home document needs them.
 func (v *InsightValidator) generateSingleShotQuery(
 	ctx context.Context,
 	insight *models.Insight,

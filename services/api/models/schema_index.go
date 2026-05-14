@@ -56,9 +56,9 @@ type BlurbLLMConfig struct {
 // upserted by (project_id) so the dashboard can poll it at 2s intervals
 // without pagination. Reset on every new indexing run.
 //
-// PLAN-TOKEN-TRACKING §4.4 places per-build blurb-LLM token totals here.
-// API-side mirror; the agent writes during a build, the API reads when
-// serving the schema-index status endpoint.
+// API-side mirror of the per-build blurb-LLM token totals; the agent
+// writes during a build, the API reads when serving the schema-index
+// status endpoint.
 type SchemaIndexProgress struct {
 	ProjectID    string    `bson:"project_id" json:"project_id"`
 	RunID        string    `bson:"run_id,omitempty" json:"run_id,omitempty"`

@@ -76,7 +76,7 @@ func TestSchemaIndexProgress_BSONRoundTrip_Agent(t *testing.T) {
 	if decoded.TablesDone != 7 {
 		t.Errorf("TablesDone = %d", decoded.TablesDone)
 	}
-	// PLAN-TOKEN-TRACKING §4.4: input/output token totals must round-trip.
+	// Input/output token totals must round-trip.
 	if decoded.InputTokens != 4200 || decoded.OutputTokens != 950 {
 		t.Errorf("tokens lost in round-trip: got (%d, %d), want (4200, 950)", decoded.InputTokens, decoded.OutputTokens)
 	}

@@ -184,7 +184,7 @@ func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 	}
 
 	// Invoke the callback. Pass non-zero tokens to verify the parameters
-	// thread through to the receiver per PLAN-TOKEN-TRACKING §4.1.
+	// thread through to the receiver.
 	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "", 123, 45)
 	if !called {
 		t.Error("onStep callback was not invoked")
@@ -559,9 +559,8 @@ func TestExploration_Explore_WithOnStepCallback(t *testing.T) {
 	if !callbackCalled {
 		t.Error("onStep callback should have been called")
 	}
-	// Per PLAN-TOKEN-TRACKING §4.1: the callback must receive tokens
-	// from the LLM call(s) issued for that step. The mock response sets
-	// InputTokens=50, OutputTokens=25.
+	// The callback must receive tokens from the LLM call(s) issued for
+	// that step. The mock response sets InputTokens=50, OutputTokens=25.
 	if cbInputTokens != 50 || cbOutputTokens != 25 {
 		t.Errorf("onStep tokens = (%d, %d), want (50, 25)", cbInputTokens, cbOutputTokens)
 	}
@@ -1283,11 +1282,11 @@ func TestMinSteps_CallbackCarriesRejectedAction(t *testing.T) {
 	if rejectedCallbacks != 2 {
 		t.Errorf("expected exactly 2 complete_rejected callbacks (steps 1 and 2), got %d", rejectedCallbacks)
 	}
-	// PLAN-TOKEN-TRACKING §4.1: a rejected-completion callback still
-	// involved one LLM call (the one whose "done" was rejected), so it
-	// must carry the tokens for that call rather than zeros. The default
-	// mock response from buildTestEngine stamps non-zero usage; assert
-	// at least one rejected callback saw real numbers.
+	// A rejected-completion callback still involved one LLM call (the
+	// one whose "done" was rejected), so it must carry the tokens for
+	// that call rather than zeros. The default mock response from
+	// buildTestEngine stamps non-zero usage; assert at least one
+	// rejected callback saw real numbers.
 	var sawRejectedWithTokens bool
 	for _, c := range captured {
 		if c.action == "complete_rejected" && (c.inputTokens > 0 || c.outputTokens > 0) {

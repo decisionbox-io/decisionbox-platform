@@ -28,11 +28,8 @@ type ExecutiveSummary struct {
 	GeneratedAt time.Time `bson:"generated_at" json:"generated_at"`
 	GeneratedBy string    `bson:"generated_by" json:"generated_by"`
 	// Per-summary LLM token usage, summed across every section call the
-	// generator made for this document (PLAN-TOKEN-TRACKING §4.6). The
-	// pre-1.0 `tokens_used` aggregate has been replaced with the split
-	// pair to match every other home doc. The enterprise generator +
-	// store wire these in PR 2 of the plan — the community module owns
-	// the field shape so PR 2 can depend on it.
+	// generator made for this document. The community module owns the
+	// field shape so the enterprise generator + store can pin to it.
 	InputTokens  int   `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int   `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 	DurationMS   int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`

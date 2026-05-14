@@ -9,10 +9,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// TestAskSessionMessage_BSONRoundTrip locks in the on-disk field shape that
-// MongoDB sees. PLAN-TOKEN-TRACKING §4.2 replaced the aggregate
-// `tokens_used` with split `input_tokens` / `output_tokens`. A future rename
-// that drops these tags would silently lose data on legacy collections — this
+// TestAskSessionMessage_BSONRoundTrip locks in the on-disk field shape
+// that MongoDB sees. The aggregate `tokens_used` was replaced with
+// split `input_tokens` / `output_tokens`. A future rename that drops
+// these tags would silently lose data on legacy collections — this
 // test fails first.
 func TestAskSessionMessage_BSONRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -37,7 +37,7 @@ func TestAskSessionMessage_BSONRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal raw: %v", err)
 	}
 	if _, ok := raw["tokens_used"]; ok {
-		t.Errorf("legacy bson key tokens_used must not appear; PLAN-TOKEN-TRACKING §4.2 dropped it")
+		t.Errorf("legacy bson key tokens_used must not appear; it was replaced by input_tokens/output_tokens")
 	}
 	if got, ok := raw["input_tokens"].(int32); !ok || int(got) != 1200 {
 		t.Errorf("input_tokens bson key missing or wrong; raw=%v", raw["input_tokens"])

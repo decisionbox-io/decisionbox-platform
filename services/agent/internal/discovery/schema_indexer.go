@@ -82,7 +82,7 @@ type ProgressReporter interface {
 	SetCounters(ctx context.Context, projectID string, total, done int) error
 	IncrementDone(ctx context.Context, projectID string, delta int) error
 	// IncrementTokens advances the per-build blurb-LLM token totals
-	// atomically (PLAN-TOKEN-TRACKING §4.4).
+	// atomically.
 	IncrementTokens(ctx context.Context, projectID string, inputDelta, outputDelta int) error
 	RecordError(ctx context.Context, projectID, msg string) error
 }
@@ -290,10 +290,9 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}
 	// Stamp the running totals onto the progress doc so the dashboard
 	// can show "tokens spent on this schema-index" without re-deriving
-	// it from per-blurb forensics (PLAN-TOKEN-TRACKING §4.4). One
-	// IncrementTokens call covers the whole build because blurbs are
-	// generated in one parallel pass — there is no streaming-mid-build
-	// requirement today.
+	// it from per-blurb forensics. One IncrementTokens call covers the
+	// whole build because blurbs are generated in one parallel pass —
+	// there is no streaming-mid-build requirement today.
 	//
 	// Failure semantics:
 	//   - blurb.Generate returns err (whole batch failed) → we returned

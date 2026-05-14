@@ -11,7 +11,7 @@ import (
 
 // TestSearchHistory_BSONRoundTrip locks in the on-disk shape. The pre-1.0
 // `tokens_used` aggregate was replaced with `input_tokens`/`output_tokens`
-// in PLAN-TOKEN-TRACKING §4.3 — this test fails first on a regression.
+// — this test fails first on a regression.
 func TestSearchHistory_BSONRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	h := SearchHistory{
@@ -36,7 +36,7 @@ func TestSearchHistory_BSONRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal raw: %v", err)
 	}
 	if _, ok := raw["tokens_used"]; ok {
-		t.Errorf("legacy bson key tokens_used must not appear; PLAN-TOKEN-TRACKING §4.3 dropped it")
+		t.Errorf("legacy bson key tokens_used must not appear; it was replaced by input_tokens/output_tokens")
 	}
 	if got, ok := raw["input_tokens"].(int32); !ok || int(got) != 900 {
 		t.Errorf("input_tokens key wrong; raw=%v", raw["input_tokens"])

@@ -2,13 +2,12 @@ package llm
 
 // UsageAccumulator sums input/output token counts across multiple LLM
 // calls that share a single home document — e.g. validation retries on
-// one insight, exec-summary section calls on one summary, agentic-ask
-// rounds on one message, pack-gen attempts on one pack, blurb calls
+// one insight, exec-summary section calls on one summary, blurb calls
 // across one schema-index build.
 //
-// Per plan PLAN-TOKEN-TRACKING.md §5: callers are single-goroutined per
-// home document, so the accumulator is intentionally NOT thread-safe.
-// Use one accumulator per logical operation.
+// Callers are single-goroutined per home document, so the accumulator
+// is intentionally NOT thread-safe. Use one accumulator per logical
+// operation.
 type UsageAccumulator struct {
 	input  int
 	output int

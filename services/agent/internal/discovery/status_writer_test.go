@@ -92,11 +92,10 @@ func TestStatusReporter_TypedNilRunStepRepo_DisablesReporter(t *testing.T) {
 	}
 }
 
-// The PLAN-TOKEN-TRACKING §4.1 plumbing must populate InputTokens /
-// OutputTokens on every RunStep produced by an LLM-call path. The
-// following four tests use fakeRunStepWriter to capture the step doc
-// without spinning up Mongo, and pass `runID="r"` so that the repo
-// methods called downstream (UpdateStatus / IncrementQueryCount /
+// Every RunStep produced by an LLM-call path must populate InputTokens /
+// OutputTokens. The following tests use fakeRunStepWriter to capture the
+// step doc without spinning up Mongo, and pass `runID="r"` so that the
+// repo methods called downstream (UpdateStatus / IncrementQueryCount /
 // IncrementSchemaActionCalls in AddExplorationStep) fail with an
 // ObjectID parse error and the StatusReporter's "log + swallow" branch
 // kicks in. The runStepRepo.AddStep call happens BEFORE those repo
@@ -197,8 +196,7 @@ func TestStatusReporter_AddInsightStep_NoTokens(t *testing.T) {
 }
 
 func TestStatusReporter_AddRecommendationStep_StampsTokens(t *testing.T) {
-	// PLAN-TOKEN-TRACKING §4.1 call site #4 — the recommendation-phase
-	// LLM call shows up on the live run-step log.
+	// The recommendation-phase LLM call shows up on the live run-step log.
 	w := &fakeRunStepWriter{}
 	sr := newEnabledReporter(t, w)
 

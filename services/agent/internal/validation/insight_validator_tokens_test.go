@@ -16,8 +16,7 @@ var errSimulatedLLM = errors.New("simulated LLM failure")
 
 // TestInsightValidator_TokenAccumulation_SingleShot verifies the single-shot
 // (no SchemaProvider) path stamps the verification LLM call's tokens onto
-// the returned ValidationResult and the InsightValidation embed
-// (PLAN-TOKEN-TRACKING §4.5).
+// the returned ValidationResult and the InsightValidation embed.
 func TestInsightValidator_TokenAccumulation_SingleShot(t *testing.T) {
 	llm := testutil.NewMockLLMProvider()
 	llm.ResponseQueue = []*gollm.ChatResponse{

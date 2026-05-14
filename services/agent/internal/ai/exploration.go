@@ -71,10 +71,9 @@ const maxParseRetries = 3
 //
 // inputTokens / outputTokens are the totals for the LLM call(s) the engine
 // issued for this step — summed across any internal parse-retry rounds so
-// the callback always sees the single home-document figure (per
-// PLAN-TOKEN-TRACKING §4.1). Both are 0 when the engine did not issue an
-// LLM call for the step (today: never — every step makes at least one
-// call, but the contract leaves the door open).
+// the callback always sees a single home-document figure. Both are 0 when
+// the engine did not issue an LLM call for the step (today: never — every
+// step makes at least one call, but the contract leaves the door open).
 // The action argument carries the step's action type — usually "query_data"
 // for a real query, "complete_rejected" when the LLM signalled done before
 // MinSteps and the engine rejected it. Downstream (StatusReporter) uses
@@ -264,8 +263,7 @@ func (e *ExplorationEngine) Explore(
 		}
 
 		// Create exploration step. Tokens are stamped here so the per-phase
-		// ExplorationStep doc carries usage data (the field existed on the
-		// struct but was never populated before PLAN-TOKEN-TRACKING).
+		// ExplorationStep doc carries usage data.
 		explorationStep := models.ExplorationStep{
 			Step:      step,
 			Timestamp: time.Now(),
@@ -408,8 +406,8 @@ type ExplorationAction struct {
 // Qwen3 and DeepSeek R1.
 func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *Conversation, step int) (*ExplorationAction, int, int, error) {
 	var lastParseErr error
-	// Per PLAN-TOKEN-TRACKING §4.1: parse-retry rounds collapse onto one
-	// home document (the ExplorationStep / RunStep), so we sum across them.
+	// Parse-retry rounds collapse onto one home document (the
+	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {

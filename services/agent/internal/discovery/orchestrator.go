@@ -751,7 +751,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Report validation results to status. Tokens come from the
 		// per-insight accumulator stamped onto the ValidationResult by
-		// the validator (PLAN-TOKEN-TRACKING §4.5).
+		// the validator.
 		for _, vr := range step.ValidationResults {
 			o.statusReporter.AddValidationStep(ctx, vr.ClaimedMetric, vr.Status, vr.ClaimedCount, vr.VerifiedCount, vr.InputTokens, vr.OutputTokens)
 		}
@@ -783,10 +783,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommendations, recStep := o.generateRecommendations(ctx, prompts.Recommendations, allInsights, baseContext, datasetsStr)
 	// Emit a per-call RunStep so the live UI carries the recommendation
-	// LLM call's tokens alongside exploration/analysis steps
-	// (PLAN-TOKEN-TRACKING §4.1, call site #4). recStep is non-nil when
-	// the recommendation phase ran at all — generateRecommendations
-	// always returns a step (even on parse/LLM failure it stamps Error).
+	// LLM call's tokens alongside exploration/analysis steps. recStep
+	// is non-nil when the recommendation phase ran at all —
+	// generateRecommendations always returns a step (even on
+	// parse/LLM failure it stamps Error).
 	if recStep != nil {
 		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}

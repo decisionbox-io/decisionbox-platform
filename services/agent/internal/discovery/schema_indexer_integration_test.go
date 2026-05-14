@@ -195,10 +195,9 @@ func TestInteg_SchemaIndexer_BuildIndex_EndToEnd(t *testing.T) {
 	if progress.increments != 3 {
 		t.Errorf("increments = %d, want 3", progress.increments)
 	}
-	// PLAN-TOKEN-TRACKING §4.4: blurb-LLM token totals are summed across
-	// every successful blurb (3 here, each contributing 1 in/1 out per
-	// the stubLLM) and stamped onto the progress doc exactly once for
-	// the build.
+	// Blurb-LLM token totals are summed across every successful blurb
+	// (3 here, each contributing 1 in/1 out per the stubLLM) and
+	// stamped onto the progress doc exactly once for the build.
 	if progress.tokenCalls != 1 {
 		t.Errorf("IncrementTokens called %d times, want exactly 1 per build", progress.tokenCalls)
 	}

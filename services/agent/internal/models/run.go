@@ -98,10 +98,10 @@ type RunStep struct {
 
 	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 
-	// Per-step LLM token usage (PLAN-TOKEN-TRACKING §4.1). Summed across
-	// any internal retries that share the same RunStep (e.g. the three
-	// validation LLM calls per insight collapse onto one validation
-	// RunStep). omitempty so legacy rows render as absent rather than 0,
+	// Per-step LLM token usage. Summed across any internal retries
+	// that share the same RunStep — e.g. the three validation LLM
+	// calls per insight collapse onto one validation RunStep.
+	// omitempty so legacy rows render as absent rather than 0,
 	// preserving the "unknown vs. zero" distinction.
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
