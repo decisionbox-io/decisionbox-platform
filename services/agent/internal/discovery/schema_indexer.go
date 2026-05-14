@@ -293,9 +293,17 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	// it from per-blurb forensics (PLAN-TOKEN-TRACKING §4.4). One
 	// IncrementTokens call covers the whole build because blurbs are
 	// generated in one parallel pass — there is no streaming-mid-build
-	// requirement today. A partial-build failure still preserves the
-	// running sum in this call's predecessor (Reset zeroed it; no other
-	// path mutates it).
+	// requirement today.
+	//
+	// Failure semantics:
+	//   - blurb.Generate returns err (whole batch failed) → we returned
+	//     early above, so the progress doc stays at the Reset() zeros.
+	//   - Individual blurbs failed but Generate returned ok → only the
+	//     successful blurbs feed blurbIn/blurbOut (loop above skips
+	//     entries with Err != nil), and those tokens are stamped here.
+	//   - Embedding or Qdrant upsert below fails → the totals stamped
+	//     here are preserved, so users still see what the blurb LLM
+	//     consumed even when the index itself was never written.
 	if si.Progress != nil && (blurbIn > 0 || blurbOut > 0) {
 		if err := si.Progress.IncrementTokens(ctx, opts.ProjectID, blurbIn, blurbOut); err != nil {
 			applog.WithError(err).Warn("schema_indexer: IncrementTokens failed (non-fatal)")

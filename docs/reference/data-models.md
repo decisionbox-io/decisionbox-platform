@@ -102,7 +102,10 @@ Aggregate stats for a discovery run.
 
 ## ExplorationStep
 
-One step in the autonomous exploration phase. Represents a single LLM call + SQL query.
+One step in the autonomous exploration phase. Drives one user-visible
+exploration turn — usually one LLM call, but a turn whose response can't
+be parsed is retried (up to a small retry budget) and every retry's
+token usage is summed onto the same step.
 
 | Field | Type | Description |
 |-------|------|-------------|
