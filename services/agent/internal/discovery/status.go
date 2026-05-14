@@ -108,9 +108,12 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 // safety, but no counter is bumped.
 //
 // inputTokens / outputTokens are stamped from the ChatResult of the LLM
-// call that produced this step (PLAN-TOKEN-TRACKING §4.1). Zero values
-// are stored absent (omitempty) so callers that didn't issue an LLM
-// call for a step (e.g. complete_rejected) need not synthesize tokens.
+// call that produced this step (PLAN-TOKEN-TRACKING §4.1). Every action
+// the engine emits today — including "complete_rejected", which records
+// the rejected early-done LLM call — comes from at least one LLM round,
+// so non-zero usage is the norm. Zero values are stored absent
+// (omitempty), preserving the "unknown vs. zero spent" distinction for
+// any future path that produces a step without an LLM call.
 func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return
