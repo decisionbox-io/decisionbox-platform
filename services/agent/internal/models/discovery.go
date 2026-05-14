@@ -98,12 +98,18 @@ type Insight struct {
 
 // InsightValidation holds the result of warehouse verification for an insight.
 type InsightValidation struct {
-	Status         string `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "unverified"
-	VerifiedCount  int    `bson:"verified_count,omitempty" json:"verified_count,omitempty"`
-	OriginalCount  int    `bson:"original_count,omitempty" json:"original_count,omitempty"`
-	Query          string `bson:"query,omitempty" json:"query,omitempty"`
-	Reasoning      string `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
-	ValidatedAt    time.Time `bson:"validated_at" json:"validated_at"`
+	Status        string    `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "unverified"
+	VerifiedCount int       `bson:"verified_count,omitempty" json:"verified_count,omitempty"`
+	OriginalCount int       `bson:"original_count,omitempty" json:"original_count,omitempty"`
+	Query         string    `bson:"query,omitempty" json:"query,omitempty"`
+	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
+	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
+
+	// Per-insight LLM token usage, summed across the verifier's three
+	// possible LLM calls (initial verification, lookup-loop rounds,
+	// forced final round) per PLAN-TOKEN-TRACKING §4.5.
+	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }
 
 // Recommendation is an actionable suggestion based on discovered insights.
@@ -273,9 +279,9 @@ type RecommendationStep struct {
 
 // ValidationResult captures warehouse verification for an insight or count.
 type ValidationResult struct {
-	InsightID     string    `bson:"insight_id" json:"insight_id"`
-	AnalysisArea  string    `bson:"analysis_area" json:"analysis_area"`
-	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
+	InsightID    string    `bson:"insight_id" json:"insight_id"`
+	AnalysisArea string    `bson:"analysis_area" json:"analysis_area"`
+	ValidatedAt  time.Time `bson:"validated_at" json:"validated_at"`
 
 	// What was claimed
 	ClaimedCount  int    `bson:"claimed_count" json:"claimed_count"`
@@ -289,6 +295,12 @@ type ValidationResult struct {
 	// Assessment
 	Status    string `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "error"
 	Reasoning string `bson:"reasoning" json:"reasoning"`
+
+	// Per-insight LLM token usage, summed across the verifier's three
+	// possible LLM calls (initial verification, lookup-loop rounds,
+	// forced final round) per PLAN-TOKEN-TRACKING §4.5.
+	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

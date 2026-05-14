@@ -106,7 +106,12 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 //
 // Any unrecognised action falls through to the "query" rendering for
 // safety, but no counter is bumped.
-func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string) {
+//
+// inputTokens / outputTokens are stamped from the ChatResult of the LLM
+// call that produced this step (PLAN-TOKEN-TRACKING §4.1). Zero values
+// are stored absent (omitempty) so callers that didn't issue an LLM
+// call for a step (e.g. complete_rejected) need not synthesize tokens.
+func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return
 	}
@@ -119,17 +124,19 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 	}
 
 	step := models.RunStep{
-		Phase:       models.PhaseExploration,
-		StepNum:     stepNum,
-		Type:        stepType,
-		Message:     msg,
-		LLMThinking: thinking,
-		Query:       query,
-		QueryResult: resultSummary,
-		RowCount:    rowCount,
-		QueryTimeMs: queryTimeMs,
-		QueryFixed:  queryFixed,
-		Error:       errStr,
+		Phase:        models.PhaseExploration,
+		StepNum:      stepNum,
+		Type:         stepType,
+		Message:      msg,
+		LLMThinking:  thinking,
+		Query:        query,
+		QueryResult:  resultSummary,
+		RowCount:     rowCount,
+		QueryTimeMs:  queryTimeMs,
+		QueryFixed:   queryFixed,
+		Error:        errStr,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
 	}
 
 	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
@@ -191,7 +198,11 @@ func classifyExplorationStep(action string, stepNum int, thinking string) (strin
 }
 
 // AddAnalysisStep logs an analysis area completion.
-func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName string, insightCount int, errStr string) {
+//
+// inputTokens / outputTokens come from the area's analysis LLM call
+// (PLAN-TOKEN-TRACKING §4.1). On error before the LLM call returned,
+// callers pass zeros.
+func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName string, insightCount int, errStr string, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return
 	}
@@ -204,10 +215,12 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 	}
 
 	step := models.RunStep{
-		Phase:   models.PhaseAnalysis,
-		Type:    stepType,
-		Message: msg,
-		Error:   errStr,
+		Phase:        models.PhaseAnalysis,
+		Type:         stepType,
+		Message:      msg,
+		Error:        errStr,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
 	}
 
 	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
@@ -234,8 +247,44 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 	}
 }
 
+// AddRecommendationStep logs the recommendation-phase LLM call as a single
+// RunStep row, so the live UI carries its per-step token usage and duration
+// alongside exploration and analysis steps (PLAN-TOKEN-TRACKING §4.1, call
+// site #4 — recommendation generation). When errStr is non-empty the row
+// is written with Type="error" so the dashboard renders the failure.
+func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendationCount int, errStr string, inputTokens, outputTokens int) {
+	if !s.enabled() {
+		return
+	}
+
+	msg := fmt.Sprintf("Generated %d recommendations", recommendationCount)
+	stepType := "recommendation"
+	if errStr != "" {
+		msg = fmt.Sprintf("Recommendation generation failed: %s", errStr)
+		stepType = "error"
+	}
+
+	step := models.RunStep{
+		Phase:        models.PhaseRecommendations,
+		Type:         stepType,
+		Message:      msg,
+		Error:        errStr,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	}
+
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+		logger.WithError(err).Warn("failed to add recommendation step")
+	}
+}
+
 // AddValidationStep logs a validation check result.
-func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, status string, claimed, verified int) {
+//
+// inputTokens / outputTokens are the accumulated totals across every LLM
+// call the verifier made for this single insight — up to three calls per
+// insight today (initial verification, lookup-loop rounds, forced final
+// round) collapse onto one validation RunStep (PLAN-TOKEN-TRACKING §4.5).
+func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, status string, claimed, verified, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return
 	}
@@ -246,9 +295,11 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 	}
 
 	step := models.RunStep{
-		Phase:   models.PhaseValidation,
-		Type:    "validation",
-		Message: msg,
+		Phase:        models.PhaseValidation,
+		Type:         "validation",
+		Message:      msg,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
 	}
 
 	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {

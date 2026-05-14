@@ -52,13 +52,13 @@ func TestStatusReporter_SetPhase_NoOp_WhenDisabled(t *testing.T) {
 func TestStatusReporter_AddExplorationStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, nil, "", "", 10)
 	// Should not panic when disabled
-	sr.AddExplorationStep(context.TODO(), 1, "query_data", "thinking", "SELECT 1", 10, 100, false, "")
+	sr.AddExplorationStep(context.TODO(), 1, "query_data", "thinking", "SELECT 1", 10, 100, false, "", 0, 0)
 }
 
 func TestStatusReporter_AddAnalysisStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, nil, "", "", 10)
 	// Should not panic when disabled
-	sr.AddAnalysisStep(context.TODO(), "churn", "Churn Risks", 3, "")
+	sr.AddAnalysisStep(context.TODO(), "churn", "Churn Risks", 3, "", 0, 0)
 }
 
 func TestStatusReporter_AddInsightStep_NoOp_WhenDisabled(t *testing.T) {
@@ -70,7 +70,13 @@ func TestStatusReporter_AddInsightStep_NoOp_WhenDisabled(t *testing.T) {
 func TestStatusReporter_AddValidationStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, nil, "", "", 10)
 	// Should not panic when disabled
-	sr.AddValidationStep(context.TODO(), "affected_count", "confirmed", 2847, 2900)
+	sr.AddValidationStep(context.TODO(), "affected_count", "confirmed", 2847, 2900, 0, 0)
+}
+
+func TestStatusReporter_AddRecommendationStep_NoOp_WhenDisabled(t *testing.T) {
+	sr := NewStatusReporter(nil, nil, "", "", 10)
+	// Should not panic when disabled
+	sr.AddRecommendationStep(context.TODO(), 4, "", 0, 0)
 }
 
 func TestStatusReporter_Complete_NoOp_WhenDisabled(t *testing.T) {
@@ -145,13 +151,15 @@ func TestStatusReporter_AllMethods_NoOp_WhenEmptyRunID(t *testing.T) {
 	// All of these should be no-ops and not panic
 	sr.SetPhase(ctx, models.PhaseSchemaDiscovery, "discovering schemas...", 10)
 	sr.AddStep(ctx, models.RunStep{Phase: models.PhaseInit, Type: "info", Message: "starting"})
-	sr.AddExplorationStep(ctx, 1, "query_data", "thinking about retention", "SELECT 1", 5, 100, false, "")
-	sr.AddExplorationStep(ctx, 2, "query_data", "thinking", "SELECT 2", 0, 50, false, "query failed")
-	sr.AddExplorationStep(ctx, 3, "complete_rejected", "premature done", "", 0, 0, false, "rejected premature completion (3 < 5)")
-	sr.AddAnalysisStep(ctx, "churn", "Churn Risks", 0, "timeout")
+	sr.AddExplorationStep(ctx, 1, "query_data", "thinking about retention", "SELECT 1", 5, 100, false, "", 120, 40)
+	sr.AddExplorationStep(ctx, 2, "query_data", "thinking", "SELECT 2", 0, 50, false, "query failed", 0, 0)
+	sr.AddExplorationStep(ctx, 3, "complete_rejected", "premature done", "", 0, 0, false, "rejected premature completion (3 < 5)", 80, 10)
+	sr.AddAnalysisStep(ctx, "churn", "Churn Risks", 0, "timeout", 0, 0)
 	sr.AddInsightStep(ctx, "Revenue Drop", "high", "monetization")
-	sr.AddValidationStep(ctx, "affected_count", "adjusted", 500, 350)
-	sr.AddValidationStep(ctx, "user_count", "confirmed", 0, 0)
+	sr.AddValidationStep(ctx, "affected_count", "adjusted", 500, 350, 200, 50)
+	sr.AddValidationStep(ctx, "user_count", "confirmed", 0, 0, 0, 0)
+	sr.AddRecommendationStep(ctx, 5, "", 1500, 800)
+	sr.AddRecommendationStep(ctx, 0, "LLM unreachable", 0, 0)
 	sr.RecordSchemaTelemetry(ctx, 4096, 12)
 	sr.IncrementSchemaActionCalls(ctx, "lookup_schema", 1)
 	sr.IncrementAnalysisCounter(ctx, "step_index_upserts", 1)

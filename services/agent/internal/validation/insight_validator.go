@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discipline"
@@ -163,7 +164,9 @@ func (v *InsightValidator) ValidateInsights(
 		vr := v.validateSingleInsight(ctx, &insight)
 		results = append(results, vr)
 
-		// Update insight validation in-place
+		// Update insight validation in-place. Tokens are mirrored from the
+		// ValidationResult so consumers reading just the Insight (without
+		// joining to discovery_validation_results) still see usage.
 		insights[i].Validation = &models.InsightValidation{
 			Status:        vr.Status,
 			VerifiedCount: vr.VerifiedCount,
@@ -171,6 +174,8 @@ func (v *InsightValidator) ValidateInsights(
 			Query:         vr.Query,
 			Reasoning:     vr.Reasoning,
 			ValidatedAt:   vr.ValidatedAt,
+			InputTokens:   vr.InputTokens,
+			OutputTokens:  vr.OutputTokens,
 		}
 	}
 
@@ -199,17 +204,30 @@ func (v *InsightValidator) ValidateInsights(
 }
 
 // validateSingleInsight generates and runs a verification query for one insight.
+//
+// The returned ValidationResult carries summed input/output token counts
+// across every LLM call the verifier issued for this insight — initial
+// verification, lookup-loop rounds, and the forced final round
+// (PLAN-TOKEN-TRACKING §4.5). A deferred stamp guarantees the totals are
+// applied regardless of which early-return path triggered, so partial
+// runs (LLM error, warehouse error) still expose the tokens they spent
+// before the failure.
 func (v *InsightValidator) validateSingleInsight(
 	ctx context.Context,
 	insight *models.Insight,
-) models.ValidationResult {
-	vr := models.ValidationResult{
-		InsightID:    insight.ID,
-		AnalysisArea: insight.AnalysisArea,
-		ValidatedAt:  time.Now(),
-		ClaimedCount: insight.AffectedCount,
+) (vr models.ValidationResult) {
+	vr = models.ValidationResult{
+		InsightID:     insight.ID,
+		AnalysisArea:  insight.AnalysisArea,
+		ValidatedAt:   time.Now(),
+		ClaimedCount:  insight.AffectedCount,
 		ClaimedMetric: insight.Name,
 	}
+
+	var usage gollm.UsageAccumulator
+	defer func() {
+		vr.InputTokens, vr.OutputTokens = usage.Totals()
+	}()
 
 	// Ask LLM to generate a verification query. When a SchemaProvider is
 	// wired the verifier runs a small tool loop (Layer 3) that lets the
@@ -217,7 +235,7 @@ func (v *InsightValidator) validateSingleInsight(
 	// COUNT — its results are returned alongside the SQL so the SQL fixer
 	// receives the same evidence on retry.
 	applog.WithField("insight", insight.Name).Debug("Generating verification query via LLM")
-	verificationQuery, lookups, err := v.generateVerificationQuery(ctx, insight)
+	verificationQuery, lookups, err := v.generateVerificationQuery(ctx, insight, &usage)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"insight": insight.Name,
@@ -328,30 +346,43 @@ func (v *InsightValidator) validateSingleInsight(
 // Without a SchemaProvider the function falls through to a single-shot
 // generation (Layer 1 + 2 only) — the prompt still carries the source-step
 // rendered evidence and the catalog.
+//
+// `usage` accumulates per-LLM-call tokens across whichever path runs so the
+// caller can stamp one summed pair onto the ValidationResult home doc
+// (PLAN-TOKEN-TRACKING §4.5).
 func (v *InsightValidator) generateVerificationQuery(
 	ctx context.Context,
 	insight *models.Insight,
+	usage *gollm.UsageAccumulator,
 ) (string, []ai.LookupTable, error) {
 	if v.schemaProvider == nil {
-		sql, err := v.generateSingleShotQuery(ctx, insight, nil)
+		sql, err := v.generateSingleShotQuery(ctx, insight, nil, usage)
 		return sql, nil, err
 	}
-	return v.runVerificationLoop(ctx, insight)
+	return v.runVerificationLoop(ctx, insight, usage)
 }
 
 // generateSingleShotQuery sends one prompt and returns the SQL. lookups, when
 // non-empty, are folded into the rendered evidence block — the verifier loop
 // passes the accumulated set on its forced final round so the model can adapt
 // what it has gathered into a SELECT COUNT.
+//
+// `usage` accumulates the LLM call's input/output tokens onto the caller's
+// per-insight running totals (PLAN-TOKEN-TRACKING §4.5). Pass nil when no
+// home document needs them.
 func (v *InsightValidator) generateSingleShotQuery(
 	ctx context.Context,
 	insight *models.Insight,
 	lookups []ai.LookupTable,
+	usage *gollm.UsageAccumulator,
 ) (string, error) {
 	prompt := v.buildVerificationPrompt(insight, lookups, nil, false, false)
 	chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
 	if err != nil {
 		return "", err
+	}
+	if usage != nil {
+		usage.Add(chatResult.TokensIn, chatResult.TokensOut)
 	}
 	return cleanGeneratedSQL(chatResult.Content)
 }
@@ -366,6 +397,7 @@ func (v *InsightValidator) generateSingleShotQuery(
 func (v *InsightValidator) runVerificationLoop(
 	ctx context.Context,
 	insight *models.Insight,
+	usage *gollm.UsageAccumulator,
 ) (string, []ai.LookupTable, error) {
 	var (
 		lookups   []ai.LookupTable
@@ -379,6 +411,9 @@ func (v *InsightValidator) runVerificationLoop(
 		chatResult, err := v.aiClient.Chat(ctx, prompt, "", 2000)
 		if err != nil {
 			return "", lookups, err
+		}
+		if usage != nil {
+			usage.Add(chatResult.TokensIn, chatResult.TokensOut)
 		}
 
 		action, parseErr := ai.ParseAction(chatResult.Content, allowed)
@@ -435,6 +470,9 @@ func (v *InsightValidator) runVerificationLoop(
 	chatResult, err := v.aiClient.Chat(ctx, forcedPrompt, "", 2000)
 	if err != nil {
 		return "", lookups, err
+	}
+	if usage != nil {
+		usage.Add(chatResult.TokensIn, chatResult.TokensOut)
 	}
 	if sql, ok := bareSQLFallback(chatResult.Content); ok {
 		return sql, lookups, nil

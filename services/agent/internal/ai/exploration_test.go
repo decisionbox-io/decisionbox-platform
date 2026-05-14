@@ -164,8 +164,11 @@ func TestNewExplorationEngine_Defaults(t *testing.T) {
 
 func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 	called := false
-	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+	var gotIn, gotOut int
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 		called = true
+		gotIn = inputTokens
+		gotOut = outputTokens
 	}
 
 	engine := NewExplorationEngine(ExplorationEngineOptions{
@@ -180,10 +183,14 @@ func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 		t.Fatal("onStep should be set")
 	}
 
-	// Invoke the callback
-	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "")
+	// Invoke the callback. Pass non-zero tokens to verify the parameters
+	// thread through to the receiver per PLAN-TOKEN-TRACKING §4.1.
+	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "", 123, 45)
 	if !called {
 		t.Error("onStep callback was not invoked")
+	}
+	if gotIn != 123 || gotOut != 45 {
+		t.Errorf("onStep tokens: got (%d, %d), want (123, 45)", gotIn, gotOut)
 	}
 }
 
@@ -193,8 +200,9 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 	var gotRows int
 	var gotTimeMs int64
 	var gotFixed bool
+	var gotInputTokens, gotOutputTokens int
 
-	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 		gotStep = stepNum
 		gotAction = action
 		gotThinking = thinking
@@ -203,6 +211,8 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 		gotTimeMs = queryTimeMs
 		gotFixed = queryFixed
 		gotErr = errMsg
+		gotInputTokens = inputTokens
+		gotOutputTokens = outputTokens
 	}
 
 	engine := NewExplorationEngine(ExplorationEngineOptions{
@@ -210,7 +220,7 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 		OnStep:   cb,
 	})
 
-	engine.onStep(3, "query_data", "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error")
+	engine.onStep(3, "query_data", "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error", 800, 200)
 
 	if gotStep != 3 {
 		t.Errorf("stepNum = %d, want 3", gotStep)
@@ -235,6 +245,9 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 	}
 	if gotErr != "some error" {
 		t.Errorf("errMsg = %q", gotErr)
+	}
+	if gotInputTokens != 800 || gotOutputTokens != 200 {
+		t.Errorf("tokens = (%d, %d), want (800, 200)", gotInputTokens, gotOutputTokens)
 	}
 }
 
@@ -518,20 +531,23 @@ func TestExploration_Explore_WithOnStepCallback(t *testing.T) {
 	})
 
 	callbackCalled := false
+	var cbInputTokens, cbOutputTokens int
 	engine := NewExplorationEngine(ExplorationEngineOptions{
 		Client:   client,
 		Executor: executor,
 		MaxSteps: 5,
 		Dataset:  "test_dataset",
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 			callbackCalled = true
+			cbInputTokens = inputTokens
+			cbOutputTokens = outputTokens
 		},
 	})
 
 	result, err := engine.Explore(context.Background(), ExplorationContext{
-		ProjectID:      "proj-123",
-		Dataset:        "test_dataset",
-		InitialPrompt:  "Explore",
+		ProjectID:     "proj-123",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore",
 	})
 
 	if err != nil {
@@ -542,6 +558,12 @@ func TestExploration_Explore_WithOnStepCallback(t *testing.T) {
 	}
 	if !callbackCalled {
 		t.Error("onStep callback should have been called")
+	}
+	// Per PLAN-TOKEN-TRACKING §4.1: the callback must receive tokens
+	// from the LLM call(s) issued for that step. The mock response sets
+	// InputTokens=50, OutputTokens=25.
+	if cbInputTokens != 50 || cbOutputTokens != 25 {
+		t.Errorf("onStep tokens = (%d, %d), want (50, 25)", cbInputTokens, cbOutputTokens)
 	}
 }
 
@@ -1202,22 +1224,26 @@ func TestMinSteps_RejectsPrematureCompletion(t *testing.T) {
 // and skip the query counter.
 func TestMinSteps_CallbackCarriesRejectedAction(t *testing.T) {
 	type capturedStep struct {
-		step   int
-		action string
-		query  string
-		errMsg string
+		step         int
+		action       string
+		query        string
+		errMsg       string
+		inputTokens  int
+		outputTokens int
 	}
 	var captured []capturedStep
 
 	opts := ExplorationEngineOptions{
 		MaxSteps: 10,
 		MinSteps: 3,
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 			captured = append(captured, capturedStep{
-				step:   stepNum,
-				action: action,
-				query:  query,
-				errMsg: errMsg,
+				step:         stepNum,
+				action:       action,
+				query:        query,
+				errMsg:       errMsg,
+				inputTokens:  inputTokens,
+				outputTokens: outputTokens,
 			})
 		},
 	}
@@ -1257,6 +1283,21 @@ func TestMinSteps_CallbackCarriesRejectedAction(t *testing.T) {
 	if rejectedCallbacks != 2 {
 		t.Errorf("expected exactly 2 complete_rejected callbacks (steps 1 and 2), got %d", rejectedCallbacks)
 	}
+	// PLAN-TOKEN-TRACKING §4.1: a rejected-completion callback still
+	// involved one LLM call (the one whose "done" was rejected), so it
+	// must carry the tokens for that call rather than zeros. The default
+	// mock response from buildTestEngine stamps non-zero usage; assert
+	// at least one rejected callback saw real numbers.
+	var sawRejectedWithTokens bool
+	for _, c := range captured {
+		if c.action == "complete_rejected" && (c.inputTokens > 0 || c.outputTokens > 0) {
+			sawRejectedWithTokens = true
+			break
+		}
+	}
+	if !sawRejectedWithTokens {
+		t.Error("expected at least one complete_rejected callback to carry the rejected LLM call's tokens")
+	}
 }
 
 // TestStatusReporter_CompleteRejected_SkipsQueryCounter is colocated here
@@ -1271,7 +1312,7 @@ func TestStatusReporter_CallbackShapeCompiles(t *testing.T) {
 	// signature can be passed through OnStep. If the signature drifts this
 	// file stops compiling.
 	_ = ExplorationEngineOptions{
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 			_ = stepNum
 			_ = action
 			_ = thinking
@@ -1280,6 +1321,8 @@ func TestStatusReporter_CallbackShapeCompiles(t *testing.T) {
 			_ = queryTimeMs
 			_ = queryFixed
 			_ = errMsg
+			_ = inputTokens
+			_ = outputTokens
 		},
 	}
 }

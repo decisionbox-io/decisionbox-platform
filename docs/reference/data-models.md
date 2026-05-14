@@ -116,6 +116,8 @@ One step in the autonomous exploration phase. Represents a single LLM call + SQL
 | `execution_time_ms` | int64 | Query execution time in milliseconds |
 | `error` | string | Error message if query failed |
 | `fixed` | bool | True if the query was auto-fixed after a SQL error |
+| `tokens_in` | int | Input tokens consumed (sum across any parse-retry rounds on this step) |
+| `tokens_out` | int | Output tokens generated (sum across any parse-retry rounds on this step) |
 
 ## AnalysisStep
 
@@ -147,6 +149,8 @@ Warehouse verification of an insight's claims.
 | `reasoning` | string | Explanation of the result |
 | `query` | string | The verification SQL query |
 | `validated_at` | timestamp | When validation was performed |
+| `input_tokens` | int | Input tokens summed across every verifier LLM call for this insight (initial verification, lookup-loop rounds, forced final round). Omitted on legacy rows. |
+| `output_tokens` | int | Output tokens summed across the same set. Omitted on legacy rows. |
 
 ## DiscoveryRunStatus
 

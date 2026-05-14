@@ -528,8 +528,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:        datasetsStr,
 		SchemaProvider: schemaProvider,
 		StepIndexer:    stepIndexer,
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string) {
-			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg)
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens)
 		},
 	})
 
@@ -744,14 +744,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		allInsights = append(allInsights, insights...)
 
 		// Report analysis completion and insights to status
-		o.statusReporter.AddAnalysisStep(ctx, area.ID, area.Name, len(insights), "")
+		o.statusReporter.AddAnalysisStep(ctx, area.ID, area.Name, len(insights), "", step.TokensIn, step.TokensOut)
 		for _, insight := range insights {
 			o.statusReporter.AddInsightStep(ctx, insight.Name, insight.Severity, area.ID)
 		}
 
-		// Report validation results to status
+		// Report validation results to status. Tokens come from the
+		// per-insight accumulator stamped onto the ValidationResult by
+		// the validator (PLAN-TOKEN-TRACKING §4.5).
 		for _, vr := range step.ValidationResults {
-			o.statusReporter.AddValidationStep(ctx, vr.ClaimedMetric, vr.Status, vr.ClaimedCount, vr.VerifiedCount)
+			o.statusReporter.AddValidationStep(ctx, vr.ClaimedMetric, vr.Status, vr.ClaimedCount, vr.VerifiedCount, vr.InputTokens, vr.OutputTokens)
 		}
 
 		applog.WithFields(applog.Fields{
@@ -780,6 +782,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommendations, recStep := o.generateRecommendations(ctx, prompts.Recommendations, allInsights, baseContext, datasetsStr)
+	// Emit a per-call RunStep so the live UI carries the recommendation
+	// LLM call's tokens alongside exploration/analysis steps
+	// (PLAN-TOKEN-TRACKING §4.1, call site #4). recStep is non-nil when
+	// the recommendation phase ran at all — generateRecommendations
+	// always returns a step (even on parse/LLM failure it stamps Error).
+	if recStep != nil {
+		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.Error, recStep.TokensIn, recStep.TokensOut)
+	}
 
 	// Validate recommendation segment sizes
 	var recValidationResults []models.ValidationResult

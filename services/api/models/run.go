@@ -89,4 +89,10 @@ type RunStep struct {
 	InsightSeverity string    `bson:"insight_severity,omitempty" json:"insight_severity,omitempty"`
 	Error           string    `bson:"error,omitempty" json:"error,omitempty"`
 	DurationMs      int64     `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+
+	// Per-step LLM token usage (PLAN-TOKEN-TRACKING §4.1). Mirror of the
+	// agent-side field. omitempty so legacy rows render as absent rather
+	// than 0.
+	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }

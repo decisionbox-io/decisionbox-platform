@@ -45,6 +45,8 @@ func (r *SchemaIndexProgressRepository) Reset(ctx context.Context, projectID, ru
 			"started_at":    now,
 			"updated_at":    now,
 			"error_message": "",
+			"input_tokens":  0,
+			"output_tokens": 0,
 		},
 	}
 	opts := options.Update().SetUpsert(true)

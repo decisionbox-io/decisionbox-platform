@@ -294,5 +294,7 @@ func convertValidation(v *models.InsightValidation) *commonmodels.InsightValidat
 		OriginalCount: v.OriginalCount,
 		Reasoning:     v.Reasoning,
 		ValidatedAt:   v.ValidatedAt,
+		InputTokens:   v.InputTokens,
+		OutputTokens:  v.OutputTokens,
 	}
 }

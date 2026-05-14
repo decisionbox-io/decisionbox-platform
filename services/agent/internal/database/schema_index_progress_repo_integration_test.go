@@ -151,6 +151,92 @@ func TestAgentInteg_SchemaIndexProgress_NoDocPropagatesError(t *testing.T) {
 	}
 }
 
+// TestAgentInteg_SchemaIndexProgress_IncrementTokens — PLAN-TOKEN-TRACKING §4.4.
+// Reset() must zero token totals; IncrementTokens must sum atomically; the
+// values must round-trip back through the typed model.
+func TestAgentInteg_SchemaIndexProgress_IncrementTokens(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	r := NewSchemaIndexProgressRepository(db)
+	projectID := "proj-agent-tokens"
+	if err := r.Reset(ctx, projectID, "run-tokens-1"); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	// First increment.
+	if err := r.IncrementTokens(ctx, projectID, 1500, 400); err != nil {
+		t.Fatalf("IncrementTokens #1: %v", err)
+	}
+	var got models.SchemaIndexProgress
+	if err := db.Collection(CollectionSchemaIndexProgress).
+		FindOne(ctx, map[string]string{"project_id": projectID}).
+		Decode(&got); err != nil {
+		t.Fatalf("FindOne: %v", err)
+	}
+	if got.InputTokens != 1500 || got.OutputTokens != 400 {
+		t.Errorf("after 1st IncrementTokens: got (%d, %d), want (1500, 400)", got.InputTokens, got.OutputTokens)
+	}
+
+	// Second increment — must accumulate, not replace.
+	if err := r.IncrementTokens(ctx, projectID, 200, 75); err != nil {
+		t.Fatalf("IncrementTokens #2: %v", err)
+	}
+	_ = db.Collection(CollectionSchemaIndexProgress).
+		FindOne(ctx, map[string]string{"project_id": projectID}).
+		Decode(&got)
+	if got.InputTokens != 1700 || got.OutputTokens != 475 {
+		t.Errorf("after 2nd IncrementTokens: got (%d, %d), want (1700, 475) — sums must accumulate", got.InputTokens, got.OutputTokens)
+	}
+
+	// Reset must zero totals for the next build.
+	if err := r.Reset(ctx, projectID, "run-tokens-2"); err != nil {
+		t.Fatalf("Reset #2: %v", err)
+	}
+	_ = db.Collection(CollectionSchemaIndexProgress).
+		FindOne(ctx, map[string]string{"project_id": projectID}).
+		Decode(&got)
+	if got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Errorf("after Reset: tokens = (%d, %d), want (0, 0) — Reset must zero per-build totals", got.InputTokens, got.OutputTokens)
+	}
+
+	// Empty projectID is an error.
+	if err := r.IncrementTokens(ctx, "", 1, 1); err == nil {
+		t.Error("IncrementTokens with empty projectID should error")
+	}
+
+	// Both deltas <= 0 is a no-op (not an error).
+	if err := r.IncrementTokens(ctx, projectID, 0, 0); err != nil {
+		t.Errorf("zero deltas should be no-op, got %v", err)
+	}
+	if err := r.IncrementTokens(ctx, projectID, -5, -3); err != nil {
+		t.Errorf("negative deltas should be no-op, got %v", err)
+	}
+	_ = db.Collection(CollectionSchemaIndexProgress).
+		FindOne(ctx, map[string]string{"project_id": projectID}).
+		Decode(&got)
+	if got.InputTokens != 0 || got.OutputTokens != 0 {
+		t.Errorf("after no-op increments: tokens = (%d, %d), want (0, 0)", got.InputTokens, got.OutputTokens)
+	}
+
+	// Mixed-sign delta: positive applies, non-positive is dropped.
+	if err := r.IncrementTokens(ctx, projectID, 10, -3); err != nil {
+		t.Fatalf("mixed-sign IncrementTokens: %v", err)
+	}
+	_ = db.Collection(CollectionSchemaIndexProgress).
+		FindOne(ctx, map[string]string{"project_id": projectID}).
+		Decode(&got)
+	if got.InputTokens != 10 || got.OutputTokens != 0 {
+		t.Errorf("mixed-sign: got (%d, %d), want (10, 0)", got.InputTokens, got.OutputTokens)
+	}
+
+	// Without a Reset, the doc is missing — IncrementTokens must error.
+	if err := r.IncrementTokens(ctx, "ghost-tokens", 1, 1); err == nil {
+		t.Error("IncrementTokens without Reset should error")
+	}
+}
+
 func TestAgentInteg_SchemaIndexProgress_RecordErrorStampedOnFailure(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()

@@ -631,12 +631,13 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	msg := commonmodels.AskSessionMessage{
-		Question:   req.Question,
-		Answer:     chatResp.Content,
-		Sources:    sessionSources,
-		Model:      chatResp.Model,
-		TokensUsed: chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens,
-		CreatedAt:  time.Now(),
+		Question:     req.Question,
+		Answer:       chatResp.Content,
+		Sources:      sessionSources,
+		Model:        chatResp.Model,
+		InputTokens:  chatResp.Usage.InputTokens,
+		OutputTokens: chatResp.Usage.OutputTokens,
+		CreatedAt:    time.Now(),
 	}
 
 	// Create or append to session

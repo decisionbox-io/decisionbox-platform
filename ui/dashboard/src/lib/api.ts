@@ -199,6 +199,8 @@ export interface SchemaIndexProgress {
   started_at?: string;
   updated_at?: string;
   error_message?: string;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 export interface SchemaIndexStatus {
@@ -681,7 +683,8 @@ export interface AskSessionMessage {
   answer: string;
   sources: AskSessionSource[];
   model: string;
-  tokens_used: number;
+  input_tokens?: number;
+  output_tokens?: number;
   created_at: string;
 }
 
@@ -757,7 +760,8 @@ export interface SearchHistoryEntry {
   answer_summary?: string;
   source_ids?: string[];
   llm_model?: string;
-  tokens_used?: number;
+  input_tokens?: number;
+  output_tokens?: number;
   created_at: string;
 }
 

@@ -36,15 +36,23 @@ func (s *stubIntegSchemaSource) DiscoverSchemas(_ context.Context) (map[string]m
 // indexer calls the lifecycle methods in the right order without
 // needing a real Mongo.
 type memProgress struct {
-	resetCalls int
-	phases     []string
-	totals     []int
-	increments int
-	errors     []string
+	resetCalls   int
+	phases       []string
+	totals       []int
+	increments   int
+	inputTokens  int
+	outputTokens int
+	tokenCalls   int
+	errors       []string
 }
 
 func (p *memProgress) Reset(_ context.Context, _, _ string) error {
 	p.resetCalls++
+	// Reset() in the real repo zeroes per-build token totals; the mock
+	// mirrors that contract so tests across multiple builds aren't
+	// polluted by a prior build's accumulator.
+	p.inputTokens = 0
+	p.outputTokens = 0
 	return nil
 }
 func (p *memProgress) SetPhase(_ context.Context, _, phase string) error {
@@ -61,6 +69,12 @@ func (p *memProgress) SetCounters(_ context.Context, _ string, total, _ int) err
 }
 func (p *memProgress) IncrementDone(_ context.Context, _ string, d int) error {
 	p.increments += d
+	return nil
+}
+func (p *memProgress) IncrementTokens(_ context.Context, _ string, inDelta, outDelta int) error {
+	p.tokenCalls++
+	p.inputTokens += inDelta
+	p.outputTokens += outDelta
 	return nil
 }
 func (p *memProgress) RecordError(_ context.Context, _, msg string) error {
@@ -180,6 +194,16 @@ func TestInteg_SchemaIndexer_BuildIndex_EndToEnd(t *testing.T) {
 	}
 	if progress.increments != 3 {
 		t.Errorf("increments = %d, want 3", progress.increments)
+	}
+	// PLAN-TOKEN-TRACKING §4.4: blurb-LLM token totals are summed across
+	// every successful blurb (3 here, each contributing 1 in/1 out per
+	// the stubLLM) and stamped onto the progress doc exactly once for
+	// the build.
+	if progress.tokenCalls != 1 {
+		t.Errorf("IncrementTokens called %d times, want exactly 1 per build", progress.tokenCalls)
+	}
+	if progress.inputTokens != 3 || progress.outputTokens != 3 {
+		t.Errorf("progress tokens = (%d, %d), want (3, 3)", progress.inputTokens, progress.outputTokens)
 	}
 
 	// Search should find the indexed tables.

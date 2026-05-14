@@ -350,11 +350,12 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 		Title:     "What causes churn?",
 		Messages: []commonmodels.AskSessionMessage{
 			{
-				Question:   "What causes churn?",
-				Answer:     "Based on insights [1]...",
-				Model:      "claude-sonnet",
-				TokensUsed: 150,
-				CreatedAt:  time.Now(),
+				Question:     "What causes churn?",
+				Answer:       "Based on insights [1]...",
+				Model:        "claude-sonnet",
+				InputTokens:  100,
+				OutputTokens: 50,
+				CreatedAt:    time.Now(),
 			},
 		},
 	}
@@ -378,11 +379,12 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 
 	// Append message
 	err = repo.AppendMessage(ctx, "session-integ-1", commonmodels.AskSessionMessage{
-		Question:   "Tell me more about Level 45",
-		Answer:     "Level 45 shows...",
-		Model:      "claude-sonnet",
-		TokensUsed: 200,
-		CreatedAt:  time.Now(),
+		Question:     "Tell me more about Level 45",
+		Answer:       "Level 45 shows...",
+		Model:        "claude-sonnet",
+		InputTokens:  140,
+		OutputTokens: 60,
+		CreatedAt:    time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)

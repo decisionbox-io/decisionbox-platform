@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -67,13 +68,20 @@ type ExplorationEngine struct {
 const maxParseRetries = 3
 
 // StepCallback is called after each exploration step with live progress data.
+//
+// inputTokens / outputTokens are the totals for the LLM call(s) the engine
+// issued for this step — summed across any internal parse-retry rounds so
+// the callback always sees the single home-document figure (per
+// PLAN-TOKEN-TRACKING §4.1). Both are 0 when the engine did not issue an
+// LLM call for the step (today: never — every step makes at least one
+// call, but the contract leaves the door open).
 // The action argument carries the step's action type — usually "query_data"
 // for a real query, "complete_rejected" when the LLM signalled done before
 // MinSteps and the engine rejected it. Downstream (StatusReporter) uses
 // this to distinguish real queries from non-query events so the live UI
 // doesn't render a rejected completion as an empty-SQL failed query and
 // the per-run query counter only counts real queries.
-type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string)
+type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int)
 
 // ExplorationEngineOptions configures the exploration engine.
 type ExplorationEngineOptions struct {
@@ -210,7 +218,7 @@ func (e *ExplorationEngine) Explore(
 			"messages": len(conversation.GetMessages()),
 		}).Info("Exploration step starting")
 
-		action, err := e.runStepWithRetry(ctx, conversation, step)
+		action, inputTokens, outputTokens, err := e.runStepWithRetry(ctx, conversation, step)
 		if err != nil {
 			result.Error = err
 			result.Duration = time.Since(startTime)
@@ -244,21 +252,27 @@ func (e *ExplorationEngine) Explore(
 				Action:    "complete_rejected",
 				Thinking:  action.Thinking,
 				Error:     fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps),
+				TokensIn:  inputTokens,
+				TokensOut: outputTokens,
 			})
 			result.TotalSteps = step
 
 			if e.onStep != nil {
-				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps))
+				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens)
 			}
 			continue
 		}
 
-		// Create exploration step
+		// Create exploration step. Tokens are stamped here so the per-phase
+		// ExplorationStep doc carries usage data (the field existed on the
+		// struct but was never populated before PLAN-TOKEN-TRACKING).
 		explorationStep := models.ExplorationStep{
 			Step:      step,
 			Timestamp: time.Now(),
 			Action:    action.Action,
 			Thinking:  action.Thinking,
+			TokensIn:  inputTokens,
+			TokensOut: outputTokens,
 		}
 
 		// Execute the action
@@ -302,7 +316,7 @@ func (e *ExplorationEngine) Explore(
 		// Report step for live status
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
-			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg)
+			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens)
 		}
 
 		// Check if exploration is complete
@@ -392,8 +406,11 @@ type ExplorationAction struct {
 // previous behaviour where an unparseable response silently terminated the
 // run as "complete" — the main cause of short-runs on reasoning models like
 // Qwen3 and DeepSeek R1.
-func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *Conversation, step int) (*ExplorationAction, error) {
+func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *Conversation, step int) (*ExplorationAction, int, int, error) {
 	var lastParseErr error
+	// Per PLAN-TOKEN-TRACKING §4.1: parse-retry rounds collapse onto one
+	// home document (the ExplorationStep / RunStep), so we sum across them.
+	var usage gollm.UsageAccumulator
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
@@ -409,8 +426,11 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 				"attempt": attempt,
 				"error":   err.Error(),
 			}).Error("LLM call failed during exploration")
-			return nil, fmt.Errorf("step %d: failed to get LLM response: %w", step, err)
+			in, out := usage.Totals()
+			return nil, in, out, fmt.Errorf("step %d: failed to get LLM response: %w", step, err)
 		}
+
+		usage.Add(response.Usage.InputTokens, response.Usage.OutputTokens)
 
 		logger.WithFields(logger.Fields{
 			"step":       step,
@@ -429,7 +449,8 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 
 		action, err := e.parseAction(responseText)
 		if err == nil {
-			return action, nil
+			in, out := usage.Totals()
+			return action, in, out, nil
 		}
 
 		lastParseErr = err
@@ -457,7 +478,8 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 		)
 	}
 
-	return nil, fmt.Errorf("step %d: unable to parse LLM response after %d attempts: %w", step, maxParseRetries+1, lastParseErr)
+	in, out := usage.Totals()
+	return nil, in, out, fmt.Errorf("step %d: unable to parse LLM response after %d attempts: %w", step, maxParseRetries+1, lastParseErr)
 }
 
 // ParseAction parses the LLM's response into an ExplorationAction, restricted

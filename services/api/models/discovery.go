@@ -51,6 +51,11 @@ type InsightValidation struct {
 	OriginalCount int       `bson:"original_count,omitempty" json:"original_count,omitempty"`
 	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
 	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
+
+	// Per-insight LLM token usage, summed across the verifier's LLM
+	// calls per PLAN-TOKEN-TRACKING §4.5. API-side mirror.
+	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }
 
 type Recommendation struct {

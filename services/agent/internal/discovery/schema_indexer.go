@@ -81,6 +81,9 @@ type ProgressReporter interface {
 	SetTotals(ctx context.Context, projectID string, total int) error
 	SetCounters(ctx context.Context, projectID string, total, done int) error
 	IncrementDone(ctx context.Context, projectID string, delta int) error
+	// IncrementTokens advances the per-build blurb-LLM token totals
+	// atomically (PLAN-TOKEN-TRACKING §4.4).
+	IncrementTokens(ctx context.Context, projectID string, inputDelta, outputDelta int) error
 	RecordError(ctx context.Context, projectID, msg string) error
 }
 
@@ -284,6 +287,19 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		})
 		blurbIn += k.blurb.InputTokens
 		blurbOut += k.blurb.OutputTokens
+	}
+	// Stamp the running totals onto the progress doc so the dashboard
+	// can show "tokens spent on this schema-index" without re-deriving
+	// it from per-blurb forensics (PLAN-TOKEN-TRACKING §4.4). One
+	// IncrementTokens call covers the whole build because blurbs are
+	// generated in one parallel pass — there is no streaming-mid-build
+	// requirement today. A partial-build failure still preserves the
+	// running sum in this call's predecessor (Reset zeroed it; no other
+	// path mutates it).
+	if si.Progress != nil && (blurbIn > 0 || blurbOut > 0) {
+		if err := si.Progress.IncrementTokens(ctx, opts.ProjectID, blurbIn, blurbOut); err != nil {
+			applog.WithError(err).Warn("schema_indexer: IncrementTokens failed (non-fatal)")
+		}
 	}
 	applog.WithFields(applog.Fields{"points": len(items)}).Info("schema_indexer: phase=qdrant_upsert")
 	if err := si.Retriever.Upsert(ctx, opts.ProjectID, items); err != nil {

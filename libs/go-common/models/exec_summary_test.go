@@ -27,7 +27,8 @@ func TestExecutiveSummary_JSONRoundTrip_PopulatesEveryField(t *testing.T) {
 	if !got.GeneratedAt.Equal(want.GeneratedAt) {
 		t.Errorf("GeneratedAt: got %v want %v", got.GeneratedAt, want.GeneratedAt)
 	}
-	if got.TokensUsed != want.TokensUsed || got.DurationMS != want.DurationMS {
+	// PLAN-TOKEN-TRACKING §4.6: TokensUsed → InputTokens / OutputTokens.
+	if got.InputTokens != want.InputTokens || got.OutputTokens != want.OutputTokens || got.DurationMS != want.DurationMS {
 		t.Errorf("telemetry lost: got %+v want %+v", got, want)
 	}
 	if got.Issue != want.Issue {
@@ -186,8 +187,10 @@ func TestExecutiveSummary_OmitemptyOnZeroValueDocument(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	s := string(blob)
-	// Verify the typical bloat fields aren't present.
-	for _, key := range []string{"prompt_version", "tokens_used", "duration_ms", "error", "sections", "pull_quote", "cited_insight_ids", "cited_rec_ids", "stat_row", "stories"} {
+	// Verify the typical bloat fields aren't present. PLAN-TOKEN-TRACKING §4.6
+	// dropped `tokens_used`; the new `input_tokens` / `output_tokens` must
+	// also omit on a near-empty doc.
+	for _, key := range []string{"prompt_version", "tokens_used", "input_tokens", "output_tokens", "duration_ms", "error", "sections", "pull_quote", "cited_insight_ids", "cited_rec_ids", "stat_row", "stories"} {
 		if contains(s, `"`+key+`":`) {
 			t.Errorf("omitempty broken: field %q present on near-empty document", key)
 		}
@@ -250,10 +253,11 @@ func fullFixture() ExecutiveSummary {
 		Language:      "Turkish",
 		Model:         "claude-opus-4-7",
 		PromptVersion: "v1",
-		GeneratedAt:   when,
-		GeneratedBy:   "user-42",
-		TokensUsed:    12345,
-		DurationMS:    9876,
+		GeneratedAt:  when,
+		GeneratedBy:  "user-42",
+		InputTokens:  9000,
+		OutputTokens: 3345,
+		DurationMS:   9876,
 		Status:        "ready",
 		Issue: IssueMeta{
 			Title:               "OXXO Raporu",

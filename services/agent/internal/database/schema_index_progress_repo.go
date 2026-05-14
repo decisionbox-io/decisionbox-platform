@@ -30,7 +30,9 @@ func (r *SchemaIndexProgressRepository) col() *mongo.Collection {
 }
 
 // Reset upserts a fresh progress doc at the start of a new indexing run.
-// Clears prior tables_total / tables_done / error_message.
+// Clears prior tables_total / tables_done / error_message and zeroes the
+// blurb-LLM token totals (PLAN-TOKEN-TRACKING §4.4 — the totals are
+// per-build, not cumulative across builds).
 func (r *SchemaIndexProgressRepository) Reset(ctx context.Context, projectID, runID string) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
@@ -47,6 +49,8 @@ func (r *SchemaIndexProgressRepository) Reset(ctx context.Context, projectID, ru
 			"started_at":    now,
 			"updated_at":    now,
 			"error_message": "",
+			"input_tokens":  0,
+			"output_tokens": 0,
 		}},
 		options.Update().SetUpsert(true),
 	)
@@ -122,6 +126,40 @@ func (r *SchemaIndexProgressRepository) SetCounters(ctx context.Context, project
 	)
 	if err != nil {
 		return fmt.Errorf("set schema-index counters: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("schema-index progress not found for project %q", projectID)
+	}
+	return nil
+}
+
+// IncrementTokens atomically adds inputDelta / outputDelta onto the per-build
+// blurb-LLM token totals (PLAN-TOKEN-TRACKING §4.4). Safe under concurrent
+// worker goroutines because the writes use $inc. Negative or zero deltas
+// no-op so a misreporting provider can't drive totals backwards.
+func (r *SchemaIndexProgressRepository) IncrementTokens(ctx context.Context, projectID string, inputDelta, outputDelta int) error {
+	if projectID == "" {
+		return errors.New("projectID is required")
+	}
+	if inputDelta <= 0 && outputDelta <= 0 {
+		return nil
+	}
+	inc := bson.M{}
+	if inputDelta > 0 {
+		inc["input_tokens"] = inputDelta
+	}
+	if outputDelta > 0 {
+		inc["output_tokens"] = outputDelta
+	}
+	res, err := r.col().UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{
+			"$inc": inc,
+			"$set": bson.M{"updated_at": time.Now().UTC()},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("increment schema-index tokens: %w", err)
 	}
 	if res.MatchedCount == 0 {
 		return fmt.Errorf("schema-index progress not found for project %q", projectID)

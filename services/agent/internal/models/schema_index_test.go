@@ -56,12 +56,14 @@ func TestBlurbLLMConfig_JSONRoundTrip_Agent(t *testing.T) {
 func TestSchemaIndexProgress_BSONRoundTrip_Agent(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond)
 	original := SchemaIndexProgress{
-		ProjectID:   "p",
-		Phase:       SchemaIndexPhaseEmbedding,
-		TablesTotal: 10,
-		TablesDone:  7,
-		StartedAt:   now,
-		UpdatedAt:   now,
+		ProjectID:    "p",
+		Phase:        SchemaIndexPhaseEmbedding,
+		TablesTotal:  10,
+		TablesDone:   7,
+		StartedAt:    now,
+		UpdatedAt:    now,
+		InputTokens:  4200,
+		OutputTokens: 950,
 	}
 	b, err := bson.Marshal(original)
 	if err != nil {
@@ -73,6 +75,31 @@ func TestSchemaIndexProgress_BSONRoundTrip_Agent(t *testing.T) {
 	}
 	if decoded.TablesDone != 7 {
 		t.Errorf("TablesDone = %d", decoded.TablesDone)
+	}
+	// PLAN-TOKEN-TRACKING §4.4: input/output token totals must round-trip.
+	if decoded.InputTokens != 4200 || decoded.OutputTokens != 950 {
+		t.Errorf("tokens lost in round-trip: got (%d, %d), want (4200, 950)", decoded.InputTokens, decoded.OutputTokens)
+	}
+}
+
+func TestSchemaIndexProgress_JSONOmitemptyOnZero_Agent(t *testing.T) {
+	// Legacy rows (built before tokens were tracked) and rows decoded after
+	// Reset must render the token fields as absent rather than 0 — the
+	// dashboard relies on this to distinguish "unknown" from "zero spent".
+	p := SchemaIndexProgress{ProjectID: "p", Phase: SchemaIndexPhaseListingTables}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["input_tokens"]; ok {
+		t.Errorf("input_tokens should be omitted when zero; raw=%v", raw)
+	}
+	if _, ok := raw["output_tokens"]; ok {
+		t.Errorf("output_tokens should be omitted when zero; raw=%v", raw)
 	}
 }
 
