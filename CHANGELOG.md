@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agent K8s Job pods satisfy PodSecurity `restricted` admission** — `KubernetesRunner.buildJob()` now stamps a full pod + container `SecurityContext` (`RunAsNonRoot=true`, `RunAsUser/Group=1000`, `FSGroup=1000`, `AllowPrivilegeEscalation=false`, `ReadOnlyRootFilesystem=true`, `Capabilities.Drop=[ALL]`, `SeccompProfile.Type=RuntimeDefault`) on every Job it creates (discovery runs, schema indexing, test-connection). Without these fields, namespaces labeled `pod-security.kubernetes.io/enforce=restricted` reject every agent Job and the dashboard shows "Schema index: Not indexed" indefinitely. To keep `ReadOnlyRootFilesystem=true` compatible with cloud SDKs that opportunistically write disk caches (gosnowflake OCSP, AWS/GCP token files), the spec also declares an `emptyDir` volume mounted at `/tmp` and points `TMPDIR=/tmp` + `HOME=/tmp`. The agent image (Alpine + static Go binary) already runs as UID 1000 with no capabilities — this is a spec-only fix with no runtime behavior change.
+
 ## [0.5.0] - 2026-05-15
 
 ### Added
