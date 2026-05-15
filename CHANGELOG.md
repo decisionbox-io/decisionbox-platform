@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dashboard `ApiError` carries `code` + `details`** — `ui/dashboard/src/lib/api.ts` now throws a typed `ApiError` (extends `Error`) on every non-2xx response with the parsed `code` and `details` fields attached. The Ask page branches on `code` to surface specific copy: configuration mismatches point at project settings, context-overflow points at "start a new chat or pick a wider model", and upstream errors show the sanitised provider message. The generic "could not answer" copy is now only the fallback for unknown codes or non-`ApiError` throwables.
 
+### Tests
+
+- **Real-provider Ask integration coverage across Bedrock, OpenAI, and Vertex AI Gemini** — `services/api/internal/handler/ask_real_providers_integration_test.go` (renamed from `ask_bedrock_integration_test.go`) now runs the full Ask flow — budget walk, RAG fitting, history trim, typed-error machinery — against three real LLM backends via a MongoDB testcontainer. Per provider: a happy-path "new session" test and a 50-turn "trims long session" test. Each suite skips cleanly when its credentials env var is absent (`INTEGRATION_TEST_BEDROCK_REGION`, `INTEGRATION_TEST_OPENAI_API_KEY`, `INTEGRATION_TEST_VERTEX_PROJECT_ID`), so non-cloud CI runs them as skips. Shared helpers (`askMockVectorStore`, `askMockEmbedding`, `askSearchHandlerForProvider`, `runAskHappyPath`, `runAskTrim`) keep per-provider sections small. Verified passing locally against Claude Haiku 4.5 (Bedrock), gpt-4o-mini (OpenAI), and Gemini 2.5 Flash (Vertex).
+
+- **tiktoken vs real OpenAI billing cross-check** — `providers/llm/openai/tokens_integration_test.go` sends a ~100-token prompt to OpenAI, reads `prompt_tokens` from the response, and asserts the local tiktoken count is within ±20% of OpenAI's billing. Catches a counter regression where the wrong encoding table would silently drift. Plus a monotonicity test that progressively longer prompts produce strictly larger counts. Observed drift on gpt-4o-mini: ~7% (well inside the safety margin).
+
 ## [0.5.0] - 2026-05-15
 
 ### Added
