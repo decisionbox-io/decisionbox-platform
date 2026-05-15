@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -135,29 +134,68 @@ func TestOpenAITokenCounter_DeterministicSameInput(t *testing.T) {
 	}
 }
 
-// --- Encoding cache ------------------------------------------------
+// --- Canonical-host routing ----------------------------------------
 
-func TestGetEncoding_ReturnsSameInstanceOnRepeatCalls(t *testing.T) {
-	a, err := getEncoding(FallbackEncoding)
+func TestOpenAIProvider_TokenCounter_UsesApproximateForCustomBaseURL(t *testing.T) {
+	// Self-hosted OpenAI-compatible proxy: tokenizer is unknown,
+	// tiktoken would over- or under-count. Counter must drop to
+	// ApproximateCounter so the budget walk picks the wider 15%
+	// safety margin instead of falsely claiming 5% exactness.
+	p := NewOpenAIProvider("test-key", "gpt-4o", "https://my-llm-proxy.example.com/v1", 10*time.Second)
+	c, err := p.TokenCounter(context.Background(), "gpt-4o")
 	if err != nil {
-		t.Fatalf("getEncoding errored: %v", err)
+		t.Fatalf("TokenCounter errored: %v", err)
 	}
-	b, err := getEncoding(FallbackEncoding)
-	if err != nil {
-		t.Fatalf("second getEncoding errored: %v", err)
+	if _, ok := c.(gollm.ApproximateCounter); !ok {
+		t.Fatalf("got %T, want ApproximateCounter for custom base_url", c)
 	}
-	if a != b {
-		t.Fatal("getEncoding returned different instances for the same name; cache broken")
+	if gollm.IsExact(c) {
+		t.Fatal("custom-base_url counter must NOT register as exact")
 	}
 }
 
-func TestGetEncoding_UnknownNameErrors(t *testing.T) {
-	_, err := getEncoding("definitely-not-a-real-encoding")
-	if err == nil {
-		t.Fatal("getEncoding accepted a bogus name without error")
+func TestOpenAIProvider_TokenCounter_RealOpenAIBaseURLStaysExact(t *testing.T) {
+	// Default base URL ("") → canonical OpenAI host → tiktoken.
+	p := NewOpenAIProvider("test-key", "gpt-4o", "", 10*time.Second)
+	c, err := p.TokenCounter(context.Background(), "gpt-4o")
+	if err != nil {
+		t.Fatalf("TokenCounter errored: %v", err)
 	}
-	if !strings.Contains(err.Error(), "encoding") && !strings.Contains(err.Error(), "not found") {
-		// Don't pin the exact phrasing — tiktoken-go owns it.
-		t.Logf("unknown-encoding err: %v (informational)", err)
+	if !gollm.IsExact(c) {
+		t.Fatal("default-base_url counter must register as exact (tiktoken)")
+	}
+}
+
+func TestOpenAIProvider_TokenCounter_ExplicitCanonicalOpenAIBaseURL(t *testing.T) {
+	// Explicit api.openai.com URL → still canonical → tiktoken.
+	p := NewOpenAIProvider("test-key", "gpt-4o", "https://api.openai.com/v1", 10*time.Second)
+	c, err := p.TokenCounter(context.Background(), "gpt-4o")
+	if err != nil {
+		t.Fatalf("TokenCounter errored: %v", err)
+	}
+	if !gollm.IsExact(c) {
+		t.Fatal("api.openai.com base_url must register as exact")
+	}
+}
+
+func TestIsCanonicalOpenAIHost(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"", true},                                   // default → api.openai.com
+		{"https://api.openai.com/v1", true},          // explicit canonical
+		{"https://api.openai.com", true},             // no path
+		{"http://api.openai.com/v1", true},           // http scheme
+		{"https://my-proxy.example.com/v1", false},   // self-hosted
+		{"https://oai-proxy.internal.net/v1", false}, // private
+		{"https://api.openai.com.attacker.tld/v1", false}, // suffix attack
+		{"not-a-url", false},                         // malformed
+	}
+	for _, c := range cases {
+		got := isCanonicalOpenAIHost(c.url)
+		if got != c.want {
+			t.Errorf("isCanonicalOpenAIHost(%q) = %v, want %v", c.url, got, c.want)
+		}
 	}
 }

@@ -59,14 +59,19 @@ Whatever is left is the **history budget** — how many tokens may be spent on t
 
 Different providers expose different token-counting capabilities:
 
-| Provider | Counter | Notes |
+| Provider / model | Counter | Notes |
 |---|---|---|
 | Anthropic Claude (direct) | `/v1/messages/count_tokens` | Exact. One extra RTT per call. |
-| OpenAI / Azure Foundry / OpenAI-wire models | [`tiktoken-go`](https://github.com/pkoukk/tiktoken-go) with the model's declared `Encoding` | Exact. Local, no network. `o200k_base` for every current OpenAI model. |
+| OpenAI (canonical `api.openai.com` endpoint) | [`tiktoken-go`](https://github.com/pkoukk/tiktoken-go) with the model's declared `Encoding` | Exact. Local, no network. `o200k_base` for every current OpenAI model. Unknown models on the canonical endpoint still get tiktoken with the `o200k_base` fallback. |
+| OpenAI provider with a custom `base_url` (self-hosted proxy, OpenAI-compatible gateway) | Rune-count approximation | Tokenizer of the upstream is unknown; tiktoken would over- or under-count. The approximation + wider 15% safety margin is the safe choice. |
+| Azure AI Foundry — OpenAI-wire models (GPT-5 / 4.1 / 4o family) | `tiktoken-go` with the model's declared `Encoding` | Exact. Same code path as direct OpenAI. |
+| Azure AI Foundry — Claude / Mistral / unknown deployment | Rune-count approximation | Foundry fronts Claude through its own wire (no `count_tokens` available); Mistral and custom deployments have no declared encoding. |
 | Bedrock | Rune-count approximation (`runes / 4`) | No universal token API on Bedrock. |
-| Vertex AI | Rune-count approximation | A native `countTokens` endpoint exists but is not wired in PR 1; safety-margin compensates. |
+| Vertex AI — Gemini (Google-native wire) | `:countTokens` REST endpoint | Exact. One extra RTT per call; uses the same ADC bearer the Chat path uses, does not consume generation quota. |
+| Vertex AI — Claude (Anthropic wire) | Rune-count approximation | Vertex's Anthropic publisher does not expose a public count_tokens endpoint. |
+| Vertex AI — Llama / Qwen / DeepSeek / Mistral MaaS (OpenAI-compat) | Rune-count approximation | SentencePiece-based tokenizers; tiktoken would be systematically wrong. |
 | Ollama | Rune-count approximation | Model-specific tokenizers vary; users running with low `num_ctx` should pick a smaller model. |
-| Unknown | Rune-count approximation | Default fallback. |
+| Unknown provider / model | Rune-count approximation | Default fallback. |
 
 The handler picks the right counter automatically. When the provider does not implement `gollm.TokenCounterProvider`, the handler uses `gollm.ApproximateCounter` and widens the safety margin from 5% to 15% to absorb the inaccuracy — under-counting causes the exact 400 the budget layer is designed to prevent, so we err generously toward over-trimming.
 

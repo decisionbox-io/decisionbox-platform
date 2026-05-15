@@ -606,6 +606,13 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	knowledgeSection := gosources.FormatPromptSection(knowledgeChunks)
 	counter, budget = countOrFallback(ctx, counter, budget, modelMaxInput, knowledgeSection,
 		"knowledge section token count failed; falling back to approximate counter")
+	// countOrFallback may have rebuilt budget with the wider 15%
+	// approximate-tier margin, shrinking Available(). Recompute
+	// `available` so the RAG-fit + overflow checks below see the
+	// post-fallback budget — using the pre-fallback value would
+	// make ragBudget too generous and could reintroduce an
+	// upstream context overflow after a counter swap.
+	available = budget.Available() - questionTokens
 	knowledgeTokens, _ := counter.Count(ctx, knowledgeSection)
 
 	ragBudget := available - knowledgeTokens

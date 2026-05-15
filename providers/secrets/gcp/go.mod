@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	cloud.google.com/go/secretmanager v1.14.5
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
+	github.com/googleapis/gax-go/v2 v2.14.1
 	google.golang.org/api v0.228.0
 	google.golang.org/grpc v1.79.3
 )
@@ -20,7 +21,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
-	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.59.0 // indirect

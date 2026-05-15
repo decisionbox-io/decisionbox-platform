@@ -7,6 +7,11 @@ require (
 	golang.org/x/oauth2 v0.36.0
 )
 
-require cloud.google.com/go/compute/metadata v0.3.0 // indirect
+require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
+	github.com/dlclark/regexp2 v1.10.0 // indirect
+	github.com/google/uuid v1.3.0 // indirect
+	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
+)
 
 replace github.com/decisionbox-io/decisionbox/libs/go-common => ../../../libs/go-common
