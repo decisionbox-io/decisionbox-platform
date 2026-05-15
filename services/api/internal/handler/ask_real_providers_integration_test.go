@@ -22,6 +22,7 @@ import (
 
 	// Real LLM provider registrations.
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
 
@@ -435,4 +436,54 @@ func TestIntegration_Ask_RealVertex_TrimsLongSession(t *testing.T) {
 		})
 	t.Cleanup(func() { askCleanup(setup) })
 	runAskTrim(t, setup, "vertex-ai", model, 50, 120*time.Second)
+}
+
+// --- Ollama -------------------------------------------------------
+
+func ollamaHost(t *testing.T) string {
+	t.Helper()
+	h := os.Getenv("INTEGRATION_TEST_OLLAMA_HOST")
+	if h == "" {
+		t.Skip("INTEGRATION_TEST_OLLAMA_HOST not set; skipping Ollama-backed Ask integration test")
+	}
+	return h
+}
+
+func ollamaModelFor(t *testing.T) string {
+	t.Helper()
+	if m := os.Getenv("INTEGRATION_TEST_OLLAMA_MODEL"); m != "" {
+		return m
+	}
+	// Catalogued via the qwen3 alias list in providers/llm/ollama/catalog.go.
+	return "qwen3:32b"
+}
+
+// TestIntegration_Ask_RealOllama_NewSession exercises the Ask handler
+// against a remote Ollama endpoint (set via INTEGRATION_TEST_OLLAMA_HOST).
+// Ollama does not implement TokenCounterProvider, so this verifies the
+// approximate-counter fallback with the 15% safety margin against a
+// real model. The 60-second deadline is generous for self-hosted
+// large-model inference.
+func TestIntegration_Ask_RealOllama_NewSession(t *testing.T) {
+	host := ollamaHost(t)
+	model := ollamaModelFor(t)
+	setup := askSearchHandlerForProvider(t, "ollama", model,
+		map[string]string{"host": host})
+	t.Cleanup(func() { askCleanup(setup) })
+	runAskHappyPath(t, setup, "What's the most pressing retention issue?", 180*time.Second)
+}
+
+// TestIntegration_Ask_RealOllama_TrimsLongSession verifies the
+// approximate-counter trim path against the model's published native
+// context (qwen3 ships 128K). Even with the wider safety margin a
+// 50-turn fixture has plenty of room — the test is here to prove the
+// budget walk does not interact pathologically with Ollama's
+// streaming-by-default API.
+func TestIntegration_Ask_RealOllama_TrimsLongSession(t *testing.T) {
+	host := ollamaHost(t)
+	model := ollamaModelFor(t)
+	setup := askSearchHandlerForProvider(t, "ollama", model,
+		map[string]string{"host": host})
+	t.Cleanup(func() { askCleanup(setup) })
+	runAskTrim(t, setup, "ollama", model, 50, 240*time.Second)
 }
