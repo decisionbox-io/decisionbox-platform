@@ -598,7 +598,14 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// account for it as a fixed cost. Otherwise a project with
 	// large knowledge sources could pass the per-RAG budget but still
 	// overflow once knowledge is added.
+	//
+	// If the exact counter fails here, drop to the approximate counter
+	// for everything that follows — silently treating the failure as
+	// zero tokens (the previous behaviour) would under-count and let
+	// the prompt overshoot the upstream window.
 	knowledgeSection := gosources.FormatPromptSection(knowledgeChunks)
+	counter, budget = countOrFallback(ctx, counter, budget, modelMaxInput, knowledgeSection,
+		"knowledge section token count failed; falling back to approximate counter")
 	knowledgeTokens, _ := counter.Count(ctx, knowledgeSection)
 
 	ragBudget := available - knowledgeTokens
@@ -622,6 +629,12 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := fmt.Sprintf("Context from %d relevant insights/recommendations:\n\n%s\n\n%s\nQuestion: %s", keptInsights, contextStr, knowledgeSection, req.Question)
+	// Same fallback discipline as the knowledge section. The exact
+	// counter could still fail here even after surviving earlier
+	// calls (transient network for /count_tokens), and treating that
+	// as 0 would inflate the history budget and risk an upstream 4xx.
+	counter, budget = countOrFallback(ctx, counter, budget, modelMaxInput, prompt,
+		"prompt token count failed; falling back to approximate counter")
 	promptTokens, _ := counter.Count(ctx, prompt)
 
 	// Budget remaining for history = Available - prompt-shaped tokens.

@@ -456,6 +456,62 @@ func TestClassifyLLMError_SanitisesSecretsInDetails(t *testing.T) {
 	}
 }
 
+// --- countOrFallback -----------------------------------------------
+
+func TestCountOrFallback_NoChangeWhenAlreadyApproximate(t *testing.T) {
+	approx := gollm.ApproximateCounter{}
+	original := gollm.NewBudget(200000, 2048, 600, false)
+	c, b := countOrFallback(context.Background(), approx, original, 200000, "ignored", "should never log")
+	if _, ok := c.(gollm.ApproximateCounter); !ok {
+		t.Fatalf("got %T, want ApproximateCounter (no-op path)", c)
+	}
+	if b != original {
+		t.Fatalf("budget should not be rebuilt when already on approximate path")
+	}
+}
+
+func TestCountOrFallback_NoChangeWhenExactCounterSucceeds(t *testing.T) {
+	// fixedCounter always succeeds → no swap.
+	exact := fixedCounter{perCall: 7}
+	original := gollm.NewBudget(200000, 2048, 600, true)
+	c, b := countOrFallback(context.Background(), exact, original, 200000, "ping", "should not log")
+	if _, ok := c.(fixedCounter); !ok {
+		t.Fatalf("got %T, want fixedCounter (success path)", c)
+	}
+	if b != original {
+		t.Fatalf("budget should not be rebuilt when probe succeeds")
+	}
+}
+
+func TestCountOrFallback_SwapsToApproximateAndWidensBudgetOnError(t *testing.T) {
+	// Counter errors on its first probe call. countOrFallback must
+	// drop to ApproximateCounter AND rebuild the budget with the
+	// wider 15% safety margin (because we lost the exactness
+	// guarantee).
+	stub := errors.New("upstream-blip")
+	c := &errorCounter{failOnCall: 1, err: stub}
+	original := gollm.NewBudget(200000, 2048, 600, true)
+	got, rebuilt := countOrFallback(context.Background(), c, original, 200000, "ping", "expected log")
+	if _, ok := got.(gollm.ApproximateCounter); !ok {
+		t.Fatalf("got %T, want ApproximateCounter after error", got)
+	}
+	// Approximate-tier margin is 15%; exact-tier was 5%. Rebuilt
+	// budget must reflect the new tier so available() over-trims
+	// rather than under-trims.
+	expectedApproxMargin := 200000 * gollm.ApproxCounterMarginPct / 100
+	if rebuilt.SafetyMargin != expectedApproxMargin {
+		t.Fatalf("SafetyMargin = %d, want %d (15%% tier)", rebuilt.SafetyMargin, expectedApproxMargin)
+	}
+}
+
+func TestCountOrFallback_NilCounterReturnsApproximate(t *testing.T) {
+	original := gollm.NewBudget(200000, 2048, 600, false)
+	got, _ := countOrFallback(context.Background(), nil, original, 200000, "ping", "ignored")
+	if _, ok := got.(gollm.ApproximateCounter); !ok {
+		t.Fatalf("got %T, want ApproximateCounter for nil input", got)
+	}
+}
+
 // --- resolveCounter ------------------------------------------------
 
 // tcProvider implements gollm.TokenCounterProvider for resolveCounter tests.

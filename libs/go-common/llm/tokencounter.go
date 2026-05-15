@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -54,14 +55,17 @@ type TokenCounterProvider interface {
 // returned an error.
 type ApproximateCounter struct{}
 
-// Count returns runes/4 rounded up. Treats empty / whitespace input
-// as zero tokens. Honours ctx.Err() so callers in a cancellation
-// chain don't get a stale count.
+// Count returns runes/4 rounded up. Treats empty or whitespace-only
+// input as zero tokens — a prompt that boils down to "" after
+// trimming has no semantic content the model will be billed for, and
+// returning 1 here would falsely report budget pressure on a
+// no-op turn. Honours ctx.Err() so callers in a cancellation chain
+// don't get a stale count.
 func (ApproximateCounter) Count(ctx context.Context, text string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return 0, nil
 	}
 	runes := utf8.RuneCountInString(text)

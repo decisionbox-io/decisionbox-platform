@@ -50,12 +50,16 @@ export type AskErrorCode =
  *      sessions list can render consistent copy.
  *   2. Adding a new typed code is a one-line change in the switch.
  *
- * Returns the generic "could not answer" string for any non-ApiError
- * or unrecognised code — better than leaking provider internals.
+ * Returns the generic "could not answer" string for any non-ApiError,
+ * any ApiError without a recognised `code`, and any new code the
+ * backend ships before this switch knows about it — surfacing raw
+ * backend `message` text in those cases would leak provider internals
+ * and break the consistent-copy contract above.
  */
 export function askErrorMessage(err: unknown): string {
+  const generic = 'Sorry, I could not answer this question. Try again, or start a new chat.';
   if (!(err instanceof ApiError)) {
-    return 'Sorry, I could not answer this question. Try again, or start a new chat.';
+    return generic;
   }
   switch (err.code as AskErrorCode | undefined) {
     case 'embedding_not_configured':
@@ -69,7 +73,7 @@ export function askErrorMessage(err: unknown): string {
     case 'llm_synthesis_failed':
       return 'The LLM provider failed to answer this question. Try again, or start a new chat.';
     default:
-      return err.message || 'Sorry, I could not answer this question.';
+      return generic;
   }
 }
 
@@ -97,16 +101,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     );
   }
 
-  // Some error paths (proxy 502 from Next.js, network blip) return
-  // non-JSON bodies. Guard against res.json() throwing so the caller
-  // still sees a meaningful ApiError rather than a SyntaxError.
+  // Some paths (Next.js proxy 502, misconfigured upstream returning
+  // HTML 200, network blip) return non-JSON bodies. Guard against
+  // res.json() throwing on either branch so the caller always sees a
+  // meaningful ApiError instead of a silent `undefined` success or a
+  // raw SyntaxError.
   let json: { data?: unknown; error?: string; code?: string; details?: string } = {};
+  let parseFailed = false;
   try {
     json = await res.json();
   } catch {
-    if (!res.ok) {
-      throw new ApiError(`API error: ${res.status}`, res.status);
-    }
+    parseFailed = true;
   }
 
   if (!res.ok) {
@@ -115,6 +120,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       res.status,
       json.code,
       json.details,
+    );
+  }
+
+  // 2xx with an unparseable body is treated as a server error rather
+  // than returning `undefined` to the caller. Surfacing this loudly
+  // makes the actual failure mode (misconfigured proxy / non-JSON
+  // upstream) discoverable instead of producing mystery null derefs.
+  if (parseFailed) {
+    throw new ApiError(
+      `API error: ${res.status} returned a non-JSON body`,
+      res.status,
     );
   }
 

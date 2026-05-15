@@ -9,6 +9,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 )
 
 // askMaxOutputTokens is the generation cap Ask reserves on the chat
@@ -28,6 +29,38 @@ const askReservedSystemTokens = 600
 // typed 413; below this, the answer becomes useless and the user is
 // better off being told to start a new chat / pick a wider model.
 const askMinRAGItems = 1
+
+// countOrFallback returns (possibly-swapped counter, possibly-rebuilt
+// budget) after probing whether `counter` can count `sample` without
+// erroring. The Ask handler uses this between budget-critical steps
+// (knowledge section, final prompt) so a transient failure in an
+// exact counter (e.g. a Claude `/count_tokens` HTTP blip) drops the
+// remainder of the request onto ApproximateCounter with the wider
+// 15% margin, rather than silently treating the failed count as
+// zero tokens — which would inflate the budget and produce an
+// upstream 4xx.
+//
+// No-op when the counter is already ApproximateCounter (the probe
+// would always succeed, and swapping the budget would just waste
+// allocations). Honours ctx cancellation by propagating the probe's
+// context — a cancelled-context error is the same shape as a
+// network error here, and ApproximateCounter is the right fallback
+// either way.
+func countOrFallback(ctx context.Context, counter gollm.TokenCounter, budget gollm.Budget, modelMaxInput int, sample, logReason string) (gollm.TokenCounter, gollm.Budget) {
+	if counter == nil {
+		counter = gollm.ApproximateCounter{}
+	}
+	if _, isApprox := counter.(gollm.ApproximateCounter); isApprox {
+		return counter, budget
+	}
+	if _, err := counter.Count(ctx, sample); err == nil {
+		return counter, budget
+	} else {
+		apilog.WithError(err).Warn(logReason)
+	}
+	approx := gollm.ApproximateCounter{}
+	return approx, gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
+}
 
 // resolveCounter returns the active TokenCounter and whether it is
 // exact. Providers that implement gollm.TokenCounterProvider supply

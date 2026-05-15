@@ -71,6 +71,30 @@ describe('request() ApiError parsing', () => {
     }
   });
 
+  it('rejects 2xx responses whose body is not valid JSON with a typed ApiError', async () => {
+    // Misconfigured proxy returning HTML 200, or a server that
+    // forgot to set Content-Type to JSON. Without explicit handling,
+    // request() previously returned `undefined` silently. The
+    // caller's `result.field` deref then produced a mystery
+    // TypeError far away from the actual failure.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON');
+      },
+    });
+    try {
+      await api.askInsights('proj-1', { question: 'q' });
+      fail('expected throw');
+    } catch (err) {
+      const e = err as ApiError;
+      expect(e).toBeInstanceOf(ApiError);
+      expect(e.status).toBe(200);
+      expect(e.message).toMatch(/non-JSON|200/);
+    }
+  });
+
   it('throws ApiError(status=0) on network failure', async () => {
     mockFetch.mockRejectedValueOnce(new TypeError('network down'));
     try {
@@ -135,10 +159,22 @@ describe('askErrorMessage', () => {
     expect(msg).toMatch(/failed to answer|start a new chat|Try again/i);
   });
 
-  it('falls through to the message on unknown codes', () => {
-    const e = new ApiError('mystery', 500, 'something_new' as never);
+  it('returns the generic line for unknown codes — never leaks raw backend message', () => {
+    // Surfacing raw backend text for new codes would defeat the
+    // consistent-copy contract and could leak provider internals,
+    // so the default branch goes to the generic line. Future codes
+    // need an explicit case in the switch.
+    const e = new ApiError('mystery upstream detail', 500, 'something_new' as never);
     const msg = askErrorMessage(e);
-    expect(msg).toBe('mystery');
+    expect(msg).not.toBe('mystery upstream detail');
+    expect(msg).toContain('could not answer');
+  });
+
+  it('returns the generic line when the ApiError has no code at all', () => {
+    const e = new ApiError('raw http 400 message', 400);
+    const msg = askErrorMessage(e);
+    expect(msg).not.toBe('raw http 400 message');
+    expect(msg).toContain('could not answer');
   });
 
   it('falls back to the generic line when message is empty too', () => {

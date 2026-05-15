@@ -84,6 +84,21 @@ func TestApproximateCounter_Empty(t *testing.T) {
 	}
 }
 
+func TestApproximateCounter_WhitespaceOnlyIsZero(t *testing.T) {
+	// Whitespace-only strings have no semantic content — billing
+	// them as tokens would falsely report budget pressure for an
+	// empty-feeling turn.
+	for _, s := range []string{" ", "  ", "\t", "\n", " \t\n\r "} {
+		got, err := ApproximateCounter{}.Count(context.Background(), s)
+		if err != nil {
+			t.Fatalf("Count(%q) errored: %v", s, err)
+		}
+		if got != 0 {
+			t.Fatalf("Count(%q) = %d, want 0 (whitespace-only)", s, got)
+		}
+	}
+}
+
 func TestApproximateCounter_SingleRune(t *testing.T) {
 	// Ceiling division — a single character must cost 1 token, not 0.
 	got, err := ApproximateCounter{}.Count(context.Background(), "x")
