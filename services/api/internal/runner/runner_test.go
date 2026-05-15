@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -221,6 +223,106 @@ func TestKubernetesRunner_Run_CreatesJob(t *testing.T) {
 	if *job.Spec.TTLSecondsAfterFinished != 3600 {
 		t.Errorf("TTL = %d, want 3600", *job.Spec.TTLSecondsAfterFinished)
 	}
+}
+
+// assertRestrictedSecurityContext verifies that a Job created by buildJob() is
+// admissible under PodSecurity "restricted" enforcement. Tenant namespaces in
+// cloud are labeled pod-security.kubernetes.io/enforce=restricted, which
+// rejects pods that don't set every one of these fields — see the regression
+// that motivated this fix.
+func assertRestrictedSecurityContext(t *testing.T, job batchv1.Job) {
+	t.Helper()
+
+	pod := job.Spec.Template.Spec
+	if pod.SecurityContext == nil {
+		t.Fatal("pod.SecurityContext is nil — restricted PodSecurity will reject the pod")
+	}
+	if pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+		t.Error("pod.SecurityContext.RunAsNonRoot must be true")
+	}
+	if pod.SecurityContext.RunAsUser == nil || *pod.SecurityContext.RunAsUser != 1000 {
+		t.Error("pod.SecurityContext.RunAsUser must be 1000")
+	}
+	if pod.SecurityContext.SeccompProfile == nil ||
+		pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("pod.SecurityContext.SeccompProfile.Type must be RuntimeDefault")
+	}
+
+	if len(pod.Containers) == 0 {
+		t.Fatal("no containers on pod")
+	}
+	c := pod.Containers[0]
+	if c.SecurityContext == nil {
+		t.Fatal("container.SecurityContext is nil — restricted PodSecurity will reject the pod")
+	}
+	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Error("container.AllowPrivilegeEscalation must be false")
+	}
+	if c.SecurityContext.RunAsNonRoot == nil || !*c.SecurityContext.RunAsNonRoot {
+		t.Error("container.RunAsNonRoot must be true")
+	}
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("container.ReadOnlyRootFilesystem must be true")
+	}
+	if c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Drop) == 0 ||
+		c.SecurityContext.Capabilities.Drop[0] != "ALL" {
+		t.Error("container.Capabilities must drop [ALL]")
+	}
+	if c.SecurityContext.SeccompProfile == nil ||
+		c.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("container.SecurityContext.SeccompProfile.Type must be RuntimeDefault")
+	}
+
+	// /tmp emptyDir is mandatory because ReadOnlyRootFilesystem=true blocks
+	// any SDK that wants to write temp/cache files (e.g., gosnowflake OCSP).
+	var hasTmpVol bool
+	for _, v := range pod.Volumes {
+		if v.Name == "tmp" && v.EmptyDir != nil {
+			hasTmpVol = true
+			break
+		}
+	}
+	if !hasTmpVol {
+		t.Error("pod must declare an emptyDir Volume named 'tmp' for writable scratch")
+	}
+	var hasTmpMount bool
+	for _, m := range c.VolumeMounts {
+		if m.Name == "tmp" && m.MountPath == "/tmp" {
+			hasTmpMount = true
+			break
+		}
+	}
+	if !hasTmpMount {
+		t.Error("container must mount 'tmp' volume at /tmp")
+	}
+
+	envMap := make(map[string]string)
+	for _, e := range c.Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["TMPDIR"] != "/tmp" {
+		t.Errorf("TMPDIR env = %q, want /tmp", envMap["TMPDIR"])
+	}
+	if envMap["HOME"] != "/tmp" {
+		t.Errorf("HOME env = %q, want /tmp", envMap["HOME"])
+	}
+}
+
+// TestKubernetesRunner_Run_SetsRestrictedSecurityContext exercises the
+// discovery-run path. Without this, agent K8s Jobs are rejected by the
+// admission controller on namespaces enforcing pod-security restricted.
+func TestKubernetesRunner_Run_SetsRestrictedSecurityContext(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-sec-1234567890"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	assertRestrictedSecurityContext(t, jobs.Items[0])
 }
 
 func TestKubernetesRunner_Run_NoAreas(t *testing.T) {
@@ -551,6 +653,72 @@ func TestKubernetesRunner_RunSync_CreatesJob(t *testing.T) {
 	if memLim.String() != "256Mi" {
 		t.Errorf("memory limit = %q, want 256Mi", memLim.String())
 	}
+}
+
+// TestKubernetesRunner_RunSync_SetsRestrictedSecurityContext exercises the
+// test-connection path. Same buildJob() call site, so the assertion is
+// duplicated to lock in the contract per call site.
+func TestKubernetesRunner_RunSync_SetsRestrictedSecurityContext(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simulate K8s controller succeeding the job after a tick.
+	go func() {
+		for {
+			time.Sleep(50 * time.Millisecond)
+			jobs, _ := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+			if len(jobs.Items) == 0 {
+				continue
+			}
+			job := jobs.Items[0]
+			job.Status.Succeeded = 1
+			_, _ = r.client.BatchV1().Jobs("test-ns").UpdateStatus(context.Background(), &job, metav1.UpdateOptions{})
+			return
+		}
+	}()
+
+	if _, err := r.RunSync(ctx, RunSyncOptions{ProjectID: "p", Args: []string{"--test-connection", "warehouse"}}); err != nil {
+		t.Fatalf("RunSync failed: %v", err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	assertRestrictedSecurityContext(t, jobs.Items[0])
+}
+
+// TestKubernetesRunner_RunIndexSchema_SetsRestrictedSecurityContext exercises
+// the schema-indexing path — the one originally observed failing under
+// restricted PodSecurity (job name prefix "index-").
+func TestKubernetesRunner_RunIndexSchema_SetsRestrictedSecurityContext(t *testing.T) {
+	r := newFakeK8sRunner()
+	// RunIndexSchema polls on a 5s ticker — keep the context longer than one tick.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	go func() {
+		for {
+			time.Sleep(50 * time.Millisecond)
+			jobs, _ := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+			if len(jobs.Items) == 0 {
+				continue
+			}
+			job := jobs.Items[0]
+			job.Status.Succeeded = 1
+			_, _ = r.client.BatchV1().Jobs("test-ns").UpdateStatus(context.Background(), &job, metav1.UpdateOptions{})
+			return
+		}
+	}()
+
+	if err := r.RunIndexSchema(ctx, IndexSchemaOptions{ProjectID: "p", RunID: "idx-run-1"}); err != nil {
+		t.Fatalf("RunIndexSchema failed: %v", err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	assertRestrictedSecurityContext(t, jobs.Items[0])
 }
 
 func TestKubernetesRunner_RunSync_JobFails(t *testing.T) {

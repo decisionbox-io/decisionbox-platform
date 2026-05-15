@@ -66,6 +66,11 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 	envVars := []corev1.EnvVar{
 		{Name: "MONGODB_URI", Value: getEnv("MONGODB_URI", "mongodb://localhost:27017")},
 		{Name: "MONGODB_DB", Value: getEnv("MONGODB_DB", "decisionbox")},
+		// Point any disk-touching SDKs (gosnowflake OCSP cache, AWS/GCP token
+		// caches) at the /tmp emptyDir below — required because the container
+		// runs with ReadOnlyRootFilesystem=true.
+		{Name: "TMPDIR", Value: "/tmp"},
+		{Name: "HOME", Value: "/tmp"},
 	}
 	for _, kv := range []struct{ key, envKey string }{
 		{"SECRET_PROVIDER", "SECRET_PROVIDER"},
@@ -82,6 +87,11 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 
 	backoffLimit := int32(0)
 
+	// SecurityContext fields satisfy PodSecurity "restricted" admission: agent
+	// pods run on tenant namespaces labeled pod-security.kubernetes.io/enforce=
+	// restricted, which rejects pods missing any of these. The agent image
+	// (Alpine + static Go binary) already runs as UID 1000 and needs no
+	// capabilities, so these are spec-only changes — no runtime behavior change.
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      spec.name,
@@ -97,12 +107,43 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					ServiceAccountName: r.config.ServiceAccountName,
 					RestartPolicy:      corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: boolPtr(true),
+						RunAsUser:    int64Ptr(1000),
+						RunAsGroup:   int64Ptr(1000),
+						FSGroup:      int64Ptr(1000),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name:         "tmp",
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:  "agent",
 							Image: r.config.AgentImage,
 							Args:  spec.args,
 							Env:   envVars,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: boolPtr(false),
+								RunAsNonRoot:             boolPtr(true),
+								RunAsUser:                int64Ptr(1000),
+								RunAsGroup:               int64Ptr(1000),
+								ReadOnlyRootFilesystem:   boolPtr(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "tmp", MountPath: "/tmp"},
+							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(spec.cpuReq),
@@ -121,6 +162,9 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 	}
 	return job
 }
+
+func boolPtr(b bool) *bool    { return &b }
+func int64Ptr(i int64) *int64 { return &i }
 
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
