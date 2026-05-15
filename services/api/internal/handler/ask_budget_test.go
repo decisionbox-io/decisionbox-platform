@@ -84,6 +84,24 @@ func (c *countOnceThenError) Count(_ context.Context, _ string) (int, error) {
 	return 1, nil
 }
 
+// hugeExactLLM is a provider whose exact verifier always reports a
+// count that exceeds the model's window. Lets us exercise the
+// verifyExactPromptFits → 413 path without needing a real upstream.
+type hugeExactLLM struct {
+	smallWindowLLM
+	reportedTokens int
+}
+
+func (h *hugeExactLLM) TokenCounter(_ context.Context, _ string) (gollm.TokenCounter, error) {
+	return &fixedExactCounter{count: h.reportedTokens}, nil
+}
+
+type fixedExactCounter struct{ count int }
+
+func (c *fixedExactCounter) Count(_ context.Context, _ string) (int, error) {
+	return c.count, nil
+}
+
 func init() {
 	// Provider with a deliberately tiny context window so trim is
 	// triggered by a few normal-length messages. MaxOutputTokens stays
@@ -165,6 +183,26 @@ func init() {
 				Wire:            gollm.WireAnthropic,
 				MaxOutputTokens: 256,
 				MaxInputTokens:  4000,
+			},
+		},
+	})
+
+	// Provider whose exact verifier reports 250000 tokens — always
+	// over the model's 200000 window. Exercises the
+	// verifyExactPromptFits 413 path.
+	gollm.RegisterWithMeta("test-llm-huge-exact", func(_ gollm.ProviderConfig) (gollm.Provider, error) {
+		return &hugeExactLLM{
+			smallWindowLLM: smallWindowLLM{response: &gollm.ChatResponse{Content: "should never see this", Model: "huge-llm"}},
+			reportedTokens: 250000,
+		}, nil
+	}, gollm.ProviderMeta{
+		Name: "test-llm-huge-exact",
+		Models: []gollm.ModelEntry{
+			{
+				ID:              "huge-llm",
+				Wire:            gollm.WireAnthropic,
+				MaxOutputTokens: 1024,
+				MaxInputTokens:  200000,
 			},
 		},
 	})
@@ -409,6 +447,52 @@ func TestAsk_AssembledPromptOverflowReturns413(t *testing.T) {
 }
 
 // --- Exact-verifier failure is non-fatal (test-llm-flaky-counter) ---
+
+// TestAsk_ExactVerifierOverflowReturns413 exercises the final
+// verifyExactPromptFits gate: even when the approximate budget walk
+// cleared the prompt, the exact counter can reveal that the
+// upstream-tokenized request still exceeds the model's window.
+// Handler must return typed 413 with details naming the exact count.
+func TestAsk_ExactVerifierOverflowReturns413(t *testing.T) {
+	insightID := "11111111-1111-4111-8111-111111111111"
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID:        "proj-1",
+			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:       models.LLMConfig{Provider: "test-llm-huge-exact", Model: "huge-llm"},
+		},
+	}
+	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+		{ID: insightID, Score: 0.9, Payload: map[string]interface{}{"type": "insight"}},
+	}}
+	insightRepo := &mockInsightRepo{insights: []*commonmodels.StandaloneInsight{
+		{ID: insightID, ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "n", Description: "d", Severity: "high"},
+	}}
+
+	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+	body, _ := json.Marshal(askRequest{Question: "small question"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 from exact-verifier overflow, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp.Code != ErrCodeContextOverflow {
+		t.Errorf("Code = %q, want %q", resp.Code, ErrCodeContextOverflow)
+	}
+	if !strings.Contains(resp.Error, "verified via exact counter") {
+		t.Errorf("Error message should call out 'verified via exact counter'; got %q", resp.Error)
+	}
+	if !strings.Contains(resp.Details, "exact_tokens=250000") {
+		t.Errorf("Details should carry exact_tokens=250000; got %q", resp.Details)
+	}
+}
 
 // TestAsk_FlakyExactVerifierIsNonFatal covers the rare case where
 // the provider's exact counter errors on the final verification

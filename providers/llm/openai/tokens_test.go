@@ -187,10 +187,14 @@ func TestIsCanonicalOpenAIHost(t *testing.T) {
 		{"https://api.openai.com/v1", true},          // explicit canonical
 		{"https://api.openai.com", true},             // no path
 		{"http://api.openai.com/v1", true},           // http scheme
+		{"api.openai.com", true},                     // schemeless canonical
+		{"api.openai.com/v1", true},                  // schemeless canonical with path
+		{"my-proxy.example.com", false},              // schemeless custom
 		{"https://my-proxy.example.com/v1", false},   // self-hosted
 		{"https://oai-proxy.internal.net/v1", false}, // private
 		{"https://api.openai.com.attacker.tld/v1", false}, // suffix attack
-		{"not-a-url", false},                         // malformed
+		{"not-a-url", false},                         // malformed (single token)
+		{"http://[::1]:%ZZ/x", false},                // truly unparseable URL (bad escape in port)
 	}
 	for _, c := range cases {
 		got := isCanonicalOpenAIHost(c.url)

@@ -111,6 +111,30 @@ func TestClaudeTokenCounter_ServerErrorReturnsTypedError(t *testing.T) {
 	}
 }
 
+func TestClaudeTokenCounter_MalformedSuccessResponse(t *testing.T) {
+	// 200 OK with a body that isn't a valid countTokensResponse —
+	// e.g. an upstream proxy that returns HTML on success. The
+	// counter must return a parse error rather than silently
+	// returning 0 (which would under-count and let the prompt
+	// overshoot).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("<html>not json</html>"))
+	}))
+	defer srv.Close()
+	withCountTokensURL(t, srv.URL)
+
+	p := &ClaudeProvider{apiKey: "k", model: "claude-haiku-4-5", httpClient: &http.Client{Timeout: 5 * time.Second}}
+	c, _ := p.TokenCounter(context.Background(), "claude-haiku-4-5")
+	_, err := c.Count(context.Background(), "anything")
+	if err == nil {
+		t.Fatal("Count returned nil error on malformed 200 body")
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error %q missing 'parse' detail", err.Error())
+	}
+}
+
 func TestClaudeTokenCounter_NonJSONErrorBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)

@@ -94,16 +94,7 @@ func (c *vertexGeminiTokenCounter) Count(ctx context.Context, text string) (int,
 		return 0, fmt.Errorf("vertex-ai countTokens: marshal: %w", err)
 	}
 
-	var host string
-	if c.location == "global" {
-		host = "aiplatform.googleapis.com"
-	} else {
-		host = fmt.Sprintf("%s-aiplatform.googleapis.com", c.location)
-	}
-	endpoint := fmt.Sprintf(
-		"https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:countTokens",
-		host, c.projectID, c.location, c.model,
-	)
+	endpoint := buildCountTokensURL(c.projectID, c.location, c.model)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -145,6 +136,21 @@ func (c *vertexGeminiTokenCounter) Count(ctx context.Context, text string) (int,
 // counts pieces individually so we keep it minimal.
 type geminiCountTokensRequest struct {
 	Contents []geminiContent `json:"contents"`
+}
+
+// buildCountTokensURL returns the canonical Vertex countTokens URL
+// for the given (projectID, location, model). Exposed as a
+// package-level variable so unit tests can redirect to an httptest
+// server. Production code never reassigns it.
+var buildCountTokensURL = func(projectID, location, model string) string {
+	host := fmt.Sprintf("%s-aiplatform.googleapis.com", location)
+	if location == "global" {
+		host = "aiplatform.googleapis.com"
+	}
+	return fmt.Sprintf(
+		"https://%s/v1/projects/%s/locations/%s/publishers/google/models/%s:countTokens",
+		host, projectID, location, model,
+	)
 }
 
 // geminiCountTokensResponse is the success payload. Vertex also
