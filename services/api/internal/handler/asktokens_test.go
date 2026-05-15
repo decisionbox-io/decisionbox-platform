@@ -456,65 +456,9 @@ func TestClassifyLLMError_SanitisesSecretsInDetails(t *testing.T) {
 	}
 }
 
-// --- countOrFallback -----------------------------------------------
+// --- verifyExactPromptFits -----------------------------------------
 
-func TestCountOrFallback_NoChangeWhenAlreadyApproximate(t *testing.T) {
-	approx := gollm.ApproximateCounter{}
-	original := gollm.NewBudget(200000, 2048, 600, false)
-	c, b := countOrFallback(context.Background(), approx, original, 200000, "ignored", "should never log")
-	if _, ok := c.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want ApproximateCounter (no-op path)", c)
-	}
-	if b != original {
-		t.Fatalf("budget should not be rebuilt when already on approximate path")
-	}
-}
-
-func TestCountOrFallback_NoChangeWhenExactCounterSucceeds(t *testing.T) {
-	// fixedCounter always succeeds → no swap.
-	exact := fixedCounter{perCall: 7}
-	original := gollm.NewBudget(200000, 2048, 600, true)
-	c, b := countOrFallback(context.Background(), exact, original, 200000, "ping", "should not log")
-	if _, ok := c.(fixedCounter); !ok {
-		t.Fatalf("got %T, want fixedCounter (success path)", c)
-	}
-	if b != original {
-		t.Fatalf("budget should not be rebuilt when probe succeeds")
-	}
-}
-
-func TestCountOrFallback_SwapsToApproximateAndWidensBudgetOnError(t *testing.T) {
-	// Counter errors on its first probe call. countOrFallback must
-	// drop to ApproximateCounter AND rebuild the budget with the
-	// wider 15% safety margin (because we lost the exactness
-	// guarantee).
-	stub := errors.New("upstream-blip")
-	c := &errorCounter{failOnCall: 1, err: stub}
-	original := gollm.NewBudget(200000, 2048, 600, true)
-	got, rebuilt := countOrFallback(context.Background(), c, original, 200000, "ping", "expected log")
-	if _, ok := got.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want ApproximateCounter after error", got)
-	}
-	// Approximate-tier margin is 15%; exact-tier was 5%. Rebuilt
-	// budget must reflect the new tier so available() over-trims
-	// rather than under-trims.
-	expectedApproxMargin := 200000 * gollm.ApproxCounterMarginPct / 100
-	if rebuilt.SafetyMargin != expectedApproxMargin {
-		t.Fatalf("SafetyMargin = %d, want %d (15%% tier)", rebuilt.SafetyMargin, expectedApproxMargin)
-	}
-}
-
-func TestCountOrFallback_NilCounterReturnsApproximate(t *testing.T) {
-	original := gollm.NewBudget(200000, 2048, 600, false)
-	got, _ := countOrFallback(context.Background(), nil, original, 200000, "ping", "ignored")
-	if _, ok := got.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want ApproximateCounter for nil input", got)
-	}
-}
-
-// --- resolveCounter ------------------------------------------------
-
-// tcProvider implements gollm.TokenCounterProvider for resolveCounter tests.
+// tcProvider implements gollm.TokenCounterProvider for verify tests.
 type tcProvider struct {
 	counter gollm.TokenCounter
 	err     error
@@ -528,59 +472,149 @@ func (p *tcProvider) TokenCounter(_ context.Context, _ string) (gollm.TokenCount
 	return p.counter, p.err
 }
 
-func TestResolveCounter_NilProviderFallsBackToApproximate(t *testing.T) {
-	c, exact := resolveCounter(context.Background(), nil, "any-model")
-	if c == nil {
-		t.Fatal("nil provider yielded nil counter; expected approximate")
-	}
-	if exact {
-		t.Fatal("nil provider should not register as exact")
-	}
-	if _, ok := c.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want gollm.ApproximateCounter", c)
-	}
-}
-
-func TestResolveCounter_ProviderWithoutInterfaceFallsBackToApproximate(t *testing.T) {
-	// mockProvider does not implement TokenCounterProvider.
-	c, exact := resolveCounter(context.Background(), &chatOnlyProvider{}, "any-model")
-	if _, ok := c.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want gollm.ApproximateCounter", c)
-	}
-	if exact {
-		t.Fatal("non-implementing provider should not register as exact")
-	}
-}
-
-func TestResolveCounter_ProviderTokenCounterErrorFallsBackToApproximate(t *testing.T) {
-	p := &tcProvider{err: errors.New("can't load encoding")}
-	c, exact := resolveCounter(context.Background(), p, "")
-	if _, ok := c.(gollm.ApproximateCounter); !ok {
-		t.Fatalf("got %T, want gollm.ApproximateCounter on err", c)
-	}
-	if exact {
-		t.Fatal("error should not register as exact")
-	}
-}
-
-func TestResolveCounter_ProviderSuppliesExact(t *testing.T) {
-	exactC := fixedCounter{perCall: 42}
-	p := &tcProvider{counter: exactC}
-	c, exact := resolveCounter(context.Background(), p, "")
-	if !exact {
-		t.Fatal("provider-supplied counter should register as exact")
-	}
-	if _, ok := c.(fixedCounter); !ok {
-		t.Fatalf("got %T, want fixedCounter", c)
-	}
-}
-
 // chatOnlyProvider implements gollm.Provider but NOT
-// gollm.TokenCounterProvider — used to verify resolveCounter degrades
-// gracefully when the active provider has no native counter.
+// gollm.TokenCounterProvider — used to verify the verify-helper
+// degrades gracefully when the active provider has no exact counter.
 type chatOnlyProvider struct{}
 
 func (chatOnlyProvider) Chat(_ context.Context, _ gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	return &gollm.ChatResponse{}, nil
 }
 func (chatOnlyProvider) Validate(_ context.Context) error { return nil }
+
+func TestVerifyExactPromptFits_NoProviderShortCircuits(t *testing.T) {
+	overflow, ok := verifyExactPromptFits(context.Background(), nil, "m", "sys", nil, 200000)
+	if ok {
+		t.Fatal("nil provider should report ok=false (no verification possible)")
+	}
+	if overflow != nil {
+		t.Fatalf("overflow = %v, want nil", overflow)
+	}
+}
+
+func TestVerifyExactPromptFits_ProviderWithoutTokenCounterShortCircuits(t *testing.T) {
+	_, ok := verifyExactPromptFits(context.Background(), &chatOnlyProvider{}, "m", "sys", nil, 200000)
+	if ok {
+		t.Fatal("provider without TokenCounter should report ok=false")
+	}
+}
+
+func TestVerifyExactPromptFits_TokenCounterErrorIsNonFatal(t *testing.T) {
+	p := &tcProvider{err: errors.New("encoding load failed")}
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	if ok {
+		t.Fatal("TokenCounter() err should yield ok=false")
+	}
+	if overflow != nil {
+		t.Fatalf("overflow = %v, want nil", overflow)
+	}
+}
+
+func TestVerifyExactPromptFits_ApproximateCounterIsSkipped(t *testing.T) {
+	// Provider returned ApproximateCounter (e.g. custom OpenAI
+	// base_url, Claude on Foundry). Re-running the approximation
+	// we already used during the walk would be wasted work.
+	p := &tcProvider{counter: gollm.ApproximateCounter{}}
+	_, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	if ok {
+		t.Fatal("approximate counter returned by provider should short-circuit (ok=false)")
+	}
+}
+
+func TestVerifyExactPromptFits_CounterErrorIsNonFatal(t *testing.T) {
+	// Exact counter exists but its first Count() errored (transient
+	// network blip). The handler must NOT 413 — fall through and
+	// let the provider report any overflow.
+	stub := errors.New("count_tokens 503")
+	p := &tcProvider{counter: &errorCounter{failOnCall: 1, err: stub}}
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	if ok {
+		t.Fatal("Count error should yield ok=false")
+	}
+	if overflow != nil {
+		t.Fatalf("overflow = %v, want nil", overflow)
+	}
+}
+
+func TestVerifyExactPromptFits_InWindowReturnsNoOverflow(t *testing.T) {
+	// fixedCounter(7) — single Count call returns 7. With
+	// modelMaxInput=200000 and askMaxOutputTokens=2048 reserve,
+	// 7 + 2048 ≪ 200000, so no overflow.
+	p := &tcProvider{counter: fixedCounter{perCall: 7}}
+	messages := []gollm.Message{
+		{Role: "user", Content: "hi"},
+	}
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", messages, 200000)
+	if !ok {
+		t.Fatal("exact counter present should yield ok=true")
+	}
+	if overflow != nil {
+		t.Fatalf("overflow = %v, want nil (well inside window)", overflow)
+	}
+}
+
+func TestVerifyExactPromptFits_OverflowReportsTypedError(t *testing.T) {
+	// Exact counter says 250000 tokens; model window is 200000.
+	// 250000 + 2048 > 200000 → overflow.
+	p := &tcProvider{counter: fixedCounter{perCall: 250000}}
+	messages := []gollm.Message{
+		{Role: "user", Content: "huge"},
+	}
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "test-model", "sys", messages, 200000)
+	if !ok {
+		t.Fatal("exact counter present should yield ok=true")
+	}
+	if overflow == nil {
+		t.Fatal("expected overflow error; got nil")
+	}
+	if !strings.Contains(overflow.Error(), "exact_tokens=250000") {
+		t.Errorf("overflow error %q missing exact_tokens=250000", overflow.Error())
+	}
+	if !strings.Contains(overflow.Error(), "window=200000") {
+		t.Errorf("overflow error %q missing window=200000", overflow.Error())
+	}
+}
+
+func TestVerifyExactPromptFits_BoundaryExactlyAtBudget(t *testing.T) {
+	// exactTokens + askMaxOutputTokens == modelMaxInput should pass
+	// (we use strict > for overflow). Boundary at modelMaxInput=2050
+	// and exactTokens=2 (askMaxOutputTokens=2048) → 2 + 2048 = 2050,
+	// not > 2050.
+	p := &tcProvider{counter: fixedCounter{perCall: 2}}
+	messages := []gollm.Message{{Role: "user", Content: "x"}}
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "", messages, askMaxOutputTokens+2)
+	if !ok {
+		t.Fatal("boundary case should yield ok=true")
+	}
+	if overflow != nil {
+		t.Fatalf("boundary case should not overflow; got %v", overflow)
+	}
+}
+
+// --- flattenForExactCount -----------------------------------------
+
+func TestFlattenForExactCount_EmptySystemAndMessages(t *testing.T) {
+	if got := flattenForExactCount("", nil); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestFlattenForExactCount_SkipsEmptyMessageContent(t *testing.T) {
+	// A message with empty Content shouldn't introduce a stray
+	// separator that the counter then counts as overhead.
+	got := flattenForExactCount("sys", []gollm.Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", Content: ""},
+		{Role: "user", Content: "follow-up"},
+	})
+	if got != "sys\n\nq\n\nfollow-up" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFlattenForExactCount_OmitsEmptySystem(t *testing.T) {
+	got := flattenForExactCount("", []gollm.Message{{Role: "user", Content: "q"}})
+	if got != "q" {
+		t.Fatalf("got %q, want %q", got, "q")
+	}
+}

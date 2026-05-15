@@ -408,9 +408,16 @@ func TestAsk_AssembledPromptOverflowReturns413(t *testing.T) {
 	}
 }
 
-// --- Counter-error fallback (test-llm-flaky-counter) --------------
+// --- Exact-verifier failure is non-fatal (test-llm-flaky-counter) ---
 
-func TestAsk_FlakyCounterFallsBackToApproximateAndStillAnswers(t *testing.T) {
+// TestAsk_FlakyExactVerifierIsNonFatal covers the rare case where
+// the provider's exact counter errors on the final verification
+// call (transient /count_tokens 503, e.g.). The Ask handler must
+// fall through silently and let the request proceed — the
+// approximate walk's 15% safety margin already cleared the prompt,
+// and a flaky upstream verifier should never block a user's
+// otherwise-valid request.
+func TestAsk_FlakyExactVerifierIsNonFatal(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
@@ -433,10 +440,7 @@ func TestAsk_FlakyCounterFallsBackToApproximateAndStillAnswers(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
 
-	// First counter call errors on the question — handler must
-	// substitute ApproximateCounter, rebuild the budget, and still
-	// produce a 200.
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (fallback to approximate counter), got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 200 (flaky exact verifier should not block request), got %d: %s", w.Code, w.Body.String())
 	}
 }

@@ -98,7 +98,7 @@ The /ask endpoint returns structured error codes the dashboard can branch on:
 | `412 Precondition Failed` | `embedding_not_configured` | Project has no embedding provider set. | "This project has no embedding provider configured. Add one under project settings → Embedding to enable Ask." |
 | `412 Precondition Failed` | `llm_not_configured` | Project has no LLM provider set, or the configured provider failed to instantiate. | "This project has no LLM provider configured. Add one under project settings → LLM to enable Ask." |
 | `413 Payload Too Large` | `context_overflow` | Even after trimming, the request exceeds the model's input window. | "This conversation has grown past the model's context window. Start a new chat, or switch to a model with a wider context window." |
-| `502 Bad Gateway` | `llm_upstream` | Provider returned a 4xx that is not a context overflow (rate limit, content filter, billing). | "The LLM provider rejected the request \[detail]. Try again; if it keeps happening, check provider credentials and quota." |
+| `502 Bad Gateway` | `llm_upstream` | Provider returned a 4xx that is not a context overflow (rate limit, content filter, billing). | "The LLM provider rejected the request. Try again; if it keeps happening, check provider credentials and quota." The sanitised provider message is on `ApiError.details` for any future "what happened" expander, never in the primary copy. |
 | `504 Gateway Timeout` | `llm_upstream` | Context cancelled or deadline exceeded. | Same as 502 messaging — try again. |
 | `500 Internal Server Error` | `llm_synthesis_failed` | Catch-all for unexpected provider failures. | "The LLM provider failed to answer this question. Try again, or start a new chat." |
 

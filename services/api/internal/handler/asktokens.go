@@ -30,60 +30,91 @@ const askReservedSystemTokens = 600
 // better off being told to start a new chat / pick a wider model.
 const askMinRAGItems = 1
 
-// countOrFallback returns (possibly-swapped counter, possibly-rebuilt
-// budget) after probing whether `counter` can count `sample` without
-// erroring. The Ask handler uses this between budget-critical steps
-// (knowledge section, final prompt) so a transient failure in an
-// exact counter (e.g. a Claude `/count_tokens` HTTP blip) drops the
-// remainder of the request onto ApproximateCounter with the wider
-// 15% margin, rather than silently treating the failed count as
-// zero tokens — which would inflate the budget and produce an
-// upstream 4xx.
+// verifyExactPromptFits does a single exact-counter check on the
+// fully assembled request (system prompt + every history message +
+// the new user prompt). The Ask handler does the budget walk with
+// gollm.ApproximateCounter for performance — counting every message
+// with an exact counter that round-trips to the upstream (Anthropic
+// /count_tokens, Vertex :countTokens) would put N+1 calls in the
+// hot path. This function is the safety net: ONE exact call right
+// before Chat, just to confirm the approximation didn't slip past
+// the model's window.
 //
-// No-op when the counter is already ApproximateCounter (the probe
-// would always succeed, and swapping the budget would just waste
-// allocations). Honours ctx cancellation by propagating the probe's
-// context — a cancelled-context error is the same shape as a
-// network error here, and ApproximateCounter is the right fallback
-// either way.
-func countOrFallback(ctx context.Context, counter gollm.TokenCounter, budget gollm.Budget, modelMaxInput int, sample, logReason string) (gollm.TokenCounter, gollm.Budget) {
-	if counter == nil {
-		counter = gollm.ApproximateCounter{}
-	}
-	if _, isApprox := counter.(gollm.ApproximateCounter); isApprox {
-		return counter, budget
-	}
-	if _, err := counter.Count(ctx, sample); err == nil {
-		return counter, budget
-	} else {
-		apilog.WithError(err).Warn(logReason)
-	}
-	approx := gollm.ApproximateCounter{}
-	return approx, gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
-}
-
-// resolveCounter returns the active TokenCounter and whether it is
-// exact. Providers that implement gollm.TokenCounterProvider supply
-// their own counter (Claude /count_tokens, OpenAI tiktoken); everyone
-// else falls back to the approximation counter, which the safety
-// margin in NewBudget widens to absorb the inaccuracy.
+// Returns:
+//   - (nil, false): provider has no exact counter, the verify call
+//     errored, or context cancelled. Caller proceeds with the
+//     request — the approximate walk's 15% safety margin is the
+//     only safety net, and any provider-side overflow gets typed
+//     via classifyLLMError.
+//   - (nil, true): exact counter confirmed the prompt fits.
+//   - (err, true): exact counter reported overflow. Caller surfaces
+//     413 context_overflow with err.Error() as details.
 //
-// A nil provider returns the approximate counter rather than
-// panicking — callers in error paths can ask for a budget shape
-// without first guaranteeing the provider exists.
-func resolveCounter(ctx context.Context, llmProvider gollm.Provider, model string) (gollm.TokenCounter, bool) {
+// The exact counter is invoked exactly once on a flattened string —
+// `Count(text string)` is the only operation the TokenCounter
+// interface exposes, so we sum the system prompt + each message's
+// content (separator = "\n\n"). The flattened text is a lower bound
+// on the upstream-billed tokens (chat-template overhead adds a few
+// per message) — the askMaxOutputTokens + askReservedSystemTokens
+// reserves cover that gap.
+func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, model, systemPrompt string, messages []gollm.Message, modelMaxInput int) (error, bool) {
 	if llmProvider == nil {
-		return gollm.ApproximateCounter{}, false
+		return nil, false
 	}
 	tcp, ok := llmProvider.(gollm.TokenCounterProvider)
 	if !ok {
-		return gollm.ApproximateCounter{}, false
+		return nil, false
 	}
 	counter, err := tcp.TokenCounter(ctx, model)
 	if err != nil || counter == nil {
-		return gollm.ApproximateCounter{}, false
+		return nil, false
 	}
-	return counter, gollm.IsExact(counter)
+	// Skip when the provider returned ApproximateCounter (custom
+	// OpenAI base_url, Claude/Mistral on Foundry, etc.) — verifying
+	// with the same approximation we already used wastes a call.
+	if !gollm.IsExact(counter) {
+		return nil, false
+	}
+
+	// Flatten the full request into one string the counter sees.
+	// We don't model role markers / message boundaries here: the
+	// exact counter's job is to spot a clear overshoot, not to
+	// match the upstream's chat-template billing byte-for-byte.
+	full := flattenForExactCount(systemPrompt, messages)
+	exactTokens, err := counter.Count(ctx, full)
+	if err != nil {
+		apilog.WithError(err).Warn("exact prompt verification failed; proceeding with approximate walk's clearance")
+		return nil, false
+	}
+
+	// Allow the request when the exact count plus the generation
+	// reserve still fits the model's input window. The system-prompt
+	// reserve already lives in askReservedSystemTokens; we don't
+	// double-subtract it here because the flattened text already
+	// includes the system prompt.
+	if exactTokens+askMaxOutputTokens > modelMaxInput {
+		return fmt.Errorf("model=%s window=%d exact_tokens=%d max_output=%d",
+			model, modelMaxInput, exactTokens, askMaxOutputTokens), true
+	}
+	return nil, true
+}
+
+// flattenForExactCount concatenates the system prompt + every
+// message's content into a single string the exact counter can
+// consume. Uses "\n\n" as the separator — close enough to what
+// chat-template formatters produce that any small overcount lives
+// in the askMaxOutputTokens reserve, not in user-visible behavior.
+func flattenForExactCount(systemPrompt string, messages []gollm.Message) string {
+	parts := make([]string, 0, len(messages)+1)
+	if systemPrompt != "" {
+		parts = append(parts, systemPrompt)
+	}
+	for _, m := range messages {
+		if m.Content != "" {
+			parts = append(parts, m.Content)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // trimMessagesByTokens walks the session's stored Q/A pairs newest →

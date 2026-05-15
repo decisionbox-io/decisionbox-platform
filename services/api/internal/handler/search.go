@@ -565,24 +565,31 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token-aware prompt assembly. The budget walk subtracts fixed
-	// costs (max-output, system-prompt estimate, safety margin) from
-	// the model's context window, then trims RAG and history to fit.
-	// See asktokens.go for the budget shape and trim invariants.
-	counter, exact := resolveCounter(ctx, llmProvider, project.LLM.Model)
+	// Token-aware prompt assembly. The budget walk uses
+	// gollm.ApproximateCounter throughout (rune/4) for two reasons:
+	//
+	//  1. Trim/shrink decisions touch every history pair, every RAG
+	//     shrink iteration, and the assembled prompt — call counts
+	//     scale with session size. With an exact counter that makes
+	//     a network round-trip (Anthropic /count_tokens, Vertex
+	//     :countTokens), the per-Ask latency would balloon by
+	//     20–100×.
+	//  2. The 15% approximate-tier safety margin is wide enough to
+	//     absorb rune/4's drift on every prompt shape we've seen
+	//     (English, code, CJK, mixed).
+	//
+	// We then do ONE exact verification on the assembled request
+	// (system + history + prompt) via the provider's
+	// TokenCounterProvider (Claude /count_tokens, OpenAI tiktoken,
+	// Vertex Gemini :countTokens, …). If exact reveals an overflow
+	// the approximate walk missed, the gate returns 413. If the
+	// provider has no exact counter (Bedrock, Ollama, …), the
+	// approximate walk's 15% margin is the safety net.
+	counter := gollm.ApproximateCounter{}
 	modelMaxInput := gollm.GetMaxInputTokens(project.LLM.Provider, project.LLM.Model)
-	budget := gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, exact)
+	budget := gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
 
-	questionTokens, err := counter.Count(ctx, req.Question)
-	if err != nil {
-		// Counter went sideways — fall back to approximation rather
-		// than failing the user's request. The wider safety margin
-		// already in the budget absorbs the inaccuracy.
-		counter = gollm.ApproximateCounter{}
-		budget = gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
-		questionTokens, _ = counter.Count(ctx, req.Question)
-	}
-
+	questionTokens, _ := counter.Count(ctx, req.Question)
 	available := budget.Available() - questionTokens
 	if available <= 0 {
 		writeErrorCode(w, http.StatusRequestEntityTooLarge,
@@ -598,30 +605,11 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// account for it as a fixed cost. Otherwise a project with
 	// large knowledge sources could pass the per-RAG budget but still
 	// overflow once knowledge is added.
-	//
-	// If the exact counter fails here, drop to the approximate counter
-	// for everything that follows — silently treating the failure as
-	// zero tokens (the previous behaviour) would under-count and let
-	// the prompt overshoot the upstream window.
 	knowledgeSection := gosources.FormatPromptSection(knowledgeChunks)
-	counter, budget = countOrFallback(ctx, counter, budget, modelMaxInput, knowledgeSection,
-		"knowledge section token count failed; falling back to approximate counter")
-	// countOrFallback may have rebuilt budget with the wider 15%
-	// approximate-tier margin, shrinking Available(). Recompute
-	// `available` so the RAG-fit + overflow checks below see the
-	// post-fallback budget — using the pre-fallback value would
-	// make ragBudget too generous and could reintroduce an
-	// upstream context overflow after a counter swap.
-	available = budget.Available() - questionTokens
 	knowledgeTokens, _ := counter.Count(ctx, knowledgeSection)
 
 	ragBudget := available - knowledgeTokens
-	contextStr, ragTokens, keptInsights, err := fitRAGContext(ctx, counter, insights, ragBudget)
-	if err != nil {
-		// Counting failed mid-shrink; treat as best-effort and
-		// continue with whatever we measured.
-		apilog.WithError(err).Warn("RAG context token counting failed; using best-effort sizing")
-	}
+	contextStr, ragTokens, keptInsights, _ := fitRAGContext(ctx, counter, insights, ragBudget)
 
 	// If RAG context + knowledge still overflows even at the
 	// askMinRAGItems floor, surface a typed 413 rather than letting
@@ -636,12 +624,6 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := fmt.Sprintf("Context from %d relevant insights/recommendations:\n\n%s\n\n%s\nQuestion: %s", keptInsights, contextStr, knowledgeSection, req.Question)
-	// Same fallback discipline as the knowledge section. The exact
-	// counter could still fail here even after surviving earlier
-	// calls (transient network for /count_tokens), and treating that
-	// as 0 would inflate the history budget and risk an upstream 4xx.
-	counter, budget = countOrFallback(ctx, counter, budget, modelMaxInput, prompt,
-		"prompt token count failed; falling back to approximate counter")
 	promptTokens, _ := counter.Count(ctx, prompt)
 
 	// The earlier "rag + knowledge > available" check counts the raw
@@ -649,9 +631,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// ("Context from N relevant insights/recommendations:\n\n…
 	// Question: …"). On tight budgets that wrapper can be the
 	// difference between fitting and overflowing, so we surface the
-	// 413 here rather than letting the provider 4xx — clamping
-	// historyBudget alone wouldn't help because the prompt itself
-	// already overshoots.
+	// 413 here rather than letting the provider 4xx.
 	if promptTokens > budget.Available() {
 		writeErrorCode(w, http.StatusRequestEntityTooLarge,
 			ErrCodeContextOverflow,
@@ -677,17 +657,26 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "session does not belong to this project")
 				return
 			}
-			trimmed, trimErr := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
-			if trimErr != nil {
-				// Best-effort: the trim returned whatever fit before
-				// the counter errored. Log so operators can spot a
-				// persistently broken counter without blocking users.
-				apilog.WithError(trimErr).Warn("Ask history trim hit counter error; using partial history")
-			}
+			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
 			messages = append(messages, trimmed...)
 		}
 	}
 	messages = append(messages, gollm.Message{Role: "user", Content: prompt})
+
+	// Single exact verification on the fully assembled request.
+	// Catches the rare case where the approximate walk under-counted
+	// enough to slip past the budget but exact reveals an actual
+	// overflow. Provider exact counter not available, transient
+	// upstream error, or context-cancelled → silently fall through
+	// and let provider report any overflow as a typed 413 via
+	// classifyLLMError below.
+	if overflow, ok := verifyExactPromptFits(ctx, llmProvider, project.LLM.Model, systemPrompt, messages, modelMaxInput); ok && overflow != nil {
+		writeErrorCode(w, http.StatusRequestEntityTooLarge,
+			ErrCodeContextOverflow,
+			"the assembled prompt exceeds the model's input window (verified via exact counter)",
+			overflow.Error())
+		return
+	}
 
 	// Temperature omitted: Bedrock + direct Anthropic reject the field
 	// on Opus 4.x extended-thinking models. Synthesis already grounds the
