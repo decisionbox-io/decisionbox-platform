@@ -12,8 +12,17 @@ import (
 // TokenCounter implements gollm.TokenCounterProvider for OpenAI. The
 // counter looks up the BPE encoding declared on the catalog entry
 // (catalog.go, "Encoding" field) and runs tiktoken-go locally — no
-// network round-trip, no API quota consumed, and the result matches
-// what the OpenAI server would charge for input_tokens.
+// network round-trip, no API quota consumed.
+//
+// Count() is exact for the raw text input, but OpenAI's billed
+// `prompt_tokens` for a chat-completions request additionally
+// includes per-message overhead (role markers, message boundaries,
+// tool_call metadata, a small priming budget). Empirically that
+// overhead is ~3–7 tokens per message on gpt-4o-mini — small in
+// absolute terms but ~25% of a short message. The budget layer's
+// 5% safety margin (exact-counter tier) absorbs the residual; the
+// tiktoken-vs-real-billing integration test pins the drift at
+// ≤20% on a non-trivial prompt.
 //
 // Unknown models fall back to the o200k_base encoding (FallbackEncoding)
 // which matches every modern OpenAI model. If even the fallback

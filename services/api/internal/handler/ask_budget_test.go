@@ -361,6 +361,53 @@ func TestAsk_QuestionAloneOverflowReturns413(t *testing.T) {
 	}
 }
 
+// --- Assembled-prompt overflow (test-llm-tiny + small RAG) --------
+
+// TestAsk_AssembledPromptOverflowReturns413 covers the gap between
+// the "question alone overflows" check and the "RAG+knowledge >
+// available" check: the prompt scaffolding wrapper itself
+// ("Context from N relevant insights/recommendations:\n\n…
+// Question: …") adds tokens that aren't measured by either earlier
+// guard. Without the explicit promptTokens > Available() check the
+// handler would let an oversized prompt through to the provider.
+func TestAsk_AssembledPromptOverflowReturns413(t *testing.T) {
+	insightID := "11111111-1111-4111-8111-111111111111"
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID:        "proj-1",
+			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:       models.LLMConfig{Provider: "test-llm-tiny", Model: "tiny-llm"},
+		},
+	}
+	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+		{ID: insightID, Score: 0.9, Payload: map[string]interface{}{"type": "insight"}},
+	}}
+	insightRepo := &mockInsightRepo{insights: []*commonmodels.StandaloneInsight{
+		{ID: insightID, ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "n", Description: "d", Severity: "high"},
+	}}
+
+	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+	// Question short enough to slip past the question-alone guard,
+	// but combined with the scaffolding wrapper + 1 insight it
+	// overshoots the tiny-llm 64-token window.
+	body, _ := json.Marshal(askRequest{Question: "what is happening with retention and churn here"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for assembled-prompt overflow, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp.Code != ErrCodeContextOverflow {
+		t.Errorf("Code = %q, want %q", resp.Code, ErrCodeContextOverflow)
+	}
+}
+
 // --- Counter-error fallback (test-llm-flaky-counter) --------------
 
 func TestAsk_FlakyCounterFallsBackToApproximateAndStillAnswers(t *testing.T) {

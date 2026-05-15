@@ -637,13 +637,27 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		"prompt token count failed; falling back to approximate counter")
 	promptTokens, _ := counter.Count(ctx, prompt)
 
+	// The earlier "rag + knowledge > available" check counts the raw
+	// citation + chunk bodies but not the wrapping prompt scaffolding
+	// ("Context from N relevant insights/recommendations:\n\n…
+	// Question: …"). On tight budgets that wrapper can be the
+	// difference between fitting and overflowing, so we surface the
+	// 413 here rather than letting the provider 4xx — clamping
+	// historyBudget alone wouldn't help because the prompt itself
+	// already overshoots.
+	if promptTokens > budget.Available() {
+		writeErrorCode(w, http.StatusRequestEntityTooLarge,
+			ErrCodeContextOverflow,
+			"the assembled question + retrieved context exceeds this model's input window",
+			fmt.Sprintf("model=%s window=%d prompt_tokens=%d available=%d",
+				project.LLM.Model, modelMaxInput, promptTokens, budget.Available()))
+		return
+	}
+
 	// Budget remaining for history = Available - prompt-shaped tokens.
 	// The prompt already includes the question + RAG + knowledge; we
 	// don't double-count.
 	historyBudget := budget.Available() - promptTokens
-	if historyBudget < 0 {
-		historyBudget = 0
-	}
 
 	// Build messages with conversation history from session for
 	// multi-turn context. The walk drops oldest pairs first; the

@@ -69,7 +69,12 @@ export function askErrorMessage(err: unknown): string {
     case 'context_overflow':
       return "This conversation has grown past the model's context window. Start a new chat, or switch to a model with a wider context window.";
     case 'llm_upstream':
-      return `The LLM provider rejected the request${err.details ? ` (${err.details})` : ''}. Try again in a moment; if it keeps happening, check your provider credentials and quota.`;
+      // Per the ApiError doc, `details` is surfaced in a secondary
+      // "what happened" expander, never inlined in the primary
+      // sentence — otherwise a leaky upstream message becomes part
+      // of the headline copy. Callers that want to render the
+      // detail can read err.details directly off the ApiError.
+      return 'The LLM provider rejected the request. Try again in a moment; if it keeps happening, check your provider credentials and quota.';
     case 'llm_synthesis_failed':
       return 'The LLM provider failed to answer this question. Try again, or start a new chat.';
     default:

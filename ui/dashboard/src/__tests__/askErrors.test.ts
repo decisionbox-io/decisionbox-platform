@@ -139,18 +139,24 @@ describe('askErrorMessage', () => {
     expect(msg).toMatch(/new chat|wider/i);
   });
 
-  it('maps llm_upstream to provider-side copy and includes details when present', () => {
+  it('maps llm_upstream to provider-side copy WITHOUT inlining details', () => {
+    // The ApiError doc says `details` belongs in a secondary expander,
+    // not in the primary user-facing sentence. Inlining it would leak
+    // raw upstream text into the headline copy and defeat the
+    // consistent-copy contract.
     const e = new ApiError('rate limited', 502, 'llm_upstream', 'rate_limit_error — slow down');
     const msg = askErrorMessage(e);
     expect(msg).toContain('LLM provider rejected');
-    expect(msg).toContain('rate_limit_error');
+    expect(msg).not.toContain('rate_limit_error');
+    expect(msg).not.toContain('slow down');
   });
 
-  it('maps llm_upstream to provider-side copy without details', () => {
-    const e = new ApiError('rate limited', 502, 'llm_upstream');
-    const msg = askErrorMessage(e);
-    expect(msg).toContain('LLM provider rejected');
-    expect(msg).not.toContain('()');
+  it('llm_upstream produces the same primary message regardless of details presence', () => {
+    // Details vs no-details must not change the primary message —
+    // callers reading err.details for an expander get the same UX.
+    const withDetails = askErrorMessage(new ApiError('x', 502, 'llm_upstream', 'detail'));
+    const without = askErrorMessage(new ApiError('x', 502, 'llm_upstream'));
+    expect(withDetails).toBe(without);
   });
 
   it('maps llm_synthesis_failed to a try-again line', () => {
