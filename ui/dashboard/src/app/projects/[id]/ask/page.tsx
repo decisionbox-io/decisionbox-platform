@@ -9,7 +9,7 @@ import remarkGfm from 'remark-gfm';
 import Shell from '@/components/layout/AppShell';
 import CitationsFooter, { sourceHref } from '@/components/citations/CitationsFooter';
 import { CitationLink } from '@/components/citations/CitationLink';
-import { api, AskSession, SearchResultItem } from '@/lib/api';
+import { api, AskSession, SearchResultItem, askErrorMessage } from '@/lib/api';
 
 interface DisplayMessage {
   question: string;
@@ -75,10 +75,10 @@ export default function AskPage() {
         timestamp: new Date().toISOString(),
       }]);
       loadSessions();
-    } catch {
+    } catch (err) {
       setMessages(prev => [...prev, {
         question: text,
-        answer: 'Sorry, I could not answer this question. Make sure embedding is configured for this project.',
+        answer: askErrorMessage(err),
         sources: [],
         model: '',
         timestamp: new Date().toISOString(),

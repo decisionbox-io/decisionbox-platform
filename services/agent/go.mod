@@ -29,7 +29,7 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
-	github.com/pkoukk/tiktoken-go v0.1.2
+	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/qdrant/go-client v1.17.0
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0

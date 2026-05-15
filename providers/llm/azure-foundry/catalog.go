@@ -30,6 +30,20 @@ const (
 	gpt5Max  = 16384
 	gpt4oMax = 16384
 	gpt41Max = 32768
+
+	// Context-window caps. Anthropic on Foundry mirrors Anthropic's
+	// 200K standard tier; OpenAI on Foundry mirrors OpenAI's per-model
+	// window; Mistral Large on Foundry follows the upstream 128K.
+	claude4InputWindow      = 200000
+	gpt5InputWindow         = 400000
+	gpt41InputWindow        = 1000000
+	gpt4oInputWindow        = 128000
+	mistralLargeInputWindow = 128000
+
+	// Tiktoken encoding for OpenAI models on Foundry — matches the
+	// direct-OpenAI catalog. The provider's TokenCounter reads this
+	// when assembling an exact count for an OpenAI-wire model.
+	encO200KBase = "o200k_base"
 )
 
 // buildAzureFoundryCatalog returns Azure AI Foundry models with
@@ -38,7 +52,7 @@ const (
 // the user types so a deployment called "claude-haiku-4-5-prod"
 // still resolves through the FamilyInferrer.
 func buildAzureFoundryCatalog() []gollm.ModelEntry {
-	return []gollm.ModelEntry{
+	models := []gollm.ModelEntry{
 		// --- Anthropic Claude on Foundry ---
 		{
 			ID:              "claude-opus-4-7",
@@ -103,6 +117,8 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "GPT-5 (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: gpt5Max,
+			MaxInputTokens:  gpt5InputWindow,
+			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 15.0},
 		},
 		{
@@ -110,6 +126,8 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "GPT-5 Mini (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: gpt5Max,
+			MaxInputTokens:  gpt5InputWindow,
+			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.30, OutputPerMillion: 1.20},
 		},
 		{
@@ -117,6 +135,8 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "GPT-4.1 (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: gpt41Max,
+			MaxInputTokens:  gpt41InputWindow,
+			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 2.0, OutputPerMillion: 8.0},
 		},
 		{
@@ -124,6 +144,8 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "GPT-4o (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: gpt4oMax,
+			MaxInputTokens:  gpt4oInputWindow,
+			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 2.50, OutputPerMillion: 10.0},
 		},
 		{
@@ -131,6 +153,8 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "GPT-4o Mini (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: gpt4oMax,
+			MaxInputTokens:  gpt4oInputWindow,
+			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.15, OutputPerMillion: 0.60},
 		},
 		{
@@ -138,7 +162,16 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			DisplayName:     "Mistral Large 2411 (Azure Foundry)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 4096,
+			MaxInputTokens:  mistralLargeInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 9.0},
 		},
 	}
+	// Claude 4.x on Foundry mirrors Anthropic's 200K standard tier —
+	// fill once rather than duplicate on every Anthropic-wire entry.
+	for i := range models {
+		if models[i].Wire == gollm.WireAnthropic && models[i].MaxInputTokens == 0 {
+			models[i].MaxInputTokens = claude4InputWindow
+		}
+	}
+	return models
 }

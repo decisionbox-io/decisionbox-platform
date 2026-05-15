@@ -123,6 +123,8 @@ The API talks to LLMs for `/ask`, pack-gen, and the enterprise executive-summary
 |----------|---------|-------------|
 | `LLM_TIMEOUT` | *(provider-specific)* | HTTP timeout per LLM API call, applied to every registered provider. Go duration format: `30s`, `2m`, `15m`. Per-project `timeout_seconds` overrides this when set. When unset, providers use their hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). Raise this when long-form generations (e.g. executive summaries on Opus-class models) exceed 5 minutes. Same env var the agent reads — set it once on both containers. |
 
+**No env vars are needed for `/ask` context budgeting.** The handler reads each model's published context window from its catalog entry (`MaxInputTokens`) and sizes the prompt against it automatically. Models with no declared window fall back to a conservative 32K. See [Ask: Token-Aware Context Budgeting](../concepts/ask.md) for the full algorithm and the typed error codes the dashboard branches on.
+
 ### Agent Runner
 
 The API spawns the agent for each discovery run. Two modes:

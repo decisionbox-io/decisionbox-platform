@@ -2,6 +2,22 @@ package ollama
 
 import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
+// MaxInputTokens here is the model's *upstream-published* native
+// context — what the model architecture supports. Users running
+// Ollama with a lower `num_ctx` (Ollama's default is 2048 unless the
+// modelfile or `OLLAMA_KV_CACHE_TYPE` raises it) will see callers
+// over-fill the prompt and Ollama will silently truncate. The
+// budgeting layer applies a 15% safety margin via the approximation
+// counter, which absorbs minor mismatches; for projects that pin
+// num_ctx well below the native window, users should configure a
+// smaller model in the dashboard.
+const (
+	ctx128K = 131072
+	ctx64K  = 65536
+	ctx8K   = 8192
+	ctx1M   = 1048576 // Llama 4 Scout's published native window
+)
+
 // Output-token caps for popular Ollama model families. Values come
 // from each model card's documented synchronous generation limit; the
 // agent caps requests at these so a poorly-specified prompt doesn't
@@ -26,12 +42,14 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			Aliases:         []string{"qwen3.6:latest", "qwen3.6:35b-a3b"},
 			DisplayName:     "Qwen 3.6",
 			MaxOutputTokens: 65536,
+			MaxInputTokens:  ctx128K,
 		},
 		{
 			ID:              "qwen3.5",
 			Aliases:         []string{"qwen3.5:latest", "qwen3.5:122b"},
 			DisplayName:     "Qwen 3.5",
 			MaxOutputTokens: 65536,
+			MaxInputTokens:  ctx128K,
 		},
 
 		// DeepSeek R1 — reasoning chains need the long tail.
@@ -46,6 +64,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "DeepSeek R1",
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  ctx128K,
 		},
 
 		// Qwen 3 — tech report recommends 32k for standard output.
@@ -60,6 +79,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Qwen 3",
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  ctx128K,
 		},
 
 		// DeepSeek V3.
@@ -68,6 +88,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			Aliases:         []string{"deepseek-v3:latest", "deepseek-v3.2"},
 			DisplayName:     "DeepSeek V3",
 			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx64K,
 		},
 
 		// Qwen 2.5 — model card sets max_new_tokens=16384.
@@ -82,6 +103,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Qwen 2.5",
 			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
 		},
 
 		// Gemma 3 — paid-tier providers expose 16k output.
@@ -90,9 +112,10 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			Aliases:         []string{"gemma3:latest", "gemma3:27b"},
 			DisplayName:     "Gemma 3",
 			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
 		},
 
-		// Llama 4 — huge context, 8k practical output.
+		// Llama 4 — huge context (1M+ on Scout), 8k practical output.
 		{
 			ID: "llama4",
 			Aliases: []string{
@@ -102,6 +125,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Llama 4",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx1M,
 		},
 
 		// Llama 3.x — 128k context, 8k practical output. Each shipped
@@ -115,6 +139,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Llama 3.3",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx128K,
 		},
 		{
 			ID: "llama3.2",
@@ -125,6 +150,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Llama 3.2",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx128K,
 		},
 		{
 			ID: "llama3.1",
@@ -136,6 +162,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Llama 3.1",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx128K,
 		},
 		{
 			ID: "llama3",
@@ -146,6 +173,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Llama 3",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx8K,
 		},
 
 		// Gemma 2 — 8k context, output capped at 8k.
@@ -159,6 +187,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			},
 			DisplayName:     "Gemma 2",
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx8K,
 		},
 	}
 }

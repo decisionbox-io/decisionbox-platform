@@ -37,6 +37,19 @@ const (
 	opus4Max   = 32000
 	sonnet4Max = 64000
 	haiku4Max  = 64000
+
+	// Context-window caps. Claude 4.x on Bedrock mirrors Anthropic's
+	// 200K standard tier. Open-source models on Bedrock vary, so each
+	// catalog entry declares its own; the defaults below cover the
+	// common case where the entry doesn't override.
+	claude4InputWindow = 200000
+
+	qwenInputWindow         = 128000 // Qwen3 family (32K–128K depending on variant; 128K is the upper)
+	deepseekR1InputWindow   = 128000 // DeepSeek R1 (Bedrock-published)
+	mixtral8x22BInputWindow = 65536  // Mistral Mixtral 8x22B
+	mistralLargeInputWindow = 128000 // Mistral Large 2407
+	llama3InputWindow       = 128000 // Meta Llama 3.3 70B Instruct
+	llama4InputWindow       = 1000000 // Meta Llama 4 Maverick 17B (long-context)
 )
 
 // buildBedrockCatalog returns every Bedrock model DecisionBox ships
@@ -48,7 +61,7 @@ const (
 // Adding a new model is a single ModelEntry — alias generation is
 // programmatic so the matrix stays in sync as AWS adds new geos.
 func buildBedrockCatalog() []gollm.ModelEntry {
-	return []gollm.ModelEntry{
+	models := []gollm.ModelEntry{
 		// --- Anthropic wire — Claude on Bedrock ---
 		{
 			ID:              "anthropic.claude-opus-4-7-v1:0",
@@ -130,6 +143,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Qwen3-next 80B A3B (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  qwenInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.22, OutputPerMillion: 0.88},
 		},
 		{
@@ -138,6 +152,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Qwen3 Coder 30B A3B (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  qwenInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.18, OutputPerMillion: 0.72},
 		},
 		{
@@ -146,6 +161,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Qwen3 32B (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  qwenInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.18, OutputPerMillion: 0.72},
 		},
 		{
@@ -154,6 +170,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "DeepSeek R1 (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  deepseekR1InputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.35, OutputPerMillion: 5.40},
 		},
 		{
@@ -162,6 +179,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Mixtral 8x22B (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  mixtral8x22BInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.60, OutputPerMillion: 1.80},
 		},
 		{
@@ -170,6 +188,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Mistral Large 2407 (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 4096,
+			MaxInputTokens:  mistralLargeInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 9.0},
 		},
 		{
@@ -178,6 +197,7 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Llama 3.3 70B Instruct (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  llama3InputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.72, OutputPerMillion: 0.72},
 		},
 		{
@@ -186,7 +206,16 @@ func buildBedrockCatalog() []gollm.ModelEntry {
 			DisplayName:     "Llama 4 Maverick 17B (Bedrock)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  llama4InputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.35, OutputPerMillion: 1.40},
 		},
 	}
+	// Claude 4.x entries on Bedrock share the same standard 200K
+	// context window — fill once rather than duplicate per row.
+	for i := range models {
+		if models[i].Wire == gollm.WireAnthropic && models[i].MaxInputTokens == 0 {
+			models[i].MaxInputTokens = claude4InputWindow
+		}
+	}
+	return models
 }

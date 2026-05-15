@@ -27,6 +27,16 @@ const (
 	opus4Max   = 32000
 	sonnet4Max = 64000
 	haiku4Max  = 64000
+
+	// Anthropic-published context windows (input + output combined).
+	// Source: https://platform.claude.com/docs/en/docs/about-claude/models/overview
+	//
+	// The standard tier is 200K across the Claude 4.x line; long-context
+	// (1M) is a beta opt-in keyed off a separate header and not yet
+	// surfaced here. Until that lands we keep the conservative 200K
+	// number — over-trimming is recoverable, under-counting and 4xx is
+	// not.
+	claude4InputWindow = 200000
 )
 
 // buildClaudeCatalog returns Anthropic's published Claude API model
@@ -38,7 +48,7 @@ const (
 // Source for IDs and aliases:
 // https://platform.claude.com/docs/en/docs/about-claude/models/overview
 func buildClaudeCatalog() []gollm.ModelEntry {
-	return []gollm.ModelEntry{
+	models := []gollm.ModelEntry{
 		{
 			ID:              "claude-opus-4-7",
 			Aliases:         []string{"opus-4-7"},
@@ -114,4 +124,11 @@ func buildClaudeCatalog() []gollm.ModelEntry {
 			Pricing:         gollm.TokenPricing{InputPerMillion: haikuIn, OutputPerMillion: haikuOut},
 		},
 	}
+	// Every Claude 4.x model exposes the same 200K standard context
+	// window — fill MaxInputTokens uniformly rather than duplicating
+	// the value on each entry.
+	for i := range models {
+		models[i].MaxInputTokens = claude4InputWindow
+	}
+	return models
 }

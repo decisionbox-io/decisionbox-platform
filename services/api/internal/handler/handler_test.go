@@ -296,6 +296,13 @@ func TestLLMProviders_HavePricing(t *testing.T) {
 		if meta.ID == "ollama" {
 			continue
 		}
+		// Test fixtures register providers prefixed "test-" to
+		// exercise handler-level paths (trim, typed errors). They
+		// are not shipped models — skip the pricing assertion for
+		// them rather than papering over with fake numbers.
+		if strings.HasPrefix(meta.ID, "test-") {
+			continue
+		}
 		hasPricing := false
 		for _, e := range meta.Models {
 			if e.Pricing.InputPerMillion > 0 || e.Pricing.OutputPerMillion > 0 {

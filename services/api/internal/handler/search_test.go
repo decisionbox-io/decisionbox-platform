@@ -587,8 +587,17 @@ func TestAsk_NoEmbeddingConfig(t *testing.T) {
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412, got %d: %s", w.Code, w.Body.String())
+	}
+	// The dashboard branches on Code rather than Error, so verify
+	// the typed code is set and stable.
+	var resp APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp.Code != ErrCodeEmbeddingNotConfigured {
+		t.Errorf("Code = %q, want %q", resp.Code, ErrCodeEmbeddingNotConfigured)
 	}
 }
 

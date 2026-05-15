@@ -35,6 +35,20 @@ const (
 	geminiMax  = 65536
 )
 
+// Context-window caps. Claude on Vertex inherits Anthropic's 200K
+// standard tier. Gemini 2.x supports 1M input; 1.5 Flash supports 1M
+// as well (Google publishes 1M for the entire 1.5 / 2.x line). MaaS
+// models vary — set per-entry below.
+const (
+	claude4InputWindow      = 200000
+	gemini1MInputWindow     = 1000000
+	llama3MaaSInputWindow   = 128000
+	llama4MaaSInputWindow   = 1000000
+	qwenMaaSInputWindow     = 256000
+	mistralMaaSInputWindow  = 128000
+	deepseekMaaSInputWindow = 128000
+)
+
 // buildVertexCatalog returns every Vertex AI model DecisionBox ships
 // support for. Three wires coexist: GoogleNative for Gemini,
 // Anthropic for Claude (via publishers/anthropic), OpenAICompat for
@@ -55,7 +69,7 @@ const (
 // our side — it mirrors what Anthropic's docs page lists as each
 // model's primary identifier on Vertex.
 func buildVertexCatalog() []gollm.ModelEntry {
-	return []gollm.ModelEntry{
+	models := []gollm.ModelEntry{
 		// --- Google-native — Gemini ---
 		{
 			ID:              "gemini-2.5-pro",
@@ -63,6 +77,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemini 2.5 Pro (Vertex)",
 			Wire:            gollm.WireGoogleNative,
 			MaxOutputTokens: geminiMax,
+			MaxInputTokens:  gemini1MInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.25, OutputPerMillion: 10.0},
 		},
 		{
@@ -71,6 +86,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemini 2.5 Flash (Vertex)",
 			Wire:            gollm.WireGoogleNative,
 			MaxOutputTokens: geminiMax,
+			MaxInputTokens:  gemini1MInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.15, OutputPerMillion: 0.60},
 		},
 		{
@@ -79,6 +95,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemini 2.0 Flash (Vertex)",
 			Wire:            gollm.WireGoogleNative,
 			MaxOutputTokens: geminiMax,
+			MaxInputTokens:  gemini1MInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.10, OutputPerMillion: 0.40},
 		},
 		{
@@ -87,6 +104,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemini 1.5 Pro (Vertex)",
 			Wire:            gollm.WireGoogleNative,
 			MaxOutputTokens: geminiMax,
+			MaxInputTokens:  gemini1MInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.25, OutputPerMillion: 5.0},
 		},
 		{
@@ -95,6 +113,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemini 1.5 Flash (Vertex)",
 			Wire:            gollm.WireGoogleNative,
 			MaxOutputTokens: geminiMax,
+			MaxInputTokens:  gemini1MInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.075, OutputPerMillion: 0.30},
 		},
 
@@ -178,6 +197,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Llama 3.3 70B Instruct (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  llama3MaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.72, OutputPerMillion: 0.72},
 		},
 		{
@@ -185,6 +205,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Llama 4 Maverick 17B (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
+			MaxInputTokens:  llama4MaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.35, OutputPerMillion: 1.40},
 		},
 		{
@@ -192,6 +213,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Qwen3 Coder 480B A35B (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  qwenMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 2.0, OutputPerMillion: 8.0},
 		},
 		{
@@ -204,6 +226,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "Mistral Large 2411 (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 4096,
+			MaxInputTokens:  mistralMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 9.0},
 		},
 		{
@@ -214,7 +237,16 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			DisplayName:     "DeepSeek R1 (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 32768,
+			MaxInputTokens:  deepseekMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.35, OutputPerMillion: 5.40},
 		},
 	}
+	// Claude 4.x on Vertex shares the 200K standard context window —
+	// fill once rather than duplicate the value on every entry.
+	for i := range models {
+		if models[i].Wire == gollm.WireAnthropic && models[i].MaxInputTokens == 0 {
+			models[i].MaxInputTokens = claude4InputWindow
+		}
+	}
+	return models
 }

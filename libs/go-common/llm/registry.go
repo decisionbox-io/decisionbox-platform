@@ -145,6 +145,26 @@ type ModelEntry struct {
 	// does not specify max_tokens. Required (must be > 0).
 	MaxOutputTokens int
 
+	// MaxInputTokens is the upstream-published context window for this
+	// model. Callers that assemble multi-turn prompts (e.g. /ask) use
+	// it to size the history budget so the request never exceeds the
+	// provider's input cap.
+	//
+	// Optional. Zero means "unknown" — callers fall back to
+	// DefaultMaxInputTokens, which is conservative enough that trim
+	// happens before any shipped model would 4xx.
+	MaxInputTokens int
+
+	// Encoding is the BPE tokenizer name for OpenAI-family models
+	// (e.g. "cl100k_base" for gpt-4, "o200k_base" for gpt-4o / gpt-5
+	// / o-series). Read by the OpenAI provider's TokenCounter so
+	// catalog edits drive tokenizer selection without a code change.
+	//
+	// Empty for non-OpenAI models — their providers either have a
+	// native count API (Anthropic /messages/count_tokens, Vertex
+	// countTokens) or fall back to the approximation counter.
+	Encoding string
+
 	// Pricing carries list price per 1M tokens. Optional — zero values
 	// surface as "unknown" in the dashboard rather than misleading
 	// $0.
@@ -183,6 +203,7 @@ type ModelInfo struct {
 	DisplayName           string  `json:"display_name"`
 	Wire                  string  `json:"wire"`
 	MaxOutputTokens       int     `json:"max_output_tokens,omitempty"`
+	MaxInputTokens        int     `json:"max_input_tokens,omitempty"`
 	InputPricePerMillion  float64 `json:"input_price_per_million,omitempty"`
 	OutputPricePerMillion float64 `json:"output_price_per_million,omitempty"`
 	Lifecycle             string  `json:"lifecycle,omitempty"`
@@ -220,6 +241,12 @@ type ProviderMeta struct {
 	// exceeding the upstream cap. 0 means "fall back to the global
 	// 8192 default".
 	DefaultMaxOutputTokens int `json:"default_max_output_tokens,omitempty"`
+
+	// DefaultMaxInputTokens is the context-window cap returned for IDs
+	// that match no entry in Models. 0 means "fall back to the global
+	// DefaultMaxInputTokens" (set conservatively so callers truncate
+	// rather than overshoot an unknown model's upstream window).
+	DefaultMaxInputTokens int `json:"default_max_input_tokens,omitempty"`
 
 	// FamilyInferrer, when non-nil, is consulted by ResolveWire when
 	// the catalog misses and no wire_override is set. Provider-local;
@@ -291,6 +318,37 @@ func (m ProviderMeta) MaxOutputTokensFor(model string) int {
 	return 8192
 }
 
+// DefaultMaxInputTokens is the global fallback context-window size
+// returned when neither the catalog nor the provider's
+// DefaultMaxInputTokens supplies one. Chosen conservatively (~32K) so
+// callers under-fill rather than overshoot an unknown model's
+// upstream window.
+const DefaultMaxInputTokens = 32000
+
+// MaxInputTokensFor returns the context-window size for the given
+// model ID. Resolution: catalog (ID + aliases) → ProviderMeta
+// DefaultMaxInputTokens → package DefaultMaxInputTokens.
+func (m ProviderMeta) MaxInputTokensFor(model string) int {
+	if e, ok := m.FindModel(model); ok && e.MaxInputTokens > 0 {
+		return e.MaxInputTokens
+	}
+	if m.DefaultMaxInputTokens > 0 {
+		return m.DefaultMaxInputTokens
+	}
+	return DefaultMaxInputTokens
+}
+
+// EncodingFor returns the BPE encoding name declared for the given
+// model, or empty when none is declared. Empty means the caller
+// should not use tiktoken for this model — it has either a native
+// counter (Anthropic, Vertex) or must use the approximation counter.
+func (m ProviderMeta) EncodingFor(model string) string {
+	if e, ok := m.FindModel(model); ok {
+		return e.Encoding
+	}
+	return ""
+}
+
 // PricingFor returns the entry's pricing and ok=true when the model
 // is in the catalog. Returns the zero TokenPricing and ok=false
 // otherwise (use to gate cost-estimate UI: hide rather than show $0).
@@ -316,6 +374,7 @@ func (m ProviderMeta) CatalogModels() []ModelInfo {
 			DisplayName:           display,
 			Wire:                  string(e.Wire),
 			MaxOutputTokens:       e.MaxOutputTokens,
+			MaxInputTokens:        e.MaxInputTokens,
 			InputPricePerMillion:  e.Pricing.InputPerMillion,
 			OutputPricePerMillion: e.Pricing.OutputPerMillion,
 			Lifecycle:             e.Lifecycle,
@@ -365,6 +424,7 @@ type providerMetaJSON struct {
 	ConfigFields           []ConfigField `json:"config_fields"`
 	Models                 []ModelInfo   `json:"models,omitempty"`
 	DefaultMaxOutputTokens int           `json:"default_max_output_tokens,omitempty"`
+	DefaultMaxInputTokens  int           `json:"default_max_input_tokens,omitempty"`
 	SupportsTools          bool          `json:"supports_tools"`
 }
 
@@ -381,6 +441,7 @@ func (m ProviderMeta) MarshalJSON() ([]byte, error) {
 		ConfigFields:           m.ConfigFields,
 		Models:                 m.CatalogModels(),
 		DefaultMaxOutputTokens: m.DefaultMaxOutputTokens,
+		DefaultMaxInputTokens:  m.DefaultMaxInputTokens,
 		SupportsTools:          m.SupportsTools,
 	})
 }
@@ -540,4 +601,33 @@ func GetMaxOutputTokens(providerName, model string) int {
 		return 8192
 	}
 	return meta.MaxOutputTokensFor(model)
+}
+
+// GetMaxInputTokens returns the context-window size for a (provider,
+// model) combination. Resolution:
+//  1. ProviderMeta.MaxInputTokensFor — catalog (ID + aliases) →
+//     ProviderMeta DefaultMaxInputTokens → package DefaultMaxInputTokens.
+//  2. Package DefaultMaxInputTokens fallback (provider not registered).
+func GetMaxInputTokens(providerName, model string) int {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return DefaultMaxInputTokens
+	}
+	return meta.MaxInputTokensFor(model)
+}
+
+// GetEncoding returns the BPE encoding name declared for a
+// (provider, model) combination, or empty when none is declared
+// (caller should not use tiktoken — either use the provider's native
+// counter or fall back to the approximation counter).
+func GetEncoding(providerName, model string) string {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return ""
+	}
+	return meta.EncodingFor(model)
 }

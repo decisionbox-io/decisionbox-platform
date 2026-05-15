@@ -1,0 +1,233 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+)
+
+// askMaxOutputTokens is the generation cap Ask reserves on the chat
+// request. Was an inline literal in the handler; promoting to a
+// named constant lets the budgeting layer subtract the same value
+// the caller will send.
+const askMaxOutputTokens = 2048
+
+// askReservedSystemTokens is the flat token estimate the budget
+// reserves for the system prompt and any fixed scaffolding. Set
+// generously so a per-character miscount can't blow the budget — the
+// trim loop only sees Available() after this subtraction.
+const askReservedSystemTokens = 600
+
+// askMinRAGItems is the floor for dynamic top-K shrinking. The trim
+// loop will not drop below this count of insights before returning a
+// typed 413; below this, the answer becomes useless and the user is
+// better off being told to start a new chat / pick a wider model.
+const askMinRAGItems = 1
+
+// resolveCounter returns the active TokenCounter and whether it is
+// exact. Providers that implement gollm.TokenCounterProvider supply
+// their own counter (Claude /count_tokens, OpenAI tiktoken); everyone
+// else falls back to the approximation counter, which the safety
+// margin in NewBudget widens to absorb the inaccuracy.
+//
+// A nil provider returns the approximate counter rather than
+// panicking — callers in error paths can ask for a budget shape
+// without first guaranteeing the provider exists.
+func resolveCounter(ctx context.Context, llmProvider gollm.Provider, model string) (gollm.TokenCounter, bool) {
+	if llmProvider == nil {
+		return gollm.ApproximateCounter{}, false
+	}
+	tcp, ok := llmProvider.(gollm.TokenCounterProvider)
+	if !ok {
+		return gollm.ApproximateCounter{}, false
+	}
+	counter, err := tcp.TokenCounter(ctx, model)
+	if err != nil || counter == nil {
+		return gollm.ApproximateCounter{}, false
+	}
+	return counter, gollm.IsExact(counter)
+}
+
+// trimMessagesByTokens walks the session's stored Q/A pairs newest →
+// oldest and keeps only the suffix whose cumulative token cost fits
+// budget. Returns the kept pairs flattened into the [user, assistant,
+// user, assistant, …] sequence the chat API expects.
+//
+// Invariants enforced here:
+//   - A user message is never separated from its assistant reply (we
+//     trim by pair, never by individual message), so the model never
+//     sees a dangling answer.
+//   - The most recent N pairs are kept; ancient pairs are dropped
+//     first. This matches user expectation that recent context
+//     matters more.
+//   - A counter error stops the walk and returns whatever fit so far,
+//     plus the error. Callers can decide whether to surface it (the
+//     Ask handler degrades gracefully — partial history + the current
+//     question is still useful).
+//
+// Counting both Question and Answer separately matches what the
+// provider will see (chat APIs send two messages per turn). The
+// budget value should already be the post-RAG, post-question
+// remainder — see Budget.Available() and the caller.
+func trimMessagesByTokens(ctx context.Context, msgs []commonmodels.AskSessionMessage, counter gollm.TokenCounter, budget int) ([]gollm.Message, error) {
+	if len(msgs) == 0 || budget <= 0 {
+		return nil, nil
+	}
+	if counter == nil {
+		counter = gollm.ApproximateCounter{}
+	}
+
+	// Build in reverse so we can stop as soon as the next-older pair
+	// won't fit. Each kept pair contributes (qTokens + aTokens) to the
+	// running total.
+	out := make([]keptPair, 0, len(msgs))
+	used := 0
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+
+		qTokens, err := counter.Count(ctx, m.Question)
+		if err != nil {
+			return flattenKept(out), err
+		}
+		aTokens, err := counter.Count(ctx, m.Answer)
+		if err != nil {
+			return flattenKept(out), err
+		}
+		pairTokens := qTokens + aTokens
+		if used+pairTokens > budget {
+			break
+		}
+		out = append(out, keptPair{
+			user:      gollm.Message{Role: "user", Content: m.Question},
+			assistant: gollm.Message{Role: "assistant", Content: m.Answer},
+		})
+		used += pairTokens
+	}
+
+	return flattenKept(out), nil
+}
+
+// keptPair holds one user/assistant turn that survived the trim
+// walk. Internal — the public output is a flattened []gollm.Message.
+type keptPair struct {
+	user, assistant gollm.Message
+}
+
+// fitRAGContext assembles the [i] Name: Description (score) citation
+// block from insights, dropping the lowest-scoring entry whenever
+// the assembled context exceeds available. Returns:
+//   - the final context string,
+//   - its token count,
+//   - the number of insights it kept (callers gate the 413 path on
+//     this rather than len(insights), so they don't have to track
+//     the shrink state separately), and
+//   - the last counter error (if any — caller treats it as
+//     informational).
+//
+// Search results arrive sorted by similarity (best first), so
+// dropping the tail is also dropping the worst match. Stops when:
+//   - the context fits, or
+//   - only askMinRAGItems insights remain. The caller decides
+//     whether to return a typed 413 from there.
+func fitRAGContext(ctx context.Context, counter gollm.TokenCounter, insights []searchResultItem, available int) (string, int, int, error) {
+	if counter == nil {
+		counter = gollm.ApproximateCounter{}
+	}
+	working := insights
+	var lastErr error
+	for {
+		text := formatRAGContext(working)
+		tokens, err := counter.Count(ctx, text)
+		if err != nil {
+			lastErr = err
+			// Couldn't count — assume it fits and return what we have
+			// rather than spinning forever.
+			return text, tokens, len(working), lastErr
+		}
+		if tokens <= available || len(working) <= askMinRAGItems {
+			return text, tokens, len(working), lastErr
+		}
+		working = working[:len(working)-1]
+	}
+}
+
+// formatRAGContext renders the [i] Name: Description (score) lines
+// the LLM cites against. Centralised so fitRAGContext and the Ask
+// handler share a single formatter — no drift between what gets
+// counted and what gets sent.
+func formatRAGContext(insights []searchResultItem) string {
+	if len(insights) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(insights))
+	for i, s := range insights {
+		parts = append(parts, fmt.Sprintf("[%d] %s: %s (score: %.2f)", i+1, s.Name, s.Description, s.Score))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// classifyLLMError maps an upstream LLM error into an HTTP status +
+// typed error code so the dashboard can branch on condition. The
+// classification is deliberately small: context overflow (413) is the
+// only condition the user can act on themselves; everything else is
+// a 5xx the user surfaces to support.
+//
+// Context-overflow detection sniffs known upstream phrases —
+// Anthropic ("prompt is too long"), OpenAI ("context length"), and
+// Bedrock ("input too long"). Adding a new provider may require a
+// new substring; the worst case is we miss the classification and
+// surface 502 instead of 413, which is annoying but not broken.
+func classifyLLMError(err error) (status int, code, msg, details string) {
+	if err == nil {
+		return http.StatusOK, "", "", ""
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, ErrCodeLLMUpstream,
+			"LLM request timed out", err.Error()
+	}
+	low := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(low, "prompt is too long"),
+		strings.Contains(low, "context length"),
+		strings.Contains(low, "context_length_exceeded"),
+		strings.Contains(low, "maximum context length"),
+		strings.Contains(low, "input too long"),
+		strings.Contains(low, "too many tokens"):
+		return http.StatusRequestEntityTooLarge, ErrCodeContextOverflow,
+			"this conversation has grown past the model's context window",
+			gollm.SanitizeErrorBody([]byte(err.Error()), 300)
+	case strings.Contains(low, "rate limit"),
+		strings.Contains(low, "rate_limit"),
+		strings.Contains(low, "quota"),
+		strings.Contains(low, "throttl"):
+		return http.StatusBadGateway, ErrCodeLLMUpstream,
+			"LLM provider is rate-limiting", gollm.SanitizeErrorBody([]byte(err.Error()), 300)
+	case strings.Contains(low, "content_filter"),
+		strings.Contains(low, "content filter"),
+		strings.Contains(low, "safety"):
+		return http.StatusBadGateway, ErrCodeLLMUpstream,
+			"LLM provider blocked this content", gollm.SanitizeErrorBody([]byte(err.Error()), 300)
+	}
+	return http.StatusInternalServerError, ErrCodeLLMSynthesisFailed,
+		"LLM synthesis failed", gollm.SanitizeErrorBody([]byte(err.Error()), 300)
+}
+
+// flattenKept reverses the newest-first kept slice into the
+// oldest-first [user, assistant, user, assistant, …] sequence the
+// chat API consumes.
+func flattenKept(pairs []keptPair) []gollm.Message {
+	if len(pairs) == 0 {
+		return nil
+	}
+	out := make([]gollm.Message, 0, 2*len(pairs))
+	for i := len(pairs) - 1; i >= 0; i-- {
+		out = append(out, pairs[i].user, pairs[i].assistant)
+	}
+	return out
+}

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask sessions no longer fail with a misleading "embedding not configured" message after 3–5 turns** — The handler in `services/api/internal/handler/search.go::Ask` previously hard-trimmed conversation history to the last 10 turns with no awareness of message length or model context window, so by turn 5 of a normal session the upstream provider could 4xx with `invalid_request_error: prompt is too long`. Every non-2xx from the provider was then mapped to a flat HTTP 500 with the generic error `"LLM synthesis failed"`, which the dashboard rendered as `"Sorry, I could not answer this question. Make sure embedding is configured for this project."` — a copy-paste that suggested the wrong root cause (embedding, not context). The handler now sizes every Ask call against the model's published `MaxInputTokens`, subtracts `max_tokens` (the 2048-token generation reserve) and ~600 tokens for the system prompt, then trims session history newest-first by token count rather than turn count. Insights are dropped lowest-scoring-first if the retrieved context alone wouldn't fit. The trim invariants are: never separate a user message from its assistant reply (no orphan assistants), the current user question always rides at the end, and the safety margin widens from 5% to 15% when the active counter is approximate so under-counting can't push us past the upstream cap.
+
+### Added
+
+- **`MaxInputTokens` + `Encoding` fields on every LLM model catalog entry** — Every shipped model in `libs/go-common/llm/registry.go::ModelEntry` now carries an upstream-published context-window size and (for OpenAI-wire models) a tiktoken encoding name. Resolution is catalog → ProviderMeta `DefaultMaxInputTokens` → package-level `DefaultMaxInputTokens = 32000` so unknown models still get a usable (conservative) budget. Claude 4.x is 200K, GPT-5 family is 400K, GPT-4.1 family is 1M, GPT-4o is 128K, o-series is 200K, Gemini 1.5/2.x is 1M, and Bedrock OSS models declare per-family caps. Exposed on `/api/v1/providers/llm` so the dashboard can render the window in the model picker if it wants. `GetMaxInputTokens(provider, model)` and `GetEncoding(provider, model)` are the package-level lookup helpers.
+
+- **`gollm.TokenCounter` interface + per-provider implementations** — A new optional capability interface, `gollm.TokenCounterProvider`, lets a Provider hand back an exact counter for a given model. The Claude direct provider implements it via `/v1/messages/count_tokens` (one extra RTT, exact for the active model). The OpenAI provider implements it via [`tiktoken-go`](https://github.com/pkoukk/tiktoken-go) using the encoding declared on the catalog entry (`o200k_base` for every modern OpenAI model); the encoding object is cached so the per-turn cost is just `enc.Encode(text)`. Providers that don't implement the interface (Bedrock, Ollama, Azure Foundry, Vertex AI for now) fall back to `gollm.ApproximateCounter` — rune count divided by 4 — and the budget layer widens the safety margin to 15% to absorb the inaccuracy. The interface is optional precisely so a new provider can ship without a counter and still benefit from the budget walk on day one.
+
+- **`docs/concepts/ask.md`** — New page documenting the budget algorithm, per-provider counter choices, the typed error codes (`embedding_not_configured`, `llm_not_configured`, `context_overflow`, `llm_upstream`, `llm_synthesis_failed`), and what users see for each. Cross-linked from `docs/reference/configuration.md`.
+
+### Changed
+
+- **`POST /api/v1/projects/{id}/ask` returns typed error codes** — Previously every failure was a flat HTTP 500 with `error: "LLM synthesis failed"`. The handler now returns a `code` field on the response body alongside the human-readable `error`, plus an optional `details` field carrying provider-sanitised context. Status codes: `412 embedding_not_configured`, `412 llm_not_configured`, `413 context_overflow` (the case the budget walk surfaces when even minimal context won't fit), `502 llm_upstream` for rate-limit / quota / content-filter, `504` for cancel / deadline, `500 llm_synthesis_failed` for unclassified provider failures. Existing callers that only look at the human `error` keep working — the new `code` field is additive.
+
+- **Dashboard `ApiError` carries `code` + `details`** — `ui/dashboard/src/lib/api.ts` now throws a typed `ApiError` (extends `Error`) on every non-2xx response with the parsed `code` and `details` fields attached. The Ask page branches on `code` to surface specific copy: configuration mismatches point at project settings, context-overflow points at "start a new chat or pick a wider model", and upstream errors show the sanitised provider message. The generic "could not answer" copy is now only the fallback for unknown codes or non-`ApiError` throwables.
+
 ## [0.5.0] - 2026-05-15
 
 ### Added
