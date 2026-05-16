@@ -235,7 +235,7 @@ func (g *Generator) Generate(ctx context.Context, inputs []Input, progress Progr
 			close(jobs)
 			wg.Wait()
 			if failures > maxFailures {
-				return outputs, fmt.Errorf("blurb: %w (%d of %d failed, cap %d)", ErrTooManyFailures, failures, len(inputs), maxFailures)
+				return outputs, fmt.Errorf("blurb: %w (%d of %d failed, cap %d, sample error: %v)", ErrTooManyFailures, failures, len(inputs), maxFailures, firstError(outputs))
 			}
 			return outputs, ctx.Err()
 		case jobs <- job{idx: i, in: in}:
@@ -245,9 +245,21 @@ func (g *Generator) Generate(ctx context.Context, inputs []Input, progress Progr
 	wg.Wait()
 
 	if failures > maxFailures {
-		return outputs, fmt.Errorf("blurb: %w (%d of %d failed, cap %d)", ErrTooManyFailures, failures, len(inputs), maxFailures)
+		return outputs, fmt.Errorf("blurb: %w (%d of %d failed, cap %d, sample error: %v)", ErrTooManyFailures, failures, len(inputs), maxFailures, firstError(outputs))
 	}
 	return outputs, nil
+}
+
+// firstError returns the first non-nil per-table Err from outputs so the
+// failure-budget wrapper carries a real underlying message instead of
+// swallowing every per-table reason.
+func firstError(outputs []Output) error {
+	for _, o := range outputs {
+		if o.Err != nil {
+			return o.Err
+		}
+	}
+	return nil
 }
 
 // ErrTooManyFailures is returned from Generate when the fraction of per-
