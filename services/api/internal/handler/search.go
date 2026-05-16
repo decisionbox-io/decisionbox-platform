@@ -141,7 +141,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create embedding provider for this project
-	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID)
+	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID, project.Embedding.Config)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create embedding provider")
 		return
@@ -186,19 +186,24 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 }
 
 // createEmbeddingProvider creates an embedding provider for a project.
-func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerName, model, projectID string) (goembedding.Provider, error) {
-	apiKey := ""
+// The projectConfig map carries non-credential provider settings the
+// dashboard saved (auth_method, project_id, location, region, role_arn,
+// …); the agent's initEmbeddingProvider does the same merge for the
+// indexing path so search/ask see the identical factory wiring.
+func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerName, model, projectID string, projectConfig map[string]string) (goembedding.Provider, error) {
+	cfg := goembedding.ProviderConfig{
+		"model": model,
+	}
+	for k, v := range projectConfig {
+		cfg[k] = v
+	}
 	if h.secretProvider != nil {
 		key, err := h.secretProvider.Get(ctx, projectID, "embedding-credentials")
-		if err == nil {
-			apiKey = key
+		if err == nil && key != "" {
+			cfg["credentials_json"] = key
 		}
 	}
-
-	return goembedding.NewProvider(providerName, goembedding.ProviderConfig{
-		"credentials_json": apiKey,
-		"model":            model,
-	})
+	return goembedding.NewProvider(providerName, cfg)
 }
 
 // enrichResults fetches full documents from MongoDB for each search result.
@@ -358,7 +363,7 @@ func (h *SearchHandler) CrossProjectSearch(w http.ResponseWriter, r *http.Reques
 	var embProvider goembedding.Provider
 	for _, p := range allProjects {
 		if p.Embedding.Model == req.EmbeddingModel && p.Embedding.Provider != "" {
-			embProvider, err = h.createEmbeddingProvider(ctx, p.Embedding.Provider, req.EmbeddingModel, p.ID)
+			embProvider, err = h.createEmbeddingProvider(ctx, p.Embedding.Provider, req.EmbeddingModel, p.ID, p.Embedding.Config)
 			if err == nil {
 				break
 			}
@@ -494,7 +499,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Embed the question
-	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID)
+	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID, project.Embedding.Config)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create embedding provider")
 		return
