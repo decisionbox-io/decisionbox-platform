@@ -96,7 +96,18 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("blurb model %q is reasoning-class and cannot be used — pick gpt-4.1-nano, claude-haiku-4-5, or qwen.qwen3-32b-v1:0", blurbModel)
 	}
 
-	llmCfg := buildLLMProviderConfig(cfg, project.LLM.Config, blurbAPIKey, blurbModel)
+	// Pick the right config source for the blurb provider — when blurb
+	// is configured separately, its own Config holds the auth_method +
+	// per-method fields. Falling through to project.LLM.Config here was
+	// the legacy behaviour that worked only by accident when blurb and
+	// analysis used the same provider (e.g. Gemini + Gemini); a mixed
+	// setup like Vertex analysis + Bedrock blurb fed GCP auth_method
+	// values into the AWS factory and tripped "unsupported auth method".
+	blurbConfig := project.LLM.Config
+	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
+		blurbConfig = project.BlurbLLM.Config
+	}
+	llmCfg := buildLLMProviderConfig(cfg, blurbConfig, blurbAPIKey, blurbModel)
 	llm, err := gollm.NewProvider(blurbProvider, llmCfg)
 	if err != nil {
 		return fmt.Errorf("build blurb LLM (%s): %w", blurbProvider, err)
