@@ -144,6 +144,12 @@ func TestIsReasoningClassModel_Matches(t *testing.T) {
 		"o4-mini",
 		"some-model-extended-thinking",
 		"DeepSeek-R1", // case-insensitive
+		// GPT-5 family — reasoning by default, must be rejected for blurb.
+		"gpt-5",
+		"gpt-5-mini",
+		"gpt-5-nano",
+		"gpt-5-2025-08-07",
+		"GPT-5", // case-insensitive
 	}
 	for _, m := range reasoning {
 		if !IsReasoningClassModel(m) {

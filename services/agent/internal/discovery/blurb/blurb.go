@@ -454,6 +454,11 @@ var reasoningClassPatterns = []string{
 	"o1-",
 	"o3",
 	"o4-mini",
+	// GPT-5 family — reasoning by default. Burns max_completion_tokens
+	// on hidden reasoning before producing visible content, so a 512-token
+	// blurb budget yields content="". Matches "gpt-5", "gpt-5-mini",
+	// "gpt-5-nano", and dated snapshots (gpt-5-2025-08-07).
+	"gpt-5",
 	"extended-thinking",
 }
 
