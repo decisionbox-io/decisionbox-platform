@@ -250,7 +250,16 @@ export default function NewProjectPage() {
         embedding: {
           provider: embedding.provider,
           model: embedding.model,
-          ...(embedding.authMethod ? { config: { auth_method: embedding.authMethod, ...embedding.config } } : {}),
+          // Persist every form-state config field (project_id, location,
+          // region, …) plus auth_method when picked. Required for
+          // Vertex (project_id + location), Bedrock (region), and any
+          // provider whose factory reads non-credential settings from
+          // ProviderConfig. Drop "model" because it lives in the
+          // top-level Model field, not Config.
+          config: {
+            ...Object.fromEntries(Object.entries(embedding.config).filter(([k]) => k !== 'model')),
+            ...(embedding.authMethod ? { auth_method: embedding.authMethod } : {}),
+          },
         },
         // Only send blurb_llm when the user explicitly overrode it; otherwise
         // the agent falls back to the analysis LLM (its own fallback path).

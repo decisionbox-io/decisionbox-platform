@@ -198,7 +198,14 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         Object.entries(llm.config).filter(([k]) => k !== 'model'),
       );
       if (llm.authMethod) llmConfig.auth_method = llm.authMethod;
-      const embConfig: Record<string, string> = {};
+      // Carry every form-state config field for embedding (project_id,
+      // location, region, …). The form holds them under
+      // embedding.config[key], which is what the agent reads from
+      // project.Embedding.Config at init time. Drop "model" because
+      // it lives in the top-level Model field, not Config.
+      const embConfig: Record<string, string> = Object.fromEntries(
+        Object.entries(embedding.config).filter(([k]) => k !== 'model'),
+      );
       if (embedding.authMethod) embConfig.auth_method = embedding.authMethod;
       const saved = await api.updateProject(projectId, {
         llm: {
