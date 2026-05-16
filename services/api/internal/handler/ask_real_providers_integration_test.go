@@ -358,7 +358,7 @@ func TestIntegration_Ask_RealOpenAI_NewSession(t *testing.T) {
 	apiKey := openaiAPIKey(t)
 	model := openaiModelFor(t)
 	setup := askSearchHandlerForProvider(t, "openai", model,
-		map[string]string{"api_key": apiKey})
+		map[string]string{"credentials_json": apiKey})
 	t.Cleanup(func() { askCleanup(setup) })
 	runAskHappyPath(t, setup, "What's the most pressing retention issue?", 60*time.Second)
 }
@@ -372,7 +372,7 @@ func TestIntegration_Ask_RealOpenAI_TrimsLongSession(t *testing.T) {
 	apiKey := openaiAPIKey(t)
 	model := openaiModelFor(t)
 	setup := askSearchHandlerForProvider(t, "openai", model,
-		map[string]string{"api_key": apiKey})
+		map[string]string{"credentials_json": apiKey})
 	t.Cleanup(func() { askCleanup(setup) })
 	runAskTrim(t, setup, "openai", model, 50, 90*time.Second)
 }

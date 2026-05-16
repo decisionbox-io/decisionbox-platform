@@ -203,8 +203,8 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		cfg["model"] = project.LLM.Model
 	}
 	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(r.Context(), pid, "llm-api-key"); err == nil && key != "" {
-			cfg["api_key"] = key
+		if key, err := h.secretProvider.Get(r.Context(), pid, "llm-credentials"); err == nil && key != "" {
+			cfg["credentials_json"] = key
 		}
 	}
 	// cfg holds the secret for the duration of this handler; it goes
@@ -395,8 +395,8 @@ func (h *ProvidersHandler) ListLiveEmbeddingModelsForProject(w http.ResponseWrit
 	// user re-typing. Match the agent's lookup so project-scoped list
 	// works exactly like a real indexing run's embed call.
 	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(r.Context(), pid, "embedding-api-key"); err == nil && key != "" {
-			cfg["api_key"] = key
+		if key, err := h.secretProvider.Get(r.Context(), pid, "embedding-credentials"); err == nil && key != "" {
+			cfg["credentials_json"] = key
 		}
 	}
 

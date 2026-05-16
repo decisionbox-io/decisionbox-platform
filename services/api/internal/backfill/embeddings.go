@@ -182,10 +182,10 @@ func processProject(ctx context.Context, client *gomongo.Client, secretProvider 
 	}
 
 	// Create embedding provider
-	apiKey, _ := secretProvider.Get(ctx, proj.ID(), "embedding-api-key")
+	apiKey, _ := secretProvider.Get(ctx, proj.ID(), "embedding-credentials")
 	embProvider, err := goembedding.NewProvider(proj.Embedding.Provider, goembedding.ProviderConfig{
-		"api_key": apiKey,
-		"model":   proj.Embedding.Model,
+		"credentials_json": apiKey,
+		"model":            proj.Embedding.Model,
 	})
 	if err != nil {
 		return fmt.Errorf("create embedding provider: %w", err)

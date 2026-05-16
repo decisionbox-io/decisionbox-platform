@@ -19,9 +19,9 @@ func TestClaude_FactoryWiresTimeout(t *testing.T) {
 		envVal string
 		want   time.Duration
 	}{
-		{name: "cfg_wins", cfg: gollm.ProviderConfig{"api_key": "sk-x", "timeout_seconds": "777"}, envVal: "11s", want: 777 * time.Second},
-		{name: "env_fills_in", cfg: gollm.ProviderConfig{"api_key": "sk-x"}, envVal: "888s", want: 888 * time.Second},
-		{name: "fallback_60s", cfg: gollm.ProviderConfig{"api_key": "sk-x"}, want: claudeDefaultTimeout},
+		{name: "cfg_wins", cfg: gollm.ProviderConfig{"credentials_json": "sk-x", "timeout_seconds": "777"}, envVal: "11s", want: 777 * time.Second},
+		{name: "env_fills_in", cfg: gollm.ProviderConfig{"credentials_json": "sk-x"}, envVal: "888s", want: 888 * time.Second},
+		{name: "fallback_60s", cfg: gollm.ProviderConfig{"credentials_json": "sk-x"}, want: claudeDefaultTimeout},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

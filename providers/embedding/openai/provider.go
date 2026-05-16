@@ -32,9 +32,9 @@ var modelDimensions = map[string]int{
 
 func init() {
 	goembedding.RegisterWithMeta("openai", func(cfg goembedding.ProviderConfig) (goembedding.Provider, error) {
-		apiKey := cfg["api_key"]
+		apiKey := cfg["credentials_json"]
 		if apiKey == "" {
-			return nil, fmt.Errorf("openai embedding: api_key is required")
+			return nil, fmt.Errorf("openai embedding: API key is required")
 		}
 
 		model := cfg["model"]
@@ -58,9 +58,17 @@ func init() {
 		Name:        "OpenAI",
 		Description: "OpenAI text embeddings - best cost/quality ratio",
 		ConfigFields: []goembedding.ConfigField{
-			{Key: "api_key", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-..."},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "text-embedding-3-small"},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: defaultBaseURL, Description: "For OpenAI-compatible APIs"},
+		},
+		AuthMethods: []goembedding.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "OpenAI API key (or compatible API key for self-hosted gateways).",
+				Fields: []goembedding.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-..."},
+				},
+			},
 		},
 		Models: []goembedding.ModelInfo{
 			{ID: "text-embedding-3-small", Name: "Embedding 3 Small", Dimensions: 1536},

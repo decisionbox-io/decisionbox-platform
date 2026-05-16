@@ -268,11 +268,19 @@ func TestProvidersHandler_LLMProviderHasConfigFields(t *testing.T) {
 				fm := f.(map[string]interface{})
 				keys[fm["key"].(string)] = true
 			}
-			if !keys["api_key"] {
-				t.Error("claude should have api_key config field")
-			}
 			if !keys["model"] {
 				t.Error("claude should have model config field")
+			}
+			// api_key field moved to AuthMethods after the credential
+			// abstraction landed; verify it surfaces there now.
+			auths, _ := pm["auth_methods"].([]interface{})
+			if len(auths) != 1 {
+				t.Errorf("claude should have exactly one auth method, got %d", len(auths))
+				continue
+			}
+			am := auths[0].(map[string]interface{})
+			if am["id"] != "api_key" {
+				t.Errorf("claude auth method id = %v, want api_key", am["id"])
 			}
 		}
 	}

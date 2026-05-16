@@ -36,7 +36,7 @@ func init() {
 		delayMs, _ := strconv.Atoi(cfg["request_delay_ms"])
 
 		return NewClaudeProvider(ClaudeConfig{
-			APIKey:         cfg["api_key"],
+			APIKey:         cfg["credentials_json"],
 			Model:          cfg["model"],
 			MaxRetries:     maxRetries,
 			Timeout:        gollm.ResolveHTTPTimeout(cfg, claudeDefaultTimeout),
@@ -46,7 +46,6 @@ func init() {
 		Name:        "Claude (Anthropic)",
 		Description: "Anthropic Claude API - direct access",
 		ConfigFields: []gollm.ConfigField{
-			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-ant-..."},
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -55,6 +54,15 @@ func init() {
 				FreeText:    true,
 				Default:     "claude-sonnet-4-6",
 				Description: "Pick a catalogued Claude model or type any Anthropic model ID.",
+			},
+		},
+		AuthMethods: []gollm.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "Anthropic Claude API key.",
+				Fields: []gollm.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-ant-..."},
+				},
 			},
 		},
 		Models:                 buildClaudeCatalog(),

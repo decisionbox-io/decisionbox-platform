@@ -103,7 +103,7 @@ func TestProvidersHandler_ListLiveEmbeddingModels_FactoryFailureSurfacesError(t 
 func TestProvidersHandler_ListLiveEmbeddingModels_ProviderWithoutLister_EmptyNoError(t *testing.T) {
 	h := NewProvidersHandler()
 	req := httptest.NewRequest("POST", "/api/v1/providers/embedding/voyage/models/live",
-		strings.NewReader(`{"config":{"api_key":"pa-test","model":"voyage-3"}}`))
+		strings.NewReader(`{"config":{"credentials_json":"pa-test","model":"voyage-3"}}`))
 	req.SetPathValue("id", "voyage")
 	w := httptest.NewRecorder()
 	h.ListLiveEmbeddingModels(w, req)

@@ -130,7 +130,7 @@ func TestListModels_NetworkErrorPropagates(t *testing.T) {
 // the API-side handler's type assertion would silently return nil.
 func TestProviderSatisfiesModelListerCapability(t *testing.T) {
 	prov, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"api_key": "test-key",
+		"credentials_json": "test-key",
 		"model":   "text-embedding-3-small",
 	})
 	if err != nil {

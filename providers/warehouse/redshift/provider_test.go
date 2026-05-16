@@ -521,43 +521,12 @@ func TestRedshiftProvider_GetTableSchema_Provisioned(t *testing.T) {
 	}
 }
 
-func TestLoadAWSConfig_AccessKeysEmptyParts(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method":      "access_keys",
-		"credentials_json": ":secret",
-	}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err == nil {
-		t.Fatal("expected error for empty access key ID")
-	}
-}
-
-func TestLoadAWSConfig_AssumeRoleWithExternalID(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method": "assume_role",
-		"role_arn":    "arn:aws:iam::123456789012:role/TestRole",
-		"external_id": "ext-123",
-	}
-	awsCfg, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if awsCfg.Region != "us-east-1" {
-		t.Errorf("expected region us-east-1, got %q", awsCfg.Region)
-	}
-}
-
-func TestLoadAWSConfig_ExplicitIAMRole(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method": "iam_role",
-	}
-	_, err := loadAWSConfig(context.Background(), "eu-west-1", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// --- Auth method tests ---
+// --- Auth method registration tests ---
+//
+// Auth method *behaviour* is covered by libs/awscreds tests; the tests
+// here only assert that the redshift factory registers the expected
+// methods and routes auth_method through to awscreds.Load (verified by
+// confirming the redshift: prefix wraps the underlying awscreds error).
 
 func TestRegisteredAuthMethods(t *testing.T) {
 	meta, _ := gowarehouse.GetProviderMeta("redshift")
@@ -575,69 +544,36 @@ func TestRegisteredAuthMethods(t *testing.T) {
 	}
 }
 
-func TestLoadAWSConfig_AccessKeys(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method":      "access_keys",
-		"credentials_json": "AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-	}
-	awsCfg, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	creds, err := awsCfg.Credentials.Retrieve(context.Background())
-	if err != nil {
-		t.Fatalf("failed to retrieve credentials: %v", err)
-	}
-	if creds.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
-		t.Errorf("access key = %q, want AKIAIOSFODNN7EXAMPLE", creds.AccessKeyID)
-	}
-}
-
-func TestLoadAWSConfig_AccessKeysInvalidFormat(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method":      "access_keys",
-		"credentials_json": "no-colon-separator",
-	}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err == nil {
-		t.Fatal("expected error for invalid format")
-	}
-}
-
-func TestLoadAWSConfig_AccessKeysMissing(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method": "access_keys",
-	}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err == nil {
-		t.Fatal("expected error for missing credentials")
-	}
-}
-
-func TestLoadAWSConfig_AssumeRoleMissingARN(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method": "assume_role",
-	}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err == nil {
-		t.Fatal("expected error for missing role ARN")
-	}
-}
-
-func TestLoadAWSConfig_IAMRoleDefault(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadAWSConfig_UnsupportedMethod(t *testing.T) {
-	cfg := gowarehouse.ProviderConfig{
-		"auth_method": "oauth",
-	}
-	_, err := loadAWSConfig(context.Background(), "us-east-1", cfg)
+func TestFactory_RoutesAuthMethodToAWSCreds(t *testing.T) {
+	// Unsupported method must surface awscreds error wrapped with the
+	// redshift: prefix — proves the factory delegates to awscreds.Load
+	// rather than rolling its own switch.
+	_, err := gowarehouse.NewProvider("redshift", gowarehouse.ProviderConfig{
+		"workgroup":   "test-wg",
+		"database":    "dev",
+		"auth_method": "totally-bogus",
+	})
 	if err == nil {
 		t.Fatal("expected error for unsupported auth method")
+	}
+	if !strings.Contains(err.Error(), "redshift:") {
+		t.Errorf("error missing redshift: prefix: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unsupported auth method") {
+		t.Errorf("error missing awscreds message: %v", err)
+	}
+}
+
+func TestFactory_AssumeRoleMissingARN(t *testing.T) {
+	_, err := gowarehouse.NewProvider("redshift", gowarehouse.ProviderConfig{
+		"workgroup":   "test-wg",
+		"database":    "dev",
+		"auth_method": "assume_role",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing role_arn")
+	}
+	if !strings.Contains(err.Error(), "role_arn is required") {
+		t.Errorf("error = %v, want substring 'role_arn is required'", err)
 	}
 }

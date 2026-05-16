@@ -21,12 +21,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/redshiftdata"
 	"github.com/aws/aws-sdk-go-v2/service/redshiftdata/types"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/decisionbox-io/decisionbox/libs/awscreds"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
@@ -49,9 +46,16 @@ func init() {
 			timeoutMin = 5
 		}
 
-		awsCfg, err := loadAWSConfig(context.Background(), region, cfg)
+		awsCfg, err := awscreds.Load(context.Background(), awscreds.Config{
+			Method:      cfg["auth_method"],
+			Region:      region,
+			Credentials: cfg[awscreds.FieldCredentials],
+			RoleARN:     cfg[awscreds.FieldRoleARN],
+			ExternalID:  cfg[awscreds.FieldExternalID],
+			SessionName: "decisionbox-agent",
+		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("redshift: %w", err)
 		}
 
 		client := redshiftdata.NewFromConfig(awsCfg)
@@ -78,22 +82,22 @@ func init() {
 		},
 		AuthMethods: []gowarehouse.AuthMethod{
 			{
-				ID: "iam_role", Name: "IAM Role",
+				ID: awscreds.MethodIAMRole, Name: "IAM Role",
 				Description: "Automatic — EC2 instance profile, EKS pod role, environment variables. No credentials needed.",
 			},
 			{
-				ID: "access_keys", Name: "Access Keys",
+				ID: awscreds.MethodAccessKeys, Name: "Access Keys",
 				Description: "AWS access key pair for cross-cloud or local access.",
 				Fields: []gowarehouse.ConfigField{
-					{Key: "credentials", Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIA...:wJalr..."}, //nolint:gosec // example placeholder
+					{Key: awscreds.FieldCredentials, Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIA...:wJalr..."}, //nolint:gosec // example placeholder
 				},
 			},
 			{
-				ID: "assume_role", Name: "Assume Role",
+				ID: awscreds.MethodAssumeRole, Name: "Assume Role",
 				Description: "Assume an IAM role via STS. For cross-account access.",
 				Fields: []gowarehouse.ConfigField{
-					{Key: "role_arn", Label: "Role ARN", Required: true, Type: "string", Placeholder: "arn:aws:iam::123456789012:role/RedshiftRole"},
-					{Key: "external_id", Label: "External ID", Type: "string", Description: "Required if the role trust policy requires an external ID."},
+					{Key: awscreds.FieldRoleARN, Label: "Role ARN", Required: true, Type: "string", Placeholder: "arn:aws:iam::123456789012:role/RedshiftRole"},
+					{Key: awscreds.FieldExternalID, Label: "External ID", Type: "string", Description: "Required if the role trust policy requires an external ID."},
 				},
 			},
 		},
@@ -406,54 +410,6 @@ func (p *RedshiftProvider) HealthCheck(ctx context.Context) error {
 
 func (p *RedshiftProvider) Close() error {
 	return nil // Data API is stateless, no connection to close
-}
-
-// loadAWSConfig creates an AWS config based on the selected auth method.
-func loadAWSConfig(ctx context.Context, region string, cfg gowarehouse.ProviderConfig) (aws.Config, error) {
-	switch cfg["auth_method"] {
-	case "access_keys":
-		creds := cfg["credentials_json"]
-		if creds == "" {
-			return aws.Config{}, fmt.Errorf("redshift: access keys are required (format: ACCESS_KEY_ID:SECRET_ACCESS_KEY)")
-		}
-		parts := strings.SplitN(creds, ":", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return aws.Config{}, fmt.Errorf("redshift: invalid access key format, expected ACCESS_KEY_ID:SECRET_ACCESS_KEY")
-		}
-		return awsconfig.LoadDefaultConfig(ctx,
-			awsconfig.WithRegion(region),
-			awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(parts[0], parts[1], "")),
-		)
-
-	case "assume_role":
-		roleARN := cfg["role_arn"]
-		if roleARN == "" {
-			return aws.Config{}, fmt.Errorf("redshift: role_arn is required for assume_role auth")
-		}
-		baseCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
-		if err != nil {
-			return aws.Config{}, fmt.Errorf("redshift: failed to load base AWS config: %w", err)
-		}
-		stsClient := sts.NewFromConfig(baseCfg)
-		provider := stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(o *stscreds.AssumeRoleOptions) {
-			o.RoleSessionName = "decisionbox-agent"
-			if extID := cfg["external_id"]; extID != "" {
-				o.ExternalID = &extID
-			}
-		})
-		baseCfg.Credentials = aws.NewCredentialsCache(provider)
-		return baseCfg, nil
-
-	case "iam_role", "":
-		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
-		if err != nil {
-			return aws.Config{}, fmt.Errorf("redshift: failed to load AWS config: %w", err)
-		}
-		return awsCfg, nil
-
-	default:
-		return aws.Config{}, fmt.Errorf("redshift: unsupported auth method %q", cfg["auth_method"])
-	}
 }
 
 // normalizeRedshiftType maps Redshift types to warehouse-agnostic types.

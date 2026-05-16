@@ -1,5 +1,5 @@
 // Package vertexai provides an embedding.Provider backed by Google Cloud Vertex AI.
-// Uses Application Default Credentials (ADC) for authentication — same as the LLM vertex-ai provider.
+// Credentials resolved by libs/gcpcreds (ADC or Service Account Key).
 //
 // Register via init():
 //
@@ -20,9 +20,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 var modelDimensions = map[string]int{
@@ -54,7 +54,10 @@ func init() {
 		}
 
 		ctx := context.Background()
-		auth, err := newGCPAuth(ctx)
+		auth, err := newGCPAuth(ctx, gcpcreds.Config{
+			Method:          cfg["auth_method"],
+			CredentialsJSON: cfg[gcpcreds.FieldCredentials],
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -70,6 +73,19 @@ func init() {
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-central1", Placeholder: "us-central1"},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "text-embedding-005"},
+		},
+		AuthMethods: []goembedding.AuthMethod{
+			{
+				ID: gcpcreds.MethodADC, Name: "Application Default Credentials",
+				Description: "Automatic — GKE Workload Identity, gcloud auth, VM service account. No credentials needed.",
+			},
+			{
+				ID: gcpcreds.MethodSAKey, Name: "Service Account Key",
+				Description: "GCP service account JSON key. Also supports Workload Identity Federation credential configs.",
+				Fields: []goembedding.ConfigField{
+					{Key: gcpcreds.FieldCredentials, Label: "Service Account JSON", Required: true, Type: "credential"},
+				},
+			},
 		},
 		Models: []goembedding.ModelInfo{
 			{ID: "text-embedding-005", Name: "Text Embedding 005", Dimensions: 768},
@@ -219,17 +235,19 @@ func (p *provider) Validate(ctx context.Context) error {
 	return err
 }
 
-// gcpAuth manages GCP access tokens from Application Default Credentials.
+// gcpAuth manages GCP access tokens for the Vertex AI predict endpoint.
+// The underlying TokenSource is resolved by libs/gcpcreds based on the
+// project's auth_method (adc or sa_key).
 type gcpAuth struct {
 	tokenSource oauth2.TokenSource
 }
 
-func newGCPAuth(ctx context.Context) (*gcpAuth, error) {
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+func newGCPAuth(ctx context.Context, c gcpcreds.Config) (*gcpAuth, error) {
+	src, err := gcpcreds.TokenSource(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai embedding: failed to find GCP credentials (run 'gcloud auth application-default login'): %w", err)
+		return nil, fmt.Errorf("vertex-ai embedding: %w", err)
 	}
-	return &gcpAuth{tokenSource: creds.TokenSource}, nil
+	return &gcpAuth{tokenSource: src}, nil
 }
 
 func (a *gcpAuth) token(ctx context.Context) (string, error) {

@@ -47,7 +47,7 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing api_key")
 	}
-	if !strings.Contains(err.Error(), "api_key is required") {
+	if !strings.Contains(err.Error(), "API key is required") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 // Embed() call will surface the "unknown model" error from OpenAI.
 func TestFactoryUnknownModel(t *testing.T) {
 	prov, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"api_key": "test-key",
+		"credentials_json": "test-key",
 		"model":   "text-embedding-future-ultra",
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestFactoryDefaultModel(t *testing.T) {
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 		"base_url": server.URL,
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestFactoryLargeModel(t *testing.T) {
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 		"model":    "text-embedding-3-large",
 		"base_url": server.URL,
 	})

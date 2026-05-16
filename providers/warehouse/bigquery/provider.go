@@ -11,6 +11,7 @@ import (
 	"time"
 
 	bq "cloud.google.com/go/bigquery"
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -26,26 +27,20 @@ func init() {
 			timeoutMin = 5
 		}
 
-		// Resolve credentials based on auth method.
-		var credentialsJSON string
-		switch cfg["auth_method"] {
-		case "sa_key":
-			credentialsJSON = cfg["credentials_json"]
-			if credentialsJSON == "" {
-				return nil, fmt.Errorf("bigquery: service account key is required for sa_key auth")
-			}
-		case "adc", "":
-			// Application Default Credentials — no explicit credentials needed.
-		default:
-			return nil, fmt.Errorf("bigquery: unsupported auth method %q", cfg["auth_method"])
+		clientOpts, err := gcpcreds.ClientOptions(context.Background(), gcpcreds.Config{
+			Method:          cfg["auth_method"],
+			CredentialsJSON: cfg[gcpcreds.FieldCredentials],
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bigquery: %w", err)
 		}
 
 		return NewBigQueryProvider(context.Background(), BigQueryConfig{
-			ProjectID:       cfg["project_id"],
-			Dataset:         cfg["dataset"],
-			Location:        cfg["location"],
-			Timeout:         time.Duration(timeoutMin) * time.Minute,
-			CredentialsJSON: credentialsJSON,
+			ProjectID:     cfg["project_id"],
+			Dataset:       cfg["dataset"],
+			Location:      cfg["location"],
+			Timeout:       time.Duration(timeoutMin) * time.Minute,
+			ClientOptions: clientOpts,
 		})
 	}, gowarehouse.ProviderMeta{
 		Name:        "Google BigQuery",
@@ -57,14 +52,14 @@ func init() {
 		},
 		AuthMethods: []gowarehouse.AuthMethod{
 			{
-				ID: "adc", Name: "Application Default Credentials",
+				ID: gcpcreds.MethodADC, Name: "Application Default Credentials",
 				Description: "Automatic — GKE Workload Identity, gcloud auth, VM service account. No credentials needed.",
 			},
 			{
-				ID: "sa_key", Name: "Service Account Key",
+				ID: gcpcreds.MethodSAKey, Name: "Service Account Key",
 				Description: "GCP service account JSON key. Also supports Workload Identity Federation credential configs.",
 				Fields: []gowarehouse.ConfigField{
-					{Key: "credentials", Label: "Service Account JSON", Required: true, Type: "credential"},
+					{Key: gcpcreds.FieldCredentials, Label: "Service Account JSON", Required: true, Type: "credential"},
 				},
 			},
 		},
@@ -81,13 +76,9 @@ type BigQueryConfig struct {
 	Dataset   string
 	Location  string
 	Timeout   time.Duration
-	// CredentialsJSON is an optional GCP service account key (JSON).
-	// When set, BigQuery authenticates with this key instead of ADC.
-	// Use this when running outside GCP (e.g., on AWS, Azure, or on-prem).
-	// If empty, falls back to Application Default Credentials.
-	CredentialsJSON string
-	// ClientOptions allows passing custom options (e.g., emulator endpoint).
-	// Used for testing with BigQuery emulator.
+	// ClientOptions carries credentials (resolved upstream via
+	// gcpcreds.ClientOptions) plus any custom options such as an
+	// emulator endpoint for tests.
 	ClientOptions []option.ClientOption
 }
 
@@ -108,12 +99,6 @@ func NewBigQueryProvider(ctx context.Context, cfg BigQueryConfig) (*BigQueryProv
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute
-	}
-
-	// If credentials JSON provided, use it instead of ADC
-	if cfg.CredentialsJSON != "" {
-		cfg.ClientOptions = append(cfg.ClientOptions,
-			option.WithCredentialsJSON([]byte(cfg.CredentialsJSON)))
 	}
 
 	client, err := bq.NewClient(ctx, cfg.ProjectID, cfg.ClientOptions...)

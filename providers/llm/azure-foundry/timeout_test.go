@@ -12,7 +12,7 @@ import (
 func TestAzureFoundry_FactoryWiresTimeout(t *testing.T) {
 	base := gollm.ProviderConfig{
 		"endpoint": "https://example.services.ai.azure.com",
-		"api_key":  "key",
+		"credentials_json":  "key",
 		"model":    "claude-sonnet-4-6",
 	}
 	tests := []struct {

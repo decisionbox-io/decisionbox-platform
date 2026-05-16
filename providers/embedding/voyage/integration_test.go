@@ -111,7 +111,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 	}
 
 	p, err := goembedding.NewProvider("voyage", goembedding.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   "voyage-3-lite",
 	})
 	if err != nil {

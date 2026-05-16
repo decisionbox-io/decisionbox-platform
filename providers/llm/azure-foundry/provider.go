@@ -51,7 +51,6 @@ func init() {
 		Description: "Microsoft Azure-managed AI platform — Claude & OpenAI models with API key auth",
 		ConfigFields: []gollm.ConfigField{
 			{Key: "endpoint", Label: "Endpoint URL", Required: true, Type: "string", Placeholder: "https://my-resource.services.ai.azure.com"},
-			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "your-azure-api-key"},
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -75,6 +74,15 @@ func init() {
 				},
 			},
 		},
+		AuthMethods: []gollm.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "Azure AI Foundry API key.",
+				Fields: []gollm.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-azure-api-key"},
+				},
+			},
+		},
 		Models:                 buildAzureFoundryCatalog(),
 		DefaultMaxOutputTokens: 16384,
 		FamilyInferrer:         inferAzureWire,
@@ -88,9 +96,9 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
 
-	apiKey := cfg["api_key"]
+	apiKey := cfg["credentials_json"]
 	if apiKey == "" {
-		return nil, fmt.Errorf("azure-foundry: api_key is required")
+		return nil, fmt.Errorf("azure-foundry: API key is required")
 	}
 
 	model := cfg["model"]

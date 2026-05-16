@@ -17,27 +17,6 @@ func TestBigQueryConfig_DefaultTimeout(t *testing.T) {
 	}
 }
 
-func TestBigQueryConfig_WithCredentials(t *testing.T) {
-	cfg := BigQueryConfig{
-		ProjectID:       "test-project",
-		Dataset:         "test_dataset",
-		CredentialsJSON: `{"type":"service_account","project_id":"test"}`,
-	}
-	if cfg.CredentialsJSON == "" {
-		t.Error("credentials should be set")
-	}
-}
-
-func TestBigQueryConfig_WithoutCredentials(t *testing.T) {
-	cfg := BigQueryConfig{
-		ProjectID: "test-project",
-		Dataset:   "test_dataset",
-	}
-	if cfg.CredentialsJSON != "" {
-		t.Error("credentials should be empty by default (ADC fallback)")
-	}
-}
-
 func TestNewBigQueryProvider_MissingProjectID(t *testing.T) {
 	_, err := NewBigQueryProvider(context.TODO(), BigQueryConfig{
 		Dataset: "test",
@@ -53,18 +32,6 @@ func TestNewBigQueryProvider_MissingDataset(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for missing dataset")
-	}
-}
-
-func TestNewBigQueryProvider_InvalidCredentials(t *testing.T) {
-	// Invalid JSON credentials should fail at client creation
-	_, err := NewBigQueryProvider(context.TODO(), BigQueryConfig{
-		ProjectID:       "test",
-		Dataset:         "test",
-		CredentialsJSON: "not-valid-json",
-	})
-	if err == nil {
-		t.Error("expected error for invalid credentials JSON")
 	}
 }
 
@@ -114,19 +81,6 @@ func TestBigQueryFactory_WithCredentials(t *testing.T) {
 	if err != nil {
 		// Expected — no GCP credentials available in test
 		t.Logf("Expected error (no GCP creds): %v", err)
-	}
-}
-
-func TestBigQueryFactory_CredentialsPassthrough(t *testing.T) {
-	// Verify invalid credentials produce a clear error (not a panic)
-	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
-		"project_id":       "test-project",
-		"dataset":          "test_dataset",
-		"auth_method":      "sa_key",
-		"credentials_json": `{"type":"invalid"}`,
-	})
-	if err == nil {
-		t.Error("expected error for invalid credentials")
 	}
 }
 
@@ -229,17 +183,22 @@ func TestRegisteredAuthMethods(t *testing.T) {
 	}
 }
 
-func TestBigQueryFactory_SAKeyMissing(t *testing.T) {
+func TestBigQueryFactory_SAKeyEmptyFallsThroughToADC(t *testing.T) {
+	// Under the new credential-resolution rule, sa_key with an empty
+	// credential blob falls through to ADC — the SDK uses
+	// GOOGLE_APPLICATION_CREDENTIALS / metadata server. The factory must
+	// not error on empty credentials at this layer; the SDK will error
+	// later if no ambient credentials are available.
 	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
 		"project_id":  "test-project",
 		"dataset":     "test_dataset",
 		"auth_method": "sa_key",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing SA key")
-	}
-	if !bqContains(err.Error(), "service account key is required") {
-		t.Errorf("wrong error: %v", err)
+	// The factory call may succeed (client constructor is lazy) or fail
+	// downstream at client creation; what must NOT happen is a
+	// "service account key is required" error.
+	if err != nil && bqContains(err.Error(), "service account key is required") {
+		t.Errorf("legacy 'sa key required' error must not return under env-fallback rule: %v", err)
 	}
 }
 

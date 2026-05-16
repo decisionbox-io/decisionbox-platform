@@ -19,7 +19,16 @@ type ProviderMeta struct {
 	Name         string        `json:"name"`
 	Description  string        `json:"description"`
 	ConfigFields []ConfigField `json:"config_fields"`
-	Models       []ModelInfo   `json:"models"`
+
+	// AuthMethods declares the auth options exposed in the dashboard.
+	// Empty for providers that need no credentials (Ollama). For api-key
+	// providers (OpenAI, Voyage, Azure OpenAI) this is a single "api_key"
+	// method. For cloud providers (Bedrock, Vertex) it lists every
+	// supported credential strategy. Mirrors the warehouse + LLM
+	// AuthMethod shape so the dashboard selector renders uniformly.
+	AuthMethods []AuthMethod `json:"auth_methods,omitempty"`
+
+	Models []ModelInfo `json:"models"`
 }
 
 // ConfigField describes a single configuration field.
@@ -31,6 +40,16 @@ type ConfigField struct {
 	Type        string `json:"type"`
 	Default     string `json:"default"`
 	Placeholder string `json:"placeholder"`
+}
+
+// AuthMethod describes an authentication option for an embedding provider.
+// See ProviderMeta.AuthMethods for usage; structurally identical to the
+// warehouse + LLM AuthMethod types so the dashboard renderer can be reused.
+type AuthMethod struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Fields      []ConfigField `json:"fields"`
 }
 
 // ModelInfo describes an embedding model offered by a provider.

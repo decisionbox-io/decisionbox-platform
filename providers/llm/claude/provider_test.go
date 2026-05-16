@@ -121,11 +121,29 @@ func TestProviderConfigFields(t *testing.T) {
 	for _, f := range meta.ConfigFields {
 		keys[f.Key] = true
 	}
-	if !keys["api_key"] {
-		t.Error("missing api_key config field")
-	}
 	if !keys["model"] {
 		t.Error("missing model config field")
+	}
+
+	// api_key moved from top-level ConfigFields into AuthMethod.Fields
+	// so the dashboard's AuthMethodSelector picks it up. Verify the
+	// api_key auth method declares credentials_json as its credential
+	// field — the agent injects the resolved key under that name.
+	if len(meta.AuthMethods) != 1 {
+		t.Fatalf("expected exactly one auth method, got %d", len(meta.AuthMethods))
+	}
+	am := meta.AuthMethods[0]
+	if am.ID != "api_key" {
+		t.Errorf("auth method ID = %q, want api_key", am.ID)
+	}
+	if len(am.Fields) != 1 {
+		t.Fatalf("api_key auth method should have 1 field, got %d", len(am.Fields))
+	}
+	if am.Fields[0].Key != "credentials_json" {
+		t.Errorf("api_key field key = %q, want credentials_json", am.Fields[0].Key)
+	}
+	if am.Fields[0].Type != "credential" {
+		t.Errorf("api_key field type = %q, want credential", am.Fields[0].Type)
 	}
 }
 
@@ -134,14 +152,14 @@ func TestProviderFactory_MissingKey(t *testing.T) {
 		"model": "claude-sonnet-4-20250514",
 	})
 	if err == nil {
-		t.Error("should error without api_key")
+		t.Error("should error without credentials_json")
 	}
 }
 
 func TestProviderFactory_Success(t *testing.T) {
 	p, err := gollm.NewProvider("claude", gollm.ProviderConfig{
-		"api_key": "test-key",
-		"model":   "claude-sonnet-4-20250514",
+		"credentials_json": "test-key",
+		"model":            "claude-sonnet-4-20250514",
 	})
 	if err != nil {
 		t.Fatalf("factory error: %v", err)

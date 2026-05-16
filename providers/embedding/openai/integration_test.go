@@ -90,7 +90,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 	}
 
 	p, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   "text-embedding-3-small",
 	})
 	if err != nil {

@@ -99,7 +99,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 
 	p, err := goembedding.NewProvider("azure-openai", goembedding.ProviderConfig{
 		"endpoint":   endpoint,
-		"api_key":    apiKey,
+		"credentials_json":    apiKey,
 		"deployment": deployment,
 		"model":      "text-embedding-3-small",
 	})

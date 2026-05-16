@@ -380,7 +380,7 @@ func TestProviderFactory_DefaultModel(t *testing.T) {
 	// Can't fully test without actual API, but verify factory doesn't error.
 	// Use a bad base_url to avoid real API calls.
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key":  "test",
+		"credentials_json":  "test",
 		"base_url": "http://127.0.0.1:1",
 	})
 	if err != nil {

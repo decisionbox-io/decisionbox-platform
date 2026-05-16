@@ -35,9 +35,9 @@ const openaiDefaultTimeout = 5 * time.Minute
 
 func init() {
 	gollm.RegisterWithMeta("openai", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
-		apiKey := cfg["api_key"]
+		apiKey := cfg["credentials_json"]
 		if apiKey == "" {
-			return nil, fmt.Errorf("openai: api_key is required")
+			return nil, fmt.Errorf("openai: API key is required")
 		}
 
 		model := cfg["model"]
@@ -56,7 +56,6 @@ func init() {
 		Name:        "OpenAI",
 		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
 		ConfigFields: []gollm.ConfigField{
-			{Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-..."},
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -67,6 +66,15 @@ func init() {
 				Description: "Pick a catalogued model or type any OpenAI model ID.",
 			},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
+		},
+		AuthMethods: []gollm.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "OpenAI API key (or compatible API key for self-hosted gateways).",
+				Fields: []gollm.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-..."},
+				},
+			},
 		},
 		Models:                 buildOpenAICatalog(),
 		DefaultMaxOutputTokens: 16384,

@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/service/bedrock v1.59.1
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
+	github.com/decisionbox-io/decisionbox/libs/awscreds v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 )
 
@@ -29,4 +30,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 )
 
-replace github.com/decisionbox-io/decisionbox/libs/go-common => ../../../libs/go-common
+replace (
+	github.com/decisionbox-io/decisionbox/libs/awscreds => ../../../libs/awscreds
+	github.com/decisionbox-io/decisionbox/libs/go-common => ../../../libs/go-common
+)

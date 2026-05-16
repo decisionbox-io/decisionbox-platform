@@ -42,9 +42,9 @@ const (
 // multilingual model (e.g. Qwen3-32B on Bedrock) can outperform an Opus
 // on retrieval recall while costing two orders of magnitude less.
 //
-// Credentials flow through the same `llm-api-key` secret when the blurb
+// Credentials flow through the same `llm-credentials` secret when the blurb
 // and analysis provider match. When they differ, a separate
-// `blurb-llm-api-key` secret holds the blurb provider's key.
+// `blurb-llm-credentials` secret holds the blurb provider's key.
 type BlurbLLMConfig struct {
 	Provider string            `bson:"provider" json:"provider"`
 	Model    string            `bson:"model" json:"model"`

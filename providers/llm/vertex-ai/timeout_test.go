@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
@@ -49,7 +50,7 @@ func TestVertex_FactoryWiresTimeout(t *testing.T) {
 // the test's defer site honest about scope.
 func stubAuth(a *gcpAuth, err error) func() {
 	prev := newAuth
-	newAuth = func(_ context.Context) (*gcpAuth, error) {
+	newAuth = func(_ context.Context, _ gcpcreds.Config) (*gcpAuth, error) {
 		return a, err
 	}
 	return func() { newAuth = prev }

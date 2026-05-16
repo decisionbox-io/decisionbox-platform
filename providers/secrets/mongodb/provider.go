@@ -204,7 +204,7 @@ func (p *MongoProvider) List(ctx context.Context, projectID string) ([]secrets.S
 
 // DeleteAllForProject removes every secret stored for a project under
 // this provider's namespace. Used by the project-deletion cascade so
-// `warehouse-credentials`, `llm-api-key`, `blurb-llm-api-key`, and any
+// `warehouse-credentials`, `llm-credentials`, `blurb-llm-credentials`, and any
 // other per-project secret are dropped along with the project doc.
 //
 // Idempotent: a project with no secrets returns nil. The implicit

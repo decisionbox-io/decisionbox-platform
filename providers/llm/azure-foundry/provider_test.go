@@ -193,17 +193,26 @@ func TestAzureFoundryProvider_ConfigFields(t *testing.T) {
 	if !fieldKeys["endpoint"] {
 		t.Error("missing endpoint config field")
 	}
-	if !fieldKeys["api_key"] {
-		t.Error("missing api_key config field")
-	}
 	if !fieldKeys["model"] {
 		t.Error("missing model config field")
+	}
+
+	// api_key moved from top-level ConfigFields into AuthMethod.Fields.
+	if len(meta.AuthMethods) != 1 {
+		t.Fatalf("expected exactly one auth method, got %d", len(meta.AuthMethods))
+	}
+	am := meta.AuthMethods[0]
+	if am.ID != "api_key" {
+		t.Errorf("auth method ID = %q, want api_key", am.ID)
+	}
+	if len(am.Fields) != 1 || am.Fields[0].Key != "credentials_json" {
+		t.Errorf("api_key auth method should declare credentials_json field, got %+v", am.Fields)
 	}
 }
 
 func TestAzureFoundryProvider_Factory_MissingEndpoint(t *testing.T) {
 	_, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"api_key": "test-key",
+		"credentials_json": "test-key",
 		"model":   "claude-sonnet-4-6",
 	})
 	if err == nil {
@@ -220,17 +229,17 @@ func TestAzureFoundryProvider_Factory_MissingAPIKey(t *testing.T) {
 		"model":    "claude-sonnet-4-6",
 	})
 	if err == nil {
-		t.Fatal("expected error for missing api_key")
+		t.Fatal("expected error for missing API key")
 	}
-	if !strings.Contains(err.Error(), "api_key is required") {
-		t.Errorf("error = %q, should mention api_key is required", err.Error())
+	if !strings.Contains(err.Error(), "API key is required") {
+		t.Errorf("error = %q, should mention API key is required", err.Error())
 	}
 }
 
 func TestAzureFoundryProvider_Factory_MissingModel(t *testing.T) {
 	_, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": "https://test.services.ai.azure.com",
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing model")
@@ -243,7 +252,7 @@ func TestAzureFoundryProvider_Factory_MissingModel(t *testing.T) {
 func TestAzureFoundryProvider_Factory_StripsTrailingSlash(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": "https://test.services.ai.azure.com/",
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 		"model":    "claude-sonnet-4-6",
 	})
 	if err != nil {
@@ -258,7 +267,7 @@ func TestAzureFoundryProvider_Factory_StripsTrailingSlash(t *testing.T) {
 func TestAzureFoundryProvider_Factory_DefaultTimeout(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": "https://test.services.ai.azure.com",
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 		"model":    "claude-sonnet-4-6",
 	})
 	if err != nil {
@@ -274,7 +283,7 @@ func TestAzureFoundryProvider_Factory_DefaultTimeout(t *testing.T) {
 func TestAzureFoundryProvider_Factory_CustomTimeout(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint":        "https://test.services.ai.azure.com",
-		"api_key":         "test-key",
+		"credentials_json":         "test-key",
 		"model":           "claude-sonnet-4-6",
 		"timeout_seconds": "60",
 	})

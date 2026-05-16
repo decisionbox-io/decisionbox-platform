@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 )
 
@@ -19,7 +20,7 @@ func TestIntegration_EmbedSingleText(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	auth, err := newGCPAuth(ctx)
+	auth, err := newGCPAuth(ctx, gcpcreds.Config{})
 	if err != nil {
 		t.Fatalf("Failed to create GCP auth: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestIntegration_EmbedBatch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	auth, err := newGCPAuth(ctx)
+	auth, err := newGCPAuth(ctx, gcpcreds.Config{})
 	if err != nil {
 		t.Fatalf("Failed to create GCP auth: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestIntegration_Validate(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	auth, err := newGCPAuth(ctx)
+	auth, err := newGCPAuth(ctx, gcpcreds.Config{})
 	if err != nil {
 		t.Fatalf("Failed to create GCP auth: %v", err)
 	}

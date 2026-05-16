@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 func TestIntegration_ClaudeChat(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testClaudeModel,
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func TestIntegration_ClaudeChat(t *testing.T) {
 func TestIntegration_ClaudeSystemPrompt(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testClaudeModel,
 	})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestIntegration_ClaudeSystemPrompt(t *testing.T) {
 func TestIntegration_OpenAIChat(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testOpenAIModel,
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestIntegration_OpenAIChat(t *testing.T) {
 func TestIntegration_OpenAISystemPrompt(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testOpenAIModel,
 	})
 	if err != nil {
@@ -145,7 +145,7 @@ func TestIntegration_OpenAISystemPrompt(t *testing.T) {
 func TestIntegration_ContextCancellation(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testClaudeModel,
 	})
 	if err != nil {
@@ -168,7 +168,7 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 func TestIntegration_Validate_Claude(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testClaudeModel,
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestIntegration_Validate_Claude(t *testing.T) {
 func TestIntegration_Validate_OpenAI(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"endpoint": testEndpoint,
-		"api_key":  testAPIKey,
+		"credentials_json":  testAPIKey,
 		"model":    testOpenAIModel,
 	})
 	if err != nil {
@@ -195,9 +195,9 @@ func TestIntegration_Validate_OpenAI(t *testing.T) {
 
 func TestIntegration_InvalidAPIKey(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"api_key":  "invalid-key-xyz",
-		"model":    testOpenAIModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": "invalid-key-xyz",
+		"model":            testOpenAIModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)

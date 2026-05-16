@@ -8,7 +8,7 @@
 //	SECRET_NAMESPACE=decisionbox           (default)
 //
 // Authentication: Application Default Credentials (GKE Workload Identity, gcloud auth).
-// Secret naming: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)
+// Secret naming: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-credentials)
 package gcp
 
 import (

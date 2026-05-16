@@ -8,7 +8,7 @@
 //	SECRET_NAMESPACE=decisionbox  (default)
 //
 // Authentication: AWS credentials (IAM role, env vars, or ~/.aws/credentials).
-// Secret naming: {namespace}/{projectID}/{key} (e.g., decisionbox/proj123/llm-api-key)
+// Secret naming: {namespace}/{projectID}/{key} (e.g., decisionbox/proj123/llm-credentials)
 package aws
 
 import (

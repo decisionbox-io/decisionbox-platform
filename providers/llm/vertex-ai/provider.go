@@ -20,10 +20,10 @@
 //	VERTEX_LOCATION=us-east5  (us-east5 for Claude, us-central1 for Gemini)
 //	wire_override=google-native|anthropic|openai-compat  (optional)
 //
-// Authentication:
-//
-//	Application Default Credentials (ADC). On GKE: Workload Identity.
-//	Locally: gcloud auth application-default login
+// Authentication: GCP credentials resolved by libs/gcpcreds. Supports
+// Application Default Credentials (ADC — on GKE Workload Identity,
+// locally gcloud auth application-default login) and Service Account
+// Key (project JSON in "credentials_json").
 package vertexai
 
 import (
@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
@@ -81,6 +82,19 @@ func init() {
 				},
 			},
 		},
+		AuthMethods: []gollm.AuthMethod{
+			{
+				ID: gcpcreds.MethodADC, Name: "Application Default Credentials",
+				Description: "Automatic — GKE Workload Identity, gcloud auth, VM service account. No credentials needed.",
+			},
+			{
+				ID: gcpcreds.MethodSAKey, Name: "Service Account Key",
+				Description: "GCP service account JSON key. Also supports Workload Identity Federation credential configs.",
+				Fields: []gollm.ConfigField{
+					{Key: gcpcreds.FieldCredentials, Label: "Service Account JSON", Required: true, Type: "credential"},
+				},
+			},
+		},
 		Models:                 buildVertexCatalog(),
 		DefaultMaxOutputTokens: 16384,
 		FamilyInferrer:         inferVertexWire,
@@ -116,7 +130,10 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	timeout := gollm.ResolveHTTPTimeout(cfg, vertexDefaultTimeout)
 	ctx := context.Background()
 
-	auth, err := newAuth(ctx)
+	auth, err := newAuth(ctx, gcpcreds.Config{
+		Method:          cfg["auth_method"],
+		CredentialsJSON: cfg[gcpcreds.FieldCredentials],
+	})
 	if err != nil {
 		return nil, err
 	}

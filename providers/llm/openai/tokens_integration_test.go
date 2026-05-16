@@ -50,7 +50,7 @@ func TestIntegration_TiktokenMatchesOpenAIPromptTokens(t *testing.T) {
 	model := openaiModel()
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   model,
 	})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestIntegration_TiktokenCorrectlyOrdersIncreasingPromptSizes(t *testing.T) 
 	model := openaiModel()
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   model,
 	})
 	if err != nil {

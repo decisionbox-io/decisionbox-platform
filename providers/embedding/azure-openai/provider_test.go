@@ -38,14 +38,11 @@ func TestRegistrationMeta(t *testing.T) {
 	}
 
 	hasEndpoint := false
-	hasAPIKey := false
 	hasDeployment := false
 	for _, f := range meta.ConfigFields {
 		switch f.Key {
 		case "endpoint":
 			hasEndpoint = f.Required
-		case "api_key":
-			hasAPIKey = f.Required && f.Type == "credential"
 		case "deployment":
 			hasDeployment = f.Required
 		}
@@ -53,17 +50,26 @@ func TestRegistrationMeta(t *testing.T) {
 	if !hasEndpoint {
 		t.Error("expected required endpoint config field")
 	}
-	if !hasAPIKey {
-		t.Error("expected required api_key credential field")
-	}
 	if !hasDeployment {
 		t.Error("expected required deployment config field")
+	}
+
+	// api_key moved from top-level ConfigFields into AuthMethod.Fields.
+	if len(meta.AuthMethods) != 1 {
+		t.Fatalf("expected exactly one auth method, got %d", len(meta.AuthMethods))
+	}
+	am := meta.AuthMethods[0]
+	if am.ID != "api_key" {
+		t.Errorf("auth method ID = %q, want api_key", am.ID)
+	}
+	if len(am.Fields) != 1 || am.Fields[0].Key != "credentials_json" || am.Fields[0].Type != "credential" {
+		t.Errorf("api_key auth method should declare credentials_json credential field, got %+v", am.Fields)
 	}
 }
 
 func TestFactoryMissingEndpoint(t *testing.T) {
 	_, err := goembedding.NewProvider("azure-openai", goembedding.ProviderConfig{
-		"api_key":    "test-key",
+		"credentials_json":    "test-key",
 		"deployment": "my-deployment",
 	})
 	if err == nil {
@@ -82,7 +88,7 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing api_key")
 	}
-	if !strings.Contains(err.Error(), "api_key is required") {
+	if !strings.Contains(err.Error(), "API key is required") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -90,7 +96,7 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 func TestFactoryMissingDeployment(t *testing.T) {
 	_, err := goembedding.NewProvider("azure-openai", goembedding.ProviderConfig{
 		"endpoint": "https://test.openai.azure.com",
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing deployment")
@@ -103,7 +109,7 @@ func TestFactoryMissingDeployment(t *testing.T) {
 func TestFactoryUnsupportedModel(t *testing.T) {
 	_, err := goembedding.NewProvider("azure-openai", goembedding.ProviderConfig{
 		"endpoint":   "https://test.openai.azure.com",
-		"api_key":    "test-key",
+		"credentials_json":    "test-key",
 		"deployment": "my-deployment",
 		"model":      "nonexistent-model",
 	})

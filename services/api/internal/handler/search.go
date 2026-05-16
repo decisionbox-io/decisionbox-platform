@@ -189,15 +189,15 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerName, model, projectID string) (goembedding.Provider, error) {
 	apiKey := ""
 	if h.secretProvider != nil {
-		key, err := h.secretProvider.Get(ctx, projectID, "embedding-api-key")
+		key, err := h.secretProvider.Get(ctx, projectID, "embedding-credentials")
 		if err == nil {
 			apiKey = key
 		}
 	}
 
 	return goembedding.NewProvider(providerName, goembedding.ProviderConfig{
-		"api_key": apiKey,
-		"model":   model,
+		"credentials_json": apiKey,
+		"model":            model,
 	})
 }
 
@@ -792,15 +792,15 @@ func chunkCitationID(c gosources.Chunk) string {
 func (h *SearchHandler) createLLMProvider(ctx context.Context, project *models.Project, projectID string) (gollm.Provider, error) {
 	apiKey := ""
 	if h.secretProvider != nil {
-		key, err := h.secretProvider.Get(ctx, projectID, "llm-api-key")
+		key, err := h.secretProvider.Get(ctx, projectID, "llm-credentials")
 		if err == nil {
 			apiKey = key
 		}
 	}
 
 	cfg := gollm.ProviderConfig{
-		"api_key": apiKey,
-		"model":   project.LLM.Model,
+		"credentials_json": apiKey,
+		"model":            project.LLM.Model,
 	}
 	for k, v := range project.LLM.Config {
 		cfg[k] = v

@@ -38,7 +38,7 @@ func openAIModel() string {
 func TestInteg_OpenAI_FunctionCall_EndToEnd(t *testing.T) {
 	key := openAIKey(t)
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": key,
+		"credentials_json": key,
 		"model":   openAIModel(),
 	})
 	if err != nil {
@@ -85,7 +85,7 @@ func TestInteg_OpenAI_FunctionCall_EndToEnd(t *testing.T) {
 func TestInteg_OpenAI_FunctionCall_RoundTrip(t *testing.T) {
 	key := openAIKey(t)
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": key,
+		"credentials_json": key,
 		"model":   openAIModel(),
 	})
 	if err != nil {

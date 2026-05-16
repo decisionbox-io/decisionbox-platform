@@ -16,7 +16,10 @@
 //	region in project LLM config (default: us-east-1)
 //	wire_override=anthropic|openai-compat  (optional)
 //
-// Authentication: AWS credentials (IAM role, env vars, or ~/.aws/credentials).
+// Authentication: AWS credentials resolved by libs/awscreds. Supports
+// IAM Role (ambient SDK chain), Access Keys (project blob in
+// "credentials_json"), and Assume Role (project "role_arn" + optional
+// "external_id" against ambient base creds).
 package bedrock
 
 import (
@@ -25,8 +28,8 @@ import (
 	"net/http"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/decisionbox-io/decisionbox/libs/awscreds"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
@@ -66,6 +69,27 @@ func init() {
 					{Value: "", Label: "Auto — use model catalog"},
 					{Value: string(gollm.WireAnthropic), Label: "Anthropic Messages (Claude)"},
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
+				},
+			},
+		},
+		AuthMethods: []gollm.AuthMethod{
+			{
+				ID: awscreds.MethodIAMRole, Name: "IAM Role",
+				Description: "Automatic — EC2 instance profile, EKS pod role, environment variables. No credentials needed.",
+			},
+			{
+				ID: awscreds.MethodAccessKeys, Name: "Access Keys",
+				Description: "AWS access key pair for cross-cloud or local access.",
+				Fields: []gollm.ConfigField{
+					{Key: awscreds.FieldCredentials, Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIA...:wJalr..."}, //nolint:gosec // example placeholder
+				},
+			},
+			{
+				ID: awscreds.MethodAssumeRole, Name: "Assume Role",
+				Description: "Assume an IAM role via STS. For cross-account access.",
+				Fields: []gollm.ConfigField{
+					{Key: awscreds.FieldRoleARN, Label: "Role ARN", Required: true, Type: "string", Placeholder: "arn:aws:iam::123456789012:role/BedrockRole"},
+					{Key: awscreds.FieldExternalID, Label: "External ID", Type: "string", Description: "Required if the role trust policy requires an external ID."},
 				},
 			},
 		},
@@ -112,11 +136,16 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 
 	timeout := gollm.ResolveHTTPTimeout(cfg, bedrockDefaultTimeout)
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(region),
-	)
+	awsCfg, err := awscreds.Load(context.Background(), awscreds.Config{
+		Method:      cfg["auth_method"],
+		Region:      region,
+		Credentials: cfg[awscreds.FieldCredentials],
+		RoleARN:     cfg[awscreds.FieldRoleARN],
+		ExternalID:  cfg[awscreds.FieldExternalID],
+		SessionName: "decisionbox-llm",
+	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock: failed to load AWS config: %w", err)
+		return nil, fmt.Errorf("bedrock: %w", err)
 	}
 
 	client := bedrockruntime.NewFromConfig(awsCfg)

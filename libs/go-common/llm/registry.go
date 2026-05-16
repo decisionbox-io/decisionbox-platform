@@ -225,6 +225,14 @@ type ProviderMeta struct {
 	Description  string        `json:"description"`
 	ConfigFields []ConfigField `json:"config_fields"`
 
+	// AuthMethods declares the auth options exposed in the dashboard.
+	// Empty for providers that need no credentials (Ollama). For api-key
+	// providers (Claude, OpenAI, Voyage, Azure Foundry) this is a single
+	// "api_key" method. For cloud providers (Bedrock, Vertex) it lists
+	// every supported credential strategy (iam_role/access_keys/assume_role
+	// or adc/sa_key). Serialised in the /api/v1/providers/llm response.
+	AuthMethods []AuthMethod `json:"auth_methods,omitempty"`
+
 	// Models is the provider's authoritative model catalog. Each
 	// entry can be matched by its canonical ID or any registered
 	// alias. Empty for providers without a fixed catalog (Ollama
@@ -413,6 +421,20 @@ type ConfigOption struct {
 	Label string `json:"label"`
 }
 
+// AuthMethod describes an authentication option for an LLM provider.
+// Each provider declares its supported auth methods in ProviderMeta.AuthMethods.
+// The UI renders a selector and shows auth-method-specific fields. The
+// selected method ID is stored in the project's LLM config as "auth_method".
+//
+// Mirrors the warehouse AuthMethod shape so the dashboard's selector
+// component can be reused across warehouse, LLM, and embedding surfaces.
+type AuthMethod struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Fields      []ConfigField `json:"fields"`
+}
+
 // providerMetaJSON mirrors ProviderMeta with the catalog rendered as
 // CatalogModels() output. Used for JSON marshalling so the response
 // shape stays "{...meta, models: [...]}", but with one row per
@@ -422,6 +444,7 @@ type providerMetaJSON struct {
 	Name                   string        `json:"name"`
 	Description            string        `json:"description"`
 	ConfigFields           []ConfigField `json:"config_fields"`
+	AuthMethods            []AuthMethod  `json:"auth_methods,omitempty"`
 	Models                 []ModelInfo   `json:"models,omitempty"`
 	DefaultMaxOutputTokens int           `json:"default_max_output_tokens,omitempty"`
 	DefaultMaxInputTokens  int           `json:"default_max_input_tokens,omitempty"`
@@ -439,6 +462,7 @@ func (m ProviderMeta) MarshalJSON() ([]byte, error) {
 		Name:                   m.Name,
 		Description:            m.Description,
 		ConfigFields:           m.ConfigFields,
+		AuthMethods:            m.AuthMethods,
 		Models:                 m.CatalogModels(),
 		DefaultMaxOutputTokens: m.DefaultMaxOutputTokens,
 		DefaultMaxInputTokens:  m.DefaultMaxInputTokens,

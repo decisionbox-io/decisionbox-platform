@@ -103,6 +103,8 @@ require (
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/databricks/databricks-sql-go v1.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/decisionbox-io/decisionbox/libs/awscreds v0.0.0 // indirect
+	github.com/decisionbox-io/decisionbox/libs/gcpcreds v0.0.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dnephin/pflag v1.0.7 // indirect
@@ -207,6 +209,8 @@ require (
 )
 
 replace (
+	github.com/decisionbox-io/decisionbox/libs/awscreds => ../../libs/awscreds
+	github.com/decisionbox-io/decisionbox/libs/gcpcreds => ../../libs/gcpcreds
 	github.com/decisionbox-io/decisionbox/libs/go-common => ../../libs/go-common
 	github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant => ../../libs/go-common/vectorstore/qdrant
 	github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai => ../../providers/embedding/azure-openai

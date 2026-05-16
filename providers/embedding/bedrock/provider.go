@@ -1,5 +1,6 @@
 // Package bedrock provides an embedding.Provider backed by AWS Bedrock.
-// Uses AWS SDK v2 with default credential chain (IAM role, env vars, ~/.aws/credentials).
+// Credentials resolved by libs/awscreds (IAM Role / Access Keys / Assume
+// Role).
 //
 // Register via init():
 //
@@ -15,10 +16,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
-
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/decisionbox-io/decisionbox/libs/awscreds"
+	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 )
 
 var modelDimensions = map[string]int{
@@ -43,11 +43,16 @@ func init() {
 			return nil, fmt.Errorf("bedrock embedding: unsupported model %q (supported: amazon.titan-embed-text-v2:0, amazon.titan-embed-text-v1:2)", model)
 		}
 
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(region),
-		)
+		awsCfg, err := awscreds.Load(context.Background(), awscreds.Config{
+			Method:      cfg["auth_method"],
+			Region:      region,
+			Credentials: cfg[awscreds.FieldCredentials],
+			RoleARN:     cfg[awscreds.FieldRoleARN],
+			ExternalID:  cfg[awscreds.FieldExternalID],
+			SessionName: "decisionbox-embedding",
+		})
 		if err != nil {
-			return nil, fmt.Errorf("bedrock embedding: failed to load AWS config: %w", err)
+			return nil, fmt.Errorf("bedrock embedding: %w", err)
 		}
 
 		client := bedrockruntime.NewFromConfig(awsCfg)
@@ -59,6 +64,27 @@ func init() {
 		ConfigFields: []goembedding.ConfigField{
 			{Key: "region", Label: "AWS Region", Type: "string", Default: "us-east-1", Placeholder: "us-east-1"},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "amazon.titan-embed-text-v2:0"},
+		},
+		AuthMethods: []goembedding.AuthMethod{
+			{
+				ID: awscreds.MethodIAMRole, Name: "IAM Role",
+				Description: "Automatic — EC2 instance profile, EKS pod role, environment variables. No credentials needed.",
+			},
+			{
+				ID: awscreds.MethodAccessKeys, Name: "Access Keys",
+				Description: "AWS access key pair for cross-cloud or local access.",
+				Fields: []goembedding.ConfigField{
+					{Key: awscreds.FieldCredentials, Label: "Access Key ID : Secret Access Key", Required: true, Type: "credential", Placeholder: "AKIA...:wJalr..."}, //nolint:gosec // example placeholder
+				},
+			},
+			{
+				ID: awscreds.MethodAssumeRole, Name: "Assume Role",
+				Description: "Assume an IAM role via STS. For cross-account access.",
+				Fields: []goembedding.ConfigField{
+					{Key: awscreds.FieldRoleARN, Label: "Role ARN", Required: true, Type: "string", Placeholder: "arn:aws:iam::123456789012:role/BedrockRole"},
+					{Key: awscreds.FieldExternalID, Label: "External ID", Type: "string", Description: "Required if the role trust policy requires an external ID."},
+				},
+			},
 		},
 		Models: []goembedding.ModelInfo{
 			{ID: "amazon.titan-embed-text-v2:0", Name: "Titan Text Embeddings V2", Dimensions: 1024},

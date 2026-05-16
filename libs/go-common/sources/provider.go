@@ -64,7 +64,7 @@ type Dependencies struct {
 	Mongo *mongo.Database
 	// Vectorstore is the vector store the platform uses (Qdrant).
 	Vectorstore vectorstore.Provider
-	// SecretProvider supplies per-project credentials such as embedding-api-key.
+	// SecretProvider supplies per-project credentials such as embedding-credentials.
 	SecretProvider secrets.Provider
 }
 

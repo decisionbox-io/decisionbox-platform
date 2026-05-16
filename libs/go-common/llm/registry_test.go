@@ -475,6 +475,67 @@ func TestProviderMeta_MarshalJSON(t *testing.T) {
 	}
 }
 
+var onceAuthMethodsMarshal sync.Once
+
+func TestProviderMeta_AuthMethodsMarshal(t *testing.T) {
+	name := "test-auth-methods-marshal"
+	onceAuthMethodsMarshal.Do(func() {
+		RegisterWithMeta(name, mockFactory, ProviderMeta{
+			Name: "auth methods test",
+			AuthMethods: []AuthMethod{
+				{
+					ID:          "iam_role",
+					Name:        "IAM Role",
+					Description: "uses pod role",
+				},
+				{
+					ID:          "access_keys",
+					Name:        "Access Keys",
+					Description: "static keys",
+					Fields: []ConfigField{
+						{Key: "credentials_json", Label: "Access Keys", Required: true, Type: "credential"},
+					},
+				},
+			},
+		})
+	})
+	meta, _ := GetProviderMeta(name)
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"auth_methods"`,
+		`"id":"iam_role"`,
+		`"id":"access_keys"`,
+		`"name":"IAM Role"`,
+		`"name":"Access Keys"`,
+		`"credentials_json"`,
+		`"type":"credential"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in JSON %q", want, got)
+		}
+	}
+}
+
+func TestProviderMeta_AuthMethodsOmittedWhenEmpty(t *testing.T) {
+	// Providers without AuthMethods (Ollama-style) should not emit an
+	// auth_methods key — the dashboard renders nothing in that case.
+	meta := ProviderMeta{
+		ID:   "no-auth-provider",
+		Name: "no auth",
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "auth_methods") {
+		t.Errorf("auth_methods key leaked into JSON: %q", string(raw))
+	}
+}
+
 // --- helpers ---
 
 func expectPanic(t *testing.T, wantSubstring string) {

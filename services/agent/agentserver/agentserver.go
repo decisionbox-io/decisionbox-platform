@@ -6,7 +6,6 @@ package agentserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -302,52 +301,54 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 	}, nil
 }
 
+// resolveCredential applies the platform's credential-resolution order
+// to a single slot: dashboard secret wins, env var is fallback, ambient
+// (handled downstream by the provider factory for cloud auth methods) is
+// last. The returned source string is one of "dashboard", "env", or
+// "none" and is logged so operators can see where the credential came
+// from.
+func resolveCredential(ctx context.Context, secretProvider gosecrets.Provider, projectID, secretKey, envVar string) (value, source string) {
+	if v, err := secretProvider.Get(ctx, projectID, secretKey); err == nil && v != "" {
+		return v, "dashboard"
+	} else if err != nil && err != gosecrets.ErrNotFound {
+		applog.WithError(err).WithField("secret_key", secretKey).Warn("Failed to read credential from secret provider")
+	}
+	if v := os.Getenv(envVar); v != "" {
+		return v, "env"
+	}
+	return "", "none"
+}
+
 func initEmbeddingProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (goembedding.Provider, error) {
-	// When BYOK_EMBEDDING_ENABLED is false, EMBEDDING_PROVIDER_API_KEY
-	// from the environment wins over project-supplied credentials.
-	// Setting the flag to true flips the priority so project credentials
-	// take precedence.
-	byok := os.Getenv("BYOK_EMBEDDING_ENABLED") == "true"
-
-	// Fill project.Credentials from the secret provider when the project
-	// does not already carry a UI-supplied key (the UI writes credentials
-	// directly into project.Embedding.Credentials; older deployments
-	// stored the key in the secret provider under "embedding-api-key").
-	if project.Embedding.Credentials == "" {
-		key, err := secretProvider.Get(ctx, projectID, "embedding-api-key")
-		if err == nil && key != "" {
-			project.Embedding.Credentials = key
-			applog.Info("Embedding API key loaded from secret provider")
-		} else if err != nil && err != gosecrets.ErrNotFound {
-			applog.WithError(err).Warn("Failed to read embedding API key from secret provider")
-		}
+	if project.Embedding.Provider == "" {
+		applog.Info("Embedding provider not configured — Phase 9 will skip embedding")
+		return nil, nil
 	}
 
-	resolved, err := goembedding.ResolveConfig(project.Embedding, byok)
-	if err != nil {
-		if errors.Is(err, goembedding.ErrNoProvider) {
-			applog.Info("Embedding provider not configured — Phase 9 will skip embedding")
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to resolve embedding config: %w", err)
-	}
+	credential, source := resolveCredential(ctx, secretProvider, projectID, "embedding-credentials", "EMBEDDING_API_KEY")
 
 	embCfg := goembedding.ProviderConfig{
-		"api_key": resolved.APIKey,
-		"model":   resolved.Model,
+		"credentials_json": credential,
+		"model":            project.Embedding.Model,
 	}
+	// Non-credential provider config (auth_method, region, project_id,
+	// location, role_arn, …) flows through project.Embedding config map
+	// if present. Today the embedding ProjectConfig doesn't carry this
+	// map (only Provider + Model) — wire-up arrives with the dashboard
+	// changes in task #9. The factory's auth_method switch falls through
+	// to ambient (iam_role / adc) when the key is absent, which matches
+	// the pre-refactor behaviour for Bedrock + Vertex.
 
-	provider, err := goembedding.NewProvider(resolved.Provider, embCfg)
+	provider, err := goembedding.NewProvider(project.Embedding.Provider, embCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create embedding provider (%s): %w", resolved.Provider, err)
+		return nil, fmt.Errorf("failed to create embedding provider (%s): %w", project.Embedding.Provider, err)
 	}
 
 	applog.WithFields(applog.Fields{
-		"provider":        resolved.Provider,
-		"model":           resolved.Model,
-		"dims":            provider.Dimensions(),
-		"credential_src":  resolved.Source,
-		"byok_enabled":    byok,
+		"provider":       project.Embedding.Provider,
+		"model":          project.Embedding.Model,
+		"dims":           provider.Dimensions(),
+		"credential_src": source,
 	}).Info("Embedding provider initialized")
 
 	return provider, nil
@@ -358,17 +359,10 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 		return nil, fmt.Errorf("no LLM provider configured")
 	}
 
-	apiKey := ""
-	key, err := secretProvider.Get(ctx, projectID, "llm-api-key")
-	if err == nil && key != "" {
-		apiKey = key
-		applog.Info("LLM API key loaded from secret provider")
-	} else if err != nil && err != gosecrets.ErrNotFound {
-		applog.WithError(err).Warn("Failed to read LLM API key from secret provider")
-	}
+	credential, source := resolveCredential(ctx, secretProvider, projectID, "llm-credentials", "LLM_API_KEY")
 
 	llmCfg := gollm.ProviderConfig{
-		"api_key":          apiKey,
+		"credentials_json": credential,
 		"model":            project.LLM.Model,
 		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
 		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),
@@ -396,8 +390,9 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 	}
 
 	applog.WithFields(applog.Fields{
-		"provider": project.LLM.Provider,
-		"model":    project.LLM.Model,
+		"provider":       project.LLM.Provider,
+		"model":          project.LLM.Model,
+		"credential_src": source,
 	}).Info("LLM provider initialized")
 
 	return provider, nil

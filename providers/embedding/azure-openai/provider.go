@@ -43,9 +43,9 @@ func init() {
 			return nil, fmt.Errorf("azure-openai embedding: endpoint is required")
 		}
 
-		apiKey := cfg["api_key"]
+		apiKey := cfg["credentials_json"]
 		if apiKey == "" {
-			return nil, fmt.Errorf("azure-openai embedding: api_key is required")
+			return nil, fmt.Errorf("azure-openai embedding: API key is required")
 		}
 
 		deployment := cfg["deployment"]
@@ -74,10 +74,18 @@ func init() {
 		Description: "Azure-hosted OpenAI embeddings — enterprise compliance, regional deployment",
 		ConfigFields: []goembedding.ConfigField{
 			{Key: "endpoint", Label: "Azure Endpoint", Required: true, Type: "string", Placeholder: "https://your-resource.openai.azure.com"},
-			{Key: "api_key", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-api-key"},
 			{Key: "deployment", Label: "Deployment Name", Required: true, Type: "string", Placeholder: "my-embedding-deployment"},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "text-embedding-3-small"},
 			{Key: "api_version", Label: "API Version", Type: "string", Default: defaultAPIVersion},
+		},
+		AuthMethods: []goembedding.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "Azure OpenAI API key.",
+				Fields: []goembedding.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-api-key"},
+				},
+			},
 		},
 		Models: []goembedding.ModelInfo{
 			{ID: "text-embedding-3-small", Name: "Embedding 3 Small", Dimensions: 1536},

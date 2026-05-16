@@ -8,7 +8,7 @@
 //	SECRET_NAMESPACE=decisionbox  (default)
 //
 // Authentication: Azure DefaultAzureCredential (env vars, managed identity, Azure CLI).
-// Secret naming: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-api-key)
+// Secret naming: {namespace}-{projectID}-{key} (e.g., decisionbox-proj123-llm-credentials)
 package azure
 
 import (

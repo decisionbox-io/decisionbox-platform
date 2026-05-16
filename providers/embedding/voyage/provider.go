@@ -36,9 +36,9 @@ var modelDimensions = map[string]int{
 
 func init() {
 	goembedding.RegisterWithMeta("voyage", func(cfg goembedding.ProviderConfig) (goembedding.Provider, error) {
-		apiKey := cfg["api_key"]
+		apiKey := cfg["credentials_json"]
 		if apiKey == "" {
-			return nil, fmt.Errorf("voyage embedding: api_key is required")
+			return nil, fmt.Errorf("voyage embedding: API key is required")
 		}
 
 		model := cfg["model"]
@@ -66,10 +66,18 @@ func init() {
 		Name:        "Voyage AI",
 		Description: "Voyage AI embeddings — top-tier retrieval quality, code-optimized models",
 		ConfigFields: []goembedding.ConfigField{
-			{Key: "api_key", Label: "API Key", Required: true, Type: "credential", Placeholder: "pa-..."},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "voyage-3"},
 			{Key: "input_type", Label: "Input Type", Type: "string", Description: "Optional: 'query' or 'document' for retrieval optimization"},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: defaultBaseURL},
+		},
+		AuthMethods: []goembedding.AuthMethod{
+			{
+				ID: "api_key", Name: "API Key",
+				Description: "Voyage AI API key.",
+				Fields: []goembedding.ConfigField{
+					{Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "pa-..."},
+				},
+			},
 		},
 		Models: []goembedding.ModelInfo{
 			{ID: "voyage-3-large", Name: "Voyage 3 Large", Dimensions: 1024},

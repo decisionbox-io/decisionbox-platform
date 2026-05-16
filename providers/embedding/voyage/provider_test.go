@@ -43,14 +43,14 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing api_key")
 	}
-	if !strings.Contains(err.Error(), "api_key is required") {
+	if !strings.Contains(err.Error(), "API key is required") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 func TestFactoryUnsupportedModel(t *testing.T) {
 	_, err := goembedding.NewProvider("voyage", goembedding.ProviderConfig{
-		"api_key": "test-key",
+		"credentials_json": "test-key",
 		"model":   "nonexistent-model",
 	})
 	if err == nil {
@@ -63,7 +63,7 @@ func TestFactoryUnsupportedModel(t *testing.T) {
 
 func TestFactoryInvalidInputType(t *testing.T) {
 	_, err := goembedding.NewProvider("voyage", goembedding.ProviderConfig{
-		"api_key":    "test-key",
+		"credentials_json":    "test-key",
 		"input_type": "invalid",
 	})
 	if err == nil {
@@ -83,7 +83,7 @@ func TestFactoryDefaultModel(t *testing.T) {
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("voyage", goembedding.ProviderConfig{
-		"api_key":  "test-key",
+		"credentials_json":  "test-key",
 		"base_url": server.URL,
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestFactoryDefaultModel(t *testing.T) {
 func TestFactoryValidInputTypes(t *testing.T) {
 	for _, inputType := range []string{"query", "document", ""} {
 		_, err := goembedding.NewProvider("voyage", goembedding.ProviderConfig{
-			"api_key":    "test-key",
+			"credentials_json":    "test-key",
 			"base_url":   "http://unused",
 			"input_type": inputType,
 		})

@@ -6,27 +6,27 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
-// gcpAuth manages GCP access tokens from Application Default Credentials.
-// Tokens are cached and auto-refreshed.
+// gcpAuth manages GCP access tokens from a resolved oauth2 source.
+// Tokens are cached and auto-refreshed; the underlying source is provided
+// by libs/gcpcreds based on the project's selected auth method (adc or
+// sa_key).
 type gcpAuth struct {
 	mu          sync.Mutex
 	tokenSource oauth2.TokenSource
 }
 
-// newGCPAuth creates a new GCP auth helper using Application Default Credentials.
-func newGCPAuth(ctx context.Context) (*gcpAuth, error) {
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+// newGCPAuth resolves credentials via libs/gcpcreds and wraps the
+// returned oauth2.TokenSource for use by the dispatcher.
+func newGCPAuth(ctx context.Context, c gcpcreds.Config) (*gcpAuth, error) {
+	src, err := gcpcreds.TokenSource(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("vertex-ai: failed to find GCP credentials (run 'gcloud auth application-default login'): %w", err)
+		return nil, fmt.Errorf("vertex-ai: %w", err)
 	}
-
-	return &gcpAuth{
-		tokenSource: creds.TokenSource,
-	}, nil
+	return &gcpAuth{tokenSource: src}, nil
 }
 
 // token returns a valid access token, refreshing if needed.

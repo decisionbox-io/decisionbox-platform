@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
 )
 
 // TestIntegration_ListModels exercises the live Vertex AI publishers-
@@ -23,7 +25,7 @@ func TestIntegration_ListModels(t *testing.T) {
 		location = "us-central1"
 	}
 
-	auth, err := newGCPAuth(context.Background())
+	auth, err := newGCPAuth(context.Background(), gcpcreds.Config{})
 	if err != nil {
 		t.Fatalf("newGCPAuth: %v", err)
 	}

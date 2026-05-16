@@ -106,7 +106,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 	}
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   "gpt-4o-mini",
 	})
 	if err != nil {
@@ -206,7 +206,7 @@ func TestIntegration_Validate_ViaFactory(t *testing.T) {
 	}
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"api_key": apiKey,
+		"credentials_json": apiKey,
 		"model":   "gpt-4o-mini",
 	})
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 // through the registered factory for every resolution branch.
 func TestOpenAI_FactoryWiresTimeout(t *testing.T) {
 	base := gollm.ProviderConfig{
-		"api_key": "sk-test",
+		"credentials_json": "sk-test",
 		"model":   "gpt-4o",
 	}
 	tests := []struct {
@@ -20,7 +20,7 @@ func TestOpenAI_FactoryWiresTimeout(t *testing.T) {
 		envVal string
 		want   time.Duration
 	}{
-		{name: "cfg_wins", cfg: gollm.ProviderConfig{"api_key": "sk-test", "model": "gpt-4o", "timeout_seconds": "777"}, envVal: "11s", want: 777 * time.Second},
+		{name: "cfg_wins", cfg: gollm.ProviderConfig{"credentials_json": "sk-test", "model": "gpt-4o", "timeout_seconds": "777"}, envVal: "11s", want: 777 * time.Second},
 		{name: "env_fills_in", cfg: base, envVal: "888s", want: 888 * time.Second},
 		{name: "fallback_5m", cfg: base, want: openaiDefaultTimeout},
 	}
