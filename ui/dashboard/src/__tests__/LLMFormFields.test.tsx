@@ -396,4 +396,54 @@ describe('LLMFormFields — Bedrock interaction', () => {
     fireEvent.change(regionInput, { target: { value: 'eu-west-1' } });
     expect(getDump().value.config.region).toBe('eu-west-1');
   });
+
+  // Bedrock declares iam_role + access_keys auth methods (per the
+  // fixture), so the auth-method selector renders. These tests pin the
+  // multi-method UI paths LLMFormFields takes for cloud providers.
+  test('shows auth-method selector when provider has 2+ methods', () => {
+    const initial: LLMFormState = {
+      provider: 'bedrock',
+      authMethod: 'iam_role',
+      config: { region: 'us-east-1' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
+    expect(screen.getAllByLabelText(/Authentication method/i).length).toBeGreaterThan(0);
+  });
+
+  test('switching to access_keys reveals the credential field + clears any prior apiKey', () => {
+    const initial: LLMFormState = {
+      provider: 'bedrock',
+      authMethod: 'access_keys',
+      config: { region: 'us-east-1' },
+      apiKey: '',
+    };
+    const { container } = render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
+    // The credential field's label comes from the auth-method fixture
+    // ("Access Keys"). bedrockMeta defines a single credential field
+    // with that label.
+    expect(within(container).getByLabelText(/Access Keys/i)).toBeInTheDocument();
+  });
+
+  test('Load models is disabled until an auth_method is picked on a multi-method provider', () => {
+    const initial: LLMFormState = {
+      provider: 'bedrock',
+      authMethod: '',
+      config: { region: 'us-east-1' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
+    expect(screen.getByRole('button', { name: 'Load models' })).toBeDisabled();
+  });
+
+  test('Load models is enabled for iam_role (ambient creds, no credential field)', () => {
+    const initial: LLMFormState = {
+      provider: 'bedrock',
+      authMethod: 'iam_role',
+      config: { region: 'us-east-1' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
+    expect(screen.getByRole('button', { name: 'Load models' })).not.toBeDisabled();
+  });
 });
