@@ -76,8 +76,113 @@ func TestBuildRequestBody_MaxTokensAndTemperature(t *testing.T) {
 	if body.MaxTokens != 2000 {
 		t.Errorf("max_tokens = %d", body.MaxTokens)
 	}
+	if body.MaxCompletionTokens != 0 {
+		t.Errorf("max_completion_tokens should be 0 for gpt-4o, got %d", body.MaxCompletionTokens)
+	}
 	if body.Temperature != 0.7 {
 		t.Errorf("temperature = %f", body.Temperature)
+	}
+}
+
+// TestBuildRequestBody_MaxCompletionTokensForNewModels guards against the
+// regression where gpt-5 / o-series models were sent `max_tokens` and OpenAI
+// rejected the request with 400 ("Unsupported parameter: 'max_tokens' is not
+// supported with this model. Use 'max_completion_tokens' instead.").
+func TestBuildRequestBody_MaxCompletionTokensForNewModels(t *testing.T) {
+	models := []string{
+		"gpt-5",
+		"gpt-5-mini",
+		"gpt-5-2025-08-07",
+		"GPT-5",
+		"o1",
+		"o1-mini",
+		"o1-preview",
+		"o3",
+		"o3-mini",
+		"o3-mini-2025-01-31",
+		"o4-mini",
+	}
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			body := BuildRequestBody(model, gollm.ChatRequest{
+				Messages:  []gollm.Message{{Role: "user", Content: "hi"}},
+				MaxTokens: 1024,
+			})
+			if body.MaxTokens != 0 {
+				t.Errorf("max_tokens = %d, want 0 for %s", body.MaxTokens, model)
+			}
+			if body.MaxCompletionTokens != 1024 {
+				t.Errorf("max_completion_tokens = %d, want 1024 for %s", body.MaxCompletionTokens, model)
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			s := string(raw)
+			if strings.Contains(s, `"max_tokens"`) {
+				t.Errorf("wire body must not contain max_tokens for %s: %s", model, s)
+			}
+			if !strings.Contains(s, `"max_completion_tokens":1024`) {
+				t.Errorf("wire body must contain max_completion_tokens for %s: %s", model, s)
+			}
+		})
+	}
+}
+
+// TestBuildRequestBody_MaxTokensForLegacyModels documents the inverse —
+// non-reasoning chat models keep the legacy `max_tokens` field, both because
+// they accept it and because openaicompat is shared with non-OpenAI backends
+// (Bedrock/Azure/Vertex MaaS) that only ever speak the legacy field.
+func TestBuildRequestBody_MaxTokensForLegacyModels(t *testing.T) {
+	models := []string{
+		"gpt-4o",
+		"gpt-4o-mini",
+		"gpt-4.1",
+		"gpt-4-turbo",
+		"gpt-3.5-turbo",
+		// Bedrock OpenAI-wire and Vertex MaaS model IDs share this code path.
+		"qwen.qwen-7b-instruct",
+		"meta.llama3-70b-instruct-v1:0",
+		"mistral.mistral-large-2407-v1:0",
+	}
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			body := BuildRequestBody(model, gollm.ChatRequest{
+				Messages:  []gollm.Message{{Role: "user", Content: "hi"}},
+				MaxTokens: 1024,
+			})
+			if body.MaxTokens != 1024 {
+				t.Errorf("max_tokens = %d, want 1024 for %s", body.MaxTokens, model)
+			}
+			if body.MaxCompletionTokens != 0 {
+				t.Errorf("max_completion_tokens = %d, want 0 for %s", body.MaxCompletionTokens, model)
+			}
+		})
+	}
+}
+
+func TestUsesMaxCompletionTokens(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-5", true},
+		{"gpt-5-mini", true},
+		{"GPT-5-Mini", true},
+		{"o1", true},
+		{"o1-preview", true},
+		{"o3-mini", true},
+		{"o4-mini", true},
+		{"gpt-4o", false},
+		{"gpt-4.1", false},
+		{"gpt-3.5-turbo", false},
+		{"", false},
+		{"claude-3-5-sonnet", false},
+	}
+	for _, tt := range tests {
+		if got := usesMaxCompletionTokens(tt.model); got != tt.want {
+			t.Errorf("usesMaxCompletionTokens(%q) = %v, want %v", tt.model, got, tt.want)
+		}
 	}
 }
 

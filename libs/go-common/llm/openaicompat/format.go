@@ -15,16 +15,25 @@ package openaicompat
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
 // RequestBody is the OpenAI /chat/completions request body.
+//
+// MaxTokens vs MaxCompletionTokens: OpenAI deprecated `max_tokens` for the
+// GPT-5 and reasoning (o1/o3/o4) families — those reject `max_tokens` with
+// HTTP 400 and require `max_completion_tokens`. Older chat models
+// (gpt-4o, gpt-4.1, gpt-3.5) still take `max_tokens`. BuildRequestBody
+// picks the right field by model ID; both are tagged `omitempty` so only
+// the one that's set goes on the wire.
 type RequestBody struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
+	Model               string    `json:"model"`
+	Messages            []Message `json:"messages"`
+	MaxTokens           int       `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int       `json:"max_completion_tokens,omitempty"`
+	Temperature         float64   `json:"temperature,omitempty"`
 
 	// Tools and ToolChoice are populated only when the caller supplies
 	// ChatRequest.Tools. Empty slices/strings are omitted so providers
@@ -195,7 +204,11 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 		Messages: messages,
 	}
 	if req.MaxTokens > 0 {
-		body.MaxTokens = req.MaxTokens
+		if usesMaxCompletionTokens(effectiveModel) {
+			body.MaxCompletionTokens = req.MaxTokens
+		} else {
+			body.MaxTokens = req.MaxTokens
+		}
 	}
 	if req.Temperature > 0 {
 		body.Temperature = req.Temperature
@@ -217,6 +230,28 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 		body.ToolChoice = tc
 	}
 	return body
+}
+
+// usesMaxCompletionTokens reports whether the given model ID belongs to an
+// OpenAI family that requires `max_completion_tokens` instead of the legacy
+// `max_tokens` field. Today that covers the GPT-5 family and the reasoning
+// models (o1/o3/o4). Match is case-insensitive on the model-ID prefix because
+// catalog entries and free-text model IDs vary in casing across UIs.
+//
+// This is intentionally a prefix check, not an allow-list of exact IDs —
+// OpenAI adds dated snapshot suffixes (gpt-5-2025-08-07, o3-mini-2025-01-31)
+// and we don't want to chase the catalog. Non-OpenAI providers that share
+// this wire (Bedrock OpenAI-compat, Azure, Vertex MaaS) never serve these
+// model IDs, so the prefix check is safe across all openaicompat callers.
+func usesMaxCompletionTokens(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "gpt-5"):
+		return true
+	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
+		return true
+	}
+	return false
 }
 
 // translateToolChoice maps the wire-neutral string to OpenAI's
