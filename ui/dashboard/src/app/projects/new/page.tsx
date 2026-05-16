@@ -170,11 +170,15 @@ export default function NewProjectPage() {
     setAiLoading(true);
     setLiveError(null);
     try {
-      // Build the config map the backend expects: every field the user
-      // filled in, plus api_key as its own key (the factories all read
-      // cfg["api_key"]).
+      // Build the config map the backend expects: every form-state
+      // field plus auth_method + credentials_json (every provider
+      // factory reads the credential from cfg["credentials_json"] now;
+      // api_key as a top-level key was removed during the auth-method
+      // refactor — the live-list call must mirror what the agent
+      // sends at indexing time).
       const config: Record<string, string> = { ...llm.config };
-      if (llm.apiKey) config['api_key'] = llm.apiKey;
+      if (llm.authMethod) config['auth_method'] = llm.authMethod;
+      if (llm.apiKey) config['credentials_json'] = llm.apiKey;
       const resp = await api.listLiveLLMModels(provider, config);
       if (reqId !== loadReqIdRef.current) return; // superseded
       setLiveModels(resp.models);
