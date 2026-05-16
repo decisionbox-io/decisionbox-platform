@@ -6,6 +6,7 @@ package agentserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -243,7 +244,7 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, secretP
 	if err == nil && whCreds != "" {
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
-	} else if err != nil && err != gosecrets.ErrNotFound {
+	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
 	}
 
@@ -310,7 +311,13 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 func resolveCredential(ctx context.Context, secretProvider gosecrets.Provider, projectID, secretKey, envVar string) (value, source string) {
 	if v, err := secretProvider.Get(ctx, projectID, secretKey); err == nil && v != "" {
 		return v, "dashboard"
-	} else if err != nil && err != gosecrets.ErrNotFound {
+	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
+		// Use errors.Is — gcp/aws/azure secret providers wrap their
+		// backend errors with %w, so a wrapped ErrNotFound would not
+		// compare equal via `!=`. Mongo returns the sentinel directly,
+		// which is why both forms appear correct in unit tests; only
+		// the wrapped path matters in production for the cloud
+		// backends.
 		applog.WithError(err).WithField("secret_key", secretKey).Warn("Failed to read credential from secret provider")
 	}
 	if v := os.Getenv(envVar); v != "" {
@@ -331,13 +338,15 @@ func initEmbeddingProvider(ctx context.Context, project *models.Project, secretP
 		"credentials_json": credential,
 		"model":            project.Embedding.Model,
 	}
-	// Non-credential provider config (auth_method, region, project_id,
-	// location, role_arn, …) flows through project.Embedding config map
-	// if present. Today the embedding ProjectConfig doesn't carry this
-	// map (only Provider + Model) — wire-up arrives with the dashboard
-	// changes in task #9. The factory's auth_method switch falls through
-	// to ambient (iam_role / adc) when the key is absent, which matches
-	// the pre-refactor behaviour for Bedrock + Vertex.
+	// Copy provider-specific non-credential config (auth_method,
+	// region, project_id, location, role_arn, external_id, …) from
+	// the project document so Bedrock / Vertex factories see what the
+	// dashboard saved. project.Embedding.Config is the map the
+	// dashboard writes when the user picks an auth method or enters
+	// method-specific fields.
+	for k, v := range project.Embedding.Config {
+		embCfg[k] = v
+	}
 
 	provider, err := goembedding.NewProvider(project.Embedding.Provider, embCfg)
 	if err != nil {

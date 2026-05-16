@@ -140,7 +140,7 @@ export function LLMFormFields({
 
           {credentialField && (
             <TextInput
-              label={hasSavedApiKey ? `Update ${credentialField.label || 'Credentials'}` : credentialField.label || 'Credentials'}
+              label={hasSavedApiKey ? 'Update credentials' : credentialField.label || 'Credentials'}
               required={!hasSavedApiKey}
               type="password"
               placeholder={credentialField.placeholder || 'Enter credentials'}

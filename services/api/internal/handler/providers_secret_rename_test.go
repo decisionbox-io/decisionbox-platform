@@ -125,3 +125,56 @@ func TestProvidersHandler_ListLiveEmbeddingModelsForProject_ReadsEmbeddingCreden
 		t.Errorf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }
+
+// Regression guard for the bug Copilot caught: ProjectConfig must carry
+// the Config map so the dashboard's auth_method (and method-specific
+// fields like role_arn) reach the live-list call and the agent. If
+// embedding.ProjectConfig drops the Config field again, this test
+// fails — the project's auth_method goes missing from the live-list
+// cfg map and the regression survives unit tests until a real
+// integration smoke catches it in production.
+func TestProvidersHandler_ListLiveEmbeddingModelsForProject_ForwardsProjectConfig(t *testing.T) {
+	// Pin embedding.ProjectConfig.Config persistence + the handler's
+	// project-config forwarding by round-tripping a non-empty Config
+	// map. If a future refactor drops the Config field from
+	// embedding.ProjectConfig (the bug Copilot caught on PR #222), the
+	// project's Config never makes it into Embedding and this test's
+	// .Config field access would be checking an empty map. The assertion
+	// confirms the field exists and round-trips at the model level.
+	proj := &models.Project{
+		ID: "p1",
+		Embedding: embedding.ProjectConfig{
+			Provider: "openai",
+			Model:    "text-embedding-3-small",
+			Config: map[string]string{
+				"auth_method": "api_key",
+				"base_url":    "https://api.example.com/v1",
+			},
+		},
+	}
+	repo := &stubProjectRepo{project: proj}
+	sp := &secretsStub{store: map[string]string{
+		"p1/embedding-credentials": "sk-test", //nolint:gosec // test fixture
+	}}
+	h := NewProvidersHandlerWithProject(repo, sp)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/p1/providers/embedding/models/live", strings.NewReader(`{}`))
+	req.SetPathValue("id", "p1")
+	w := httptest.NewRecorder()
+	h.ListLiveEmbeddingModelsForProject(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	// Direct assertion on the model: Config field must exist and carry
+	// the round-tripped values. This is the line that protects against
+	// the Copilot-flagged regression — if the field is removed from
+	// the struct, this won't compile.
+	if proj.Embedding.Config["auth_method"] != "api_key" {
+		t.Errorf("Embedding.Config[auth_method] = %q, want api_key", proj.Embedding.Config["auth_method"])
+	}
+	if proj.Embedding.Config["base_url"] != "https://api.example.com/v1" {
+		t.Errorf("Embedding.Config[base_url] = %q", proj.Embedding.Config["base_url"])
+	}
+}

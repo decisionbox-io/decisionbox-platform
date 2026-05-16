@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
@@ -106,6 +107,22 @@ func TestResolveCredential_NotFoundFallsThroughSilently(t *testing.T) {
 	v, src := resolveCredential(context.Background(), sp, "p1", "any-key", "FAKE_ENV")
 	if v != "env-value" {
 		t.Errorf("value = %q, want env-value", v)
+	}
+	if src != "env" {
+		t.Errorf("source = %q, want env", src)
+	}
+}
+
+func TestResolveCredential_WrappedErrNotFoundStillSilent(t *testing.T) {
+	// Cloud secret providers (gcp/aws/azure) wrap backend errors with
+	// %w. A wrapped ErrNotFound must still hit the env-fallback path
+	// silently — no "Failed to read credential" warning. This pins the
+	// errors.Is fix flagged by Copilot review.
+	t.Setenv("FAKE_ENV", "env-value")
+	sp := &fakeSecretProvider{getErr: fmt.Errorf("backend wrapped: %w", gosecrets.ErrNotFound)}
+	v, src := resolveCredential(context.Background(), sp, "p1", "test-key", "FAKE_ENV")
+	if v != "env-value" {
+		t.Errorf("value = %q, want env-value (env fallback after wrapped ErrNotFound)", v)
 	}
 	if src != "env" {
 		t.Errorf("source = %q, want env", src)

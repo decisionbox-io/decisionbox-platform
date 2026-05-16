@@ -248,6 +248,7 @@ export default function NewProjectPage() {
         embedding: {
           provider: embedding.provider,
           model: embedding.model,
+          ...(embedding.authMethod ? { config: { auth_method: embedding.authMethod, ...embedding.config } } : {}),
         },
         // Only send blurb_llm when the user explicitly overrode it; otherwise
         // the agent falls back to the analysis LLM (its own fallback path).

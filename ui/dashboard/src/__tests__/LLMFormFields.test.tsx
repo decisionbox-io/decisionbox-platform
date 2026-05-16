@@ -176,7 +176,7 @@ describe('LLMFormFields — credentials phase', () => {
     expect(screen.getByRole('button', { name: 'Load models' })).not.toBeDisabled();
   });
 
-  test('hasSavedApiKey label switches to "Update API Key" and Load models is enabled with no fresh key', () => {
+  test('hasSavedApiKey label switches to "Update credentials" and Load models is enabled with no fresh key', () => {
     const initial: LLMFormState = {
       provider: 'openai',
       authMethod: 'api_key',
@@ -184,7 +184,7 @@ describe('LLMFormFields — credentials phase', () => {
       apiKey: '',
     };
     render(<ControlledHarness providers={[openaiMeta]} initial={initial} hasSavedApiKey />);
-    expect(screen.getByLabelText('Update API Key')).toBeInTheDocument();
+    expect(screen.getByLabelText('Update credentials')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Load models' })).not.toBeDisabled();
   });
 

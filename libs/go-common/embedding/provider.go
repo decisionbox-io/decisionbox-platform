@@ -12,13 +12,16 @@ import "context"
 // secret wins, env var EMBEDDING_API_KEY as fallback) and injects them
 // into the per-provider ProviderConfig as "credentials_json".
 //
-// Provider-specific non-credential fields (auth_method, region,
-// project_id, location, role_arn, …) flow through a parallel
-// map[string]string config stored alongside this struct in the project
-// document.
+// Config carries provider-specific non-credential settings selected by
+// the user in the dashboard: "auth_method" (iam_role / access_keys /
+// assume_role / adc / sa_key), plus method-specific fields like
+// role_arn, external_id, region, project_id, location. The agent
+// copies this map verbatim into the per-provider ProviderConfig at
+// init time, alongside the credential blob.
 type ProjectConfig struct {
-	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
-	Model    string `bson:"model,omitempty" json:"model,omitempty"`
+	Provider string            `bson:"provider,omitempty" json:"provider,omitempty"`
+	Model    string            `bson:"model,omitempty" json:"model,omitempty"`
+	Config   map[string]string `bson:"config,omitempty" json:"config,omitempty"`
 }
 
 // RemoteModel is one row returned by a provider's live ListModels

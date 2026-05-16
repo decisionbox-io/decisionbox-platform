@@ -391,9 +391,15 @@ func (h *ProvidersHandler) ListLiveEmbeddingModelsForProject(w http.ResponseWrit
 	}
 
 	cfg := map[string]string{}
-	// Pull the stored key so the live call has credentials without the
-	// user re-typing. Match the agent's lookup so project-scoped list
-	// works exactly like a real indexing run's embed call.
+	// Forward the project's saved non-credential settings (auth_method,
+	// region, project_id, location, role_arn, …) so the live-list
+	// instantiation mirrors what the agent does at indexing time.
+	for k, v := range project.Embedding.Config {
+		cfg[k] = v
+	}
+	// Pull the stored credential so the live call has credentials
+	// without the user re-typing. Match the agent's lookup so
+	// project-scoped list works exactly like a real indexing run.
 	if h.secretProvider != nil {
 		if key, err := h.secretProvider.Get(r.Context(), pid, "embedding-credentials"); err == nil && key != "" {
 			cfg["credentials_json"] = key
