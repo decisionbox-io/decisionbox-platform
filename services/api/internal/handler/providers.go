@@ -153,11 +153,28 @@ func displayOr(a, b string) string {
 	return b
 }
 
+// projectLiveModelsRequest is the body of POST
+// /api/v1/projects/{id}/providers/llm/models/live. The optional Slot field
+// picks which project slot to read — "llm" (default) for the analysis LLM,
+// "blurb_llm" for the schema-index blurb LLM. The slot determines both the
+// project field (project.LLM vs project.BlurbLLM) and the secret key
+// (llm-credentials vs blurb-llm-credentials).
+//
+// When slot=blurb_llm but the project has no blurb_llm configured, the
+// handler falls back to the analysis LLM slot (matching the agent's
+// resolveBlurbLLM behaviour — a missing blurb_llm means "reuse analysis").
+type projectLiveModelsRequest struct {
+	Slot string `json:"slot,omitempty"`
+}
+
 // ListLiveLLMModelsForProject runs the same merge as ListLiveLLMModels
 // but pulls the API key from the project's saved secret (if any) so
 // the user doesn't re-enter it on the settings screen. Cloud providers
 // that use ambient credentials (Bedrock, Vertex) work here too — the
 // factory picks up IAM / ADC from the environment.
+//
+// The request body may include {"slot": "blurb_llm"} to read the
+// project's blurb-LLM slot instead of the default analysis-LLM slot.
 //
 // Requires a handler built via NewProvidersHandlerWithProject — the
 // plain NewProvidersHandler() does not wire the project repo and
@@ -171,6 +188,25 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		return
 	}
 
+	// Body is optional — an empty body is the legacy {slot: "llm"} call.
+	var body projectLiveModelsRequest
+	if r.ContentLength > 0 {
+		// Tolerate an empty `{}` body too — decode errors are real client
+		// bugs (malformed JSON), not a missing-body signal.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	slot := body.Slot
+	if slot == "" {
+		slot = "llm"
+	}
+	if slot != "llm" && slot != "blurb_llm" {
+		writeError(w, http.StatusBadRequest, "invalid slot: "+slot+" (must be llm or blurb_llm)")
+		return
+	}
+
 	project, err := h.projectRepo.GetByID(r.Context(), pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load project: "+err.Error())
@@ -180,30 +216,66 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	if project.LLM.Provider == "" {
-		writeError(w, http.StatusBadRequest, "project has no llm provider configured")
+
+	// Resolve the slot to a (provider, model, config, secretKey) tuple.
+	// For slot=blurb_llm with no blurb override configured, fall through
+	// to the analysis LLM — same rule the agent's resolveBlurbLLM uses
+	// when running an index. The dashboard wouldn't normally hit this
+	// branch (it doesn't call the blurb endpoint until the user enables
+	// the blurb switch), but the fallback keeps the contract consistent.
+	var (
+		provider  string
+		modelID   string
+		slotCfg   map[string]string
+		secretKey string
+	)
+	switch slot {
+	case "blurb_llm":
+		if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
+			provider = project.BlurbLLM.Provider
+			modelID = project.BlurbLLM.Model
+			slotCfg = project.BlurbLLM.Config
+			secretKey = "blurb-llm-credentials"
+			break
+		}
+		// No blurb override — fall through to analysis LLM, but read
+		// the blurb-credentials secret first (a user can configure a
+		// separate blurb credential even without flipping provider).
+		provider = project.LLM.Provider
+		modelID = project.LLM.Model
+		slotCfg = project.LLM.Config
+		secretKey = "llm-credentials"
+	default:
+		provider = project.LLM.Provider
+		modelID = project.LLM.Model
+		slotCfg = project.LLM.Config
+		secretKey = "llm-credentials"
+	}
+
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, "project has no "+slot+" provider configured")
 		return
 	}
 
-	meta, ok := gollm.GetProviderMeta(project.LLM.Provider)
+	meta, ok := gollm.GetProviderMeta(provider)
 	if !ok {
-		writeError(w, http.StatusNotFound, "unknown provider on project: "+project.LLM.Provider)
+		writeError(w, http.StatusNotFound, "unknown provider on project: "+provider)
 		return
 	}
 
-	// Build config from project.llm.config + the stored secret.
+	// Build config from the slot's config + the stored secret.
 	// For the *list* call we only need credentials + connection params;
 	// fetchLiveModels fills in a placeholder model for factories that
 	// require one at construction time.
 	cfg := map[string]string{}
-	for k, v := range project.LLM.Config {
+	for k, v := range slotCfg {
 		cfg[k] = v
 	}
-	if project.LLM.Model != "" {
-		cfg["model"] = project.LLM.Model
+	if modelID != "" {
+		cfg["model"] = modelID
 	}
 	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(r.Context(), pid, "llm-credentials"); err == nil && key != "" {
+		if key, err := h.secretProvider.Get(r.Context(), pid, secretKey); err == nil && key != "" {
 			cfg["credentials_json"] = key
 		}
 	}
@@ -214,7 +286,7 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	live, liveErr := fetchLiveModels(ctx, project.LLM.Provider, cfg)
+	live, liveErr := fetchLiveModels(ctx, provider, cfg)
 	writeLiveModelsResponse(w, meta, live, liveErr)
 }
 

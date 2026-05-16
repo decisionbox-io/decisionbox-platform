@@ -329,6 +329,8 @@ export default function PackGenWizardPage() {
                   llmProviders={llmProviders}
                   value={blurb}
                   onChange={setBlurb}
+                  projectId={id}
+                  savedProvider={project?.blurb_llm?.provider || project?.llm?.provider}
                 />
                 <Group justify="flex-end">
                   <Button onClick={handleSaveBlurb} loading={savingBlurb} disabled={!blurbValid}>

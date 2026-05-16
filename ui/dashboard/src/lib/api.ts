@@ -929,10 +929,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ config }),
     }),
-  listLiveLLMModelsForProject: (projectID: string) =>
+  // slot defaults to "llm" on the server. Pass "blurb_llm" to read the
+  // project's blurb-LLM slot (project.blurb_llm + blurb-llm-credentials),
+  // which falls back to the analysis-LLM slot when no blurb override is
+  // configured (matching the agent's resolveBlurbLLM behaviour).
+  listLiveLLMModelsForProject: (projectID: string, slot?: 'llm' | 'blurb_llm') =>
     request<LiveModelsResponse>(`/api/v1/projects/${encodeURIComponent(projectID)}/providers/llm/models/live`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify(slot ? { slot } : {}),
     }),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
 

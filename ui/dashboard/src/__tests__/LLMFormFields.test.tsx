@@ -311,6 +311,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
   test('renders wire_override inline when the selected model has no known wire', () => {
     const initial: LLMFormState = {
       provider: 'wire-aware',
+      authMethod: 'api_key',
       config: { model: 'unknown-typed-model' },
       apiKey: 'sk-test',
     };
@@ -324,6 +325,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     const user = userEvent.setup();
     const initial: LLMFormState = {
       provider: 'wire-aware',
+      authMethod: 'api_key',
       config: { model: 'known-model' },
       apiKey: 'sk-test',
     };
@@ -348,6 +350,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
   test('typing into the model combobox updates state via setConfigField', () => {
     const initial: LLMFormState = {
       provider: 'wire-aware',
+      authMethod: 'api_key',
       config: { model: '' },
       apiKey: 'sk-test',
     };
@@ -369,6 +372,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     // rendered without going through the Advanced disclosure.
     const initial: LLMFormState = {
       provider: 'wire-aware',
+      authMethod: 'api_key',
       config: { model: 'unknown-model', wire_override: '' },
       apiKey: 'sk-test',
     };

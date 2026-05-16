@@ -297,6 +297,8 @@ export default function ProjectSettingsPage() {
               value={blurb}
               onChange={(next) => setBlurb(next)}
               startInModelPhase={!!project?.blurb_llm?.provider}
+              projectId={id}
+              savedProvider={project?.blurb_llm?.provider || project?.llm?.provider}
             />
             <Group justify="flex-end">
               <Button onClick={saveBlurb} loading={savingBlurb}>Save blurb model</Button>

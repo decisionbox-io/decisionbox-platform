@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 
 	// Register real providers so GetProviderMeta finds them.
@@ -17,6 +18,25 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 )
+
+// stubSecretProvider records which keys were requested so a test can
+// assert the slot-routing logic picks the right secret.
+type stubSecretProvider struct {
+	values   map[string]string // key → value (project-scoped tests use one project)
+	requests []string          // append-only list of keys passed to Get
+}
+
+func (s *stubSecretProvider) Get(_ context.Context, _, key string) (string, error) {
+	s.requests = append(s.requests, key)
+	if v, ok := s.values[key]; ok {
+		return v, nil
+	}
+	return "", secrets.ErrNotFound
+}
+func (s *stubSecretProvider) Set(context.Context, string, string, string) error { return nil }
+func (s *stubSecretProvider) List(context.Context, string) ([]secrets.SecretEntry, error) {
+	return nil, nil
+}
 
 // --- ListLiveLLMModels (cloud-neutral; POST body with credentials) ---
 
@@ -219,6 +239,127 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_NoSecretProviderReturnsCat
 	}
 	if len(resp.Data.Models) == 0 {
 		t.Error("catalog rows must still be returned")
+	}
+}
+
+// --- ListLiveLLMModelsForProject slot routing ---
+
+// callForProject is a small helper to invoke the handler with a slot body
+// and return the recorder so the assertions stay tight.
+func callForProject(t *testing.T, h *ProvidersHandler, pid, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+pid+"/providers/llm/models/live",
+		strings.NewReader(body))
+	req.SetPathValue("id", pid)
+	w := httptest.NewRecorder()
+	h.ListLiveLLMModelsForProject(w, req)
+	return w
+}
+
+func TestProvidersHandler_ListLiveLLMModelsForProject_DefaultSlotReadsLLMCredentials(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"llm-credentials":       "sk-llm",
+		"blurb-llm-credentials": "sk-blurb",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	w := callForProject(t, h, "p", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(secrets.requests) != 1 || secrets.requests[0] != "llm-credentials" {
+		t.Errorf("requests = %v, want exactly [llm-credentials]", secrets.requests)
+	}
+}
+
+func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotReadsBlurbCredentials(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+		BlurbLLM: &models.BlurbLLMConfig{
+			Provider: "openai",
+			Model:    "gpt-4.1-nano",
+		},
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"llm-credentials":       "sk-llm",
+		"blurb-llm-credentials": "sk-blurb",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	w := callForProject(t, h, "p", `{"slot":"blurb_llm"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(secrets.requests) != 1 || secrets.requests[0] != "blurb-llm-credentials" {
+		t.Errorf("requests = %v, want exactly [blurb-llm-credentials]", secrets.requests)
+	}
+}
+
+// When the project has no blurb override the handler falls back to the
+// analysis LLM slot — matching the agent's resolveBlurbLLM rule. The
+// blurb editor on the dashboard wouldn't normally hit this branch
+// (the switch is off → it doesn't render), but the contract should be
+// consistent if a future caller asks for the blurb slot.
+func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotFallsBackToLLM(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+		// BlurbLLM intentionally unset.
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"llm-credentials": "sk-llm",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	w := callForProject(t, h, "p", `{"slot":"blurb_llm"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(secrets.requests) != 1 || secrets.requests[0] != "llm-credentials" {
+		t.Errorf("requests = %v, want exactly [llm-credentials] on fallback", secrets.requests)
+	}
+}
+
+func TestProvidersHandler_ListLiveLLMModelsForProject_InvalidSlot(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{ID: "p"}}
+	h := NewProvidersHandlerWithProject(repo, nil)
+
+	w := callForProject(t, h, "p", `{"slot":"warehouse"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "invalid slot") {
+		t.Errorf("body = %s, want invalid-slot error", w.Body.String())
+	}
+}
+
+func TestProvidersHandler_ListLiveLLMModelsForProject_EmptyBodyDefaultsToLLMSlot(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"llm-credentials": "sk-llm",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	// Empty body (Content-Length: 0) — should not error and should
+	// route to the default LLM slot.
+	req := httptest.NewRequest("POST", "/api/v1/projects/p/providers/llm/models/live", nil)
+	req.SetPathValue("id", "p")
+	w := httptest.NewRecorder()
+	h.ListLiveLLMModelsForProject(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(secrets.requests) != 1 || secrets.requests[0] != "llm-credentials" {
+		t.Errorf("requests = %v, want exactly [llm-credentials]", secrets.requests)
 	}
 }
 
