@@ -123,8 +123,9 @@ type projectInfo struct {
 	Domain   string             `bson:"domain"`
 	Category string             `bson:"category"`
 	Embedding struct {
-		Provider string `bson:"provider"`
-		Model    string `bson:"model"`
+		Provider string            `bson:"provider"`
+		Model    string            `bson:"model"`
+		Config   map[string]string `bson:"config,omitempty"`
 	} `bson:"embedding"`
 }
 
@@ -181,12 +182,21 @@ func processProject(ctx context.Context, client *gomongo.Client, secretProvider 
 		return nil
 	}
 
-	// Create embedding provider
-	apiKey, _ := secretProvider.Get(ctx, proj.ID(), "embedding-credentials")
-	embProvider, err := goembedding.NewProvider(proj.Embedding.Provider, goembedding.ProviderConfig{
-		"credentials_json": apiKey,
-		"model":            proj.Embedding.Model,
-	})
+	// Create embedding provider. Merge the project's non-credential
+	// config (auth_method, region, project_id, location, role_arn, …)
+	// so cloud providers (Bedrock, Vertex) see what the dashboard
+	// saved — identical pattern to agentserver.initEmbeddingProvider
+	// and handler.search::createEmbeddingProvider.
+	embCfg := goembedding.ProviderConfig{
+		"model": proj.Embedding.Model,
+	}
+	for k, v := range proj.Embedding.Config {
+		embCfg[k] = v
+	}
+	if apiKey, _ := secretProvider.Get(ctx, proj.ID(), "embedding-credentials"); apiKey != "" {
+		embCfg["credentials_json"] = apiKey
+	}
+	embProvider, err := goembedding.NewProvider(proj.Embedding.Provider, embCfg)
 	if err != nil {
 		return fmt.Errorf("create embedding provider: %w", err)
 	}
