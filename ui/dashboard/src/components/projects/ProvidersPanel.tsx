@@ -103,11 +103,15 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
           },
           apiKey: '',
         });
+        // Use the freshly-fetched embProvs (local var) — embeddingProviders
+        // state was just set on line 93 but the value here is still the
+        // initial empty array until React re-renders.
+        const embProvMeta = (embProvs || []).find((p) => p.id === proj.embedding?.provider);
         setEmbedding({
           provider: proj.embedding?.provider || '',
-          authMethod: autoSingleAuthMethod(embeddingProviders.find((p) => p.id === proj.embedding?.provider)),
+          authMethod: (proj.embedding?.config?.['auth_method'] as string) || autoSingleAuthMethod(embProvMeta),
           model: proj.embedding?.model || '',
-          config: {},
+          config: proj.embedding?.config || {},
           apiKey: '',
         });
         if (proj.llm.provider) {

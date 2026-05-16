@@ -113,9 +113,11 @@ export default function NewProjectPage() {
         if (llmProvs.length > 0) {
           const claude = llmProvs.find((p) => p.id === 'claude');
           const first = claude || llmProvs[0];
+          const methods = first.auth_methods ?? [];
           setLlm((prev) => ({
             ...prev,
             provider: first.id,
+            authMethod: methods.length === 1 ? methods[0].id : '',
             config: buildDefaults(first.config_fields),
           }));
         }

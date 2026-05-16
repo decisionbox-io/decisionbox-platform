@@ -446,4 +446,43 @@ describe('LLMFormFields — Bedrock interaction', () => {
     render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
     expect(screen.getByRole('button', { name: 'Load models' })).not.toBeDisabled();
   });
+
+  // Regression: when the parent pre-selects a provider but forgets to
+  // pre-select its auth method (e.g. new-project page defaulting to
+  // Claude), the credential field must NOT silently disappear — the
+  // user would see "Claude selected" but no API key input. Reported by
+  // user testing locally after PR #222 went up.
+  test('single-method provider pre-selected without authMethod still renders nothing — caller must pre-select method', () => {
+    const initial: LLMFormState = {
+      provider: 'openai',
+      authMethod: '', // parent forgot to set it — bug repro
+      config: {},
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[openaiMeta]} initial={initial} />);
+    // Credential field is gated on selectedMethod (= authMethods.find by
+    // value.authMethod). With authMethod='' no method is selected →
+    // no credential field renders. This is the failure mode the user
+    // hit. Documenting the contract: callers MUST initialise
+    // authMethod when they initialise provider.
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument();
+    // Load models should be disabled in this state so the user can't
+    // submit a broken config silently.
+    expect(screen.getByRole('button', { name: 'Load models' })).toBeDisabled();
+  });
+
+  test('single-method provider pre-selected WITH authMethod renders the credential field', () => {
+    // Fixed state: parent supplies provider + authMethod together —
+    // credential field renders, button enables when filled. This is
+    // the contract the new-project page + ProvidersPanel hydration
+    // paths must satisfy.
+    const initial: LLMFormState = {
+      provider: 'openai',
+      authMethod: 'api_key',
+      config: {},
+      apiKey: '',
+    };
+    const { container } = render(<ControlledHarness providers={[openaiMeta]} initial={initial} />);
+    expect(container.querySelector('input[type="password"]')).toBeInTheDocument();
+  });
 });
