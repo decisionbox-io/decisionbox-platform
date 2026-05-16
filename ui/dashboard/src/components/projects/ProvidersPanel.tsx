@@ -303,6 +303,8 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         value={embedding}
         onChange={(next) => setEmbedding(next)}
         startInModelPhase={!!project.embedding?.provider}
+        projectId={projectId}
+        savedProvider={project.embedding?.provider}
       />
 
       {hasSavedEmbeddingKey && project.embedding?.provider && (

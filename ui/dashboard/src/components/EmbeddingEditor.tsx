@@ -38,9 +38,21 @@ interface Props {
    * Load-models click just to see the current selection.
    */
   startInModelPhase?: boolean;
+  /**
+   * When set, the Load-models click prefers the per-project endpoint so
+   * the user doesn't have to re-enter the embedding API key on Settings.
+   * Falls back to the in-flight credentials endpoint when the user has
+   * just typed a new key, switched provider, or there's no projectId
+   * (new-project flow).
+   */
+  projectId?: string;
+  /** Provider the project currently has saved. The per-project endpoint
+   * is only safe when the form provider still matches what's persisted —
+   * otherwise the server reads the wrong credential. */
+  savedProvider?: string;
 }
 
-export function EmbeddingEditor({ providers, value, onChange, required, startInModelPhase }: Props) {
+export function EmbeddingEditor({ providers, value, onChange, required, startInModelPhase, projectId, savedProvider }: Props) {
   const [liveModels, setLiveModels] = useState<EmbeddingLiveModel[] | null>(null);
 
   const selectedProvider = providers.find((p) => p.id === value.provider) || null;
@@ -79,7 +91,22 @@ export function EmbeddingEditor({ providers, value, onChange, required, startInM
       phaseOverride={startInModelPhase ? 'model' : undefined}
       onLoad={async (cfg) => {
         try {
-          const resp = await api.listLiveEmbeddingModels(value.provider, cfg);
+          // Prefer the per-project endpoint when:
+          //   - we have a projectId (Settings, not new-project),
+          //   - the form still points at the same provider the project
+          //     has saved (otherwise the server reads the wrong secret),
+          //   - the user has NOT just typed a new key (in that case we
+          //     want to validate THAT key, not the persisted one).
+          // The server reads project.embedding.config + the stored
+          // embedding-credentials secret. There's only one embedding
+          // slot per project so no slot parameter is needed.
+          const useProjectEndpoint =
+            !!projectId &&
+            !cfg.credentials_json &&
+            savedProvider === value.provider;
+          const resp = useProjectEndpoint
+            ? await api.listLiveEmbeddingModelsForProject(projectId!)
+            : await api.listLiveEmbeddingModels(value.provider, cfg);
           setLiveModels(resp.models);
           return { ok: true, liveError: resp.live_error };
         } catch (e: unknown) {
