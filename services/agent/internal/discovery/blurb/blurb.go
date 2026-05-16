@@ -250,10 +250,22 @@ func (g *Generator) Generate(ctx context.Context, inputs []Input, progress Progr
 	return outputs, nil
 }
 
-// firstError returns the first non-nil per-table Err from outputs so the
-// failure-budget wrapper carries a real underlying message instead of
-// swallowing every per-table reason.
+// firstError returns the first non-nil per-table Err from outputs so
+// the failure-budget wrapper carries a real underlying message
+// instead of swallowing every per-table reason.
+//
+// Prefer errors that are NOT just propagated context cancellation —
+// when the failure cap trips, the worker pool calls cancel() and
+// every still-in-flight call returns "context canceled". Those are
+// downstream of the real failure, not the cause; iterating once for
+// a non-cancellation error first and falling back to whatever is
+// there surfaces the upstream issue (auth/permissions/throttling/…).
 func firstError(outputs []Output) error {
+	for _, o := range outputs {
+		if o.Err != nil && !errors.Is(o.Err, context.Canceled) && !strings.Contains(o.Err.Error(), "context canceled") {
+			return o.Err
+		}
+	}
 	for _, o := range outputs {
 		if o.Err != nil {
 			return o.Err
