@@ -91,7 +91,18 @@ func ClientOptions(ctx context.Context, c Config) ([]option.ClientOption, error)
 		if _, err := google.CredentialsFromJSON(ctx, []byte(c.CredentialsJSON), DefaultScope); err != nil {
 			return nil, fmt.Errorf("gcpcreds: invalid service-account JSON: %w", err)
 		}
-		return []option.ClientOption{option.WithCredentialsJSON([]byte(c.CredentialsJSON))}, nil
+		// option.WithCredentialsJSON is the canonical way to inject a
+		// service-account key JSON into a Google Cloud SDK client. The
+		// staticcheck deprecation notice flags it as a "potential
+		// security risk" because the JSON sits in process memory — that
+		// is true of every other transport (file path, token source,
+		// env var pointed at a file) since the SDK ultimately needs the
+		// bytes. The platform takes the JSON from the secret provider
+		// (already in process memory, never logged) and hands it
+		// straight to the SDK; there is no longer-lived exposure to
+		// avoid here. The alternative APIs (google.CredentialsFromJSON
+		// + option.WithTokenSource) end up holding the same bytes.
+		return []option.ClientOption{option.WithCredentialsJSON([]byte(c.CredentialsJSON))}, nil //nolint:staticcheck // SA1019: see comment above
 
 	case MethodADC:
 		return nil, nil

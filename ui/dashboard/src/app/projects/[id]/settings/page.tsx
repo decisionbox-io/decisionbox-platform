@@ -112,9 +112,13 @@ export default function ProjectSettingsPage() {
         setMaxSteps(proj.schedule?.max_steps || 100);
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
+          const blurbProviderID = proj.blurb_llm.provider;
+          const blurbMeta = llmProvs?.find((p) => p.id === blurbProviderID);
+          const blurbMethods = blurbMeta?.auth_methods ?? [];
           setBlurb({
             enabled: true,
-            provider: proj.blurb_llm.provider,
+            provider: blurbProviderID,
+            authMethod: blurbMethods.length === 1 ? blurbMethods[0].id : '',
             model: proj.blurb_llm.model || '',
             config: proj.blurb_llm.config || {},
             apiKey: '',
@@ -218,7 +222,7 @@ export default function ProjectSettingsPage() {
             : undefined,
       });
       if (blurb.enabled && blurb.apiKey) {
-        await api.setSecret(id, 'blurb-llm-api-key', blurb.apiKey);
+        await api.setSecret(id, 'blurb-llm-credentials', blurb.apiKey);
         setBlurb((prev) => ({ ...prev, apiKey: '' }));
       }
       setProject(saved);

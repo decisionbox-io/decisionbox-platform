@@ -14,6 +14,16 @@ import {
   AIPhase, LLMFormFields, LLMFormState, emptyLLMFormState,
 } from './LLMFormFields';
 import { buildDefaults } from './WarehouseFormFields';
+import { TestConnectionButton } from './WarehouseConfigPanel';
+
+// autoSingleAuthMethod returns the only auth method when a provider has
+// exactly one, or empty string otherwise. Used to pre-select api_key
+// for direct providers (Claude/OpenAI/Voyage) so the user doesn't have
+// to click a dropdown with a single option.
+function autoSingleAuthMethod(meta?: { auth_methods?: { id: string }[] }): string {
+  const methods = meta?.auth_methods ?? [];
+  return methods.length === 1 ? methods[0].id : '';
+}
 
 type Variant = 'page' | 'wizard';
 
@@ -42,8 +52,8 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 // `LLMFormFields` (LLM provider + credentials/model phase) and
 // `EmbeddingEditor` (embedding provider + model + key) so this panel
 // shares its rendering with the new-project wizard. Both providers save
-// in one click via PUT /projects/{id}; secret keys (llm-api-key,
-// embedding-api-key) rotate only when the user enters a new value.
+// in one click via PUT /projects/{id}; secret keys (llm-credentials,
+// embedding-credentials) rotate only when the user enters a new value.
 // Used by:
 //   - settings/page.tsx          (variant="page")
 //   - pack-gen wizard            (variant="wizard")
@@ -85,6 +95,7 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         const fieldDefaults = provMeta ? buildDefaults(provMeta.config_fields) : {};
         setLlm({
           provider: proj.llm.provider || '',
+          authMethod: (proj.llm.config?.['auth_method'] as string) || autoSingleAuthMethod(provMeta),
           config: {
             ...fieldDefaults,
             ...(proj.llm.config || {}),
@@ -94,6 +105,7 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         });
         setEmbedding({
           provider: proj.embedding?.provider || '',
+          authMethod: autoSingleAuthMethod(embeddingProviders.find((p) => p.id === proj.embedding?.provider)),
           model: proj.embedding?.model || '',
           config: {},
           apiKey: '',
@@ -122,19 +134,19 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
   }, [projectId]);
 
   const selectedLlm = llmProviders.find((p) => p.id === llm.provider);
-  const llmNeedsApiKey = selectedLlm?.config_fields.some((f) => f.key === 'api_key') ?? false;
-  const hasSavedLLMKey = secretsList.some((s) => s.key === 'llm-api-key');
-  const hasSavedEmbeddingKey = secretsList.some((s) => s.key === 'embedding-api-key');
+  const llmAuthMethod = (selectedLlm?.auth_methods ?? []).find((m) => m.id === llm.authMethod);
+  const llmNeedsCredential = (llmAuthMethod?.fields ?? []).some((f) => f.type === 'credential');
+  const hasSavedLLMKey = secretsList.some((s) => s.key === 'llm-credentials');
+  const hasSavedEmbeddingKey = secretsList.some((s) => s.key === 'embedding-credentials');
   const embProviderMeta = embeddingProviders.find((p) => p.id === embedding.provider);
-  const embNeedsKey = embProviderMeta?.config_fields.some(
-    (f) => f.type === 'credential' || f.key === 'api_key',
-  ) ?? false;
+  const embAuthMethod = (embProviderMeta?.auth_methods ?? []).find((m) => m.id === embedding.authMethod);
+  const embNeedsCredential = (embAuthMethod?.fields ?? []).some((f) => f.type === 'credential');
 
   const isValid = Boolean(
     llm.provider && llm.config['model'] &&
-    (!llmNeedsApiKey || llm.apiKey || hasSavedLLMKey) &&
+    (!llmNeedsCredential || llm.apiKey || hasSavedLLMKey) &&
     embedding.provider && embedding.model &&
-    (!embNeedsKey || embedding.apiKey || hasSavedEmbeddingKey),
+    (!embNeedsCredential || embedding.apiKey || hasSavedEmbeddingKey),
   );
 
   const refreshLiveModels = async () => {
@@ -151,9 +163,10 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
       // are persisted (so cloud providers using ambient credentials —
       // bedrock, vertex — work without a fake key in the form).
       const persistedMatch =
-        project?.llm?.provider === llm.provider && (hasSavedLLMKey || !llmNeedsApiKey);
+        project?.llm?.provider === llm.provider && (hasSavedLLMKey || !llmNeedsCredential);
       const inflightCfg: Record<string, string> = { ...llm.config };
-      if (llm.apiKey) inflightCfg.api_key = llm.apiKey;
+      if (llm.authMethod) inflightCfg.auth_method = llm.authMethod;
+      if (llm.apiKey) inflightCfg.credentials_json = llm.apiKey;
       const resp = persistedMatch && !llm.apiKey
         ? await api.listLiveLLMModelsForProject(projectId)
         : await api.listLiveLLMModels(llm.provider, inflightCfg);
@@ -177,22 +190,26 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
     if (!project) return;
     setSaving(true);
     try {
+      const llmConfig: Record<string, string> = Object.fromEntries(
+        Object.entries(llm.config).filter(([k]) => k !== 'model'),
+      );
+      if (llm.authMethod) llmConfig.auth_method = llm.authMethod;
+      const embConfig: Record<string, string> = {};
+      if (embedding.authMethod) embConfig.auth_method = embedding.authMethod;
       const saved = await api.updateProject(projectId, {
         llm: {
           provider: llm.provider,
           model: llm.config['model'] || '',
-          config: Object.fromEntries(
-            Object.entries(llm.config).filter(([k]) => k !== 'model' && k !== 'api_key'),
-          ),
+          config: llmConfig,
         },
-        embedding: { provider: embedding.provider, model: embedding.model },
+        embedding: { provider: embedding.provider, model: embedding.model, config: embConfig },
       });
       if (llm.apiKey) {
-        await api.setSecret(projectId, 'llm-api-key', llm.apiKey);
+        await api.setSecret(projectId, 'llm-credentials', llm.apiKey);
         setLlm((prev) => ({ ...prev, apiKey: '' }));
       }
       if (embedding.apiKey) {
-        await api.setSecret(projectId, 'embedding-api-key', embedding.apiKey);
+        await api.setSecret(projectId, 'embedding-credentials', embedding.apiKey);
         setEmbedding((prev) => ({ ...prev, apiKey: '' }));
       }
       const updated = await api.listSecrets(projectId);
@@ -224,13 +241,13 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
 
       <Title order={5}>AI Provider</Title>
 
-      {hasSavedLLMKey && llmNeedsApiKey && (
+      {hasSavedLLMKey && llmNeedsCredential && (
         <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
           <Group gap="xs">
             <IconShieldCheck size={14} color="var(--db-green-text)" />
-            <Text size="xs" fw={500}>API Key saved</Text>
+            <Text size="xs" fw={500}>Credentials saved</Text>
             <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-              {secretsList.find((s) => s.key === 'llm-api-key')?.masked}
+              {secretsList.find((s) => s.key === 'llm-credentials')?.masked}
             </Text>
           </Group>
         </div>
@@ -255,11 +272,17 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         hasSavedApiKey={hasSavedLLMKey}
       />
 
+      {/* Test button is gated on saved credentials — testing reads the
+          stored secret + project config, not in-flight form state. */}
+      {hasSavedLLMKey && project.llm?.provider && (
+        <TestConnectionButton projectId={projectId} target="llm" />
+      )}
+
       <Title order={5} mt="md">Embedding Provider</Title>
       <Text size="xs" c="dimmed" mb="xs">
         Required for schema indexing and semantic search.
         {hasSavedEmbeddingKey ? (
-          <> Current key: <b>{secretsList.find(s => s.key === 'embedding-api-key')?.masked}</b>. Leave the key field blank to keep it.</>
+          <> Current credentials: <b>{secretsList.find(s => s.key === 'embedding-credentials')?.masked}</b>. Leave the credentials field blank to keep them.</>
         ) : null}
       </Text>
       <EmbeddingEditor
@@ -268,6 +291,10 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         onChange={(next) => setEmbedding(next)}
         startInModelPhase={!!project.embedding?.provider}
       />
+
+      {hasSavedEmbeddingKey && project.embedding?.provider && (
+        <TestConnectionButton projectId={projectId} target="embedding" />
+      )}
 
       <Group justify="flex-end" mt="sm">
         <Button onClick={handleSave} loading={saving} disabled={!isValid}>

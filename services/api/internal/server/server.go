@@ -261,6 +261,8 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	// Connection testing — admin
 	mux.HandleFunc("POST /api/v1/projects/{id}/test/warehouse", withRole(admin, testConn.TestWarehouse))
 	mux.HandleFunc("POST /api/v1/projects/{id}/test/llm", withRole(admin, testConn.TestLLM))
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/embedding", withRole(admin, testConn.TestEmbedding))
+	mux.HandleFunc("POST /api/v1/projects/{id}/test/blurb-llm", withRole(admin, testConn.TestBlurbLLM))
 
 	// Secrets — admin
 	if secretProvider != nil {

@@ -9,12 +9,19 @@ import { buildDefaults } from './WarehouseFormFields';
 
 export interface LLMFormState {
   provider: string;
+  /** Selected auth method ID. Empty when the provider declares no auth
+   *  methods (Ollama) or when none is selected yet. */
+  authMethod: string;
   config: Record<string, string>;
+  /** Credential value entered for the selected auth method's credential
+   *  field (api_key for direct providers; AKID:secret for AWS access
+   *  keys; SA JSON for GCP sa_key). The name is kept as "apiKey" for
+   *  state-shape stability across callers. */
   apiKey: string;
 }
 
 export function emptyLLMFormState(): LLMFormState {
-  return { provider: '', config: {}, apiKey: '' };
+  return { provider: '', authMethod: '', config: {}, apiKey: '' };
 }
 
 export type AIPhase = 'credentials' | 'model';
@@ -55,17 +62,27 @@ export function LLMFormFields({
   liveModels, liveError, loading, onLoadModels, hasSavedApiKey,
 }: Props) {
   const selected = providers.find((p) => p.id === value.provider) || null;
-  const needsApiKey = selected?.config_fields.some((f) => f.key === 'api_key') ?? false;
+  const authMethods = selected?.auth_methods ?? [];
+  const selectedMethod = authMethods.find((m) => m.id === value.authMethod);
+  const credentialField = (selectedMethod?.fields ?? []).find((f) => f.type === 'credential');
+  const nonCredentialAuthFields = (selectedMethod?.fields ?? []).filter((f) => f.type !== 'credential');
+  const needsCredential = Boolean(credentialField);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const setProvider = (id: string) => {
     const prov = providers.find((p) => p.id === id);
+    const methods = prov?.auth_methods ?? [];
     onChange({
       provider: id,
+      authMethod: methods.length === 1 ? methods[0].id : '',
       config: prov ? buildDefaults(prov.config_fields) : {},
       apiKey: '',
     });
     onPhaseChange('credentials');
+  };
+
+  const setAuthMethod = (id: string) => {
+    onChange({ ...value, authMethod: id, apiKey: '' });
   };
 
   const setConfigField = (key: string, val: string) => {
@@ -87,7 +104,7 @@ export function LLMFormFields({
       {phase === 'credentials' && (
         <>
           {selected?.config_fields
-            .filter((f) => f.key !== 'api_key' && f.key !== 'model' && f.key !== 'wire_override')
+            .filter((f) => f.key !== 'model' && f.key !== 'wire_override')
             .map((field) => (
               <CatalogAwareField
                 key={field.key}
@@ -98,12 +115,35 @@ export function LLMFormFields({
               />
             ))}
 
-          {needsApiKey && (
+          {authMethods.length > 1 && (
+            <Select
+              label="Authentication method"
+              required
+              data={authMethods.map((m) => ({ value: m.id, label: m.name }))}
+              value={value.authMethod || null}
+              onChange={(v) => v && setAuthMethod(v)}
+            />
+          )}
+          {selectedMethod?.description && (
+            <Text size="xs" c="dimmed">{selectedMethod.description}</Text>
+          )}
+
+          {nonCredentialAuthFields.map((field) => (
+            <CatalogAwareField
+              key={field.key}
+              field={field}
+              providerMeta={selected}
+              value={value.config[field.key] || ''}
+              onChange={(val) => setConfigField(field.key, val)}
+            />
+          ))}
+
+          {credentialField && (
             <TextInput
-              label={hasSavedApiKey ? 'Update API Key' : 'API Key'}
+              label={hasSavedApiKey ? `Update ${credentialField.label || 'Credentials'}` : credentialField.label || 'Credentials'}
               required={!hasSavedApiKey}
               type="password"
-              placeholder={selected?.config_fields.find((f) => f.key === 'api_key')?.placeholder || 'Enter API key'}
+              placeholder={credentialField.placeholder || 'Enter credentials'}
               value={value.apiKey}
               onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
               description={hasSavedApiKey
@@ -112,16 +152,26 @@ export function LLMFormFields({
             />
           )}
 
-          {!needsApiKey && (
+          {value.authMethod && !credentialField && (
             <Text size="xs" c="dimmed">
-              This provider uses cloud credentials (IAM / ADC). No API key needed.
+              This auth method uses ambient cloud credentials (IAM role / ADC) — no credentials needed in the dashboard.
+            </Text>
+          )}
+
+          {authMethods.length === 0 && (
+            <Text size="xs" c="dimmed">
+              This provider requires no credentials.
             </Text>
           )}
 
           <Button
             onClick={onLoadModels}
             loading={loading}
-            disabled={!value.provider || (needsApiKey && !value.apiKey && !hasSavedApiKey)}
+            disabled={
+              !value.provider ||
+              (authMethods.length > 0 && !value.authMethod) ||
+              (needsCredential && !value.apiKey && !hasSavedApiKey)
+            }
           >
             Load models
           </Button>

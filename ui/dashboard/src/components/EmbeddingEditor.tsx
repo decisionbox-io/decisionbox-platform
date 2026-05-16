@@ -17,13 +17,14 @@ import { EmbeddingModelCombobox } from './EmbeddingModelCombobox';
 
 export interface EmbeddingState {
   provider: string;
+  authMethod: string;
   model: string;
   config: Record<string, string>;
   apiKey: string;
 }
 
 export function emptyEmbeddingState(): EmbeddingState {
-  return { provider: '', model: '', config: {}, apiKey: '' };
+  return { provider: '', authMethod: '', model: '', config: {}, apiKey: '' };
 }
 
 interface Props {
@@ -48,7 +49,7 @@ export function EmbeddingEditor({ providers, value, onChange, required, startInM
   // parent as the single source of truth while letting the shared
   // phase treat its own value as self-contained.
   const credentials: CredentialsPhaseValue = value.provider
-    ? { provider: value.provider, config: value.config, apiKey: value.apiKey }
+    ? { provider: value.provider, authMethod: value.authMethod, config: value.config, apiKey: value.apiKey }
     : emptyCredentials();
 
   const applyCredentials = (next: CredentialsPhaseValue) => {
@@ -60,6 +61,7 @@ export function EmbeddingEditor({ providers, value, onChange, required, startInM
     onChange({
       ...value,
       provider: next.provider,
+      authMethod: next.authMethod,
       config: next.config,
       apiKey: next.apiKey,
       ...(providerChanged ? { model: '' } : {}),

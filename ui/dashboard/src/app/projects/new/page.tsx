@@ -87,8 +87,10 @@ export default function NewProjectPage() {
         if ((embProvs || []).length > 0) {
           const openai = embProvs.find((p) => p.id === 'openai');
           const first = openai || embProvs[0];
+          const methods = first.auth_methods ?? [];
           setEmbedding({
             provider: first.id,
+            authMethod: methods.length === 1 ? methods[0].id : '',
             model: first.models.find((m) => m.id === 'text-embedding-3-large')?.id || first.models[0]?.id || '',
             config: {},
             apiKey: '',
@@ -264,22 +266,22 @@ export default function NewProjectPage() {
       });
       // Save secrets
       if (llm.apiKey && project.id) {
-        await api.setSecret(project.id, 'llm-api-key', llm.apiKey);
+        await api.setSecret(project.id, 'llm-credentials', llm.apiKey);
       }
       if (warehouse.credential && project.id) {
         await api.setSecret(project.id, 'warehouse-credentials', warehouse.credential);
       }
-      // Blurb-LLM key is stored separately. Only written when the user
-      // supplied one — otherwise the agent falls back to `llm-api-key`.
+      // Blurb-LLM credentials are stored separately. Only written when the user
+      // supplied one — otherwise the agent falls back to `llm-credentials`.
       if (blurb.enabled && blurb.apiKey && project.id) {
-        await api.setSecret(project.id, 'blurb-llm-api-key', blurb.apiKey);
+        await api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey);
       }
-      // Embedding key — required by the worker pre-flight if the
+      // Embedding credentials — required by the worker pre-flight if the
       // provider exposes a credential field. Safe to save conditionally
       // on user input (empty → skip, preserves an existing stored key
       // on re-creates).
       if (embedding.apiKey && project.id) {
-        await api.setSecret(project.id, 'embedding-api-key', embedding.apiKey);
+        await api.setSecret(project.id, 'embedding-credentials', embedding.apiKey);
       }
 
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });

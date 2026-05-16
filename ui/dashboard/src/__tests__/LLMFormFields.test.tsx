@@ -26,9 +26,18 @@ const openaiMeta: ProviderMeta = {
   name: 'OpenAI',
   description: 'OpenAI models',
   config_fields: [
-    { key: 'api_key', label: 'API Key', required: true, type: 'credential', placeholder: 'sk-…', description: '', default: '', options: [] },
     { key: 'base_url', label: 'Base URL', required: false, type: 'string', placeholder: '', description: '', default: 'https://api.openai.com/v1', options: [] },
     { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+  ],
+  auth_methods: [
+    {
+      id: 'api_key',
+      name: 'API Key',
+      description: 'OpenAI API key.',
+      fields: [
+        { key: 'credentials_json', label: 'API Key', required: true, type: 'credential', placeholder: 'sk-…', description: '', default: '', options: [] },
+      ],
+    },
   ],
 };
 
@@ -39,6 +48,22 @@ const bedrockMeta: ProviderMeta = {
   config_fields: [
     { key: 'region', label: 'Region', required: true, type: 'string', placeholder: '', description: '', default: 'us-east-1', options: [] },
     { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+  ],
+  auth_methods: [
+    {
+      id: 'iam_role',
+      name: 'IAM Role',
+      description: 'Ambient AWS credentials.',
+      fields: [],
+    },
+    {
+      id: 'access_keys',
+      name: 'Access Keys',
+      description: 'AWS access key pair.',
+      fields: [
+        { key: 'credentials_json', label: 'Access Keys', required: true, type: 'credential', placeholder: 'AKIA…:wJalr…', description: '', default: '', options: [] },
+      ],
+    },
   ],
 };
 
@@ -95,6 +120,7 @@ describe('LLMFormFields — credentials phase', () => {
   test('OpenAI: renders API Key field (required) and Load models button', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: { base_url: 'https://api.openai.com/v1' },
       apiKey: '',
     };
@@ -108,17 +134,19 @@ describe('LLMFormFields — credentials phase', () => {
   test('Bedrock: renders cloud-credentials hint instead of API Key', () => {
     const initial: LLMFormState = {
       provider: 'bedrock',
+      authMethod: 'iam_role',
       config: { region: 'us-east-1' },
       apiKey: '',
     };
     render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
     expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument();
-    expect(screen.getByText(/uses cloud credentials/i)).toBeInTheDocument();
+    expect(screen.getByText(/ambient cloud credentials/i)).toBeInTheDocument();
   });
 
   test('Load models is disabled when api_key is missing on a credential provider', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: '',
     };
@@ -129,6 +157,7 @@ describe('LLMFormFields — credentials phase', () => {
   test('Load models is enabled once api_key is filled', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -139,6 +168,7 @@ describe('LLMFormFields — credentials phase', () => {
   test('Load models is enabled for cloud-creds providers without api_key', () => {
     const initial: LLMFormState = {
       provider: 'bedrock',
+      authMethod: 'iam_role',
       config: { region: 'us-east-1' },
       apiKey: '',
     };
@@ -149,6 +179,7 @@ describe('LLMFormFields — credentials phase', () => {
   test('hasSavedApiKey label switches to "Update API Key" and Load models is enabled with no fresh key', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: '',
     };
@@ -161,6 +192,7 @@ describe('LLMFormFields — credentials phase', () => {
     const onLoadModels = jest.fn().mockResolvedValue(undefined);
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -172,6 +204,7 @@ describe('LLMFormFields — credentials phase', () => {
   test('typing into the API Key field updates state', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: '',
     };
@@ -187,6 +220,7 @@ describe('LLMFormFields — model phase', () => {
   test('renders LiveModelCombobox in model phase', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -199,6 +233,7 @@ describe('LLMFormFields — model phase', () => {
   test('shows live-error alert when liveError is supplied', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -217,6 +252,7 @@ describe('LLMFormFields — model phase', () => {
   test('Back to credentials returns to credentials phase', () => {
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -229,6 +265,7 @@ describe('LLMFormFields — model phase', () => {
     const onLoadModels = jest.fn().mockResolvedValue(undefined);
     const initial: LLMFormState = {
       provider: 'openai',
+      authMethod: 'api_key',
       config: {},
       apiKey: 'sk-test',
     };
@@ -350,6 +387,7 @@ describe('LLMFormFields — Bedrock interaction', () => {
   test('setting region via the rendered TextInput updates state.config', () => {
     const initial: LLMFormState = {
       provider: 'bedrock',
+      authMethod: 'iam_role',
       config: { region: 'us-east-1' },
       apiKey: '',
     };

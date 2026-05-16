@@ -76,7 +76,7 @@ func Run() {
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
-		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse' or 'llm'")
+		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
 		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (enterprise feature). Default: run discovery.")
 	)
 
@@ -401,8 +401,10 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 // --- Test connection ---
 
 func runTestConnection(cfg *config.Config, projectID, target string) error {
-	if target != "warehouse" && target != "llm" {
-		return fmt.Errorf("invalid test target %q: must be 'warehouse' or 'llm'", target)
+	switch target {
+	case "warehouse", "llm", "embedding", "blurb-llm":
+	default:
+		return fmt.Errorf("invalid test target %q: must be 'warehouse', 'llm', 'embedding', or 'blurb-llm'", target)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -477,6 +479,68 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 		}
 		fmt.Println(string(out))
 
+	case "embedding":
+		provider, err := initEmbeddingProvider(ctx, project, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
+		if provider == nil {
+			return fmt.Errorf("embedding provider not configured")
+		}
+		// Issue a minimal embed call so credentials + model availability
+		// are both checked end-to-end.
+		if _, err := provider.Embed(ctx, []string{"ping"}); err != nil {
+			return fmt.Errorf("embedding test failed: %w", err)
+		}
+		out, err := json.Marshal(map[string]interface{}{
+			"success":    true,
+			"provider":   project.Embedding.Provider,
+			"model":      project.Embedding.Model,
+			"dimensions": provider.Dimensions(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
+
+	case "blurb-llm":
+		// Resolve the blurb LLM via the same path discovery uses; falls
+		// back to the analysis LLM credential when blurb borrows that
+		// provider's setup.
+		providerName, model, credential, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
+		testCfg := *cfg
+		testCfg.LLM.MaxRetries = 1
+		testCfg.LLM.RequestDelayMs = 0
+		extra := map[string]string{}
+		if project.BlurbLLM != nil {
+			for k, v := range project.BlurbLLM.Config {
+				extra[k] = v
+			}
+		} else {
+			for k, v := range project.LLM.Config {
+				extra[k] = v
+			}
+		}
+		llmCfg := buildLLMProviderConfig(&testCfg, extra, credential, model)
+		provider, err := gollm.NewProvider(providerName, llmCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create blurb LLM provider (%s): %w", providerName, err)
+		}
+		if err := provider.Validate(ctx); err != nil {
+			return err
+		}
+		out, err := json.Marshal(map[string]interface{}{
+			"success":  true,
+			"provider": providerName,
+			"model":    model,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		fmt.Println(string(out))
 	}
 
 	return nil

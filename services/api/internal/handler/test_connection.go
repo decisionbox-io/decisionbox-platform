@@ -34,6 +34,20 @@ func (h *TestConnectionHandler) TestLLM(w http.ResponseWriter, r *http.Request) 
 	h.runTest(w, r, "llm")
 }
 
+// TestEmbedding tests the embedding provider connection for a project.
+// POST /api/v1/projects/{id}/test/embedding
+func (h *TestConnectionHandler) TestEmbedding(w http.ResponseWriter, r *http.Request) {
+	h.runTest(w, r, "embedding")
+}
+
+// TestBlurbLLM tests the blurb LLM connection for a project. Falls
+// back to the analysis LLM credential when the blurb provider matches
+// the analysis provider — same path discovery uses.
+// POST /api/v1/projects/{id}/test/blurb-llm
+func (h *TestConnectionHandler) TestBlurbLLM(w http.ResponseWriter, r *http.Request) {
+	h.runTest(w, r, "blurb-llm")
+}
+
 func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, target string) {
 	projectID := r.PathValue("id")
 

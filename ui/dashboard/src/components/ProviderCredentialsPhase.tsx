@@ -40,29 +40,43 @@ import { useRef, useState } from 'react';
 import { Alert, Button, Card, Group, Select, Stack, Text, TextInput } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
-import { ConfigField } from '@/lib/api';
+import { AuthMethod, ConfigField } from '@/lib/api';
 
 /**
  * Minimal provider shape this component operates on. Both ProviderMeta
  * (LLM) and EmbeddingProviderMeta satisfy it, so we don't need generics
  * or a discriminator — duck typing through TS structural types is
  * enough.
+ *
+ * auth_methods is optional: providers that need no credentials (Ollama)
+ * leave it absent; api-key providers declare a single "api_key" method;
+ * cloud providers declare the full credential strategy menu (iam_role /
+ * access_keys / assume_role for AWS, adc / sa_key for GCP).
  */
 export interface ProviderLike {
   id: string;
   name: string;
   description: string;
   config_fields: ConfigField[];
+  auth_methods?: AuthMethod[];
 }
 
 export interface CredentialsPhaseValue {
   provider: string;
+  /** Selected auth method ID. Empty when the provider declares no auth methods. */
+  authMethod: string;
   config: Record<string, string>;
+  /**
+   * Credential value entered for the selected auth method's credential
+   * field. The name "apiKey" is kept for backwards-compat with editor
+   * state types; semantically this is "the credential blob" (API key,
+   * AWS access-keys string, GCP service-account JSON, …).
+   */
   apiKey: string;
 }
 
 export function emptyCredentials(): CredentialsPhaseValue {
-  return { provider: '', config: {}, apiKey: '' };
+  return { provider: '', authMethod: '', config: {}, apiKey: '' };
 }
 
 export interface ProviderCredentialsPhaseProps<P extends ProviderLike> {
@@ -120,6 +134,17 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
   const [liveError, setLiveError] = useState<string | null>(null);
   const loadReqIdRef = useRef(0);
 
+  const selected = providers.find((p) => p.id === value.provider);
+  const authMethods = selected?.auth_methods ?? [];
+  const selectedMethod = authMethods.find((m) => m.id === value.authMethod);
+  // Each auth method declares at most one credential field today
+  // (api_key for direct providers, credentials_json for cloud blobs).
+  const credentialField = (selectedMethod?.fields ?? []).find((f) => f.type === 'credential');
+  // Non-credential auth-method fields (role_arn, external_id, …) render
+  // alongside the credential input.
+  const nonCredentialAuthFields = (selectedMethod?.fields ?? []).filter((f) => f.type !== 'credential');
+  const needsCredential = Boolean(credentialField);
+
   // Monotonic request id so a stale response can't overwrite newer state.
   const handleLoad = async () => {
     if (!value.provider) return;
@@ -128,7 +153,8 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
     setLiveError(null);
     try {
       const cfg: Record<string, string> = { ...value.config };
-      if (value.apiKey) cfg['api_key'] = value.apiKey;
+      if (value.authMethod) cfg['auth_method'] = value.authMethod;
+      if (value.apiKey && credentialField) cfg[credentialField.key] = value.apiKey;
       const result = await onLoad(cfg);
       if (reqId !== loadReqIdRef.current) return;
       if (result.liveError) setLiveError(result.liveError);
@@ -146,20 +172,25 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
     }
   };
 
-  const selected = providers.find((p) => p.id === value.provider);
-  const needsApiKey = selected?.config_fields.some(
-    (f) => f.type === 'credential' || f.key === 'api_key'
-  ) ?? false;
-
   const setProvider = (providerID: string) => {
     const prov = providers.find((p) => p.id === providerID);
+    // Auto-pick the single auth method when there's only one — no
+    // point making the user click "API Key" for Claude/OpenAI/Voyage.
+    const methods = prov?.auth_methods ?? [];
+    const defaultMethod = methods.length === 1 ? methods[0].id : '';
     onChange({
       provider: providerID,
+      authMethod: defaultMethod,
       config: prov ? buildDefaults(prov.config_fields) : {},
       apiKey: '',
     });
     setPhase('credentials');
     onPhaseChange?.('credentials');
+    setLiveError(null);
+  };
+
+  const setAuthMethod = (methodID: string) => {
+    onChange({ ...value, authMethod: methodID, apiKey: '' });
     setLiveError(null);
   };
 
@@ -180,12 +211,11 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
           <Stack gap="sm">
             {phase === 'credentials' && (
               <>
-                {/* Non-credential, non-model, non-wire provider config fields. */}
+                {/* Non-credential, non-model, non-wire top-level provider config fields. */}
                 {selected.config_fields
                   .filter(
                     (f) =>
                       f.type !== 'credential' &&
-                      f.key !== 'api_key' &&
                       f.key !== 'model' &&
                       f.key !== 'wire_override'
                   )
@@ -201,28 +231,63 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                     />
                   ))}
 
-                {needsApiKey && (
+                {/* Auth method selector — shown when the provider declares 2+ methods.
+                    Single-method providers (Claude/OpenAI/Voyage api_key, …) auto-select. */}
+                {authMethods.length > 1 && (
+                  <Select
+                    label="Authentication method"
+                    required={required}
+                    data={authMethods.map((m) => ({ value: m.id, label: m.name }))}
+                    value={value.authMethod || null}
+                    onChange={(v) => v && setAuthMethod(v)}
+                  />
+                )}
+                {selectedMethod?.description && (
+                  <Text size="xs" c="dimmed">{selectedMethod.description}</Text>
+                )}
+
+                {/* Per-method non-credential fields (e.g. role_arn for assume_role). */}
+                {nonCredentialAuthFields.map((field) => (
+                  <CatalogAwareField
+                    key={field.key}
+                    field={field}
+                    providerMeta={null}
+                    value={value.config[field.key] || ''}
+                    onChange={(val) =>
+                      onChange({ ...value, config: { ...value.config, [field.key]: val } })
+                    }
+                  />
+                ))}
+
+                {credentialField && (
                   <TextInput
-                    label="API Key"
+                    label={credentialField.label || 'Credentials'}
                     required={required}
                     type="password"
-                    placeholder={
-                      selected.config_fields.find((f) => f.type === 'credential' || f.key === 'api_key')
-                        ?.placeholder || 'Enter API key'
-                    }
+                    placeholder={credentialField.placeholder || 'Enter credentials'}
                     value={value.apiKey}
                     onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
                     description="Used now only to load the model list; stored encrypted when the project is saved."
                   />
                 )}
 
-                {!needsApiKey && <Text size="xs" c="dimmed">{noKeyHint}</Text>}
+                {value.authMethod && !credentialField && (
+                  <Text size="xs" c="dimmed">{noKeyHint}</Text>
+                )}
+
+                {authMethods.length === 0 && (
+                  <Text size="xs" c="dimmed">This provider requires no credentials.</Text>
+                )}
 
                 <Button
                   size="xs"
                   onClick={handleLoad}
                   loading={loading}
-                  disabled={!value.provider || (needsApiKey && !value.apiKey)}
+                  disabled={
+                    !value.provider ||
+                    (authMethods.length > 0 && !value.authMethod) ||
+                    (needsCredential && !value.apiKey)
+                  }
                   style={{ alignSelf: 'flex-start' }}
                 >
                   {loadButtonLabel}

@@ -195,18 +195,29 @@ function projectToFormState(proj: Project, providers: ProviderMeta[]): Warehouse
   };
 }
 
-function TestConnectionButton({ projectId, target }: { projectId: string; target: 'warehouse' | 'llm' }) {
+export type TestConnectionTarget = 'warehouse' | 'llm' | 'embedding' | 'blurb-llm';
+
+export function TestConnectionButton({ projectId, target }: { projectId: string; target: TestConnectionTarget }) {
   const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
-  const label = target === 'warehouse' ? 'Test Warehouse Connection' : 'Test AI Provider Connection';
+  const labels: Record<TestConnectionTarget, string> = {
+    warehouse: 'Test Warehouse Connection',
+    llm: 'Test LLM Connection',
+    embedding: 'Test Embedding Connection',
+    'blurb-llm': 'Test Blurb LLM Connection',
+  };
+  const label = labels[target];
 
   const handleTest = async () => {
     setStatus('testing');
     setErrorMsg('');
     try {
-      const result: TestConnectionResult = target === 'warehouse'
-        ? await api.testWarehouse(projectId)
-        : await api.testLLM(projectId);
+      const result: TestConnectionResult = await (
+        target === 'warehouse' ? api.testWarehouse(projectId) :
+        target === 'llm' ? api.testLLM(projectId) :
+        target === 'embedding' ? api.testEmbedding(projectId) :
+        api.testBlurbLLM(projectId)
+      );
       if (result.success) {
         setStatus('success');
         notifications.show({ title: 'Connection successful', message: `${result.provider} is reachable`, color: 'green' });

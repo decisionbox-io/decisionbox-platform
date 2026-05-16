@@ -21,13 +21,14 @@ export interface BlurbLLMState {
   /** false → fall back to analysis LLM (no blurb_llm sent to server). */
   enabled: boolean;
   provider: string;
+  authMethod: string;
   model: string;
   config: Record<string, string>;
   apiKey: string;
 }
 
 export function emptyBlurbLLMState(): BlurbLLMState {
-  return { enabled: false, provider: '', model: '', config: {}, apiKey: '' };
+  return { enabled: false, provider: '', authMethod: '', model: '', config: {}, apiKey: '' };
 }
 
 interface Props {
@@ -47,7 +48,7 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
 
   const credentials: CredentialsPhaseValue = value.enabled
-    ? { provider: value.provider, config: value.config, apiKey: value.apiKey }
+    ? { provider: value.provider, authMethod: value.authMethod, config: value.config, apiKey: value.apiKey }
     : emptyCredentials();
 
   const selected = llmProviders.find((p) => p.id === value.provider) || null;
@@ -62,9 +63,11 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
     // sees the credentials phase populated instead of a blank form.
     const first = llmProviders.find((p) => p.id === 'bedrock') || llmProviders[0];
     if (!first) return;
+    const methods = first.auth_methods ?? [];
     onChange({
       enabled: true,
       provider: first.id,
+      authMethod: methods.length === 1 ? methods[0].id : '',
       model: '',
       config: buildDefaults(first),
       apiKey: '',
@@ -76,6 +79,7 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
     onChange({
       ...value,
       provider: next.provider,
+      authMethod: next.authMethod,
       config: next.config,
       apiKey: next.apiKey,
       ...(providerChanged ? { model: '' } : {}),

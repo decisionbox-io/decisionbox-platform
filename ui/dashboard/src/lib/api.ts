@@ -351,6 +351,8 @@ export interface SchemaIndexLogLine {
 export interface EmbeddingConfig {
   provider: string;
   model: string;
+  /** Per-provider non-credential settings (auth_method, role_arn, …). */
+  config?: Record<string, string>;
 }
 
 export interface WarehouseConfig {
@@ -717,6 +719,7 @@ export interface EmbeddingProviderMeta {
   name: string;
   description: string;
   config_fields: ConfigField[];
+  auth_methods?: AuthMethod[];
   models: EmbeddingModelMeta[];
 }
 
@@ -1138,6 +1141,10 @@ export const api = {
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/warehouse`, { method: 'POST' }),
   testLLM: (projectId: string) =>
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/llm`, { method: 'POST' }),
+  testEmbedding: (projectId: string) =>
+    request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/embedding`, { method: 'POST' }),
+  testBlurbLLM: (projectId: string) =>
+    request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/blurb-llm`, { method: 'POST' }),
 
   // Embedding providers
   listEmbeddingProviders: () => request<EmbeddingProviderMeta[]>('/api/v1/providers/embedding'),

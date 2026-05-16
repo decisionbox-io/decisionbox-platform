@@ -86,9 +86,13 @@ export default function PackGenWizardPage() {
         // Hydrate the blurb editor from any persisted blurb_llm so
         // returning to the wizard mid-setup picks up the prior choice.
         if (p.blurb_llm?.provider && p.blurb_llm?.model) {
+          const blurbProviderID = p.blurb_llm.provider;
+          const blurbMeta = llmProvs?.find((prov) => prov.id === blurbProviderID);
+          const blurbMethods = blurbMeta?.auth_methods ?? [];
           setBlurb({
             enabled: true,
-            provider: p.blurb_llm.provider,
+            provider: blurbProviderID,
+            authMethod: blurbMethods.length === 1 ? blurbMethods[0].id : '',
             model: p.blurb_llm.model,
             config: p.blurb_llm.config || {},
             apiKey: '',
@@ -178,7 +182,7 @@ export default function PackGenWizardPage() {
         : {};
       const saved = await api.updateProject(project.id, payload);
       if (blurb.enabled && blurb.apiKey) {
-        await api.setSecret(project.id, 'blurb-llm-api-key', blurb.apiKey);
+        await api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey);
         setBlurb((prev) => ({ ...prev, apiKey: '' }));
       }
       setProject(saved);
