@@ -13,8 +13,12 @@
  *      needed — but the kind-specific parent filters `model` /
  *      `wire_override` out of its config map since those live in the
  *      model picker itself).
- *   3. Renders an API-key <TextInput> when the provider's config_fields
- *      include a credential (type="credential" or key="api_key").
+ *   3. Renders a clear-text monospace <Textarea> for the selected auth
+ *      method's credential field. Matches the warehouse credential UI
+ *      (clear text, monospace, autosize) so JSON service-account keys
+ *      and AWS access-key strings are readable while editing. The
+ *      saved value is encrypted in the secret store — the form input
+ *      itself is just a multi-line editor.
  *   4. Renders a "Load models" button that invokes the caller-supplied
  *      `onLoad` handler. The handler is responsible for doing the
  *      network call (since the endpoint + response type differ per
@@ -37,7 +41,7 @@
  */
 
 import { useRef, useState } from 'react';
-import { Alert, Button, Card, Group, Select, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Card, Group, Select, Stack, Text, Textarea } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
 import { AuthMethod, ConfigField } from '@/lib/api';
@@ -260,14 +264,16 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                 ))}
 
                 {credentialField && (
-                  <TextInput
+                  <Textarea
                     label={credentialField.label || 'Credentials'}
                     required={required}
-                    type="password"
-                    placeholder={credentialField.placeholder || 'Enter credentials'}
+                    placeholder={credentialField.placeholder || `Enter ${(credentialField.label || 'credentials').toLowerCase()}`}
                     value={value.apiKey}
                     onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
                     description="Used now only to load the model list; stored encrypted when the project is saved."
+                    minRows={3}
+                    autosize
+                    styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
                   />
                 )}
 

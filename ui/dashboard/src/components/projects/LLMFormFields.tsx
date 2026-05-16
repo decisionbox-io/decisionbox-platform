@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Button, Collapse, Group, Select, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { useState } from 'react';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
@@ -139,16 +139,18 @@ export function LLMFormFields({
           ))}
 
           {credentialField && (
-            <TextInput
+            <Textarea
               label={hasSavedApiKey ? 'Update credentials' : credentialField.label || 'Credentials'}
               required={!hasSavedApiKey}
-              type="password"
-              placeholder={credentialField.placeholder || 'Enter credentials'}
+              placeholder={credentialField.placeholder || `Enter ${(credentialField.label || 'credentials').toLowerCase()}`}
               value={value.apiKey}
               onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
               description={hasSavedApiKey
                 ? 'Stored encrypted. Leave empty to keep current. Used now only to refresh the model list.'
                 : 'Stored encrypted. Used now only to load the model list.'}
+              minRows={3}
+              autosize
+              styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
             />
           )}
 

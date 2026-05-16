@@ -125,9 +125,9 @@ describe('LLMFormFields — credentials phase', () => {
       apiKey: '',
     };
     const { container } = render(<ControlledHarness providers={[openaiMeta]} initial={initial} />);
-    // API Key is a password input — find it directly to avoid Mantine's
+    // API Key is a textarea (clear text, matches warehouse credential UX) — find it directly to avoid Mantine's
     // label-association quirks with the required asterisk.
-    expect(container.querySelector('input[type="password"]')).toBeInTheDocument();
+    expect(container.querySelector('textarea')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Load models' })).toBeInTheDocument();
   });
 
@@ -209,7 +209,7 @@ describe('LLMFormFields — credentials phase', () => {
       apiKey: '',
     };
     const { container } = render(<ControlledHarness providers={[openaiMeta]} initial={initial} />);
-    const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('textarea') as HTMLTextAreaElement;
     expect(passwordInput).not.toBeNull();
     fireEvent.change(passwordInput, { target: { value: 'sk-typed' } });
     expect(getDump().value.apiKey).toBe('sk-typed');
@@ -356,7 +356,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     // The Model field is rendered by LiveModelCombobox; in jsdom
     // Mantine's Autocomplete renders an <input> with the field label.
     const modelInputs = screen.getAllByLabelText(/Model/);
-    const input = modelInputs.find((el) => el.tagName === 'INPUT') as HTMLInputElement | undefined;
+    const input = modelInputs.find((el) => el.tagName === 'INPUT') as HTMLTextAreaElement | undefined;
     expect(input).toBeDefined();
     if (!input) return;
     fireEvent.change(input, { target: { value: 'typed-model' } });
@@ -373,7 +373,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       apiKey: 'sk-test',
     };
     render(<ControlledHarness providers={[wireOnlyMeta]} initial={initial} initialPhase="model" />);
-    const wireInput = screen.getByLabelText(/Wire override/) as HTMLInputElement;
+    const wireInput = screen.getByLabelText(/Wire override/) as HTMLTextAreaElement;
     fireEvent.change(wireInput, { target: { value: 'anthropic-messages' } });
     expect(getDump().value.config.wire_override).toBe('anthropic-messages');
   });
@@ -392,7 +392,7 @@ describe('LLMFormFields — Bedrock interaction', () => {
       apiKey: '',
     };
     const { container } = render(<ControlledHarness providers={[bedrockMeta]} initial={initial} />);
-    const regionInput = within(container).getByLabelText(/Region/) as HTMLInputElement;
+    const regionInput = within(container).getByLabelText(/Region/) as HTMLTextAreaElement;
     fireEvent.change(regionInput, { target: { value: 'eu-west-1' } });
     expect(getDump().value.config.region).toBe('eu-west-1');
   });
@@ -483,6 +483,6 @@ describe('LLMFormFields — Bedrock interaction', () => {
       apiKey: '',
     };
     const { container } = render(<ControlledHarness providers={[openaiMeta]} initial={initial} />);
-    expect(container.querySelector('input[type="password"]')).toBeInTheDocument();
+    expect(container.querySelector('textarea')).toBeInTheDocument();
   });
 });
