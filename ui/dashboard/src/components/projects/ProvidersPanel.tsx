@@ -215,14 +215,16 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         },
         embedding: { provider: embedding.provider, model: embedding.model, config: embConfig },
       });
-      if (llm.apiKey) {
-        await api.setSecret(projectId, 'llm-credentials', llm.apiKey);
-        setLlm((prev) => ({ ...prev, apiKey: '' }));
-      }
-      if (embedding.apiKey) {
-        await api.setSecret(projectId, 'embedding-credentials', embedding.apiKey);
-        setEmbedding((prev) => ({ ...prev, apiKey: '' }));
-      }
+      // Parallel writes for symmetry with new-project page; the settings
+      // path doesn't auto-trigger indexing so the race is less acute,
+      // but a sequential await per secret still wastes ~250ms per
+      // round-trip.
+      const writes: Promise<unknown>[] = [];
+      if (llm.apiKey) writes.push(api.setSecret(projectId, 'llm-credentials', llm.apiKey));
+      if (embedding.apiKey) writes.push(api.setSecret(projectId, 'embedding-credentials', embedding.apiKey));
+      await Promise.all(writes);
+      if (llm.apiKey) setLlm((prev) => ({ ...prev, apiKey: '' }));
+      if (embedding.apiKey) setEmbedding((prev) => ({ ...prev, apiKey: '' }));
       const updated = await api.listSecrets(projectId);
       setSecretsList(updated || []);
       notifications.show({ title: 'Saved', message: 'Provider configuration updated', color: 'green' });

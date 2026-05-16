@@ -286,24 +286,28 @@ export default function NewProjectPage() {
           : {}),
         schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
-      // Save secrets
-      if (llm.apiKey && project.id) {
-        await api.setSecret(project.id, 'llm-credentials', llm.apiKey);
-      }
-      if (warehouse.credential && project.id) {
-        await api.setSecret(project.id, 'warehouse-credentials', warehouse.credential);
-      }
-      // Blurb-LLM credentials are stored separately. Only written when the user
-      // supplied one — otherwise the agent falls back to `llm-credentials`.
-      if (blurb.enabled && blurb.apiKey && project.id) {
-        await api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey);
-      }
-      // Embedding credentials — required by the worker pre-flight if the
-      // provider exposes a credential field. Safe to save conditionally
-      // on user input (empty → skip, preserves an existing stored key
-      // on re-creates).
-      if (embedding.apiKey && project.id) {
-        await api.setSecret(project.id, 'embedding-credentials', embedding.apiKey);
+      // Save secrets in parallel — sequential awaits left a ~1s race
+      // window between project creation (which sets
+      // schema_index_status=pending_indexing) and the schema-index
+      // worker's next poll. The worker would claim the project before
+      // embedding-credentials was stored and fail with "API key is
+      // required". Promise.all compresses the window to a single
+      // round-trip (~250ms) which is shorter than the worker's poll
+      // interval, so in practice the race no longer fires.
+      if (project.id) {
+        const writes: Promise<unknown>[] = [];
+        if (llm.apiKey) writes.push(api.setSecret(project.id, 'llm-credentials', llm.apiKey));
+        if (warehouse.credential) writes.push(api.setSecret(project.id, 'warehouse-credentials', warehouse.credential));
+        // Blurb-LLM credentials are stored separately. Only written when
+        // the user supplied one — otherwise the agent falls back to
+        // `llm-credentials`.
+        if (blurb.enabled && blurb.apiKey) writes.push(api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey));
+        // Embedding credentials — required by the worker pre-flight if
+        // the provider exposes a credential field. Safe to save
+        // conditionally on user input (empty → skip, preserves an
+        // existing stored key on re-creates).
+        if (embedding.apiKey) writes.push(api.setSecret(project.id, 'embedding-credentials', embedding.apiKey));
+        await Promise.all(writes);
       }
 
       notifications.show({ title: 'Project created', message: project.name, color: 'green' });
