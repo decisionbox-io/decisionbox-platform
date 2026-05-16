@@ -215,9 +215,12 @@ export default function ProjectSettingsPage() {
             ? {
                 provider: blurb.provider,
                 model: blurb.model,
-                config: Object.fromEntries(
-                  Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key'),
-                ),
+                config: {
+                  ...Object.fromEntries(
+                    Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key'),
+                  ),
+                  ...(blurb.authMethod ? { auth_method: blurb.authMethod } : {}),
+                },
               }
             : undefined,
       });

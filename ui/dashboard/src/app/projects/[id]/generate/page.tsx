@@ -168,9 +168,12 @@ export default function PackGenWizardPage() {
             blurb_llm: {
               provider: blurb.provider,
               model: blurb.model,
-              config: Object.fromEntries(
-                Object.entries(blurb.config || {}).filter(([k]) => k !== 'model' && k !== 'api_key'),
-              ),
+              config: {
+                ...Object.fromEntries(
+                  Object.entries(blurb.config || {}).filter(([k]) => k !== 'model' && k !== 'api_key'),
+                ),
+                ...(blurb.authMethod ? { auth_method: blurb.authMethod } : {}),
+              },
             },
           }
         // Explicit null in the wire payload would be ideal but the API
