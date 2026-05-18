@@ -61,6 +61,13 @@ func init() {
 		},
 		Models:                 buildOllamaCatalog(),
 		DefaultMaxOutputTokens: 16384,
+		// Ollama dispatches every model through one SDK path with no
+		// wire switch, so any model the server has pulled (returned by
+		// /api/tags) is dispatchable. Without this flag, live-only rows
+		// like "gemma4:31b" come back with Wire="" + Dispatchable=false
+		// and the dashboard hides them under the "unsupported wire"
+		// filter.
+		DispatchAnyModelID: true,
 	})
 }
 

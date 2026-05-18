@@ -267,6 +267,20 @@ type ProviderMeta struct {
 	// tool-dependent flow (e.g. /ask function-calling) must pick a
 	// different provider or skip tools.
 	SupportsTools bool `json:"supports_tools"`
+
+	// DispatchAnyModelID declares that this provider's Chat method
+	// accepts ANY non-empty model ID through one SDK path, with no
+	// wire dispatch step that needs the ID classified. Today only
+	// Ollama (a single local API for all pulled models) qualifies;
+	// vLLM / LM Studio / Text Generation Inference would too if added.
+	//
+	// The live-models merge consults this flag: when true, every row
+	// returned by ListModels is marked dispatchable regardless of
+	// whether the FamilyInferrer recognises the ID. Without it, a
+	// freshly pulled model (e.g. "gemma4:31b") would come back from
+	// /api/tags with Wire="" and Dispatchable=false, and the dashboard
+	// would hide it under the "unsupported wire" filter.
+	DispatchAnyModelID bool `json:"-"`
 }
 
 // FindModel returns the catalog entry whose ID or alias matches the

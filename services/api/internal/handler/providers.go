@@ -354,9 +354,14 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			if meta.FamilyInferrer != nil {
 				inferred = string(meta.FamilyInferrer(lm.ID))
 			}
+			// Wire-blind providers (Ollama today) dispatch every model
+			// ID through one SDK path with no wire switch, so live
+			// rows are always dispatchable regardless of inference.
+			dispatchable := meta.DispatchAnyModelID ||
+				(inferred != "" && inferred != string(gollm.WireUnknown))
 			merged[lm.ID] = liveModelsResponse{
 				Source:       "live",
-				Dispatchable: inferred != "" && inferred != string(gollm.WireUnknown),
+				Dispatchable: dispatchable,
 				ModelInfo: gollm.ModelInfo{
 					ID:          lm.ID,
 					DisplayName: displayOr(lm.DisplayName, lm.ID),
