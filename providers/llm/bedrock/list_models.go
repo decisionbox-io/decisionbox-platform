@@ -4,9 +4,26 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	bedrockcp "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
+
+// bedrockControlClient is the slice of the Bedrock control-plane API
+// that ListModels consumes. Defined here so tests can substitute a
+// fake without spinning up a real bedrockcp.Client.
+type bedrockControlClient interface {
+	ListFoundationModels(ctx context.Context, in *bedrockcp.ListFoundationModelsInput, opts ...func(*bedrockcp.Options)) (*bedrockcp.ListFoundationModelsOutput, error)
+	ListInferenceProfiles(ctx context.Context, in *bedrockcp.ListInferenceProfilesInput, opts ...func(*bedrockcp.Options)) (*bedrockcp.ListInferenceProfilesOutput, error)
+}
+
+// newControlClient builds a control-plane client from a resolved
+// aws.Config. Held in a package var so tests can swap it for a fake
+// without dragging in a real bedrockcp.NewFromConfig call. Production
+// code never reassigns this.
+var newControlClient = func(cfg aws.Config) bedrockControlClient {
+	return bedrockcp.NewFromConfig(cfg)
+}
 
 // ListModels calls the Bedrock control-plane ListFoundationModels API
 // (not bedrockruntime). Returns every text-capable model in the region
@@ -20,7 +37,7 @@ import (
 // surfaced as "no EC2 IMDS role found" on local Docker setups whose
 // shell has no AWS_* env vars.
 func (p *BedrockProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel, error) {
-	client := bedrockcp.NewFromConfig(p.awsCfg)
+	client := newControlClient(p.awsCfg)
 
 	out := make([]gollm.RemoteModel, 0, 64)
 
