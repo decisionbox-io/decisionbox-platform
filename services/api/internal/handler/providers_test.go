@@ -300,11 +300,13 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotReadsBlurbCredent
 	}
 }
 
-// When the project has no blurb override the handler falls back to the
-// analysis LLM slot — matching the agent's resolveBlurbLLM rule. The
-// blurb editor on the dashboard wouldn't normally hit this branch
-// (the switch is off → it doesn't render), but the contract should be
-// consistent if a future caller asks for the blurb slot.
+// When the project has no blurb override the handler borrows the
+// analysis LLM provider but still prefers the blurb-specific secret
+// — matching the agent's resolveBlurbLLM lookup order
+// (blurb-llm-credentials first, then llm-credentials). Without a
+// blurb-credentials secret stored, the handler must fall back to
+// llm-credentials, so the dashboard's Load-models reads exactly the
+// same credential the agent would read at indexing time.
 func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotFallsBackToLLM(t *testing.T) {
 	repo := &stubProjectRepo{project: &models.Project{
 		ID:  "p",
@@ -312,6 +314,7 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotFallsBackToLLM(t 
 		// BlurbLLM intentionally unset.
 	}}
 	secrets := &stubSecretProvider{values: map[string]string{
+		// blurb-llm-credentials NOT stored — handler must fall through.
 		"llm-credentials": "sk-llm",
 	}}
 	h := NewProvidersHandlerWithProject(repo, secrets)
@@ -320,8 +323,41 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotFallsBackToLLM(t 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	if len(secrets.requests) != 1 || secrets.requests[0] != "llm-credentials" {
-		t.Errorf("requests = %v, want exactly [llm-credentials] on fallback", secrets.requests)
+	want := []string{"blurb-llm-credentials", "llm-credentials"}
+	if len(secrets.requests) != len(want) {
+		t.Fatalf("requests = %v, want %v (blurb first, then fallback)", secrets.requests, want)
+	}
+	for i, k := range want {
+		if secrets.requests[i] != k {
+			t.Errorf("request[%d] = %q, want %q", i, secrets.requests[i], k)
+		}
+	}
+}
+
+// When a blurb-specific secret IS stored, the handler uses it directly
+// and never reads llm-credentials. Mirrors the agent's resolveBlurbLLM
+// — the blurb-specific credential always wins when present, even if
+// the blurb slot borrows the analysis LLM's provider/model.
+func TestProvidersHandler_ListLiveLLMModelsForProject_BlurbSlotPrefersBlurbSecretEvenOnFallback(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+		// No BlurbLLM override — falls through to LLM provider, but
+		// the blurb-credentials secret IS present and must win.
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"blurb-llm-credentials": "sk-blurb",
+		"llm-credentials":       "sk-llm",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	w := callForProject(t, h, "p", `{"slot":"blurb_llm"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	// Only one request — the blurb-specific secret short-circuits.
+	if len(secrets.requests) != 1 || secrets.requests[0] != "blurb-llm-credentials" {
+		t.Errorf("requests = %v, want exactly [blurb-llm-credentials]", secrets.requests)
 	}
 }
 

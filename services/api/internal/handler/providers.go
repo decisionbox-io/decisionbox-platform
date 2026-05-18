@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"time"
@@ -191,9 +193,13 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 	// Body is optional — an empty body is the legacy {slot: "llm"} call.
 	var body projectLiveModelsRequest
 	if r.ContentLength > 0 {
-		// Tolerate an empty `{}` body too — decode errors are real client
-		// bugs (malformed JSON), not a missing-body signal.
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		// Tolerate an empty `{}` body too: io.EOF from Decode is the
+		// idiomatic empty-body signal. Use errors.Is rather than a
+		// string compare against "EOF" so any future error wrapping
+		// (or a different decoder error type that happens to stringify
+		// to "EOF") still routes correctly. Real malformed JSON falls
+		// through to the 400 below.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
@@ -217,17 +223,19 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		return
 	}
 
-	// Resolve the slot to a (provider, model, config, secretKey) tuple.
-	// For slot=blurb_llm with no blurb override configured, fall through
-	// to the analysis LLM — same rule the agent's resolveBlurbLLM uses
-	// when running an index. The dashboard wouldn't normally hit this
-	// branch (it doesn't call the blurb endpoint until the user enables
-	// the blurb switch), but the fallback keeps the contract consistent.
+	// Resolve the slot to a (provider, model, config, []secretKey) tuple.
+	// For slot=blurb_llm the secret lookup order matches the agent's
+	// resolveBlurbLLM (index_schema.go): blurb-llm-credentials first,
+	// then fall back to llm-credentials. This applies whether or not
+	// project.BlurbLLM is populated — a user can configure a blurb-
+	// specific credential even when blurb shares the analysis provider,
+	// and the dashboard's "Load models" must read the same credential
+	// the agent would read at indexing time.
 	var (
-		provider  string
-		modelID   string
-		slotCfg   map[string]string
-		secretKey string
+		provider   string
+		modelID    string
+		slotCfg    map[string]string
+		secretKeys []string
 	)
 	switch slot {
 	case "blurb_llm":
@@ -235,21 +243,20 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 			provider = project.BlurbLLM.Provider
 			modelID = project.BlurbLLM.Model
 			slotCfg = project.BlurbLLM.Config
-			secretKey = "blurb-llm-credentials"
-			break
+		} else {
+			// No blurb override — borrow the analysis LLM's provider/
+			// model/config but still prefer the blurb-specific secret
+			// per the agent's resolveBlurbLLM contract.
+			provider = project.LLM.Provider
+			modelID = project.LLM.Model
+			slotCfg = project.LLM.Config
 		}
-		// No blurb override — fall through to analysis LLM, but read
-		// the blurb-credentials secret first (a user can configure a
-		// separate blurb credential even without flipping provider).
-		provider = project.LLM.Provider
-		modelID = project.LLM.Model
-		slotCfg = project.LLM.Config
-		secretKey = "llm-credentials"
+		secretKeys = []string{"blurb-llm-credentials", "llm-credentials"}
 	default:
 		provider = project.LLM.Provider
 		modelID = project.LLM.Model
 		slotCfg = project.LLM.Config
-		secretKey = "llm-credentials"
+		secretKeys = []string{"llm-credentials"}
 	}
 
 	if provider == "" {
@@ -275,8 +282,15 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		cfg["model"] = modelID
 	}
 	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(r.Context(), pid, secretKey); err == nil && key != "" {
-			cfg["credentials_json"] = key
+		// First non-empty secret wins, mirroring the agent's lookup
+		// order (blurb-specific takes precedence even when blurb
+		// borrows the analysis provider's config).
+		for _, key := range secretKeys {
+			value, err := h.secretProvider.Get(r.Context(), pid, key)
+			if err == nil && value != "" {
+				cfg["credentials_json"] = value
+				break
+			}
 		}
 	}
 	// cfg holds the secret for the duration of this handler; it goes
