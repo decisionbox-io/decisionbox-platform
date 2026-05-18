@@ -26,7 +26,7 @@ func TestIntegration_EmbedSingleText(t *testing.T) {
 	}
 	client := bedrockruntime.NewFromConfig(awsCfg)
 
-	p := newProvider(client, region, "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, awsCfg, region, "amazon.titan-embed-text-v2:0", 1024)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -56,7 +56,7 @@ func TestIntegration_EmbedBatch(t *testing.T) {
 	}
 	client := bedrockruntime.NewFromConfig(awsCfg)
 
-	p := newProvider(client, region, "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, awsCfg, region, "amazon.titan-embed-text-v2:0", 1024)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -93,7 +93,7 @@ func TestIntegration_Validate(t *testing.T) {
 	}
 	client := bedrockruntime.NewFromConfig(awsCfg)
 
-	p := newProvider(client, region, "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, awsCfg, region, "amazon.titan-embed-text-v2:0", 1024)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
