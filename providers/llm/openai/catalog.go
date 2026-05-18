@@ -57,6 +57,15 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.30, OutputPerMillion: 1.20},
 		},
 		{
+			ID:              "gpt-5-nano",
+			DisplayName:     "GPT-5 Nano",
+			Wire:            gollm.WireOpenAICompat,
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  gpt5InputWindow,
+			Encoding:        encO200KBase,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.05, OutputPerMillion: 0.40},
+		},
+		{
 			ID:              "gpt-4.1",
 			Aliases:         []string{"gpt-4.1-2025-04-14"},
 			DisplayName:     "GPT-4.1",
@@ -75,6 +84,16 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 			MaxInputTokens:  gpt41InputWindow,
 			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.40, OutputPerMillion: 1.60},
+		},
+		{
+			ID:              "gpt-4.1-nano",
+			Aliases:         []string{"gpt-4.1-nano-2025-04-14"},
+			DisplayName:     "GPT-4.1 Nano",
+			Wire:            gollm.WireOpenAICompat,
+			MaxOutputTokens: 32768,
+			MaxInputTokens:  gpt41InputWindow,
+			Encoding:        encO200KBase,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.10, OutputPerMillion: 0.40},
 		},
 		{
 			ID:              "gpt-4o",

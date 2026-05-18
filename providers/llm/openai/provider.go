@@ -77,6 +77,7 @@ func init() {
 			},
 		},
 		Models:                 buildOpenAICatalog(),
+		FamilyInferrer:         inferOpenAIWire,
 		DefaultMaxOutputTokens: 16384,
 		// OpenAI's chat-completions endpoint supports function calling on
 		// gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini. Reasoning models
