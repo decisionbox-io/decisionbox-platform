@@ -133,6 +133,24 @@ func TestListModels_EmbeddingsAreEnrichedWithDimensions(t *testing.T) {
 	}
 }
 
+// TestNewControlClient_RealConstructor pins that the default
+// newControlClient builds a real bedrockcp.Client and conforms to the
+// interface ListModels consumes. Other tests override newControlClient
+// to avoid hitting the SDK, so this is the one place the production
+// lambda body is actually executed — guards against drift if anyone
+// edits the constructor in a way that fails to satisfy the interface.
+func TestNewControlClient_RealConstructor(t *testing.T) {
+	// c is already typed as bedrockControlClient (newControlClient's
+	// return type); the nil check below is the runtime guarantee. The
+	// compile-time guarantee lives at the package var declaration —
+	// newControlClient's type signature won't compile if
+	// bedrockcp.NewFromConfig stops satisfying bedrockControlClient.
+	c := newControlClient(aws.Config{})
+	if c == nil {
+		t.Fatal("newControlClient returned nil")
+	}
+}
+
 // TestListModels_FoundationModelsErrorPropagates — embedding's
 // ListModels has no fallback (there's no inference-profile equivalent
 // for embeddings), so any control-plane error must surface.
