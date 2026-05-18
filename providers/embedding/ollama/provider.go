@@ -25,11 +25,11 @@ import (
 
 const defaultHost = "http://localhost:11434"
 
-var modelDimensions = map[string]int{
-	"nomic-embed-text": 768,
-	"mxbai-embed-large": 1024,
-	"all-minilm":        384,
-}
+// probeTimeout caps the dimension-discovery call at the factory. Cold
+// starts on a freshly loaded model can take 30–60s on a 32B server, so
+// the budget here is the full Embed() ceiling. The probe only runs
+// once per factory construction (i.e. once per index run).
+const probeTimeout = 120 * time.Second
 
 func init() {
 	goembedding.RegisterWithMeta("ollama", func(cfg goembedding.ProviderConfig) (goembedding.Provider, error) {
@@ -40,12 +40,25 @@ func init() {
 
 		model := cfg["model"]
 		if model == "" {
-			model = "nomic-embed-text"
+			return nil, fmt.Errorf("ollama embedding: model is required (pull one with 'ollama pull nomic-embed-text' or similar, then pick it in the dashboard)")
 		}
 
-		dims, ok := modelDimensions[model]
-		if !ok {
-			return nil, fmt.Errorf("ollama embedding: unsupported model %q (supported: nomic-embed-text, mxbai-embed-large, all-minilm)", model)
+		// Discover the dimension by asking Ollama directly — one /api/embed
+		// call with a single token returns a vector whose length IS the
+		// model's embedding dimension. This works for ANY model the
+		// server has pulled and that supports /api/embed, with no
+		// hardcoded allow-list to keep in sync with Ollama's catalog.
+		// Models that aren't embedding-capable (pure chat models without
+		// embedding output) surface a clear Ollama error at this point
+		// instead of failing mid-index.
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		defer cancel()
+		dims, err := probeDimension(ctx, host, model)
+		if err != nil {
+			return nil, fmt.Errorf("ollama embedding: %w", err)
+		}
+		if dims <= 0 {
+			return nil, fmt.Errorf("ollama embedding: model %q returned a zero-length embedding (not an embedding-capable model)", model)
 		}
 
 		return newProvider(host, model, dims), nil
@@ -56,12 +69,60 @@ func init() {
 			{Key: "host", Label: "Ollama Host", Type: "string", Default: defaultHost, Placeholder: defaultHost},
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "nomic-embed-text"},
 		},
+		// Models stays as a small suggestion catalog for the dashboard —
+		// users can pick anything they've pulled, but these are the
+		// known-good defaults the picker preselects.
 		Models: []goembedding.ModelInfo{
 			{ID: "nomic-embed-text", Name: "Nomic Embed Text", Dimensions: 768},
 			{ID: "mxbai-embed-large", Name: "MxBai Embed Large", Dimensions: 1024},
+			{ID: "snowflake-arctic-embed", Name: "Snowflake Arctic Embed", Dimensions: 1024},
+			{ID: "bge-m3", Name: "BGE M3", Dimensions: 1024},
 			{ID: "all-minilm", Name: "All-MiniLM", Dimensions: 384},
 		},
 	})
+}
+
+// probeDimension asks Ollama to embed a single token and returns the
+// vector length. The HTTP client is a fresh one with probeTimeout so a
+// hung server doesn't inherit the project's default timeout config.
+func probeDimension(ctx context.Context, host, model string) (int, error) {
+	body, err := json.Marshal(embedRequest{Model: model, Input: []string{"."}})
+	if err != nil {
+		return 0, fmt.Errorf("marshal probe: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host+"/api/embed", bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: probeTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("probe %s (is Ollama running at %s?): %w", model, host, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return 0, fmt.Errorf("read probe response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Ollama returns 404 with "model not found" when the user
+		// picked a model the server hasn't pulled. Forward that
+		// message verbatim so the dashboard surfaces an actionable
+		// hint ('ollama pull mxbai-embed-large' or similar).
+		return 0, fmt.Errorf("probe %s: HTTP %d: %s", model, resp.StatusCode, string(respBody))
+	}
+
+	var er embedResponse
+	if err := json.Unmarshal(respBody, &er); err != nil {
+		return 0, fmt.Errorf("parse probe response: %w", err)
+	}
+	if len(er.Embeddings) == 0 {
+		return 0, nil
+	}
+	return len(er.Embeddings[0]), nil
 }
 
 // provider implements embedding.Provider using a local Ollama instance.

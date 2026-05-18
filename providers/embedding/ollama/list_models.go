@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 )
@@ -58,17 +57,13 @@ func (p *provider) ListModels(ctx context.Context) ([]goembedding.RemoteModel, e
 		if m.Name == "" {
 			continue
 		}
-		// Tags ship as "<model>:<tag>" (e.g. "nomic-embed-text:latest").
-		// modelDimensions is keyed on the bare model id; strip the
-		// tag suffix when looking up.
-		bare := m.Name
-		if i := strings.IndexByte(bare, ':'); i > 0 {
-			bare = bare[:i]
-		}
+		// The dimension is no longer carried here — the factory probes
+		// /api/embed for whatever model the user picks. The dashboard
+		// shows "dimensions unknown" until selection and the probe
+		// at construction time discovers the actual size.
 		out = append(out, goembedding.RemoteModel{
 			ID:          m.Name,
 			DisplayName: m.Name,
-			Dimensions:  modelDimensions[bare],
 		})
 	}
 	return out, nil

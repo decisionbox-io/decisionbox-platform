@@ -33,65 +33,102 @@ func TestRegistrationMeta(t *testing.T) {
 	if meta.Name != "Ollama (Local)" {
 		t.Errorf("expected Name='Ollama (Local)', got %s", meta.Name)
 	}
-	if len(meta.Models) != 3 {
-		t.Errorf("expected 3 models, got %d", len(meta.Models))
+	// Models is a non-empty suggestion catalog now (not an allow-list).
+	// Any model the user has pulled works once the probe returns a
+	// non-zero dimension.
+	if len(meta.Models) == 0 {
+		t.Errorf("expected suggestion catalog, got 0 models")
 	}
 }
 
-func TestFactoryUnsupportedModel(t *testing.T) {
+// Picking a model the Ollama server hasn't pulled returns Ollama's
+// "model not found" error verbatim — the factory forwards it so the
+// dashboard surfaces an actionable hint ('ollama pull <model>').
+func TestFactoryMissingModelOnServer(t *testing.T) {
+	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"model 'nonexistent-model' not found"}`))
+	})
+	defer server.Close()
+
 	_, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
+		"host":  server.URL,
 		"model": "nonexistent-model",
 	})
 	if err == nil {
-		t.Fatal("expected error for unsupported model")
+		t.Fatal("expected error when the server doesn't have the model")
 	}
-	if !strings.Contains(err.Error(), "unsupported model") {
+	if !strings.Contains(err.Error(), "model not found") && !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected upstream Ollama error to be forwarded; got: %v", err)
+	}
+}
+
+// An empty model arg is a configuration bug — the dashboard should
+// always send one, but the factory rejects with an actionable hint
+// rather than silently picking a default that may not be pulled.
+func TestFactoryMissingModelArg(t *testing.T) {
+	_, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
+		"host": "http://unused",
+	})
+	if err == nil {
+		t.Fatal("expected error when model is empty")
+	}
+	if !strings.Contains(err.Error(), "model is required") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-func TestFactoryDefaultModel(t *testing.T) {
+// The dimension is discovered from /api/embed at construction —
+// whatever vector length the server returns is what we report. This
+// test serves a 1024-dim probe response and asserts the provider
+// surfaces 1024 without needing the model in any hardcoded map.
+func TestFactoryProbeDimension(t *testing.T) {
+	probeCalls := 0
 	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		probeCalls++
 		json.NewEncoder(w).Encode(embedResponse{
-			Embeddings: [][]float64{make([]float64, 768)},
-		})
-	})
-	defer server.Close()
-
-	p, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
-		"host": server.URL,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.ModelName() != "nomic-embed-text" {
-		t.Errorf("expected default model nomic-embed-text, got %s", p.ModelName())
-	}
-	if p.Dimensions() != 768 {
-		t.Errorf("expected 768 dims, got %d", p.Dimensions())
-	}
-}
-
-func TestFactoryCustomHost(t *testing.T) {
-	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(embedResponse{
-			Embeddings: [][]float64{make([]float64, 768)},
+			Embeddings: [][]float64{make([]float64, 1024)},
 		})
 	})
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
 		"host":  server.URL,
-		"model": "nomic-embed-text",
+		"model": "mxbai-embed-large:latest",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if p.ModelName() != "mxbai-embed-large:latest" {
+		t.Errorf("expected mxbai-embed-large:latest preserved (with tag), got %s", p.ModelName())
+	}
+	if p.Dimensions() != 1024 {
+		t.Errorf("expected probed dimension 1024, got %d", p.Dimensions())
+	}
+	if probeCalls != 1 {
+		t.Errorf("expected exactly 1 probe call, got %d", probeCalls)
+	}
+}
 
-	// Verify it uses the custom host by making a request
-	_, err = p.Embed(context.Background(), []string{"test"})
-	if err != nil {
-		t.Fatalf("Embed failed: %v", err)
+// A model that returns an empty embedding (not embedding-capable —
+// some pure chat models) is rejected at construction with a clear
+// error, instead of silently producing zero-length vectors that would
+// break the Qdrant collection at index time.
+func TestFactoryZeroLengthEmbeddingRejected(t *testing.T) {
+	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(embedResponse{Embeddings: [][]float64{}})
+	})
+	defer server.Close()
+
+	_, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
+		"host":  server.URL,
+		"model": "not-an-embedding-model",
+	})
+	if err == nil {
+		t.Fatal("expected zero-length embedding to be rejected")
+	}
+	if !strings.Contains(err.Error(), "zero-length") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
