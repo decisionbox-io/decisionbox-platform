@@ -523,8 +523,16 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 		testCfg := *cfg
 		testCfg.LLM.MaxRetries = 1
 		testCfg.LLM.RequestDelayMs = 0
+		// Mirror the strict guard in index_schema.go::runIndexSchema —
+		// a non-nil BlurbLLM with an empty Provider field means the
+		// document only carries override config (e.g. legacy/partial
+		// documents) but resolveBlurbLLM has fallen back to the analysis
+		// provider. Without checking Provider too, this branch would
+		// feed the (likely empty) BlurbLLM.Config into the factory
+		// while the resolved provider+model come from project.LLM,
+		// diverging from what the agent does at indexing time.
 		extra := map[string]string{}
-		if project.BlurbLLM != nil {
+		if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
 			for k, v := range project.BlurbLLM.Config {
 				extra[k] = v
 			}

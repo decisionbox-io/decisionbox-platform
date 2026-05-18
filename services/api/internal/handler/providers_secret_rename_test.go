@@ -22,13 +22,19 @@ import (
 // from the provider factory. These tests pin the new key names so a
 // future rename does not regress silently.
 
-// secretsStub implements gosecrets.Provider with a fixed map for the
-// rename tests. Only Get is exercised by the providers handler.
+// secretsStub implements gosecrets.Provider with a fixed map AND
+// records every key the handler asked for. The recorded keys are the
+// real assertion target — checking the response body for a credential
+// would make the test depend on upstream error text from real provider
+// SDKs, but checking which secret-store keys were consulted is exact
+// and provider-agnostic.
 type secretsStub struct {
-	store map[string]string // key = "<projectID>/<key>"
+	store    map[string]string // key = "<projectID>/<key>"
+	requests []string          // append-only log of keys Get was called with
 }
 
 func (s *secretsStub) Get(_ context.Context, projectID, key string) (string, error) {
+	s.requests = append(s.requests, key)
 	v, ok := s.store[projectID+"/"+key]
 	if !ok {
 		return "", gosecrets.ErrNotFound
@@ -42,16 +48,23 @@ func (s *secretsStub) List(_ context.Context, _ string) ([]gosecrets.SecretEntry
 	return nil, nil
 }
 
+// containsKey reports whether the recorded request log includes the
+// given key. Used by rename-guard assertions to check what the handler
+// actually asked the secret store for.
+func (s *secretsStub) containsKey(want string) bool {
+	for _, k := range s.requests {
+		if k == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProvidersHandler_ListLiveLLMModelsForProject_ReadsLLMCredentials(t *testing.T) {
 	repo := &stubProjectRepo{project: &models.Project{
 		ID:  "p1",
 		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
 	}}
-	// Seed the stub with the new key name only. If the handler still
-	// reads the old "llm-api-key" name, this Get returns ErrNotFound and
-	// the live-list call falls back to no-credentials — observable as
-	// the absence of any successful response. The assertion below pins
-	// the new key by triggering a 200 with non-empty handling.
 	sp := &secretsStub{store: map[string]string{
 		"p1/llm-credentials": "sk-test-from-secret-store",
 	}}
@@ -62,13 +75,13 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_ReadsLLMCredentials(t *tes
 	w := httptest.NewRecorder()
 	h.ListLiveLLMModelsForProject(w, req)
 
-	// Handler returns 200 either way (live-list errors surface in the
-	// body, not the status). The point of this test is that the handler
-	// reads the new key — verified by inspecting the response body and
-	// confirming no "no credential" error from the live-list path
-	// (which would surface if the old key were still being read).
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	// The real regression guard: the handler must have asked for the
+	// new "llm-credentials" key.
+	if !sp.containsKey("llm-credentials") {
+		t.Errorf("handler never read llm-credentials; requests = %v", sp.requests)
 	}
 }
 
@@ -77,11 +90,11 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_OldKeyNotRead(t *testing.T
 		ID:  "p1",
 		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
 	}}
-	// Regression guard: if a future refactor accidentally restores the
-	// old key name, the handler picks up "sk-from-old-key" instead of
-	// the empty value at "p1/llm-credentials". Wire the stub so the
-	// only entry is under the old name and assert the live-list path
-	// does NOT see that value (it sees empty).
+	// Wire ONLY the old key into the store. A correct handler asks for
+	// "llm-credentials", never sees the value, and falls back to no-
+	// credentials. A regressed handler asks for "llm-api-key" and
+	// picks up "sk-from-old-key" — which the recorder below will
+	// surface as a failed assertion.
 	sp := &secretsStub{store: map[string]string{
 		"p1/llm-api-key": "sk-from-old-key",
 	}}
@@ -92,17 +105,16 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_OldKeyNotRead(t *testing.T
 	w := httptest.NewRecorder()
 	h.ListLiveLLMModelsForProject(w, req)
 
-	// 200 either way; the assertion is implicit — if the handler reads
-	// the old key, the live-list goes out with sk-from-old-key in cfg,
-	// the Anthropic API rejects it, and the live_error body contains
-	// the upstream rejection. We can't grep for that without making the
-	// test depend on Anthropic's error text. The next assertion below
-	// is the real regression guard: even though we sent a request, the
-	// stub never had Get called with "llm-credentials" hitting — that
-	// path returned ErrNotFound. As long as the rename stays in place,
-	// this test passes.
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
+	}
+	// Regression guard: the handler must NEVER ask for the old key.
+	if sp.containsKey("llm-api-key") {
+		t.Errorf("handler regressed to reading old llm-api-key key; requests = %v", sp.requests)
+	}
+	// And it MUST ask for the new key.
+	if !sp.containsKey("llm-credentials") {
+		t.Errorf("handler never read llm-credentials; requests = %v", sp.requests)
 	}
 }
 
@@ -123,6 +135,12 @@ func TestProvidersHandler_ListLiveEmbeddingModelsForProject_ReadsEmbeddingCreden
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if !sp.containsKey("embedding-credentials") {
+		t.Errorf("handler never read embedding-credentials; requests = %v", sp.requests)
+	}
+	if sp.containsKey("embedding-api-key") {
+		t.Errorf("handler regressed to reading old embedding-api-key; requests = %v", sp.requests)
 	}
 }
 

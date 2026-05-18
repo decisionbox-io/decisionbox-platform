@@ -170,7 +170,15 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         project?.llm?.provider === llm.provider && (hasSavedLLMKey || !llmNeedsCredential);
       const inflightCfg: Record<string, string> = { ...llm.config };
       if (llm.authMethod) inflightCfg.auth_method = llm.authMethod;
-      if (llm.apiKey) inflightCfg.credentials_json = llm.apiKey;
+      // Derive the credential field key from the selected auth method
+      // instead of hardcoding "credentials_json". Every provider today
+      // happens to use that key, but a future auth method that declares
+      // a different credential field key (e.g. "token") would silently
+      // drop the in-flight credential here. Mirrors ProviderCredentialsPhase.
+      if (llm.apiKey) {
+        const credField = (llmAuthMethod?.fields ?? []).find((f) => f.type === 'credential');
+        if (credField) inflightCfg[credField.key] = llm.apiKey;
+      }
       const resp = persistedMatch && !llm.apiKey
         ? await api.listLiveLLMModelsForProject(projectId)
         : await api.listLiveLLMModels(llm.provider, inflightCfg);
