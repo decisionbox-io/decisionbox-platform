@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/decisionbox-io/decisionbox/libs/awscreds"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -152,6 +153,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 
 	return &BedrockProvider{
 		client:       client,
+		awsCfg:       awsCfg,
 		region:       region,
 		model:        model,
 		wireOverride: wireOverride,
@@ -161,8 +163,17 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 
 // BedrockProvider implements llm.Provider for AWS Bedrock. Routes per
 // wire resolved from the registered ProviderMeta catalog.
+//
+// awsCfg is the resolved AWS config the runtime client was built from.
+// Stashed so ListModels can construct a Bedrock control-plane client
+// against the SAME credentials (access_keys / assume_role / iam_role
+// — whichever the project's auth_method selected) instead of
+// re-deriving via LoadDefaultConfig, which would silently ignore
+// dashboard-supplied access keys and fall through to the SDK's
+// ambient chain.
 type BedrockProvider struct {
 	client       bedrockClient
+	awsCfg       aws.Config
 	region       string
 	model        string
 	wireOverride gollm.Wire

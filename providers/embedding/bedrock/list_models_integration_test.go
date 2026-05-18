@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
 // TestIntegration_ListModels exercises the live Bedrock control-plane
@@ -20,7 +22,15 @@ func TestIntegration_ListModels(t *testing.T) {
 		t.Skip("INTEGRATION_TEST_BEDROCK_REGION not set")
 	}
 
-	p := newProvider(nil, region, "amazon.titan-embed-text-v2:0", 1024)
+	// Resolve an aws.Config the way the factory would for iam_role auth
+	// — falls through to the SDK's ambient chain. This exercises the
+	// same code path as a real ListModels call now that the provider
+	// reuses the factory-built awsCfg instead of re-deriving it.
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
+	if err != nil {
+		t.Fatalf("load default aws config: %v", err)
+	}
+	p := newProvider(nil, awsCfg, region, "amazon.titan-embed-text-v2:0", 1024)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

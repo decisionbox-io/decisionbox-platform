@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 )
 
 // mockClient implements bedrockClient for testing.
@@ -92,7 +93,7 @@ func TestEmbedSingleTextV2(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", model, 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", model, 1024)
 	result, err := p.Embed(context.Background(), []string{"hello world"})
 	if err != nil {
 		t.Fatalf("Embed failed: %v", err)
@@ -134,7 +135,7 @@ func TestEmbedSingleTextV1(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", model, 1536)
+	p := newProvider(client, aws.Config{}, "us-east-1", model, 1536)
 	result, err := p.Embed(context.Background(), []string{"test text"})
 	if err != nil {
 		t.Fatalf("Embed failed: %v", err)
@@ -159,7 +160,7 @@ func TestEmbedBatch(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	result, err := p.Embed(context.Background(), []string{"text1", "text2", "text3"})
 	if err != nil {
 		t.Fatalf("Embed failed: %v", err)
@@ -173,7 +174,7 @@ func TestEmbedBatch(t *testing.T) {
 }
 
 func TestEmbedEmpty(t *testing.T) {
-	p := newProvider(nil, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(nil, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	result, err := p.Embed(context.Background(), []string{})
 	if err != nil {
 		t.Fatalf("Embed empty failed: %v", err)
@@ -190,7 +191,7 @@ func TestEmbedInvokeError(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for InvokeModel failure")
@@ -210,7 +211,7 @@ func TestEmbedEmptyEmbedding(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for empty embedding")
@@ -227,7 +228,7 @@ func TestEmbedInvalidJSON(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	_, err := p.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
@@ -252,7 +253,7 @@ func TestEmbedBatchPartialFailure(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	_, err := p.Embed(context.Background(), []string{"text1", "text2", "text3"})
 	if err == nil {
 		t.Fatal("expected error for partial batch failure")
@@ -272,7 +273,7 @@ func TestValidate(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	err := p.Validate(context.Background())
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
@@ -286,7 +287,7 @@ func TestValidateError(t *testing.T) {
 		},
 	}
 
-	p := newProvider(client, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(client, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	err := p.Validate(context.Background())
 	if err == nil {
 		t.Fatal("expected validation error")
@@ -294,7 +295,7 @@ func TestValidateError(t *testing.T) {
 }
 
 func TestModelName(t *testing.T) {
-	p := newProvider(nil, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
+	p := newProvider(nil, aws.Config{}, "us-east-1", "amazon.titan-embed-text-v2:0", 1024)
 	if p.ModelName() != "amazon.titan-embed-text-v2:0" {
 		t.Errorf("expected amazon.titan-embed-text-v2:0, got %s", p.ModelName())
 	}
@@ -309,7 +310,7 @@ func TestDimensions(t *testing.T) {
 		{"amazon.titan-embed-text-v1:2", 1536},
 	}
 	for _, tt := range tests {
-		p := newProvider(nil, "us-east-1", tt.model, tt.dims)
+		p := newProvider(nil, aws.Config{}, "us-east-1", tt.model, tt.dims)
 		if p.Dimensions() != tt.dims {
 			t.Errorf("model %s: expected %d dims, got %d", tt.model, tt.dims, p.Dimensions())
 		}

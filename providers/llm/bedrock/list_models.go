@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	bedrockcp "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
@@ -13,14 +12,15 @@ import (
 // (not bedrockruntime). Returns every text-capable model in the region
 // that supports ON_DEMAND or INFERENCE_PROFILE delivery.
 //
-// We use a fresh AWS config loaded with the provider's region because
-// the runtime client does not expose its underlying cfg.
+// Reuses the provider's awsCfg so the control-plane client inherits
+// whichever credentials the factory built from auth_method
+// (access_keys / assume_role / iam_role). A fresh LoadDefaultConfig
+// here would silently ignore dashboard-supplied access keys and fall
+// through to the SDK's ambient chain — exactly the regression that
+// surfaced as "no EC2 IMDS role found" on local Docker setups whose
+// shell has no AWS_* env vars.
 func (p *BedrockProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(p.region))
-	if err != nil {
-		return nil, fmt.Errorf("bedrock: list models: load aws config: %w", err)
-	}
-	client := bedrockcp.NewFromConfig(cfg)
+	client := bedrockcp.NewFromConfig(p.awsCfg)
 
 	out := make([]gollm.RemoteModel, 0, 64)
 

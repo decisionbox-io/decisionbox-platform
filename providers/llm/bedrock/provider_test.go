@@ -366,3 +366,47 @@ func TestBedrockProvider_Dispatch_InferredWireForUncataloguedClaude(t *testing.T
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// TestFactory_StashesAwsCfg_AccessKeys is the regression for the gap
+// in PR #222: factory built an awsCfg from the access_keys auth method
+// but didn't store it on BedrockProvider, so ListModels later called
+// awsconfig.LoadDefaultConfig and threw the dashboard-supplied keys
+// away. The fix stashes the factory's awsCfg on the provider so
+// ListModels can reuse it.
+//
+// We assert by retrieving credentials directly from the stored config
+// — if the factory stops persisting awsCfg, the static credentials are
+// lost and Retrieve returns a different access key (or hits the SDK
+// ambient chain, which produces an IMDS error on a non-EC2 host).
+func TestFactory_StashesAwsCfg_AccessKeys(t *testing.T) {
+	cfg := gollm.ProviderConfig{
+		"region":           "us-east-1",
+		"model":            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		"auth_method":      "access_keys",
+		"credentials_json": "AKIA-fixture:secret-fixture",
+	}
+	prov, err := factory(cfg)
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	bp, ok := prov.(*BedrockProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *BedrockProvider", prov)
+	}
+	if bp.awsCfg.Credentials == nil {
+		t.Fatal("awsCfg.Credentials is nil — factory dropped the credential provider")
+	}
+	creds, err := bp.awsCfg.Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("retrieve from awsCfg: %v", err)
+	}
+	if creds.AccessKeyID != "AKIA-fixture" {
+		t.Errorf("AccessKeyID = %q, want AKIA-fixture (factory did not stash the static credentials provider)", creds.AccessKeyID)
+	}
+	if creds.SecretAccessKey != "secret-fixture" {
+		t.Errorf("SecretAccessKey = %q, want secret-fixture", creds.SecretAccessKey)
+	}
+	if bp.awsCfg.Region != "us-east-1" {
+		t.Errorf("Region = %q, want us-east-1", bp.awsCfg.Region)
+	}
+}

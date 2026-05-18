@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -191,5 +192,40 @@ func TestFactory_UnsupportedModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported model") {
 		t.Errorf("error = %v, want substring 'unsupported model'", err)
+	}
+}
+
+// TestFactory_StashesAwsCfg_AccessKeys is the regression for the same
+// PR #222 gap the LLM Bedrock provider had — the factory built an
+// awsCfg from access_keys but didn't store it on the provider, so
+// ListModels later called LoadDefaultConfig and threw the dashboard-
+// supplied keys away. The fix stashes the factory's awsCfg on the
+// provider so ListModels reuses it.
+func TestFactory_StashesAwsCfg_AccessKeys(t *testing.T) {
+	prov, err := goembedding.NewProvider("bedrock", goembedding.ProviderConfig{
+		"region":           "us-east-1",
+		"model":            "amazon.titan-embed-text-v2:0",
+		"auth_method":      "access_keys",
+		"credentials_json": "AKIA-fixture:secret-fixture",
+	})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	bp, ok := prov.(*provider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *provider", prov)
+	}
+	if bp.awsCfg.Credentials == nil {
+		t.Fatal("awsCfg.Credentials is nil — factory dropped the credential provider")
+	}
+	creds, err := bp.awsCfg.Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("retrieve from awsCfg: %v", err)
+	}
+	if creds.AccessKeyID != "AKIA-fixture" {
+		t.Errorf("AccessKeyID = %q, want AKIA-fixture (factory did not stash the static credentials provider)", creds.AccessKeyID)
+	}
+	if creds.SecretAccessKey != "secret-fixture" {
+		t.Errorf("SecretAccessKey = %q, want secret-fixture", creds.SecretAccessKey)
 	}
 }

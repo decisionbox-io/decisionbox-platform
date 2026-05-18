@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	bedrockcp "github.com/aws/aws-sdk-go-v2/service/bedrock"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -20,15 +19,15 @@ var _ goembedding.ModelLister = (*provider)(nil)
 // output modality. Returns the live set of embedding models the
 // caller's IAM identity can actually invoke in the configured region.
 //
-// We re-load AWS config rather than reusing bedrockruntime's client
-// because that client doesn't expose its underlying cfg. The
-// control-plane API is free and doesn't consume embedding quota.
+// Reuses the provider's awsCfg so the control-plane client inherits
+// whichever credentials the factory built from auth_method
+// (access_keys / assume_role / iam_role). A fresh LoadDefaultConfig
+// here would silently ignore dashboard-supplied access keys and fall
+// through to the SDK's ambient chain — exactly the regression that
+// surfaced as "no EC2 IMDS role found" on local Docker setups whose
+// shell has no AWS_* env vars.
 func (p *provider) ListModels(ctx context.Context) ([]goembedding.RemoteModel, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(p.region))
-	if err != nil {
-		return nil, fmt.Errorf("bedrock embedding: list models: load aws config: %w", err)
-	}
-	client := bedrockcp.NewFromConfig(awsCfg)
+	client := bedrockcp.NewFromConfig(p.awsCfg)
 
 	resp, err := client.ListFoundationModels(ctx, &bedrockcp.ListFoundationModelsInput{
 		ByOutputModality: bedrocktypes.ModelModalityEmbedding,

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/decisionbox-io/decisionbox/libs/awscreds"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -57,7 +58,7 @@ func init() {
 
 		client := bedrockruntime.NewFromConfig(awsCfg)
 
-		return newProvider(client, region, model, dims), nil
+		return newProvider(client, awsCfg, region, model, dims), nil
 	}, goembedding.ProviderMeta{
 		Name:        "AWS Bedrock",
 		Description: "Amazon Titan embeddings — IAM auth, no API key needed",
@@ -102,16 +103,26 @@ type bedrockClient interface {
 var _ bedrockClient = (*bedrockruntime.Client)(nil)
 
 // provider implements embedding.Provider using AWS Bedrock.
+//
+// awsCfg is the resolved AWS config the runtime client was built from.
+// Stashed so ListModels can construct a Bedrock control-plane client
+// against the SAME credentials (access_keys / assume_role / iam_role
+// — whichever the project's auth_method selected) instead of
+// re-deriving via LoadDefaultConfig, which would silently ignore
+// dashboard-supplied access keys and fall through to the SDK's
+// ambient chain.
 type provider struct {
 	client bedrockClient
+	awsCfg aws.Config
 	region string
 	model  string
 	dims   int
 }
 
-func newProvider(client bedrockClient, region, model string, dims int) *provider {
+func newProvider(client bedrockClient, awsCfg aws.Config, region, model string, dims int) *provider {
 	return &provider{
 		client: client,
+		awsCfg: awsCfg,
 		region: region,
 		model:  model,
 		dims:   dims,
