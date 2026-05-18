@@ -281,6 +281,20 @@ type ProviderMeta struct {
 	// /api/tags with Wire="" and Dispatchable=false, and the dashboard
 	// would hide it under the "unsupported wire" filter.
 	DispatchAnyModelID bool `json:"-"`
+
+	// PreferLiveModelID tells the live-models merge to keep each live
+	// row under its own ID instead of projecting onto a catalog
+	// canonical ID via alias matching. Set true for providers (Ollama)
+	// where the canonical ID is NOT accepted at dispatch time and the
+	// user must pass the exact ID the upstream returns. For example,
+	// Ollama's catalog has ID="qwen3" with alias "qwen3:32b", but the
+	// Ollama server strictly requires the tagged form — calling Chat
+	// with "qwen3" when only "qwen3:32b" is pulled returns 404.
+	//
+	// FindModel still walks aliases so catalog enrichment (max-tokens,
+	// encoding, etc.) resolves at runtime when the saved model matches
+	// an alias of a catalog entry.
+	PreferLiveModelID bool `json:"-"`
 }
 
 // FindModel returns the catalog entry whose ID or alias matches the

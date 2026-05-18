@@ -338,6 +338,113 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_InvalidSlot(t *testing.T) 
 	}
 }
 
+// --- writeLiveModelsResponse merge: PreferLiveModelID ---
+
+// When a provider sets PreferLiveModelID (Ollama), the merge must keep
+// the live ID as the picker row's ID even when it matches a catalog
+// alias. Other providers (the default) project onto the catalog
+// canonical so identical IDs don't double-list. This guards against
+// the Ollama-specific 404 where saving the canonical (e.g. "qwen3")
+// fails because the upstream only knows the tagged form ("qwen3:32b").
+func TestWriteLiveModelsResponse_PreferLiveModelIDKeepsTaggedID(t *testing.T) {
+	meta := gollm.ProviderMeta{
+		Name: "test-provider",
+		Models: []gollm.ModelEntry{
+			{
+				ID:      "qwen3",
+				Aliases: []string{"qwen3:32b", "qwen3:14b"},
+				Wire:    gollm.WireUnknown,
+			},
+		},
+		PreferLiveModelID:  true,
+		DispatchAnyModelID: true,
+	}
+	live := []gollm.RemoteModel{
+		{ID: "qwen3:32b", DisplayName: "qwen3:32b"},
+	}
+
+	w := httptest.NewRecorder()
+	writeLiveModelsResponse(w, meta, live, nil)
+
+	var resp struct {
+		Data struct {
+			Models []map[string]any `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Expect a row with the tagged ID, plus the catalog row "qwen3"
+	// (which is catalog-only — the dashboard filters it out of the
+	// picker, but it still gets serialized).
+	var taggedRow, canonicalRow map[string]any
+	for _, r := range resp.Data.Models {
+		switch r["id"] {
+		case "qwen3:32b":
+			taggedRow = r
+		case "qwen3":
+			canonicalRow = r
+		}
+	}
+	if taggedRow == nil {
+		t.Fatalf("expected a row with id=qwen3:32b; got models=%+v", resp.Data.Models)
+	}
+	if taggedRow["source"] != "live" {
+		t.Errorf("tagged row source = %v, want live", taggedRow["source"])
+	}
+	if taggedRow["dispatchable"] != true {
+		t.Errorf("tagged row dispatchable = %v, want true (DispatchAnyModelID is set)", taggedRow["dispatchable"])
+	}
+	if canonicalRow == nil {
+		t.Errorf("expected canonical catalog row qwen3 to remain in response")
+	} else if canonicalRow["source"] != "catalog" {
+		t.Errorf("canonical row source = %v, want catalog", canonicalRow["source"])
+	}
+}
+
+// Regression guard for the OTHER providers (OpenAI, Bedrock, etc.):
+// when PreferLiveModelID is NOT set, a live ID that matches a catalog
+// alias must collapse onto the canonical row, preserving the existing
+// "one row per canonical ID" picker behaviour.
+func TestWriteLiveModelsResponse_DefaultProjectsAliasOntoCanonical(t *testing.T) {
+	meta := gollm.ProviderMeta{
+		Name: "test-provider",
+		Models: []gollm.ModelEntry{
+			{
+				ID:      "gpt-4o",
+				Aliases: []string{"gpt-4o-2024-08-06"},
+				Wire:    gollm.WireOpenAICompat,
+			},
+		},
+	}
+	live := []gollm.RemoteModel{
+		{ID: "gpt-4o-2024-08-06", DisplayName: "gpt-4o-2024-08-06"},
+	}
+
+	w := httptest.NewRecorder()
+	writeLiveModelsResponse(w, meta, live, nil)
+
+	var resp struct {
+		Data struct {
+			Models []map[string]any `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data.Models) != 1 {
+		t.Fatalf("expected one merged row, got %d: %+v", len(resp.Data.Models), resp.Data.Models)
+	}
+	r := resp.Data.Models[0]
+	if r["id"] != "gpt-4o" {
+		t.Errorf("merged row id = %v, want canonical gpt-4o", r["id"])
+	}
+	if r["source"] != "both" {
+		t.Errorf("merged row source = %v, want both", r["source"])
+	}
+}
+
 func TestProvidersHandler_ListLiveLLMModelsForProject_EmptyBodyDefaultsToLLMSlot(t *testing.T) {
 	repo := &stubProjectRepo{project: &models.Project{
 		ID:  "p",

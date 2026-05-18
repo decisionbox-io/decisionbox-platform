@@ -334,10 +334,14 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 	}
 	for _, lm := range live {
 		// If the live ID matches an alias, project onto the canonical
-		// row so we don't double-list the same model.
+		// row so we don't double-list the same model. Suppressed for
+		// providers (Ollama) where the canonical ID is NOT dispatchable
+		// — the user must save the exact live ID the upstream returns.
 		canonical := lm.ID
-		if c, ok := canonicalByID[lm.ID]; ok {
-			canonical = c
+		if !meta.PreferLiveModelID {
+			if c, ok := canonicalByID[lm.ID]; ok {
+				canonical = c
+			}
 		}
 		row, ok := merged[canonical]
 		if ok {

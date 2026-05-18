@@ -68,6 +68,13 @@ func init() {
 		// and the dashboard hides them under the "unsupported wire"
 		// filter.
 		DispatchAnyModelID: true,
+		// Ollama strictly requires the EXACT model:tag the user pulled.
+		// `ollama run qwen3` when only `qwen3:32b` is local returns 404.
+		// So the picker must save the live ID (qwen3:32b), not the
+		// catalog canonical (qwen3). FindModel keeps working at runtime
+		// because the catalog row's aliases include the tagged forms,
+		// so max-tokens enrichment still resolves.
+		PreferLiveModelID: true,
 	})
 }
 
