@@ -556,20 +556,20 @@ func (h *ProvidersHandler) ListLiveEmbeddingModelsForProject(w http.ResponseWrit
 // models if it implements the optional ModelLister capability. Returns
 // (nil, nil) for providers that don't — the dashboard then just
 // renders the shipped catalog, no user-visible error.
+//
+// We forward cfg as-is, including an empty model — the dashboard's
+// "Load models" flow is the user's way of discovering which models
+// their server has, so it must work BEFORE a model is picked. Each
+// provider's factory is responsible for either accepting an empty
+// model (list-only mode) or surfacing a clear error that the dashboard
+// can show. Injecting a catalog default here would trigger an
+// upstream probe against a model the server may not have pulled (the
+// Ollama embedding factory hits /api/embed at construction time), and
+// the dashboard would then silently fall back to the static catalog —
+// hiding the models the server actually has.
 func fetchLiveEmbeddingModels(ctx context.Context, providerID string, cfg map[string]string) ([]goembedding.RemoteModel, error) {
 	if cfg == nil {
 		cfg = map[string]string{}
-	}
-	// Every registered embedding provider factory validates required
-	// config fields up-front, and most reject anything not on a strict
-	// model allowlist (Bedrock's modelDimensions, Voyage's, etc.). For
-	// a list-only call we just need the factory to succeed so
-	// ListModels can run — supply the first catalogued model id as a
-	// placeholder. ListModels never reads cfg["model"].
-	if cfg["model"] == "" {
-		if meta, ok := goembedding.GetProviderMeta(providerID); ok && len(meta.Models) > 0 {
-			cfg["model"] = meta.Models[0].ID
-		}
 	}
 	prov, err := goembedding.NewProvider(providerID, goembedding.ProviderConfig(cfg))
 	if err != nil {

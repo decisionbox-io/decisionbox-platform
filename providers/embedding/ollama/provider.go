@@ -40,7 +40,18 @@ func init() {
 
 		model := cfg["model"]
 		if model == "" {
-			return nil, fmt.Errorf("ollama embedding: model is required (pull one with 'ollama pull nomic-embed-text' or similar, then pick it in the dashboard)")
+			// List-only mode: the dashboard's "Load models" flow
+			// constructs the provider before the user has picked a
+			// model so it can call ListModels() to discover what the
+			// server has pulled. ListModels() only needs `host` —
+			// requiring `model` here would either force the caller to
+			// guess (which is what caused the live-list to silently
+			// fall back to the static catalog when the guessed model
+			// wasn't pulled) or break the flow entirely. Returning a
+			// partial provider with dims=0 keeps ListModels() working;
+			// callers that hit Embed() / Dimensions() / Validate()
+			// without first setting a model see a clear error there.
+			return newProvider(host, "", 0), nil
 		}
 
 		// Discover the dimension by asking Ollama directly — one /api/embed
@@ -149,6 +160,15 @@ func newProvider(host, model string, dims int) *provider {
 func (p *provider) Embed(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	if p.model == "" {
+		// List-only providers were constructed without a model so
+		// ListModels() could run from the dashboard's discovery flow.
+		// Calling Embed() / Validate() in that state is a caller bug —
+		// the path that picked a model should have re-constructed the
+		// provider with cfg["model"] populated. Surfacing a clear
+		// error here beats a confusing upstream 400 from /api/embed.
+		return nil, fmt.Errorf("ollama embedding: provider was constructed without a model (list-only); call NewProvider again with cfg[\"model\"] set before embedding")
 	}
 
 	reqBody := embedRequest{

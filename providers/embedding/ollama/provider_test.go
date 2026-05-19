@@ -66,15 +66,67 @@ func TestFactoryMissingModelOnServer(t *testing.T) {
 // An empty model arg is a configuration bug — the dashboard should
 // always send one, but the factory rejects with an actionable hint
 // rather than silently picking a default that may not be pulled.
-func TestFactoryMissingModelArg(t *testing.T) {
-	_, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
-		"host": "http://unused",
+// TestFactoryEmptyModelReturnsListOnlyProvider verifies that
+// constructing the provider without a `model` succeeds and yields a
+// partial provider with dims=0. This is the path the dashboard's
+// "Load models" flow takes — it constructs the provider before the
+// user has picked a model so it can hit ListModels(). Without this,
+// listing would either require guessing a default model (which is what
+// caused the 404 against `nomic-embed-text` on servers that didn't
+// have it pulled) or fail outright.
+func TestFactoryEmptyModelReturnsListOnlyProvider(t *testing.T) {
+	probeCalls := 0
+	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		probeCalls++
 	})
-	if err == nil {
-		t.Fatal("expected error when model is empty")
+	defer server.Close()
+
+	prov, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{
+		"host": server.URL,
+		// model intentionally unset
+	})
+	if err != nil {
+		t.Fatalf("expected list-only construction to succeed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "model is required") {
-		t.Errorf("unexpected error: %v", err)
+	if prov == nil {
+		t.Fatal("provider should not be nil in list-only mode")
+	}
+	if probeCalls != 0 {
+		t.Errorf("probe should be skipped in list-only mode, got %d calls", probeCalls)
+	}
+	if prov.Dimensions() != 0 {
+		t.Errorf("Dimensions() = %d, want 0 (no probe ran)", prov.Dimensions())
+	}
+	if prov.ModelName() != "" {
+		t.Errorf("ModelName() = %q, want empty in list-only mode", prov.ModelName())
+	}
+}
+
+// TestEmbedWithoutModelFailsCleanly verifies that calling Embed() on a
+// list-only provider returns a clear error instead of forwarding an
+// empty `model` to /api/embed (which would surface as a confusing
+// upstream 400). Callers that picked a model should re-construct via
+// NewProvider with cfg["model"] set.
+func TestEmbedWithoutModelFailsCleanly(t *testing.T) {
+	requests := 0
+	server := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	})
+	defer server.Close()
+
+	prov, err := goembedding.NewProvider("ollama", goembedding.ProviderConfig{"host": server.URL})
+	if err != nil {
+		t.Fatalf("list-only construction failed: %v", err)
+	}
+	_, err = prov.Embed(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected Embed() to error in list-only mode")
+	}
+	if !strings.Contains(err.Error(), "list-only") {
+		t.Errorf("error should mention list-only mode for a useful caller-side hint, got %v", err)
+	}
+	if requests != 0 {
+		t.Errorf("Embed() should fail BEFORE hitting the server, got %d requests", requests)
 	}
 }
 
