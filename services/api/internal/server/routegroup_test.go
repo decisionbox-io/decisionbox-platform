@@ -50,6 +50,50 @@ func TestMountRouteGroups_DuplicatePrefixPanics(t *testing.T) {
 	})
 }
 
+// The validation rules documented on RouteGroup are enforced by
+// mountRouteGroups directly (not just apiserver.RegisterRouteGroup) so
+// a caller that constructs a RouteGroup literal and passes it to
+// NewWithRouteGroups cannot bypass the contract.
+func TestMountRouteGroups_EmptyPrefixPanics(t *testing.T) {
+	mux := http.NewServeMux()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("mountRouteGroups must panic on empty prefix")
+		}
+	}()
+	mountRouteGroups(mux, []RouteGroup{{Prefix: "", Handler: handlerWriting("a")}})
+}
+
+func TestMountRouteGroups_MissingLeadingSlashPanics(t *testing.T) {
+	mux := http.NewServeMux()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("mountRouteGroups must panic when prefix is missing leading '/'")
+		}
+	}()
+	mountRouteGroups(mux, []RouteGroup{{Prefix: "api/foo", Handler: handlerWriting("a")}})
+}
+
+func TestMountRouteGroups_TrailingSlashPanics(t *testing.T) {
+	mux := http.NewServeMux()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("mountRouteGroups must panic on trailing-slash prefix — the mux appends one internally")
+		}
+	}()
+	mountRouteGroups(mux, []RouteGroup{{Prefix: "/api/foo/", Handler: handlerWriting("a")}})
+}
+
+func TestMountRouteGroups_NilHandlerPanics(t *testing.T) {
+	mux := http.NewServeMux()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("mountRouteGroups must panic on nil handler — net/http would panic later anyway")
+		}
+	}()
+	mountRouteGroups(mux, []RouteGroup{{Prefix: "/api/foo", Handler: nil}})
+}
+
 func TestMountRouteGroups_EmptyGroupsIsNoOp(t *testing.T) {
 	mux := http.NewServeMux()
 	// Must not panic, must not register anything spurious.

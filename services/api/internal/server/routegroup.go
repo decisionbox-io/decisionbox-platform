@@ -3,21 +3,46 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // mountRouteGroups mounts each (prefix, handler) onto the given mux at
-// "{prefix}/". Duplicate prefixes panic so a boot-time collision is
-// visible immediately. Exported through the package only via
-// NewWithRouteGroups; kept package-private here so tests can exercise
-// the panic path without standing up a full server.
+// "{prefix}/". Enforces every constraint the RouteGroup doc-comment
+// documents — empty/missing-leading-slash/trailing-slash prefixes, nil
+// handlers, and duplicate prefixes all panic. Validation lives here
+// (the closest layer to the actual mount) so both entry points —
+// apiserver.RegisterRouteGroup at init time AND
+// NewWithRouteGroups when callers pass a literal RouteGroup — share
+// one enforcement point. Kept package-private so tests can exercise
+// the panic paths without standing up a full server.
 func mountRouteGroups(mux *http.ServeMux, groups []RouteGroup) {
 	seen := make(map[string]struct{}, len(groups))
 	for _, g := range groups {
+		ValidateRouteGroup(g)
 		if _, dup := seen[g.Prefix]; dup {
 			panic(fmt.Sprintf("server: duplicate route-group prefix %q", g.Prefix))
 		}
 		seen[g.Prefix] = struct{}{}
 		mux.Handle(g.Prefix+"/", g.Handler)
+	}
+}
+
+// ValidateRouteGroup panics if g violates any RouteGroup contract.
+// Exported so cross-package callers (apiserver.RegisterRouteGroup) can
+// share the same enforcement at registration time without rules
+// drifting between entry points.
+func ValidateRouteGroup(g RouteGroup) {
+	if g.Prefix == "" {
+		panic("server: route-group prefix is empty")
+	}
+	if !strings.HasPrefix(g.Prefix, "/") {
+		panic(fmt.Sprintf("server: route-group prefix %q must start with '/'", g.Prefix))
+	}
+	if strings.HasSuffix(g.Prefix, "/") {
+		panic(fmt.Sprintf("server: route-group prefix %q must not end with '/'", g.Prefix))
+	}
+	if g.Handler == nil {
+		panic(fmt.Sprintf("server: route-group handler is nil for prefix %q", g.Prefix))
 	}
 }
 

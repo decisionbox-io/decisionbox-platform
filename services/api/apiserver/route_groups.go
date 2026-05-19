@@ -3,7 +3,6 @@ package apiserver
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
@@ -24,30 +23,26 @@ import (
 //   - h must not be nil.
 //   - prefix must be unique across all registered groups.
 //
+// The shared rules (everything except uniqueness) are enforced by
+// server.ValidateRouteGroup so both registration paths — this function
+// AND server.NewWithRouteGroups with a literal RouteGroup — share one
+// validator. Uniqueness is checked here because it depends on
+// registry state.
+//
 // The handler receives the full request URL including the prefix; it
 // is responsible for any internal sub-routing and for its own auth /
 // RBAC enforcement beyond what the API server's global chain provides.
 func RegisterRouteGroup(prefix string, h http.Handler) {
-	if prefix == "" {
-		panic("apiserver: RegisterRouteGroup with empty prefix")
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		panic(fmt.Sprintf("apiserver: RegisterRouteGroup prefix %q must start with '/'", prefix))
-	}
-	if strings.HasSuffix(prefix, "/") {
-		panic(fmt.Sprintf("apiserver: RegisterRouteGroup prefix %q must not end with '/'", prefix))
-	}
-	if h == nil {
-		panic(fmt.Sprintf("apiserver: RegisterRouteGroup handler is nil for prefix %q", prefix))
-	}
+	g := server.RouteGroup{Prefix: prefix, Handler: h}
+	server.ValidateRouteGroup(g)
 	routeGroupsMu.Lock()
 	defer routeGroupsMu.Unlock()
-	for _, g := range routeGroups {
-		if g.Prefix == prefix {
+	for _, existing := range routeGroups {
+		if existing.Prefix == prefix {
 			panic(fmt.Sprintf("apiserver: RegisterRouteGroup called twice for prefix %q", prefix))
 		}
 	}
-	routeGroups = append(routeGroups, server.RouteGroup{Prefix: prefix, Handler: h})
+	routeGroups = append(routeGroups, g)
 }
 
 // RegisteredRouteGroups returns the route groups registered via
