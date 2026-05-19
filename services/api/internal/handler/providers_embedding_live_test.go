@@ -62,12 +62,16 @@ func TestProvidersHandler_ListLiveEmbeddingModels_InvalidJSON(t *testing.T) {
 	}
 }
 
-// Factory failure (missing api_key on OpenAI) must surface live_error
-// and an empty models list. We intentionally do NOT fall back to the
-// shipped catalog here — the combobox has catalog access separately,
-// and mixing catalog rows into the live-list response hides the fact
-// that the user's credentials didn't work.
-func TestProvidersHandler_ListLiveEmbeddingModels_FactoryFailureSurfacesError(t *testing.T) {
+// Factory failure (e.g. OpenAI factory rejecting empty model) is
+// treated as "this provider can't list right now" — the response is
+// 200 with an empty models list and NO live_error. The user can pick
+// from the static catalog or type a free-text model name; surfacing
+// "model is required" as a live_error here would confuse the
+// dashboard's "Load models" UX, which exists precisely to discover
+// models before one is picked. Real upstream errors from a working
+// list call (rate-limited, network down) still propagate via the
+// ListModels() return path.
+func TestProvidersHandler_ListLiveEmbeddingModels_FactoryFailureReturnsEmpty(t *testing.T) {
 	h := NewProvidersHandler()
 	req := httptest.NewRequest("POST", "/api/v1/providers/embedding/openai/models/live",
 		strings.NewReader(`{"config":{}}`))
@@ -87,11 +91,11 @@ func TestProvidersHandler_ListLiveEmbeddingModels_FactoryFailureSurfacesError(t 
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Data.LiveError == "" {
-		t.Error("expected live_error when factory fails for OpenAI without api_key")
+	if resp.Data.LiveError != "" {
+		t.Errorf("expected no live_error on factory rejection, got %q", resp.Data.LiveError)
 	}
 	if len(resp.Data.Models) != 0 {
-		t.Errorf("expected empty models list when factory fails, got %d rows", len(resp.Data.Models))
+		t.Errorf("expected empty models list when provider can't list, got %d rows", len(resp.Data.Models))
 	}
 }
 

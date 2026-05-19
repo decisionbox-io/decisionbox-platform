@@ -37,10 +37,11 @@ func init() {
 			host = "http://localhost:11434"
 		}
 
+		// model is optional at construction time: the dashboard's "Load
+		// models" flow constructs the provider without a model picked so
+		// it can call ListModels(). Chat() / Validate() check for an
+		// empty model at call time and return a clear error there.
 		model := cfg["model"]
-		if model == "" {
-			return nil, fmt.Errorf("ollama: model is required")
-		}
 
 		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout))
 	}, gollm.ProviderMeta{
@@ -112,6 +113,9 @@ func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvid
 // Validate checks that Ollama is reachable and the model is available.
 // Uses the List API — no inference cost.
 func (p *OllamaProvider) Validate(ctx context.Context) error {
+	if p.model == "" {
+		return fmt.Errorf("ollama: provider was constructed without a model (list-only); call NewProvider again with cfg[\"model\"] set before validating")
+	}
 	list, err := p.client.List(ctx)
 	if err != nil {
 		return fmt.Errorf("ollama: cannot reach server: %w", err)
@@ -149,6 +153,9 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	model := req.Model
 	if model == "" {
 		model = p.model
+	}
+	if model == "" {
+		return nil, fmt.Errorf("ollama: chat requires a model — neither ChatRequest.Model nor provider model is set (list-only construction)")
 	}
 
 	// Convert messages

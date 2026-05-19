@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -130,12 +131,45 @@ func TestOllamaProvider_ZeroPricing(t *testing.T) {
 	}
 }
 
-func TestOllamaProvider_FactoryMissingModel(t *testing.T) {
-	_, err := gollm.NewProvider("ollama", gollm.ProviderConfig{
+// TestOllamaProvider_FactoryEmptyModelReturnsListOnlyProvider verifies
+// the factory accepts an empty model (list-only construction) so the
+// dashboard's "Load models" flow can call ListModels() before the user
+// has picked a model. Chat() / Validate() on a list-only provider must
+// error clearly when called without a model — pinned in separate
+// tests.
+func TestOllamaProvider_FactoryEmptyModelReturnsListOnlyProvider(t *testing.T) {
+	p, err := gollm.NewProvider("ollama", gollm.ProviderConfig{
 		"host": "http://localhost:11434",
 	})
+	if err != nil {
+		t.Fatalf("list-only construction must succeed without model, got %v", err)
+	}
+	if p == nil {
+		t.Fatal("provider should not be nil in list-only mode")
+	}
+}
+
+func TestOllamaProvider_ChatFailsWithoutModel(t *testing.T) {
+	p, err := gollm.NewProvider("ollama", gollm.ProviderConfig{"host": "http://localhost:11434"})
+	if err != nil {
+		t.Fatalf("list-only factory: %v", err)
+	}
+	_, err = p.Chat(context.Background(), gollm.ChatRequest{Messages: []gollm.Message{{Role: "user", Content: "hi"}}})
 	if err == nil {
-		t.Error("should error without model")
+		t.Fatal("Chat must error in list-only mode")
+	}
+	if !strings.Contains(err.Error(), "list-only") && !strings.Contains(err.Error(), "model") {
+		t.Errorf("error should mention missing model, got %v", err)
+	}
+}
+
+func TestOllamaProvider_ValidateFailsWithoutModel(t *testing.T) {
+	p, err := gollm.NewProvider("ollama", gollm.ProviderConfig{"host": "http://localhost:11434"})
+	if err != nil {
+		t.Fatalf("list-only factory: %v", err)
+	}
+	if err := p.Validate(context.Background()); err == nil {
+		t.Fatal("Validate must error in list-only mode")
 	}
 }
 

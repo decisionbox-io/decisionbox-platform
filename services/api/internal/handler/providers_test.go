@@ -78,9 +78,13 @@ func TestProvidersHandler_ListLiveLLMModels_InvalidJSON(t *testing.T) {
 	}
 }
 
-// When the factory fails (e.g. missing credentials), the handler should
-// still return a 200 with the catalog rows and an embedded live_error.
-// The user sees the catalog + a visible error instead of a hard 500.
+// When the factory fails (e.g. missing credentials), the handler treats
+// it as "provider can't list right now" — 200 with the catalog rows and
+// NO live_error. The list endpoint exists to discover models before
+// credentials are set, so a missing-api-key factory rejection is
+// expected, not an error to surface. The user sees the catalog + can
+// type a free-text model name. Real upstream errors (rate-limited,
+// network down) still propagate via the ListModels() return path.
 func TestProvidersHandler_ListLiveLLMModels_FactoryFailureReturnsCatalog(t *testing.T) {
 	h := NewProvidersHandler()
 	// claude factory requires api_key — send empty body to provoke failure.
@@ -103,8 +107,8 @@ func TestProvidersHandler_ListLiveLLMModels_FactoryFailureReturnsCatalog(t *test
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Data.LiveError == "" {
-		t.Error("expected live_error when factory fails")
+	if resp.Data.LiveError != "" {
+		t.Errorf("factory rejection must not surface as live_error, got %q", resp.Data.LiveError)
 	}
 	// Catalog rows must still be returned so the UI has something.
 	if len(resp.Data.Models) == 0 {
@@ -205,10 +209,13 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_UnknownProvider(t *testing
 	}
 }
 
-// With no secret provider wired, the handler must still attempt the
+// With no secret provider wired, the handler still attempts the
 // factory (cloud providers like Bedrock / Vertex use ambient creds);
-// the factory will usually fail for api-key providers (Claude, OpenAI),
-// in which case we get a 200 with the catalog + live_error.
+// for api-key providers (Claude, OpenAI) the factory rejects the empty
+// credential. Under the "lister or empty" contract the rejection is
+// treated as "this provider can't list right now" — 200 with the
+// catalog rows and NO live_error. The dashboard renders catalog +
+// free-text so the user can still proceed.
 func TestProvidersHandler_ListLiveLLMModelsForProject_NoSecretProviderReturnsCatalog(t *testing.T) {
 	repo := &stubProjectRepo{project: &models.Project{
 		ID:  "p",
@@ -234,8 +241,8 @@ func TestProvidersHandler_ListLiveLLMModelsForProject_NoSecretProviderReturnsCat
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Data.LiveError == "" {
-		t.Error("expected live_error when no secret is available")
+	if resp.Data.LiveError != "" {
+		t.Errorf("factory rejection (missing secret) must not surface as live_error, got %q", resp.Data.LiveError)
 	}
 	if len(resp.Data.Models) == 0 {
 		t.Error("catalog rows must still be returned")
