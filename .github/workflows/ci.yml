@@ -363,6 +363,7 @@ jobs:
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-integ.txt" .)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-db-integ.txt" ./database/)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-handler-integ.txt" ./internal/handler/)
+          (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-server-integ.txt" ./internal/server/)
 
       - name: Secrets provider integration tests
         env:

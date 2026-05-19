@@ -178,3 +178,146 @@ func TestDiscoveryLogRepository_LimitAndIsolation(t *testing.T) {
 		t.Errorf("limit=1: got %d, want 1", len(gotALimited))
 	}
 }
+
+// TestDiscoveryLogRepository_FixHistoryRoundTrip pins the BSON round-trip
+// for the per-attempt SQL-fix history field on ExplorationStep: every
+// scalar, the ordered slice itself, and the empty-history case all
+// rehydrate to the same shape they were saved with. This is the
+// persistence guarantee downstream tooling depends on — a marshal that
+// silently dropped a field on read would surface as "no fix history" in
+// the dashboard / exports despite the agent recording it.
+func TestDiscoveryLogRepository_FixHistoryRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewDiscoveryLogRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	const (
+		projectID   = "proj-fix"
+		discoveryID = "disc-fix"
+		runID       = "run-fix"
+	)
+
+	// One step that needed two fix attempts before succeeding (mirrors a
+	// real exploration in which attempt 0 was still wrong, attempt 1
+	// landed). Plus a step with no fix history at all to verify omitempty
+	// behaviour.
+	steps := []models.ExplorationStep{
+		{
+			Step:        7,
+			Action:      "query_data",
+			Query:       "SELECT n FROM t WHERE app_id = 'x'",
+			LLMRequest:  "p",
+			LLMResponse: "r",
+			FixAttempts: 2,
+			Fixed:       true,
+			FixHistory: []models.FixAttempt{
+				{
+					Step:         7,
+					Attempt:      0,
+					PromptIn:     "[system]\nfix prompt v1\n[user]\nfix this",
+					ResponseOut:  "```sql\nSELECT bad2 FROM t WHERE app_id = 'x'\n```",
+					SQLBefore:    "SELECT BAD FROM t WHERE app_id = 'x'",
+					SQLAfter:     "SELECT bad2 FROM t WHERE app_id = 'x'",
+					ErrorIn:      "Unknown column 'BAD'",
+					InputTokens:  120,
+					OutputTokens: 60,
+					DurationMs:   840,
+					Timestamp:    now,
+				},
+				{
+					Step:         7,
+					Attempt:      1,
+					PromptIn:     "[system]\nfix prompt v2\n[user]\nfix this",
+					ResponseOut:  "```sql\nSELECT n FROM t WHERE app_id = 'x'\n```",
+					SQLBefore:    "SELECT bad2 FROM t WHERE app_id = 'x'",
+					SQLAfter:     "SELECT n FROM t WHERE app_id = 'x'",
+					ErrorIn:      "Unknown column 'bad2'",
+					InputTokens:  130,
+					OutputTokens: 55,
+					DurationMs:   910,
+					Timestamp:    now.Add(time.Second),
+				},
+			},
+		},
+		// Step that ran cleanly first time — FixHistory must be empty
+		// after round-trip (the `omitempty` BSON tag means it may be
+		// absent from the document, but the decoded slice must remain
+		// non-failing and zero-length).
+		{
+			Step:        8,
+			Action:      "query_data",
+			Query:       "SELECT 1",
+			LLMRequest:  "p",
+			LLMResponse: "r",
+		},
+	}
+	if err := repo.SaveExplorationSteps(ctx, projectID, discoveryID, runID, steps); err != nil {
+		t.Fatalf("SaveExplorationSteps: %v", err)
+	}
+
+	got, err := repo.ListExplorationStepsByDiscovery(ctx, discoveryID, 0)
+	if err != nil {
+		t.Fatalf("ListExplorationStepsByDiscovery: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d steps, want 2", len(got))
+	}
+
+	// First step: full FixHistory round-trip.
+	first := got[0]
+	if first.Step != 7 {
+		t.Fatalf("ordering broke: first.Step = %d, want 7", first.Step)
+	}
+	if first.FixAttempts != 2 {
+		t.Errorf("FixAttempts = %d, want 2", first.FixAttempts)
+	}
+	if !first.Fixed {
+		t.Errorf("Fixed = false, want true")
+	}
+	if len(first.FixHistory) != 2 {
+		t.Fatalf("FixHistory entries = %d, want 2 — slice ordering / encoding broke", len(first.FixHistory))
+	}
+	for i, entry := range first.FixHistory {
+		want := steps[0].FixHistory[i]
+		if entry.Step != want.Step || entry.Attempt != want.Attempt {
+			t.Errorf("entry %d Step/Attempt: got (%d, %d), want (%d, %d)", i, entry.Step, entry.Attempt, want.Step, want.Attempt)
+		}
+		if entry.PromptIn != want.PromptIn || entry.ResponseOut != want.ResponseOut {
+			t.Errorf("entry %d prompt/response round-trip broke", i)
+		}
+		if entry.SQLBefore != want.SQLBefore || entry.SQLAfter != want.SQLAfter {
+			t.Errorf("entry %d SQL before/after round-trip broke: got (%q -> %q), want (%q -> %q)", i, entry.SQLBefore, entry.SQLAfter, want.SQLBefore, want.SQLAfter)
+		}
+		if entry.ErrorIn != want.ErrorIn {
+			t.Errorf("entry %d ErrorIn = %q, want %q", i, entry.ErrorIn, want.ErrorIn)
+		}
+		if entry.InputTokens != want.InputTokens || entry.OutputTokens != want.OutputTokens {
+			t.Errorf("entry %d token counts: got (in=%d, out=%d), want (in=%d, out=%d)", i, entry.InputTokens, entry.OutputTokens, want.InputTokens, want.OutputTokens)
+		}
+		if entry.DurationMs != want.DurationMs {
+			t.Errorf("entry %d DurationMs = %d, want %d", i, entry.DurationMs, want.DurationMs)
+		}
+		if !entry.Timestamp.Equal(want.Timestamp) {
+			t.Errorf("entry %d Timestamp = %v, want %v", i, entry.Timestamp, want.Timestamp)
+		}
+	}
+
+	// Second step: no FixHistory recorded — decoded slice must be
+	// nil-or-empty, never a non-nil placeholder with junk values.
+	second := got[1]
+	if second.Step != 8 {
+		t.Fatalf("second.Step = %d, want 8", second.Step)
+	}
+	if second.FixAttempts != 0 {
+		t.Errorf("FixAttempts = %d, want 0", second.FixAttempts)
+	}
+	if len(second.FixHistory) != 0 {
+		t.Errorf("FixHistory should be empty for a step that ran cleanly, got %d entries", len(second.FixHistory))
+	}
+}
