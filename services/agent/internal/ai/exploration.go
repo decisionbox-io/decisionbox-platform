@@ -845,6 +845,7 @@ func (e *ExplorationEngine) executeQuery(
 	step.RowCount = result.RowCount
 	step.FixAttempts = result.FixAttempts
 	step.Fixed = result.Fixed
+	step.FixHistory = result.FixHistory
 
 	// Build the per-step compact digest exactly once. Storing it on
 	// the step means the analysis phase can render the digest into

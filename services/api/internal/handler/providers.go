@@ -11,6 +11,7 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	gocatalog "github.com/decisionbox-io/decisionbox/libs/go-common/llm/catalog"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -40,6 +41,49 @@ func NewProvidersHandlerWithProject(projectRepo database.ProjectRepo, secretProv
 // GET /api/v1/providers/llm
 func (h *ProvidersHandler) ListLLMProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gollm.RegisteredProvidersMeta())
+}
+
+// ListExtendedLLMModels returns project-scoped LLM model entries
+// contributed by any registered external model registry. Empty by
+// default (no extenders registered); plugins may register entries via
+// libs/go-common/llm/catalog.RegisterExtender. The response shape
+// matches the per-model entries inside ListLLMProviders so the
+// dashboard can merge the two lists without reshaping.
+//
+// GET /api/v1/projects/{id}/llm/extended-models
+func (h *ProvidersHandler) ListExtendedLLMModels(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("id")
+	if pid == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
+		return
+	}
+	entries, err := gocatalog.Extend(r.Context(), pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load extended models: "+err.Error())
+		return
+	}
+	// Flatten to the same ModelInfo shape the built-in catalog exposes,
+	// so the dashboard's model picker can render both lists with a
+	// single component.
+	out := make([]gollm.ModelInfo, 0, len(entries))
+	for _, e := range entries {
+		display := e.DisplayName
+		if display == "" {
+			display = e.ID
+		}
+		out = append(out, gollm.ModelInfo{
+			ID:                    e.ID,
+			DisplayName:           display,
+			Wire:                  string(e.Wire),
+			MaxOutputTokens:       e.MaxOutputTokens,
+			MaxInputTokens:        e.MaxInputTokens,
+			InputPricePerMillion:  e.Pricing.InputPerMillion,
+			OutputPricePerMillion: e.Pricing.OutputPerMillion,
+			Lifecycle:             e.Lifecycle,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ListWarehouseProviders returns registered warehouse providers with config metadata.

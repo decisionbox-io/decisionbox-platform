@@ -71,6 +71,32 @@ curl http://localhost:8080/api/v1/providers/llm
 }
 ```
 
+### GET /api/v1/projects/{id}/llm/extended-models
+
+List project-scoped LLM model entries contributed by any registered external model registry (see [Hook 7 — External model registry](../concepts/plugin-hooks.md#hook-7--external-model-registry)).
+Returns an empty array on the default community build (no extenders registered).
+Each entry has the same shape as a model row inside `GET /api/v1/providers/llm`, so the dashboard's model picker can merge both lists without reshaping.
+
+```bash
+curl http://localhost:8080/api/v1/projects/proj-123/llm/extended-models
+```
+
+```json
+{
+  "data": [
+    {
+      "id": "ext:my-custom-model",
+      "display_name": "My Custom Model",
+      "wire": "openai-compat",
+      "max_output_tokens": 4096,
+      "max_input_tokens": 32000,
+      "input_price_per_million": 1.5,
+      "output_price_per_million": 7.5
+    }
+  ]
+}
+```
+
 ### GET /api/v1/providers/warehouse
 
 List registered warehouse providers with metadata and config fields.

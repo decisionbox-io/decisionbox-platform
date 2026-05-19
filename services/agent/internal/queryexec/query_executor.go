@@ -41,9 +41,25 @@ type FixOpts struct {
 	VerificationContext string
 }
 
+// FixResult is the structured return shape of SQLFixer.FixSQL. It
+// carries the parsed proposed SQL alongside the raw prompt / response
+// and token / latency accounting from the LLM call. The executor records
+// one FixAttempt per call into ExecuteResult.FixHistory from these
+// fields, so consumers downstream of the executor (the exploration
+// engine, the debug logger, any plugin extension) have access to the
+// full repair trajectory rather than just the final fixed SQL.
+type FixResult struct {
+	FixedSQL     string
+	Prompt       string
+	Response     string
+	InputTokens  int
+	OutputTokens int
+	DurationMs   int64
+}
+
 // SQLFixer defines the interface for fixing SQL queries.
 type SQLFixer interface {
-	FixSQL(ctx context.Context, query string, error string, attempt int, opts FixOpts) (string, error)
+	FixSQL(ctx context.Context, query string, error string, attempt int, opts FixOpts) (FixResult, error)
 }
 
 // QueryExecutorOptions configures the query executor.
@@ -86,6 +102,13 @@ type ExecuteResult struct {
 	OriginalQuery   string
 	FinalQuery      string
 	Errors          []string
+
+	// FixHistory is one entry per LLM fix call made during this
+	// execution, in chronological order. Empty when no fix was needed.
+	// Callers that persist the executing step (the exploration engine)
+	// copy this onto ExplorationStep.FixHistory so the per-attempt trail
+	// is preserved in storage alongside the rest of the step's dialog.
+	FixHistory []models.FixAttempt
 }
 
 // Execute executes a query with automatic self-healing. It forwards to
@@ -192,20 +215,34 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 			"error":   err.Error(),
 		}).Info("Attempting SQL fix via LLM")
 
-		fixedQuery, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt, opts)
+		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt, opts)
 		if fixErr != nil {
 			applog.WithError(fixErr).Error("SQL fixer failed")
 			return nil, fmt.Errorf("failed to fix SQL query: %w", fixErr)
 		}
 
-		if verifyErr := e.verifyFilter(fixedQuery); verifyErr != nil {
+		if verifyErr := e.verifyFilter(fix.FixedSQL); verifyErr != nil {
 			applog.WithError(verifyErr).Error("Fixed query failed security filter check")
 			return nil, fmt.Errorf("fixed query security violation: %w", verifyErr)
 		}
 
+		result.FixHistory = append(result.FixHistory, models.FixAttempt{
+			Step:         e.currentStep,
+			Attempt:      attempt,
+			PromptIn:     fix.Prompt,
+			ResponseOut:  fix.Response,
+			SQLBefore:    currentQuery,
+			SQLAfter:     fix.FixedSQL,
+			ErrorIn:      err.Error(),
+			InputTokens:  fix.InputTokens,
+			OutputTokens: fix.OutputTokens,
+			DurationMs:   fix.DurationMs,
+			Timestamp:    time.Now(),
+		})
+
 		applog.Debug("SQL fix applied, retrying with corrected query")
 		result.FixAttempts++
-		currentQuery = fixedQuery
+		currentQuery = fix.FixedSQL
 		startTime = time.Now()
 	}
 

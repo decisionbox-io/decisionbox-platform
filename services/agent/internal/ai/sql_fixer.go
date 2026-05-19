@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -45,7 +46,7 @@ func NewSQLFixer(opts SQLFixerOptions) *SQLFixer {
 // {{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}} section is stripped
 // from the rendered prompt. Background:
 // plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
-func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, attempt int, opts queryexec.FixOpts) (string, error) {
+func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, attempt int, opts queryexec.FixOpts) (queryexec.FixResult, error) {
 	logger.WithFields(logger.Fields{
 		"attempt": attempt,
 		"error":   errorMsg,
@@ -69,19 +70,66 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 	})
 	conversation.AddUserMessage(userMessage)
 
+	// renderedPrompt is what we report back to the caller as PromptIn:
+	// the system instruction followed by the user message, formatted so
+	// a reader can see the dialog as the LLM did. Build it before the
+	// call so the prompt is recorded even when the LLM call errors out.
+	renderedPrompt := renderFixPrompt(conversation.GetSystemPrompt(), userMessage)
+
+	start := time.Now()
 	response, err := f.client.CreateMessage(ctx, conversation.GetMessages(), conversation.GetSystemPrompt(), 4000)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
-		return "", fmt.Errorf("failed to get SQL fix: %w", err)
+		return queryexec.FixResult{Prompt: renderedPrompt, DurationMs: durationMs}, fmt.Errorf("failed to get SQL fix: %w", err)
 	}
 
-	fixedSQL, err := extractFixedSQL(response)
-	if err != nil {
-		return "", fmt.Errorf("failed to extract fixed SQL: %w", err)
+	rawResponse := ""
+	inputTokens := 0
+	outputTokens := 0
+	if response != nil {
+		rawResponse = response.Content
+		inputTokens = response.Usage.InputTokens
+		outputTokens = response.Usage.OutputTokens
+	}
+
+	fixedSQL, extractErr := extractFixedSQL(response)
+	if extractErr != nil {
+		return queryexec.FixResult{
+			Prompt:       renderedPrompt,
+			Response:     rawResponse,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			DurationMs:   durationMs,
+		}, fmt.Errorf("failed to extract fixed SQL: %w", extractErr)
 	}
 
 	logger.WithField("attempt", attempt).Info("SQL query fixed")
 
-	return fixedSQL, nil
+	return queryexec.FixResult{
+		FixedSQL:     fixedSQL,
+		Prompt:       renderedPrompt,
+		Response:     rawResponse,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		DurationMs:   durationMs,
+	}, nil
+}
+
+// renderFixPrompt formats the system+user pair into a single text blob
+// that mirrors how the LLM saw the dialog. The fixer always sends two
+// messages (system + a single user turn) so flattening them produces a
+// faithful record without ambiguity. Keep the markers short and stable
+// — downstream tooling parses this back.
+func renderFixPrompt(system, user string) string {
+	var b strings.Builder
+	if system != "" {
+		b.WriteString("[system]\n")
+		b.WriteString(system)
+		b.WriteString("\n")
+	}
+	b.WriteString("[user]\n")
+	b.WriteString(user)
+	return b.String()
 }
 
 // SetSchemaContext updates the schema context.

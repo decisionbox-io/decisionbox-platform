@@ -26,6 +26,19 @@ import (
 // nil when Qdrant is not configured; /reindex then relies on the
 // worker's pre-run drop as the source of truth.
 func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, vectorStore ...vectorstore.Provider) http.Handler {
+	return NewWithRouteGroups(db, healthHandler, secretProvider, authProvider, schemaCollectionDropper, indexCanceller, nil, vectorStore...)
+}
+
+// NewWithRouteGroups is New with an explicit slice of additional route
+// groups to mount on the authenticated mux. Groups are mounted after
+// built-in routes so a group cannot shadow an existing API endpoint
+// (the longest-match net/http rule keeps built-in routes preferred for
+// the exact prefixes they own).
+//
+// The community Run() retrieves its groups from apiserver's registry and
+// forwards them here; tests pass groups directly to avoid touching the
+// global registry.
+func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, routeGroups []RouteGroup, vectorStore ...vectorstore.Provider) http.Handler {
 	var vs vectorstore.Provider
 	if len(vectorStore) > 0 {
 		vs = vectorStore[0]
@@ -147,6 +160,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))
 	mux.HandleFunc("POST /api/v1/projects/{id}/providers/llm/models/live", withRole(viewer, providers.ListLiveLLMModelsForProject))
+	mux.HandleFunc("GET /api/v1/projects/{id}/llm/extended-models", withRole(viewer, providers.ListExtendedLLMModels))
 	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 	mux.HandleFunc("GET /api/v1/providers/embedding", withRole(viewer, providers.ListEmbeddingProviders))
 	mux.HandleFunc("POST /api/v1/providers/embedding/{id}/models/live", withRole(viewer, providers.ListLiveEmbeddingModels))
@@ -269,6 +283,12 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 		mux.HandleFunc("PUT /api/v1/projects/{id}/secrets/{key}", withRole(admin, secretsHandler.Set))
 		mux.HandleFunc("GET /api/v1/projects/{id}/secrets", withRole(admin, secretsHandler.List))
 	}
+
+	// Plugin route groups: mounted on the same auth chain as built-in
+	// routes. Each group's handler sees the FULL URL including its
+	// prefix. Duplicate prefixes panic — caught at boot rather than
+	// first request.
+	mountRouteGroups(mux, routeGroups)
 
 	// Combine: health (no auth) + app (with auth + RBAC)
 	root := http.NewServeMux()

@@ -274,7 +274,12 @@ func Run() {
 	}
 
 	// HTTP server
-	handler := server.New(db, healthHandler, secretProvider, authProvider, droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker), qdrantProvider)
+	handler := server.NewWithRouteGroups(
+		db, healthHandler, secretProvider, authProvider,
+		droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker),
+		RegisteredRouteGroups(),
+		qdrantProvider,
+	)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      ApplyGlobalMiddlewares(handler),

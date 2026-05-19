@@ -5,7 +5,7 @@
 DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the community code.
 Each hook is a leaf-level registry: a plugin imports it (often with a blank import) and calls `Register*` from `init()`; the platform consults the registry at the right moment in its normal flow.
 
-This page documents the five hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
+This page documents the seven hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
 
 ## Hook 1 — Context providers
 
@@ -170,6 +170,78 @@ Behavior:
 - A hook that panics is recovered; its result records a panic-tagged error and subsequent hooks still run.
 - Hook execution is sequential within one run so an upstream hook (e.g. an audit record) finishes before a downstream one (e.g. a Slack notification) observes its side effect.
 - The `RunCompletion` payload carries `RunID`, `DiscoveryID`, `ProjectID`, `Status`, `CompletedAt`, and `Error` (set only for `failed` runs). `RunID` is the `discovery_runs._id`; `DiscoveryID` is the `discoveries._id` the run produced and is what consumers should use to query `insights` / `recommendations` / `executive_summaries` / any collection keyed on `discovery_id`. The agent stamps `DiscoveryID` in `RunRepository.Complete` immediately before flipping the run to `completed`, so successful runs always carry it. `DiscoveryID` is empty for `failed` / `cancelled` runs (no discovery was produced) and for completed runs that pre-date the field (legacy data — a one-off backfill is the supported recovery path; a hook seeing an empty value should treat it as a hard error rather than guess).
+
+## Hook 6 — Plugin route groups
+
+Plugins can mount additional HTTP routes on the API server's authenticated mux without modifying the core router.
+Use it to expose plugin-specific endpoints (an extra admin surface, a sidecar dashboard backend) under a dedicated prefix.
+
+```go
+import (
+    "net/http"
+
+    "github.com/decisionbox-io/decisionbox/services/api/apiserver"
+)
+
+func init() {
+    sub := http.NewServeMux()
+    sub.HandleFunc("GET /api/myplugin/status", func(w http.ResponseWriter, r *http.Request) {
+        _, _ = w.Write([]byte(`{"ok":true}`))
+    })
+    apiserver.RegisterRouteGroup("/api/myplugin", sub)
+}
+```
+
+Behavior:
+
+- Each group is mounted at `{prefix}/` on the authenticated mux, so every route under the prefix flows through the API server's global auth + RBAC chain. The handler is responsible for its own role checks (use `auth.RequireRole(...)` on the handlers it composes).
+- The handler receives the full request URL including the prefix — plugins typically construct a sub-mux at the same prefix or strip explicitly.
+- Prefixes must start with `/` and must not end with one (the mux appends the trailing slash). The empty string, a `nil` handler, and a duplicate prefix all panic at registration time so a typo fails noisily during boot rather than silently shadowing a built-in route.
+- Groups are mounted after built-in routes; Go's longest-match rule keeps built-in routes preferred for the exact prefixes they own.
+
+The community build registers no route groups; the registry is a no-op until a plugin attaches.
+
+## Hook 7 — External model registry
+
+Plugins can surface additional LLM model entries for the dashboard model picker and answer opaque-model-ID resolution queries from agent-side resolvers, without editing any built-in provider catalog.
+Use it when a plugin owns its own model directory whose entries aren't known at provider-init time (e.g. dynamically registered project-scoped models).
+
+```go
+import (
+    "context"
+
+    gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+    "github.com/decisionbox-io/decisionbox/libs/go-common/llm/catalog"
+)
+
+type myExtender struct{}
+
+func (myExtender) Extend(ctx context.Context, projectID string) ([]gollm.ModelEntry, error) {
+    return []gollm.ModelEntry{
+        {ID: "ext:my-custom-model", DisplayName: "My Custom Model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 4096},
+    }, nil
+}
+
+func (myExtender) Resolve(ctx context.Context, modelID string) (*gollm.ModelEntry, error) {
+    if modelID == "ext:my-custom-model" {
+        return &gollm.ModelEntry{ID: modelID, Wire: gollm.WireOpenAICompat, MaxOutputTokens: 4096}, nil
+    }
+    return nil, catalog.ErrModelNotFound
+}
+
+func init() {
+    catalog.RegisterExtender(myExtender{})
+}
+```
+
+Behavior:
+
+- `Extend(ctx, projectID)` returns project-scoped entries. The API endpoint `GET /api/v1/projects/{id}/llm/extended-models` exposes the concatenation across all registered extenders, in registration order, so the dashboard can merge them into its model picker alongside the built-in catalog (`GET /api/v1/providers/llm`).
+- `Resolve(ctx, modelID)` answers "does any extender own this opaque model ID?". Extenders that don't own the ID return `nil, catalog.ErrModelNotFound`; the first extender that returns a non–not-found answer wins.
+- Empty project IDs / model IDs on the wrapper functions return an error so plugins don't accidentally expose entries without project scope.
+- Registering `nil` panics. Order of registration is preserved; later extenders see calls only when earlier ones disclaim ownership (for `Resolve`) or after earlier ones finish (for `Extend`).
+
+The community build registers no extenders; both endpoints return empty lists until a plugin attaches.
 
 ## Migration & compatibility
 

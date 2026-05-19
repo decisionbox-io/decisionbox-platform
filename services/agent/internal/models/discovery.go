@@ -187,6 +187,15 @@ type ExplorationStep struct {
 	FixAttempts int    `bson:"fix_attempts,omitempty" json:"fix_attempts,omitempty"`
 	Fixed       bool   `bson:"fixed,omitempty" json:"fixed,omitempty"`
 
+	// FixHistory is the per-attempt log produced when an initial query
+	// failed and the self-healing path called the LLM to repair the SQL.
+	// One entry per fix call: the prompt sent, the raw response, the
+	// broken SQL, the proposed fix, the warehouse error that triggered
+	// the call, and the token / latency accounting. The slice mirrors
+	// FixAttempts in size and order; FixAttempts is retained as a fast
+	// scalar for dashboards that don't need the full history.
+	FixHistory []FixAttempt `bson:"fix_history,omitempty" json:"fix_history,omitempty"`
+
 	// Complete LLM dialog (for fine-tuning)
 	LLMRequest  string `bson:"llm_request" json:"llm_request"`   // full prompt sent to LLM
 	LLMResponse string `bson:"llm_response" json:"llm_response"` // full response from LLM
@@ -195,6 +204,51 @@ type ExplorationStep struct {
 	DurationMs  int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 
 	IsInsight bool `bson:"is_insight" json:"is_insight"`
+}
+
+// FixAttempt is the per-attempt record produced by the self-healing SQL
+// fix loop. The exploration engine fills one entry per LLM call the
+// fixer made for a given step — including unsuccessful attempts (where
+// the proposed SQL still failed) so downstream tooling has visibility
+// into the full repair trajectory, not just the last call.
+type FixAttempt struct {
+	// Step is the parent ExplorationStep.Step number, duplicated here so
+	// a flattened export of FixAttempt rows is self-contained without
+	// joining back to the step.
+	Step int `bson:"step" json:"step"`
+
+	// Attempt is the zero-based retry index inside the step. Matches the
+	// `attempt` argument the executor passes to SQLFixer.FixSQL.
+	Attempt int `bson:"attempt" json:"attempt"`
+
+	// PromptIn is the fully rendered prompt the fixer sent to the LLM
+	// (system instruction + user message, concatenated as the LLM saw
+	// it).
+	PromptIn string `bson:"prompt_in" json:"prompt_in"`
+
+	// ResponseOut is the raw LLM response text — before SQL extraction —
+	// so consumers can see the model's full output, not just the parsed
+	// SQL.
+	ResponseOut string `bson:"response_out" json:"response_out"`
+
+	// SQLBefore is the broken SQL handed to the fixer.
+	SQLBefore string `bson:"sql_before" json:"sql_before"`
+
+	// SQLAfter is the SQL the fixer proposed. Whether it ran cleanly is
+	// determined by the subsequent attempt: if attempt N's SQLAfter is
+	// attempt N+1's SQLBefore, the proposal still failed; if it's the
+	// final attempt and the step has no Error, it succeeded.
+	SQLAfter string `bson:"sql_after" json:"sql_after"`
+
+	// ErrorIn is the warehouse error message that triggered this fix
+	// call.
+	ErrorIn string `bson:"error_in" json:"error_in"`
+
+	InputTokens  int   `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
+	OutputTokens int   `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
+	DurationMs   int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+
+	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
 }
 
 // AnalysisStep captures the complete LLM dialog for a single analysis area.

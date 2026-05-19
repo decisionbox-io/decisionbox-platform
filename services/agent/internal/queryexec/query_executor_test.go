@@ -19,16 +19,30 @@ type mockFixer struct {
 	LastOpts   FixOpts
 }
 
-func (m *mockFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts FixOpts) (string, error) {
+func (m *mockFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts FixOpts) (FixResult, error) {
 	m.Calls++
 	m.LastOpts = opts
 	if m.Error != nil {
-		return "", m.Error
+		return FixResult{}, m.Error
 	}
 	if m.FixedQuery != "" {
-		return m.FixedQuery, nil
+		return FixResult{
+			FixedSQL:     m.FixedQuery,
+			Prompt:       "[system]\nfix prompt\n[user]\nfix this",
+			Response:     m.FixedQuery,
+			InputTokens:  10,
+			OutputTokens: 5,
+			DurationMs:   1,
+		}, nil
 	}
-	return "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'", nil
+	return FixResult{
+		FixedSQL:     "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'",
+		Prompt:       "[system]\nfix prompt\n[user]\nfix this",
+		Response:     "SELECT fixed FROM `dataset.table` WHERE app_id = 'test'",
+		InputTokens:  10,
+		OutputTokens: 5,
+		DurationMs:   1,
+	}, nil
 }
 
 func TestExecuteSuccess(t *testing.T) {
@@ -549,4 +563,201 @@ func TestExecute_ShimAlwaysPassesEmptyFixOpts(t *testing.T) {
 	if fixer.LastOpts.VerificationContext != "" {
 		t.Errorf("Execute shim must forward empty FixOpts, fixer saw VerificationContext=%q", fixer.LastOpts.VerificationContext)
 	}
+}
+
+// TestExecute_FixHistoryRecordedOnSingleFix verifies that a single
+// successful fix attempt produces exactly one FixAttempt entry on the
+// result, populated with the broken SQL, the proposed fix, the warehouse
+// error that triggered the call, and the LLM accounting fields.
+func TestExecute_FixHistoryRecordedOnSingleFix(t *testing.T) {
+	callCount := 0
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	origQuery := func(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("syntax error near 'BAD'")
+		}
+		return &gowarehouse.QueryResult{
+			Columns: []string{"n"},
+			Rows:    []map[string]interface{}{{"n": 1}},
+		}, nil
+	}
+	wrapper := &queryWrapper{fn: origQuery, provider: wh}
+
+	fixer := &mockFixer{FixedQuery: "SELECT 1 AS n FROM `test_dataset.t` WHERE app_id = 'test'"}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wrapper,
+		SQLFixer:    fixer,
+		MaxRetries:  3,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+	executor.SetStep(7)
+
+	original := "SELECT BAD FROM t WHERE app_id = 'test'"
+	result, err := executor.Execute(context.Background(), original, "test")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.FixHistory) != 1 {
+		t.Fatalf("FixHistory entries = %d, want 1", len(result.FixHistory))
+	}
+	got := result.FixHistory[0]
+	if got.Step != 7 {
+		t.Errorf("Step = %d, want 7 (taken from QueryExecutor.currentStep)", got.Step)
+	}
+	if got.Attempt != 0 {
+		t.Errorf("Attempt = %d, want 0 (zero-based first retry)", got.Attempt)
+	}
+	if got.SQLBefore != original {
+		t.Errorf("SQLBefore = %q, want %q", got.SQLBefore, original)
+	}
+	if got.SQLAfter != fixer.FixedQuery {
+		t.Errorf("SQLAfter = %q, want %q", got.SQLAfter, fixer.FixedQuery)
+	}
+	if got.ErrorIn != "syntax error near 'BAD'" {
+		t.Errorf("ErrorIn = %q, want warehouse error verbatim", got.ErrorIn)
+	}
+	if got.PromptIn == "" || got.ResponseOut == "" {
+		t.Errorf("PromptIn / ResponseOut should be populated, got prompt=%q response=%q", got.PromptIn, got.ResponseOut)
+	}
+	if got.InputTokens == 0 || got.OutputTokens == 0 {
+		t.Errorf("token counts should be propagated from the fixer: in=%d out=%d", got.InputTokens, got.OutputTokens)
+	}
+	if got.Timestamp.IsZero() {
+		t.Error("Timestamp should be set")
+	}
+}
+
+// TestExecute_FixHistoryRecordsAllAttemptsUntilSuccess verifies that
+// every fix call lands on FixHistory in chronological order — including
+// attempts whose proposed SQL still failed on the next warehouse round
+// trip. Confirms attempt indexes are zero-based and increase by 1, and
+// SQLBefore on attempt N matches SQLAfter on attempt N-1.
+func TestExecute_FixHistoryRecordsAllAttemptsUntilSuccess(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	queries := make([]string, 0)
+	fixer := &chainedFixer{
+		FixedQueries: []string{
+			"SELECT step1 FROM t WHERE app_id = 'test'",
+			"SELECT step2 FROM t WHERE app_id = 'test'",
+			"SELECT step3 FROM t WHERE app_id = 'test'", // this one succeeds
+		},
+	}
+
+	callCount := 0
+	origQuery := func(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
+		queries = append(queries, query)
+		callCount++
+		if callCount <= 3 {
+			return nil, fmt.Errorf("error attempt %d", callCount)
+		}
+		return &gowarehouse.QueryResult{
+			Columns: []string{"n"},
+			Rows:    []map[string]interface{}{{"n": 1}},
+		}, nil
+	}
+	wrapper := &queryWrapper{fn: origQuery, provider: wh}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wrapper,
+		SQLFixer:    fixer,
+		MaxRetries:  5,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+
+	original := "SELECT BAD FROM t WHERE app_id = 'test'"
+	result, err := executor.Execute(context.Background(), original, "test")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.FixHistory) != 3 {
+		t.Fatalf("FixHistory entries = %d, want 3 (one per fixer call)", len(result.FixHistory))
+	}
+	for i, entry := range result.FixHistory {
+		if entry.Attempt != i {
+			t.Errorf("entry %d Attempt = %d, want %d", i, entry.Attempt, i)
+		}
+	}
+	if result.FixHistory[0].SQLBefore != original {
+		t.Errorf("first SQLBefore = %q, want original %q", result.FixHistory[0].SQLBefore, original)
+	}
+	if result.FixHistory[1].SQLBefore != result.FixHistory[0].SQLAfter {
+		t.Errorf("attempt 1 SQLBefore (%q) should equal attempt 0 SQLAfter (%q) — failed proposals chain", result.FixHistory[1].SQLBefore, result.FixHistory[0].SQLAfter)
+	}
+	if result.FixHistory[2].SQLBefore != result.FixHistory[1].SQLAfter {
+		t.Errorf("attempt 2 SQLBefore (%q) should equal attempt 1 SQLAfter (%q)", result.FixHistory[2].SQLBefore, result.FixHistory[1].SQLAfter)
+	}
+	if result.FixAttempts != 3 {
+		t.Errorf("FixAttempts = %d, want 3", result.FixAttempts)
+	}
+}
+
+// TestExecute_FixHistoryEmptyOnHappyPath confirms FixHistory is nil/empty
+// when the query succeeds on the first try, mirroring FixAttempts=0.
+func TestExecute_FixHistoryEmptyOnHappyPath(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 3,
+	})
+
+	result, err := executor.Execute(context.Background(), "SELECT 1", "happy")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.FixHistory) != 0 {
+		t.Errorf("FixHistory should be empty on happy path, got %d entries", len(result.FixHistory))
+	}
+}
+
+// TestExecute_FixHistoryEmptyWhenFixerFails confirms that when the fixer
+// itself errors (LLM down, malformed response), no FixAttempt is
+// recorded and the executor returns the fixer error — the contract is
+// "every recorded attempt has a non-empty SQLAfter the executor saw."
+func TestExecute_FixHistoryEmptyWhenFixerFails(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("syntax error")
+	fixer := &mockFixer{Error: fmt.Errorf("fixer broke")}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		SQLFixer:   fixer,
+		MaxRetries: 2,
+	})
+
+	result, err := executor.Execute(context.Background(), "SELECT 1", "test")
+	if err == nil {
+		t.Fatal("expected error when fixer fails")
+	}
+	if result != nil && len(result.FixHistory) != 0 {
+		t.Errorf("FixHistory should be empty when fixer errors out, got %d entries", len(result.FixHistory))
+	}
+}
+
+// chainedFixer returns a different fixed query on each successive call
+// — used to verify multi-attempt FixHistory chaining.
+type chainedFixer struct {
+	FixedQueries []string
+	Calls        int
+	LastOpts     FixOpts
+}
+
+func (c *chainedFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts FixOpts) (FixResult, error) {
+	c.LastOpts = opts
+	idx := c.Calls
+	if idx >= len(c.FixedQueries) {
+		idx = len(c.FixedQueries) - 1
+	}
+	c.Calls++
+	return FixResult{
+		FixedSQL:     c.FixedQueries[idx],
+		Prompt:       "[system]\nfix\n[user]\nfix this",
+		Response:     c.FixedQueries[idx],
+		InputTokens:  1,
+		OutputTokens: 1,
+		DurationMs:   1,
+	}, nil
 }
