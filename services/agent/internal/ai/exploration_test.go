@@ -431,6 +431,38 @@ func TestExploration_ExecuteAction_QueryData(t *testing.T) {
 	}
 }
 
+// TestExploration_ExecuteAction_QueryData_BindsExecutorStep pins the
+// contract that the exploration engine binds the query executor to the
+// step number it is about to execute. Without this, the executor's
+// currentStep stays at 0 across the whole run and every FixAttempt
+// (plus the executor's debug-log emissions) records step=0 — which
+// makes a flattened export of fix-history rows indistinguishable
+// across steps. Background: discovered live when persisted FixHistory
+// rows all carried step=0 despite being attached to different parent
+// steps.
+func TestExploration_ExecuteAction_QueryData_BindsExecutorStep(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
+		Warehouse:  wh,
+		MaxRetries: 1,
+	})
+	engine := &ExplorationEngine{executor: executor}
+
+	for _, want := range []int{1, 4, 9} {
+		step := &models.ExplorationStep{Step: want}
+		action := &ExplorationAction{
+			Action:       "query_data",
+			QueryPurpose: "count users",
+			Query:        "SELECT COUNT(*) FROM users",
+		}
+		_ = engine.executeAction(context.Background(), action, step)
+
+		if got := executor.CurrentStep(); got != want {
+			t.Errorf("after executing step=%d, executor.currentStep = %d, want %d", want, got, want)
+		}
+	}
+}
+
 func TestExploration_ExecuteAction_Complete(t *testing.T) {
 	engine := &ExplorationEngine{}
 

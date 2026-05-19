@@ -828,6 +828,13 @@ func (e *ExplorationEngine) executeQuery(
 	step.QueryPurpose = action.QueryPurpose
 	step.Query = action.Query
 
+	// Bind the executor to this step number before invoking so the
+	// per-attempt FixHistory entries (and the executor's debug-log
+	// emissions) record the parent step the fix loop ran for. Without
+	// this every FixAttempt.Step would default to 0, indistinguishable
+	// across steps in a flattened export.
+	e.executor.SetStep(step.Step)
+
 	queryStart := time.Now()
 
 	result, err := e.executor.Execute(ctx, action.Query, action.QueryPurpose)

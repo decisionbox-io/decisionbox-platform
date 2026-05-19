@@ -92,6 +92,12 @@ func (e *QueryExecutor) SetStep(step int)                { e.currentStep = step 
 func (e *QueryExecutor) SetPhase(phase string)           { e.currentPhase = phase }
 func (e *QueryExecutor) SetDebugLogger(dl *debug.Logger) { e.debugLogger = dl }
 
+// CurrentStep reports the step number the executor is currently bound
+// to — what FixHistory entries and debug-log rows stamp as their parent
+// step. Tests use this to assert the exploration engine wires the
+// per-step number through before each Execute call.
+func (e *QueryExecutor) CurrentStep() int { return e.currentStep }
+
 // ExecuteResult represents the result of a query execution.
 type ExecuteResult struct {
 	Data            []map[string]interface{}
