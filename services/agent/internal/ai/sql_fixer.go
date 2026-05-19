@@ -76,8 +76,18 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 	// call so the prompt is recorded even when the LLM call errors out.
 	renderedPrompt := renderFixPrompt(conversation.GetSystemPrompt(), userMessage)
 
+	// Cap output at whatever the active (provider, model) declares in
+	// the central catalog. Without this lookup every model was capped
+	// at the historical 4000, which left wider-window models leaving
+	// budget on the table and tighter-window models occasionally being
+	// asked for tokens they can't deliver. GetMaxOutputTokens falls back
+	// to the global default (8192) when neither the catalog nor the
+	// provider's DefaultMaxOutputTokens is set, so providers without a
+	// fixed catalog (Ollama) still get a sensible cap.
+	maxOutputTokens := gollm.GetMaxOutputTokens(f.client.ProviderName(), f.client.ModelName())
+
 	start := time.Now()
-	response, err := f.client.CreateMessage(ctx, conversation.GetMessages(), conversation.GetSystemPrompt(), 4000)
+	response, err := f.client.CreateMessage(ctx, conversation.GetMessages(), conversation.GetSystemPrompt(), maxOutputTokens)
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		return queryexec.FixResult{Prompt: renderedPrompt, DurationMs: durationMs}, fmt.Errorf("failed to get SQL fix: %w", err)

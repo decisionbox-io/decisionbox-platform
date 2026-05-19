@@ -194,6 +194,14 @@ func (c *Client) ExtractText(resp *gollm.ChatResponse) string {
 }
 
 func (c *Client) ModelName() string             { return c.model }
+
+// ProviderName returns the registered provider ID (e.g. "ollama",
+// "openai", "bedrock") set via SetProvenance. Empty when SetProvenance
+// was never called. Callers that need to look up catalog metadata for
+// the active (provider, model) pair — e.g. the SQL fixer resolving
+// MaxOutputTokens against the central registry — read it through here.
+func (c *Client) ProviderName() string          { return c.providerName }
+
 func (c *Client) SetTestMode(enabled bool)     { c.testMode = enabled }
 func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
 func (c *Client) SetStep(step int)             { c.currentStep = step }

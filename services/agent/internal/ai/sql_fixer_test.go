@@ -291,6 +291,81 @@ func TestSQLFixer_FixSQL_RecordsLLMErrorContext(t *testing.T) {
 	}
 }
 
+func TestSQLFixer_FixSQL_UsesCatalogMaxOutputTokens(t *testing.T) {
+	// Provider with a catalog entry that declares a non-default
+	// MaxOutputTokens — when the fixer sends its request it must pick
+	// up the per-model cap, not the historical hard-coded value. The
+	// provider name is unique so we don't collide with built-in
+	// registrations.
+	const providerName = "test-fixer-max-tokens"
+	const modelID = "test-model-x"
+
+	gollm.RegisterWithMeta(providerName, func(_ gollm.ProviderConfig) (gollm.Provider, error) {
+		return nil, fmt.Errorf("not used")
+	}, gollm.ProviderMeta{
+		ID:   providerName,
+		Name: "fixer max tokens test",
+		Models: []gollm.ModelEntry{
+			{ID: modelID, Wire: gollm.WireAnthropic, MaxOutputTokens: 13579},
+		},
+	})
+
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content: "```sql\nSELECT 1\n```",
+		Usage:   gollm.Usage{InputTokens: 5, OutputTokens: 3},
+	}
+	client, _ := New(provider, modelID)
+	client.SetProvenance("p1", "r1", providerName)
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}",
+		Dataset:      "ds",
+	})
+
+	if _, err := fixer.FixSQL(context.Background(), "SELECT BAD", "broken", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+
+	if len(provider.Calls) != 1 {
+		t.Fatalf("provider.Calls = %d, want 1", len(provider.Calls))
+	}
+	gotMax := provider.Calls[0].Request.MaxTokens
+	if gotMax != 13579 {
+		t.Errorf("MaxTokens passed to the LLM = %d, want 13579 (the catalog cap for %s/%s)", gotMax, providerName, modelID)
+	}
+}
+
+func TestSQLFixer_FixSQL_FallsBackToDefaultWhenProviderUnregistered(t *testing.T) {
+	// Unknown provider name — GetMaxOutputTokens must fall back to the
+	// 8192 global default, so the fixer never sends a 0 max_tokens
+	// (some providers reject 0 outright; Ollama interprets it as
+	// "unlimited" which can hang).
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content: "```sql\nSELECT 1\n```",
+		Usage:   gollm.Usage{InputTokens: 5, OutputTokens: 3},
+	}
+	client, _ := New(provider, "totally-unknown-model")
+	client.SetProvenance("p1", "r1", "totally-unknown-provider")
+
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}",
+		Dataset:      "ds",
+	})
+
+	if _, err := fixer.FixSQL(context.Background(), "SELECT BAD", "broken", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+
+	gotMax := provider.Calls[0].Request.MaxTokens
+	if gotMax != 8192 {
+		t.Errorf("MaxTokens for unknown provider = %d, want 8192 (global default)", gotMax)
+	}
+}
+
 func TestSQLFixer_FixSQL_RecordsExtractErrorContext(t *testing.T) {
 	provider := testutil.NewMockLLMProvider()
 	provider.DefaultResponse = &gollm.ChatResponse{

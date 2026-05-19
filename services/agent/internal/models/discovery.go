@@ -191,9 +191,19 @@ type ExplorationStep struct {
 	// failed and the self-healing path called the LLM to repair the SQL.
 	// One entry per fix call: the prompt sent, the raw response, the
 	// broken SQL, the proposed fix, the warehouse error that triggered
-	// the call, and the token / latency accounting. The slice mirrors
-	// FixAttempts in size and order; FixAttempts is retained as a fast
-	// scalar for dashboards that don't need the full history.
+	// the call, and the token / latency accounting.
+	//
+	// Both successful and failed fix calls are recorded — failed
+	// attempts (LLM transport error, unparseable response, post-fix
+	// security-filter rejection) carry FixAttempt.FixerError set, and
+	// the executor did NOT retry the warehouse with those proposals.
+	// Successful (applied) attempts have FixerError empty.
+	//
+	// FixAttempts counts only applied attempts (those that resulted in
+	// a warehouse retry) — so `FixAttempts <= len(FixHistory)`, with
+	// the gap being failed-fixer rows. FixAttempts is retained as a
+	// fast scalar for dashboards that only need to ask "did self-heal
+	// kick in for this step".
 	FixHistory []FixAttempt `bson:"fix_history,omitempty" json:"fix_history,omitempty"`
 
 	// Complete LLM dialog (for fine-tuning)
@@ -237,12 +247,28 @@ type FixAttempt struct {
 	// SQLAfter is the SQL the fixer proposed. Whether it ran cleanly is
 	// determined by the subsequent attempt: if attempt N's SQLAfter is
 	// attempt N+1's SQLBefore, the proposal still failed; if it's the
-	// final attempt and the step has no Error, it succeeded.
+	// final attempt and the step has no Error, it succeeded. Empty when
+	// the fixer failed to produce any parseable SQL (see FixerError).
 	SQLAfter string `bson:"sql_after" json:"sql_after"`
 
 	// ErrorIn is the warehouse error message that triggered this fix
 	// call.
 	ErrorIn string `bson:"error_in" json:"error_in"`
+
+	// FixerError, when non-empty, captures the reason the fixer's
+	// proposal was NOT applied to the next warehouse retry. Three cases
+	// produce a non-empty value:
+	//   - LLM transport error (network / 5xx / context cancelled).
+	//   - Response-extraction failure (model returned no parseable SQL,
+	//     e.g. Gemma running to max_tokens with a truncated body).
+	//   - Post-fix security-filter rejection (the proposed SQL was valid
+	//     but did not carry the required filter clause).
+	// When empty, the proposal was applied and the warehouse was retried
+	// with SQLAfter. Even with FixerError set, PromptIn / ResponseOut /
+	// InputTokens / OutputTokens / DurationMs still reflect the LLM call
+	// that was made (when one was made) so downstream tooling can use
+	// failed attempts as negative training examples.
+	FixerError string `bson:"fixer_error,omitempty" json:"fixer_error,omitempty"`
 
 	InputTokens  int   `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int   `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`

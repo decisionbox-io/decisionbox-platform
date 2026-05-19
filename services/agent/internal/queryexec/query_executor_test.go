@@ -3,6 +3,7 @@ package queryexec
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -297,9 +298,20 @@ func TestExecuteWithHistory_Error(t *testing.T) {
 
 	result, history := executor.ExecuteWithHistory(context.Background(), "SELECT 1", "test error")
 
-	// result may be nil on error
-	if result != nil {
-		t.Error("result should be nil on error with no fixer")
+	// Executor now returns a non-nil partial ExecuteResult on every
+	// error branch so callers can read accumulated FixHistory (failed-
+	// fixer attempts in particular). For this case there's no fixer
+	// configured and the warehouse errored first try, so FixHistory is
+	// empty, but the result itself must be present and reflect the
+	// original query.
+	if result == nil {
+		t.Fatal("result should be a non-nil partial on error so callers can read FixHistory")
+	}
+	if result.OriginalQuery != "SELECT 1" {
+		t.Errorf("OriginalQuery = %q, want 'SELECT 1'", result.OriginalQuery)
+	}
+	if len(result.FixHistory) != 0 {
+		t.Errorf("FixHistory should be empty when no fixer is configured, got %d entries", len(result.FixHistory))
 	}
 
 	if history == nil {
@@ -713,28 +725,174 @@ func TestExecute_FixHistoryEmptyOnHappyPath(t *testing.T) {
 	}
 }
 
-// TestExecute_FixHistoryEmptyWhenFixerFails confirms that when the fixer
-// itself errors (LLM down, malformed response), no FixAttempt is
-// recorded and the executor returns the fixer error — the contract is
-// "every recorded attempt has a non-empty SQLAfter the executor saw."
-func TestExecute_FixHistoryEmptyWhenFixerFails(t *testing.T) {
+// TestExecute_FixerErrorIsRecordedWithFixerError verifies that when the
+// fixer's LLM call errors (transport failure, unparseable response), the
+// attempt is still recorded into FixHistory with FixerError set, the
+// executor returns the partial result (not nil), and downstream callers
+// can read every attempt that was made. These rows are the negative
+// examples downstream tooling (fine-tuning pipelines, dashboards) wants
+// to surface — discarding them was a silent data loss.
+func TestExecute_FixerErrorIsRecordedWithFixerError(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	wh.QueryError = fmt.Errorf("syntax error")
-	fixer := &mockFixer{Error: fmt.Errorf("fixer broke")}
+	fixer := &capturingFixer{
+		Result: FixResult{
+			Prompt:       "[system]\nfix prompt\n[user]\nfix this",
+			Response:     "i cannot help",
+			InputTokens:  120,
+			OutputTokens: 4000, // simulates the model running to max_tokens
+			DurationMs:   42000,
+		},
+		ReturnErr: fmt.Errorf("failed to extract fixed SQL: empty response"),
+	}
 
 	executor := NewQueryExecutor(QueryExecutorOptions{
 		Warehouse:  wh,
 		SQLFixer:   fixer,
 		MaxRetries: 2,
 	})
+	executor.SetStep(11)
 
-	result, err := executor.Execute(context.Background(), "SELECT 1", "test")
+	result, err := executor.Execute(context.Background(), "SELECT BAD", "test")
 	if err == nil {
-		t.Fatal("expected error when fixer fails")
+		t.Fatal("expected error from executor when fixer fails")
 	}
-	if result != nil && len(result.FixHistory) != 0 {
-		t.Errorf("FixHistory should be empty when fixer errors out, got %d entries", len(result.FixHistory))
+	if result == nil {
+		t.Fatal("executor must return partial result on error so caller can read FixHistory")
 	}
+	if len(result.FixHistory) != 1 {
+		t.Fatalf("FixHistory entries = %d, want 1 (the failed attempt must be recorded, not discarded)", len(result.FixHistory))
+	}
+	got := result.FixHistory[0]
+	if got.FixerError == "" {
+		t.Error("FixerError should be set on a failed fixer attempt")
+	}
+	if !strings.Contains(got.FixerError, "empty response") {
+		t.Errorf("FixerError should carry the underlying parse failure, got %q", got.FixerError)
+	}
+	if got.SQLAfter != "" {
+		t.Errorf("SQLAfter should be empty when the fixer failed to extract SQL, got %q", got.SQLAfter)
+	}
+	if got.PromptIn == "" || got.ResponseOut != "i cannot help" {
+		t.Errorf("Prompt/Response should be carried from the partial FixResult: prompt=%q response=%q", got.PromptIn, got.ResponseOut)
+	}
+	if got.InputTokens != 120 || got.OutputTokens != 4000 {
+		t.Errorf("token accounting should round-trip: in=%d out=%d", got.InputTokens, got.OutputTokens)
+	}
+	if got.Step != 11 {
+		t.Errorf("Step = %d, want 11 (taken from executor.currentStep)", got.Step)
+	}
+	if result.FixAttempts != 0 {
+		t.Errorf("FixAttempts = %d, want 0 (failed fixer call must not count as applied)", result.FixAttempts)
+	}
+}
+
+// TestExecute_FilterRejectionIsRecordedWithFixerError verifies that
+// when the fixer produces parseable SQL but the post-fix security
+// filter check rejects it, the attempt is still recorded with
+// FixerError set to a "security violation: …" message. This case
+// produced a usable LLM dialog and is just as valuable as a successful
+// repair for downstream tooling.
+func TestExecute_FilterRejectionIsRecordedWithFixerError(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	wh.QueryError = fmt.Errorf("syntax error")
+	fixer := &capturingFixer{
+		Result: FixResult{
+			FixedSQL:     "SELECT * FROM users", // missing app_id filter
+			Prompt:       "[system]\nfix\n[user]\nfix",
+			Response:     "SELECT * FROM users",
+			InputTokens:  80,
+			OutputTokens: 12,
+			DurationMs:   500,
+		},
+	}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wh,
+		SQLFixer:    fixer,
+		MaxRetries:  2,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+
+	result, err := executor.Execute(context.Background(), "SELECT BAD FROM users WHERE app_id = 'test'", "test")
+	if err == nil {
+		t.Fatal("expected security violation error")
+	}
+	if result == nil {
+		t.Fatal("partial result expected even on filter rejection")
+	}
+	if len(result.FixHistory) != 1 {
+		t.Fatalf("FixHistory entries = %d, want 1 (filter-rejected proposal must be recorded)", len(result.FixHistory))
+	}
+	got := result.FixHistory[0]
+	if got.FixerError == "" {
+		t.Error("FixerError should be set on filter rejection")
+	}
+	if !strings.Contains(got.FixerError, "security violation") {
+		t.Errorf("FixerError should label this as a security violation, got %q", got.FixerError)
+	}
+	if got.SQLAfter != "SELECT * FROM users" {
+		t.Errorf("SQLAfter should still record the rejected proposal, got %q", got.SQLAfter)
+	}
+	if result.FixAttempts != 0 {
+		t.Errorf("FixAttempts = %d, want 0 (rejected proposals must not count as applied)", result.FixAttempts)
+	}
+}
+
+// TestExecute_SuccessfulFixHasEmptyFixerError verifies that applied
+// (successful) fixes leave FixerError empty — the field is the
+// discriminator between "applied" and "rejected/failed" entries in
+// FixHistory.
+func TestExecute_SuccessfulFixHasEmptyFixerError(t *testing.T) {
+	callCount := 0
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	origQuery := func(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("syntax error")
+		}
+		return &gowarehouse.QueryResult{Columns: []string{"n"}, Rows: []map[string]interface{}{{"n": 1}}}, nil
+	}
+	wrapper := &queryWrapper{fn: origQuery, provider: wh}
+	fixer := &mockFixer{FixedQuery: "SELECT n FROM t WHERE app_id = 'test'"}
+
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wrapper,
+		SQLFixer:    fixer,
+		MaxRetries:  3,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+
+	result, err := executor.Execute(context.Background(), "SELECT BAD FROM t WHERE app_id = 'test'", "test")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(result.FixHistory) != 1 {
+		t.Fatalf("FixHistory entries = %d, want 1", len(result.FixHistory))
+	}
+	if result.FixHistory[0].FixerError != "" {
+		t.Errorf("FixerError = %q, want empty for an applied fix", result.FixHistory[0].FixerError)
+	}
+	if result.FixAttempts != 1 {
+		t.Errorf("FixAttempts = %d, want 1 (applied fix counts)", result.FixAttempts)
+	}
+}
+
+// capturingFixer returns a configurable FixResult and (optionally) an
+// error — used to drive the FixerError / partial-result paths.
+type capturingFixer struct {
+	Result    FixResult
+	ReturnErr error
+	Calls     int
+	LastOpts  FixOpts
+}
+
+func (c *capturingFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts FixOpts) (FixResult, error) {
+	c.Calls++
+	c.LastOpts = opts
+	return c.Result, c.ReturnErr
 }
 
 // chainedFixer returns a different fixed query on each successive call

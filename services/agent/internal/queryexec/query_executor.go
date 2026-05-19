@@ -208,12 +208,12 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 					query, purpose, nil, 0, time.Since(startTime).Milliseconds(),
 					err, result.FixAttempts, "")
 			}
-			return nil, fmt.Errorf("query failed after %d attempts: %w", attempt+1, err)
+			return result, fmt.Errorf("query failed after %d attempts: %w", attempt+1, err)
 		}
 
 		if e.sqlFixer == nil {
 			applog.Error("Query failed and no SQL fixer available — cannot retry")
-			return nil, fmt.Errorf("query failed and no SQL fixer available: %w", err)
+			return result, fmt.Errorf("query failed and no SQL fixer available: %w", err)
 		}
 
 		applog.WithFields(applog.Fields{
@@ -223,13 +223,50 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 
 		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt, opts)
 		if fixErr != nil {
+			// The fixer call failed (LLM transport error OR the response
+			// couldn't be parsed into SQL). Record the attempt so the
+			// LLM dialog and accounting aren't lost — these are exactly
+			// the negative examples downstream tooling wants — then
+			// return the partial result so the caller can read it.
+			result.FixHistory = append(result.FixHistory, models.FixAttempt{
+				Step:         e.currentStep,
+				Attempt:      attempt,
+				PromptIn:     fix.Prompt,
+				ResponseOut:  fix.Response,
+				SQLBefore:    currentQuery,
+				SQLAfter:     fix.FixedSQL,
+				ErrorIn:      err.Error(),
+				FixerError:   fixErr.Error(),
+				InputTokens:  fix.InputTokens,
+				OutputTokens: fix.OutputTokens,
+				DurationMs:   fix.DurationMs,
+				Timestamp:    time.Now(),
+			})
 			applog.WithError(fixErr).Error("SQL fixer failed")
-			return nil, fmt.Errorf("failed to fix SQL query: %w", fixErr)
+			return result, fmt.Errorf("failed to fix SQL query: %w", fixErr)
 		}
 
 		if verifyErr := e.verifyFilter(fix.FixedSQL); verifyErr != nil {
+			// The fixer produced parseable SQL but it violated the
+			// security filter contract. Record the attempt with
+			// FixerError set so the rejection is visible — same negative-
+			// example value as a fixer-side failure.
+			result.FixHistory = append(result.FixHistory, models.FixAttempt{
+				Step:         e.currentStep,
+				Attempt:      attempt,
+				PromptIn:     fix.Prompt,
+				ResponseOut:  fix.Response,
+				SQLBefore:    currentQuery,
+				SQLAfter:     fix.FixedSQL,
+				ErrorIn:      err.Error(),
+				FixerError:   "fixed query security violation: " + verifyErr.Error(),
+				InputTokens:  fix.InputTokens,
+				OutputTokens: fix.OutputTokens,
+				DurationMs:   fix.DurationMs,
+				Timestamp:    time.Now(),
+			})
 			applog.WithError(verifyErr).Error("Fixed query failed security filter check")
-			return nil, fmt.Errorf("fixed query security violation: %w", verifyErr)
+			return result, fmt.Errorf("fixed query security violation: %w", verifyErr)
 		}
 
 		result.FixHistory = append(result.FixHistory, models.FixAttempt{

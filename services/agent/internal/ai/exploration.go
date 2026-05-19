@@ -844,6 +844,15 @@ func (e *ExplorationEngine) executeQuery(
 	if err != nil {
 		step.Error = err.Error()
 		step.Fixed = false
+		// Carry the partial fix history even on failure paths — the
+		// executor now returns a non-nil result containing every
+		// attempt it made (including failed fix calls with FixerError
+		// set), and dropping them here would lose exactly the
+		// negative-example data downstream tooling cares about.
+		if result != nil {
+			step.FixAttempts = result.FixAttempts
+			step.FixHistory = result.FixHistory
+		}
 		logger.WithField("error", err.Error()).Error("Query execution failed")
 		return fmt.Sprintf("Query failed: %s\n\nPlease try a different approach.", err.Error())
 	}

@@ -243,6 +243,26 @@ func TestDiscoveryLogRepository_FixHistoryRoundTrip(t *testing.T) {
 					DurationMs:   910,
 					Timestamp:    now.Add(time.Second),
 				},
+				{
+					// Failed-fixer attempt: LLM ran to max_tokens and
+					// response could not be parsed into SQL. FixerError
+					// is set, SQLAfter is empty. Pins the BSON round-
+					// trip for the FixerError field so the negative-
+					// example rows downstream tooling cares about are
+					// preserved through Mongo.
+					Step:         7,
+					Attempt:      2,
+					PromptIn:     "[system]\nfix prompt v3\n[user]\nfix this",
+					ResponseOut:  "<truncated nonsense>",
+					SQLBefore:    "SELECT n FROM t WHERE app_id = 'x'",
+					SQLAfter:     "",
+					ErrorIn:      "extracted SQL parse error",
+					FixerError:   "failed to extract fixed SQL: empty response",
+					InputTokens:  140,
+					OutputTokens: 4000,
+					DurationMs:   112000,
+					Timestamp:    now.Add(2 * time.Second),
+				},
 			},
 		},
 		// Step that ran cleanly first time — FixHistory must be empty
@@ -280,8 +300,8 @@ func TestDiscoveryLogRepository_FixHistoryRoundTrip(t *testing.T) {
 	if !first.Fixed {
 		t.Errorf("Fixed = false, want true")
 	}
-	if len(first.FixHistory) != 2 {
-		t.Fatalf("FixHistory entries = %d, want 2 — slice ordering / encoding broke", len(first.FixHistory))
+	if len(first.FixHistory) != 3 {
+		t.Fatalf("FixHistory entries = %d, want 3 — slice ordering / encoding broke", len(first.FixHistory))
 	}
 	for i, entry := range first.FixHistory {
 		want := steps[0].FixHistory[i]
@@ -296,6 +316,9 @@ func TestDiscoveryLogRepository_FixHistoryRoundTrip(t *testing.T) {
 		}
 		if entry.ErrorIn != want.ErrorIn {
 			t.Errorf("entry %d ErrorIn = %q, want %q", i, entry.ErrorIn, want.ErrorIn)
+		}
+		if entry.FixerError != want.FixerError {
+			t.Errorf("entry %d FixerError = %q, want %q", i, entry.FixerError, want.FixerError)
 		}
 		if entry.InputTokens != want.InputTokens || entry.OutputTokens != want.OutputTokens {
 			t.Errorf("entry %d token counts: got (in=%d, out=%d), want (in=%d, out=%d)", i, entry.InputTokens, entry.OutputTokens, want.InputTokens, want.OutputTokens)
