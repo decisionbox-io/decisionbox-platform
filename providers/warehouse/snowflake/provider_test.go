@@ -473,6 +473,64 @@ func TestValidateReadOnly(t *testing.T) {
 	}
 }
 
+func TestValidateSQL_RejectsEmpty(t *testing.T) {
+	called := false
+	mock := &mockSFClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			called = true
+			return nil, fmt.Errorf("mock should not be called")
+		},
+	}
+	p := &SnowflakeProvider{client: mock, timeout: 5 * time.Second}
+
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if err := p.ValidateSQL(context.Background(), in); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", in)
+		}
+	}
+	if called {
+		t.Error("client should not be called for empty SQL")
+	}
+}
+
+func TestValidateSQL_PrefixesExplainUsingText(t *testing.T) {
+	mock := &mockSFClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			return nil, fmt.Errorf("mock: short-circuit")
+		},
+	}
+	p := &SnowflakeProvider{client: mock, timeout: 5 * time.Second}
+
+	_ = p.ValidateSQL(context.Background(), "SELECT 1")
+
+	if !strings.HasPrefix(mock.lastQuery, "EXPLAIN USING TEXT ") {
+		t.Errorf("query should be prefixed with EXPLAIN USING TEXT, got: %q", mock.lastQuery)
+	}
+	if !strings.Contains(mock.lastQuery, "SELECT 1") {
+		t.Errorf("query should retain the original SQL, got: %q", mock.lastQuery)
+	}
+}
+
+func TestValidateSQL_WrapsErrorWithPrefix(t *testing.T) {
+	mock := &mockSFClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			return nil, fmt.Errorf("SQL compilation error: syntax error line 1 at position 0 unexpected 'SELEC'")
+		},
+	}
+	p := &SnowflakeProvider{client: mock, timeout: 5 * time.Second}
+
+	err := p.ValidateSQL(context.Background(), "SELEC 1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "snowflake: validate SQL") {
+		t.Errorf("error should carry the validate-SQL prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SQL compilation error") {
+		t.Errorf("error should propagate the warehouse's own message, got: %v", err)
+	}
+}
+
 func TestDefaultPricing(t *testing.T) {
 	meta, _ := gowarehouse.GetProviderMeta("snowflake")
 	if meta.DefaultPricing == nil {

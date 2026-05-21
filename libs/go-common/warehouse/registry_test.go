@@ -51,6 +51,10 @@ func (m *mockWarehouseProvider) ValidateReadOnly(_ context.Context) error {
 	return nil
 }
 
+func (m *mockWarehouseProvider) ValidateSQL(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockWarehouseProvider) HealthCheck(_ context.Context) error {
 	return nil
 }

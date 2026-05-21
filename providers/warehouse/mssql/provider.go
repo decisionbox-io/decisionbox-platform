@@ -399,6 +399,45 @@ func (p *MSSQLProvider) ValidateReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// ValidateSQL asks SQL Server to compile the statement via
+// NOEXEC without executing it. NOEXEC runs through the parser
+// and the optimiser (name resolution, plan compilation) but
+// skips execution — exactly the "did the warehouse accept this"
+// signal callers need.
+//
+// PARSEONLY is the other obvious primitive but its semantics are
+// scoped to *subsequent* batches: a single-batch
+// `SET PARSEONLY ON; <sql>; SET PARSEONLY OFF;` does NOT prevent
+// execution of the embedded statement on the current batch (and
+// an integration test confirmed it).
+//
+// NOEXEC is session-scoped and applies immediately within the
+// same batch. We bracket the statement so the connection returns
+// to the pool with NOEXEC=OFF and the next caller is unaffected.
+//
+// Empty or whitespace-only input is rejected at the caller
+// boundary so the NOEXEC wrapper always sees a real payload.
+//
+// Reference: SET NOEXEC (Transact-SQL) — "When SET NOEXEC is ON,
+// SQL Server compiles each batch of Transact-SQL statements but
+// doesn't execute them."
+func (p *MSSQLProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("mssql: empty SQL")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	// NOEXEC is session-scoped; turn it ON, run the statement,
+	// then turn it OFF — all three are sent as a single batch so
+	// the connection pool can't hand us a half-configured session
+	// for the next call.
+	batch := "SET NOEXEC ON;\n" + sql + ";\nSET NOEXEC OFF;"
+	if _, err := p.client.ExecContext(ctx, batch); err != nil {
+		return fmt.Errorf("mssql: validate SQL: %w", err)
+	}
+	return nil
+}
+
 func (p *MSSQLProvider) HealthCheck(ctx context.Context) error {
 	return p.client.PingContext(ctx)
 }

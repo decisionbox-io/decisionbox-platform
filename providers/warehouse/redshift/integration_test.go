@@ -231,3 +231,71 @@ func TestIntegration_AssumeRole_Query(t *testing.T) {
 	}
 	t.Logf("Assume Role: Query OK, result=%v", result.Rows)
 }
+
+// ---------------------------------------------------------------------------
+// ValidateSQL
+// ---------------------------------------------------------------------------
+
+func redshiftFromIAMRole(t *testing.T) gowarehouse.Provider {
+	t.Helper()
+	cfg := getIntegrationConfig(t)
+	cfg["auth_method"] = "iam_role"
+	provider, err := gowarehouse.NewProvider("redshift", cfg)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	t.Cleanup(func() { provider.Close() })
+	return provider
+}
+
+func TestIntegration_ValidateSQL_Redshift_AcceptsValidSelect(t *testing.T) {
+	provider := redshiftFromIAMRole(t)
+
+	// Each subtest gets its own context so a Serverless workgroup
+	// cold-start on the first call (which can eat 3+ minutes
+	// before the first row returns) doesn't poison the deadline
+	// for the remaining cases.
+	cases := []string{
+		"SELECT 1",
+		"SELECT 1 AS one",
+		"WITH src AS (SELECT 1 AS n) SELECT * FROM src",
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := provider.ValidateSQL(ctx, sql); err != nil {
+				t.Errorf("ValidateSQL rejected valid statement: %v", err)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_Redshift_RejectsMalformed(t *testing.T) {
+	provider := redshiftFromIAMRole(t)
+
+	cases := []struct{ name, sql string }{
+		{"typo in keyword", "SELEC 1"},
+		{"unbalanced paren", "SELECT (1"},
+		{"missing FROM target", "SELECT * FROM"},
+		{"unterminated string", "SELECT 'oops"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := provider.ValidateSQL(ctx, c.sql); err == nil {
+				t.Errorf("ValidateSQL accepted invalid input %q", c.sql)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_Redshift_RejectsEmpty(t *testing.T) {
+	provider := redshiftFromIAMRole(t)
+	for _, sql := range []string{"", "   ", "\t\n"} {
+		if err := provider.ValidateSQL(context.Background(), sql); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", sql)
+		}
+	}
+}

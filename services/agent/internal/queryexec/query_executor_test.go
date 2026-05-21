@@ -264,6 +264,9 @@ func (w *queryWrapper) GetTableSchemaInDataset(ctx context.Context, dataset, tab
 	return w.provider.GetTableSchema(ctx, table)
 }
 func (w *queryWrapper) ValidateReadOnly(ctx context.Context) error { return nil }
+func (w *queryWrapper) ValidateSQL(ctx context.Context, sql string) error {
+	return nil
+}
 func (w *queryWrapper) HealthCheck(ctx context.Context) error { return nil }
 func (w *queryWrapper) Close() error            { return nil }
 

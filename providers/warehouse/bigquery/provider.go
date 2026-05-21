@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	bq "cloud.google.com/go/bigquery"
@@ -313,6 +314,31 @@ func (p *BigQueryProvider) ValidateReadOnly(ctx context.Context) error {
 	}
 	_ = it // just check it doesn't error
 
+	return nil
+}
+
+// ValidateSQL asks BigQuery to parse + plan the statement via the
+// native dry-run API (QueryConfig.DryRun = true). The job is
+// configured but never scheduled; BigQuery returns parser /
+// resolver errors immediately. Bytes are not scanned, no slot
+// time is consumed, and the call shares its quota with regular
+// metadata operations.
+//
+// Empty or whitespace-only input is rejected at the caller
+// boundary so the BigQuery API call always sees a non-trivial
+// payload.
+func (p *BigQueryProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("bigquery: empty SQL")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	defer cancel()
+	q := p.client.Query(sql)
+	q.DryRun = true
+	q.Location = p.config.Location
+	if _, err := q.Run(ctx); err != nil {
+		return fmt.Errorf("bigquery: validate SQL: %w", err)
+	}
 	return nil
 }
 

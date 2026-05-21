@@ -71,6 +71,36 @@ type Provider interface {
 	// to prevent accidental data modification.
 	ValidateReadOnly(ctx context.Context) error
 
+	// ValidateSQL asks the warehouse to compile the given SQL
+	// without executing it and returns nil iff the warehouse
+	// accepts the statement in its own dialect.
+	//
+	// Each provider routes through the warehouse's native dry-run /
+	// compile-only path so the dialect-owner decides — no shared
+	// hand-rolled SQL grammar lives in this package. Typical
+	// implementations:
+	//   BigQuery:   QueryConfig.DryRun = true
+	//   PostgreSQL: EXPLAIN <sql>
+	//   Redshift:   EXPLAIN <sql>
+	//   Snowflake:  EXPLAIN USING TEXT <sql>
+	//   Databricks: EXPLAIN <sql>
+	//   SQL Server: SET NOEXEC ON; <sql>; SET NOEXEC OFF;
+	//
+	// The check is "compile, don't execute". Concretely that
+	// covers syntax and — for every provider above — name
+	// resolution against the catalogue: a SELECT against a missing
+	// table surfaces as an error. Implementations must NOT execute
+	// the statement; a passing ValidateSQL on an INSERT / UPDATE /
+	// DELETE still does not authorise execution. Read-only
+	// enforcement remains the ValidateReadOnly contract's
+	// responsibility.
+	//
+	// The returned error is suitable for surfacing back to the
+	// caller: providers include the warehouse's own error text so
+	// the caller can echo it directly into an end-user message or
+	// retry loop.
+	ValidateSQL(ctx context.Context, sql string) error
+
 	// HealthCheck verifies the warehouse connection is alive.
 	HealthCheck(ctx context.Context) error
 

@@ -876,3 +876,125 @@ func assertGoType[T any](t *testing.T, row map[string]interface{}, col string) {
 		t.Errorf("%s: expected %T, got %T (%v)", col, *new(T), row[col], row[col])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ValidateSQL
+// ---------------------------------------------------------------------------
+
+func TestIntegration_ValidateSQL_AcceptsValidSelect(t *testing.T) {
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cases := []string{
+		"SELECT 1",
+		"SELECT id, col_text FROM all_types",
+		"SELECT col_text FROM all_types WHERE col_bool = true ORDER BY id LIMIT 5",
+		`WITH src AS (SELECT id FROM all_types) SELECT count(*) FROM src`,
+		`SELECT col_text FROM all_types WHERE col_text = 'embedded ''quote'' literal'`,
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if err := provider.ValidateSQL(ctx, sql); err != nil {
+				t.Errorf("ValidateSQL rejected a valid statement: %v", err)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_RejectsMalformed(t *testing.T) {
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{"typo in keyword", "SELEC 1"},
+		{"unbalanced paren", "SELECT (1"},
+		{"missing FROM target", "SELECT * FROM"},
+		{"unterminated string", "SELECT 'oops"},
+		{"random prose", "this is not sql"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := provider.ValidateSQL(ctx, c.sql); err == nil {
+				t.Errorf("ValidateSQL accepted invalid input %q", c.sql)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_RejectsEmpty(t *testing.T) {
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	for _, sql := range []string{"", "   ", "\t\n"} {
+		if err := provider.ValidateSQL(context.Background(), sql); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", sql)
+		}
+	}
+}
+
+func TestIntegration_ValidateSQL_DoesNotExecuteSideEffects(t *testing.T) {
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// EXPLAIN over an INSERT plans the statement but does not run
+	// it. Confirm by validating an INSERT and then checking the
+	// table's row count is unchanged.
+	beforeRes, err := provider.Query(ctx, "SELECT count(*) AS c FROM all_types", nil)
+	if err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+	if len(beforeRes.Rows) != 1 {
+		t.Fatalf("count before: expected 1 row, got %d", len(beforeRes.Rows))
+	}
+	before := beforeRes.Rows[0]["c"]
+
+	// EXPLAIN INSERT is accepted by Postgres (parse + plan succeed)
+	// even though the statement is a write. ValidateSQL therefore
+	// returns nil — read-only enforcement is ValidateReadOnly's
+	// concern, not ValidateSQL's, per the interface contract.
+	_ = provider.ValidateSQL(ctx, "INSERT INTO all_types (col_text) VALUES ('side effect')")
+
+	afterRes, err := provider.Query(ctx, "SELECT count(*) AS c FROM all_types", nil)
+	if err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	after := afterRes.Rows[0]["c"]
+
+	if before != after {
+		t.Errorf("ValidateSQL appears to have executed the INSERT: before=%v after=%v", before, after)
+	}
+}
+
+func TestIntegration_ValidateSQL_AcceptsQuotedIdentifierThatLooksLikeKeyword(t *testing.T) {
+	// The regex/heuristic scorer this implementation replaces
+	// treated "x" as a string literal and miscounted FROM
+	// recognition for queries like `SELECT col FROM "from"`. The
+	// warehouse-driven path has no such confusion — make sure a
+	// quoted-identifier-as-keyword statement plans cleanly here.
+	provider, cleanup := setupPostgres(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := provider.Query(ctx, `CREATE TABLE "from" (id int)`, nil)
+	if err != nil {
+		t.Fatalf("create quoted-keyword table: %v", err)
+	}
+
+	if err := provider.ValidateSQL(ctx, `SELECT id FROM "from"`); err != nil {
+		t.Errorf("ValidateSQL rejected SELECT against a quoted-keyword table: %v", err)
+	}
+}
