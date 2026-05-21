@@ -393,6 +393,40 @@ func (p *DatabricksProvider) ValidateReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// ValidateSQL asks Databricks SQL to compile the statement via
+// EXPLAIN without executing it. EXPLAIN runs parsing + name
+// resolution + plan compilation and returns the plan as rows; it
+// never scans data, so the SQL warehouse stays effectively idle.
+//
+// Empty or whitespace-only input is rejected at the caller
+// boundary so the EXPLAIN wrapper always sees a real payload.
+//
+// Reference: Databricks SQL EXPLAIN — "Provides a logical and
+// physical plan for a given input statement. … No data is read
+// or computed."
+func (p *DatabricksProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("databricks: empty SQL")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	rows, err := p.client.QueryContext(ctx, "EXPLAIN "+sql)
+	if err != nil {
+		return fmt.Errorf("databricks: validate SQL: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// Drain the plan rows so the connection returns to the
+		// pool cleanly. The values themselves don't matter.
+		var line string
+		_ = rows.Scan(&line)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("databricks: validate SQL: %w", err)
+	}
+	return nil
+}
+
 func (p *DatabricksProvider) HealthCheck(ctx context.Context) error {
 	return p.client.PingContext(ctx)
 }

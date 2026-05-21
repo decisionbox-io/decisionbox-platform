@@ -181,6 +181,9 @@ func (m *MockWarehouseProvider) GetTableSchemaInDataset(ctx context.Context, dat
 	return m.GetTableSchema(ctx, table)
 }
 func (m *MockWarehouseProvider) ValidateReadOnly(ctx context.Context) error { return nil }
+func (m *MockWarehouseProvider) ValidateSQL(ctx context.Context, sql string) error {
+	return nil
+}
 func (m *MockWarehouseProvider) HealthCheck(ctx context.Context) error { return nil }
 func (m *MockWarehouseProvider) Close() error                         { return nil }
 

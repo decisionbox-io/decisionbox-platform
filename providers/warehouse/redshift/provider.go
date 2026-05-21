@@ -403,6 +403,28 @@ func (p *RedshiftProvider) ValidateReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// ValidateSQL asks Redshift to parse + plan the statement via
+// EXPLAIN without executing it. EXPLAIN runs through the parser
+// and planner but does not scan data — it surfaces syntax errors,
+// missing tables, and dialect-incompatible constructs without
+// consuming any meaningful resources.
+//
+// Empty or whitespace-only input is rejected at the caller
+// boundary so the EXPLAIN wrapper always sees a real payload.
+//
+// The implementation reuses Query (which speaks the Data API),
+// not a separate execution path. Discarding the returned plan
+// rows keeps the call cheap and side-effect-free.
+func (p *RedshiftProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("redshift: empty SQL")
+	}
+	if _, err := p.Query(ctx, "EXPLAIN "+sql, nil); err != nil {
+		return fmt.Errorf("redshift: validate SQL: %w", err)
+	}
+	return nil
+}
+
 func (p *RedshiftProvider) HealthCheck(ctx context.Context) error {
 	_, err := p.Query(ctx, "SELECT 1", nil)
 	return err

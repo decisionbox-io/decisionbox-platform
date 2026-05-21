@@ -340,6 +340,42 @@ func (p *SnowflakeProvider) ValidateReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// ValidateSQL asks Snowflake to compile the statement via EXPLAIN
+// USING TEXT without executing it. EXPLAIN runs parsing + name
+// resolution + plan compilation but does not scan data or
+// schedule a warehouse — it surfaces syntax errors, missing
+// tables, and dialect-incompatible constructs without consuming
+// query credits beyond the metadata overhead.
+//
+// Empty or whitespace-only input is rejected at the caller
+// boundary so the EXPLAIN wrapper always sees a real payload.
+//
+// Reference: Snowflake EXPLAIN — "Returns the logical execution
+// plan for the specified SQL statement. … The statement itself is
+// not executed."
+func (p *SnowflakeProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("snowflake: empty SQL")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	rows, err := p.client.QueryContext(ctx, "EXPLAIN USING TEXT "+sql)
+	if err != nil {
+		return fmt.Errorf("snowflake: validate SQL: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// Drain the plan rows so the connection returns to the
+		// pool cleanly. The values themselves don't matter.
+		var line string
+		_ = rows.Scan(&line)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("snowflake: validate SQL: %w", err)
+	}
+	return nil
+}
+
 func (p *SnowflakeProvider) HealthCheck(ctx context.Context) error {
 	return p.client.PingContext(ctx)
 }

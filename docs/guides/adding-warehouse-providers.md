@@ -19,6 +19,7 @@ type Provider interface {
     QuoteRef(parts ...string) string
     SQLFixPrompt() string
     ValidateReadOnly(ctx context.Context) error
+    ValidateSQL(ctx context.Context, sql string) error
     HealthCheck(ctx context.Context) error
     Close() error
 }
@@ -38,6 +39,7 @@ type Provider interface {
 | `QuoteRef` | Return a dialect-correct fully-qualified identifier | Quote each part with the dialect's native delimiter and join with dots: BigQuery / Databricks use backticks, PostgreSQL / Redshift / Snowflake use double quotes, SQL Server uses square brackets. Delegate to the colocated helper `warehouse.QuotePartsWith(open, close, parts)`. Used by the orchestrator to render `{{REF:table}}` placeholders in prompts. |
 | `SQLFixPrompt` | Return warehouse-specific SQL fix prompt | Instructions for the AI to fix SQL errors |
 | `ValidateReadOnly` | Verify read access works | Run a simple query to confirm connectivity |
+| `ValidateSQL` | Compile a SQL statement without executing it | Route through the warehouse's native compile-only path: `EXPLAIN <sql>` on Postgres-family / Databricks / Redshift, `EXPLAIN USING TEXT <sql>` on Snowflake, `QueryConfig.DryRun = true` on BigQuery, `SET NOEXEC ON; <sql>; SET NOEXEC OFF;` on SQL Server. Reject empty / whitespace SQL at the boundary. Wrap the warehouse's own error with a `"<provider>: validate SQL: %w"` prefix so callers see the underlying message alongside the routing context. Must NOT execute the statement — read-only enforcement remains `ValidateReadOnly`'s concern. |
 | `HealthCheck` | Quick connectivity check | Used by health endpoints |
 | `Close` | Clean up connections | Called on shutdown |
 

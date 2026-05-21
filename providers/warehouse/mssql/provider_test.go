@@ -599,6 +599,55 @@ func TestValidateReadOnlySendsSelectOne(t *testing.T) {
 	}
 }
 
+func TestValidateSQL_RejectsEmpty(t *testing.T) {
+	mock := &mockMSClient{}
+	p := &MSSQLProvider{client: mock, timeout: 5 * time.Second}
+
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if err := p.ValidateSQL(context.Background(), in); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", in)
+		}
+	}
+	if mock.lastExecQuery != "" {
+		t.Errorf("client should not be called for empty SQL, but got: %q", mock.lastExecQuery)
+	}
+}
+
+func TestValidateSQL_WrapsBatchInNoExec(t *testing.T) {
+	mock := &mockMSClient{}
+	p := &MSSQLProvider{client: mock, timeout: 5 * time.Second}
+
+	if err := p.ValidateSQL(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("ValidateSQL: %v", err)
+	}
+	want := []string{"SET NOEXEC ON", "SELECT 1", "SET NOEXEC OFF"}
+	for _, frag := range want {
+		if !strings.Contains(mock.lastExecQuery, frag) {
+			t.Errorf("batch should contain %q, got: %q", frag, mock.lastExecQuery)
+		}
+	}
+}
+
+func TestValidateSQL_PropagatesError(t *testing.T) {
+	mock := &mockMSClient{
+		execFunc: func(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+			return nil, fmt.Errorf("Incorrect syntax near 'SELEC'.")
+		},
+	}
+	p := &MSSQLProvider{client: mock, timeout: 5 * time.Second}
+
+	err := p.ValidateSQL(context.Background(), "SELEC 1")
+	if err == nil {
+		t.Fatal("expected error from underlying client")
+	}
+	if !strings.Contains(err.Error(), "mssql: validate SQL") {
+		t.Errorf("error should carry the validate-SQL prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Incorrect syntax") {
+		t.Errorf("error should propagate the warehouse's own message, got: %v", err)
+	}
+}
+
 func TestQueryError(t *testing.T) {
 	mock := &mockMSClient{
 		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {

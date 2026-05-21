@@ -233,3 +233,104 @@ func TestIntegration_SAKey_Query(t *testing.T) {
 	}
 	t.Logf("SA Key: Query OK, result=%v", result.Rows)
 }
+
+// ---------------------------------------------------------------------------
+// ValidateSQL
+// ---------------------------------------------------------------------------
+
+func bigqueryFromSAKey(t *testing.T) (gowarehouse.Provider, string) {
+	t.Helper()
+	cfg := getIntegrationConfig(t)
+
+	saKeyPath := os.Getenv("INTEGRATION_TEST_BIGQUERY_SA_KEY_FILE")
+	if saKeyPath == "" {
+		t.Skip("INTEGRATION_TEST_BIGQUERY_SA_KEY_FILE not set")
+	}
+	saKey, err := os.ReadFile(saKeyPath) //nolint:gosec // G304: path comes from operator env, not user input
+	if err != nil {
+		t.Fatalf("failed to read SA key file: %v", err)
+	}
+
+	cfg["auth_method"] = "sa_key"
+	cfg["credentials_json"] = string(saKey)
+
+	provider, err := gowarehouse.NewProvider("bigquery", cfg)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+	t.Cleanup(func() { provider.Close() })
+
+	return provider, cfg["dataset"]
+}
+
+func TestIntegration_ValidateSQL_BigQuery_AcceptsValidSelect(t *testing.T) {
+	provider, dataset := bigqueryFromSAKey(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The test fixture lives at `<dataset>.customers` in
+	// demo_olist_ecommerce. The dataset name comes from
+	// INTEGRATION_TEST_BIGQUERY_DATASET so the test stays portable
+	// to whatever project/dataset the operator wires in.
+	cases := []string{
+		"SELECT 1",
+		"SELECT 1 AS one",
+		"SELECT customer_id FROM `" + dataset + ".customers` LIMIT 5",
+		"WITH src AS (SELECT customer_id FROM `" + dataset + ".customers`) SELECT count(*) FROM src",
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if err := provider.ValidateSQL(ctx, sql); err != nil {
+				t.Errorf("ValidateSQL rejected a valid statement: %v", err)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_BigQuery_RejectsMalformed(t *testing.T) {
+	provider, _ := bigqueryFromSAKey(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cases := []struct {
+		name, sql string
+	}{
+		{"typo in keyword", "SELEC 1"},
+		{"unbalanced paren", "SELECT (1"},
+		{"missing FROM target", "SELECT * FROM"},
+		{"unterminated string", "SELECT 'oops"},
+		{"random prose", "this is not sql"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := provider.ValidateSQL(ctx, c.sql); err == nil {
+				t.Errorf("ValidateSQL accepted invalid input %q", c.sql)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_BigQuery_RejectsNonexistentTable(t *testing.T) {
+	provider, _ := bigqueryFromSAKey(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// BigQuery's dry-run path resolves table references, so a
+	// nonexistent table surfaces as an error here. Unlike Postgres
+	// (where EXPLAIN against a missing table also errors), this is
+	// a stronger guarantee — BigQuery is one of the dialects where
+	// ValidateSQL doubles as a basic catalog check.
+	err := provider.ValidateSQL(ctx, "SELECT 1 FROM `no_such_dataset.no_such_table`")
+	if err == nil {
+		t.Error("expected ValidateSQL to reject a query against a missing table")
+	}
+}
+
+func TestIntegration_ValidateSQL_BigQuery_RejectsEmpty(t *testing.T) {
+	provider, _ := bigqueryFromSAKey(t)
+	for _, sql := range []string{"", "   ", "\t\n"} {
+		if err := provider.ValidateSQL(context.Background(), sql); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", sql)
+		}
+	}
+}

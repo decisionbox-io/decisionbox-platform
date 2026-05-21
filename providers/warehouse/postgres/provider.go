@@ -321,6 +321,44 @@ func (p *PostgresProvider) ValidateReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// ValidateSQL asks the PostgreSQL server to parse + plan the
+// statement via EXPLAIN without executing it. EXPLAIN performs
+// full parsing and name resolution and returns the query plan;
+// nothing is run against the data. Empty or whitespace-only SQL
+// is rejected at the caller boundary so the EXPLAIN wrapper
+// always sees a non-empty payload.
+//
+// EXPLAIN naturally rejects unbalanced quotes, missing FROM
+// clauses, unknown tables (when the search_path can't resolve
+// them), and dialect-incompatible syntax — exactly the cases a
+// syntactic check has to catch.
+func (p *PostgresProvider) ValidateSQL(ctx context.Context, sql string) error {
+	if strings.TrimSpace(sql) == "" {
+		return fmt.Errorf("postgres: empty SQL")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	// EXPLAIN runs through the parser, planner, and rewrite stages
+	// but never executes the underlying scan / DML. Discarding the
+	// rows keeps the call cheap.
+	rows, err := p.client.QueryContext(ctx, "EXPLAIN "+sql)
+	if err != nil {
+		return fmt.Errorf("postgres: validate SQL: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// EXPLAIN emits plan-tree rows; we don't need their values,
+		// but we have to drain the cursor so the connection returns
+		// to the pool cleanly.
+		var line string
+		_ = rows.Scan(&line)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("postgres: validate SQL: %w", err)
+	}
+	return nil
+}
+
 func (p *PostgresProvider) HealthCheck(ctx context.Context) error {
 	return p.client.PingContext(ctx)
 }

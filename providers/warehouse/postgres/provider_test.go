@@ -498,6 +498,76 @@ func TestValidateReadOnly(t *testing.T) {
 	}
 }
 
+func TestValidateSQL_EmptyRejectedBeforeRoundtrip(t *testing.T) {
+	called := false
+	mock := &mockPGClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			called = true
+			return nil, fmt.Errorf("mock should not be called")
+		},
+	}
+	p := &PostgresProvider{client: mock, timeout: 5 * time.Second}
+
+	for _, in := range []string{"", "   ", "\t\n "} {
+		t.Run(fmt.Sprintf("input=%q", in), func(t *testing.T) {
+			err := p.ValidateSQL(context.Background(), in)
+			if err == nil {
+				t.Fatal("expected empty-SQL error")
+			}
+			if !strings.Contains(err.Error(), "empty SQL") {
+				t.Errorf("error should mention 'empty SQL', got: %v", err)
+			}
+		})
+	}
+	if called {
+		t.Error("client should not be called for empty SQL")
+	}
+}
+
+func TestValidateSQL_WrapsErrorWithPrefix(t *testing.T) {
+	mock := &mockPGClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			return nil, fmt.Errorf("syntax error at or near \"SELEC\"")
+		},
+	}
+	p := &PostgresProvider{client: mock, timeout: 5 * time.Second}
+
+	err := p.ValidateSQL(context.Background(), "SELEC 1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "postgres: validate SQL") {
+		t.Errorf("error should carry the validate-SQL prefix, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "syntax error") {
+		t.Errorf("error should propagate the warehouse's own message, got: %v", err)
+	}
+}
+
+func TestValidateSQL_PrefixesEXPLAIN(t *testing.T) {
+	// The unit-level contract: the implementation hands the
+	// statement to the warehouse via `EXPLAIN <sql>` so the parser
+	// runs but no scan executes. Integration tests cover the
+	// real round-trip.
+	var seenQuery string
+	mock := &mockPGClient{
+		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+			seenQuery = query
+			return nil, fmt.Errorf("mock: don't need real rows")
+		},
+	}
+	p := &PostgresProvider{client: mock, timeout: 5 * time.Second}
+
+	_ = p.ValidateSQL(context.Background(), "SELECT 1")
+
+	if !strings.HasPrefix(seenQuery, "EXPLAIN ") {
+		t.Errorf("query should be prefixed with EXPLAIN, got: %q", seenQuery)
+	}
+	if !strings.Contains(seenQuery, "SELECT 1") {
+		t.Errorf("query should retain the original SQL, got: %q", seenQuery)
+	}
+}
+
 func TestQueryError(t *testing.T) {
 	mock := &mockPGClient{
 		queryFunc: func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {

@@ -35,7 +35,10 @@ func (f *fakeProvider) GetDataset() string             { return "" }
 func (f *fakeProvider) SQLDialect() string             { return f.dialect }
 func (f *fakeProvider) SQLFixPrompt() string           { return "" }
 func (f *fakeProvider) ValidateReadOnly(context.Context) error { return nil }
-func (f *fakeProvider) HealthCheck(context.Context) error      { return nil }
+func (f *fakeProvider) ValidateSQL(context.Context, string) error {
+	return nil
+}
+func (f *fakeProvider) HealthCheck(context.Context) error { return nil }
 func (f *fakeProvider) Close() error                           { return nil }
 func (f *fakeProvider) QuoteRef(parts ...string) string {
 	return gowarehouse.QuotePartsWith(f.quoteOpen, f.quoteClose, parts)

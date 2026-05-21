@@ -286,3 +286,17 @@ func bqContains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestValidateSQL_RejectsEmpty(t *testing.T) {
+	// The BigQuery client is a concrete *bq.Client we can't mock
+	// without a sandbox emulator, so the unit-level test only
+	// exercises the empty-string short-circuit that runs before any
+	// API call. Real round-trip coverage lives in
+	// integration_test.go behind INTEGRATION_TEST_BIGQUERY_*.
+	p := &BigQueryProvider{}
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if err := p.ValidateSQL(context.Background(), in); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", in)
+		}
+	}
+}

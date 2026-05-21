@@ -443,6 +443,43 @@ func TestRedshiftProvider_ValidateReadOnly(t *testing.T) {
 	}
 }
 
+func TestRedshiftProvider_ValidateSQL_RejectsEmpty(t *testing.T) {
+	p := &RedshiftProvider{}
+	for _, in := range []string{"", "   ", "\t\n"} {
+		if err := p.ValidateSQL(context.Background(), in); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", in)
+		}
+	}
+}
+
+func TestRedshiftProvider_ValidateSQL_PrefixesEXPLAIN(t *testing.T) {
+	mock := &mockDataAPIClient{}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 5 * time.Second}
+
+	if err := p.ValidateSQL(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("ValidateSQL: %v", err)
+	}
+	if !strings.HasPrefix(mock.executedSQL, "EXPLAIN ") {
+		t.Errorf("query should be prefixed with EXPLAIN, got: %q", mock.executedSQL)
+	}
+	if !strings.Contains(mock.executedSQL, "SELECT 1") {
+		t.Errorf("query should retain the original SQL, got: %q", mock.executedSQL)
+	}
+}
+
+func TestRedshiftProvider_ValidateSQL_PropagatesError(t *testing.T) {
+	mock := &mockDataAPIClient{executeErr: fmt.Errorf("syntax error at or near \"FROM\"")}
+	p := &RedshiftProvider{client: mock, workgroup: "wg", database: "db", timeout: 5 * time.Second}
+
+	err := p.ValidateSQL(context.Background(), "SELECT FROM")
+	if err == nil {
+		t.Fatal("expected error from underlying client")
+	}
+	if !strings.Contains(err.Error(), "validate SQL") {
+		t.Errorf("error should carry the validate-SQL prefix, got: %v", err)
+	}
+}
+
 func TestRedshiftProvider_WaitForCompletion_Timeout(t *testing.T) {
 	mock := &mockDataAPIClient{
 		describeStatus: types.StatusStringStarted, // never finishes

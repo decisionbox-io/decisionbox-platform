@@ -922,3 +922,110 @@ func assertGoType[T any](t *testing.T, row map[string]interface{}, col string) {
 		t.Errorf("%s: expected %T, got %T (%v)", col, *new(T), row[col], row[col])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ValidateSQL
+// ---------------------------------------------------------------------------
+
+func TestIntegration_ValidateSQL_AcceptsValidSelect(t *testing.T) {
+	f := setupMSSQLContainer(t)
+	defer f.teardown()
+	p := f.newProvider(t)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cases := []string{
+		"SELECT 1",
+		"SELECT id, col_text FROM all_types",
+		"SELECT TOP 5 col_nvarchar FROM all_types WHERE col_bit = 1 ORDER BY id",
+		"WITH src AS (SELECT id FROM all_types) SELECT count(*) FROM src",
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			if err := p.ValidateSQL(ctx, sql); err != nil {
+				t.Errorf("ValidateSQL rejected a valid statement: %v", err)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_RejectsMalformed(t *testing.T) {
+	f := setupMSSQLContainer(t)
+	defer f.teardown()
+	p := f.newProvider(t)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cases := []struct{ name, sql string }{
+		{"typo in keyword", "SELEC 1"},
+		{"unbalanced paren", "SELECT (1"},
+		{"missing FROM target", "SELECT * FROM"},
+		{"unterminated string", "SELECT 'oops"},
+		{"random prose", "this is not sql"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := p.ValidateSQL(ctx, c.sql); err == nil {
+				t.Errorf("ValidateSQL accepted invalid input %q", c.sql)
+			}
+		})
+	}
+}
+
+func TestIntegration_ValidateSQL_RejectsEmpty(t *testing.T) {
+	f := setupMSSQLContainer(t)
+	defer f.teardown()
+	p := f.newProvider(t)
+	defer p.Close()
+
+	for _, sql := range []string{"", "   ", "\t\n"} {
+		if err := p.ValidateSQL(context.Background(), sql); err == nil {
+			t.Errorf("ValidateSQL accepted whitespace-only input %q", sql)
+		}
+	}
+}
+
+func TestIntegration_ValidateSQL_DoesNotExecuteSideEffects(t *testing.T) {
+	// NOEXEC compiles each statement in the batch but skips
+	// execution, so an INSERT inside the SET NOEXEC ON/OFF batch
+	// must NOT modify the table. Confirm by counting before and
+	// after a ValidateSQL call against an INSERT statement. This
+	// is the regression test that pins us to NOEXEC: PARSEONLY in
+	// the same batch as the INSERT would let the write through.
+	f := setupMSSQLContainer(t)
+	defer f.teardown()
+	p := f.newProvider(t)
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	beforeRes, err := p.Query(ctx, "SELECT count(*) AS c FROM all_types", nil)
+	if err != nil {
+		t.Fatalf("count before: %v", err)
+	}
+	if len(beforeRes.Rows) != 1 {
+		t.Fatalf("count before: expected 1 row, got %d", len(beforeRes.Rows))
+	}
+	before := beforeRes.Rows[0]["c"]
+
+	// NOEXEC compiles the INSERT (resolving columns + types) but
+	// skips execution, so ValidateSQL returns nil and no row
+	// lands in the table. Read-only enforcement remains
+	// ValidateReadOnly's concern, not ValidateSQL's.
+	_ = p.ValidateSQL(ctx, "INSERT INTO all_types (col_nvarchar) VALUES (N'side effect')")
+
+	afterRes, err := p.Query(ctx, "SELECT count(*) AS c FROM all_types", nil)
+	if err != nil {
+		t.Fatalf("count after: %v", err)
+	}
+	after := afterRes.Rows[0]["c"]
+
+	if before != after {
+		t.Errorf("ValidateSQL appears to have executed the INSERT: before=%v after=%v", before, after)
+	}
+}
