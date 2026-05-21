@@ -10,7 +10,7 @@ import (
 type msClient interface {
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 	// ExecContext runs a statement that doesn't return rows (used
-	// by ValidateSQL's SET PARSEONLY ON/OFF batch).
+	// by ValidateSQL's SET NOEXEC ON/OFF compile-only batch).
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 	PingContext(ctx context.Context) error
 	Close() error

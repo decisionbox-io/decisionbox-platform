@@ -990,9 +990,12 @@ func TestIntegration_ValidateSQL_RejectsEmpty(t *testing.T) {
 }
 
 func TestIntegration_ValidateSQL_DoesNotExecuteSideEffects(t *testing.T) {
-	// PARSEONLY checks syntax without compiling or executing, so an
-	// INSERT must NOT modify the table. Confirm by counting before
-	// and after a ValidateSQL call against an INSERT statement.
+	// NOEXEC compiles each statement in the batch but skips
+	// execution, so an INSERT inside the SET NOEXEC ON/OFF batch
+	// must NOT modify the table. Confirm by counting before and
+	// after a ValidateSQL call against an INSERT statement. This
+	// is the regression test that pins us to NOEXEC: PARSEONLY in
+	// the same batch as the INSERT would let the write through.
 	f := setupMSSQLContainer(t)
 	defer f.teardown()
 	p := f.newProvider(t)
@@ -1010,8 +1013,10 @@ func TestIntegration_ValidateSQL_DoesNotExecuteSideEffects(t *testing.T) {
 	}
 	before := beforeRes.Rows[0]["c"]
 
-	// PARSEONLY validates the syntax of an INSERT and returns nil.
-	// Read-only enforcement is ValidateReadOnly's concern.
+	// NOEXEC compiles the INSERT (resolving columns + types) but
+	// skips execution, so ValidateSQL returns nil and no row
+	// lands in the table. Read-only enforcement remains
+	// ValidateReadOnly's concern, not ValidateSQL's.
 	_ = p.ValidateSQL(ctx, "INSERT INTO all_types (col_nvarchar) VALUES (N'side effect')")
 
 	afterRes, err := p.Query(ctx, "SELECT count(*) AS c FROM all_types", nil)
