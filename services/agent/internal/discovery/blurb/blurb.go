@@ -31,18 +31,19 @@ import (
 // DefaultMaxTokens for a blurb response. The prompt targets 2-4
 // sentences (~80-150 tokens), but modern "thinking" models
 // (Gemini 2.5+ Pro / 3.x preview, Qwen3 with default
-// thinking-mode-on, etc.) emit a hidden <think>...</think> or
-// equivalent reasoning prefix before producing the visible
-// answer. 2048 gives those models room to think AND produce
-// without hitting MAX_TOKENS / length cutoff — a 100-column
-// ERP-scale table blurb fits comfortably in this budget even
-// with a generous reasoning preamble. Operators can override
-// via the BLURB_MAX_TOKENS env var; non-reasoning models
-// (Haiku, gpt-4o-mini, gemini-2.5-flash) still emit under 200
-// tokens of actual blurb, so the extra budget is cheap in
-// practice — token cost only accrues to what the model
-// actually emits, not the cap.
-const DefaultMaxTokens = 2048
+// thinking-mode-on, GPT-5-mini, etc.) emit a hidden
+// <think>...</think> or equivalent reasoning prefix before
+// producing the visible answer, and ERP-scale schemas (200+
+// columns) ask the model for a longer blurb description on top.
+// 8192 gives those models comfortable room to think AND produce
+// across the full warehouse-shape range we've seen in practice
+// without hitting MAX_TOKENS / length cutoff. Operators can
+// override via the BLURB_MAX_TOKENS env var; non-reasoning
+// models (Haiku, gpt-4o-mini, gemini-2.5-flash) still emit under
+// 200 tokens of actual blurb, so the extra budget is cheap —
+// token cost only accrues to what the model actually emits,
+// not the cap.
+const DefaultMaxTokens = 8192
 
 // DefaultMaxFailureRate is the fraction of per-table blurb failures the
 // generator will tolerate before aborting the run. 5% on a 2000-table
