@@ -725,10 +725,29 @@ func TestBackoffDuration_OverflowProtection(t *testing.T) {
 // TestBackoffDuration_FirstAttemptApproximatesBase confirms the
 // 5s default does what the doc says — the first retry's wait is
 // somewhere in the ±25% jitter window around base, not 2×base.
+//
+// The bounds match the actual jitter formula exactly:
+//   - jitter range: [0, d/2) where d == base
+//   - result      : d - d/4 + jitter ∈ [0.75·d, 1.25·d)
+//
+// For base=5s that's [3.75s, 6.25s). The earlier `[3s, 6s]`
+// window was wrong on the upper edge — ~10% of the
+// distribution lives in [6s, 6.25s) and would flake the test.
+// Caught by Codex round 3 of PR #234's review.
 func TestBackoffDuration_FirstAttemptApproximatesBase(t *testing.T) {
-	d := backoffDuration(5*time.Second, 1)
-	if d < 3*time.Second || d > 6*time.Second {
-		t.Errorf("first-attempt backoff %v outside expected 3-6s window", d)
+	const base = 5 * time.Second
+	low := base * 3 / 4         // 3.75s — inclusive lower bound
+	high := base + base/4 - 1   // 6.25s minus one ns — exclusive upper
+
+	// Run several times so the jitter distribution is actually
+	// exercised. A single sample could happen to land near the
+	// centre and miss the edges; ~30 samples covers the window
+	// with high confidence without dragging out the test.
+	for i := 0; i < 30; i++ {
+		d := backoffDuration(base, 1)
+		if d < low || d > high {
+			t.Errorf("iter %d: backoff %v outside [%v, %v]", i, d, low, high)
+		}
 	}
 }
 
