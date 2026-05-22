@@ -27,6 +27,14 @@ function mount(onChange?: jest.Mock) {
   );
 }
 
+function mountHideWhenReady(onChange?: jest.Mock) {
+  return render(
+    <MantineProvider>
+      <SchemaIndexPanel projectId="p1" onStatusChange={onChange} hideWhenReady />
+    </MantineProvider>
+  );
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   // Panel's log-tail effect triggers listSchemaIndexLogs when the
@@ -200,5 +208,71 @@ describe('SchemaIndexPanel', () => {
     (await screen.findByRole('button', { name: /Cancel indexing/i })).click();
     (await screen.findByRole('button', { name: /Yes, cancel/i })).click();
     await waitFor(() => expect(screen.getByText(/network down/i)).toBeInTheDocument());
+  });
+
+  // hideWhenReady is the opt-in the project home + pack-gen-pending
+  // surfaces pass — those convey "ready" via their own badge / helper
+  // copy, so the verbose panel banner is duplicative noise in
+  // steady state. Polling continues so the panel re-appears the
+  // moment status flips to anything actionable.
+  it('hideWhenReady=true + status=ready renders nothing (steady-state hidden)', async () => {
+    const onChange = jest.fn();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'ready',
+      updated_at: '2026-05-22T18:00:00Z',
+    });
+    const { container } = mountHideWhenReady(onChange);
+    // onStatusChange still fires once polling lands — the parent
+    // needs the status to drive its own gating UI even when the
+    // panel itself is invisible.
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' })));
+    // The panel renders no visible DOM beyond what the wrapping
+    // Mantine provider injects. The Re-index button + banner are
+    // both gone — Settings → Clear cache is the path to flip to
+    // needs_reindex and bring the panel back.
+    expect(screen.queryByText(/Schema index:/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Re-index/i })).not.toBeInTheDocument();
+    // Sanity — no Card / Alert mounted by our component (only the
+    // Mantine portal node Notifications would inject).
+    expect(container.querySelector('[class*="mantine-Alert-root"]')).toBeNull();
+  });
+
+  it('hideWhenReady=true + status=indexing still renders the in-flight banner', async () => {
+    // The hide gate is specifically "ready" — anything actionable
+    // (indexing, pending_indexing, failed, cancelled, needs_reindex)
+    // still surfaces so the operator never loses sight of a real
+    // workflow state.
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'embedding', tables_total: 100, tables_done: 42 },
+    });
+    mountHideWhenReady();
+    await waitFor(() => expect(screen.getByText(/Schema index:/)).toBeInTheDocument());
+    // Cancel button is the in-flight action; presence confirms the
+    // panel rendered the full banner, not just empty space.
+    expect(screen.getByRole('button', { name: /Cancel indexing/i })).toBeInTheDocument();
+  });
+
+  it('hideWhenReady=true + status=needs_reindex still renders so the operator can re-index', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'needs_reindex' });
+    mountHideWhenReady();
+    await waitFor(() => expect(screen.getByText(/Schema index:/)).toBeInTheDocument());
+    expect(screen.getByText(/Cache cleared/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Re-index now/i })).toBeInTheDocument();
+  });
+
+  it('hideWhenReady=false (default) still renders the Ready banner — preserves the wizard contract', async () => {
+    // The wizard's last step keeps the default behaviour so
+    // operators see the explicit "Ready" affordance before
+    // clicking Generate pack. This test pins that contract — a
+    // bug that flipped the default to true would silently break
+    // the wizard's pre-flight indicator.
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'ready',
+      updated_at: '2026-05-22T18:00:00Z',
+    });
+    mount(); // no hideWhenReady — default false
+    await waitFor(() => expect(screen.getByText(/Schema index:/)).toBeInTheDocument());
+    expect(screen.getByText(/Ready/)).toBeInTheDocument();
   });
 });

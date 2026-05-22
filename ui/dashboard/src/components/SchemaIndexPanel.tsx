@@ -33,6 +33,18 @@ interface Props {
    * "Step 1 of 2 — Indexing schema".
    */
   title?: string;
+  /**
+   * When true, the panel renders nothing while `status === 'ready'`.
+   * Polling continues internally so the panel re-appears the moment
+   * the status flips to anything actionable (`needs_reindex`,
+   * `indexing`, `failed`, `cancelled`). Used by surfaces where the
+   * "Ready" steady state is visual noise (the project home + the
+   * pack-gen panel — the badge / helper copy already convey the
+   * "ready" signal). The wizard's last step keeps the default
+   * (false) so operators see the explicit "Ready" affordance
+   * before clicking Generate pack.
+   */
+  hideWhenReady?: boolean;
 }
 
 const POLL_MS = 2000;
@@ -45,7 +57,7 @@ const PHASE_LABELS: Record<string, string> = {
   embedding: 'Building vector index',
 };
 
-export function SchemaIndexPanel({ projectId, onStatusChange, title }: Props) {
+export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false }: Props) {
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -224,7 +236,29 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title }: Props) {
             : <IconRotateClockwise size={16} />;
 
   if (!status) {
-    return <Text size="sm" c="dimmed">Loading schema index status...</Text>;
+    return hideWhenReady
+      // When the caller opts in to hide-when-ready, also suppress
+      // the brief "Loading schema index status..." flash on the
+      // initial mount — for the project-home steady state the
+      // panel is supposed to be invisible whenever there's
+      // nothing actionable to surface, and the pre-poll moment
+      // counts. Polling still kicks off the moment the component
+      // mounts, so the panel re-appears the instant the first
+      // poll returns a non-ready status.
+      ? null
+      : <Text size="sm" c="dimmed">Loading schema index status...</Text>;
+  }
+
+  // hideWhenReady is the project-home / pack-gen-panel opt-in:
+  // those surfaces convey "ready" through their own badge / helper
+  // copy, so the verbose "Schema index: Ready · last built X · Re-index"
+  // banner is redundant visual noise in steady state. Polling
+  // continues (the useEffect above still runs), so the panel
+  // re-appears the moment status changes to anything else
+  // (`needs_reindex` after Settings → Clear cache, `indexing`
+  // after a re-index kick-off, `failed` / `cancelled` recovery).
+  if (hideWhenReady && status.status === 'ready') {
+    return null;
   }
 
   const updatedDate = status.updated_at ? new Date(status.updated_at).toLocaleString() : null;
