@@ -123,18 +123,26 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 }
 
 // backoffDuration returns the sleep for attempt N (1-indexed).
-// Exponential: base * 2^(N-1), with ±25% jitter, capped at
-// MaxBackoff. Jitter prevents thundering-herd reconnects when
-// multiple discovery runs share a single upstream throttle event.
+// Exponential: base * 2^(N-1), with ±25% jitter, with the
+// FINAL result clamped to MaxBackoff. Jitter prevents
+// thundering-herd reconnects when multiple discovery runs
+// share a single upstream throttle event.
+//
+// Implementation note: the cap is applied AFTER jitter so the
+// 25%-upward jitter excursion can't push the value past
+// MaxBackoff. An earlier version clamped d pre-jitter and the
+// `d - d/4 + jitter` shape allowed up to `1.25 * MaxBackoff`
+// to leak through — pinned by TestBackoffDuration_RespectsCap.
 func backoffDuration(base time.Duration, attempt int) time.Duration {
 	d := base << (attempt - 1) // base * 2^(attempt-1)
-	if d > MaxBackoff {
-		d = MaxBackoff
-	}
 	// Jitter: ±25%. Deterministic seeding not desired — the goal
 	// is anti-synchronisation across concurrent agents.
 	jitter := time.Duration(rand.Int63n(int64(d) / 2)) //nolint:gosec // jitter, not crypto
-	return d - d/4 + jitter
+	result := d - d/4 + jitter
+	if result > MaxBackoff {
+		result = MaxBackoff
+	}
+	return result
 }
 
 // isRetryableLLMError classifies an error from gollm.Provider.Chat
@@ -210,19 +218,28 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 	}
 
 	// HTTP status codes surface via the provider error string
-	// (gollm doesn't have typed HTTP errors today). Match by
-	// substring; the formats we care about are
-	// "status 499", "status 429", "status 5xx", "(status 499)".
+	// (gollm doesn't have typed HTTP errors at the interface
+	// boundary today). Match by substring against every shape
+	// the in-tree providers actually format. As of this PR:
+	//   - vertex-ai/google-native, vertex-ai/anthropic,
+	//     azure-foundry/claude, claude:     "API error (status NNN):"
+	//   - openai, azure-foundry/openai,
+	//     vertex-ai/openai-compat:          "API error (NNN):"
+	// Bedrock takes a different path entirely (AWS SDK typed
+	// exceptions), handled below.
 	for _, code := range retryableStatusCodes {
-		if strings.Contains(msg, "status "+code) {
+		if strings.Contains(msg, "status "+code) || strings.Contains(msg, "("+code+")") {
 			return true
 		}
 	}
-	// Some providers spell CANCELLED differently. The gRPC code 1
-	// path on Vertex audit logs shows "The operation was
-	// cancelled." even on the HTTP 499 transport.
-	if strings.Contains(lower, "operation was cancelled") {
-		return true
+
+	// Provider-typed error names for transient classes. None of
+	// these include a numeric HTTP status in the error string,
+	// so the status-code branch above misses them on its own.
+	for _, hint := range retryableProviderHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
 	}
 
 	return false
@@ -233,9 +250,18 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 // 429 is the standard rate-limit code; 5xx are server-side
 // failures. Anything else is treated as deterministic and
 // surfaced to the caller without retry.
+// retryableStatusCodes lists every HTTP status the in-tree
+// providers actually return for transient failure. Sources:
+// Anthropic Errors doc (529 overloaded, 504 timeout), AWS
+// Bedrock InvokeModel API reference (429 ThrottlingException,
+// 429 ModelNotReadyException, 408 ModelTimeoutException, 500
+// InternalServerException, 503 ServiceUnavailableException),
+// OpenAI Python SDK exceptions (429 RateLimitError, 5xx
+// InternalServerError), Vertex AI google-native (499 CANCELLED
+// shared-serving yield).
 var retryableStatusCodes = []string{
-	"499", "429",
-	"500", "502", "503", "504",
+	"408", "429", "499",
+	"500", "502", "503", "504", "529",
 }
 
 // networkErrorHints matches transient network failures whose
@@ -250,4 +276,48 @@ var networkErrorHints = []string{
 	"i/o timeout",
 	"server closed idle connection",
 	"unexpected eof",
+}
+
+// retryableProviderHints catches transient classes whose error
+// strings don't carry a numeric HTTP status:
+//
+//   - "operation was cancelled" — Vertex's gRPC-code-1
+//     audit-log shape (HTTP 499 transport, but the body's
+//     status field reads "CANCELLED"). Surfaced by
+//     google-native's response body parse.
+//   - Anthropic Claude typed errors. When the response body is
+//     a parseable JSON `{"error":{"type":"rate_limit_error",...}}`
+//     the provider formats `"claude: API error: rate_limit_error - ..."`
+//     with NO status code. The Type field IS the signal. Full
+//     transient-class list per Anthropic Errors doc:
+//     rate_limit_error (429), api_error (500), timeout_error
+//     (504), overloaded_error (529).
+//   - AWS Bedrock SDK exception names. Bedrock errors arrive as
+//     wrapped smithy.OperationError values whose String() form
+//     embeds the AWS exception type. Per InvokeModel API
+//     reference: ThrottlingException (429),
+//     ModelNotReadyException (429 — docs explicitly mark
+//     SDK-retryable), ServiceUnavailableException (503),
+//     InternalServerException (500), ModelTimeoutException
+//     (408). ModelStreamErrorException covers
+//     InvokeModelWithResponseStream which we don't currently
+//     use but include for forward compatibility.
+//
+// All matched lowercased to keep the check case-insensitive.
+var retryableProviderHints = []string{
+	// Cross-provider: cancellation
+	"operation was cancelled",
+	// Anthropic typed errors (no status code in the formatted
+	// string; the Type field is the only signal)
+	"rate_limit_error",
+	"overloaded_error",
+	"api_error",
+	"timeout_error",
+	// AWS Bedrock SDK exception names
+	"throttlingexception",
+	"modelnotreadyexception",
+	"serviceunavailableexception",
+	"internalserverexception",
+	"modeltimeoutexception",
+	"modelstreamerrorexception",
 }

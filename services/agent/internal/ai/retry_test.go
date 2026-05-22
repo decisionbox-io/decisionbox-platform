@@ -380,6 +380,138 @@ func TestIsRetryableLLMError_ParentCtxCanceledOverridesRetryableErr(t *testing.T
 	}
 }
 
+// TestIsRetryableLLMError_CrossProviderFormats pins detection
+// across every error-string shape the in-tree providers
+// actually emit. Codex round 1 caught the gap: the classifier
+// originally only matched "status NNN" and missed OpenAI /
+// Azure-foundry/openai / Vertex-openai-compat which format as
+// "(NNN)", missed Claude's typed-error path which has no
+// status at all, and missed AWS Bedrock's SDK exception names.
+// Each row below is a real error string copied verbatim from
+// the provider source files; if a provider rephrases its
+// errors in the future, this test catches the regression.
+func TestIsRetryableLLMError_CrossProviderFormats(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		// vertex-ai/google-native, vertex-ai/anthropic, claude,
+		// azure-foundry/claude — "status NNN" form
+		{"google_native_499", "vertex-ai/google-native: API error (status 499): cancelled", true},
+		{"vertex_anthropic_503", "vertex-ai/anthropic: API error (status 503): overloaded", true},
+		{"claude_http_429", "claude: API error (status 429): rate", true},
+		{"azure_foundry_claude_500", "azure-foundry/claude: API error (status 500): boom", true},
+		// openai, azure-foundry/openai, vertex-ai/openai-compat
+		// — "(NNN)" form (NO "status" prefix)
+		{"openai_429", "openai: API error (429): rate_limit_error - You exceeded your current quota", true},
+		{"openai_500", "openai: API error (500): internal", true},
+		{"openai_502", "openai: API error (502): bad gateway", true},
+		{"openai_503", "openai: API error (503): service unavailable", true},
+		{"azure_foundry_openai_429", "azure-foundry/openai: API error (429): RateLimit", true},
+		{"vertex_openai_compat_500", "vertex-ai/openai-compat: API error (500): server", true},
+		// Claude typed errors (no status code in the string). Full
+		// transient list per docs.claude.com/en/api/errors.
+		{"claude_rate_limit_typed", "claude: API error: rate_limit_error - Number of request tokens has exceeded your per-minute rate limit", true},
+		{"claude_overloaded_typed", "claude: API error: overloaded_error - Anthropic is overloaded", true},
+		{"claude_api_error_typed_500", "claude: API error: api_error - An unexpected error occurred", true},
+		{"claude_timeout_error_typed_504", "claude: API error: timeout_error - The request timed out while processing", true},
+		// Anthropic-specific status codes our list previously
+		// missed (Anthropic Errors doc): 504 timeout and 529
+		// overloaded.
+		{"claude_http_504_status_form", "vertex-ai/anthropic: API error (status 504): processing timeout", true},
+		{"claude_http_529_status_form", "vertex-ai/anthropic: API error (status 529): overloaded", true},
+		// Bedrock SDK exception names per InvokeModel API
+		// reference.
+		{"bedrock_throttling", "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, ThrottlingException: Too many requests", true},
+		{"bedrock_model_not_ready", "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, ModelNotReadyException: model warming up", true},
+		{"bedrock_service_unavailable", "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, ServiceUnavailableException: Try again", true},
+		{"bedrock_internal_server", "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, InternalServerException: Internal failure", true},
+		{"bedrock_model_timeout", "bedrock/anthropic: InvokeModel failed: ModelTimeoutException: model took too long", true},
+		{"bedrock_408_status_form", "bedrock/anthropic: API error (408): timeout", true},
+		// Anthropic deterministic typed errors — must NOT
+		// retry. Per docs: invalid_request_error,
+		// authentication_error, billing_error, permission_error,
+		// not_found_error, request_too_large.
+		{"claude_invalid_request_typed", "claude: API error: invalid_request_error - Bad model id", false},
+		{"claude_billing_error_typed", "claude: API error: billing_error - Payment required", false},
+		{"claude_not_found_typed", "claude: API error: not_found_error - Model not found", false},
+		{"claude_request_too_large_typed", "claude: API error: request_too_large - 32 MB exceeded", false},
+		// Bedrock deterministic exceptions — must NOT retry.
+		{"bedrock_access_denied", "bedrock/anthropic: AccessDeniedException: not authorised", false},
+		{"bedrock_validation", "bedrock/anthropic: ValidationException: invalid contentType", false},
+		{"bedrock_resource_not_found", "bedrock/anthropic: ResourceNotFoundException: model arn not found", false},
+		// Deterministic config errors — must NOT match
+		{"openai_400", "openai: API error (400): invalid_request_error - Invalid value for 'model'", false},
+		{"openai_401", "openai: API error (401): invalid_api_key", false},
+		{"google_native_403", "vertex-ai/google-native: API error (status 403): caller does not have permission", false},
+		{"google_native_404", "vertex-ai/google-native: API error (status 404): model not found", false},
+		{"claude_authentication", "claude: API error: authentication_error - invalid x-api-key", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isRetryableLLMError(ctx, errors.New(c.msg)); got != c.want {
+				t.Errorf("isRetryableLLMError(%q) = %v, want %v", c.msg, got, c.want)
+			}
+		})
+	}
+}
+
+// TestChatWithRetry_RetriesOnOpenAIParenFormat is the worked
+// example of Codex round 1's finding: an OpenAI 429 used to
+// surface immediately (no "status NNN" in the error string) and
+// the retry never engaged. Now it does.
+func TestChatWithRetry_RetriesOnOpenAIParenFormat(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: errors.New("openai: API error (429): rate_limit_error - try again")},
+		{resp: okResp()},
+	}}
+	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
+	if err != nil {
+		t.Fatalf("OpenAI 429 paren-format should retry; got %v", err)
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 2 {
+		t.Errorf("LLM called %d times, want 2 (recovered after retry)", got)
+	}
+}
+
+// TestChatWithRetry_RetriesOnBedrockThrottling is the
+// AWS-SDK-shaped variant of the same finding. Bedrock errors
+// don't carry an HTTP status string at all; the typed exception
+// name IS the signal.
+func TestChatWithRetry_RetriesOnBedrockThrottling(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: errors.New("bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, ThrottlingException: Too many requests, please wait before trying again")},
+		{resp: okResp()},
+	}}
+	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
+	if err != nil {
+		t.Fatalf("Bedrock throttling should retry; got %v", err)
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 2 {
+		t.Errorf("LLM called %d times, want 2 (recovered after retry)", got)
+	}
+}
+
+// TestChatWithRetry_RetriesOnClaudeTypedRateLimit covers the
+// Claude path where the response body is a parseable JSON error
+// and the provider formats `"claude: API error: rate_limit_error - ..."`
+// WITHOUT a status code. The Type field is the only signal.
+func TestChatWithRetry_RetriesOnClaudeTypedRateLimit(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: errors.New("claude: API error: rate_limit_error - Number of request tokens has exceeded your per-minute rate limit")},
+		{resp: okResp()},
+	}}
+	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
+	if err != nil {
+		t.Fatalf("Claude rate_limit_error should retry; got %v", err)
+	}
+}
+
 // TestBackoffDuration_RespectsCap pins the upper-bound contract.
 // Attempt 6 with a 5s base would compute 160s without the cap;
 // the MaxBackoff floor keeps us from accidentally introducing a
