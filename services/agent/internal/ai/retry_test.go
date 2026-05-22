@@ -79,11 +79,15 @@ func TestChatWithRetry_RetriesOn499_RecoversOnSecondAttempt(t *testing.T) {
 	}
 }
 
-// TestChatWithRetry_RetriesOn429_RecoversOnThirdAttempt covers
-// the rate-limit class — two consecutive 429s absorbed by the
-// retry budget, success on the third attempt.
-func TestChatWithRetry_RetriesOn429_RecoversOnThirdAttempt(t *testing.T) {
+// TestChatWithRetry_RetriesOn429_HonoursWidenedBudget covers
+// the env-knob path: setting LLM_RETRY_MAX_ATTEMPTS=3 lets two
+// consecutive 429s be absorbed by the budget with success on
+// the third attempt. With the default 2-attempt budget the
+// same scenario would surface after the first retry; the env
+// override is the operator's tool for flaky-upstream tuning.
+func TestChatWithRetry_RetriesOn429_HonoursWidenedBudget(t *testing.T) {
 	shortBackoffFor(t)
+	t.Setenv(LLMRetryMaxAttemptsEnv, "3")
 	llm := &retryFakeLLM{scripted: []retryScript{
 		{err: httpErr(429)},
 		{err: httpErr(429)},
@@ -91,10 +95,10 @@ func TestChatWithRetry_RetriesOn429_RecoversOnThirdAttempt(t *testing.T) {
 	}}
 	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
 	if err != nil {
-		t.Fatalf("expected success after two retries; got %v", err)
+		t.Fatalf("expected success after two retries with widened budget; got %v", err)
 	}
 	if got := atomic.LoadInt64(&llm.calls); got != 3 {
-		t.Errorf("LLM called %d times, want 3", got)
+		t.Errorf("LLM called %d times, want 3 (one initial + two retries)", got)
 	}
 }
 
@@ -227,25 +231,48 @@ func TestChatWithRetry_DoesNotRetryOnParentContextCancel(t *testing.T) {
 	}
 }
 
+// signalFakeLLM is a retryFakeLLM variant that publishes on a
+// channel as soon as its first Chat call enters — gives tests a
+// deterministic synchronisation point without depending on
+// wall-clock sleep. Used by TestChatWithRetry_BackoffRespectsContextDeadline
+// where the earlier `time.Sleep(2ms)` shape was a CI-jitter
+// flake risk (Copilot review round 1).
+type signalFakeLLM struct {
+	calls   int64
+	entered chan struct{} // closed after the first Chat() call enters
+	err     error
+}
+
+func (f *signalFakeLLM) Chat(ctx context.Context, _ gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	if atomic.AddInt64(&f.calls, 1) == 1 {
+		close(f.entered)
+	}
+	return nil, f.err
+}
+func (f *signalFakeLLM) Validate(_ context.Context) error { return nil }
+
 // TestChatWithRetry_BackoffRespectsContextDeadline pins the
 // sleep-cancellation contract. A ctx that cancels DURING the
 // retry backoff sleep must surface ctx.Err() promptly — without
 // this the worker would wait out a 60s backoff on a run that's
 // already been told to stop.
 func TestChatWithRetry_BackoffRespectsContextDeadline(t *testing.T) {
-	// Use a 5ms backoff so the test runs fast but is long enough
-	// to detect the bail.
-	t.Setenv(LLMRetryBaseBackoffEnv, "5ms")
-	llm := &retryFakeLLM{scripted: []retryScript{
-		{err: httpErr(499)}, // triggers retry → enters backoff
-	}}
+	// Long enough backoff that the test would obviously hang
+	// without the ctx-aware select.
+	t.Setenv(LLMRetryBaseBackoffEnv, "5s")
+	llm := &signalFakeLLM{entered: make(chan struct{}), err: httpErr(499)}
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after the first attempt fails but before the
-	// backoff sleep completes.
+
+	// Synchronised cancellation: wait until the first Chat()
+	// call has actually entered the provider (so the retry loop
+	// is about to start its backoff sleep), then cancel. No
+	// sleep-based race window — the channel close is the
+	// happens-before edge.
 	go func() {
-		time.Sleep(2 * time.Millisecond)
+		<-llm.entered
 		cancel()
 	}()
+
 	start := time.Now()
 	_, err := chatWithRetry(ctx, llm, gollm.ChatRequest{})
 	elapsed := time.Since(start)
@@ -255,11 +282,11 @@ func TestChatWithRetry_BackoffRespectsContextDeadline(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
-	// Without the ctx-aware select on timer.C we'd wait the full
-	// backoff (~5ms+jitter); the cancel should fire well within
-	// that window. Use a generous upper bound to keep the test
-	// stable on busy CI.
-	if elapsed > 100*time.Millisecond {
+	// Without the ctx-aware select on timer.C we'd wait the
+	// full 5s backoff; the cancel should fire well within
+	// that window. Generous upper bound keeps the test stable
+	// on busy CI.
+	if elapsed > time.Second {
 		t.Errorf("backoff did not bail on ctx cancel; elapsed=%v", elapsed)
 	}
 }
@@ -509,6 +536,90 @@ func TestChatWithRetry_RetriesOnClaudeTypedRateLimit(t *testing.T) {
 	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
 	if err != nil {
 		t.Fatalf("Claude rate_limit_error should retry; got %v", err)
+	}
+}
+
+// TestIsRetryableLLMError_ParentDeadlineExceededBails pins the
+// subtle invariant Copilot caught in round 1: when the parent
+// run context's deadline fires (parent timeout), Chat() returns
+// `context.DeadlineExceeded`. The per-request HTTP-timeout case
+// also surfaces as DeadlineExceeded but is retryable. The
+// classifier MUST disambiguate by checking ctx.Err() first — a
+// parent deadline means the operator (or a parent timeout) said
+// stop; retrying defeats the signal.
+func TestIsRetryableLLMError_ParentDeadlineExceededBails(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	// Even though the error itself is context.DeadlineExceeded
+	// (which is normally retryable per the per-request-timeout
+	// branch), the parent ctx has the same deadline-exceeded
+	// state and that signal wins.
+	if isRetryableLLMError(ctx, context.DeadlineExceeded) {
+		t.Error("parent ctx deadline must override the per-request-DeadlineExceeded retry")
+	}
+}
+
+// TestChatWithRetry_DoesNotRetryWhenParentDeadlineFires covers
+// the integration of the above through the full retry loop.
+func TestChatWithRetry_DoesNotRetryWhenParentDeadlineFires(t *testing.T) {
+	shortBackoffFor(t)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: context.DeadlineExceeded},
+		{resp: okResp()}, // would succeed but ctx is dead
+	}}
+	_, err := chatWithRetry(ctx, llm, gollm.ChatRequest{})
+	if err == nil {
+		t.Fatal("expected parent-deadline cancellation to surface")
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 1 {
+		t.Errorf("LLM called %d times when parent ctx is dead; want 1", got)
+	}
+}
+
+// TestBackoffDuration_OverflowProtection pins the contract Copilot
+// caught in round 1: large operator-supplied
+// LLM_RETRY_MAX_ATTEMPTS × LLM_RETRY_BASE_BACKOFF combinations
+// could overflow time.Duration with the original
+// `base << (attempt - 1)` shape. Iterative doubling with a
+// per-step cap check keeps the value sane regardless of how the
+// operator misconfigures the knobs.
+func TestBackoffDuration_OverflowProtection(t *testing.T) {
+	// Pathological inputs: a generous base + a high attempt index
+	// that would `<<` past int64.
+	cases := []struct {
+		name    string
+		base    time.Duration
+		attempt int
+	}{
+		{"high_attempt_default_base", 5 * time.Second, 100},
+		{"large_base_high_attempt", time.Hour, 50},
+		{"max_int_attempt", time.Second, 62},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := backoffDuration(c.base, c.attempt)
+			if d < 0 {
+				t.Errorf("overflow: backoff %v is negative", d)
+			}
+			if d > MaxBackoff {
+				t.Errorf("backoff %v exceeded MaxBackoff %v", d, MaxBackoff)
+			}
+			if d <= 0 {
+				t.Errorf("backoff %v must be positive (or the retry loop wouldn't sleep at all)", d)
+			}
+		})
+	}
+}
+
+// TestBackoffDuration_FirstAttemptApproximatesBase confirms the
+// 5s default does what the doc says — the first retry's wait is
+// somewhere in the ±25% jitter window around base, not 2×base.
+func TestBackoffDuration_FirstAttemptApproximatesBase(t *testing.T) {
+	d := backoffDuration(5*time.Second, 1)
+	if d < 3*time.Second || d > 6*time.Second {
+		t.Errorf("first-attempt backoff %v outside expected 3-6s window", d)
 	}
 }
 

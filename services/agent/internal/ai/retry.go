@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"time"
@@ -33,15 +33,29 @@ import (
 // cancellation bail immediately.
 
 // DefaultMaxAttempts caps the total number of Chat calls
-// (initial + retries). 3 means up to two retries — enough to
-// absorb the rare transient on shared serving without burning
-// wall-clock on a permanently-broken upstream.
-const DefaultMaxAttempts = 3
+// (initial + retries). 2 means one retry — same default the
+// blurb generator uses (PR #227). The empirical observation
+// on Vertex shared-serving 499s is that a single retry
+// resolves the transient; further attempts mostly burn token
+// budget on permanently-failing prompts.
+//
+// IMPORTANT: this retry layer composes with provider-internal
+// retries. Anthropic's claude provider defaults to
+// max_retries=3 inside its own HTTP loop (via LLM_MAX_RETRIES);
+// Bedrock's AWS SDK also retries ModelNotReadyException up to
+// 5 times. The outer retry adds Vertex's 499 (provider-internal
+// loops don't see it) and transport-layer errors. Worst-case
+// total attempts = outer × inner; operators who care about the
+// blast radius should lower one or both knobs.
+const DefaultMaxAttempts = 2
 
 // DefaultBaseBackoff is the first retry's delay. Exponential
-// scaling thereafter: 5s, 15s. Long enough that a server-side
-// queue overload has time to drain; short enough that we don't
-// add real wall-clock to an exploration run that mostly succeeds.
+// 2x scaling thereafter: 5s → 10s → 20s (before jitter / cap).
+// Long enough that a server-side queue overload has time to
+// drain; short enough that we don't add real wall-clock to an
+// exploration run that mostly succeeds. The MaxBackoff cap
+// limits the worst-case wait to one minute even on a deeply
+// configured retry chain.
 const DefaultBaseBackoff = 5 * time.Second
 
 // MaxBackoff caps the per-retry sleep. Without a cap the
@@ -123,21 +137,49 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 }
 
 // backoffDuration returns the sleep for attempt N (1-indexed).
-// Exponential: base * 2^(N-1), with ±25% jitter, with the
-// FINAL result clamped to MaxBackoff. Jitter prevents
-// thundering-herd reconnects when multiple discovery runs
-// share a single upstream throttle event.
+// Exponential 2x growth from base, with ±25% jitter, with the
+// final result clamped to MaxBackoff. Iterative doubling with
+// a per-step cap check protects against time.Duration overflow
+// for operator-supplied LLM_RETRY_BASE_BACKOFF + LLM_RETRY_MAX_ATTEMPTS
+// combinations that would otherwise wrap an int64 nanosecond
+// count (base=100s × 2^30 overflows; capping at MaxBackoff per
+// step keeps the value sane regardless of attempt index).
+//
+// Jitter uses math/rand/v2 which has a per-process random source
+// initialised at process start without requiring an explicit
+// rand.Seed call. Goal is anti-synchronisation across concurrent
+// agents — deterministic seeding is not desired.
 //
 // Implementation note: the cap is applied AFTER jitter so the
-// 25%-upward jitter excursion can't push the value past
+// +25%-upward jitter excursion can't push the value past
 // MaxBackoff. An earlier version clamped d pre-jitter and the
 // `d - d/4 + jitter` shape allowed up to `1.25 * MaxBackoff`
 // to leak through — pinned by TestBackoffDuration_RespectsCap.
 func backoffDuration(base time.Duration, attempt int) time.Duration {
-	d := base << (attempt - 1) // base * 2^(attempt-1)
-	// Jitter: ±25%. Deterministic seeding not desired — the goal
-	// is anti-synchronisation across concurrent agents.
-	jitter := time.Duration(rand.Int63n(int64(d) / 2)) //nolint:gosec // jitter, not crypto
+	if base <= 0 {
+		base = DefaultBaseBackoff
+	}
+	d := base
+	for i := 1; i < attempt; i++ {
+		// Cap before doubling so the next iteration can't
+		// overflow time.Duration. Once d hits MaxBackoff every
+		// subsequent attempt sticks there.
+		if d >= MaxBackoff {
+			d = MaxBackoff
+			break
+		}
+		d *= 2
+	}
+	if d > MaxBackoff {
+		d = MaxBackoff
+	}
+	// Jitter range: 0..d/2, applied as `d - d/4 + jitter` so
+	// the centre stays at d and the spread is ±25%.
+	half := int64(d) / 2
+	if half <= 0 {
+		return d
+	}
+	jitter := time.Duration(rand.Int64N(half)) //nolint:gosec // jitter, not crypto
 	result := d - d/4 + jitter
 	if result > MaxBackoff {
 		result = MaxBackoff
@@ -185,15 +227,24 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 	}
 
 	// Parent context cancellation always bails — propagating the
-	// signal is more important than the retry budget.
-	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
+	// signal is more important than the retry budget. Covers both
+	// flavours: `context.Canceled` (operator clicked Cancel) and
+	// `context.DeadlineExceeded` (parent timeout fired). The
+	// per-request HTTP-timeout case below distinguishes by checking
+	// ctx.Err() first — if the parent context is healthy, an
+	// err == context.DeadlineExceeded reflects the per-request
+	// HTTP deadline and IS retryable.
+	if ctx.Err() != nil {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
 
-	// Per-request HTTP timeout: classic transient case.
+	// Per-request HTTP timeout (NOT parent timeout — ruled out by
+	// the ctx.Err() check above). The Vertex / Anthropic / OpenAI
+	// HTTP clients set their own per-call deadlines; a hit here is
+	// the classic transient case retry is for.
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
