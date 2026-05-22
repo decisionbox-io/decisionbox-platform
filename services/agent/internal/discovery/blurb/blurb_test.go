@@ -686,7 +686,7 @@ func TestBlurbErrorRetryable_Truthtable(t *testing.T) {
 		{"empty_maxtokens_no_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "MAX_TOKENS"}, false},
 		{"empty_stop_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "STOP"}, true},
 		{"empty_other_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "OTHER"}, true},
-		{"max_blurb_len_no_retry", fmt.Errorf("blurb(x): response exceeds MaxBlurbLen=4000 chars (got 5000); pick a less verbose model"), false},
+		{"max_blurb_len_no_retry", &runawayResponseErr{providerID: "fake/m", got: 5000}, false},
 		{"chat_error_retry", fmt.Errorf("blurb(x): upstream 429"), true},
 	}
 	for _, c := range cases {
@@ -695,5 +695,92 @@ func TestBlurbErrorRetryable_Truthtable(t *testing.T) {
 				t.Errorf("blurbErrorRetryable(%v) = %v, want %v", c.err, got, c.want)
 			}
 		})
+	}
+}
+
+// TestOneBlurb_AccumulatesUsageAcrossRetries pins the cost-
+// accounting fix: a failed empty-response attempt charges input
+// tokens upstream, so when the retry succeeds the final Output
+// must carry both attempts' usage so schema_indexer's
+// IncrementTokens call sees the full charge.
+func TestOneBlurb_AccumulatesUsageAcrossRetries(t *testing.T) {
+	// fakeLLM stamps Usage{Input:10, Output:20} on every response. The
+	// first attempt empties out but consumes those tokens; the retry
+	// succeeds and also consumes them. The final Output must total
+	// 20 input / 40 output, not 10 / 20.
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: ""},
+		{text: "A table of orders."},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err != nil {
+		t.Fatalf("unexpected error: %v", out.Err)
+	}
+	if out.InputTokens != 20 {
+		t.Errorf("InputTokens = %d, want 20 (failed-attempt 10 + retry 10)", out.InputTokens)
+	}
+	if out.OutputTokens != 40 {
+		t.Errorf("OutputTokens = %d, want 40 (failed-attempt 20 + retry 20)", out.OutputTokens)
+	}
+}
+
+// TestOneBlurb_DoesNotRetry_LowercaseMaxTokens covers Anthropic's
+// snake_case stop_reason; the classifier must skip the retry on
+// `max_tokens` exactly the same as on Gemini's `MAX_TOKENS`.
+func TestOneBlurb_DoesNotRetry_LowercaseMaxTokens(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: "max_tokens"},
+		{text: "should never run"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected lowercase max_tokens to be deterministic")
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want 1 (lowercase max_tokens deterministic)", got)
+	}
+}
+
+// TestOneBlurb_DoesNotRetry_OpenAILength covers OpenAI's
+// finish_reason="length" alias for max_tokens. Same semantics as
+// Gemini MAX_TOKENS; classifier table includes "length" so we
+// don't double-bill the user on under-MaxTokens runs.
+func TestOneBlurb_DoesNotRetry_OpenAILength(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: "length"},
+		{text: "should never run"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected OpenAI 'length' stop reason to be deterministic")
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want 1 (OpenAI 'length' alias)", got)
+	}
+}
+
+// TestRunawayResponseError_TypedClassification ensures the
+// non-retryable classification of MaxBlurbLen violations now goes
+// through errors.As on the typed *runawayResponseErr — a future
+// edit to the formatted message can't silently flip the
+// classifier the way a strings.Contains check would.
+func TestRunawayResponseError_TypedClassification(t *testing.T) {
+	err := &runawayResponseErr{providerID: "fake/m", got: 9999}
+	if blurbErrorRetryable(err) {
+		t.Error("runawayResponseErr must be classified as non-retryable")
+	}
+	// errors.As round-trip through fmt.Errorf wrapping (the way
+	// orchestrators wrap errors with extra context).
+	wrapped := fmt.Errorf("schema_indexer: blurb: %w", err)
+	if blurbErrorRetryable(wrapped) {
+		t.Error("wrapped runawayResponseErr must still be classified as non-retryable")
+	}
+	// Message must still carry the wording operators expect (the
+	// MaxBlurbLen-exceeds wording is in the agent's error log).
+	if !strings.Contains(err.Error(), "MaxBlurbLen") {
+		t.Errorf("error message must mention MaxBlurbLen; got %q", err.Error())
 	}
 }
