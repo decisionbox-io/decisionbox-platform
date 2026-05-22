@@ -9,6 +9,7 @@ import PackGenStatusPanel from '@/components/projects/PackGenStatusPanel';
 import {
   api,
   Project,
+  SchemaIndexStatus,
   WarehouseConfig,
   PROJECT_STATE_PACK_GENERATION_PENDING,
 } from '@/lib/api';
@@ -53,16 +54,30 @@ function pendingProject(): Project {
   } as Project;
 }
 
+// Minimal but complete WarehouseConfig — every required field
+// stamped so strict TypeScript accepts the fixture without an
+// `as unknown` cast. The fields we don't exercise in this test
+// suite (`project_id`, `location`, `filter_field`, `filter_value`)
+// are still required by the type contract.
+function warehouseFixture(overrides: Partial<WarehouseConfig> = {}): WarehouseConfig {
+  return {
+    provider: 'bigquery',
+    project_id: 'demo-proj',
+    datasets: ['analytics'],
+    location: 'US',
+    filter_field: '',
+    filter_value: '',
+    ...overrides,
+  };
+}
+
 function pendingProjectWithWarehouse(): Project {
-  const p = pendingProject();
   // A fully-configured warehouse needs both a provider AND at
   // least one dataset — the agent's index-schema mode rejects
   // with "no datasets configured in project" without datasets.
   // Test fixtures mirror the gate.
-  (p as Project).warehouse = {
-    provider: 'bigquery',
-    datasets: ['analytics'],
-  } as WarehouseConfig;
+  const p = pendingProject();
+  (p as Project).warehouse = warehouseFixture();
   return p;
 }
 
@@ -73,7 +88,7 @@ function pendingProjectWithProviderOnly(): Project {
   // Build action would POST a reindex against a warehouse that
   // doesn't know what to index.
   const p = pendingProject();
-  (p as Project).warehouse = { provider: 'bigquery', datasets: [] } as WarehouseConfig;
+  (p as Project).warehouse = warehouseFixture({ datasets: [] });
   return p;
 }
 
@@ -85,21 +100,23 @@ function pendingProjectWithProviderOnly(): Project {
 function statusResponse(
   status: string,
   progress?: { phase?: string; tables_total?: number; tables_done?: number },
-  extra: Partial<{ updated_at: string | null; error: string }> = {},
-) {
-  return {
-    status,
-    updated_at: extra.updated_at ?? null,
-    error: extra.error,
-    progress:
-      progress === undefined
-        ? undefined
-        : {
-            phase: progress.phase ?? 'embedding',
-            tables_total: progress.tables_total ?? 100,
-            tables_done: progress.tables_done ?? 42,
-          },
-  };
+  extra: Partial<{ updated_at: string; error: string }> = {},
+): SchemaIndexStatus {
+  // `updated_at` and `error` are optional on the wire — only
+  // included when the caller supplies them, so the fixture
+  // matches the real `SchemaIndexStatus` type (which declares
+  // both as optional `string`, NOT `string | null`).
+  const out: SchemaIndexStatus = { status };
+  if (extra.updated_at !== undefined) out.updated_at = extra.updated_at;
+  if (extra.error !== undefined) out.error = extra.error;
+  if (progress !== undefined) {
+    out.progress = {
+      phase: progress.phase ?? 'embedding',
+      tables_total: progress.tables_total ?? 100,
+      tables_done: progress.tables_done ?? 42,
+    };
+  }
+  return out;
 }
 
 function mount(p: Project = pendingProject()) {
