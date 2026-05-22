@@ -539,6 +539,115 @@ func TestChatWithRetry_RetriesOnClaudeTypedRateLimit(t *testing.T) {
 	}
 }
 
+// TestIsRetryableLLMError_5xxRange pins the contract Codex
+// caught in round 2: the entire 5xx range is retryable, not
+// just the enumerated 500/502/503/504/529. Cloudflare and
+// other gateway proxies sit between the agent and the LLM
+// provider and emit non-standard 5xx codes when they themselves
+// are stressed (520 "Web Server Returned an Unknown Error",
+// 522 "Connection Timed Out", 524 "A Timeout Occurred"). All
+// are transient — the upstream server is overloaded or briefly
+// unreachable.
+func TestIsRetryableLLMError_5xxRange(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		// Cloudflare-family non-standard 5xx codes.
+		{"cloudflare_520_unknown", 520, true},
+		{"cloudflare_522_conn_timeout", 522, true},
+		{"cloudflare_524_timeout", 524, true},
+		{"cloudflare_525_ssl_handshake", 525, true},
+		{"cloudflare_526_invalid_ssl", 526, true},
+		// Anthropic-specific 529 overloaded.
+		{"anthropic_529_overloaded", 529, true},
+		// AWS-specific 5xx range upper bound.
+		{"five_xx_upper_599", 599, true},
+		// Spot checks for the enumerated set.
+		{"openai_500_server_error", 500, true},
+		{"google_native_503", 503, true},
+		// Below the 5xx range — should NOT retry.
+		{"client_error_400", 400, false},
+		{"client_error_401", 401, false},
+		{"client_error_403", 403, false},
+		{"client_error_404", 404, false},
+		{"client_error_409", 409, false},
+		{"client_error_410", 410, false},
+		// Special-case retryable 4xx.
+		{"client_408_request_timeout", 408, true},
+		{"client_425_too_early", 425, true},
+		{"client_429_rate_limit", 429, true},
+		{"client_499_cancelled", 499, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Format as the most common shape so the regex
+			// extractor finds the number.
+			msg := fmt.Sprintf("openai: API error (%d): something", c.status)
+			if got := isRetryableLLMError(ctx, errors.New(msg)); got != c.want {
+				t.Errorf("status %d: isRetryableLLMError = %v, want %v (msg=%q)", c.status, got, c.want, msg)
+			}
+		})
+	}
+}
+
+// TestExtractHTTPStatus pins the regex contract — every error
+// shape the in-tree providers emit must surrender its status
+// code. Catches both the "status NNN" and "(NNN)" formats and
+// false-positive-tolerant against unrelated 3-digit numbers in
+// the message (timeouts, byte counts, etc.).
+func TestExtractHTTPStatus(t *testing.T) {
+	cases := []struct {
+		name    string
+		msg     string
+		want    int
+		wantOK  bool
+	}{
+		{"status_form", "vertex-ai/google-native: API error (status 499): cancelled", 499, true},
+		{"paren_form", "openai: API error (429): rate limit", 429, true},
+		{"cloudflare_paren", "openai: API error (520): unknown", 520, true},
+		{"anthropic_529_status_form", "vertex-ai/anthropic: API error (status 529): overloaded", 529, true},
+		// No HTTP-status pattern; the extractor reports
+		// "not found" so the classifier can fall through to
+		// the typed-name and network checks.
+		{"bedrock_no_status", "bedrock/anthropic: InvokeModel failed: ThrottlingException: ...", 0, false},
+		{"claude_typed_no_status", "claude: API error: rate_limit_error - rate", 0, false},
+		// False-positive avoidance — millisecond timings,
+		// byte counts etc. must NOT match.
+		{"ms_in_message", "context deadline exceeded after 5000ms", 0, false},
+		{"unrelated_three_digit", "got 200 OK from healthcheck", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n, ok := extractHTTPStatus(c.msg)
+			if ok != c.wantOK || n != c.want {
+				t.Errorf("extractHTTPStatus(%q) = (%d, %v), want (%d, %v)", c.msg, n, ok, c.want, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestChatWithRetry_RetriesOnCloudflare520 is the integration
+// pin for Codex round 2's finding: the agent must retry when
+// a gateway proxy returns a 520-class error. Previously the
+// enumerated list let this fall through.
+func TestChatWithRetry_RetriesOnCloudflare520(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: errors.New("vertex-ai/openai-compat: API error (520): Cloudflare unknown error")},
+		{resp: okResp()},
+	}}
+	_, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{})
+	if err != nil {
+		t.Fatalf("Cloudflare 520 should retry; got %v", err)
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 2 {
+		t.Errorf("LLM called %d times, want 2", got)
+	}
+}
+
 // TestIsRetryableLLMError_ParentDeadlineExceededBails pins the
 // subtle invariant Copilot caught in round 1: when the parent
 // run context's deadline fires (parent timeout), Chat() returns

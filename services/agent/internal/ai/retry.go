@@ -7,6 +7,8 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -270,18 +272,16 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 
 	// HTTP status codes surface via the provider error string
 	// (gollm doesn't have typed HTTP errors at the interface
-	// boundary today). Match by substring against every shape
-	// the in-tree providers actually format. As of this PR:
-	//   - vertex-ai/google-native, vertex-ai/anthropic,
-	//     azure-foundry/claude, claude:     "API error (status NNN):"
-	//   - openai, azure-foundry/openai,
-	//     vertex-ai/openai-compat:          "API error (NNN):"
-	// Bedrock takes a different path entirely (AWS SDK typed
-	// exceptions), handled below.
-	for _, code := range retryableStatusCodes {
-		if strings.Contains(msg, "status "+code) || strings.Contains(msg, "("+code+")") {
-			return true
-		}
+	// boundary today). Extract the numeric status from the two
+	// shapes the in-tree providers format ("status NNN" and
+	// "(NNN)") and classify by RANGE rather than enumerating
+	// individual codes — that way unlisted-but-transient
+	// upstream errors (Cloudflare 520/522/524, any 5xx
+	// gateway proxy emits) retry too. Codex caught this in
+	// round 2 of PR #234's review: an enumeration like
+	// {500,502,503,504,529} silently dropped 520-class errors.
+	if status, ok := extractHTTPStatus(msg); ok && isRetryableHTTPStatus(status) {
+		return true
 	}
 
 	// Provider-typed error names for transient classes. None of
@@ -296,25 +296,67 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 	return false
 }
 
+// httpStatusRegex matches the two error-string shapes the
+// in-tree providers use to embed an HTTP status code:
+//
+//   - "status NNN" — vertex-ai/google-native,
+//     vertex-ai/anthropic, claude (HTTP fallback),
+//     azure-foundry/claude
+//   - "(NNN)" — openai, azure-foundry/openai,
+//     vertex-ai/openai-compat
+//
+// The boundary on either side (`\b` for "status", parens for
+// the second form) prevents false matches against substrings
+// like "5000ms" appearing elsewhere in the error message.
+var httpStatusRegex = regexp.MustCompile(`(?:status\s+|\()(\d{3})\)?`)
+
+// extractHTTPStatus parses the first HTTP status code out of a
+// provider error string. Returns (0, false) when no
+// recognisable pattern is present (e.g. Bedrock SDK errors
+// whose typed exception name is the signal — handled
+// elsewhere).
+func extractHTTPStatus(msg string) (int, bool) {
+	m := httpStatusRegex.FindStringSubmatch(msg)
+	if len(m) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// isRetryableHTTPStatus classifies a numeric HTTP status as
+// transient. Decisions:
+//
+//   - 408 Request Timeout — Bedrock ModelTimeoutException
+//     emits this; transient by definition.
+//   - 425 Too Early — RFC 8470, sometimes used for replay
+//     protection; safe to retry.
+//   - 429 Too Many Requests — the canonical rate-limit code,
+//     always retryable.
+//   - 499 — Vertex AI's shared-serving CANCELLED, the
+//     motivating case.
+//   - 5xx — entire range. Some providers / proxies emit
+//     non-standard 5xx codes (Cloudflare 520-526, GCP 504,
+//     Anthropic 529); enumerating individual codes is
+//     fragile. The 5xx prefix is the contract.
+//   - 4xx (other than the above) — deterministic config
+//     errors; surface immediately.
+func isRetryableHTTPStatus(status int) bool {
+	switch status {
+	case 408, 425, 429, 499:
+		return true
+	}
+	return status >= 500 && status <= 599
+}
+
 // retryableStatusCodes lists the HTTP statuses we re-issue on.
 // 499 is the Vertex AI shared-serving cancellation case;
 // 429 is the standard rate-limit code; 5xx are server-side
 // failures. Anything else is treated as deterministic and
 // surfaced to the caller without retry.
-// retryableStatusCodes lists every HTTP status the in-tree
-// providers actually return for transient failure. Sources:
-// Anthropic Errors doc (529 overloaded, 504 timeout), AWS
-// Bedrock InvokeModel API reference (429 ThrottlingException,
-// 429 ModelNotReadyException, 408 ModelTimeoutException, 500
-// InternalServerException, 503 ServiceUnavailableException),
-// OpenAI Python SDK exceptions (429 RateLimitError, 5xx
-// InternalServerError), Vertex AI google-native (499 CANCELLED
-// shared-serving yield).
-var retryableStatusCodes = []string{
-	"408", "429", "499",
-	"500", "502", "503", "504", "529",
-}
-
 // networkErrorHints matches transient network failures whose
 // errors arrive as plain `errors.New(...)` strings rather than
 // net.Error implementations. The lowercase prefix list keeps
