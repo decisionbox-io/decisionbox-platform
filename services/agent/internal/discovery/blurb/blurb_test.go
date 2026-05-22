@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -25,8 +26,9 @@ type fakeLLM struct {
 }
 
 type scriptedResp struct {
-	text string
-	err  error
+	text       string
+	err        error
+	stopReason string // mirrors gollm.ChatResponse.StopReason (e.g. "SAFETY", "MAX_TOKENS", "STOP")
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
@@ -38,7 +40,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatR
 			if s.err != nil {
 				return nil, s.err
 			}
-			return &gollm.ChatResponse{Content: s.text, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}}, nil
+			return &gollm.ChatResponse{Content: s.text, StopReason: s.stopReason, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}}, nil
 		}
 	}
 	if f.err != nil {
@@ -280,12 +282,15 @@ func TestGenerate_EmptyResponseIsError(t *testing.T) {
 // --- Failure budget ---
 
 func TestGenerate_BelowFailureBudget_Succeeds(t *testing.T) {
-	// 20 inputs, 1 script-failure = 5% = at the budget (1 allowed).
+	// 20 inputs, 1 SAFETY block = 5% = at the budget (1 allowed).
+	// SAFETY is a deterministic empty-response reason so the per-blurb
+	// retry doesn't absorb it — the test still exercises the budget
+	// machinery with exactly one failure landing in the output slice.
 	scripted := make([]scriptedResp, 20)
 	for i := range scripted {
 		scripted[i] = scriptedResp{text: "ok"}
 	}
-	scripted[10] = scriptedResp{err: errors.New("transient")}
+	scripted[10] = scriptedResp{text: "", stopReason: "SAFETY"}
 	llm := &fakeLLM{scripted: scripted}
 	g, _ := New(Config{LLM: llm, Model: "gpt-4o", Workers: 1, MaxFailureRate: 0.05})
 
@@ -464,5 +469,231 @@ func TestFormatFKHints_FiltersBlanks(t *testing.T) {
 	got := formatFKHints([]string{"a", "", "b"})
 	if got != "a, b" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// --- per-blurb retry + finish-reason surfacing ---
+
+// newTestGen builds a Generator whose only knob is the LLM — every
+// other field uses defaults. The MaxFailureRate stays at 5% so the
+// failure-budget machinery is exercised the same way production code
+// uses it.
+func newTestGen(t *testing.T, llm gollm.Provider) *Generator {
+	t.Helper()
+	g, err := New(Config{LLM: llm, Model: "gpt-4o", ProviderName: "fake"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return g
+}
+
+// TestOneBlurb_RetriesEmptyResponse_WithoutFinishReason locks the
+// primary motivation for the retry: a transient empty response that
+// the provider couldn't classify (no finish_reason surfaced) clears
+// on the second call. Without the retry, the run trips the 5%
+// failure budget on cohorts where the model is mostly fine but
+// occasionally returns nothing.
+func TestOneBlurb_RetriesEmptyResponse_WithoutFinishReason(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: ""},           // first attempt: transient empty
+		{text: "A table of orders.", stopReason: "STOP"}, // retry succeeds
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err != nil {
+		t.Fatalf("expected success after retry, got err: %v", out.Err)
+	}
+	if out.Blurb != "A table of orders." {
+		t.Errorf("blurb = %q, want 'A table of orders.'", out.Blurb)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 2 {
+		t.Errorf("LLM called %d times, want 2 (one retry)", got)
+	}
+}
+
+// TestOneBlurb_DoesNotRetry_SafetyBlock pins the retry-classifier:
+// a deterministic empty (SAFETY) should fail-fast with one call,
+// not waste a second token-billed attempt on a prompt the model
+// will keep refusing.
+func TestOneBlurb_DoesNotRetry_SafetyBlock(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: "SAFETY"},
+		{text: "should never run", stopReason: "STOP"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected SAFETY block to surface as error, got success")
+	}
+	if !strings.Contains(out.Err.Error(), "finish_reason=SAFETY") {
+		t.Errorf("error %q must include finish_reason=SAFETY for operator diagnosis", out.Err)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want exactly 1 (SAFETY is deterministic)", got)
+	}
+}
+
+// TestOneBlurb_DoesNotRetry_MaxTokens covers the other deterministic
+// finish_reason: MAX_TOKENS means the response WAS produced but we
+// asked for too few tokens. Retrying with the same MaxTokens would
+// hit the same wall — surface the reason so the operator raises
+// MaxTokens or picks a less verbose model.
+func TestOneBlurb_DoesNotRetry_MaxTokens(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: "MAX_TOKENS"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected MAX_TOKENS empty to surface as error")
+	}
+	if !strings.Contains(out.Err.Error(), "finish_reason=MAX_TOKENS") {
+		t.Errorf("error %q must include finish_reason=MAX_TOKENS", out.Err)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want 1", got)
+	}
+}
+
+// TestOneBlurb_RetriesChatError absorbs the most common non-empty
+// transient: a Chat() error (rate-limit, brief 5xx). Permanent
+// errors fall through to the second attempt and surface — they
+// don't cost wall-clock because the worker pool is fan-out.
+func TestOneBlurb_RetriesChatError(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{err: fmt.Errorf("upstream 429: rate limit")},
+		{text: "ok"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err != nil {
+		t.Fatalf("expected success after Chat-error retry, got: %v", out.Err)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 2 {
+		t.Errorf("LLM called %d times, want 2", got)
+	}
+}
+
+// TestOneBlurb_GivesUpAfterMaxAttempts ensures the retry budget is
+// bounded: two consecutive transient empties surface the error
+// rather than looping. Returns the LATEST error so the operator
+// sees the most recent finish_reason hint.
+func TestOneBlurb_GivesUpAfterMaxAttempts(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: ""},
+		{text: "", stopReason: "OTHER"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected failure after exhausted retries")
+	}
+	if got := atomic.LoadInt64(&llm.called); got != int64(blurbMaxAttempts) {
+		t.Errorf("LLM called %d times, want %d (blurbMaxAttempts)", got, blurbMaxAttempts)
+	}
+	if !strings.Contains(out.Err.Error(), "finish_reason=OTHER") {
+		t.Errorf("error %q must reflect the latest attempt's finish_reason=OTHER", out.Err)
+	}
+}
+
+// TestOneBlurb_DoesNotRetry_RunawayResponse covers the third
+// deterministic-failure mode: a response that exceeds MaxBlurbLen.
+// Retrying with the same prompt + temperature=0 would produce the
+// same runaway. Caller diagnostic: pick a less verbose model.
+func TestOneBlurb_DoesNotRetry_RunawayResponse(t *testing.T) {
+	huge := strings.Repeat("x", MaxBlurbLen+1)
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: huge},
+		{text: "should never run"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected runaway response to surface as error")
+	}
+	if !strings.Contains(out.Err.Error(), "MaxBlurbLen") {
+		t.Errorf("error %q must mention MaxBlurbLen", out.Err)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want 1 (runaway is deterministic)", got)
+	}
+}
+
+// TestOneBlurb_EmptyResponse_OmitsFinishReasonWhenAbsent confirms
+// the error message degrades gracefully — providers that don't
+// surface a finish_reason (some Ollama paths, some self-hosted
+// gateways) shouldn't see a "finish_reason=" suffix with nothing
+// after the equals sign. Catches the regression where every empty
+// error suddenly grew a trailing "finish_reason=" tag.
+func TestOneBlurb_EmptyResponse_OmitsFinishReasonWhenAbsent(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: ""},
+		{text: "", stopReason: ""},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected failure after retry exhausted")
+	}
+	if strings.Contains(out.Err.Error(), "finish_reason=") {
+		t.Errorf("error %q should not include finish_reason= when provider didn't surface one", out.Err)
+	}
+}
+
+// TestOneBlurb_BackoffRespectsContextCancellation ensures a
+// cancelled context during the retry sleep returns ctx.Err()
+// promptly — staring at time.After(500ms) when every retry would
+// produce ctx.Err() anyway wastes worker-pool time on a failing
+// run.
+func TestOneBlurb_BackoffRespectsContextCancellation(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: ""}, // first attempt: empty, retryable
+	}}
+	g := newTestGen(t, llm)
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel almost immediately — the first attempt should complete,
+	// then the backoff sleep should bail on ctx.Done.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	out := g.oneBlurb(ctx, sampleInput("orders"))
+	elapsed := time.Since(start)
+	if out.Err == nil {
+		t.Fatal("expected ctx-cancelled retry to surface as error")
+	}
+	if !errors.Is(out.Err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", out.Err)
+	}
+	if elapsed >= blurbRetryBackoff {
+		t.Errorf("oneBlurb took %v, want < blurbRetryBackoff=%v (ctx cancel should bail the sleep)", elapsed, blurbRetryBackoff)
+	}
+}
+
+// TestBlurbErrorRetryable_Truthtable pins the classifier so a future
+// edit can't silently flip retryability for the deterministic cases.
+func TestBlurbErrorRetryable_Truthtable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil_no_retry", nil, false},
+		{"empty_no_finish_reason_retry", &emptyResponseErr{providerID: "p", model: "m"}, true},
+		{"empty_safety_no_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "SAFETY"}, false},
+		{"empty_recitation_no_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "RECITATION"}, false},
+		{"empty_maxtokens_no_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "MAX_TOKENS"}, false},
+		{"empty_stop_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "STOP"}, true},
+		{"empty_other_retry", &emptyResponseErr{providerID: "p", model: "m", stopReason: "OTHER"}, true},
+		{"max_blurb_len_no_retry", fmt.Errorf("blurb(x): response exceeds MaxBlurbLen=4000 chars (got 5000); pick a less verbose model"), false},
+		{"chat_error_retry", fmt.Errorf("blurb(x): upstream 429"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := blurbErrorRetryable(c.err); got != c.want {
+				t.Errorf("blurbErrorRetryable(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
 	}
 }

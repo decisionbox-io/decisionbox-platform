@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -49,6 +50,36 @@ const DefaultWorkers = 8
 // MaxBlurbLen is the hard ceiling on blurb text (characters). The prompt
 // targets 150 tokens (~600 chars) — anything over 4000 is a runaway.
 const MaxBlurbLen = 4000
+
+// blurbMaxAttempts is the maximum number of LLM calls per blurb. The
+// first attempt covers the happy path; the second absorbs transient
+// failures (empty responses with no finish_reason hint, network blips,
+// 429s, brief 5xx) that the spike found regularly on Gemini preview
+// models. A third attempt rarely adds value — by then the prompt is
+// either deterministically blocked (SAFETY / RECITATION) or the
+// upstream has a real problem we should surface, not paper over.
+const blurbMaxAttempts = 2
+
+// blurbRetryBackoff is the sleep between blurb attempts. Short enough
+// that the worker pool's wall-clock stays bounded on a fully-failing
+// run; long enough that a transient 429 / 5xx has time to clear.
+const blurbRetryBackoff = 500 * time.Millisecond
+
+// blurbDeterministicEmptyReasons lists Gemini / Vertex finish reasons
+// that mean "the model decided to produce nothing for THIS prompt and
+// will keep deciding that on retry". Surfacing the reason in the error
+// and skipping the retry tells the operator the actionable fix (pick
+// a different model, raise MaxTokens, edit the prompt) instead of
+// paying for a useless second call.
+var blurbDeterministicEmptyReasons = map[string]bool{
+	"SAFETY":     true,
+	"RECITATION": true,
+	"MAX_TOKENS": true,
+	// "STOP" and "OTHER" are NOT here on purpose — Gemini sometimes
+	// emits STOP with no text on transient backend glitches, and OTHER
+	// is by definition a "we don't know" bucket where one retry is
+	// often enough.
+}
 
 // Input is what the caller feeds per table.
 type Input struct {
@@ -280,7 +311,44 @@ func firstError(outputs []Output) error {
 // reason.
 var ErrTooManyFailures = errors.New("too many per-table blurb failures")
 
+// oneBlurb runs up to blurbMaxAttempts LLM calls for a single table.
+// A second attempt fires when the first surfaces a transient-looking
+// failure — a Chat() error, or an empty response whose finish_reason
+// is not in blurbDeterministicEmptyReasons. The spike (FINDINGS.md)
+// and a live 369-table run on Gemini preview confirmed that ~5-10%
+// of empty responses clear on a single retry; without this the
+// default 5% failure budget trips on cohorts that would have indexed
+// cleanly with one extra attempt.
 func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
+	var out Output
+	for attempt := 1; attempt <= blurbMaxAttempts; attempt++ {
+		out = g.oneBlurbAttempt(ctx, in)
+		if out.Err == nil {
+			return out
+		}
+		if !blurbErrorRetryable(out.Err) {
+			return out
+		}
+		if attempt == blurbMaxAttempts {
+			break
+		}
+		// ctx-aware backoff so a cancelled run doesn't burn the worker
+		// staring at time.Sleep when every retry would just produce
+		// ctx.Err() anyway.
+		select {
+		case <-ctx.Done():
+			return Output{Table: in.Schema.TableName, Err: ctx.Err()}
+		case <-time.After(blurbRetryBackoff):
+		}
+	}
+	return out
+}
+
+// oneBlurbAttempt is a single LLM call + response validation. Returns
+// Output.Err set on any failure mode (Chat error, empty response,
+// runaway response) and wraps the gollm error with the provider ID
+// for diagnostic context.
+func (g *Generator) oneBlurbAttempt(ctx context.Context, in Input) Output {
 	table := in.Schema.TableName
 	prompt := buildPrompt(in)
 
@@ -308,7 +376,10 @@ func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
 	if text == "" {
 		// Reasoning models would land here — we already reject them up-
 		// front, so this only triggers on genuinely empty API responses.
-		return Output{Table: table, Err: fmt.Errorf("blurb(%s): empty response from %s", g.providerID(), g.model)}
+		// Surface resp.StopReason so the failure-budget error tells the
+		// operator WHY the response was empty (SAFETY block, MAX_TOKENS
+		// truncation, RECITATION refusal, or genuinely unknown).
+		return Output{Table: table, Err: emptyResponseError(g.providerID(), g.model, resp.StopReason)}
 	}
 	if len(text) > MaxBlurbLen {
 		// Runaway response — mid-word truncation would poison the
@@ -322,6 +393,63 @@ func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 	}
+}
+
+// emptyResponseError formats the "empty response" error with the
+// provider's reported finish reason when present. Operators on the
+// 369-table preview-model run had no way to distinguish a SAFETY
+// block from a transient empty — the reason fixes that.
+func emptyResponseError(providerID, model, stopReason string) error {
+	if stopReason != "" {
+		return &emptyResponseErr{
+			providerID: providerID,
+			model:      model,
+			stopReason: stopReason,
+		}
+	}
+	return &emptyResponseErr{providerID: providerID, model: model}
+}
+
+// emptyResponseErr is a typed error so blurbErrorRetryable can
+// decide retry-vs-no without string-matching the message.
+type emptyResponseErr struct {
+	providerID string
+	model      string
+	stopReason string // optional; empty means the provider didn't surface one
+}
+
+func (e *emptyResponseErr) Error() string {
+	if e.stopReason != "" {
+		return fmt.Sprintf("blurb(%s): empty response from %s (finish_reason=%s)", e.providerID, e.model, e.stopReason)
+	}
+	return fmt.Sprintf("blurb(%s): empty response from %s", e.providerID, e.model)
+}
+
+// blurbErrorRetryable is true when the same prompt to the same model
+// has a reasonable chance of succeeding on a second try. The split
+// is conservative: empty responses with a deterministic finish_reason
+// (SAFETY / RECITATION / MAX_TOKENS) won't change on retry, and a
+// runaway response means the model is fine but verbose — neither
+// case earns a second call. Anything else (Chat errors, empty with
+// no finish_reason, empty with STOP / OTHER) gets one retry.
+func blurbErrorRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var empty *emptyResponseErr
+	if errors.As(err, &empty) {
+		return !blurbDeterministicEmptyReasons[empty.stopReason]
+	}
+	// MaxBlurbLen error string is deterministic for a given prompt;
+	// detect it so we don't waste a retry on it.
+	if strings.Contains(err.Error(), "response exceeds MaxBlurbLen") {
+		return false
+	}
+	// Any other Chat() error: usually transient (rate-limit, network
+	// blip, 5xx). Permanent errors (auth, model-not-found) fail on the
+	// retry too — the extra call is cheap, but the diagnostic still
+	// surfaces.
+	return true
 }
 
 func (g *Generator) providerID() string {
