@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agent LLM calls now retry on transient upstream cancellations (499 / 429 / 5xx / network)** — `services/agent/internal/ai/retry.go` wraps every `gollm.Provider.Chat` call from the discovery agent (orchestrator, exploration loop, SQL fixer) in a bounded exponential backoff with jitter. Resolves the single-499-kills-the-run failure mode on Vertex AI's shared-serving tier: preview models (`gemini-3.x-pro-preview` and friends) live on shared serving and transiently cancel in-flight requests (gRPC code 1 / HTTP 499) when the scheduler decides the tenant should yield. The blurb generator's per-table retry (PR #227) already covered schema-index calls; the discovery exploration loop did not, so a single transient cancellation at step N still aborted everything between steps 1-(N-1). The retry classifier (`isRetryableLLMError`) is centralised in one place — 499 / 429 / 5xx by HTTP-status substring, `context.DeadlineExceeded`, `net.Error`, `io.EOF` / `ErrUnexpectedEOF`, and common transport-layer error strings (`connection reset`, `broken pipe`, `no such host`, `i/o timeout`) — so a future gollm typed-error refactor only touches one site. Parent-context cancellation (`errors.Is(err, context.Canceled)`) and deterministic 4xx (400 / 401 / 403 / 404 / 409) surface immediately without burning retries. Defaults: 3 total attempts, 5s base backoff with ±25% jitter, 60s cap. Operators tune via `LLM_RETRY_MAX_ATTEMPTS` (set to 1 to disable retries) and `LLM_RETRY_BASE_BACKOFF` (any Go-duration string). 14 new tests pin the contract — happy path, every retryable status, every non-retryable status, parent-cancel-overrides-retryable, backoff respects ctx.Done, env knobs honoured, truth-table for the classifier.
+
 ## [0.7.0] - 2026-05-22
 
 ### Added
