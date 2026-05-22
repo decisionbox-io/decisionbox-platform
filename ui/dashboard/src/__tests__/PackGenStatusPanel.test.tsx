@@ -9,6 +9,7 @@ import PackGenStatusPanel from '@/components/projects/PackGenStatusPanel';
 import {
   api,
   Project,
+  WarehouseConfig,
   PROJECT_STATE_PACK_GENERATION_PENDING,
 } from '@/lib/api';
 
@@ -38,12 +39,49 @@ jest.mock('@/lib/api', () => {
 
 const mockedApi = api as jest.Mocked<typeof api>;
 
+// pendingProject without warehouse mirrors the very-fresh-draft state:
+// project just created, operator hasn't reached the warehouse step yet,
+// schema-index status would be empty on the server, and the
+// SchemaIndexPanel must NOT mount on the home page (clicking its
+// "Build schema index" action against a missing warehouse would land
+// the run in a confusing failed state — see PR #228 Codex review).
 function pendingProject(): Project {
   return {
     id: 'p1',
     name: 'Demo',
     state: PROJECT_STATE_PACK_GENERATION_PENDING,
   } as Project;
+}
+
+function pendingProjectWithWarehouse(): Project {
+  const p = pendingProject();
+  (p as Project).warehouse = { provider: 'bigquery' } as WarehouseConfig;
+  return p;
+}
+
+// Canonical SchemaIndexStatus shape: status + progress.{phase,
+// tables_total, tables_done}. Tests assemble responses through this
+// builder so a future field rename surfaces in one place and the
+// suite catches drift from the real wire contract — see PR #228
+// Copilot comment on the original `progress_pct` mock.
+function statusResponse(
+  status: string,
+  progress?: { phase?: string; tables_total?: number; tables_done?: number },
+  extra: Partial<{ updated_at: string | null; error: string }> = {},
+) {
+  return {
+    status,
+    updated_at: extra.updated_at ?? null,
+    error: extra.error,
+    progress:
+      progress === undefined
+        ? undefined
+        : {
+            phase: progress.phase ?? 'embedding',
+            tables_total: progress.tables_total ?? 100,
+            tables_done: progress.tables_done ?? 42,
+          },
+  };
 }
 
 function mount(p: Project = pendingProject()) {
@@ -63,22 +101,44 @@ beforeEach(() => {
   // tests don't advance fake timers, so a single resolved value keeps
   // the polling stable without affecting assertions.
   (mockedApi.getProject as jest.Mock).mockResolvedValue(pendingProject());
+  // SchemaIndexPanel calls getSchemaIndexStatus on mount; default to
+  // never-started so the panel-mount-gate tests are deterministic.
+  (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue(statusResponse(''));
 });
 
 describe('PackGenStatusPanel — pack_generation_pending', () => {
-  it('shows the "Pick up where you left off" copy when schema indexing has not started', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready', updated_at: null } as never);
+  it('shows the "Pick up where you left off" copy when the project has no warehouse and no schema-index has started', async () => {
+    // pendingProject() has no warehouse → SchemaIndexPanel is gated
+    // out → home page is purely the wizard-resume prompt. This is
+    // the very-fresh-draft state.
     mount();
-    // Default rendering picks up the ready badge (schema is indexed but
-    // pack synthesis hasn't been kicked off yet) and the wizard-resume
-    // helper copy — same as the original flow.
-    await waitFor(() => expect(screen.getByText(/Schema index is ready/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/Pick up where you left off/i)).toBeInTheDocument()
+    );
     expect(screen.getByRole('button', { name: /Continue setup/i })).toBeInTheDocument();
+    // Panel must NOT be mounted before warehouse is configured —
+    // otherwise its "Build schema index" action would call
+    // reindexSchema against an unconfigured warehouse. Absence of
+    // the SchemaIndexPanel's banner ("Schema index:") is the proof.
+    expect(screen.queryByText(/Schema index:/i)).not.toBeInTheDocument();
+  });
+
+  it('mounts SchemaIndexPanel once a warehouse is configured (Build action available pre-index)', async () => {
+    mount(pendingProjectWithWarehouse());
+    // SchemaIndexPanel renders its empty-status banner ("Schema
+    // index: Not indexed") so the operator can start indexing from
+    // the home page without re-entering the wizard.
+    await waitFor(() =>
+      expect(screen.getByText(/Schema index:/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/Pick up where you left off/i)).toBeInTheDocument();
   });
 
   it('replaces the wizard copy with an "indexing is running" message when indexStatus is indexing', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'indexing', progress_pct: 42, updated_at: null } as never);
-    mount();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(
+      statusResponse('indexing', { phase: 'embedding', tables_done: 42, tables_total: 100 }),
+    );
+    mount(pendingProjectWithWarehouse());
     await waitFor(() =>
       expect(screen.getByText(/Schema indexing is running/i)).toBeInTheDocument()
     );
@@ -91,8 +151,8 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
   });
 
   it('shows the "indexing pending" message when indexStatus is pending_indexing', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'pending_indexing', updated_at: null } as never);
-    mount();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(statusResponse('pending_indexing'));
+    mount(pendingProjectWithWarehouse());
     await waitFor(() =>
       expect(screen.getByText(/Schema indexing is running/i)).toBeInTheDocument()
     );
@@ -100,20 +160,22 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
   });
 
   it('shows "Schema indexed" + Continue-setup copy when indexStatus is ready', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready', updated_at: '2026-05-22T10:00:00Z' } as never);
-    mount();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(
+      statusResponse('ready', undefined, { updated_at: '2026-05-22T10:00:00Z' }),
+    );
+    mount(pendingProjectWithWarehouse());
     await waitFor(() => expect(screen.getByText(/Schema index is ready/i)).toBeInTheDocument());
     expect(screen.getByText(/Schema indexed/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Continue setup/i })).toBeInTheDocument();
   });
 
   it('shows a recovery message + retry button label when indexStatus is failed', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({
-      status: 'failed',
-      error: 'blurb: too many per-table blurb failures',
-      updated_at: null,
-    } as never);
-    mount();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(
+      statusResponse('failed', undefined, {
+        error: 'blurb: too many per-table blurb failures',
+      }),
+    );
+    mount(pendingProjectWithWarehouse());
     await waitFor(() =>
       expect(screen.getByText(/Schema indexing did not finish/i)).toBeInTheDocument()
     );
@@ -123,8 +185,8 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
   });
 
   it('shows a recovery message when indexStatus is cancelled', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'cancelled', updated_at: null } as never);
-    mount();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(statusResponse('cancelled'));
+    mount(pendingProjectWithWarehouse());
     await waitFor(() =>
       expect(screen.getByText(/Schema indexing was cancelled/i)).toBeInTheDocument()
     );
@@ -132,9 +194,25 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
     expect(screen.getByRole('button', { name: /Open wizard to retry/i })).toBeInTheDocument();
   });
 
+  it('shows a "Re-index required" badge when indexStatus is needs_reindex (operator cleared the cache)', async () => {
+    // After clicking Settings → Advanced → Clear schema cache, the
+    // server flips the status to needs_reindex. The home page must
+    // surface that as an actionable orange badge — without this
+    // branch the home page rendered the default gray "Pending"
+    // label and the operator wouldn't know a re-index was needed
+    // before pack synthesis can proceed.
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(statusResponse('needs_reindex'));
+    mount(pendingProjectWithWarehouse());
+    await waitFor(() =>
+      expect(screen.getByText(/Schema cache was cleared/i)).toBeInTheDocument()
+    );
+    expect(screen.getAllByText(/Re-index required/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /Open wizard to retry/i })).toBeInTheDocument();
+  });
+
   it('keeps the existing pack_gen_last_error banner when the previous pack synthesis attempt failed', async () => {
-    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready', updated_at: null } as never);
-    const proj = pendingProject();
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(statusResponse('ready'));
+    const proj = pendingProjectWithWarehouse();
     (proj as Project).pack_gen_last_error = 'invalid pack JSON: expected object';
     mount(proj);
     await waitFor(() =>
