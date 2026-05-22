@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-22
+
 ### Added
 
 - **`warehouse.Provider.ValidateSQL` — dialect-aware compile-only SQL check** — Every warehouse provider gains a `ValidateSQL(ctx, sql) error` method on the `warehouse.Provider` interface. Each implementation routes through the warehouse's native compile-only path so the dialect-owner decides whether the statement parses, resolves names, and compiles: BigQuery uses `QueryConfig.DryRun = true`; PostgreSQL, Redshift, and Databricks use `EXPLAIN <sql>`; Snowflake uses `EXPLAIN USING TEXT <sql>`; SQL Server uses `SET NOEXEC ON; <sql>; SET NOEXEC OFF;` (PARSEONLY only applies to subsequent batches in T-SQL, so it cannot gate a same-batch INSERT — confirmed by integration test). All six providers reject empty / whitespace-only SQL at the boundary, wrap the warehouse's own error with a `"<provider>: validate SQL: %w"` prefix so the underlying message is preserved alongside the routing context, and explicitly do not execute the statement. Read-only enforcement remains `ValidateReadOnly`'s responsibility — passing `ValidateSQL` on a write statement does not authorise execution. Unit tests cover the boundary check, the wire-format expectations, and error propagation for every provider; integration tests behind the existing per-provider build tags exercise the real compile path on Postgres (testcontainers), BigQuery (real), Redshift (real), and SQL Server (testcontainers). Snowflake and Databricks ship unit-only coverage until test accounts are available. **Pre-1.0 break:** any out-of-tree `warehouse.Provider` implementation must add the new method.
@@ -327,7 +329,8 @@ Initial public release.
 - 85%+ unit test coverage across all modules
 - Comprehensive documentation (28 files across 6 sections)
 
-[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.3.0...v0.4.0
