@@ -648,6 +648,51 @@ func TestChatWithRetry_RetriesOnCloudflare520(t *testing.T) {
 	}
 }
 
+// TestChatWithRetry_PreferContextErrorWhenParentDead pins the
+// race-resolution contract: when the parent ctx is cancelled
+// AND Chat happens to return a retryable upstream error (e.g.
+// the 499 raced with the cancel), we surface ctx.Err() — not
+// the upstream error. Reporting a random 499 in that case would
+// misclassify a cancelled run as an LLM failure, and operators
+// reading the agent log would chase the wrong tail. Caught by
+// Codex round 4 of PR #234's review.
+func TestChatWithRetry_PreferContextErrorWhenParentDead(t *testing.T) {
+	shortBackoffFor(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel BEFORE the Chat call so ctx.Err() is set when the
+	// retryability check runs.
+	cancel()
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: httpErr(499)}, // upstream returned a normally-retryable status
+	}}
+	_, err := chatWithRetry(ctx, llm, gollm.ChatRequest{})
+	if err == nil {
+		t.Fatal("expected cancellation to surface")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled to win, got %v (the upstream 499 must not mask the cancel)", err)
+	}
+}
+
+// TestChatWithRetry_PreferContextErrorOnDeadlineRace covers
+// the DeadlineExceeded variant of the same race: parent
+// deadline fires while Chat is returning a retryable error.
+func TestChatWithRetry_PreferContextErrorOnDeadlineRace(t *testing.T) {
+	shortBackoffFor(t)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: errors.New("openai: API error (503): server unavailable")},
+	}}
+	_, err := chatWithRetry(ctx, llm, gollm.ChatRequest{})
+	if err == nil {
+		t.Fatal("expected deadline cancellation to surface")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded to win, got %v", err)
+	}
+}
+
 // TestIsRetryableLLMError_ParentDeadlineExceededBails pins the
 // subtle invariant Copilot caught in round 1: when the parent
 // run context's deadline fires (parent timeout), Chat() returns

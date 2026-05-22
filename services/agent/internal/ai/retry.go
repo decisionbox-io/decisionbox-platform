@@ -107,6 +107,18 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 		lastErr = err
 
 		if !isRetryableLLMError(ctx, err) {
+			// When the classifier vetoes retry because the parent
+			// ctx is dead (any flavour — Canceled or
+			// DeadlineExceeded), surface ctx.Err() instead of the
+			// coincidental upstream error. The cancellation IS
+			// what the caller wants to know about; reporting a
+			// random 499 that happened to fire on the same tick
+			// would misclassify a cancelled run as an LLM
+			// failure. Caught by Codex round 4 of PR #234's
+			// review.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, err
 		}
 		if attempt == maxAttempts {
