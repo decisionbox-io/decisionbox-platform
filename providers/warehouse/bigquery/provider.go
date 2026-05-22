@@ -38,6 +38,7 @@ func init() {
 
 		return NewBigQueryProvider(context.Background(), BigQueryConfig{
 			ProjectID:     cfg["project_id"],
+			DataProjectID: cfg["data_project_id"],
 			Dataset:       cfg["dataset"],
 			Location:      cfg["location"],
 			Timeout:       time.Duration(timeoutMin) * time.Minute,
@@ -47,7 +48,8 @@ func init() {
 		Name:        "Google BigQuery",
 		Description: "Google Cloud data warehouse for analytics",
 		ConfigFields: []gowarehouse.ConfigField{
-			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
+			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project", Description: "GCP project the BigQuery client runs query jobs in (jobs.create required). For most setups this is also the project that owns the datasets — leave Data project ID empty."},
+			{Key: "data_project_id", Label: "Data project ID (cross-project reads)", Required: false, Type: "string", Placeholder: "bigquery-public-data", Description: "GCP project that owns the datasets. Defaults to GCP Project ID. Set when reading datasets from a different project — e.g. bigquery-public-data samples — so jobs still bill to your own project while reads target the data's home."},
 			{Key: "dataset", Label: "Datasets", Description: "Comma-separated dataset names", Required: true, Type: "string", Placeholder: "events_prod, features_prod"},
 			{Key: "location", Label: "Location", Type: "string", Default: "US", Placeholder: "US"},
 		},
@@ -73,10 +75,25 @@ func init() {
 
 // BigQueryConfig holds BigQuery-specific configuration.
 type BigQueryConfig struct {
+	// ProjectID is the GCP project the BigQuery client runs query
+	// jobs in. The credential's principal needs bigquery.jobs.create
+	// in this project. For single-project setups this is also where
+	// the data lives.
 	ProjectID string
-	Dataset   string
-	Location  string
-	Timeout   time.Duration
+	// DataProjectID is the GCP project that owns the datasets, when
+	// it differs from ProjectID. Optional. Empty = same project
+	// (the common case). Set when reading datasets the operator
+	// doesn't own — e.g. `bigquery-public-data` samples — so jobs
+	// still bill to the operator's project while reads target the
+	// data's home project. The BigQuery SDK's
+	// client.DatasetInProject(DataProjectID, ...) routes metadata
+	// reads accordingly, and Query.DefaultProjectID is set so
+	// unqualified table references in agent-generated SQL resolve
+	// against DataProjectID rather than the client's job project.
+	DataProjectID string
+	Dataset       string
+	Location      string
+	Timeout       time.Duration
 	// ClientOptions carries credentials (resolved upstream via
 	// gcpcreds.ClientOptions) plus any custom options such as an
 	// emulator endpoint for tests.
@@ -85,9 +102,10 @@ type BigQueryConfig struct {
 
 // BigQueryProvider implements warehouse.Provider for Google BigQuery.
 type BigQueryProvider struct {
-	client  bqClient
-	dataset string
-	config  BigQueryConfig
+	client        bqClient
+	dataset       string
+	dataProjectID string // effective; defaults to config.ProjectID
+	config        BigQueryConfig
 }
 
 // NewBigQueryProvider creates a BigQuery warehouse provider.
@@ -102,16 +120,51 @@ func NewBigQueryProvider(ctx context.Context, cfg BigQueryConfig) (*BigQueryProv
 		cfg.Timeout = 5 * time.Minute
 	}
 
+	dataProjectID := cfg.DataProjectID
+	if dataProjectID == "" {
+		dataProjectID = cfg.ProjectID
+	}
+
 	client, err := bq.NewClient(ctx, cfg.ProjectID, cfg.ClientOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("bigquery: failed to create client: %w", err)
 	}
 
-	return &BigQueryProvider{client: client, dataset: cfg.Dataset, config: cfg}, nil
+	return &BigQueryProvider{
+		client:        client,
+		dataset:       cfg.Dataset,
+		dataProjectID: dataProjectID,
+		config:        cfg,
+	}, nil
+}
+
+// datasetRef returns a dataset reference scoped to the effective
+// data project. When ProjectID == DataProjectID the reference is the
+// SDK's default Dataset() call, identical to the pre-cross-project
+// behaviour. When they differ, DatasetInProject routes metadata
+// reads to the dataset's home project even though the client was
+// constructed against the jobs project.
+func (p *BigQueryProvider) datasetRef(name string) *bq.Dataset {
+	if p.dataProjectID != p.config.ProjectID {
+		return p.client.DatasetInProject(p.dataProjectID, name)
+	}
+	return p.client.Dataset(name)
+}
+
+// applyDefaultProject sets Query.DefaultProjectID when the data
+// project differs from the jobs project, so unqualified
+// dataset.table references in agent-generated SQL resolve against
+// the data project rather than the jobs project (where the data
+// likely doesn't exist).
+func (p *BigQueryProvider) applyDefaultProject(q *bq.Query) {
+	if p.dataProjectID != p.config.ProjectID {
+		q.DefaultProjectID = p.dataProjectID
+	}
 }
 
 func (p *BigQueryProvider) Query(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
 	q := p.client.Query(query)
+	p.applyDefaultProject(q)
 
 	if len(params) > 0 {
 		qp := make([]bq.QueryParameter, 0, len(params))
@@ -161,7 +214,7 @@ func (p *BigQueryProvider) Query(ctx context.Context, query string, params map[s
 }
 
 func (p *BigQueryProvider) ListTables(ctx context.Context) ([]string, error) {
-	ds := p.client.Dataset(p.dataset)
+	ds := p.datasetRef(p.dataset)
 	it := ds.Tables(ctx)
 
 	var tables []string
@@ -186,7 +239,7 @@ func (p *BigQueryProvider) ListTables(ctx context.Context) ([]string, error) {
 }
 
 func (p *BigQueryProvider) GetTableSchema(ctx context.Context, table string) (*gowarehouse.TableSchema, error) {
-	t := p.client.Dataset(p.dataset).Table(table)
+	t := p.datasetRef(p.dataset).Table(table)
 	metadata, err := t.Metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("bigquery: failed to get metadata for %s: %w", table, err)
@@ -211,7 +264,7 @@ func (p *BigQueryProvider) GetTableSchema(ctx context.Context, table string) (*g
 }
 
 func (p *BigQueryProvider) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
-	ds := p.client.Dataset(dataset)
+	ds := p.datasetRef(dataset)
 	it := ds.Tables(ctx)
 
 	var tables []string
@@ -236,7 +289,7 @@ func (p *BigQueryProvider) ListTablesInDataset(ctx context.Context, dataset stri
 }
 
 func (p *BigQueryProvider) GetTableSchemaInDataset(ctx context.Context, dataset, table string) (*gowarehouse.TableSchema, error) {
-	t := p.client.Dataset(dataset).Table(table)
+	t := p.datasetRef(dataset).Table(table)
 	metadata, err := t.Metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("bigquery: failed to get metadata for %s.%s: %w", dataset, table, err)
@@ -300,13 +353,19 @@ func (p *BigQueryProvider) ValidateReadOnly(ctx context.Context) error {
 	// These do NOT include bigquery.tables.create/update/delete.
 
 	// Test 1: Can read dataset metadata
-	ds := p.client.Dataset(p.dataset)
+	ds := p.datasetRef(p.dataset)
 	if _, err := ds.Metadata(ctx); err != nil {
 		return fmt.Errorf("bigquery: cannot access dataset %s: %w", p.dataset, err)
 	}
 
 	// Test 2: Can run a simple query
 	q := p.client.Query("SELECT 1 as test")
+	// SELECT 1 has no table references so DefaultProjectID is
+	// irrelevant here, but applying it keeps the validation path
+	// identical to Query() so a misconfigured cross-project setup
+	// still surfaces a useful error at validation time rather than
+	// at first real query.
+	p.applyDefaultProject(q)
 	q.Location = p.config.Location
 	it, err := q.Read(ctx)
 	if err != nil {
@@ -334,6 +393,7 @@ func (p *BigQueryProvider) ValidateSQL(ctx context.Context, sql string) error {
 	ctx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
 	q := p.client.Query(sql)
+	p.applyDefaultProject(q)
 	q.DryRun = true
 	q.Location = p.config.Location
 	if _, err := q.Run(ctx); err != nil {
@@ -343,7 +403,7 @@ func (p *BigQueryProvider) ValidateSQL(ctx context.Context, sql string) error {
 }
 
 func (p *BigQueryProvider) HealthCheck(ctx context.Context) error {
-	ds := p.client.Dataset(p.dataset)
+	ds := p.datasetRef(p.dataset)
 	_, err := ds.Metadata(ctx)
 	if err != nil {
 		return fmt.Errorf("bigquery: health check failed: %w", err)
@@ -362,6 +422,7 @@ func (p *BigQueryProvider) Close() error {
 // Implements warehouse.CostEstimator.
 func (p *BigQueryProvider) DryRun(ctx context.Context, query string) (*gowarehouse.DryRunResult, error) {
 	q := p.client.Query(query)
+	p.applyDefaultProject(q)
 	q.DryRun = true
 
 	job, err := q.Run(ctx)
