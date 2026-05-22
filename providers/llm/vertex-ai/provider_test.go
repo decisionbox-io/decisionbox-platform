@@ -69,16 +69,55 @@ func TestVertexAIProvider_Factory_MissingProjectID(t *testing.T) {
 	}
 }
 
-func TestVertexAIProvider_Factory_MissingModel(t *testing.T) {
-	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+// TestVertexAIProvider_Factory_AcceptsEmptyModel pins the
+// list-only-construction contract: the dashboard's "Load models"
+// flow strips cfg["model"] before calling the factory because the
+// model field is irrelevant to ListModels. The factory must
+// construct successfully so the live-list endpoint can reach
+// ListModels(); Chat()/Validate() then refuse the empty-model
+// call site instead. Without this contract, Vertex live-listing
+// silently returns nothing (factory error → fetchLiveModels
+// returns (nil, nil) per PR #226's "lister or empty, never error"
+// rule) and the dashboard shows only the static catalog.
+func TestVertexAIProvider_Factory_AcceptsEmptyModel(t *testing.T) {
+	// ADC is probed inside the factory and may fail on a CI
+	// runner with no GCP credentials. Skip the construction
+	// assertion when that's the case — the empty-model behaviour
+	// is exercised by TestVertexAIProvider_Chat_RefusesListOnly
+	// regardless.
+	p, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
 		"project_id": "my-project",
 		"location":   "us-east5",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing model")
+	if err != nil {
+		if strings.Contains(err.Error(), "ADC") || strings.Contains(err.Error(), "google: could not find") {
+			t.Skipf("ADC unavailable in this environment: %v", err)
+		}
+		t.Fatalf("factory must accept empty model for list-only construction, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "model is required") {
-		t.Errorf("error = %q", err.Error())
+	if p == nil {
+		t.Fatal("factory returned nil provider with no error")
+	}
+}
+
+// TestVertexAIProvider_Chat_RefusesListOnly pins the runtime
+// guardrail: a provider constructed without a model surfaces a
+// clear "list-only construction" error rather than dispatching
+// against an empty model and producing a confusing downstream
+// failure.
+func TestVertexAIProvider_Chat_RefusesListOnly(t *testing.T) {
+	p := &VertexAIProvider{ /* model: "" — list-only */ }
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected list-only Chat to surface an error")
+	}
+	if !strings.Contains(err.Error(), "list-only construction") {
+		t.Errorf("error %q must mention list-only construction", err)
+	}
+	if err := p.Validate(context.Background()); err == nil {
+		t.Error("expected list-only Validate to surface an error")
 	}
 }
 

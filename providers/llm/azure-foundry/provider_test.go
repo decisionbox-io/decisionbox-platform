@@ -236,16 +236,42 @@ func TestAzureFoundryProvider_Factory_MissingAPIKey(t *testing.T) {
 	}
 }
 
-func TestAzureFoundryProvider_Factory_MissingModel(t *testing.T) {
-	_, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": "https://test.services.ai.azure.com",
-		"credentials_json":  "test-key",
+// TestAzureFoundryProvider_Factory_AcceptsEmptyModel pins the
+// list-only-construction contract: the dashboard's "Load models"
+// flow strips cfg["model"] before calling the factory, so the
+// factory must construct successfully and surface the
+// model-required error only at Chat() / Validate() time. See
+// providers/llm/ollama for the original precedent.
+func TestAzureFoundryProvider_Factory_AcceptsEmptyModel(t *testing.T) {
+	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
+		"endpoint":         "https://test.services.ai.azure.com",
+		"credentials_json": "test-key",
+	})
+	if err != nil {
+		t.Fatalf("factory must accept empty model for list-only construction, got: %v", err)
+	}
+	if p == nil {
+		t.Fatal("factory returned nil provider with no error")
+	}
+}
+
+// TestAzureFoundryProvider_Chat_RefusesListOnly pins the runtime
+// guardrail: a provider constructed without a model surfaces a
+// clear "list-only construction" error rather than dispatching
+// against an empty model.
+func TestAzureFoundryProvider_Chat_RefusesListOnly(t *testing.T) {
+	p := &AzureFoundryProvider{ /* model: "" — list-only */ }
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
 	})
 	if err == nil {
-		t.Fatal("expected error for missing model")
+		t.Fatal("expected list-only Chat to surface an error")
 	}
-	if !strings.Contains(err.Error(), "model is required") {
-		t.Errorf("error = %q, should mention model is required", err.Error())
+	if !strings.Contains(err.Error(), "list-only construction") {
+		t.Errorf("error %q must mention list-only construction", err)
+	}
+	if err := p.Validate(context.Background()); err == nil {
+		t.Error("expected list-only Validate to surface an error")
 	}
 }
 
