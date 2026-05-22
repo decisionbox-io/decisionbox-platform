@@ -107,7 +107,11 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 		"message_count": len(messages),
 	}).Debug("Sending LLM request")
 
-	resp, err := c.provider.Chat(ctx, req)
+	// chatWithRetry wraps provider.Chat with bounded exponential
+	// backoff on transient upstream failures (499 / 429 / 5xx /
+	// network). Without this, a single Vertex shared-serving
+	// cancellation in mid-discovery killed the whole run.
+	resp, err := chatWithRetry(ctx, c.provider, req)
 	latencyMs := time.Since(startTime).Milliseconds()
 
 	promptContent := ""
