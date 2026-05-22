@@ -35,6 +35,7 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   const [lastFeedback, setLastFeedback] = useState<Record<string, string>>({});
   const [regenerating, setRegenerating] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [launching, setLaunching] = useState(false);
   const [resetting, setResetting] = useState(false);
   // Schema-index status drives the "Step 1 / Step 2" progression in the
   // running-state UI. The agent builds the schema index first (which
@@ -169,7 +170,10 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
               // that pack synthesis is a separate, still-pending step
               // — operators were getting stuck here because nothing
               // on the home page told them another click was required.
-              ? 'Step 1 of 2 done — schema is indexed. Pack synthesis (step 2) has not started yet: open the wizard and click Generate pack on the final step to launch it. The agent then reads your knowledge sources + indexed schema and synthesises the pack.'
+              // The button below now launches synthesis directly when
+              // the project is ready (no wizard round-trip), so the
+              // copy points at the button rather than the wizard.
+              ? 'Step 1 of 2 done — schema is indexed. Pack synthesis (step 2) has not started yet: click Launch pack generation below to start it. The agent then reads your knowledge sources + indexed schema and synthesises the pack.'
               : 'Pick up where you left off in the wizard: upload knowledge sources, connect your warehouse, then launch the agent.';
 
     const buttonLabel = project.pack_gen_last_error
@@ -205,6 +209,58 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
       !!project.warehouse?.provider && (project.warehouse?.datasets?.length ?? 0) > 0;
     const showIndexPanel = warehouseConfigured || indexEverStarted;
 
+    // One-click pack-generation launch from the home page.
+    // Pre-conditions match the backend:
+    //   - pack_generation_pending state (this whole branch).
+    //   - project.generate_pack populated + enabled — set the moment
+    //     the wizard's create step lands the project, so any project
+    //     that reached the schema-index step has it.
+    //   - schema index is ready (the indexReady gate below).
+    //   - no pack_gen_last_error from a prior attempt — if there is
+    //     one, the operator needs to revisit knowledge sources / pack
+    //     description in the wizard before retrying, so the button
+    //     keeps routing there.
+    // If any pre-condition fails we fall back to the wizard so the
+    // user can fix the missing input in context.
+    const packReadyForLaunch =
+      indexReady &&
+      !!project.generate_pack?.enabled &&
+      !!project.generate_pack?.pack_name &&
+      !!project.generate_pack?.pack_slug &&
+      !project.pack_gen_last_error;
+
+    const handleLaunchPack = async () => {
+      setLaunching(true);
+      try {
+        await api.packGenerate(project.id);
+        notifications.show({
+          title: 'Pack generation launched',
+          message: 'The agent is synthesising the pack — this page will update automatically.',
+          color: 'blue',
+        });
+        // Refresh the project so the home page flips to the
+        // pack_generation two-step view immediately, rather than
+        // waiting up to 3s for the next poll tick.
+        try {
+          const next = await api.getProject(project.id);
+          onProjectChanged(next);
+        } catch { /* polling will catch up on the next tick */ }
+      } catch (e: unknown) {
+        const msg = (e as Error).message;
+        // 409 = state moved on (race), 400 = pack metadata missing,
+        // 404 = no provider on this deployment. For 404 / 400 the
+        // wizard is the only recovery surface; for 409 the next
+        // poll tick will reconcile. We notify regardless so the
+        // operator sees what happened.
+        notifications.show({ title: 'Could not launch pack generation', message: msg, color: 'red' });
+        if (msg.includes('no pending pack-generation request') || msg.includes('not available on this deployment')) {
+          router.push(`/projects/${project.id}/generate`);
+        }
+      } finally {
+        setLaunching(false);
+      }
+    };
+
     return (
       <Card withBorder p="lg">
         <Stack>
@@ -226,9 +282,15 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
             <SchemaIndexPanel projectId={project.id} onStatusChange={setIndexStatus} />
           )}
           <Group justify="flex-end">
-            <Button onClick={() => router.push(`/projects/${project.id}/generate`)}>
-              {buttonLabel}
-            </Button>
+            {packReadyForLaunch ? (
+              <Button onClick={handleLaunchPack} loading={launching}>
+                Launch pack generation
+              </Button>
+            ) : (
+              <Button onClick={() => router.push(`/projects/${project.id}/generate`)}>
+                {buttonLabel}
+              </Button>
+            )}
           </Group>
         </Stack>
       </Card>

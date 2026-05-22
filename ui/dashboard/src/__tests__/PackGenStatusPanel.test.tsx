@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import PackGenStatusPanel from '@/components/projects/PackGenStatusPanel';
@@ -34,6 +34,7 @@ jest.mock('@/lib/api', () => {
       cancelSchemaIndex: jest.fn(),
       listSchemaIndexLogs: jest.fn(),
       getDomainPack: jest.fn(),
+      packGenerate: jest.fn(),
     },
   };
 });
@@ -78,6 +79,24 @@ function pendingProjectWithWarehouse(): Project {
   // Test fixtures mirror the gate.
   const p = pendingProject();
   (p as Project).warehouse = warehouseFixture();
+  return p;
+}
+
+// pendingProjectReadyForLaunch is the every-precondition-met state
+// the direct-launch button activates on: warehouse configured,
+// schema indexed (asserted by the test's getSchemaIndexStatus
+// mock), pack metadata populated, no prior pack_gen_last_error.
+// Together these are what the backend's POST /pack-generate
+// endpoint requires (handler/pack_generate.go) so a direct
+// client call from the home page won't 400/404.
+function pendingProjectReadyForLaunch(): Project {
+  const p = pendingProjectWithWarehouse();
+  (p as Project).generate_pack = {
+    enabled: true,
+    pack_name: 'Demo Ecommerce Pack',
+    pack_slug: 'demo-ecommerce',
+    description: 'Ecommerce funnel + retention.',
+  };
   return p;
 }
 
@@ -208,28 +227,79 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
     expect(screen.getByText(/Indexing schema/i)).toBeInTheDocument();
   });
 
-  it('signals step 1 of 2 done and points at the wizard\'s Launch button when indexStatus is ready', async () => {
-    // The previous copy ("Schema index is ready. Continue in the
-    // wizard…" + Continue setup button) was too optimistic — at-a-
-    // glance, operators thought the pack itself was generated and
-    // got stuck waiting for a "Start discovery" button that never
-    // appears in this state. The new copy spells out that pack
-    // synthesis is a separate step that still has to be launched
-    // from the wizard's final step.
+  it('renders a one-click "Launch pack generation" button when every pre-condition for direct launch is met', async () => {
+    // Previously the home page's only affordance was a "Continue
+    // setup" button that routed back to the wizard, where the
+    // user then had to navigate to the final step and click
+    // Generate pack. With every backend pre-condition met
+    // (warehouse + datasets + indexReady + generate_pack
+    // populated + no pack_gen_last_error), the home page now
+    // exposes the launch action directly so the operator never
+    // has to context-switch back into the wizard.
     mockedApi.getSchemaIndexStatus.mockResolvedValue(
       statusResponse('ready', undefined, { updated_at: '2026-05-22T10:00:00Z' }),
     );
-    mount(pendingProjectWithWarehouse());
+    mount(pendingProjectReadyForLaunch());
     // Step disambiguator in the badge + the helper copy.
     await waitFor(() => expect(screen.getAllByText(/step 1 of 2/i).length).toBeGreaterThan(0));
-    // Badge shows the green "Schema indexed — step 1 of 2".
     expect(screen.getByText(/Schema indexed/i)).toBeInTheDocument();
-    // Helper copy must name pack synthesis as the still-pending
-    // next step so the operator knows another click is required.
     expect(screen.getByText(/pack synthesis/i)).toBeInTheDocument();
-    // Button verb names the action the next click triggers (the
-    // wizard opens, the operator clicks Generate pack there).
+    // Direct-launch button — no wizard round-trip required.
+    expect(screen.getByRole('button', { name: /^Launch pack generation$/i })).toBeInTheDocument();
+    // No wizard-fallback button when direct launch is available.
+    expect(screen.queryByRole('button', { name: /Open wizard to launch pack/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking "Launch pack generation" calls the pack-generate API and refreshes the project', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(
+      statusResponse('ready', undefined, { updated_at: '2026-05-22T10:00:00Z' }),
+    );
+    // packGenerate succeeds; getProject then returns a project in
+    // the next state so the home page can flip to the synthesis
+    // view without waiting for the 3-second polling tick.
+    (mockedApi.packGenerate as jest.Mock).mockResolvedValue({ run_id: 'run-1', async: true });
+    (mockedApi.getProject as jest.Mock).mockResolvedValue({
+      ...pendingProjectReadyForLaunch(),
+      state: 'pack_generation',
+    });
+
+    const onProjectChanged = jest.fn();
+    render(
+      <MantineProvider>
+        <Notifications />
+        <PackGenStatusPanel
+          project={pendingProjectReadyForLaunch()}
+          onProjectChanged={onProjectChanged}
+        />
+      </MantineProvider>,
+    );
+
+    const button = await waitFor(() =>
+      screen.getByRole('button', { name: /^Launch pack generation$/i }),
+    );
+    fireEvent.click(button);
+
+    // Direct call to the pack-gen API — no wizard navigation.
+    await waitFor(() => expect(mockedApi.packGenerate).toHaveBeenCalledWith('p1'));
+    // Parent gets the new project so the home page re-renders into
+    // the synthesis state immediately.
+    await waitFor(() => expect(onProjectChanged).toHaveBeenCalled());
+  });
+
+  it('falls back to the wizard when pack metadata (generate_pack) is missing', async () => {
+    // Backend would 400 on POST /pack-generate ("project has no
+    // pending pack-generation request") — client-side we detect
+    // the missing metadata and route to the wizard so the
+    // operator can fill it in instead of seeing a confusing error.
+    mockedApi.getSchemaIndexStatus.mockResolvedValue(
+      statusResponse('ready', undefined, { updated_at: '2026-05-22T10:00:00Z' }),
+    );
+    mount(pendingProjectWithWarehouse()); // no generate_pack
+    await waitFor(() => expect(screen.getByText(/Schema indexed/i)).toBeInTheDocument());
+    // Wizard-fallback button + label "Open wizard to launch pack"
+    // because direct launch can't satisfy the API pre-conditions.
     expect(screen.getByRole('button', { name: /Open wizard to launch pack/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Launch pack generation$/i })).not.toBeInTheDocument();
   });
 
   it('shows a recovery message + retry button label when indexStatus is failed', async () => {
