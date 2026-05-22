@@ -145,13 +145,17 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
           : indexNeedsReindex
             ? { color: 'orange', label: 'Re-index required' }
             : indexInFlight
-              ? { color: 'blue', label: 'Indexing schema' }
+              ? { color: 'blue', label: 'Indexing schema (step 1 of 2)' }
               : indexReady
-                ? { color: 'green', label: 'Schema indexed' }
+                // Green-but-emphatic that the pack itself is NOT yet
+                // generated — "step 1 of 2" is the disambiguator
+                // operators read at-a-glance, before they parse the
+                // helper copy below.
+                ? { color: 'green', label: 'Schema indexed — step 1 of 2' }
                 : { color: 'gray', label: 'Pending' };
 
     const helperCopy = indexInFlight
-      ? 'Schema indexing is running. You can leave this page; the panel below updates automatically. When it is ready, continue in the wizard to launch pack synthesis.'
+      ? 'Step 1 of 2 — schema indexing is running. You can leave this page; the panel below updates automatically. When it is ready, open the wizard to launch step 2 — pack synthesis.'
       : indexFailed
         ? 'Schema indexing did not finish. Open the wizard to retry with the same configuration or adjust your warehouse / blurb model.'
         : indexCancelled
@@ -159,14 +163,27 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
           : indexNeedsReindex
             ? 'Schema cache was cleared. Open the wizard to rebuild the index before continuing.'
             : indexReady
-              ? 'Schema index is ready. Continue in the wizard to upload knowledge sources, review the pack description, and launch the agent.'
+              // The previous copy ("Schema index is ready. Continue
+              // in the wizard…") read as "the pack is done" to
+              // operators who stopped at the green badge. Spell out
+              // that pack synthesis is a separate, still-pending step
+              // — operators were getting stuck here because nothing
+              // on the home page told them another click was required.
+              ? 'Step 1 of 2 done — schema is indexed. Pack synthesis (step 2) has not started yet: open the wizard and click Generate pack on the final step to launch it. The agent then reads your knowledge sources + indexed schema and synthesises the pack.'
               : 'Pick up where you left off in the wizard: upload knowledge sources, connect your warehouse, then launch the agent.';
 
     const buttonLabel = project.pack_gen_last_error
       ? 'Retry in wizard'
       : indexFailed || indexCancelled || indexNeedsReindex
         ? 'Open wizard to retry'
-        : 'Continue setup';
+        : indexReady
+          // The "ready" branch is the dwell point operators were
+          // stuck at — naming the next verb on the button makes the
+          // missing step obvious without forcing the operator to
+          // read the helper copy. "Continue setup" stays the right
+          // label for the truly-fresh-draft case below.
+          ? 'Open wizard to launch pack'
+          : 'Continue setup';
 
     // Gate the SchemaIndexPanel render on either (a) the project
     // already having a fully-configured warehouse (provider AND at

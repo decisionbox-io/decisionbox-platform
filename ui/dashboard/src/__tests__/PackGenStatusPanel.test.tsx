@@ -208,14 +208,28 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
     expect(screen.getByText(/Indexing schema/i)).toBeInTheDocument();
   });
 
-  it('shows "Schema indexed" + Continue-setup copy when indexStatus is ready', async () => {
+  it('signals step 1 of 2 done and points at the wizard\'s Launch button when indexStatus is ready', async () => {
+    // The previous copy ("Schema index is ready. Continue in the
+    // wizard…" + Continue setup button) was too optimistic — at-a-
+    // glance, operators thought the pack itself was generated and
+    // got stuck waiting for a "Start discovery" button that never
+    // appears in this state. The new copy spells out that pack
+    // synthesis is a separate step that still has to be launched
+    // from the wizard's final step.
     mockedApi.getSchemaIndexStatus.mockResolvedValue(
       statusResponse('ready', undefined, { updated_at: '2026-05-22T10:00:00Z' }),
     );
     mount(pendingProjectWithWarehouse());
-    await waitFor(() => expect(screen.getByText(/Schema index is ready/i)).toBeInTheDocument());
+    // Step disambiguator in the badge + the helper copy.
+    await waitFor(() => expect(screen.getAllByText(/step 1 of 2/i).length).toBeGreaterThan(0));
+    // Badge shows the green "Schema indexed — step 1 of 2".
     expect(screen.getByText(/Schema indexed/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Continue setup/i })).toBeInTheDocument();
+    // Helper copy must name pack synthesis as the still-pending
+    // next step so the operator knows another click is required.
+    expect(screen.getByText(/pack synthesis/i)).toBeInTheDocument();
+    // Button verb names the action the next click triggers (the
+    // wizard opens, the operator clicks Generate pack there).
+    expect(screen.getByRole('button', { name: /Open wizard to launch pack/i })).toBeInTheDocument();
   });
 
   it('shows a recovery message + retry button label when indexStatus is failed', async () => {
