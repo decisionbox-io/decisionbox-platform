@@ -123,15 +123,55 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
   };
 
   if (project.state === PROJECT_STATE_PACK_GENERATION_PENDING) {
+    // While the project is still in pack_generation_pending the operator
+    // can have already kicked off schema indexing from the wizard's
+    // "Build schema index" button — indexing runs as a separate worker,
+    // doesn't transition the project state, and may take many minutes
+    // on ERP-scale warehouses. The home page needs to be the natural
+    // progress-monitoring surface for that worker so the operator
+    // doesn't have to go back into the wizard's final step to watch
+    // progress; the SchemaIndexPanel below polls and renders the
+    // worker's state in place.
+    const indexInFlight = indexStatus?.status === 'indexing' || indexStatus?.status === 'pending_indexing';
+    const indexReady = indexStatus?.status === 'ready';
+    const indexFailed = indexStatus?.status === 'failed';
+    const indexCancelled = indexStatus?.status === 'cancelled';
+
+    const badge = project.pack_gen_last_error
+      ? { color: 'red', label: 'Last attempt failed' }
+      : indexFailed
+        ? { color: 'red', label: 'Indexing failed' }
+        : indexCancelled
+          ? { color: 'orange', label: 'Indexing cancelled' }
+          : indexInFlight
+            ? { color: 'blue', label: 'Indexing schema' }
+            : indexReady
+              ? { color: 'green', label: 'Schema indexed' }
+              : { color: 'gray', label: 'Pending' };
+
+    const helperCopy = indexInFlight
+      ? 'Schema indexing is running. You can leave this page; the panel below updates automatically. When it is ready, continue in the wizard to launch pack synthesis.'
+      : indexFailed
+        ? 'Schema indexing did not finish. Open the wizard to retry with the same configuration or adjust your warehouse / blurb model.'
+        : indexCancelled
+          ? 'Schema indexing was cancelled. Open the wizard to re-run it.'
+          : indexReady
+            ? 'Schema index is ready. Continue in the wizard to upload knowledge sources, review the pack description, and launch the agent.'
+            : 'Pick up where you left off in the wizard: upload knowledge sources, connect your warehouse, then launch the agent.';
+
+    const buttonLabel = project.pack_gen_last_error
+      ? 'Retry in wizard'
+      : indexFailed || indexCancelled
+        ? 'Open wizard to retry'
+        : 'Continue setup';
+
     return (
       <Card withBorder p="lg">
         <Stack>
           <Group gap={8}>
             <IconWand size={18} />
             <Title order={5}>Pack generation — draft</Title>
-            <Badge color={project.pack_gen_last_error ? 'red' : 'gray'}>
-              {project.pack_gen_last_error ? 'Last attempt failed' : 'Pending'}
-            </Badge>
+            <Badge color={badge.color}>{badge.label}</Badge>
           </Group>
           {project.pack_gen_last_error && (
             <Alert color="red" icon={<IconAlertCircle size={16} />} title="Pack generation failed">
@@ -141,12 +181,17 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
               </Text>
             </Alert>
           )}
-          <Text size="sm" c="dimmed">
-            Pick up where you left off in the wizard: upload knowledge sources, connect your warehouse, then launch the agent.
-          </Text>
+          <Text size="sm" c="dimmed">{helperCopy}</Text>
+          {/* SchemaIndexPanel polls every 2s while indexing and renders
+              status-aware content (progress / failure / ready badge).
+              When no schema-index has been kicked off yet, the panel
+              renders a minimal "no index" state — the helper copy above
+              already tells the operator to go to the wizard, so a
+              quiet panel here is fine. */}
+          <SchemaIndexPanel projectId={project.id} onStatusChange={setIndexStatus} />
           <Group justify="flex-end">
             <Button onClick={() => router.push(`/projects/${project.id}/generate`)}>
-              {project.pack_gen_last_error ? 'Retry in wizard' : 'Continue setup'}
+              {buttonLabel}
             </Button>
           </Group>
         </Stack>
