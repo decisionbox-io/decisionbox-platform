@@ -2,17 +2,19 @@
 
 import { useState } from 'react';
 import { Autocomplete, Badge, Group, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core';
-import type { ConfigField, ConfigOption, LiveModel, ModelInfo, ProviderMeta } from '@/lib/api';
+import type { ConfigField, ConfigOption, LiveModel, ProviderMeta } from '@/lib/api';
 
 // DynamicField renders one ConfigField from the backend provider meta.
 //
 // Behaviour:
-//   - Key === "model": always a combobox. If the selected provider has a
-//     catalog (meta.models), the dropdown lists catalogued IDs with their
-//     display name; the user can still type any string for uncatalogued
-//     models. Below the input we show a details panel (wire, max tokens,
-//     pricing) for the currently selected/typed model when catalogued, or
-//     a hint to set Wire override when not.
+//   - Key === "model": always a plain free-text input. The dashboard
+//     no longer surfaces the shipped catalog as a default selection
+//     list — operators load the upstream's live list via
+//     LiveModelCombobox (rendered by the caller) for the picker, and
+//     type any ID for new / preview models. The catalog still
+//     enriches typed values with wire / pricing metadata inside
+//     LiveModelCombobox (the badges next to a chosen / typed row),
+//     but is never offered as a starter list of selectable options.
 //   - field.options is non-empty + field.free_text is true: combobox over
 //     the provided options.
 //   - field.options is non-empty + !field.free_text: strict dropdown.
@@ -22,17 +24,17 @@ export function DynamicField({
   field,
   value,
   onChange,
-  providerMeta,
 }: {
   field: ConfigField;
   value: string;
   onChange: (v: string) => void;
+  /** Reserved for future per-field provider metadata; intentionally
+   * unused since the model picker no longer surfaces catalog rows. */
   providerMeta?: ProviderMeta | null;
 }) {
-  // Model field gets the catalog-backed combobox.
-  if (field.key === 'model') {
-    return <ModelCombobox field={field} value={value} onChange={onChange} meta={providerMeta ?? null} />;
-  }
+  // Model field falls through to the plain free-text branch below.
+  // No catalog dropdown — see the component-level comment above for
+  // why; live-list pickers live in LiveModelCombobox instead.
 
   // Generic dropdown / combobox from ConfigField.options.
   if (field.options && field.options.length > 0) {
@@ -95,62 +97,6 @@ export function DynamicField({
       value={value}
       onChange={(e) => onChange(e.target.value)}
     />
-  );
-}
-
-// ModelCombobox renders the "model" ConfigField as a combobox over the
-// provider's catalog. Shows catalog details for the selected model or an
-// inline hint prompting wire_override if the current value is uncatalogued.
-function ModelCombobox({
-  field,
-  value,
-  onChange,
-  meta,
-}: {
-  field: ConfigField;
-  value: string;
-  onChange: (v: string) => void;
-  meta: ProviderMeta | null;
-}) {
-  const models = meta?.models ?? [];
-  const match = models.find((m) => m.id === value);
-
-  if (models.length === 0) {
-    // No catalog for this provider — plain text input.
-    return (
-      <TextInput
-        label={field.label}
-        required={field.required}
-        placeholder={field.placeholder || field.default}
-        description={field.description}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    );
-  }
-
-  const data = models.map((m) => ({ value: m.id, label: `${m.display_name} — ${m.id}` }));
-  // See comment in LiveModelCombobox — normalise the Autocomplete's
-  // label-valued input back to the raw model id.
-  const handleChange = (next: string) => {
-    const hit = data.find((o) => o.label === next);
-    onChange(hit ? hit.value : next);
-  };
-
-  return (
-    <Stack gap={4}>
-      <Autocomplete
-        label={field.label}
-        required={field.required}
-        description={field.description}
-        placeholder={field.placeholder || field.default}
-        value={value}
-        onChange={handleChange}
-        limit={50}
-        data={data}
-      />
-      <ModelDetailsPanel match={match ?? null} typedValue={value} />
-    </Stack>
   );
 }
 
@@ -380,38 +326,3 @@ function LiveModelDetails({
   );
 }
 
-function ModelDetailsPanel({ match, typedValue }: { match: ModelInfo | null; typedValue: string }) {
-  if (!typedValue) return null;
-
-  if (!match) {
-    return (
-      <Text size="xs" c="dimmed">
-        <Text span fw={500} c="orange">Not in catalog.</Text>{' '}
-        Set <Text span fw={500}>Wire override</Text> below to tell DecisionBox which schema this model uses.
-      </Text>
-    );
-  }
-
-  const pricing =
-    match.input_price_per_million || match.output_price_per_million
-      ? `$${match.input_price_per_million ?? 0}/M in · $${match.output_price_per_million ?? 0}/M out`
-      : null;
-
-  return (
-    <Group gap="xs" wrap="wrap">
-      <Badge size="xs" variant="light" color="blue">
-        wire: {match.wire}
-      </Badge>
-      {match.max_output_tokens ? (
-        <Badge size="xs" variant="light" color="gray">
-          max out: {match.max_output_tokens.toLocaleString()}
-        </Badge>
-      ) : null}
-      {pricing ? (
-        <Badge size="xs" variant="light" color="gray">
-          {pricing}
-        </Badge>
-      ) : null}
-    </Group>
-  );
-}

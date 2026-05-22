@@ -1124,16 +1124,23 @@ func TestVertexAI_Factory_MissingProjectID(t *testing.T) {
 	}
 }
 
-func TestVertexAI_Factory_MissingModel(t *testing.T) {
-	_, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+// TestVertexAI_Factory_AcceptsEmptyModel mirrors the unit-test
+// guard in provider_test.go: list-only construction must succeed
+// so the live-list endpoint can call ListModels(). The Chat /
+// Validate guardrails are exercised separately.
+func TestVertexAI_Factory_AcceptsEmptyModel(t *testing.T) {
+	p, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
 		"project_id": "my-project",
 		"location":   "us-east5",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing model")
+	if err != nil {
+		if contains(err.Error(), "ADC") || contains(err.Error(), "google: could not find") {
+			t.Skipf("ADC unavailable in this environment: %v", err)
+		}
+		t.Fatalf("factory must accept empty model for list-only construction, got: %v", err)
 	}
-	if !contains(err.Error(), "model is required") {
-		t.Errorf("error = %q, should mention model is required", err.Error())
+	if p == nil {
+		t.Fatal("factory returned nil provider with no error")
 	}
 }
 

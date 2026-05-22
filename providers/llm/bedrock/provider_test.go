@@ -189,13 +189,47 @@ func TestBedrockProvider_Factory_RejectsGoogleNativeWireOverride(t *testing.T) {
 	}
 }
 
-func TestBedrockProvider_Factory_MissingModel(t *testing.T) {
-	_, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{})
-	if err == nil {
-		t.Fatal("expected error for missing model")
+// TestBedrockProvider_Factory_AcceptsEmptyModel pins the
+// list-only-construction contract: the dashboard's "Load models"
+// flow strips cfg["model"] before calling the factory because
+// the model field is irrelevant to Bedrock's
+// ListFoundationModels. The factory must construct successfully
+// so the live-list endpoint can reach ListModels(); Chat() /
+// Validate() then refuse the empty-model call site instead.
+// See providers/llm/ollama for the original precedent.
+func TestBedrockProvider_Factory_AcceptsEmptyModel(t *testing.T) {
+	p, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{})
+	if err != nil {
+		// AWS creds may be unavailable in CI; the factory loads them
+		// before validating model. Skip when that's the case — the
+		// guardrails are exercised by TestBedrockProvider_Chat_RefusesListOnly.
+		if strings.Contains(err.Error(), "no EC2 IMDS role found") || strings.Contains(err.Error(), "credentials") {
+			t.Skipf("AWS credentials unavailable in this environment: %v", err)
+		}
+		t.Fatalf("factory must accept empty model for list-only construction, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "model is required") {
-		t.Errorf("error = %q", err.Error())
+	if p == nil {
+		t.Fatal("factory returned nil provider with no error")
+	}
+}
+
+// TestBedrockProvider_Chat_RefusesListOnly pins the runtime
+// guardrail: a provider constructed without a model surfaces a
+// clear "list-only construction" error rather than dispatching
+// against an empty model.
+func TestBedrockProvider_Chat_RefusesListOnly(t *testing.T) {
+	p := &BedrockProvider{ /* model: "" — list-only */ }
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected list-only Chat to surface an error")
+	}
+	if !strings.Contains(err.Error(), "list-only construction") {
+		t.Errorf("error %q must mention list-only construction", err)
+	}
+	if err := p.Validate(context.Background()); err == nil {
+		t.Error("expected list-only Validate to surface an error")
 	}
 }
 

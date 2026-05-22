@@ -101,10 +101,13 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		return nil, fmt.Errorf("azure-foundry: API key is required")
 	}
 
+	// model is optional at construction time: the dashboard's
+	// "Load models" flow constructs the provider without a model
+	// picked so it can call ListModels(). Chat() / Validate()
+	// check for an empty model at call time and return a clear
+	// "constructed without a model (list-only)" error then.
+	// Matches the Ollama provider's list-only-construction pattern.
 	model := cfg["model"]
-	if model == "" {
-		return nil, fmt.Errorf("azure-foundry: model is required")
-	}
 
 	wireOverride := gollm.WireUnknown
 	if raw := cfg["wire_override"]; raw != "" {
@@ -143,6 +146,9 @@ type AzureFoundryProvider struct {
 // Validate exercises the same dispatch path as a real Chat call with
 // max_tokens=1 so credentials and model availability are both checked.
 func (p *AzureFoundryProvider) Validate(ctx context.Context) error {
+	if p.model == "" {
+		return fmt.Errorf("azure-foundry: provider was constructed without a model (list-only); call NewProvider again with cfg[\"model\"] set before validating")
+	}
 	_, err := p.Chat(ctx, gollm.ChatRequest{
 		Model:     p.model,
 		Messages:  []gollm.Message{{Role: "user", Content: "hi"}},
@@ -159,6 +165,12 @@ func (p *AzureFoundryProvider) Validate(ctx context.Context) error {
 func (p *AzureFoundryProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = p.model
+	}
+	if req.Model == "" {
+		// List-only construction reached Chat; surface a clear error
+		// rather than letting the dispatcher fail on an unresolvable
+		// wire later in the stack.
+		return nil, fmt.Errorf("azure-foundry: chat requires a model — neither ChatRequest.Model nor provider model is set (list-only construction)")
 	}
 	return p.dispatch(ctx, req)
 }
