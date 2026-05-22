@@ -48,6 +48,26 @@ Datasets: events_prod, features_prod, analytics
 
 The agent discovers table schemas from all listed datasets and can query across them.
 
+### Cross-Project Reads (`bigquery-public-data`, partner-shared datasets)
+
+If the datasets you want the agent to explore live in a different GCP project than the one your credentials can run jobs in — the canonical example being `bigquery-public-data`, which is read-only and denies `bigquery.jobs.create` to everyone — set the optional **Data project ID** field:
+
+```
+GCP Project ID:    my-ops-project          # where the query jobs RUN (jobs.create required)
+Data project ID:   bigquery-public-data    # where the datasets LIVE (read-only)
+Datasets:          google_analytics_sample
+```
+
+When **Data project ID** is set, DecisionBox:
+
+- Constructs the BigQuery client against your **GCP Project ID** so every query job is billed there.
+- Routes metadata reads (`Tables.list`, `Table.Metadata`) to the **Data project ID** via the BigQuery SDK's cross-project dataset reference.
+- Sets `Query.DefaultProjectID` to the **Data project ID** so unqualified `dataset.table` references in agent-generated SQL resolve against the data project rather than the jobs project.
+
+Leave **Data project ID** empty for the common single-project setup — DecisionBox behaves identically to before (data and jobs both billed to **GCP Project ID**).
+
+The credential principal needs `roles/bigquery.jobUser` (or `bigquery.user`) on the **GCP Project ID**, plus `roles/bigquery.dataViewer` on the **Data project ID** (or the public-data shared role for `bigquery-public-data`).
+
 ### Filtering
 
 For shared datasets with data from multiple apps/tenants:
