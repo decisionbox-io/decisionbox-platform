@@ -166,11 +166,19 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	})
 
 	workers := envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers)
+	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
+	// budget without code changes. Defaults to blurb.DefaultMaxTokens
+	// (8192) which fits a thinking-model preamble + a 2-4-sentence
+	// answer across the full range of warehouse shapes we've seen
+	// in practice. Bump further for outsized custom prompts; drop
+	// it for cost control on a cheap non-reasoning blurb model.
+	maxTokens := envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens)
 	gen, err := blurb.New(blurb.Config{
 		LLM:          llm,
 		Model:        blurbModel,
 		ProviderName: blurbProvider,
 		Workers:      workers,
+		MaxTokens:    maxTokens,
 	})
 	if err != nil {
 		return fmt.Errorf("blurb generator: %w", err)
