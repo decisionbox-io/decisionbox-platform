@@ -14,6 +14,16 @@ import (
 type bqClient interface {
 	Query(q string) *bq.Query
 	Dataset(datasetID string) *bq.Dataset
+	// DatasetInProject returns a dataset reference scoped to a
+	// different GCP project than the one the client was constructed
+	// with. Required for the cross-project read pattern: client
+	// constructed against the operator's billing/jobs project (where
+	// jobs.create is granted), datasets pointed at the project that
+	// owns the data (e.g. bigquery-public-data, which is read-only
+	// and denies jobs.create to everyone). Real *bq.Client exposes
+	// this directly; same return type so call sites are
+	// interchangeable.
+	DatasetInProject(projectID, datasetID string) *bq.Dataset
 	Close() error
 }
 
