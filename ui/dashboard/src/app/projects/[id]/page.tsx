@@ -275,9 +275,15 @@ export default function ProjectPage() {
 
   return (
     <Shell breadcrumb={breadcrumb} actions={topBarActions}>
-      {/* Schema-index status banner — polls every 2s while indexing. */}
+      {/* Schema-index status banner — polls every 2s while indexing.
+          hideWhenReady keeps the banner invisible on the discovery
+          steady state (status=ready), since the panel only adds value
+          when there's something to act on (indexing in flight,
+          needs_reindex after Settings → Clear cache, failed /
+          cancelled recovery). The Re-index entry point on the panel
+          re-appears the moment status flips back to non-ready. */}
       <div style={{ marginBottom: 16 }}>
-        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} />
+        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} hideWhenReady />
       </div>
 
       {/* Aggregate Stats Row */}
