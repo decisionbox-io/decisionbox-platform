@@ -784,3 +784,26 @@ func TestRunawayResponseError_TypedClassification(t *testing.T) {
 		t.Errorf("error message must mention MaxBlurbLen; got %q", err.Error())
 	}
 }
+
+// TestOneBlurb_DoesNotRetry_ContentFilter covers OpenAI / Azure's
+// "content_filter" finish reason — the same deterministic block
+// Gemini exposes as SAFETY. Without this entry the classifier
+// would treat the empty as transient and double-bill on every
+// content-filtered prompt at temperature=0.
+func TestOneBlurb_DoesNotRetry_ContentFilter(t *testing.T) {
+	llm := &fakeLLM{scripted: []scriptedResp{
+		{text: "", stopReason: "content_filter"},
+		{text: "should never run"},
+	}}
+	g := newTestGen(t, llm)
+	out := g.oneBlurb(context.Background(), sampleInput("orders"))
+	if out.Err == nil {
+		t.Fatal("expected content_filter empty to be deterministic")
+	}
+	if !strings.Contains(out.Err.Error(), "finish_reason=content_filter") {
+		t.Errorf("error %q must include finish_reason=content_filter", out.Err)
+	}
+	if got := atomic.LoadInt64(&llm.called); got != 1 {
+		t.Errorf("LLM called %d times, want 1 (content_filter deterministic)", got)
+	}
+}

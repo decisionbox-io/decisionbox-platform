@@ -86,10 +86,11 @@ const blurbRetryBackoff = 500 * time.Millisecond
 // they can land on transient backend glitches where one retry is
 // often enough.
 var blurbDeterministicEmptyReasons = map[string]bool{
-	"safety":     true,
-	"recitation": true,
-	"max_tokens": true,
-	"length":     true, // OpenAI alias for max_tokens
+	"safety":         true,
+	"recitation":     true,
+	"max_tokens":     true,
+	"length":         true, // OpenAI alias for max_tokens
+	"content_filter": true, // OpenAI / Azure content-filter block, equivalent to Vertex SAFETY
 }
 
 // Input is what the caller feeds per table.
