@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -49,6 +50,48 @@ const DefaultWorkers = 8
 // MaxBlurbLen is the hard ceiling on blurb text (characters). The prompt
 // targets 150 tokens (~600 chars) — anything over 4000 is a runaway.
 const MaxBlurbLen = 4000
+
+// blurbMaxAttempts is the maximum number of LLM calls per blurb. The
+// first attempt covers the happy path; the second absorbs transient
+// failures (empty responses with no finish_reason hint, network blips,
+// 429s, brief 5xx) that the spike found regularly on Gemini preview
+// models. A third attempt rarely adds value — by then the prompt is
+// either deterministically blocked (SAFETY / RECITATION) or the
+// upstream has a real problem we should surface, not paper over.
+const blurbMaxAttempts = 2
+
+// blurbRetryBackoff is the sleep between blurb attempts. Short enough
+// that the worker pool's wall-clock stays bounded on a fully-failing
+// run; long enough that a transient 429 / 5xx has time to clear.
+const blurbRetryBackoff = 500 * time.Millisecond
+
+// blurbDeterministicEmptyReasons lists provider stop reasons that
+// mean "the model decided to produce nothing for THIS prompt and
+// will keep deciding that on retry". Surfacing the reason in the
+// error and skipping the retry tells the operator the actionable
+// fix (pick a different model, raise MaxTokens, edit the prompt)
+// instead of paying for a useless second call.
+//
+// Keys are lowercase; callers normalise with strings.ToLower before
+// lookup so the table covers each provider's wire format:
+//   - Vertex / Gemini emits UPPERCASE reasons: "SAFETY",
+//     "MAX_TOKENS", "RECITATION".
+//   - Anthropic (Claude direct + Bedrock) emits snake_case:
+//     "max_tokens", "end_turn", "tool_use".
+//   - OpenAI emits short tokens: "length" (their alias for the
+//     max-tokens condition), "stop", "function_call".
+//
+// Only the empty-response *deterministic* reasons earn a row here.
+// "stop" / "end_turn" / "OTHER" / "" are NOT here on purpose —
+// they can land on transient backend glitches where one retry is
+// often enough.
+var blurbDeterministicEmptyReasons = map[string]bool{
+	"safety":         true,
+	"recitation":     true,
+	"max_tokens":     true,
+	"length":         true, // OpenAI alias for max_tokens
+	"content_filter": true, // OpenAI / Azure content-filter block, equivalent to Vertex SAFETY
+}
 
 // Input is what the caller feeds per table.
 type Input struct {
@@ -280,7 +323,77 @@ func firstError(outputs []Output) error {
 // reason.
 var ErrTooManyFailures = errors.New("too many per-table blurb failures")
 
+// oneBlurb runs up to blurbMaxAttempts LLM calls for a single table.
+// A second attempt fires when the first surfaces a transient-looking
+// failure — a Chat() error, or an empty response whose stop_reason
+// is not in blurbDeterministicEmptyReasons. The spike (FINDINGS.md)
+// and a live 369-table run on Gemini preview confirmed that ~5-10%
+// of empty responses clear on a single retry; without this the
+// default 5% failure budget trips on cohorts that would have indexed
+// cleanly with one extra attempt.
+//
+// Token usage is accumulated across attempts so the schema_indexer's
+// IncrementTokens call (which only sums tokens from Output.Err == nil
+// rows) sees the wasted-on-failed-attempt input tokens too — without
+// this the dashboard would underreport cost for every blurb rescued
+// by the retry.
 func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
+	var out Output
+	var failedIn, failedOut int
+	for attempt := 1; attempt <= blurbMaxAttempts; attempt++ {
+		out = g.oneBlurbAttempt(ctx, in)
+		if out.Err == nil {
+			// Final success carries the retried attempt's usage plus
+			// any tokens spent on prior failed attempts so cost
+			// accounting in schema_indexer is accurate.
+			out.InputTokens += failedIn
+			out.OutputTokens += failedOut
+			return out
+		}
+		// Track tokens consumed by this failed attempt so we don't
+		// drop them on the floor if a subsequent retry succeeds. On
+		// the final failed attempt we return `out` as-is (its own
+		// usage is already populated) so this accumulator only
+		// matters when we then retry — see the InputTokens += line
+		// above.
+		failedIn += out.InputTokens
+		failedOut += out.OutputTokens
+		if !blurbErrorRetryable(out.Err) {
+			return out
+		}
+		if attempt == blurbMaxAttempts {
+			break
+		}
+		// ctx-aware backoff using NewTimer + explicit drain so a
+		// cancelled run doesn't leak a fired-later timer (time.After
+		// allocates a timer that lives until it fires even if
+		// ctx.Done arrives first).
+		timer := time.NewTimer(blurbRetryBackoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				// Drain the channel so the timer goroutine exits
+				// promptly. Stop returns false when the timer has
+				// already fired or been stopped — we only need to
+				// drain in the "already fired" case, which is rare
+				// under the 500ms backoff but still possible.
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return Output{Table: in.Schema.TableName, Err: ctx.Err()}
+		case <-timer.C:
+		}
+	}
+	return out
+}
+
+// oneBlurbAttempt is a single LLM call + response validation. Returns
+// Output.Err set on any failure mode (Chat error, empty response,
+// runaway response) and wraps the gollm error with the provider ID
+// for diagnostic context.
+func (g *Generator) oneBlurbAttempt(ctx context.Context, in Input) Output {
 	table := in.Schema.TableName
 	prompt := buildPrompt(in)
 
@@ -308,13 +421,30 @@ func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
 	if text == "" {
 		// Reasoning models would land here — we already reject them up-
 		// front, so this only triggers on genuinely empty API responses.
-		return Output{Table: table, Err: fmt.Errorf("blurb(%s): empty response from %s", g.providerID(), g.model)}
+		// Surface resp.StopReason so the failure-budget error tells the
+		// operator WHY the response was empty (SAFETY block, MAX_TOKENS
+		// truncation, RECITATION refusal, or genuinely unknown).
+		// Usage is carried even on the empty path so oneBlurb's retry
+		// loop can accumulate the failed-attempt cost.
+		return Output{
+			Table:        table,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
+			Err:          emptyResponseError(g.providerID(), g.model, resp.StopReason),
+		}
 	}
 	if len(text) > MaxBlurbLen {
 		// Runaway response — mid-word truncation would poison the
 		// embedding. Fail the per-table blurb; the generator's failure
 		// budget decides whether that's fatal for the run.
-		return Output{Table: table, Err: fmt.Errorf("blurb(%s): response exceeds MaxBlurbLen=%d chars (got %d); pick a less verbose model or raise the cap", g.providerID(), MaxBlurbLen, len(text))}
+		// Usage is carried so retry-loop cost accounting is correct
+		// even for the deterministic-skip-retry path.
+		return Output{
+			Table:        table,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
+			Err:          &runawayResponseErr{providerID: g.providerID(), got: len(text)},
+		}
 	}
 	return Output{
 		Table:        table,
@@ -322,6 +452,80 @@ func (g *Generator) oneBlurb(ctx context.Context, in Input) Output {
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 	}
+}
+
+// emptyResponseError formats the "empty response" error with the
+// provider's reported finish reason when present. Operators on the
+// 369-table preview-model run had no way to distinguish a SAFETY
+// block from a transient empty — the reason fixes that.
+func emptyResponseError(providerID, model, stopReason string) error {
+	if stopReason != "" {
+		return &emptyResponseErr{
+			providerID: providerID,
+			model:      model,
+			stopReason: stopReason,
+		}
+	}
+	return &emptyResponseErr{providerID: providerID, model: model}
+}
+
+// emptyResponseErr is a typed error so blurbErrorRetryable can
+// decide retry-vs-no without string-matching the message.
+type emptyResponseErr struct {
+	providerID string
+	model      string
+	stopReason string // optional; empty means the provider didn't surface one
+}
+
+func (e *emptyResponseErr) Error() string {
+	if e.stopReason != "" {
+		return fmt.Sprintf("blurb(%s): empty response from %s (finish_reason=%s)", e.providerID, e.model, e.stopReason)
+	}
+	return fmt.Sprintf("blurb(%s): empty response from %s", e.providerID, e.model)
+}
+
+// runawayResponseErr is the typed error for a blurb that exceeded
+// MaxBlurbLen. Typed so blurbErrorRetryable identifies it via
+// errors.As — string-matching the formatted message would break
+// silently the moment the wording is edited.
+type runawayResponseErr struct {
+	providerID string
+	got        int
+}
+
+func (e *runawayResponseErr) Error() string {
+	return fmt.Sprintf("blurb(%s): response exceeds MaxBlurbLen=%d chars (got %d); pick a less verbose model or raise the cap", e.providerID, MaxBlurbLen, e.got)
+}
+
+// blurbErrorRetryable is true when the same prompt to the same model
+// has a reasonable chance of succeeding on a second try. The split
+// is conservative: empty responses with a deterministic stop_reason
+// (safety / recitation / max_tokens / length — see
+// blurbDeterministicEmptyReasons for the cross-provider list) won't
+// change on retry, and a runaway response means the model is fine
+// but verbose — neither case earns a second call. Anything else
+// (Chat errors, empty with no stop_reason, empty with stop / other)
+// gets one retry.
+func blurbErrorRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var empty *emptyResponseErr
+	if errors.As(err, &empty) {
+		// Lowercase so the cross-provider table catches Vertex's
+		// UPPERCASE, Anthropic's snake_case, and OpenAI's bare
+		// `length` without three parallel entries.
+		return !blurbDeterministicEmptyReasons[strings.ToLower(empty.stopReason)]
+	}
+	var runaway *runawayResponseErr
+	if errors.As(err, &runaway) {
+		return false
+	}
+	// Any other Chat() error: usually transient (rate-limit, network
+	// blip, 5xx). Permanent errors (auth, model-not-found) fail on the
+	// retry too — the extra call is cheap, but the diagnostic still
+	// surfaces.
+	return true
 }
 
 func (g *Generator) providerID() string {
