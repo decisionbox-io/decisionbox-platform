@@ -169,19 +169,23 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
         : 'Continue setup';
 
     // Gate the SchemaIndexPanel render on either (a) the project
-    // already having warehouse config so the panel's "Build schema
-    // index" button would actually have somewhere to point, or (b)
-    // a schema-index run already being in-flight or terminal so
-    // there IS something to monitor. A fresh pack-generation draft
-    // with empty warehouse + empty index status used to expose the
-    // panel's "Build schema index" action button on the home page,
-    // which `reindexSchema` would happily enqueue against the
+    // already having a fully-configured warehouse (provider AND at
+    // least one dataset — the agent's `index-schema` mode rejects
+    // with "no datasets configured in project" without datasets,
+    // and the wizard treats the warehouse step as incomplete until
+    // both are set), or (b) a schema-index run already being
+    // in-flight or terminal so there IS something to monitor. A
+    // fresh pack-generation draft with no warehouse used to expose
+    // the panel's "Build schema index" action button on the home
+    // page, which `reindexSchema` would happily enqueue against the
     // unconfigured warehouse and fail far from the surface that
     // caused it. The gate keeps the home page a clean "open the
     // wizard" prompt for fresh drafts; the panel mounts the moment
-    // a warehouse is configured OR the wizard kicks off indexing.
+    // a complete warehouse config exists OR the wizard kicks off
+    // indexing.
     const indexEverStarted = indexStatus !== null && indexStatus.status !== '';
-    const warehouseConfigured = !!project.warehouse?.provider;
+    const warehouseConfigured =
+      !!project.warehouse?.provider && (project.warehouse?.datasets?.length ?? 0) > 0;
     const showIndexPanel = warehouseConfigured || indexEverStarted;
 
     return (

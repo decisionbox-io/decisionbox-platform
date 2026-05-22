@@ -55,7 +55,25 @@ function pendingProject(): Project {
 
 function pendingProjectWithWarehouse(): Project {
   const p = pendingProject();
-  (p as Project).warehouse = { provider: 'bigquery' } as WarehouseConfig;
+  // A fully-configured warehouse needs both a provider AND at
+  // least one dataset — the agent's index-schema mode rejects
+  // with "no datasets configured in project" without datasets.
+  // Test fixtures mirror the gate.
+  (p as Project).warehouse = {
+    provider: 'bigquery',
+    datasets: ['analytics'],
+  } as WarehouseConfig;
+  return p;
+}
+
+function pendingProjectWithProviderOnly(): Project {
+  // Half-configured warehouse: provider set, datasets empty. The
+  // wizard treats this as incomplete; the home page must NOT
+  // mount SchemaIndexPanel in this state — otherwise the panel's
+  // Build action would POST a reindex against a warehouse that
+  // doesn't know what to index.
+  const p = pendingProject();
+  (p as Project).warehouse = { provider: 'bigquery', datasets: [] } as WarehouseConfig;
   return p;
 }
 
@@ -132,6 +150,20 @@ describe('PackGenStatusPanel — pack_generation_pending', () => {
       expect(screen.getByText(/Schema index:/i)).toBeInTheDocument()
     );
     expect(screen.getByText(/Pick up where you left off/i)).toBeInTheDocument();
+  });
+
+  it('does NOT mount SchemaIndexPanel when warehouse has a provider but no datasets', async () => {
+    // Half-configured warehouse is treated as incomplete by the
+    // wizard (`agent --mode index-schema` rejects with "no datasets
+    // configured in project"). Mounting the panel here would
+    // expose its Build action and enqueue a doomed indexing run
+    // from the home page. The gate requires BOTH provider AND at
+    // least one dataset before the panel renders.
+    mount(pendingProjectWithProviderOnly());
+    await waitFor(() =>
+      expect(screen.getByText(/Pick up where you left off/i)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Schema index:/i)).not.toBeInTheDocument();
   });
 
   it('replaces the wizard copy with an "indexing is running" message when indexStatus is indexing', async () => {
