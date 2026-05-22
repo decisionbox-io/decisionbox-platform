@@ -110,10 +110,13 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	if location == "" {
 		location = "us-east5"
 	}
+	// model is optional at construction time: the dashboard's
+	// "Load models" flow constructs the provider without a model
+	// picked so it can call ListModels(). Chat() / Validate()
+	// check for an empty model at call time and return a clear
+	// "constructed without a model (list-only)" error then.
+	// Matches the Ollama provider's list-only-construction pattern.
 	model := cfg["model"]
-	if model == "" {
-		return nil, fmt.Errorf("vertex-ai: model is required")
-	}
 
 	wireOverride := gollm.WireUnknown
 	if raw := cfg["wire_override"]; raw != "" {
@@ -161,6 +164,9 @@ type VertexAIProvider struct {
 // Validate exercises the same dispatch path as a real Chat call with
 // max_tokens=1 so credentials and model availability are both checked.
 func (p *VertexAIProvider) Validate(ctx context.Context) error {
+	if p.model == "" {
+		return fmt.Errorf("vertex-ai: provider was constructed without a model (list-only); call NewProvider again with cfg[\"model\"] set before validating")
+	}
 	_, err := p.Chat(ctx, gollm.ChatRequest{
 		Model:     p.model,
 		Messages:  []gollm.Message{{Role: "user", Content: "hi"}},
@@ -177,6 +183,14 @@ func (p *VertexAIProvider) Validate(ctx context.Context) error {
 func (p *VertexAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	if req.Model == "" {
 		req.Model = p.model
+	}
+	if req.Model == "" {
+		// List-only construction (no model picked at factory time and
+		// no per-request model either) reaches here when a caller
+		// accidentally tries to chat through a provider built for
+		// ListModels(). Surface a clear error instead of letting the
+		// dispatcher fail later on an unresolvable wire.
+		return nil, fmt.Errorf("vertex-ai: chat requires a model — neither ChatRequest.Model nor provider model is set (list-only construction)")
 	}
 	return p.dispatch(ctx, req)
 }

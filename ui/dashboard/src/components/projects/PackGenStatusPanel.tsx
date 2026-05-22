@@ -279,7 +279,19 @@ export default function PackGenStatusPanel({ project, onProjectChanged }: PackGe
           )}
           <Text size="sm" c="dimmed">{helperCopy}</Text>
           {showIndexPanel && (
-            <SchemaIndexPanel projectId={project.id} onStatusChange={setIndexStatus} />
+            // hideWhenReady on the pack-gen-pending surface: the badge
+            // ("Schema indexed — step 1 of 2") and the helper copy
+            // already convey "ready", so the verbose
+            // "Schema index: Ready · last built X" banner is
+            // duplicative noise in steady state. The panel still polls
+            // and re-appears the moment status changes
+            // (needs_reindex / indexing / failed / cancelled) so the
+            // operator never loses sight of in-flight or recovery
+            // states. The pack_generation two-step view below keeps
+            // the default (panel always visible) — there "Ready"
+            // means "Step 1 done, Step 2 running" and the panel IS
+            // the step-1 progress display.
+            <SchemaIndexPanel projectId={project.id} onStatusChange={setIndexStatus} hideWhenReady />
           )}
           <Group justify="flex-end">
             {packReadyForLaunch ? (
