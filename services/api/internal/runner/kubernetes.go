@@ -19,6 +19,29 @@ import (
 
 // KubernetesRunner spawns agent containers as K8s Jobs.
 // Production mode — each discovery run is an isolated container.
+// watchTickInterval is the watchJob poll interval. Package-level
+// var (not const) so tests can shorten it from the production 30s
+// cadence to milliseconds. Production callers never mutate it.
+var watchTickInterval = 30 * time.Second
+
+// watchTotalWindow returns the full watch window duration for the
+// configured JobTimeoutHours plus the grace period. Tests override
+// this when they need exhaustion to fire fast — the production
+// implementation is the hours-based math.
+var watchTotalWindow = func(jobTimeoutHours int) time.Duration {
+	return time.Duration(jobTimeoutHours)*time.Hour + watcherGracePeriod
+}
+
+// watcherGracePeriod extends the watchJob polling window past
+// ActiveDeadlineSeconds so the watcher observes the K8s Job
+// controller's deadline-failure condition AFTER the deadline
+// actually fires. Without this buffer, the final watcher tick can
+// land before the controller marks the failure, and OnFailure is
+// never called even though the kubelet kills the pod moments later.
+// 5 minutes covers controller-loop latency, etcd sync, and our own
+// 30s polling cadence with comfortable margin.
+const watcherGracePeriod = 5 * time.Minute
+
 type KubernetesRunner struct {
 	client    kubernetes.Interface
 	config    Config
@@ -79,6 +102,11 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		{"SECRET_GCP_PROJECT_ID", "SECRET_GCP_PROJECT_ID"},
 		{"QDRANT_URL", "QDRANT_URL"},
 		{"QDRANT_API_KEY", "QDRANT_API_KEY"},
+		// DISCOVERY_MAX_DURATION caps the outer agent ctx — it lives
+		// on the agent side (not the API), so it has to be forwarded
+		// here for K8s runs. Subprocess runs already inherit it from
+		// the API process's env.
+		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
@@ -183,6 +211,19 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
 	}
 
+	// Cap the discovery Job's wall-clock budget via
+	// ActiveDeadlineSeconds. Without this the K8s control plane
+	// never enforces AGENT_JOB_TIMEOUT_HOURS — the watcher in
+	// watchJob() polls for that window and then stops, but the pod
+	// can keep running past it, leaving long-running or failed
+	// jobs unobserved (no OnFailure callback, no terminal status).
+	// The deadline matches the watcher window so both stop at the
+	// same wall-clock moment; the agent's own DISCOVERY_MAX_DURATION
+	// (default 24h, paired 1h below this 25h default) fires first
+	// and lets the agent fail gracefully through its persistence
+	// tail rather than getting hard-killed by the kubelet.
+	jobDeadline := int64(r.config.JobTimeoutHours) * 3600
+
 	job := r.buildJob(jobSpec{
 		name: jobName,
 		labels: map[string]string{
@@ -191,9 +232,10 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		podLabels: map[string]string{
 			"app": "decisionbox-agent", "run-id": opts.RunID,
 		},
-		args:   args,
-		ttl:    3600,
-		cpuReq: r.config.CPURequest, cpuLim: r.config.CPULimit,
+		args:     args,
+		ttl:      3600,
+		deadline: &jobDeadline,
+		cpuReq:   r.config.CPURequest, cpuLim: r.config.CPULimit,
 		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
 	})
 
@@ -367,11 +409,41 @@ func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []by
 }
 
 // watchJob polls the Job status until it completes or fails.
+//
+// The watch window deliberately extends past ActiveDeadlineSeconds
+// by watcherGracePeriod so we observe the kubelet's deadline-failure
+// condition AFTER the deadline fires (the Job controller marks the
+// failure asynchronously — without grace, the final tick can land
+// before the failure is observable and OnFailure would be silently
+// skipped, leaving the run non-terminal).
+//
+// If the watcher exhausts its window without seeing a terminal Job
+// condition — kube-apiserver unreachable the whole time, Job
+// controller wedged, Job deleted out from under us via TTL or
+// operator cleanup — we exit silently. We deliberately do NOT call
+// OnFailure on exhaustion: the agent's own terminal-status write is
+// the source of truth (it owns Save → Complete or Save → Fail
+// through StatusReporter), ActiveDeadlineSeconds on the Job means
+// the kubelet will kill the pod if it runs over, and a watcher that
+// "fails the run from observability loss" was found to corrupt
+// successful and cancelled runs in observable degraded scenarios
+// (codex review rounds 10-13). When the agent is reachable, its
+// own terminal-status writes are correct; when it is not, leaving
+// the run in `running` is the safer outcome — an operator can see
+// the stuck run and intervene.
 func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string, string)) {
 	ctx := context.Background()
-	// Poll every 30s. Total ticks = timeout_hours * 120 (3600s / 30s per tick)
-	maxTicks := r.config.JobTimeoutHours * 120
-	ticker := newTicker(30, maxTicks)
+	// Poll every watchTickInterval for the full watch window
+	// (JobTimeoutHours hours + grace). Grace gives K8s time to
+	// observe its own deadline and surface the failure condition
+	// to our Get call.
+	tickInterval := watchTickInterval
+	total := watchTotalWindow(r.config.JobTimeoutHours)
+	maxTicks := int(total / tickInterval)
+	if maxTicks < 1 {
+		maxTicks = 1
+	}
+	ticker := newTicker(tickInterval, maxTicks)
 
 	for range ticker {
 		job, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
@@ -419,6 +491,16 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 			return
 		}
 	}
+
+	// Watcher exhausted its full window without seeing a terminal
+	// Job condition. We exit silently here on purpose — see the
+	// function comment for the design rationale. The agent's own
+	// terminal-status write is authoritative; calling OnFailure
+	// from here would corrupt successful and cancelled runs in
+	// degraded observability scenarios.
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "run_id": runID,
+	}).Warn("K8s Job watcher exhausted without observing a terminal condition; leaving terminal-status decision to the agent")
 }
 
 // getPodErrorMessage tries to extract error message from the failed pod's termination message.
@@ -443,13 +525,13 @@ func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, runID string)
 	return ""
 }
 
-// newTicker creates a channel that ticks every n seconds, up to maxTicks times.
-func newTicker(intervalSec, maxTicks int) <-chan struct{} {
+// newTicker creates a channel that ticks every interval, up to maxTicks times.
+func newTicker(interval time.Duration, maxTicks int) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
 		defer close(ch)
 		for i := 0; i < maxTicks; i++ {
-			time.Sleep(time.Duration(intervalSec) * time.Second)
+			time.Sleep(interval)
 			ch <- struct{}{}
 		}
 	}()

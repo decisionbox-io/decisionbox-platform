@@ -48,6 +48,74 @@ type AnalysisArea struct {
 	Priority    int
 }
 
+// persistTimeout bounds the tail-end durable writes — Save, split
+// logs, embed/index — that run after compute has finished.
+// Embed/index against a slow embedding API plus Qdrant upsert is
+// the heaviest step here; 10 minutes covers it with comfortable
+// margin while still failing loudly if Mongo / Qdrant are
+// genuinely unreachable.
+const persistTimeout = 10 * time.Minute
+
+// completeTimeout bounds the single Mongo UpdateOne that marks the
+// run as completed. Kept tiny because the only failure mode that
+// matters here is Mongo being genuinely unreachable — and we don't
+// want to share persistTimeout with the heavier embed/index step
+// (Phase 9 can burn most of that budget on large results, which
+// would otherwise leave Complete to run against an expired ctx).
+const completeTimeout = 30 * time.Second
+
+// runFinalizer is the subset of *StatusReporter that finalizeStatus
+// touches. Defined as an interface so unit tests can inject a fake
+// that records which terminal method was called without bringing up
+// MongoDB.
+type runFinalizer interface {
+	Complete(ctx context.Context, discoveryID string, insightsFound int)
+	Fail(ctx context.Context, discoveryID, errMsg string)
+}
+
+// finalizeStatus stamps the terminal status on the run document. On
+// the happy path (computeErr == nil) it marks the run as completed;
+// when the compute phase was cancelled mid-way (DISCOVERY_MAX_DURATION
+// expired, SIGTERM, etc.) it marks the run as failed and returns the
+// underlying error so the caller routes through the failed
+// notification path rather than emitting a misleading
+// EventDiscoveryCompleted. The partial result has already been saved
+// to Mongo by the time this runs, so the dashboard can still surface
+// what was discovered before cancellation.
+//
+// Uses its own ctx derived via WithoutCancel + a short timeout so a
+// near-expiry persistCtx never prevents the final status write from
+// landing — the run-completion UpdateOne (and the discovery_id
+// back-reference Hook 5 in plugin-hooks.md depends on) always lands.
+func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) error {
+	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), completeTimeout)
+	defer cancel()
+
+	if computeErr != nil {
+		// Pass result.ID so plugin-hooks Hook 5 / the discovery-log
+		// APIs can find the partial result the same way they would
+		// for a completed run. Empty when Save itself failed and we
+		// never got an ID — Fail then records the error only.
+		reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
+		return fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
+	}
+
+	reporter.Complete(completeCtx, result.ID, insightCount)
+	return nil
+}
+
+// persistContext derives the durable-write ctx from the run ctx.
+// It deliberately uses WithoutCancel: the compute-phase ctx may be
+// near (or past) its DISCOVERY_MAX_DURATION deadline, and the
+// caller may have cancelled it (SIGTERM during shutdown). Losing
+// the result of a completed discovery to either signal is a
+// data-loss bug — the work is done; we owe durability. Values
+// from the parent ctx (run identifiers, telemetry context) are
+// preserved.
+func persistContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), persistTimeout)
+}
+
 // ResolvedPrompts holds all prompts resolved from project configuration.
 type ResolvedPrompts struct {
 	Exploration     string
@@ -848,21 +916,48 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		UpdatedAt: time.Now(),
 	}
 
-	if err := o.discoveryRepo.Save(ctx, result); err != nil {
-		return nil, fmt.Errorf("failed to save discovery result: %w", err)
+	// Capture compute-phase ctx error BEFORE switching to the
+	// dedicated persistence ctx. If DISCOVERY_MAX_DURATION (or any
+	// other parent ctx cancellation) expired during analysis /
+	// recommendations, the LLM calls returned context.DeadlineExceeded
+	// and those errors are already recorded in the result. We still
+	// owe durability for the partial result — the user should see
+	// what was discovered before the cap was hit — but the run is
+	// NOT a success: we Fail it (not Complete it) and propagate the
+	// error so the caller fires the EventDiscoveryFailed notification
+	// rather than EventDiscoveryCompleted.
+	computeErr := ctx.Err()
+
+	// Persistence runs under a dedicated budget — see persistContext
+	// for why it is independent of the compute-phase ctx. The
+	// embed/index phase dominates this budget on large results
+	// (embedding-API calls plus Qdrant upsert).
+	persistCtx, persistCancel := persistContext(ctx)
+	defer persistCancel()
+
+	if err := o.discoveryRepo.Save(persistCtx, result); err != nil {
+		return nil, err
 	}
 
-	o.persistSplitLogs(ctx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
+	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
-	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)
-	if o.embedIndexStore != nil {
-		o.runPhaseEmbedIndex(ctx, result)
+	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes).
+	// Skipped when compute was cancelled — embedding & dedup against
+	// partial / inconsistent data is wasteful and the indexes would
+	// be stale for the next run anyway. Runs BEFORE Complete on the
+	// happy path because Phase 9's first call is
+	// statusReporter.SetPhase(PhaseEmbedIndex, …, 97) which writes
+	// RunStatusRunning. If Complete ran first, SetPhase would silently
+	// downgrade the just-completed run back to "running" with no
+	// follow-up Complete, leaving every successful discovery stuck
+	// non-terminal.
+	if computeErr == nil && o.embedIndexStore != nil {
+		o.runPhaseEmbedIndex(persistCtx, result)
 	}
 
-	// Mark run as completed. Pass the discovery's _id so the run
-	// document carries the back-reference run-completion hook
-	// consumers depend on (plugin-hooks.md Hook 5).
-	o.statusReporter.Complete(ctx, result.ID, len(allInsights))
+	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
+		return result, err
+	}
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,

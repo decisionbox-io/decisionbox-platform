@@ -258,3 +258,76 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_AlsoUpdatesUpdatedAt(t *testing.
 		t.Errorf("UpdatedAt = %v, want strictly after %v", updated.UpdatedAt, originalUpdatedAt)
 	}
 }
+
+// TestInteg_RunRepo_Fail_DoesNotOverwriteCompleted pins the codex r12
+// [P2] guard: the K8s watcher's exhaustion fallback can fire
+// OnFailure → Fail AFTER the agent has stamped the run as completed.
+// Without the terminal-status filter, a successful discovery would
+// be silently flipped to failed hours later.
+func TestInteg_RunRepo_Fail_DoesNotOverwriteCompleted(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+
+	now := time.Now()
+	runID := seedRun(t, ctx, "completed", nil, &now, now)
+	repo := NewRunRepository(testDB)
+
+	if err := repo.Fail(ctx, runID, "watcher exhausted"); err != nil {
+		t.Fatalf("Fail returned error: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("Status = %q after late Fail, want completed", got.Status)
+	}
+}
+
+// TestInteg_RunRepo_Fail_DoesNotOverwriteCancelled — the other half
+// of the terminal-status guard: a user cancellation must not be
+// flipped to failed by an in-flight watcher's exhaustion.
+func TestInteg_RunRepo_Fail_DoesNotOverwriteCancelled(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+
+	now := time.Now()
+	runID := seedRun(t, ctx, "cancelled", nil, &now, now)
+	repo := NewRunRepository(testDB)
+
+	if err := repo.Fail(ctx, runID, "watcher exhausted"); err != nil {
+		t.Fatalf("Fail returned error: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Status != "cancelled" {
+		t.Errorf("Status = %q after late Fail, want cancelled", got.Status)
+	}
+}
+
+// TestInteg_RunRepo_Fail_UpdatesRunningRuns — positive counter-test:
+// the guard must NOT lock out the genuine running → failed
+// transition for in-flight runs that hit an actual failure.
+func TestInteg_RunRepo_Fail_UpdatesRunningRuns(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+
+	runID := seedRun(t, ctx, "running", nil, nil, time.Now())
+	repo := NewRunRepository(testDB)
+
+	if err := repo.Fail(ctx, runID, "agent crashed"); err != nil {
+		t.Fatalf("Fail returned error: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Status != "failed" {
+		t.Errorf("Status = %q, want failed — guard must allow running → failed", got.Status)
+	}
+}

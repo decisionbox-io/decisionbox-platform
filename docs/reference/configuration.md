@@ -36,6 +36,12 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by **both** the agent process (discovery) and the API process (executive summary, ask, pack-gen). Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall through to the provider's hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
+### Discovery Run Budget
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCOVERY_MAX_DURATION` | `24h` | In-agent ctx cap on a single discovery run. Go duration format: `2h`, `24h`, `168h`. Acts as a runaway-loop safety net — per-step budgets (warehouse `QueryTimeout`, `LLM_TIMEOUT` + `LLM_RETRY_*`, per-table schema timeout) are what keep stuck operations responsive within a run. Set to `0` to disable the in-agent cap entirely for installs that prefer to rely solely on per-step budgets (typical for enterprise warehouses with multi-hour SQL scans). Invalid or negative values log a warning and fall back to `24h`. The tail-end persistence step (Mongo writes, embed/index, status update) always runs under its own 10-minute budget regardless of this setting, so a completed run is never lost to a deadline. **Must coexist with `AGENT_JOB_TIMEOUT_HOURS` on the API side:** the API's K8s Job `ActiveDeadlineSeconds` and the subprocess watcher are driven by `AGENT_JOB_TIMEOUT_HOURS`, so the agent is killed outright at that wall-clock cap regardless of `DISCOVERY_MAX_DURATION`. Keep `DISCOVERY_MAX_DURATION` < `AGENT_JOB_TIMEOUT_HOURS` so the in-agent cap fires first and the agent saves partial results gracefully. For multi-hour SQL, raise both consistently (e.g. `AGENT_JOB_TIMEOUT_HOURS=25` + `DISCOVERY_MAX_DURATION=24h`). |
+
 ### Vector Search (Qdrant)
 
 The agent uses Qdrant to store and index embeddings during the discovery process.
@@ -146,7 +152,7 @@ The API spawns the agent for each discovery run. Two modes:
 | `AGENT_CPU_LIMIT` | `2` | CPU limit for agent containers. |
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
 | `AGENT_MEMORY_LIMIT` | `1Gi` | Memory limit for agent containers. |
-| `AGENT_JOB_TIMEOUT_HOURS` | `6` | Maximum time (hours) to watch a K8s Job before giving up. Increase for very large datasets. |
+| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` (hard kill at the cap) **and** as the subprocess watcher timeout — applies in both runner modes. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. |
 
 ### Telemetry
 

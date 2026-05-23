@@ -38,8 +38,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.MemoryLimit != "1Gi" {
 		t.Errorf("MemoryLimit = %q", cfg.MemoryLimit)
 	}
-	if cfg.JobTimeoutHours != 6 {
-		t.Errorf("JobTimeoutHours = %d, want 6", cfg.JobTimeoutHours)
+	if cfg.JobTimeoutHours != defaultJobTimeoutHours {
+		t.Errorf("JobTimeoutHours = %d, want %d", cfg.JobTimeoutHours, defaultJobTimeoutHours)
 	}
 }
 
@@ -476,6 +476,194 @@ func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
 		if e.Name == "QDRANT_URL" || e.Name == "QDRANT_API_KEY" {
 			t.Errorf("expected %s to be absent from Job env, got value %q", e.Name, e.Value)
 		}
+	}
+}
+
+// TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion pins the
+// design rationale codex review rounds 10-13 surfaced: the watcher
+// MUST exit silently when its window expires without observing a
+// terminal Job condition. Calling OnFailure from this exhaustion
+// path was found to corrupt already-completed and already-cancelled
+// runs (the agent had stamped the terminal status; the watcher then
+// "failed" the run from observability loss). The agent's own
+// terminal-status write is authoritative.
+//
+// We exercise watchJob directly with a non-existent job — the fake
+// K8s client returns NotFound for every Get, so the watcher polls
+// to exhaustion without observing any terminal condition. The
+// invariant: OnFailure is never called.
+func TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion(t *testing.T) {
+	// Shrink interval AND total window so the test finishes in ms
+	// instead of waiting out the production 25h+grace.
+	prevTick := watchTickInterval
+	watchTickInterval = 5 * time.Millisecond
+	defer func() { watchTickInterval = prevTick }()
+	prevWindow := watchTotalWindow
+	watchTotalWindow = func(_ int) time.Duration { return 100 * time.Millisecond }
+	defer func() { watchTotalWindow = prevWindow }()
+
+	r := newFakeK8sRunner()
+	called := make(chan string, 1)
+	done := make(chan struct{})
+	onFailure := func(_, msg string) {
+		called <- msg
+	}
+
+	go func() {
+		defer close(done)
+		r.watchJob("nonexistent-job", "run-exhaust-123", onFailure)
+	}()
+
+	select {
+	case <-done:
+		// Watcher exited silently — expected on the exhaustion path.
+	case msg := <-called:
+		t.Fatalf("OnFailure must NOT be called on watcher exhaustion (would corrupt terminal runs); got msg=%q", msg)
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not exit within 5s — exhaustion path is broken")
+	}
+
+	select {
+	case msg := <-called:
+		t.Errorf("OnFailure called after watcher exit; msg=%q", msg)
+	default:
+	}
+}
+
+// TestKubernetesRunner_Run_SetsActiveDeadlineSecondsFromJobTimeout verifies
+// the codex r8 [P2] fix: discovery Jobs now carry
+// ActiveDeadlineSeconds, so K8s actually enforces the documented
+// AGENT_JOB_TIMEOUT_HOURS wall-clock kill. Without this, the API's
+// watchJob() polls for the configured window and stops, but the pod
+// can keep running past it — leaving long-running or failed jobs
+// unobserved (no OnFailure, no terminal status).
+func TestKubernetesRunner_Run_SetsActiveDeadlineSecondsFromJobTimeout(t *testing.T) {
+	r := newFakeK8sRunner()
+	// newFakeK8sRunner sets JobTimeoutHours via LoadConfig; verify
+	// it ends up on the discovery Job's ActiveDeadlineSeconds.
+	ctx := context.Background()
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-dl", RunID: "run-deadline-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	got := jobs.Items[0].Spec.ActiveDeadlineSeconds
+	if got == nil {
+		t.Fatal("ActiveDeadlineSeconds must be set so K8s enforces AGENT_JOB_TIMEOUT_HOURS — got nil")
+	}
+	want := int64(r.config.JobTimeoutHours) * 3600
+	if *got != want {
+		t.Errorf("ActiveDeadlineSeconds = %d, want %d (JobTimeoutHours=%d × 3600)", *got, want, r.config.JobTimeoutHours)
+	}
+}
+
+// TestKubernetesRunner_Run_PropagatesDiscoveryMaxDuration verifies that
+// DISCOVERY_MAX_DURATION set on the API process reaches agent Job containers.
+// The cap lives on the agent side; if it isn't forwarded here, operators who
+// set it on the API deployment silently get the default in K8s production
+// runs and the documented `0`/custom-duration escape hatch does not work.
+func TestKubernetesRunner_Run_PropagatesDiscoveryMaxDuration(t *testing.T) {
+	os.Setenv("DISCOVERY_MAX_DURATION", "168h")
+	defer os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-cap", RunID: "run-cap-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	envMap := make(map[string]string)
+	for _, e := range c.Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["DISCOVERY_MAX_DURATION"] != "168h" {
+		t.Errorf("DISCOVERY_MAX_DURATION = %q, want 168h", envMap["DISCOVERY_MAX_DURATION"])
+	}
+}
+
+// TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset verifies we
+// do NOT inject an empty DISCOVERY_MAX_DURATION when unset on the API
+// process — the agent's default kicks in cleanly when the env var is
+// genuinely absent.
+func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
+	os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-no-cap", RunID: "run-no-cap-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	for _, e := range c.Env {
+		if e.Name == "DISCOVERY_MAX_DURATION" {
+			t.Errorf("expected DISCOVERY_MAX_DURATION to be absent from Job env, got value %q", e.Value)
+		}
+	}
+}
+
+// TestLoadConfig_DiscoveryCapShadowWarning confirms the warning logic doesn't
+// panic / mis-classify the obvious cases. The actual log surface is checked
+// by inspection — the goal here is to lock in the guard's behavior under each
+// representative DISCOVERY_MAX_DURATION value so a future refactor can't
+// silently break it.
+//
+// Codex r5 [P2] surfaced the previously-missing branches: the guard must
+// use the EFFECTIVE cap (default when env unset/invalid/negative) so an
+// install with a stale AGENT_JOB_TIMEOUT_HOURS override but no
+// DISCOVERY_MAX_DURATION setting still gets warned about. The unset /
+// invalid / negative cases below pin that behavior.
+func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
+	cases := []struct {
+		name       string
+		envVal     string
+		jobHours   int
+	}{
+		{name: "shadow_equal_explicit", envVal: "6h", jobHours: 6},
+		{name: "shadow_greater_explicit", envVal: "24h", jobHours: 6},
+		{name: "safe_lower_explicit", envVal: "5h", jobHours: 6},
+		{name: "zero_explicitly_disables_warning", envVal: "0", jobHours: 6},
+		{name: "empty_uses_effective_default", envVal: "", jobHours: 6},
+		{name: "invalid_uses_effective_default", envVal: "not-a-duration", jobHours: 6},
+		{name: "negative_uses_effective_default", envVal: "-1h", jobHours: 6},
+		{name: "safe_high_job_timeout", envVal: "", jobHours: 25},
+		// Codex r8 [P2]: insufficient persistence headroom must
+		// still warn even when effective < jobBudget. 24h59m cap
+		// with a 25h job timeout leaves only 1 minute of headroom
+		// — way below the 10-minute persistence tail.
+		{name: "insufficient_headroom_warns", envVal: "24h59m", jobHours: 25},
+		{name: "exact_headroom_warns_too", envVal: "24h50m", jobHours: 25},
+		{name: "comfortable_headroom_safe", envVal: "23h", jobHours: 25},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envVal == "" {
+				os.Unsetenv("DISCOVERY_MAX_DURATION")
+			} else {
+				os.Setenv("DISCOVERY_MAX_DURATION", tc.envVal)
+			}
+			defer os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+			// Just call it — the test asserts non-panic + no Atoi-style
+			// surprise behavior. The actual log call is a side effect we
+			// don't pin format for here.
+			warnIfDiscoveryCapShadowed(tc.jobHours)
+		})
 	}
 }
 

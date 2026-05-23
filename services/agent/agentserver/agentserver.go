@@ -798,8 +798,16 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return nil
 	}
 
-	// Run discovery
-	discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+	// Run discovery. The outer cap is intentionally generous —
+	// enterprise warehouses can return long-running SQL (multi-hour
+	// scans, cold-start serverless warmup, etc.) and the per-step
+	// budgets (warehouse provider QueryTimeout, LLM HTTP timeouts +
+	// chatWithRetry, per-table schema timeout) are what keep stuck
+	// operations responsive. The outer cap only exists as a
+	// runaway-loop safety net; `DISCOVERY_MAX_DURATION=0` disables
+	// it entirely for installs that prefer to rely on per-step
+	// budgets alone.
+	discoveryCtx, cancel := discoveryRunContext(ctx)
 	defer cancel()
 
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
@@ -969,7 +977,11 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		return out
 	}
 	repo := database.NewRunRepository(db)
-	runs, err := repo.ListActiveRecent(ctx, 24*time.Hour)
+	// Lookback tracks DISCOVERY_MAX_DURATION (with a small buffer)
+	// so a long-running discovery is never misclassified as orphaned
+	// and stripped of its run-step collection mid-flight.
+	lookback := discoverySweepLookback()
+	runs, err := repo.ListActiveRecent(ctx, lookback)
 	if err != nil {
 		applog.WithError(err).Warn("Could not list active runs for orphan sweep; sweep will be conservative")
 		return out
@@ -980,6 +992,116 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		}
 	}
 	return out
+}
+
+// discoveryMaxDurationEnv is the env var that controls the outer
+// cap on a single discovery run. Value parses with
+// time.ParseDuration ("24h", "168h"). Set to "0" to disable the
+// cap entirely and rely on per-step budgets only. Empty / unset
+// falls back to defaultDiscoveryMaxDuration.
+const discoveryMaxDurationEnv = "DISCOVERY_MAX_DURATION"
+
+// defaultDiscoveryMaxDuration is generous on purpose. Enterprise
+// warehouses can return long-running SQL; the cap is a
+// runaway-loop safety net, not a per-operation budget.
+const defaultDiscoveryMaxDuration = 24 * time.Hour
+
+// discoveryRunContext derives the discovery run ctx from parent
+// ctx, applying DISCOVERY_MAX_DURATION if set. A value of "0"
+// disables the cap (returns the parent ctx with a no-op cancel).
+// An invalid value falls back to the default and logs a warning
+// — better to keep the run going under a sane cap than to refuse
+// to start because of a typo.
+func discoveryRunContext(parent context.Context) (context.Context, context.CancelFunc) {
+	raw := strings.TrimSpace(os.Getenv(discoveryMaxDurationEnv))
+	d := defaultDiscoveryMaxDuration
+
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			applog.WithFields(applog.Fields{
+				"env":     discoveryMaxDurationEnv,
+				"value":   raw,
+				"fallback": defaultDiscoveryMaxDuration.String(),
+			}).Warn("invalid DISCOVERY_MAX_DURATION; falling back to default")
+		case parsed == 0:
+			applog.Info("DISCOVERY_MAX_DURATION=0 — outer cap disabled, per-step budgets only")
+			return parent, func() {}
+		case parsed < 0:
+			applog.WithFields(applog.Fields{
+				"env":     discoveryMaxDurationEnv,
+				"value":   raw,
+				"fallback": defaultDiscoveryMaxDuration.String(),
+			}).Warn("negative DISCOVERY_MAX_DURATION; falling back to default")
+		default:
+			d = parsed
+		}
+	}
+
+	applog.WithField("max_duration", d.String()).Info("Discovery outer cap configured")
+	return context.WithTimeout(parent, d)
+}
+
+// sweepLookbackFloor is the minimum lookback used for the boot-time
+// run-step orphan sweep. Keeps behaviour identical to the old
+// hard-coded value when DISCOVERY_MAX_DURATION is unset / short.
+const sweepLookbackFloor = 24 * time.Hour
+
+// sweepLookbackBuffer is added to the parsed DISCOVERY_MAX_DURATION
+// when computing the orphan-sweep lookback. The cap is when the
+// agent gives up; the run might still be wrapping up its persistence
+// tail for another ~10 minutes after that, and clock skew between
+// the API and the agent pod can shift started_at by a few seconds.
+// One hour absorbs both comfortably.
+const sweepLookbackBuffer = time.Hour
+
+// sweepLookbackDisabled is the lookback used when
+// DISCOVERY_MAX_DURATION=0 (cap disabled). The operator has opted
+// into runs of arbitrary length, so the sweep must err very
+// conservatively or it will delete the run-step collection of a
+// long-running discovery. 30 days is large enough that no realistic
+// discovery is older — the status filter (`pending`/`running`) is
+// the strong signal for "still live"; the lookback is just an
+// extra safety net for orphaned `running` runs whose process
+// crashed without updating Mongo.
+const sweepLookbackDisabled = 30 * 24 * time.Hour
+
+// discoverySweepLookback computes the lookback window for the
+// boot-time orphan sweep so it always covers the configured outer
+// cap. Without this, setting DISCOVERY_MAX_DURATION above 24h
+// (e.g. 168h for week-long enterprise runs) shadows the
+// hard-coded lookback — a still-running discovery older than 24h
+// gets dropped from keepRunIDs and its Qdrant run-step collection
+// is deleted mid-flight, breaking the in-progress run.
+func discoverySweepLookback() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(discoveryMaxDurationEnv))
+	d := defaultDiscoveryMaxDuration
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			// Fall through with defaultDiscoveryMaxDuration — matches
+			// the behavior of discoveryRunContext, which also falls
+			// back to the default on invalid values.
+		case parsed == 0:
+			return sweepLookbackDisabled
+		case parsed < 0:
+			// Same fall-through as the invalid case.
+		default:
+			d = parsed
+		}
+	}
+	// Apply the buffer to the EFFECTIVE cap — including the default,
+	// not just an explicit env-var setting. Without the buffer here,
+	// an unset-env run started at minute 24:00:01 would be dropped
+	// by the sweep at the next agent boot (clock skew + the agent's
+	// own persistence-tail wraps it just past the floor).
+	withBuffer := d + sweepLookbackBuffer
+	if withBuffer < sweepLookbackFloor {
+		return sweepLookbackFloor
+	}
+	return withBuffer
 }
 
 // classifyError returns a coarse error class for telemetry.
