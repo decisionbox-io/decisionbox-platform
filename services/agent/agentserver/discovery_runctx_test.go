@@ -103,6 +103,78 @@ func TestDiscoveryRunContext_NegativeValueFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestDiscoverySweepLookback_FloorWhenUnset(t *testing.T) {
+	// Unset env preserves the historical 24h lookback exactly — the
+	// agent's boot-time orphan sweep behavior on an unconfigured
+	// install must not change.
+	t.Setenv(discoveryMaxDurationEnv, "")
+
+	if got := discoverySweepLookback(); got != sweepLookbackFloor {
+		t.Errorf("unset env should yield floor %s; got %s", sweepLookbackFloor, got)
+	}
+}
+
+func TestDiscoverySweepLookback_TracksCapAboveFloor(t *testing.T) {
+	// Codex r3 surfaced this: with DISCOVERY_MAX_DURATION=168h
+	// (the documented week-long enterprise case) the old hard-coded
+	// 24h lookback shadowed the cap, dropping still-running runs
+	// from keepRunIDs and letting the sweep delete their Qdrant
+	// run-step collections mid-flight. The lookback must track the
+	// cap with a buffer.
+	t.Setenv(discoveryMaxDurationEnv, "168h")
+
+	want := 168*time.Hour + sweepLookbackBuffer
+	if got := discoverySweepLookback(); got != want {
+		t.Errorf("168h cap should yield %s lookback; got %s", want, got)
+	}
+}
+
+func TestDiscoverySweepLookback_HonoursFloorOnSmallCap(t *testing.T) {
+	// A 1h cap + buffer is below the historical floor — keeping
+	// the floor means short-cap operators never accidentally shrink
+	// the sweep window below 24h, which would put recently-finished
+	// runs at risk during boot-time orphan sweeps.
+	t.Setenv(discoveryMaxDurationEnv, "1h")
+
+	if got := discoverySweepLookback(); got != sweepLookbackFloor {
+		t.Errorf("1h cap should clamp to floor %s; got %s", sweepLookbackFloor, got)
+	}
+}
+
+func TestDiscoverySweepLookback_ZeroUsesDisabledWindow(t *testing.T) {
+	// DISCOVERY_MAX_DURATION=0 means the operator has opted into
+	// runs of arbitrary length — the sweep must be very conservative
+	// or it will delete the collection of a multi-day discovery.
+	// The 30-day default is large enough that no realistic
+	// discovery is older.
+	t.Setenv(discoveryMaxDurationEnv, "0")
+
+	if got := discoverySweepLookback(); got != sweepLookbackDisabled {
+		t.Errorf("DISCOVERY_MAX_DURATION=0 should yield disabled window %s; got %s", sweepLookbackDisabled, got)
+	}
+}
+
+func TestDiscoverySweepLookback_InvalidValueUsesFloor(t *testing.T) {
+	// A typo in env config must not collapse the sweep window to 0
+	// (which would treat every run as orphaned) — fall back to the
+	// historical 24h floor.
+	t.Setenv(discoveryMaxDurationEnv, "not-a-duration")
+
+	if got := discoverySweepLookback(); got != sweepLookbackFloor {
+		t.Errorf("invalid env should fall back to floor %s; got %s", sweepLookbackFloor, got)
+	}
+}
+
+func TestDiscoverySweepLookback_NegativeValueUsesFloor(t *testing.T) {
+	// Same reasoning as the invalid-value case — never zero-out the
+	// lookback in response to a bad config.
+	t.Setenv(discoveryMaxDurationEnv, "-1h")
+
+	if got := discoverySweepLookback(); got != sweepLookbackFloor {
+		t.Errorf("negative env should fall back to floor %s; got %s", sweepLookbackFloor, got)
+	}
+}
+
 func TestDiscoveryRunContext_TrimsWhitespace(t *testing.T) {
 	// Helm values files routinely leave trailing whitespace on env
 	// vars. The trim keeps " 6h " from being treated as invalid.

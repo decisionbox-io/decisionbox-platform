@@ -977,7 +977,11 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		return out
 	}
 	repo := database.NewRunRepository(db)
-	runs, err := repo.ListActiveRecent(ctx, 24*time.Hour)
+	// Lookback tracks DISCOVERY_MAX_DURATION (with a small buffer)
+	// so a long-running discovery is never misclassified as orphaned
+	// and stripped of its run-step collection mid-flight.
+	lookback := discoverySweepLookback()
+	runs, err := repo.ListActiveRecent(ctx, lookback)
 	if err != nil {
 		applog.WithError(err).Warn("Could not list active runs for orphan sweep; sweep will be conservative")
 		return out
@@ -1037,6 +1041,56 @@ func discoveryRunContext(parent context.Context) (context.Context, context.Cance
 
 	applog.WithField("max_duration", d.String()).Info("Discovery outer cap configured")
 	return context.WithTimeout(parent, d)
+}
+
+// sweepLookbackFloor is the minimum lookback used for the boot-time
+// run-step orphan sweep. Keeps behaviour identical to the old
+// hard-coded value when DISCOVERY_MAX_DURATION is unset / short.
+const sweepLookbackFloor = 24 * time.Hour
+
+// sweepLookbackBuffer is added to the parsed DISCOVERY_MAX_DURATION
+// when computing the orphan-sweep lookback. The cap is when the
+// agent gives up; the run might still be wrapping up its persistence
+// tail for another ~10 minutes after that, and clock skew between
+// the API and the agent pod can shift started_at by a few seconds.
+// One hour absorbs both comfortably.
+const sweepLookbackBuffer = time.Hour
+
+// sweepLookbackDisabled is the lookback used when
+// DISCOVERY_MAX_DURATION=0 (cap disabled). The operator has opted
+// into runs of arbitrary length, so the sweep must err very
+// conservatively or it will delete the run-step collection of a
+// long-running discovery. 30 days is large enough that no realistic
+// discovery is older — the status filter (`pending`/`running`) is
+// the strong signal for "still live"; the lookback is just an
+// extra safety net for orphaned `running` runs whose process
+// crashed without updating Mongo.
+const sweepLookbackDisabled = 30 * 24 * time.Hour
+
+// discoverySweepLookback computes the lookback window for the
+// boot-time orphan sweep so it always covers the configured outer
+// cap. Without this, setting DISCOVERY_MAX_DURATION above 24h
+// (e.g. 168h for week-long enterprise runs) shadows the
+// hard-coded lookback — a still-running discovery older than 24h
+// gets dropped from keepRunIDs and its Qdrant run-step collection
+// is deleted mid-flight, breaking the in-progress run.
+func discoverySweepLookback() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(discoveryMaxDurationEnv))
+	if raw == "" {
+		return sweepLookbackFloor
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed < 0 {
+		return sweepLookbackFloor
+	}
+	if parsed == 0 {
+		return sweepLookbackDisabled
+	}
+	withBuffer := parsed + sweepLookbackBuffer
+	if withBuffer < sweepLookbackFloor {
+		return sweepLookbackFloor
+	}
+	return withBuffer
 }
 
 // classifyError returns a coarse error class for telemetry.
