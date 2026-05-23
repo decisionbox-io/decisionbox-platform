@@ -188,6 +188,19 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
 	}
 
+	// Cap the discovery Job's wall-clock budget via
+	// ActiveDeadlineSeconds. Without this the K8s control plane
+	// never enforces AGENT_JOB_TIMEOUT_HOURS — the watcher in
+	// watchJob() polls for that window and then stops, but the pod
+	// can keep running past it, leaving long-running or failed
+	// jobs unobserved (no OnFailure callback, no terminal status).
+	// The deadline matches the watcher window so both stop at the
+	// same wall-clock moment; the agent's own DISCOVERY_MAX_DURATION
+	// (default 24h, paired 1h below this 25h default) fires first
+	// and lets the agent fail gracefully through its persistence
+	// tail rather than getting hard-killed by the kubelet.
+	jobDeadline := int64(r.config.JobTimeoutHours) * 3600
+
 	job := r.buildJob(jobSpec{
 		name: jobName,
 		labels: map[string]string{
@@ -196,9 +209,10 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 		podLabels: map[string]string{
 			"app": "decisionbox-agent", "run-id": opts.RunID,
 		},
-		args:   args,
-		ttl:    3600,
-		cpuReq: r.config.CPURequest, cpuLim: r.config.CPULimit,
+		args:     args,
+		ttl:      3600,
+		deadline: &jobDeadline,
+		cpuReq:   r.config.CPURequest, cpuLim: r.config.CPULimit,
 		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
 	})
 

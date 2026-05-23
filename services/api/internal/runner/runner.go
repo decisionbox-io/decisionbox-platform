@@ -134,6 +134,15 @@ func LoadConfig() Config {
 // keep this in sync.
 const agentDefaultDiscoveryMaxDuration = 24 * time.Hour
 
+// agentPersistenceHeadroom mirrors the agent's persistTimeout (the
+// dedicated budget for the persistence tail after compute finishes).
+// The warning guard uses it to enforce the docs' "at least 1h above
+// the effective cap" guidance — a job timeout that fits between
+// effective cap + 10 minutes still doesn't leave enough room for
+// the persistence tail to run, defeating the partial-save design.
+// Keep in sync with the agent's persistTimeout if it changes.
+const agentPersistenceHeadroom = 10 * time.Minute
+
 // warnIfDiscoveryCapShadowed surfaces a startup warning when the
 // EFFECTIVE in-agent cap is >= the API's wall-clock budget. In that
 // configuration the wall-clock kill (K8s ActiveDeadlineSeconds or
@@ -176,13 +185,24 @@ func warnIfDiscoveryCapShadowed(jobTimeoutHours int) {
 	}
 
 	jobBudget := time.Duration(jobTimeoutHours) * time.Hour
-	if effective >= jobBudget {
+
+	// Require the wall-clock budget to cover the cap PLUS the
+	// agent's persistence-tail headroom. A job timeout that fits
+	// exactly the in-agent cap leaves no room for Save / split
+	// logs / embed-index / Complete to run — the persistence tail
+	// would be cut off mid-write by the kubelet / subprocess
+	// watcher and the partial-save design (the whole point of
+	// this PR) silently doesn't work.
+	required := effective + agentPersistenceHeadroom
+	if required > jobBudget {
 		apilog.WithFields(apilog.Fields{
-			"effective_discovery_cap":   effective.String(),
+			"effective_discovery_cap":        effective.String(),
 			"effective_discovery_cap_source": source,
-			"agent_job_timeout_hours":  jobTimeoutHours,
-			"effective_wall_clock_kill": jobBudget.String(),
-		}).Warn("Effective DISCOVERY_MAX_DURATION is >= AGENT_JOB_TIMEOUT_HOURS — the wall-clock kill will fire first and the in-agent cap will not take effect. Set AGENT_JOB_TIMEOUT_HOURS to at least 1h above the effective cap so the agent fails gracefully.")
+			"agent_job_timeout_hours":        jobTimeoutHours,
+			"effective_wall_clock_kill":      jobBudget.String(),
+			"required_minimum":               required.String(),
+			"persistence_headroom":           agentPersistenceHeadroom.String(),
+		}).Warn("AGENT_JOB_TIMEOUT_HOURS does not leave room for the agent's persistence tail above the effective DISCOVERY_MAX_DURATION — the wall-clock kill can fire during partial-save, defeating the partial-result-on-cancellation contract. Raise AGENT_JOB_TIMEOUT_HOURS so it covers the effective cap PLUS the 10-minute persistence headroom.")
 	}
 }
 
