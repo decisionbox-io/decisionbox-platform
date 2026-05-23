@@ -19,6 +19,16 @@ import (
 
 // KubernetesRunner spawns agent containers as K8s Jobs.
 // Production mode — each discovery run is an isolated container.
+// watcherGracePeriod extends the watchJob polling window past
+// ActiveDeadlineSeconds so the watcher observes the K8s Job
+// controller's deadline-failure condition AFTER the deadline
+// actually fires. Without this buffer, the final watcher tick can
+// land before the controller marks the failure, and OnFailure is
+// never called even though the kubelet kills the pod moments later.
+// 5 minutes covers controller-loop latency, etcd sync, and our own
+// 30s polling cadence with comfortable margin.
+const watcherGracePeriod = 5 * time.Minute
+
 type KubernetesRunner struct {
 	client    kubernetes.Interface
 	config    Config
@@ -386,11 +396,26 @@ func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []by
 }
 
 // watchJob polls the Job status until it completes or fails.
+//
+// The watch window deliberately extends past ActiveDeadlineSeconds
+// by watcherGracePeriod so we observe the kubelet's deadline-failure
+// condition AFTER the deadline fires (the Job controller marks the
+// failure asynchronously — without grace, the final tick can land
+// before the failure is observable and OnFailure would be silently
+// skipped, leaving the run non-terminal). If the watcher exhausts
+// without seeing a terminal status — e.g. the kube-apiserver was
+// unreachable the whole time, or the Job controller is wedged —
+// we still call OnFailure with a watch-timeout message so the run
+// gets marked failed rather than stuck.
 func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string, string)) {
 	ctx := context.Background()
-	// Poll every 30s. Total ticks = timeout_hours * 120 (3600s / 30s per tick)
-	maxTicks := r.config.JobTimeoutHours * 120
-	ticker := newTicker(30, maxTicks)
+	// Poll every 30s for (timeout_hours + watcherGracePeriod). The
+	// grace period gives K8s time to observe its own deadline and
+	// surface the failure condition to our Get call.
+	const tickInterval = 30
+	totalSeconds := r.config.JobTimeoutHours*3600 + int(watcherGracePeriod.Seconds())
+	maxTicks := totalSeconds / tickInterval
+	ticker := newTicker(tickInterval, maxTicks)
 
 	for range ticker {
 		job, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
@@ -438,6 +463,20 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 			return
 		}
 	}
+
+	// Watcher exhausted its full window (ActiveDeadlineSeconds +
+	// grace) without ever seeing a terminal Job condition. The K8s
+	// Job controller will kill the pod via the deadline if it
+	// hasn't already, but the API has now lost observability — mark
+	// the run failed here so it never stays stuck in non-terminal
+	// state. The message names the watcher exhaustion explicitly so
+	// operators can distinguish this from agent-reported failures
+	// in the dashboard.
+	errMsg := fmt.Sprintf("watcher exhausted after %dh + grace; K8s Job controller did not surface a terminal condition", r.config.JobTimeoutHours)
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "run_id": runID, "error": errMsg,
+	}).Error("Agent K8s Job watcher window exceeded — marking run failed")
+	onFailure(runID, errMsg)
 }
 
 // getPodErrorMessage tries to extract error message from the failed pod's termination message.
