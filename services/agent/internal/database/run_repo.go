@@ -190,25 +190,39 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 	return err
 }
 
-// Fail marks a run as failed.
-func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) error {
+// Fail marks a run as failed. discoveryID is the _id of the partial
+// DiscoveryResult that was persisted before the failure, when one
+// exists — this is the case for cancellation mid-compute where
+// exploration finished, the orchestrator saved a partial result,
+// and then the outer cap fired. Empty discoveryID is allowed for
+// failures that produced no persisted discovery (factory errors,
+// warehouse health-check failure, etc.); in that case the
+// discovery_id field is not stamped and the run record stays
+// without a back-reference.
+//
+// The plugin-hooks Hook 5 and the discovery-log APIs key off
+// DiscoveryRun.DiscoveryID; stamping it on the failed run lets
+// consumers navigate to the partial result the same way they would
+// for a completed run.
+func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 
 	now := time.Now()
-	update := bson.M{
-		"$set": bson.M{
-			"status":       models.RunStatusFailed,
-			"phase_detail": "Discovery failed: " + errMsg,
-			"error":        errMsg,
-			"completed_at": now,
-			"updated_at":   now,
-		},
+	set := bson.M{
+		"status":       models.RunStatusFailed,
+		"phase_detail": "Discovery failed: " + errMsg,
+		"error":        errMsg,
+		"completed_at": now,
+		"updated_at":   now,
+	}
+	if discoveryID != "" {
+		set["discovery_id"] = discoveryID
 	}
 
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{"$set": set})
 	return err
 }
 

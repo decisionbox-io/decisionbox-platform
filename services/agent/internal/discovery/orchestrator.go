@@ -70,7 +70,7 @@ const completeTimeout = 30 * time.Second
 // MongoDB.
 type runFinalizer interface {
 	Complete(ctx context.Context, discoveryID string, insightsFound int)
-	Fail(ctx context.Context, errMsg string)
+	Fail(ctx context.Context, discoveryID, errMsg string)
 }
 
 // finalizeStatus stamps the terminal status on the run document. On
@@ -92,7 +92,11 @@ func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr er
 	defer cancel()
 
 	if computeErr != nil {
-		reporter.Fail(completeCtx, fmt.Sprintf("discovery cancelled: %v", computeErr))
+		// Pass result.ID so plugin-hooks Hook 5 / the discovery-log
+		// APIs can find the partial result the same way they would
+		// for a completed run. Empty when Save itself failed and we
+		// never got an ID — Fail then records the error only.
+		reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
 		return fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
 	}
 

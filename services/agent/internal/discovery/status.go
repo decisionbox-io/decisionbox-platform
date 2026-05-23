@@ -359,12 +359,17 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 	}
 }
 
-// Fail marks the run as failed.
-func (s *StatusReporter) Fail(ctx context.Context, errMsg string) {
+// Fail marks the run as failed. discoveryID is the _id of the partial
+// DiscoveryResult that was persisted before the failure, or empty
+// when the failure produced no persisted discovery. When non-empty
+// the underlying repo stamps it on the run doc so plugin-hooks Hook
+// 5 and the discovery-log APIs can navigate to the partial result
+// the same way they would for a completed run.
+func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.Fail(ctx, s.runID, errMsg); err != nil {
+	if err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg); err != nil {
 		logger.WithError(err).Warn("failed to mark run as failed")
 	}
 }

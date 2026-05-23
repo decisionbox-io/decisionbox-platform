@@ -175,6 +175,7 @@ type fakeRunFinalizer struct {
 	completedID     string
 	completedCount  int
 	completedCalled bool
+	failedID        string
 	failedMsg       string
 	failedCalled    bool
 }
@@ -185,8 +186,9 @@ func (f *fakeRunFinalizer) Complete(_ context.Context, discoveryID string, insig
 	f.completedCount = insightsFound
 }
 
-func (f *fakeRunFinalizer) Fail(_ context.Context, errMsg string) {
+func (f *fakeRunFinalizer) Fail(_ context.Context, discoveryID, errMsg string) {
 	f.failedCalled = true
+	f.failedID = discoveryID
 	f.failedMsg = errMsg
 }
 
@@ -225,6 +227,11 @@ func TestFinalizeStatus_ComputeCancelledCallsFailNotComplete(t *testing.T) {
 	// for the dashboard, but the terminal status is Fail and the
 	// compute-phase error is wrapped + returned so the caller
 	// routes through the failed-notification path.
+	//
+	// Codex r7 [P2] additional guard: Fail must receive the
+	// result.ID so the failed run carries the discovery_id
+	// back-reference. Without that, plugin-hooks Hook 5 / the
+	// discovery-log APIs can't navigate to the partial result.
 	rep := &fakeRunFinalizer{}
 	result := &models.DiscoveryResult{ID: "disc-456"}
 
@@ -243,6 +250,9 @@ func TestFinalizeStatus_ComputeCancelledCallsFailNotComplete(t *testing.T) {
 	}
 	if rep.failedMsg == "" {
 		t.Error("Fail message must carry the compute error context")
+	}
+	if rep.failedID != "disc-456" {
+		t.Errorf("Fail discoveryID = %q, want disc-456 — failed runs must stamp the discovery_id back-reference so the partial result is reachable", rep.failedID)
 	}
 }
 
@@ -274,7 +284,7 @@ func TestFinalizeStatus_UsesFreshCtxIndependentOfParent(t *testing.T) {
 	var capturedErr error
 	rep := runFinalizerFunc{
 		complete: func(ctx context.Context, _ string, _ int) { capturedErr = ctx.Err() },
-		fail:     func(ctx context.Context, _ string) { capturedErr = ctx.Err() },
+		fail:     func(ctx context.Context, _, _ string) { capturedErr = ctx.Err() },
 	}
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -291,14 +301,14 @@ func TestFinalizeStatus_UsesFreshCtxIndependentOfParent(t *testing.T) {
 // self-contained without another struct definition.
 type runFinalizerFunc struct {
 	complete func(ctx context.Context, discoveryID string, insightsFound int)
-	fail     func(ctx context.Context, errMsg string)
+	fail     func(ctx context.Context, discoveryID, errMsg string)
 }
 
 func (f runFinalizerFunc) Complete(ctx context.Context, discoveryID string, insightsFound int) {
 	f.complete(ctx, discoveryID, insightsFound)
 }
-func (f runFinalizerFunc) Fail(ctx context.Context, errMsg string) {
-	f.fail(ctx, errMsg)
+func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) {
+	f.fail(ctx, discoveryID, errMsg)
 }
 
 // Compile-time assertion — the production *StatusReporter satisfies
