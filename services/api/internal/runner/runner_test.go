@@ -479,6 +479,61 @@ func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
 	}
 }
 
+// TestKubernetesRunner_WatchJob_ExitsSilentlyWhenJobDeleted pins the
+// codex r10 [P2] regression guard: when a user cancels a run via
+// Cancel() (Jobs.Delete), the watcher must observe NotFound and
+// exit silently. Without this, the watcher's exhaustion fallback
+// (added in r9) would call OnFailure after its window expired,
+// flipping the user-cancelled run from RunStatusCancelled to
+// RunStatusFailed.
+//
+// We exercise the watcher path directly because the existing test
+// infrastructure doesn't run the goroutine from Run() (no
+// OnFailure callback wired in fakeK8sRunner). The fake K8s client
+// returns NotFound for a job that was never created, so calling
+// watchJob with a non-existent jobName mirrors the post-Delete
+// state exactly.
+func TestKubernetesRunner_WatchJob_ExitsSilentlyWhenJobDeleted(t *testing.T) {
+	// Shorten the watch tick to keep the test fast. Restored in
+	// the deferred cleanup so subsequent tests run with prod cadence.
+	prevTick := watchTickIntervalSec
+	watchTickIntervalSec = 1
+	defer func() { watchTickIntervalSec = prevTick }()
+
+	r := newFakeK8sRunner()
+	called := make(chan string, 1)
+	done := make(chan struct{})
+	onFailure := func(_, msg string) {
+		called <- msg
+	}
+
+	go func() {
+		defer close(done)
+		// Job never exists in the fake client → first Get returns
+		// NotFound → watcher must exit silently. Without the
+		// short-circuit added in r10 the watcher would loop until
+		// exhaustion, then call OnFailure and flip a
+		// user-cancelled run from cancelled → failed.
+		r.watchJob("nonexistent-job", "run-cancelled-123", onFailure)
+	}()
+
+	select {
+	case <-done:
+		// Watcher exited — expected on the cancellation path.
+	case msg := <-called:
+		t.Fatalf("OnFailure must NOT be called when Job is deleted (cancellation path); got msg=%q", msg)
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not exit within 5s — NotFound short-circuit is missing or broken")
+	}
+
+	// Nothing snuck into the channel after done.
+	select {
+	case msg := <-called:
+		t.Errorf("OnFailure called after watcher exit; msg=%q", msg)
+	default:
+	}
+}
+
 // TestKubernetesRunner_Run_SetsActiveDeadlineSecondsFromJobTimeout verifies
 // the codex r8 [P2] fix: discovery Jobs now carry
 // ActiveDeadlineSeconds, so K8s actually enforces the documented

@@ -11,6 +11,7 @@ import (
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -19,6 +20,11 @@ import (
 
 // KubernetesRunner spawns agent containers as K8s Jobs.
 // Production mode — each discovery run is an isolated container.
+// watchTickIntervalSec is the watchJob poll interval. Package-level
+// var rather than a const so tests can shorten it without spinning
+// a 30-second-per-tick loop. Production callers never mutate it.
+var watchTickIntervalSec = 30
+
 // watcherGracePeriod extends the watchJob polling window past
 // ActiveDeadlineSeconds so the watcher observes the K8s Job
 // controller's deadline-failure condition AFTER the deadline
@@ -409,17 +415,33 @@ func (r *KubernetesRunner) readPodLogs(ctx context.Context, jobName string) []by
 // gets marked failed rather than stuck.
 func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string, string)) {
 	ctx := context.Background()
-	// Poll every 30s for (timeout_hours + watcherGracePeriod). The
-	// grace period gives K8s time to observe its own deadline and
-	// surface the failure condition to our Get call.
-	const tickInterval = 30
+	// Poll every watchTickIntervalSec seconds for (timeout_hours +
+	// watcherGracePeriod). The grace period gives K8s time to
+	// observe its own deadline and surface the failure condition
+	// to our Get call.
+	tickInterval := watchTickIntervalSec
 	totalSeconds := r.config.JobTimeoutHours*3600 + int(watcherGracePeriod.Seconds())
 	maxTicks := totalSeconds / tickInterval
+	if maxTicks < 1 {
+		maxTicks = 1
+	}
 	ticker := newTicker(tickInterval, maxTicks)
 
 	for range ticker {
 		job, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
 		if err != nil {
+			if kerrors.IsNotFound(err) {
+				// Job deleted out from under us — the user-cancellation
+				// path (Cancel() → Jobs.Delete) does this, and the
+				// handler that owns the cancel has already stamped
+				// RunStatusCancelled on the run doc. Treat as terminal
+				// and exit silently; falling through to the exhaustion
+				// fallback would flip the run from cancelled to failed.
+				apilog.WithFields(apilog.Fields{
+					"job": jobName, "run_id": runID,
+				}).Info("K8s Job no longer present — watcher exiting (likely user cancellation)")
+				return
+			}
 			apilog.WithFields(apilog.Fields{
 				"job": jobName, "error": err.Error(),
 			}).Warn("Failed to get Job status")
