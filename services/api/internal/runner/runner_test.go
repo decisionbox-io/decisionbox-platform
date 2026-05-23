@@ -479,26 +479,28 @@ func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
 	}
 }
 
-// TestKubernetesRunner_WatchJob_ExitsSilentlyWhenJobDeleted pins the
-// codex r10 [P2] regression guard: when a user cancels a run via
-// Cancel() (Jobs.Delete), the watcher must observe NotFound and
-// exit silently. Without this, the watcher's exhaustion fallback
-// (added in r9) would call OnFailure after its window expired,
-// flipping the user-cancelled run from RunStatusCancelled to
-// RunStatusFailed.
+// TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion pins the
+// design rationale codex review rounds 10-13 surfaced: the watcher
+// MUST exit silently when its window expires without observing a
+// terminal Job condition. Calling OnFailure from this exhaustion
+// path was found to corrupt already-completed and already-cancelled
+// runs (the agent had stamped the terminal status; the watcher then
+// "failed" the run from observability loss). The agent's own
+// terminal-status write is authoritative.
 //
-// We exercise the watcher path directly because the existing test
-// infrastructure doesn't run the goroutine from Run() (no
-// OnFailure callback wired in fakeK8sRunner). The fake K8s client
-// returns NotFound for a job that was never created, so calling
-// watchJob with a non-existent jobName mirrors the post-Delete
-// state exactly.
-func TestKubernetesRunner_WatchJob_ExitsSilentlyWhenJobDeleted(t *testing.T) {
-	// Shorten the watch tick to keep the test fast. Restored in
-	// the deferred cleanup so subsequent tests run with prod cadence.
-	prevTick := watchTickIntervalSec
-	watchTickIntervalSec = 1
-	defer func() { watchTickIntervalSec = prevTick }()
+// We exercise watchJob directly with a non-existent job — the fake
+// K8s client returns NotFound for every Get, so the watcher polls
+// to exhaustion without observing any terminal condition. The
+// invariant: OnFailure is never called.
+func TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion(t *testing.T) {
+	// Shrink interval AND total window so the test finishes in ms
+	// instead of waiting out the production 25h+grace.
+	prevTick := watchTickInterval
+	watchTickInterval = 5 * time.Millisecond
+	defer func() { watchTickInterval = prevTick }()
+	prevWindow := watchTotalWindow
+	watchTotalWindow = func(_ int) time.Duration { return 100 * time.Millisecond }
+	defer func() { watchTotalWindow = prevWindow }()
 
 	r := newFakeK8sRunner()
 	called := make(chan string, 1)
@@ -509,24 +511,18 @@ func TestKubernetesRunner_WatchJob_ExitsSilentlyWhenJobDeleted(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		// Job never exists in the fake client → first Get returns
-		// NotFound → watcher must exit silently. Without the
-		// short-circuit added in r10 the watcher would loop until
-		// exhaustion, then call OnFailure and flip a
-		// user-cancelled run from cancelled → failed.
-		r.watchJob("nonexistent-job", "run-cancelled-123", onFailure)
+		r.watchJob("nonexistent-job", "run-exhaust-123", onFailure)
 	}()
 
 	select {
 	case <-done:
-		// Watcher exited — expected on the cancellation path.
+		// Watcher exited silently — expected on the exhaustion path.
 	case msg := <-called:
-		t.Fatalf("OnFailure must NOT be called when Job is deleted (cancellation path); got msg=%q", msg)
+		t.Fatalf("OnFailure must NOT be called on watcher exhaustion (would corrupt terminal runs); got msg=%q", msg)
 	case <-time.After(5 * time.Second):
-		t.Fatal("watcher did not exit within 5s — NotFound short-circuit is missing or broken")
+		t.Fatal("watcher did not exit within 5s — exhaustion path is broken")
 	}
 
-	// Nothing snuck into the channel after done.
 	select {
 	case msg := <-called:
 		t.Errorf("OnFailure called after watcher exit; msg=%q", msg)
