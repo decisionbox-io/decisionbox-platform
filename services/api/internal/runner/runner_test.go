@@ -479,6 +479,63 @@ func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
 	}
 }
 
+// TestKubernetesRunner_Run_PropagatesDiscoveryMaxDuration verifies that
+// DISCOVERY_MAX_DURATION set on the API process reaches agent Job containers.
+// The cap lives on the agent side; if it isn't forwarded here, operators who
+// set it on the API deployment silently get the default in K8s production
+// runs and the documented `0`/custom-duration escape hatch does not work.
+func TestKubernetesRunner_Run_PropagatesDiscoveryMaxDuration(t *testing.T) {
+	os.Setenv("DISCOVERY_MAX_DURATION", "168h")
+	defer os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-cap", RunID: "run-cap-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	envMap := make(map[string]string)
+	for _, e := range c.Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["DISCOVERY_MAX_DURATION"] != "168h" {
+		t.Errorf("DISCOVERY_MAX_DURATION = %q, want 168h", envMap["DISCOVERY_MAX_DURATION"])
+	}
+}
+
+// TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset verifies we
+// do NOT inject an empty DISCOVERY_MAX_DURATION when unset on the API
+// process — the agent's default kicks in cleanly when the env var is
+// genuinely absent.
+func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
+	os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	err := r.Run(ctx, RunOptions{ProjectID: "proj-no-cap", RunID: "run-no-cap-1234"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	c := jobs.Items[0].Spec.Template.Spec.Containers[0]
+
+	for _, e := range c.Env {
+		if e.Name == "DISCOVERY_MAX_DURATION" {
+			t.Errorf("expected DISCOVERY_MAX_DURATION to be absent from Job env, got value %q", e.Value)
+		}
+	}
+}
+
 func TestKubernetesRunner_MultipleRuns(t *testing.T) {
 	r := newFakeK8sRunner()
 	ctx := context.Background()

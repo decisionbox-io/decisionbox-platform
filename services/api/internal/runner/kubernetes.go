@@ -79,6 +79,11 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		{"SECRET_GCP_PROJECT_ID", "SECRET_GCP_PROJECT_ID"},
 		{"QDRANT_URL", "QDRANT_URL"},
 		{"QDRANT_API_KEY", "QDRANT_API_KEY"},
+		// DISCOVERY_MAX_DURATION caps the outer agent ctx — it lives
+		// on the agent side (not the API), so it has to be forwarded
+		// here for K8s runs. Subprocess runs already inherit it from
+		// the API process's env.
+		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
