@@ -237,6 +237,23 @@ func TestPersistContext_PreservesValues(t *testing.T) {
 	}
 }
 
+func TestCompleteTimeout_IsShorterThanPersistTimeout(t *testing.T) {
+	// completeTimeout exists to decouple statusReporter.Complete from
+	// the heavier embed/index step that runs under persistCtx. The
+	// invariant the design depends on is "Complete has its own
+	// bounded budget, independent of persistCtx" — a future refactor
+	// that swaps completeTimeout to share or exceed persistTimeout
+	// would silently reintroduce the failure mode codex r1 caught
+	// (Phase 9 burns persistCtx → Complete then fires against an
+	// already-expired ctx → run is saved but never marked complete).
+	if completeTimeout >= persistTimeout {
+		t.Fatalf("completeTimeout (%s) must be shorter than persistTimeout (%s) so they are not coupled", completeTimeout, persistTimeout)
+	}
+	if completeTimeout <= 0 {
+		t.Fatalf("completeTimeout (%s) must be positive — a single Mongo UpdateOne needs at least a few seconds", completeTimeout)
+	}
+}
+
 func TestPersistContext_DeadlineMatchesPersistTimeout(t *testing.T) {
 	// Sanity: the budget the orchestrator hands the persist tail
 	// is what the constant says. Future refactors that accidentally

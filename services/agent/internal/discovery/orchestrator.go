@@ -49,12 +49,20 @@ type AnalysisArea struct {
 }
 
 // persistTimeout bounds the tail-end durable writes — Save, split
-// logs, embed/index, status Complete — that run after compute has
-// finished. Embed/index against a slow embedding API plus Qdrant
-// upsert is the heaviest step here; 10 minutes covers it with
-// comfortable margin while still failing loudly if Mongo / Qdrant
-// are genuinely unreachable.
+// logs, embed/index — that run after compute has finished.
+// Embed/index against a slow embedding API plus Qdrant upsert is
+// the heaviest step here; 10 minutes covers it with comfortable
+// margin while still failing loudly if Mongo / Qdrant are
+// genuinely unreachable.
 const persistTimeout = 10 * time.Minute
+
+// completeTimeout bounds the single Mongo UpdateOne that marks the
+// run as completed. Kept tiny because the only failure mode that
+// matters here is Mongo being genuinely unreachable — and we don't
+// want to share persistTimeout with the heavier embed/index step
+// (Phase 9 can burn most of that budget on large results, which
+// would otherwise leave Complete to run against an expired ctx).
+const completeTimeout = 30 * time.Second
 
 // persistContext derives the durable-write ctx from the run ctx.
 // It deliberately uses WithoutCancel: the compute-phase ctx may be
@@ -879,17 +887,24 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, err
 	}
 
+	// Mark the run as completed as soon as the discovery is durably
+	// saved. Phase 9 embed/index can consume most of persistCtx on
+	// large results, leaving Complete to silently fail against an
+	// expired ctx — the discovery would be saved but the run never
+	// marked complete and the discovery_id back-reference (Hook 5
+	// in plugin-hooks.md) would never land. Splitting Complete off
+	// onto its own short ctx makes it independent of the heavier
+	// non-fatal tail steps.
+	completeCtx, completeCancel := context.WithTimeout(context.WithoutCancel(ctx), completeTimeout)
+	o.statusReporter.Complete(completeCtx, result.ID, len(allInsights))
+	completeCancel()
+
 	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
 	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)
 	if o.embedIndexStore != nil {
 		o.runPhaseEmbedIndex(persistCtx, result)
 	}
-
-	// Mark run as completed. Pass the discovery's _id so the run
-	// document carries the back-reference run-completion hook
-	// consumers depend on (plugin-hooks.md Hook 5).
-	o.statusReporter.Complete(persistCtx, result.ID, len(allInsights))
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,
