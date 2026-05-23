@@ -36,6 +36,12 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by **both** the agent process (discovery) and the API process (executive summary, ask, pack-gen). Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall through to the provider's hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
+### Discovery Run Budget
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCOVERY_MAX_DURATION` | `24h` | Outer cap on a single discovery run. Go duration format: `2h`, `24h`, `168h`. Acts as a runaway-loop safety net — per-step budgets (warehouse `QueryTimeout`, `LLM_TIMEOUT` + `LLM_RETRY_*`, per-table schema timeout) are what keep stuck operations responsive within a run. Set to `0` to disable the outer cap entirely for installs that prefer to rely solely on per-step budgets (typical for enterprise warehouses with multi-hour SQL scans). Invalid or negative values log a warning and fall back to `24h`. The tail-end persistence step (Mongo writes, embed/index, status update) always runs under its own 10-minute budget regardless of this setting, so a completed run is never lost to a deadline. |
+
 ### Vector Search (Qdrant)
 
 The agent uses Qdrant to store and index embeddings during the discovery process.

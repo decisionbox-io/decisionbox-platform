@@ -798,8 +798,16 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return nil
 	}
 
-	// Run discovery
-	discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+	// Run discovery. The outer cap is intentionally generous —
+	// enterprise warehouses can return long-running SQL (multi-hour
+	// scans, cold-start serverless warmup, etc.) and the per-step
+	// budgets (warehouse provider QueryTimeout, LLM HTTP timeouts +
+	// chatWithRetry, per-table schema timeout) are what keep stuck
+	// operations responsive. The outer cap only exists as a
+	// runaway-loop safety net; `DISCOVERY_MAX_DURATION=0` disables
+	// it entirely for installs that prefer to rely on per-step
+	// budgets alone.
+	discoveryCtx, cancel := discoveryRunContext(ctx)
 	defer cancel()
 
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
@@ -980,6 +988,55 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		}
 	}
 	return out
+}
+
+// discoveryMaxDurationEnv is the env var that controls the outer
+// cap on a single discovery run. Value parses with
+// time.ParseDuration ("24h", "168h"). Set to "0" to disable the
+// cap entirely and rely on per-step budgets only. Empty / unset
+// falls back to defaultDiscoveryMaxDuration.
+const discoveryMaxDurationEnv = "DISCOVERY_MAX_DURATION"
+
+// defaultDiscoveryMaxDuration is generous on purpose. Enterprise
+// warehouses can return long-running SQL; the cap is a
+// runaway-loop safety net, not a per-operation budget.
+const defaultDiscoveryMaxDuration = 24 * time.Hour
+
+// discoveryRunContext derives the discovery run ctx from parent
+// ctx, applying DISCOVERY_MAX_DURATION if set. A value of "0"
+// disables the cap (returns the parent ctx with a no-op cancel).
+// An invalid value falls back to the default and logs a warning
+// — better to keep the run going under a sane cap than to refuse
+// to start because of a typo.
+func discoveryRunContext(parent context.Context) (context.Context, context.CancelFunc) {
+	raw := strings.TrimSpace(os.Getenv(discoveryMaxDurationEnv))
+	d := defaultDiscoveryMaxDuration
+
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			applog.WithFields(applog.Fields{
+				"env":     discoveryMaxDurationEnv,
+				"value":   raw,
+				"fallback": defaultDiscoveryMaxDuration.String(),
+			}).Warn("invalid DISCOVERY_MAX_DURATION; falling back to default")
+		case parsed == 0:
+			applog.Info("DISCOVERY_MAX_DURATION=0 — outer cap disabled, per-step budgets only")
+			return parent, func() {}
+		case parsed < 0:
+			applog.WithFields(applog.Fields{
+				"env":     discoveryMaxDurationEnv,
+				"value":   raw,
+				"fallback": defaultDiscoveryMaxDuration.String(),
+			}).Warn("negative DISCOVERY_MAX_DURATION; falling back to default")
+		default:
+			d = parsed
+		}
+	}
+
+	applog.WithField("max_duration", d.String()).Info("Discovery outer cap configured")
+	return context.WithTimeout(parent, d)
 }
 
 // classifyError returns a coarse error class for telemetry.

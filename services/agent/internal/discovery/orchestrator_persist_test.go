@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -161,6 +162,97 @@ var (
 	_ discoveryLogPersister = (*database.DiscoveryLogRepository)(nil)
 	_ discoveryLogPersister = (*fakeDiscoveryLogPersister)(nil)
 )
+
+// ctxKey is a typed key for TestPersistContext_PreservesValues. Using
+// an unexported type keeps the test self-contained and matches the
+// idiomatic pattern that prevents context-key collisions.
+type ctxKey struct{ name string }
+
+func TestPersistContext_SurvivesCancelledParent(t *testing.T) {
+	// The whole reason persistContext exists: a cancelled parent
+	// must not poison the tail-end durable writes. If WithoutCancel
+	// is ever removed or replaced with a derived ctx that inherits
+	// cancellation, this guard fires immediately.
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	if parent.Err() == nil {
+		t.Fatal("parent must report cancellation")
+	}
+
+	persist, persistCancel := persistContext(parent)
+	defer persistCancel()
+
+	if err := persist.Err(); err != nil {
+		t.Fatalf("persist ctx must not inherit parent cancellation; got %v", err)
+	}
+	if _, ok := persist.Deadline(); !ok {
+		t.Fatal("persist ctx must carry its own deadline")
+	}
+}
+
+func TestPersistContext_SurvivesExpiredParent(t *testing.T) {
+	// Production scenario after DISCOVERY_MAX_DURATION elapses
+	// mid-compute: parent ctx is already expired by the time we
+	// reach the persist tail. persistContext must give the durable
+	// writes a fresh budget anyway.
+	parent, parentCancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer parentCancel()
+	// Spin until the parent observes its own deadline so the test
+	// is order-independent of the scheduler.
+	for parent.Err() == nil {
+		time.Sleep(50 * time.Microsecond)
+	}
+
+	persist, persistCancel := persistContext(parent)
+	defer persistCancel()
+
+	if err := persist.Err(); err != nil {
+		t.Fatalf("persist ctx must not inherit parent expiry; got %v", err)
+	}
+
+	deadline, ok := persist.Deadline()
+	if !ok {
+		t.Fatal("persist ctx must carry its own deadline")
+	}
+	if remaining := time.Until(deadline); remaining < persistTimeout-time.Second {
+		t.Fatalf("persist ctx deadline too short: %s remaining (want ~%s)", remaining, persistTimeout)
+	}
+}
+
+func TestPersistContext_PreservesValues(t *testing.T) {
+	// WithoutCancel preserves values — the orchestrator and its
+	// downstream calls rely on this for correlation IDs / telemetry
+	// context that flow through the run. If a future refactor
+	// swaps WithoutCancel for context.Background(), this guard
+	// catches the silent data-attribution loss.
+	key := ctxKey{name: "run-id"}
+	parent := context.WithValue(context.Background(), key, "run-xyz")
+
+	persist, persistCancel := persistContext(parent)
+	defer persistCancel()
+
+	got, _ := persist.Value(key).(string)
+	if got != "run-xyz" {
+		t.Fatalf("persist ctx lost parent value; got %q want %q", got, "run-xyz")
+	}
+}
+
+func TestPersistContext_DeadlineMatchesPersistTimeout(t *testing.T) {
+	// Sanity: the budget the orchestrator hands the persist tail
+	// is what the constant says. Future refactors that accidentally
+	// shrink this would silently re-introduce the original bug.
+	persist, persistCancel := persistContext(context.Background())
+	defer persistCancel()
+
+	deadline, ok := persist.Deadline()
+	if !ok {
+		t.Fatal("expected a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining > persistTimeout || remaining < persistTimeout-time.Second {
+		t.Fatalf("deadline outside expected window: %s (want ~%s)", remaining, persistTimeout)
+	}
+}
 
 func TestNewOrchestrator_TypedNilDiscoveryLogRepoNormalizes(t *testing.T) {
 	// Regression — a caller passing a typed-nil
