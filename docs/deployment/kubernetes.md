@@ -183,7 +183,19 @@ env:
   RUNNER_MODE: "kubernetes"
   AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
   AGENT_NAMESPACE: "decisionbox"
+  # Wall-clock budget for one agent Job (ActiveDeadlineSeconds). The K8s
+  # control plane hard-kills the pod at this cap regardless of what the
+  # agent process is doing. Pair with DISCOVERY_MAX_DURATION below.
   AGENT_JOB_TIMEOUT_HOURS: "6"
+  # In-agent ctx cap, forwarded to the agent Job by the API. Must be less
+  # than AGENT_JOB_TIMEOUT_HOURS so the agent fails gracefully (saves
+  # partial results via the dedicated persistence ctx) rather than being
+  # hard-killed mid-write. Set to "0" to disable and rely only on per-step
+  # budgets (warehouse QueryTimeout, LLM_TIMEOUT, schema-discovery per-table
+  # timeout). For enterprise multi-hour SQL, raise BOTH consistently:
+  #   AGENT_JOB_TIMEOUT_HOURS: "25"
+  #   DISCOVERY_MAX_DURATION: "24h"
+  DISCOVERY_MAX_DURATION: "24h"
 ```
 
 The chart includes RBAC rules that grant the API service account permission to create and manage Jobs in its namespace.

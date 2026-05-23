@@ -11,6 +11,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
+
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 )
 
 // Runner spawns and manages agent processes for discovery runs.
@@ -96,6 +100,8 @@ func LoadConfig() Config {
 		timeoutHours = 6
 	}
 
+	warnIfDiscoveryCapShadowed(timeoutHours)
+
 	return Config{
 		Mode:            getEnv("RUNNER_MODE", "subprocess"),
 		AgentImage:         getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
@@ -106,6 +112,33 @@ func LoadConfig() Config {
 		MemoryRequest:   getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
 		MemoryLimit:     getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
 		JobTimeoutHours: timeoutHours,
+	}
+}
+
+// warnIfDiscoveryCapShadowed surfaces a startup warning when the
+// operator has set DISCOVERY_MAX_DURATION >= AGENT_JOB_TIMEOUT_HOURS.
+// In that configuration the wall-clock kill (K8s ActiveDeadlineSeconds
+// or subprocess watcher) fires first and the in-agent cap never takes
+// effect — the agent gets hard-killed mid-write instead of failing
+// gracefully through the persistence tail. We don't error out (a
+// running install with a stale setting should keep working) but log
+// loudly enough that the next deploy notices.
+func warnIfDiscoveryCapShadowed(jobTimeoutHours int) {
+	raw := strings.TrimSpace(os.Getenv("DISCOVERY_MAX_DURATION"))
+	if raw == "" || raw == "0" {
+		return
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return
+	}
+	jobBudget := time.Duration(jobTimeoutHours) * time.Hour
+	if d >= jobBudget {
+		apilog.WithFields(apilog.Fields{
+			"discovery_max_duration":   d.String(),
+			"agent_job_timeout_hours":  jobTimeoutHours,
+			"effective_wall_clock_kill": jobBudget.String(),
+		}).Warn("DISCOVERY_MAX_DURATION is >= AGENT_JOB_TIMEOUT_HOURS — the wall-clock kill will fire first and the in-agent cap will not take effect. Set AGENT_JOB_TIMEOUT_HOURS to at least 1h above DISCOVERY_MAX_DURATION so the agent fails gracefully.")
 	}
 }
 

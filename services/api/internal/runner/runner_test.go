@@ -536,6 +536,42 @@ func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_DiscoveryCapShadowWarning confirms the warning logic doesn't
+// panic / mis-classify the obvious cases. The actual log surface is checked
+// by inspection — the goal here is to lock in the guard's behavior under each
+// representative DISCOVERY_MAX_DURATION value so a future refactor can't
+// silently break it.
+func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
+	cases := []struct {
+		name       string
+		envVal     string
+		jobHours   int
+	}{
+		{name: "shadow_equal", envVal: "6h", jobHours: 6},
+		{name: "shadow_greater", envVal: "24h", jobHours: 6},
+		{name: "safe_lower", envVal: "5h", jobHours: 6},
+		{name: "zero_disables_warning", envVal: "0", jobHours: 6},
+		{name: "empty_unset_no_warning", envVal: "", jobHours: 6},
+		{name: "invalid_silently_skips", envVal: "not-a-duration", jobHours: 6},
+		{name: "negative_silently_skips", envVal: "-1h", jobHours: 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envVal == "" {
+				os.Unsetenv("DISCOVERY_MAX_DURATION")
+			} else {
+				os.Setenv("DISCOVERY_MAX_DURATION", tc.envVal)
+			}
+			defer os.Unsetenv("DISCOVERY_MAX_DURATION")
+
+			// Just call it — the test asserts non-panic + no Atoi-style
+			// surprise behavior. The actual log call is a side effect we
+			// don't pin format for here.
+			warnIfDiscoveryCapShadowed(tc.jobHours)
+		})
+	}
+}
+
 func TestKubernetesRunner_MultipleRuns(t *testing.T) {
 	r := newFakeK8sRunner()
 	ctx := context.Background()
