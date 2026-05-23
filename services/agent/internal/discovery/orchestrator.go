@@ -887,24 +887,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, err
 	}
 
-	// Mark the run as completed as soon as the discovery is durably
-	// saved. Phase 9 embed/index can consume most of persistCtx on
-	// large results, leaving Complete to silently fail against an
-	// expired ctx — the discovery would be saved but the run never
-	// marked complete and the discovery_id back-reference (Hook 5
-	// in plugin-hooks.md) would never land. Splitting Complete off
-	// onto its own short ctx makes it independent of the heavier
-	// non-fatal tail steps.
-	completeCtx, completeCancel := context.WithTimeout(context.WithoutCancel(ctx), completeTimeout)
-	o.statusReporter.Complete(completeCtx, result.ID, len(allInsights))
-	completeCancel()
-
 	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
-	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes)
+	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes).
+	// Runs BEFORE Complete because Phase 9's first call is
+	// statusReporter.SetPhase(PhaseEmbedIndex, …, 97) which writes
+	// RunStatusRunning. If Complete ran first, SetPhase would silently
+	// downgrade the just-completed run back to "running" with no
+	// follow-up Complete, leaving every successful discovery stuck
+	// non-terminal.
 	if o.embedIndexStore != nil {
 		o.runPhaseEmbedIndex(persistCtx, result)
 	}
+
+	// Mark the run as completed under its own dedicated ctx. Phase 9
+	// can consume most of persistCtx on large results, leaving the
+	// shared ctx near expiry — completeCtx is independent so the
+	// run-completion UpdateOne (and the discovery_id back-reference
+	// Hook 5 in plugin-hooks.md depends on) always lands.
+	completeCtx, completeCancel := context.WithTimeout(context.WithoutCancel(ctx), completeTimeout)
+	o.statusReporter.Complete(completeCtx, result.ID, len(allInsights))
+	completeCancel()
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,

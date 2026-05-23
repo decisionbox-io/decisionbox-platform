@@ -541,19 +541,26 @@ func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
 // by inspection — the goal here is to lock in the guard's behavior under each
 // representative DISCOVERY_MAX_DURATION value so a future refactor can't
 // silently break it.
+//
+// Codex r5 [P2] surfaced the previously-missing branches: the guard must
+// use the EFFECTIVE cap (default when env unset/invalid/negative) so an
+// install with a stale AGENT_JOB_TIMEOUT_HOURS override but no
+// DISCOVERY_MAX_DURATION setting still gets warned about. The unset /
+// invalid / negative cases below pin that behavior.
 func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
 	cases := []struct {
 		name       string
 		envVal     string
 		jobHours   int
 	}{
-		{name: "shadow_equal", envVal: "6h", jobHours: 6},
-		{name: "shadow_greater", envVal: "24h", jobHours: 6},
-		{name: "safe_lower", envVal: "5h", jobHours: 6},
-		{name: "zero_disables_warning", envVal: "0", jobHours: 6},
-		{name: "empty_unset_no_warning", envVal: "", jobHours: 6},
-		{name: "invalid_silently_skips", envVal: "not-a-duration", jobHours: 6},
-		{name: "negative_silently_skips", envVal: "-1h", jobHours: 6},
+		{name: "shadow_equal_explicit", envVal: "6h", jobHours: 6},
+		{name: "shadow_greater_explicit", envVal: "24h", jobHours: 6},
+		{name: "safe_lower_explicit", envVal: "5h", jobHours: 6},
+		{name: "zero_explicitly_disables_warning", envVal: "0", jobHours: 6},
+		{name: "empty_uses_effective_default", envVal: "", jobHours: 6},
+		{name: "invalid_uses_effective_default", envVal: "not-a-duration", jobHours: 6},
+		{name: "negative_uses_effective_default", envVal: "-1h", jobHours: 6},
+		{name: "safe_high_job_timeout", envVal: "", jobHours: 25},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

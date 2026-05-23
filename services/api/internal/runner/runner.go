@@ -127,30 +127,62 @@ func LoadConfig() Config {
 	}
 }
 
+// agentDefaultDiscoveryMaxDuration mirrors the agent's
+// defaultDiscoveryMaxDuration. Duplicated here so the API process
+// can warn about a shadowed configuration without taking a build
+// dependency on the agent package. If the agent's default changes,
+// keep this in sync.
+const agentDefaultDiscoveryMaxDuration = 24 * time.Hour
+
 // warnIfDiscoveryCapShadowed surfaces a startup warning when the
-// operator has set DISCOVERY_MAX_DURATION >= AGENT_JOB_TIMEOUT_HOURS.
-// In that configuration the wall-clock kill (K8s ActiveDeadlineSeconds
-// or subprocess watcher) fires first and the in-agent cap never takes
+// EFFECTIVE in-agent cap is >= the API's wall-clock budget. In that
+// configuration the wall-clock kill (K8s ActiveDeadlineSeconds or
+// subprocess watcher) fires first and the in-agent cap never takes
 // effect — the agent gets hard-killed mid-write instead of failing
-// gracefully through the persistence tail. We don't error out (a
-// running install with a stale setting should keep working) but log
-// loudly enough that the next deploy notices.
+// gracefully through the persistence tail.
+//
+// Uses the effective cap (env value if valid, else the agent's
+// default) rather than only an explicit env-var setting. Without
+// that, the most common shadowed config — operator left an old
+// AGENT_JOB_TIMEOUT_HOURS=6 override in place but never set
+// DISCOVERY_MAX_DURATION — silently slips through this guard.
+//
+// We don't error out (a running install with a stale setting
+// should keep working) but log loudly enough that the next deploy
+// notices.
 func warnIfDiscoveryCapShadowed(jobTimeoutHours int) {
 	raw := strings.TrimSpace(os.Getenv("DISCOVERY_MAX_DURATION"))
-	if raw == "" || raw == "0" {
-		return
+	effective := agentDefaultDiscoveryMaxDuration
+	source := "default (env unset)"
+
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			source = "default (env invalid)"
+		case parsed == 0:
+			// Operator explicitly disabled the in-agent cap. The
+			// agent will run unbounded; the wall-clock kill at
+			// jobTimeoutHours is the only ceiling. That's a
+			// different configuration choice from "shadowed" so
+			// we don't warn.
+			return
+		case parsed < 0:
+			source = "default (env negative)"
+		default:
+			effective = parsed
+			source = "DISCOVERY_MAX_DURATION"
+		}
 	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		return
-	}
+
 	jobBudget := time.Duration(jobTimeoutHours) * time.Hour
-	if d >= jobBudget {
+	if effective >= jobBudget {
 		apilog.WithFields(apilog.Fields{
-			"discovery_max_duration":   d.String(),
+			"effective_discovery_cap":   effective.String(),
+			"effective_discovery_cap_source": source,
 			"agent_job_timeout_hours":  jobTimeoutHours,
 			"effective_wall_clock_kill": jobBudget.String(),
-		}).Warn("DISCOVERY_MAX_DURATION is >= AGENT_JOB_TIMEOUT_HOURS — the wall-clock kill will fire first and the in-agent cap will not take effect. Set AGENT_JOB_TIMEOUT_HOURS to at least 1h above DISCOVERY_MAX_DURATION so the agent fails gracefully.")
+		}).Warn("Effective DISCOVERY_MAX_DURATION is >= AGENT_JOB_TIMEOUT_HOURS — the wall-clock kill will fire first and the in-agent cap will not take effect. Set AGENT_JOB_TIMEOUT_HOURS to at least 1h above the effective cap so the agent fails gracefully.")
 	}
 }
 
