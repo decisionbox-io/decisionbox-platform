@@ -152,7 +152,7 @@ The API spawns the agent for each discovery run. Two modes:
 | `AGENT_CPU_LIMIT` | `2` | CPU limit for agent containers. |
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
 | `AGENT_MEMORY_LIMIT` | `1Gi` | Memory limit for agent containers. |
-| `AGENT_JOB_TIMEOUT_HOURS` | `6` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` (hard kill at the cap) **and** as the subprocess watcher timeout — applies in both runner modes. Must be greater than the agent's `DISCOVERY_MAX_DURATION` (default 24h on the agent side, see [Discovery Run Budget](#discovery-run-budget) above) so the in-agent cap fires first and the agent fails gracefully rather than being killed mid-write. For enterprise multi-hour SQL runs, raise both env vars consistently (e.g. `AGENT_JOB_TIMEOUT_HOURS=25` + `DISCOVERY_MAX_DURATION=24h`). |
+| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` (hard kill at the cap) **and** as the subprocess watcher timeout — applies in both runner modes. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. |
 
 ### Telemetry
 

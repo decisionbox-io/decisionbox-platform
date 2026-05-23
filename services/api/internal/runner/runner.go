@@ -89,15 +89,27 @@ type Config struct {
 
 	// Job timeout in hours — how long to watch a Job before giving up.
 	// Applies to both K8s Job watching and subprocess waiting.
-	// Default: 6 hours.
+	// Default: 25 hours, paired with the agent's 24h
+	// DISCOVERY_MAX_DURATION default so the in-agent cap fires first
+	// and the agent fails gracefully through its persistence tail
+	// rather than being hard-killed by the wall-clock watcher.
 	JobTimeoutHours int
 }
 
+// defaultJobTimeoutHours pairs with the agent's
+// defaultDiscoveryMaxDuration (24h). The runner needs at least 1h
+// headroom above the in-agent cap so the agent fails gracefully
+// through its persistence tail (10-minute persist budget) instead of
+// being hard-killed by ActiveDeadlineSeconds / the subprocess
+// watcher giving up. Raised from the historical 6h paired with the
+// old 2h hardcoded cap.
+const defaultJobTimeoutHours = 25
+
 // LoadConfig loads runner configuration from environment variables.
 func LoadConfig() Config {
-	timeoutHours, _ := strconv.Atoi(getEnv("AGENT_JOB_TIMEOUT_HOURS", "6"))
+	timeoutHours, _ := strconv.Atoi(getEnv("AGENT_JOB_TIMEOUT_HOURS", strconv.Itoa(defaultJobTimeoutHours)))
 	if timeoutHours <= 0 {
-		timeoutHours = 6
+		timeoutHours = defaultJobTimeoutHours
 	}
 
 	warnIfDiscoveryCapShadowed(timeoutHours)

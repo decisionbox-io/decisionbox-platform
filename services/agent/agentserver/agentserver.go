@@ -1076,17 +1076,28 @@ const sweepLookbackDisabled = 30 * 24 * time.Hour
 // is deleted mid-flight, breaking the in-progress run.
 func discoverySweepLookback() time.Duration {
 	raw := strings.TrimSpace(os.Getenv(discoveryMaxDurationEnv))
-	if raw == "" {
-		return sweepLookbackFloor
+	d := defaultDiscoveryMaxDuration
+	if raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			// Fall through with defaultDiscoveryMaxDuration — matches
+			// the behavior of discoveryRunContext, which also falls
+			// back to the default on invalid values.
+		case parsed == 0:
+			return sweepLookbackDisabled
+		case parsed < 0:
+			// Same fall-through as the invalid case.
+		default:
+			d = parsed
+		}
 	}
-	parsed, err := time.ParseDuration(raw)
-	if err != nil || parsed < 0 {
-		return sweepLookbackFloor
-	}
-	if parsed == 0 {
-		return sweepLookbackDisabled
-	}
-	withBuffer := parsed + sweepLookbackBuffer
+	// Apply the buffer to the EFFECTIVE cap — including the default,
+	// not just an explicit env-var setting. Without the buffer here,
+	// an unset-env run started at minute 24:00:01 would be dropped
+	// by the sweep at the next agent boot (clock skew + the agent's
+	// own persistence-tail wraps it just past the floor).
+	withBuffer := d + sweepLookbackBuffer
 	if withBuffer < sweepLookbackFloor {
 		return sweepLookbackFloor
 	}

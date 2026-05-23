@@ -55,7 +55,7 @@ Source code for the charts is in `helm-charts/`.
 | `env.AGENT_IMAGE` | string | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Agent container image |
 | `env.AGENT_NAMESPACE` | string | `decisionbox` | Namespace for agent Jobs |
 | `env.AGENT_SERVICE_ACCOUNT` | string | `decisionbox-agent` | K8s service account for agent Jobs (Workload Identity) |
-| `env.AGENT_JOB_TIMEOUT_HOURS` | string | `6` | Wall-clock budget for one agent run (K8s Job `ActiveDeadlineSeconds` + subprocess watcher). Hard kill at this cap; for enterprise multi-hour SQL raise to at least 1h above `DISCOVERY_MAX_DURATION`. |
+| `env.AGENT_JOB_TIMEOUT_HOURS` | string | `25` | Wall-clock budget for one agent run (K8s Job `ActiveDeadlineSeconds` + subprocess watcher). Hard kill at this cap; paired with the 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first with 1h headroom for graceful persistence. If you raise `DISCOVERY_MAX_DURATION`, raise this in lockstep. |
 | `env.DISCOVERY_MAX_DURATION` | string | unset → agent default `24h` | In-agent ctx cap. Go duration format (`24h`, `168h`). Set to `0` to disable and rely only on per-step budgets. Must be **less than** `AGENT_JOB_TIMEOUT_HOURS` so the agent fails gracefully rather than getting killed mid-write. |
 | `env.QDRANT_URL` | string | — | Qdrant gRPC URL (e.g., `qdrant:6334`) |
 | `env.QDRANT_API_KEY` | string | — | Qdrant API key (injected via Secret if `qdrant.enabled=true`) |

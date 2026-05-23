@@ -50,7 +50,12 @@ env:
   AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
   AGENT_NAMESPACE: "decisionbox"
   AGENT_SERVICE_ACCOUNT: "decisionbox-agent"
-  AGENT_JOB_TIMEOUT_HOURS: "6"
+  # Wall-clock budget for one agent run — drives both the K8s Job
+  # ActiveDeadlineSeconds and the subprocess watcher timeout. Set 1h
+  # above DISCOVERY_MAX_DURATION so the in-agent cap fires first and
+  # the agent fails gracefully through its persistence tail rather
+  # than being hard-killed mid-write.
+  AGENT_JOB_TIMEOUT_HOURS: "25"
   # DISCOVERY_MAX_DURATION — outer cap on a single discovery run, applied
   # in-agent via context.WithTimeout. Go duration format (e.g. "24h",
   # "168h"). Set to "0" to disable the in-agent cap entirely and rely

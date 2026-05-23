@@ -103,14 +103,17 @@ func TestDiscoveryRunContext_NegativeValueFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestDiscoverySweepLookback_FloorWhenUnset(t *testing.T) {
-	// Unset env preserves the historical 24h lookback exactly — the
-	// agent's boot-time orphan sweep behavior on an unconfigured
-	// install must not change.
+func TestDiscoverySweepLookback_AppliesBufferToUnsetDefault(t *testing.T) {
+	// Codex r4 [P2]: when env is unset, the lookback must still apply
+	// the buffer to the effective default. Otherwise a run started
+	// just past the 24h default (clock skew + persistence wrap-up)
+	// would be excluded from keepRunIDs on the next agent boot, and
+	// the orphan sweep would drop its run-step Qdrant collection.
 	t.Setenv(discoveryMaxDurationEnv, "")
 
-	if got := discoverySweepLookback(); got != sweepLookbackFloor {
-		t.Errorf("unset env should yield floor %s; got %s", sweepLookbackFloor, got)
+	want := defaultDiscoveryMaxDuration + sweepLookbackBuffer
+	if got := discoverySweepLookback(); got != want {
+		t.Errorf("unset env should yield buffered default %s; got %s", want, got)
 	}
 }
 
@@ -154,24 +157,27 @@ func TestDiscoverySweepLookback_ZeroUsesDisabledWindow(t *testing.T) {
 	}
 }
 
-func TestDiscoverySweepLookback_InvalidValueUsesFloor(t *testing.T) {
+func TestDiscoverySweepLookback_InvalidValueFallsBackToBufferedDefault(t *testing.T) {
 	// A typo in env config must not collapse the sweep window to 0
-	// (which would treat every run as orphaned) — fall back to the
-	// historical 24h floor.
+	// (which would treat every run as orphaned). Falls back to the
+	// effective default + buffer — same window as the unset case so
+	// the sweep stays conservative.
 	t.Setenv(discoveryMaxDurationEnv, "not-a-duration")
 
-	if got := discoverySweepLookback(); got != sweepLookbackFloor {
-		t.Errorf("invalid env should fall back to floor %s; got %s", sweepLookbackFloor, got)
+	want := defaultDiscoveryMaxDuration + sweepLookbackBuffer
+	if got := discoverySweepLookback(); got != want {
+		t.Errorf("invalid env should fall back to buffered default %s; got %s", want, got)
 	}
 }
 
-func TestDiscoverySweepLookback_NegativeValueUsesFloor(t *testing.T) {
+func TestDiscoverySweepLookback_NegativeValueFallsBackToBufferedDefault(t *testing.T) {
 	// Same reasoning as the invalid-value case — never zero-out the
 	// lookback in response to a bad config.
 	t.Setenv(discoveryMaxDurationEnv, "-1h")
 
-	if got := discoverySweepLookback(); got != sweepLookbackFloor {
-		t.Errorf("negative env should fall back to floor %s; got %s", sweepLookbackFloor, got)
+	want := defaultDiscoveryMaxDuration + sweepLookbackBuffer
+	if got := discoverySweepLookback(); got != want {
+		t.Errorf("negative env should fall back to buffered default %s; got %s", want, got)
 	}
 }
 

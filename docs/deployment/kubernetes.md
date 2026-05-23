@@ -185,8 +185,10 @@ env:
   AGENT_NAMESPACE: "decisionbox"
   # Wall-clock budget for one agent Job (ActiveDeadlineSeconds). The K8s
   # control plane hard-kills the pod at this cap regardless of what the
-  # agent process is doing. Pair with DISCOVERY_MAX_DURATION below.
-  AGENT_JOB_TIMEOUT_HOURS: "6"
+  # agent process is doing. Default is paired with the 24h
+  # DISCOVERY_MAX_DURATION default so the in-agent cap fires first (with
+  # 1h headroom for the agent's 10-minute persistence tail + clock skew).
+  AGENT_JOB_TIMEOUT_HOURS: "25"
   # In-agent ctx cap, forwarded to the agent Job by the API. Must be less
   # than AGENT_JOB_TIMEOUT_HOURS so the agent fails gracefully (saves
   # partial results via the dedicated persistence ctx) rather than being

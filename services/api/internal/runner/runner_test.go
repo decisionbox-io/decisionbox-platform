@@ -38,8 +38,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.MemoryLimit != "1Gi" {
 		t.Errorf("MemoryLimit = %q", cfg.MemoryLimit)
 	}
-	if cfg.JobTimeoutHours != 6 {
-		t.Errorf("JobTimeoutHours = %d, want 6", cfg.JobTimeoutHours)
+	if cfg.JobTimeoutHours != defaultJobTimeoutHours {
+		t.Errorf("JobTimeoutHours = %d, want %d", cfg.JobTimeoutHours, defaultJobTimeoutHours)
 	}
 }
 
