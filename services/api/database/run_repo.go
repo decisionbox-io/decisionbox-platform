@@ -197,6 +197,19 @@ func (r *RunRepository) SetPolicyReservationID(ctx context.Context, runID, reser
 }
 
 // Fail marks a run as failed.
+//
+// Terminal-status invariant: only writes when the run is currently
+// in a non-terminal status (`pending` or `running`). Mirrors the
+// guard on the agent-side RunRepository.Fail (see
+// services/agent/internal/database/run_repo.go). The K8s watcher's
+// exhaustion fallback in runner.go can fire OnFailure → Fail AFTER
+// the agent has already stamped `completed` or after the cancel
+// handler has stamped `cancelled`; without this guard those
+// terminal runs would silently flip to `failed`.
+//
+// Mongo's UpdateOne returns no error when zero documents match, so
+// callers that don't care about no-ops (the watcher OnFailure
+// callback) need no change.
 func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
@@ -214,7 +227,11 @@ func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) e
 		},
 	}
 
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	filter := bson.M{
+		"_id":    oid,
+		"status": bson.M{"$in": []string{"pending", "running"}},
+	}
+	_, err = r.col.UpdateOne(ctx, filter, update)
 	return err
 }
 
