@@ -78,20 +78,38 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
-		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (enterprise feature). Default: run discovery.")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (enterprise feature); 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit. Default: run discovery.")
+		jobID           = flag.String("job-id", "", "ValidationJob _id when --mode=validate-doc. Ignored in other modes.")
 	)
 
 	flag.Parse()
 
-	if *projectID == "" {
-		fmt.Fprintf(os.Stderr, "Error: --project-id is required\n")
-		flag.Usage()
-		os.Exit(1)
-	}
-
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// validate-doc is keyed by --job-id (the agent reads project_id /
+	// discovery_id / doc_id from the loaded ValidationJob row), so it
+	// skips the --project-id requirement that gates discovery / pack-gen /
+	// index-schema. Dispatched ahead of the project-id check.
+	if *mode == "validate-doc" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		err := runValidateDoc(cfg, *jobID)
+		if err != nil {
+			applog.WithError(err).Error("Validate-doc run failed")
+		}
+		applog.Sync()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *projectID == "" {
+		fmt.Fprintf(os.Stderr, "Error: --project-id is required\n")
+		flag.Usage()
 		os.Exit(1)
 	}
 
@@ -124,7 +142,7 @@ func Run() {
 		return
 	}
 	if *mode != "" {
-		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'pack-gen', or empty)\n", *mode)
+		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'pack-gen', 'validate-doc', or empty)\n", *mode)
 		os.Exit(1)
 	}
 
