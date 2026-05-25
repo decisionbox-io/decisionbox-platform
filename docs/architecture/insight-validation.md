@@ -191,6 +191,37 @@ All UI lives under `ui/dashboard/src/components/validation/`. A single router, `
 
 Decision-maker status copy (label + tagline + tone) lives in `statusMeta.ts` — single source of truth so changing how we describe `unverifiable` is a one-file edit.
 
+## Per-project toggle + on-demand manual validation (Phase I)
+
+Validation can be turned off per-project (`Project.ValidationEnabled`, default-on for legacy projects) and re-run on-demand against a single insight or recommendation. The toggle lives in **Settings → Advanced → Validation**; the on-demand path lives in the existing detail-page sidebar.
+
+**Toggle path.** When `validation_enabled=false`, the discovery orchestrator never constructs the verifier agent for that run — every insight and recommendation is stamped `combined: validation_disabled` plus `status: "validation_disabled"` (the legacy field is backfilled so older list-rendering paths stay consistent). No LLM tokens are burned for validation.
+
+**Manual path.** Click *Run validation* on the empty-state card. The dashboard issues `POST /api/v1/discoveries/{did}/insights/{iid}/validate` (or the recommendation twin); the API enqueues a `ValidationJob` row; an in-API worker polls the queue, claims the row, and spawns `agent --mode=validate-doc --job-id <jid>` via the same `runner.Runner` abstraction that drives discovery + schema-indexing. The agent loads the job + discovery + cited source-steps, runs single-doc Phase 4.5 / 5.5 via `discovery.ValidateSingleDoc`, writes the verdict back to the embedded array via a positional array-filter update (so concurrent discovery saves can't clobber sibling docs), and marks the job `completed`. A 60-second heartbeat goroutine writes `heartbeat_at` so the API-side stale-recovery sweep doesn't requeue an in-flight job.
+
+**Queue invariants.**
+- `validation_jobs` has a **partial unique index on `(discovery_id, doc_kind, doc_id)` where `status in {pending, running}`** — at most one active job per doc. Handler-side 409 is racy under concurrent clicks; the index is the durable defence.
+- TTL is a **partial TTL on `completed_at`** scoped to terminal statuses only. A plain TTL would expire still-queued / in-flight rows that haven't reached `completed_at` yet.
+- Stale recovery uses `heartbeat_at`, not `started_at`. The default threshold is **5 minutes**; the agent writes a heartbeat every 60 seconds plus on every step change, leaving comfortable margin without false-positives. Requeued jobs bump `attempt`; over the budget (default 3), the row is marked `failed` with a clear "exceeded retry budget" error so a permanently broken job doesn't loop forever.
+- Every state-change write filters on `(id, attempt, status=running)` so a stale-recovered job's orphan agent silently no-ops instead of smearing progress across requeued rows.
+
+**Cancellation.**
+- Subprocess runner: `exec.CommandContext` delivers SIGTERM on ctx cancel; the verifier checks `ctx.Err()` between LLM rounds, so cancel is honoured within one round (~5-10s).
+- K8s runner: on ctx cancel the runner issues `Jobs.Delete(name, foregroundPropagation)` BEFORE returning. The earlier schema-index `return ctx.Err()` shortcut silently leaked Jobs — the validate-doc runner's regression test pins the fixed behaviour.
+
+**Dashboard routing.** The detail-page sidebar uses a single `<ValidationRouter />` whose decision tree distinguishes "validated by an agent" from "stamped during a disabled run":
+
+```
+isLegacy        -> <LegacyValidationCard />
+isValidated     -> <NewValidationPanel />
+inFlightJob     -> <ValidationJobProgressCard />
+else            -> <NoValidationCard validationEnabled={...} />
+```
+
+`isValidated` requires `combined not in {validation_disabled, skipped_budget_cap}` **OR** `verifier`/`refuter` detail present. A doc stamped during a disabled run remains re-runnable after the toggle flips — without this rule the Run button stays hidden forever for those docs.
+
+The router owns 2-second polling. On any terminal status (including `failed` / `cancelled`) it triggers a discovery refetch — the agent may have written the verdict back even when the process ultimately failed (e.g. heartbeat goroutine panicked after the main work succeeded).
+
 ## What's deliberately out of scope
 
 - **Parallel doc-level validation** (v1.5). Today the loop is sequential — `VALIDATION_CONCURRENCY` is not exposed until `go test -race` proves the verifier package's shared paths are safe.
