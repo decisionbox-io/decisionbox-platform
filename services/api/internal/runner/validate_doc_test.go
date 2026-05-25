@@ -60,11 +60,11 @@ func TestKubernetesRunner_RunValidateDoc_CreatesJob(t *testing.T) {
 	}
 }
 
-// THE Codex prod-r2 P0 regression test. When the caller cancels ctx
-// while the Job is still in flight, RunValidateDoc MUST delete the
-// Job before returning. RunIndexSchema historically just returned
-// ctx.Err() and left the Job running on the cluster — that's the
-// bug we are explicitly guarding against here.
+// When the caller cancels ctx while the Job is still in flight,
+// RunValidateDoc MUST delete the Job before returning.
+// RunIndexSchema historically just returned ctx.Err() and left the
+// Job running on the cluster — that's the bug we are explicitly
+// guarding against here.
 func TestKubernetesRunner_RunValidateDoc_DeletesJobOnContextCancel(t *testing.T) {
 	r := newFakeK8sRunner()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -133,9 +133,9 @@ func isDeletingOrGone(j batchv1.Job) bool {
 	return j.DeletionTimestamp != nil
 }
 
-// Codex prod-r4 P1 — sanitizeK8sLabelSegment must never let a
-// hyphen land on the last character. UUID v4 hyphens at positions
-// 8/13/18/23 made the original 24-char truncation produce
+// sanitizeK8sLabelSegment must never let a hyphen land on the last
+// character. UUID v4 hyphens at positions 8/13/18/23 made the
+// original 24-char truncation produce
 // `validate-xxxxxxxx-xxxx-xxxx-xxxx-` which the apiserver rejects.
 func TestSanitizeK8sLabelSegment_StripsTrailingDashFromUUIDTruncation(t *testing.T) {
 	uuid := "abcd1234-5678-90ab-cdef-1234567890ab"

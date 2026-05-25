@@ -38,8 +38,7 @@ type StepRowsRequest struct {
 }
 
 // ParseAction extracts exactly one Action from the model's response.
-// Contract (plan §"Wire shape — exactly one envelope per response"
-// + Codex MVP-r1 MEDIUM):
+// Contract (exactly one envelope per response):
 //
 //  1. Strip code fences, locate the outermost balanced JSON object.
 //  2. The object MUST contain exactly one of the four envelope keys.

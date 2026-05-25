@@ -34,10 +34,10 @@ const heartbeatInterval = 60 * time.Second
 
 // runValidateDoc is the entrypoint for `agent --mode=validate-doc`.
 // It loads the ValidationJob row, hydrates the discovery + cited
-// exploration steps, runs single-doc Phase 4.5/5.5 via
-// discovery.ValidateSingleDoc, persists the verdict back, and marks
-// the job complete (or failed). Heartbeats fire on a separate
-// goroutine the whole time.
+// exploration steps, runs the verifier + refuter pair against the
+// single doc via discovery.ValidateSingleDoc, persists the verdict
+// back, and marks the job complete (or failed). Heartbeats fire on
+// a separate goroutine the whole time.
 //
 // Exit contract:
 //   - returns nil on success (job marked completed)
@@ -151,8 +151,8 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	}
 
 	// Pull exploration-step rows from the split-log collection — the
-	// embedded array was retired in Phase G. validateSingleDoc indexes
-	// these by step number internally.
+	// embedded array on the discovery doc was retired. validateSingleDoc
+	// indexes these by step number internally.
 	logRepo := database.NewDiscoveryLogRepository(db)
 	steps, err := logRepo.ListExplorationStepsByDiscovery(ctx, job.DiscoveryID, 0)
 	if err != nil {
@@ -185,8 +185,9 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// wiring an adapter is non-trivial. Without it the verifier
 	// still operates on the catalog already attached to cited
 	// source steps; cross-table refutations get marked
-	// unverifiable. Discovery's Phase 4.5/5.5 has the same fall-back
-	// behaviour (see validation_phase.go) — it's not a regression.
+	// unverifiable. The orchestrator's full-run validation has the
+	// same fall-back behaviour (see validation_phase.go) — it's not
+	// a regression.
 	var schemaProvider ai.SchemaProvider
 
 	vCfg, vCaps := verifier.LoadConfigFromEnv()
@@ -243,7 +244,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// retry created a fresh attempt, we MUST NOT overwrite the
 	// discovery with this orphan's verdict — the user could see a
 	// validation they explicitly cancelled, or a stale verdict could
-	// clobber the later attempt's results. Codex prod-r6 P2.
+	// clobber the later attempt's results.
 	//
 	// The job-row writes (markJobCompleted etc.) already filter on
 	// (id, attempt, status=running), so they silently no-op on

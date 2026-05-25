@@ -9,6 +9,12 @@ import (
 // Env-var keys the agent honours. Documented in
 // docs/reference/configuration.md and listed in plan §"Cost envelope
 // and budgets".
+// These const names trigger gosec G101 ("Potential hardcoded
+// credentials") because of the `_TOKEN_` substring. They are env-var
+// names, not credentials — silence the false positive at the block
+// level rather than per-line.
+//
+//nolint:gosec // env var names, not credentials
 const (
 	EnvVerifierRounds   = "VALIDATION_VERIFIER_MAX_ROUNDS"
 	EnvVerifierTokenCap = "VALIDATION_VERIFIER_TOKEN_CAP"

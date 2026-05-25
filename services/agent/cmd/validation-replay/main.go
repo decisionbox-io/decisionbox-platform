@@ -248,7 +248,7 @@ func run() error {
 		return fmt.Errorf("marshal report: %w", err)
 	}
 	if fl.out != "" {
-		if err := os.WriteFile(fl.out, out, 0o644); err != nil {
+		if err := os.WriteFile(fl.out, out, 0o600); err != nil {
 			return fmt.Errorf("write report: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "\nreport written to %s\n", fl.out)

@@ -26,8 +26,7 @@ import { isLegacyValidation } from './validationShape';
 // combined ∈ {validation_disabled, skipped_budget_cap} AND no
 // verifier/refuter detail was stamped during a disabled run, not
 // actually validated. Treating those as "validated" would hide the
-// Run button forever once the user re-enables the toggle. Codex
-// prod-r2 P0.
+// Run button forever once the user re-enables the toggle.
 //
 // The router owns the polling. On mount it asks
 // `/validation-jobs?doc_kind=...&doc_id=...` once; if there's a
@@ -168,9 +167,9 @@ export function ValidationRouter({
     }
   }, [fetchActiveJob]);
 
-  // Legacy shape — render the pre-plan-v5 card regardless of job
-  // state. Legacy docs are read-only with respect to the new
-  // pipeline; no manual re-run available.
+  // Legacy shape — render the legacy card regardless of job state.
+  // Legacy docs are read-only with respect to the new pipeline; no
+  // manual re-run available.
   if (validation && isLegacyValidation(validation)) {
     return <LegacyValidationCard validation={validation} />;
   }

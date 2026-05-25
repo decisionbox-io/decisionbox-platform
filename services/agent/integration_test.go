@@ -319,14 +319,14 @@ func TestInteg_QueryExecutor_NoFilterRequired(t *testing.T) {
 	}
 }
 
-// The pre-plan-v5 UserCountValidator + InsightValidator integration
-// tests that used to live here have been removed alongside the legacy
-// validator packages (Phase D). The plan-v5 verifier + refuter agent
-// pair is unit-tested in services/agent/internal/validation/verifier/
-// and exercised end-to-end by the validation-replay CLI in
-// services/agent/cmd/validation-replay/. The single-doc manual-
-// validation path Phase I.3 adds will get its own integration test
-// alongside the agent --mode validate-doc handler.
+// The older UserCountValidator + InsightValidator integration tests
+// that used to live here have been removed alongside the legacy
+// validator packages. The verifier + refuter agent pair is unit-tested
+// in services/agent/internal/validation/verifier/ and exercised
+// end-to-end by the validation-replay CLI in
+// services/agent/cmd/validation-replay/. The single-doc manual
+// validation path's end-to-end test ships alongside the agent
+// --mode=validate-doc handler.
 
 // =====================================================================
 // MongoDB Repository Tests

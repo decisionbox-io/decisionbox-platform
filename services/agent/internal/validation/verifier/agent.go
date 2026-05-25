@@ -175,8 +175,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 			// EVERY normal round. If the loop runs out of rounds
 			// without an evidence-backed submission, the forced-
 			// final block (outside this loop) accepts the verdict
-			// but downgrades the Overall to partial. Plan v5 +
-			// Codex MVP-r1 HIGH.
+			// but downgrades the Overall to partial.
 			if s.mode == valmodels.ModeRefuter && s.queriesIssued+s.stepReadsUsed == 0 {
 				s.history = append(s.history, toolStep{
 					Error: "refuter discipline: cannot submit_verdict before running at least one query_warehouse or read_step_rows; gather evidence first",
@@ -218,10 +217,10 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 		return a.unverifiable(s, "forced final round produced no verdict"), nil
 	}
 	final := a.finalise(*action.Verdict, s)
-	// Refuter discipline on forced-final (Codex MVP-r1 HIGH): even on
-	// the last round, a refuter that ran zero evidence tools has not
-	// actually attempted refutation. Downgrade so the measurement of
-	// refuter effectiveness is not muddied by lazy "couldn't refute"
+	// Refuter discipline on forced-final: even on the last round, a
+	// refuter that ran zero evidence tools has not actually attempted
+	// refutation. Downgrade so the measurement of refuter
+	// effectiveness is not muddied by lazy "couldn't refute"
 	// submissions. lookup_schema does NOT count as evidence — only
 	// query_warehouse + read_step_rows.
 	if s.mode == valmodels.ModeRefuter && s.queriesIssued+s.stepReadsUsed == 0 {
@@ -286,8 +285,9 @@ func (a *Agent) buildPrompt(s *runState, allowed []ActionKind, forced bool) stri
 }
 
 // truncateHistory drops the rows from the oldest non-truncated tool
-// result. Marks it `rows_omitted_due_to_history_truncation: true`
-// (plan v4.1 — Codex r4 MEDIUM #1). Returns true if a slot was
+// result. Marks it `rows_omitted_due_to_history_truncation: true` so
+// downstream consumers can tell "no rows" apart from "rows omitted
+// because we ran out of prompt budget". Returns true if a slot was
 // truncated; false when there's nothing left to drop.
 func (a *Agent) truncateHistory(s *runState) bool {
 	for i := range s.history {
@@ -332,9 +332,9 @@ func (a *Agent) aggressiveTruncate(s *runState) {
 //            unique is_headline=true entry's claim_text)
 //   step 3 — set-equality between claims_considered and claim_text
 //   step 4 — evidence required for confirmed/supported/rejected
-//   step 4.5 — status enum validation (plan v5 / Codex MVP-r1 #4)
+//   step 4.5 — status enum validation
 //   step 5 — unverifiable rules
-//   step 6 — derive Overall when omitted (plan v5 / MVP F4)
+//   step 6 — derive Overall when omitted
 //
 // On any failure, Overall is rewritten (usually to partial) and a
 // "coverage:" reason is appended to OverallReason.
@@ -407,7 +407,7 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 	// quantitative judgment (e.g. "headline figure off by 8%") that
 	// must be backed by a row, otherwise the model can launder
 	// uncited claims through `partial` without tripping any of the
-	// other coverage rules. Codex prod-r5 P2.
+	// other coverage rules.
 	for i, c := range v.ClaimVerdicts {
 		switch c.Status {
 		case valmodels.StatusConfirmed, valmodels.StatusSupported, valmodels.StatusRejected, valmodels.StatusPartial:
@@ -419,10 +419,9 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 		}
 	}
 
-	// Step 4.5 — status enum validation (plan v5 / Codex MVP-r1 #4 +
-	// Codex prod-r1 MEDIUM). Per-claim statuses are restricted to
-	// the five claim-level values; `validation_disabled` and
-	// `skipped_budget_cap` are doc-level trip-wires only and would
+	// Step 4.5 — status enum validation. Per-claim statuses are
+	// restricted to the five claim-level values; `validation_disabled`
+	// and `skipped_budget_cap` are doc-level trip-wires only and would
 	// short-circuit the evidence-required rule above if accepted.
 	for i, c := range v.ClaimVerdicts {
 		if !c.Status.IsValidPerClaim() {
@@ -463,13 +462,13 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 		return v
 	}
 
-	// Step 6 — derive Overall when the model omitted it (plan v5
-	// MVP F4 — observed when every per-claim is supported and the
-	// model "feels" the overall is implied) OR when the model emitted
-	// an unknown value (typos like "supportd"). Codex prod-r2 P2 —
-	// the per-claim enum check above doesn't cover the top-level field,
-	// so an invalid Overall used to slip through and collapse the
-	// combined verdict to "unverifiable" downstream.
+	// Step 6 — derive Overall when the model omitted it (observed
+	// when every per-claim is supported and the model "feels" the
+	// overall is implied) OR when the model emitted an unknown value
+	// (typos like "supportd"). The per-claim enum check above
+	// doesn't cover the top-level field, so an invalid Overall used
+	// to slip through and collapse the combined verdict to
+	// "unverifiable" downstream.
 	if v.Overall == "" || !v.Overall.IsKnown() {
 		original := v.Overall
 		v.Overall = deriveOverall(v.ClaimVerdicts)
@@ -487,11 +486,11 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 // Overall when the model omitted the top-level field (or returned a
 // known-bad value the finaliser is correcting).
 //
-// Codex prod-r5 P2 — `partial` claims used to be ignored entirely,
-// so one supported + one partial promoted to `supported` and an
-// all-partial verdict collapsed to `unverifiable`. Both undercounted
-// the partial signal: a single partial claim taints the whole
-// document. The fold now treats partial similarly to a soft-reject:
+// Partial claims used to be ignored entirely, so one supported +
+// one partial promoted to `supported` and an all-partial verdict
+// collapsed to `unverifiable`. Both undercounted the partial
+// signal: a single partial claim taints the whole document. The
+// fold now treats partial similarly to a soft-reject:
 // any partial demotes a would-be supported/confirmed overall to
 // partial; all-partial returns partial (not unverifiable).
 func deriveOverall(cvs []valmodels.ClaimVerdict) valmodels.Status {
@@ -545,7 +544,7 @@ func (a *Agent) unverifiable(s *runState, reason string) valmodels.StructuredVer
 // hasDuplicates returns true if xs contains two entries that compare
 // equal after lowercasing + whitespace-collapsing. Empty strings count
 // as duplicates of each other — observed when the LLM emits a stub
-// `claim_verdicts` list (plan v5 F1 + Codex MVP-r1).
+// `claim_verdicts` list.
 func hasDuplicates(xs []string) bool {
 	seen := make(map[string]bool, len(xs))
 	for _, x := range xs {

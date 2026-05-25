@@ -60,7 +60,11 @@ func renderSystemPrompt(template string, mode valmodels.AgentMode, b Bundle, num
 		"{{MIN_SAMPLE_SIZE}}", fmt.Sprintf("%d", minSampleSize),
 	}
 	out := template
-	for i := 0; i < len(replacements); i += 2 {
+	// `replacements` is built as alternating key/value pairs immediately
+	// above; len is always even. gosec G602's "slice index out of range"
+	// is a false positive — the i+=2 stride keeps i+1 in range — but a
+	// defensive guard is cheaper than a long nolint comment.
+	for i := 0; i+1 < len(replacements); i += 2 {
 		out = strings.ReplaceAll(out, replacements[i], replacements[i+1])
 	}
 	return out

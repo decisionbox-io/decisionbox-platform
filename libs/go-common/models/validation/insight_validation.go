@@ -15,7 +15,7 @@ import "time"
 // NOT populate them; the dashboard prefers the new fields when present
 // and falls back to the legacy ones for old docs.
 type InsightValidation struct {
-	// --- legacy fields (pre-plan, kept for read compatibility) ---
+	// --- legacy fields (kept for read compatibility) ---
 
 	Status        string    `bson:"status,omitempty"          json:"status,omitempty"`
 	VerifiedCount int       `bson:"verified_count,omitempty"  json:"verified_count,omitempty"`
@@ -26,7 +26,7 @@ type InsightValidation struct {
 	InputTokens   int       `bson:"input_tokens,omitempty"    json:"input_tokens,omitempty"`
 	OutputTokens  int       `bson:"output_tokens,omitempty"   json:"output_tokens,omitempty"`
 
-	// --- new fields (plan v5) ---
+	// --- new-shape fields ---
 
 	// Verifier is the structured verdict from the defender agent.
 	Verifier *StructuredVerdict `bson:"verifier,omitempty" json:"verifier,omitempty"`

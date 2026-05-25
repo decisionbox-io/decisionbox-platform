@@ -124,9 +124,9 @@ func TestRun_RefuterDisciplineRejectsToolLessVerdict(t *testing.T) {
 	}
 }
 
-// TestRun_RefuterForcedFinalDowngradeWhenNoTools — refuter that runs
-// all rounds without calling tools and still submits on the forced-
-// final round is downgraded to partial (Codex MVP-r1 HIGH).
+// TestRun_RefuterForcedFinalDowngradeWhenNoTools — refuter that
+// runs all rounds without calling tools and still submits on the
+// forced-final round is downgraded to partial.
 func TestRun_RefuterForcedFinalDowngradeWhenNoTools(t *testing.T) {
 	// Tighten config so the loop runs 2 rounds then forces final.
 	cfg := DefaultConfig()

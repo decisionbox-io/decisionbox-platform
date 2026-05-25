@@ -67,7 +67,7 @@ type Recommendation struct {
 	Confidence        float64  `bson:"confidence" json:"confidence"`
 
 	// Validation is the verifier+refuter verdict attached after the
-	// agent's Phase 5.5. Nil on pre-plan docs.
+	// agent's recommendation-validation phase runs. Nil on legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
@@ -126,9 +126,9 @@ type DroppedAnalysisStep struct {
 
 // ValidationLogEntry is the API-side mirror of agent ValidationResult.
 // Same BSON shape so MongoDB decode round-trips between agent writes
-// and API reads. Legacy fields cover pre-plan docs; the v5 verifier
-// fields (DocKind, Verifier, Refuter, Combined, RefuterDisabled) are
-// populated by the new pipeline.
+// and API reads. Legacy fields cover older docs; the new-shape
+// verifier fields (DocKind, Verifier, Refuter, Combined,
+// RefuterDisabled) are populated by the current pipeline.
 type ValidationLogEntry struct {
 	InsightID     string    `bson:"insight_id" json:"insight_id"`
 	AnalysisArea  string    `bson:"analysis_area" json:"analysis_area"`
@@ -139,7 +139,7 @@ type ValidationLogEntry struct {
 	Query         string    `bson:"query,omitempty" json:"query,omitempty"`
 	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
 
-	// --- new fields (plan v5) ---
+	// --- new-shape fields ---
 
 	DocKind         valmodels.DocKind            `bson:"doc_kind,omitempty"         json:"doc_kind,omitempty"`
 	Verifier        *valmodels.StructuredVerdict `bson:"verifier,omitempty"         json:"verifier,omitempty"`

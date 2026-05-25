@@ -95,9 +95,9 @@ describe('ValidationPanel — new shape', () => {
 });
 
 describe('ValidationPanel — drawer with malformed agent payloads', () => {
-  // Codex prod-r2 P2 — Go encodes a nil `[]ClaimVerdict` slice as JSON
-  // null. The drawer used to read `verdict.claim_verdicts.length`
-  // unguarded and threw on every failed / unverifiable verdict.
+  // Go encodes a nil `[]ClaimVerdict` slice as JSON null. The
+  // drawer used to read `verdict.claim_verdicts.length` unguarded
+  // and threw on every failed / unverifiable verdict.
   it('does not crash when an agent verdict has claim_verdicts: null', async () => {
     // Cast through unknown — the public type forbids null but the
     // wire format allows it (Go nil slice → JSON null on failed runs).

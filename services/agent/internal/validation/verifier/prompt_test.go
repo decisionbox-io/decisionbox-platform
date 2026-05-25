@@ -7,9 +7,9 @@ import (
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
-// Codex MVP-r1 MEDIUM #2 — every {{TOKEN}} placeholder MUST be
-// substituted; if any `{{` substring remains in the rendered prompt
-// the production code has a silent prompt bug.
+// Every {{TOKEN}} placeholder MUST be substituted; if any `{{`
+// substring remains in the rendered prompt the production code has
+// a silent prompt bug.
 func TestRenderSystemPrompt_NoUnresolvedPlaceholders(t *testing.T) {
 	systems, err := loadSystemPrompts()
 	if err != nil {

@@ -189,11 +189,11 @@ func TestDenormalizeRecommendations(t *testing.T) {
 	}
 }
 
-// convertValidation was deleted in plan v5 — both agent-side and
+// convertValidation has been removed — both agent-side and
 // go-common-side InsightValidation are now the same valmodels type,
-// so the conversion is a no-op identity. The phase_embed_index code
-// now passes ins.Validation directly. Test removed; if a future
-// renaming reintroduces a conversion shim, add tests for it then.
+// so the conversion is a no-op identity. phase_embed_index now
+// passes ins.Validation directly. If a future renaming reintroduces
+// a conversion shim, add tests for it then.
 
 // mockEmbedIndexStore implements EmbedIndexStore for testing.
 type mockEmbedIndexStore struct {

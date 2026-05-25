@@ -28,7 +28,7 @@ import (
 // PriorClaims is set when the refuter runs after the verifier: the
 // refuter copies the verifier's enumerated claim set verbatim so both
 // agents attack the same surface and Combine() compares apples to
-// apples (plan v5 F2).
+// apples.
 type Bundle struct {
 	Doc                  DocDigest          `json:"doc"`
 	SourceSteps          []SourceStepDigest `json:"source_steps"`
@@ -62,7 +62,6 @@ type DocDigest struct {
 	// verifier never sees the impact claim ("X% improvement") or
 	// the action list and would silently mark recommendations
 	// supported despite the displayed impact being unverified.
-	// Codex prod-r6 P2.
 	ExpectedImpact *ExpectedImpactDigest `json:"expected_impact,omitempty"`
 	Actions        []string              `json:"actions,omitempty"`
 }
@@ -231,7 +230,6 @@ func BuildRecommendationBundle(rec *agentmodels.Recommendation, insightByID map[
 	// each action — the dashboard displays both, and recommending
 	// a doc as "supported" without checking those fields means a
 	// fabricated "10% conversion lift" sentence passes silently.
-	// Codex prod-r6 P2.
 	var impact *ExpectedImpactDigest
 	if rec.ExpectedImpact.Metric != "" ||
 		rec.ExpectedImpact.EstimatedImprovement != "" ||
@@ -327,8 +325,8 @@ func normaliseRow(row map[string]any, cellCap int) map[string]any {
 //  3. Strings over cellCap chars are truncated with an ellipsis.
 //
 // Recursion is depth-1 — nested maps are serialised after their inner
-// BQ wrappers are unwrapped. Codex MVP-r1 LOW noted nested STRUCTs
-// could still leak; that's covered here by the recursive unwrap.
+// BQ wrappers are unwrapped. Nested STRUCTs were a known leak surface
+// before the recursive unwrap landed here.
 func normaliseValue(v any, cellCap int) any {
 	switch x := v.(type) {
 	case nil:
@@ -474,7 +472,8 @@ func estimateTokens(s string, ratio float64) int {
 
 // renderForPrompt builds the human-readable rendering of the bundle
 // the agent sees. Includes the EVIDENCE OMITTED preamble when source
-// steps were dropped (per plan v5 + Codex MVP-r1 MEDIUM #2).
+// steps were dropped under the token budget — the model must mark
+// any claim that relied on a dropped step as `unverifiable`.
 func (b *Bundle) renderForPrompt() string {
 	var sb strings.Builder
 	if b.SourceStepsTruncated {

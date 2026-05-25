@@ -792,11 +792,11 @@ func TestGenerateRecommendations_ParseError(t *testing.T) {
 	}
 }
 
-// executorAdapter was deleted in plan v5 when the legacy validators
-// were removed. The verifier package's tools.go now wires the same
-// QueryExecutor through verifier.DefaultExecutor.QueryWarehouse —
-// the test cases that exercised the adapter's pass-through are now
-// covered by verifier/tools_test.go (TODO Phase B if not present).
+// executorAdapter has been removed alongside the legacy validators.
+// The verifier package's tools.go wires the same QueryExecutor
+// through verifier.DefaultExecutor.QueryWarehouse; the pass-through
+// cases that exercised the adapter are now covered by
+// verifier/tools_test.go.
 
 func TestBuildFilterClause_AllCombinations(t *testing.T) {
 	tests := []struct {

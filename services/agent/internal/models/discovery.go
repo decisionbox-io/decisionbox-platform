@@ -120,7 +120,8 @@ type Recommendation struct {
 	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
 
 	// Validation is the verifier+refuter verdict attached after the
-	// orchestrator's Phase 5.5. Nil on pre-plan docs.
+	// orchestrator's recommendation-validation phase runs. Nil on
+	// legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
@@ -384,7 +385,7 @@ type ValidationResult struct {
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 
-	// --- new fields (plan v5) ---
+	// --- new-shape fields ---
 
 	// DocKind discriminates "insight" from "recommendation" so the
 	// dashboard can render the right view. Empty on legacy docs.

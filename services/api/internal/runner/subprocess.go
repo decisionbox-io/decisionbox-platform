@@ -330,7 +330,7 @@ func (r *SubprocessRunner) RunValidateDoc(ctx context.Context, opts ValidateDocO
 		// "mark failed" branch instead of the cancellation branch.
 		// Surfacing ctx.Err() directly preserves the intended
 		// classification so a shutdown doesn't permanently mark
-		// in-flight jobs as failed. Codex prod-r4 P2.
+		// in-flight jobs as failed.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			apilog.WithFields(apilog.Fields{
 				"job_id": opts.JobID, "ctx_err": ctxErr.Error(),

@@ -1,7 +1,7 @@
 // Shape-detector for the two validation payload shapes the dashboard
-// currently has to render: the plan-v5 LLM-native shape (verifier +
-// refuter + combined + claim_verdicts) and the legacy single-status shape
-// from the pre-plan validators.
+// currently has to render: the LLM-native shape (verifier + refuter +
+// combined + claim_verdicts) and the legacy single-status shape from
+// the older validators.
 //
 // A document carries the *new* shape when any of the new fields is
 // present. Documents persisted under the new pipeline always set

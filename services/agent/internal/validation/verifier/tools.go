@@ -65,10 +65,10 @@ type DefaultExecutor struct {
 //
 // When no SchemaProvider is wired (e.g. the manual validate-doc path
 // runs without Qdrant), this returns a non-fatal tool error rather
-// than nil-derefencing — Codex prod-r3 P1. The verifier's tool-error
-// handling renders the message back to the model, which then either
-// asks for a different action or marks the dependent claim
-// unverifiable. The agent loop never panics.
+// than nil-derefencing. The verifier's tool-error handling renders
+// the message back to the model, which then either asks for a
+// different action or marks the dependent claim unverifiable. The
+// agent loop never panics.
 func (e *DefaultExecutor) LookupSchema(ctx context.Context, refs []string) (map[string]any, error) {
 	if e.SchemaProvider == nil {
 		return nil, fmt.Errorf("lookup_schema is not available for this run (no schema provider configured) — fall back to the catalog already attached to cited source steps, or mark the dependent claim unverifiable")
@@ -148,11 +148,10 @@ func (e *DefaultExecutor) QueryWarehouse(ctx context.Context, sql string) (map[s
 // ReadStepRows returns a slice from the in-memory step snapshot.
 // Out-of-range offsets are returned as an empty truncated result so
 // the agent can branch on `truncated: true` and mark the dependent
-// claim unverifiable — plan §"Tool error handling" originally framed
-// this as a tool error, but the practical contract used by the MVP
-// (and reaffirmed here) is "empty rows + truncated=true" so the agent
-// has a deterministic signal to fall back on. Codex MVP-r1 LOW noted
-// the divergence; this is the documented production behaviour.
+// claim unverifiable. (We deliberately do NOT return a tool error
+// here — the empty-rows + truncated=true pair is a deterministic
+// signal the model can rely on; a tool error would force a noisier
+// fall-back.)
 func (e *DefaultExecutor) ReadStepRows(ctx context.Context, req StepRowsRequest) (map[string]any, error) {
 	s, ok := e.StepByID[req.StepID]
 	if !ok {
@@ -161,11 +160,11 @@ func (e *DefaultExecutor) ReadStepRows(ctx context.Context, req StepRowsRequest)
 	if req.Limit <= 0 {
 		req.Limit = 50
 	}
-	// Clamp the agent-requested limit to MaxReadStepRowsCall — plan
-	// §"Cost envelope" + Codex prod-r1 HIGH. The agent may still ask
-	// for a larger number; we silently clamp and rely on the
-	// returned `truncated: true` to signal further rows are
-	// available.
+	// Clamp the agent-requested limit to MaxReadStepRowsCall so a
+	// runaway request can't blow the prompt + memory budget before
+	// history truncation can help. The agent may still ask for a
+	// larger number; we silently clamp and rely on the returned
+	// `truncated: true` to signal further rows are available.
 	cap := e.MaxReadStepRowsCall
 	if cap <= 0 {
 		cap = 200

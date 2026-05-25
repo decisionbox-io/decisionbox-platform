@@ -2,13 +2,11 @@
 // validation feature. Lives under libs/go-common so both
 // services/agent and services/api can import the same shared types,
 // avoiding cross-module-internal coupling.
-//
-// See open-source/plans/PLAN-LLM-NATIVE-VALIDATION.md for the design.
 package validation
 
 // Status is the validation taxonomy emitted by verifier + refuter and
-// combined by Combine() into the document's final verdict state. Plan
-// §"Status taxonomy — 7 terminal statuses".
+// combined by Combine() into the document's final verdict state.
+// Seven terminal statuses — see the constants below.
 type Status string
 
 const (

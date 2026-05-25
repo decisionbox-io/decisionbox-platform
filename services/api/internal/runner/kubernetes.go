@@ -107,12 +107,12 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		// here for K8s runs. Subprocess runs already inherit it from
 		// the API process's env.
 		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
-		// VALIDATION_* knobs (Phase 4.5/5.5 of the LLM-native
-		// verifier+refuter pipeline). All consumed by the agent via
-		// verifier.LoadConfigFromEnv during discovery + the
-		// Phase I.3 validate-doc handler. Without forwarding,
-		// operators setting these on the API deployment silently get
-		// defaults inside agent Jobs. Codex prod-r2 P2.
+		// VALIDATION_* knobs for the LLM-native verifier+refuter
+		// pipeline. All consumed by the agent via
+		// verifier.LoadConfigFromEnv during both full-discovery
+		// validation and manual `--mode=validate-doc` runs. Without
+		// forwarding here, operators setting these on the API
+		// deployment silently get defaults inside agent Jobs.
 		{"VALIDATION_REFUTER_ENABLED", "VALIDATION_REFUTER_ENABLED"},
 		{"VALIDATION_MAX_INSIGHTS_PER_RUN", "VALIDATION_MAX_INSIGHTS_PER_RUN"},
 		{"VALIDATION_MAX_RECOMMENDATIONS_PER_RUN", "VALIDATION_MAX_RECOMMENDATIONS_PER_RUN"},
@@ -127,10 +127,8 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		{"VALIDATION_NUMERIC_TOLERANCE", "VALIDATION_NUMERIC_TOLERANCE"},
 		{"VALIDATION_MIN_SAMPLE_SIZE", "VALIDATION_MIN_SAMPLE_SIZE"},
 		// Bundle truncation + recommendation-bundle token budget +
-		// pre-flight estimate ratio — missing from the initial
-		// fan-out (Codex prod-r3 P2). Operators setting these on
-		// the API deployment were silently getting defaults inside
-		// agent Jobs.
+		// pre-flight estimate ratio. Same forwarding rule as the
+		// other VALIDATION_* knobs above.
 		{"VALIDATION_BUNDLE_CELL_CHAR_CAP", "VALIDATION_BUNDLE_CELL_CHAR_CAP"},
 		{"VALIDATION_REC_STEPS_TOKEN_BUDGET", "VALIDATION_REC_STEPS_TOKEN_BUDGET"},
 		{"VALIDATION_ESTIMATE_TOKEN_RATIO", "VALIDATION_ESTIMATE_TOKEN_RATIO"},
@@ -227,7 +225,6 @@ func int64Ptr(i int64) *int64 { return &i }
 // last character must be alphanumeric). UUID-v4 ids have hyphens at
 // positions 8, 13, 18, and 23; truncating to 24 chars would leave
 // the last position on a hyphen, producing an invalid label.
-// Codex prod-r4 P1.
 func sanitizeK8sLabelSegment(id string, maxLen int) string {
 	if maxLen > 0 && len(id) > maxLen {
 		id = id[:maxLen]
@@ -440,10 +437,11 @@ func (r *KubernetesRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaO
 //
 // ON ctx.Done() the implementation issues
 // Jobs.Delete(name, propagation=Foreground) BEFORE returning so the
-// validation work actually stops running on the cluster. The earlier
-// RunIndexSchema shortcut (just `return ctx.Err()`) leaks running
-// Jobs every time the worker is killed or the user cancels — a
-// regression that was caught by Codex prod-r2 review of the I.3 plan.
+// validation work actually stops running on the cluster. Silently
+// returning ctx.Err() (as RunIndexSchema historically did) would
+// leave the Job running uncancellable on the cluster every time the
+// worker is killed or the user cancels — `TestKubernetesRunner_
+// RunValidateDoc_DeletesJobOnContextCancel` pins the fixed behaviour.
 func (r *KubernetesRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error {
 	if opts.JobID == "" {
 		return fmt.Errorf("validate-doc: job_id is required")
@@ -456,7 +454,7 @@ func (r *KubernetesRunner) RunValidateDoc(ctx context.Context, opts ValidateDocO
 	// `validate-xxxxxxxx-xxxx-xxxx-xxxx-` — rejected by the
 	// apiserver and every manual K8s validation would fail at
 	// creation before the agent could run. Trim trailing dashes
-	// after truncation. Codex prod-r4 P1.
+	// after truncation.
 	safeJobID := sanitizeK8sLabelSegment(opts.JobID, 24)
 	jobName := fmt.Sprintf("validate-%s", safeJobID)
 	args := []string{"--mode", "validate-doc", "--job-id", opts.JobID}

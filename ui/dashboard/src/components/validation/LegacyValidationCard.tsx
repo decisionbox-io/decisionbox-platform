@@ -1,7 +1,7 @@
 'use client';
 
-// Renders the LEGACY (pre-plan-v5) validation payload — single `status`
-// field plus original/verified counts plus a free-text reasoning.
+// Renders the legacy validation payload — single `status` field
+// plus original/verified counts plus a free-text reasoning.
 // Lifted verbatim from the old inline CompactValidationCard so we can
 // delete this whole file in one commit when legacy docs are retired.
 //

@@ -422,9 +422,9 @@ export interface Insight {
 }
 
 // Status values come from the seven-status taxonomy plus the legacy
-// values that pre-plan docs may still carry. The dashboard sorts /
-// filters on `combined` (the new plan v5 field); the older `status`
-// field is only meaningful on legacy docs.
+// values older docs may still carry. The dashboard sorts / filters
+// on `combined` (the canonical field on new docs); the older
+// `status` field is only meaningful on legacy docs.
 export type ValidationStatus =
   | "confirmed"
   | "supported"
@@ -433,7 +433,7 @@ export type ValidationStatus =
   | "unverifiable"
   | "validation_disabled"
   | "skipped_budget_cap"
-  // Legacy values (pre-plan):
+  // Legacy values:
   | "adjusted"
   | "unverified"
   | "error"
@@ -477,7 +477,7 @@ export interface StructuredVerdict {
 }
 
 export interface InsightValidation {
-  // --- legacy fields (pre-plan v5) ---
+  // --- legacy fields ---
   status?: string;
   verified_count?: number;
   original_count?: number;
@@ -486,7 +486,7 @@ export interface InsightValidation {
   validated_at?: string;
   input_tokens?: number;
   output_tokens?: number;
-  // --- new fields (plan v5) ---
+  // --- new fields ---
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
   combined?: ValidationStatus;
@@ -600,7 +600,7 @@ export interface ValidationLogEntry {
   reasoning: string;
   query: string;
   validated_at: string;
-  // --- new fields (plan v5) ---
+  // --- new fields ---
   doc_kind?: ValidationDocKind;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
@@ -1224,7 +1224,7 @@ export const api = {
   // Cancel returns a small JSON envelope ({status: "cancelled"})
   // rather than 204 — the shared request() helper rejects non-JSON
   // bodies on success, which would surface a misleading "Cancel
-  // failed" toast for every successful cancel. Codex prod-r3 P2.
+  // failed" toast for every successful cancel.
   cancelValidationJob: (jobId: string) =>
     request<{ status: string }>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
   getRecommendationLog: (discoveryId: string) =>

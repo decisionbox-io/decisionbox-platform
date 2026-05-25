@@ -35,7 +35,7 @@ func TestParseAction_QueryWarehouse_String(t *testing.T) {
 	}
 }
 
-// Codex MVP-r1 MEDIUM — query_warehouse object form must be a parse error.
+// query_warehouse object form must be a parse error.
 func TestParseAction_QueryWarehouse_ObjectFormRejected(t *testing.T) {
 	resp := `{"query_warehouse": {"sql": "SELECT 1"}}`
 	_, err := ParseAction(resp, nil)
@@ -98,7 +98,7 @@ func TestParseAction_MultiKeyIsError(t *testing.T) {
 	}
 }
 
-// Codex MVP-r1 MEDIUM — extra unknown top-level keys are a parse error.
+// Extra unknown top-level keys are a parse error.
 func TestParseAction_ExtraTopLevelKeyIsError(t *testing.T) {
 	resp := `{"thinking": "let me think...", "query_warehouse": "SELECT 1"}`
 	_, err := ParseAction(resp, nil)

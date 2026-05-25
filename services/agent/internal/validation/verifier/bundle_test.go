@@ -118,8 +118,9 @@ func TestCapCell(t *testing.T) {
 	}
 }
 
-// TestRenderForPrompt_TruncationNotice — Codex MVP-r1 MEDIUM #2: the
-// renderForPrompt MUST surface SourceStepsTruncated.
+// TestRenderForPrompt_TruncationNotice — renderForPrompt MUST
+// surface SourceStepsTruncated so the model knows to mark dependent
+// claims unverifiable.
 func TestRenderForPrompt_TruncationNotice(t *testing.T) {
 	b := Bundle{
 		Doc:                  DocDigest{Kind: valmodels.DocRecommendation, Headline: "h"},
@@ -138,7 +139,7 @@ func TestRenderForPrompt_TruncationNotice(t *testing.T) {
 }
 
 // TestRenderForPrompt_PriorClaims — refuter bundle includes the
-// verifier's claim set verbatim (plan v5 F2).
+// verifier's claim set verbatim.
 func TestRenderForPrompt_PriorClaims(t *testing.T) {
 	b := Bundle{
 		Doc:         DocDigest{Headline: "h"},

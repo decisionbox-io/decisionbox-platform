@@ -623,11 +623,11 @@ func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
 // representative DISCOVERY_MAX_DURATION value so a future refactor can't
 // silently break it.
 //
-// Codex r5 [P2] surfaced the previously-missing branches: the guard must
-// use the EFFECTIVE cap (default when env unset/invalid/negative) so an
-// install with a stale AGENT_JOB_TIMEOUT_HOURS override but no
-// DISCOVERY_MAX_DURATION setting still gets warned about. The unset /
-// invalid / negative cases below pin that behavior.
+// The guard must use the EFFECTIVE cap (default when env
+// unset/invalid/negative) so an install with a stale
+// AGENT_JOB_TIMEOUT_HOURS override but no DISCOVERY_MAX_DURATION
+// setting still gets warned about. The unset / invalid / negative
+// cases below pin that behavior.
 func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -642,10 +642,10 @@ func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
 		{name: "invalid_uses_effective_default", envVal: "not-a-duration", jobHours: 6},
 		{name: "negative_uses_effective_default", envVal: "-1h", jobHours: 6},
 		{name: "safe_high_job_timeout", envVal: "", jobHours: 25},
-		// Codex r8 [P2]: insufficient persistence headroom must
-		// still warn even when effective < jobBudget. 24h59m cap
-		// with a 25h job timeout leaves only 1 minute of headroom
-		// — way below the 10-minute persistence tail.
+		// Insufficient persistence headroom must still warn even
+		// when effective < jobBudget. 24h59m cap with a 25h job
+		// timeout leaves only 1 minute of headroom — way below the
+		// 10-minute persistence tail.
 		{name: "insufficient_headroom_warns", envVal: "24h59m", jobHours: 25},
 		{name: "exact_headroom_warns_too", envVal: "24h50m", jobHours: 25},
 		{name: "comfortable_headroom_safe", envVal: "23h", jobHours: 25},

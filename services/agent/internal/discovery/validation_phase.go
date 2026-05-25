@@ -43,7 +43,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		// Validation is disabled (project setting off, or no aiClient
 		// wired). Stamp every insight with combined=validation_disabled
 		// AND backfill the legacy Status field so consumers reading the
-		// pre-plan shape still see the verdict (Codex prod-r1 MEDIUM).
+		// legacy shape still see the verdict.
 		now := time.Now()
 		for i := range insights {
 			insights[i].Validation = &valmodels.InsightValidation{
@@ -102,8 +102,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 
 		ins.Validation = &valmodels.InsightValidation{
 			// Backfill legacy Status so dashboards / consumers that
-			// still read the old field see the new verdict (Codex
-			// prod-r1 MEDIUM).
+			// still read the old field see the new verdict.
 			Status:          string(combined),
 			Reasoning:       v.OverallReason,
 			Verifier:        &v,

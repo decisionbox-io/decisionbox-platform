@@ -143,7 +143,7 @@ func TestFinalise_MissingEvidenceRow(t *testing.T) {
 	}
 }
 
-// Step 4.5 — unknown status enum (plan v5 / Codex MVP-r1 #4).
+// Step 4.5 — unknown status enum.
 func TestFinalise_UnknownStatusEnum(t *testing.T) {
 	v := baseVerdict()
 	v.ClaimVerdicts[1].Status = "spported" // typo
@@ -157,11 +157,11 @@ func TestFinalise_UnknownStatusEnum(t *testing.T) {
 	}
 }
 
-// Per-claim status MUST exclude the doc-level trip-wires (Codex
-// prod-r1 MEDIUM). A claim emitted with status="validation_disabled"
-// would silently pass the evidence-required check (which only fires
-// for supported/confirmed/rejected) — finaliser step 4.5 now rejects
-// it explicitly.
+// Per-claim status MUST exclude the doc-level trip-wires. A claim
+// emitted with status="validation_disabled" would silently pass the
+// evidence-required check (which only fires for
+// supported/confirmed/rejected) — finaliser step 4.5 now rejects it
+// explicitly.
 func TestFinalise_DocLevelStatusOnClaimIsRejected(t *testing.T) {
 	for _, s := range []valmodels.Status{valmodels.StatusValidationDisabled, valmodels.StatusSkippedBudgetCap} {
 		t.Run(string(s), func(t *testing.T) {
@@ -215,13 +215,13 @@ func TestFinalise_DeriveOverallWhenOmitted(t *testing.T) {
 	}
 }
 
-// Codex prod-r2 P2 — when the LLM emits a known-bad top-level Overall
-// (typo like "supportd") the finaliser used to persist it; Combine()
-// then treated the verifier as Unknown and the doc collapsed to
+// When the LLM emits a known-bad top-level Overall (typo like
+// "supportd") the finaliser used to persist it; Combine() then
+// treated the verifier as Unknown and the doc collapsed to
 // Unverifiable, getting filtered out of recommendations even though
 // every per-claim verdict was supported. The finaliser now treats
-// unknown Overall the same as missing Overall — derive from per-claim
-// verdicts.
+// unknown Overall the same as missing Overall — derive from
+// per-claim verdicts.
 func TestFinalise_OverridesUnknownOverallByDeriving(t *testing.T) {
 	v := baseVerdict()
 	v.Overall = valmodels.Status("supportd") // typo
@@ -237,10 +237,10 @@ func TestFinalise_OverridesUnknownOverallByDeriving(t *testing.T) {
 	}
 }
 
-// Codex prod-r5 P2 — `partial` belongs in the evidence-required
-// branch (step 4). Without that, a per-claim `partial` with no
-// attached row laundered through the coverage rules and the doc
-// kept its supported/confirmed overall.
+// `partial` belongs in the evidence-required branch (step 4).
+// Without that, a per-claim `partial` with no attached row launders
+// through the coverage rules and the doc keeps its
+// supported/confirmed overall.
 func TestFinalise_PartialClaimWithoutEvidenceIsDowngraded(t *testing.T) {
 	v := baseVerdict()
 	// Replace the second claim (sub claim) with a partial verdict
@@ -256,9 +256,9 @@ func TestFinalise_PartialClaimWithoutEvidenceIsDowngraded(t *testing.T) {
 	}
 }
 
-// Codex prod-r5 P2 — deriveOverall now folds partial verdicts in
-// (used to silently skip them). One supported + one partial must
-// resolve to partial, not supported.
+// deriveOverall now folds partial verdicts in (used to silently
+// skip them). One supported + one partial must resolve to partial,
+// not supported.
 func TestDeriveOverall_PartialDemotesSupported(t *testing.T) {
 	cvs := []valmodels.ClaimVerdict{
 		{Status: valmodels.StatusSupported, IsHeadline: true},

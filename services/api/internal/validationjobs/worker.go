@@ -223,15 +223,13 @@ func (w *Worker) tickOneProject(ctx context.Context, projectID string) {
 	if job == nil {
 		return // idle queue for this project
 	}
-	// Codex prod-r6 P2 — historically this ran the agent
-	// synchronously, which blocked the poll + stale-sweep tickers
-	// for ~90s per job and defeated the heartbeat-based recovery
-	// path in single-replica deployments. The work runs in its own
-	// goroutine now so tick() returns immediately and staleSweep()
-	// keeps cadence. Concurrency is naturally bounded by the
-	// partial-unique-on-active index (one active job per doc) +
-	// per-project sequential claim — a malicious caller cannot
-	// fan out more than (num_projects × queue_depth) agents.
+	// Run the agent in its own goroutine so this tick returns
+	// immediately and the worker's stale-sweep ticker keeps cadence
+	// while a long validation is in flight. Concurrency is
+	// naturally bounded by the partial-unique-on-active index
+	// (one active job per doc) + per-project sequential claim —
+	// a caller cannot fan out more than (num_projects × queue_depth)
+	// agents.
 	go w.runClaimedJob(ctx, job)
 }
 

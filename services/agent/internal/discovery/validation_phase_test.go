@@ -8,12 +8,12 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// When the validation agent is nil (project toggle off, no aiClient, or
-// no schema provider), validateInsights must stamp every insight with
-// combined=validation_disabled AND backfill the legacy Status field —
-// the latter so consumers reading the pre-plan shape (dashboard list
-// rendering, etc.) still see the verdict instead of an empty pill.
-// Codex prod-r1 flagged the missing Status backfill as a MEDIUM.
+// When the validation agent is nil (project toggle off, no aiClient,
+// or no schema provider), validateInsights must stamp every insight
+// with combined=validation_disabled AND backfill the legacy Status
+// field — the latter so consumers reading the legacy shape (dashboard
+// list rendering, etc.) still see the verdict instead of an empty
+// pill.
 func TestValidateInsights_NilAgentStampsValidationDisabledWithLegacyBackfill(t *testing.T) {
 	p := &validationPhase{agent: nil}
 	insights := []models.Insight{

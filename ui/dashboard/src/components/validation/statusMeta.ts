@@ -20,7 +20,7 @@ export interface StatusMeta {
 }
 
 const META: Record<string, StatusMeta> = {
-  // --- New (plan v5) ---
+  // --- New shape ---
   confirmed: {
     label: 'Confirmed',
     tagline: 'Every claim matched the evidence exactly.',
@@ -56,7 +56,7 @@ const META: Record<string, StatusMeta> = {
     tagline: 'Validation budget was reached before this item.',
     tone: 'grey',
   },
-  // --- Legacy (pre-plan, kept until legacy docs are migrated) ---
+  // --- Legacy (kept until legacy docs are migrated) ---
   adjusted: {
     label: 'Adjusted',
     tagline: 'Counts were revised after re-running the query.',

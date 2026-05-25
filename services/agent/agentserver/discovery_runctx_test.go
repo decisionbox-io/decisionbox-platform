@@ -104,11 +104,11 @@ func TestDiscoveryRunContext_NegativeValueFallsBackToDefault(t *testing.T) {
 }
 
 func TestDiscoverySweepLookback_AppliesBufferToUnsetDefault(t *testing.T) {
-	// Codex r4 [P2]: when env is unset, the lookback must still apply
-	// the buffer to the effective default. Otherwise a run started
-	// just past the 24h default (clock skew + persistence wrap-up)
-	// would be excluded from keepRunIDs on the next agent boot, and
-	// the orphan sweep would drop its run-step Qdrant collection.
+	// When env is unset, the lookback must still apply the buffer to
+	// the effective default. Otherwise a run started just past the
+	// 24h default (clock skew + persistence wrap-up) would be
+	// excluded from keepRunIDs on the next agent boot, and the
+	// orphan sweep would drop its run-step Qdrant collection.
 	t.Setenv(discoveryMaxDurationEnv, "")
 
 	want := defaultDiscoveryMaxDuration + sweepLookbackBuffer
@@ -118,12 +118,11 @@ func TestDiscoverySweepLookback_AppliesBufferToUnsetDefault(t *testing.T) {
 }
 
 func TestDiscoverySweepLookback_TracksCapAboveFloor(t *testing.T) {
-	// Codex r3 surfaced this: with DISCOVERY_MAX_DURATION=168h
-	// (the documented week-long enterprise case) the old hard-coded
-	// 24h lookback shadowed the cap, dropping still-running runs
-	// from keepRunIDs and letting the sweep delete their Qdrant
-	// run-step collections mid-flight. The lookback must track the
-	// cap with a buffer.
+	// With DISCOVERY_MAX_DURATION=168h (the documented week-long
+	// enterprise case) the old hard-coded 24h lookback shadowed the
+	// cap, dropping still-running runs from keepRunIDs and letting
+	// the sweep delete their Qdrant run-step collections mid-flight.
+	// The lookback must track the cap with a buffer.
 	t.Setenv(discoveryMaxDurationEnv, "168h")
 
 	want := 168*time.Hour + sweepLookbackBuffer

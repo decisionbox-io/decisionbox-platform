@@ -293,8 +293,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	// Verifier agent is constructed inside RunDiscovery once the
-	// schema provider + query executor exist; legacy validators are
-	// gone (plan v5).
+	// schema provider + query executor exist; the older single-pass
+	// validators have been removed.
 
 	// Status reporter for live updates. Per-step rows go to the
 	// discovery_run_steps collection via RunStepRepo (split out of the
@@ -408,7 +408,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		FilterValue: o.filterValue,
 	})
 
-	// Initialize the LLM-native validation agent (plan v5).
+	// Initialize the LLM-native validation agent.
 	// Construction requires aiClient; an absent client → no agent →
 	// every doc gets Combined=validation_disabled. We ALSO skip
 	// construction when the project's ValidationEnabled toggle is off
@@ -620,14 +620,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// generation prompt as authoritative column-grounding evidence — without
 	// this wiring it would hallucinate column names on warehouses with
 	// non-English / abbreviated columns (customer ticket 2026-04-30, see
-	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). ValidateInsights
-	// panics if this wiring is missing, by design.
-	{
-		steps := explorationResult.Steps
-		if steps == nil {
-			steps = []models.ExplorationStep{}
-		}
-	}
+	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). The validation
+	// agent now reads explorationResult.Steps directly via the
+	// executor; the previous local rebinding here was a refactor
+	// leftover (assigned but never used after the scope closed).
 
 	// Phase 4: Analysis by area (dynamic from domain pack)
 	// Filter areas if selective run requested
@@ -804,7 +800,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		step.Insights = insights
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
-		// agent (plan v5). Walks insights in affected_count-desc order,
+		// agent. Walks insights in affected_count-desc order,
 		// applies the per-run cap (insightsValidatedThisRun is threaded
 		// across areas), and stamps Validation on each insight in
 		// place. Returns one ValidationResult per insight.
@@ -852,8 +848,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Warn("Some analysis areas failed")
 	}
 
-	// Phase 5: Generate recommendations (plan v5 — only insights with
-	// Combined∈{supported,confirmed} flow to the recommender).
+	// Phase 5: Generate recommendations — only insights with
+	// Combined∈{supported,confirmed} flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommenderInput := filterEligibleInsights(allInsights)

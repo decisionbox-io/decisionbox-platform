@@ -41,8 +41,8 @@ import (
 // handler needs to actually stop in-flight work. The worker's
 // inflight map holds the runCtx cancel fn for each job it claimed;
 // without signalling that cancel the agent subprocess / K8s Job
-// keeps spending LLM tokens after the user clicked Cancel — Codex
-// prod-r3 P2. Implemented by validationjobs.Worker.
+// keeps spending LLM tokens after the user clicked Cancel.
+// Implemented by validationjobs.Worker.
 type ValidationJobCanceller interface {
 	Cancel(jobID string) bool
 }
@@ -197,8 +197,7 @@ func (h *ValidationJobsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		// frontend request() helper throws on non-JSON success
 		// bodies (treats them as misconfigured proxies); returning
 		// the cancelled job lets the UI also pick up
-		// cancelled_at/status without a follow-up GET. Codex
-		// prod-r3 P2.
+		// cancelled_at/status without a follow-up GET.
 		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 	case errors.Is(err, database.ErrNotFound):
 		writeError(w, http.StatusNotFound, "validation job not found")

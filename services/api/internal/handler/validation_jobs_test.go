@@ -287,17 +287,17 @@ func TestValidationJobsHandler_Cancel_HappyPath(t *testing.T) {
 	if jobs.jobs["job-1"].Status != models.ValidationJobStatusCancelled {
 		t.Errorf("status not flipped to cancelled")
 	}
-	// Codex prod-r3 P2 — verify the body is a parseable JSON
-	// envelope so the dashboard's request() helper doesn't reject
-	// the success as a non-JSON misconfigured-proxy error.
+	// Verify the body is a parseable JSON envelope so the dashboard's
+	// request() helper doesn't reject the success as a non-JSON
+	// misconfigured-proxy error.
 	if !strings.Contains(rec.Body.String(), "cancelled") {
 		t.Errorf("response body should carry the cancelled status, got %q", rec.Body.String())
 	}
 }
 
-// Codex prod-r3 P2 — the in-flight agent process must receive the
-// cancel signal, not just the Mongo row. WithCanceller injects a
-// worker; Cancel must call its Cancel(jobID) method.
+// The in-flight agent process must receive the cancel signal, not
+// just the Mongo row. WithCanceller injects a worker; Cancel must
+// call its Cancel(jobID) method.
 type spyCanceller struct{ called []string }
 
 func (s *spyCanceller) Cancel(jobID string) bool {
