@@ -412,6 +412,26 @@ func (r *ValidationJobRepository) RequeueStale(ctx context.Context, staleAfter t
 	return requeued, failed, nil
 }
 
+// DistinctProjectIDsWithPendingJobs returns the deduplicated set of
+// project_ids that currently have at least one pending job. The worker
+// uses this to know which projects to tick on each poll without
+// loading the projects collection. Indexed via (project_id, status).
+func (r *ValidationJobRepository) DistinctProjectIDsWithPendingJobs(ctx context.Context) ([]string, error) {
+	raw, err := r.col.Distinct(ctx, "project_id", bson.M{
+		"status": models.ValidationJobStatusPending,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("distinct pending project_ids: %w", err)
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 // CountActiveByDoc returns the count of non-terminal jobs for a
 // (discovery, doc) pair. Used by handlers for the pre-Enqueue 409
 // check — fast path that avoids hitting the unique-index error for

@@ -17,9 +17,6 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -322,80 +319,14 @@ func TestInteg_QueryExecutor_NoFilterRequired(t *testing.T) {
 	}
 }
 
-// =====================================================================
-// UserCountValidator with BigQuery Emulator
-// =====================================================================
-
-func TestInteg_UserCountValidator_WithBigQuery(t *testing.T) {
-	v := validation.NewUserCountValidator(validation.UserCountValidatorOptions{
-		Warehouse: testWarehouse,
-		Dataset:   testBQDataset,
-		Filter:    "WHERE app_id = 'test-app'",
-	})
-
-	total, err := v.GetTotalUsers(context.Background())
-	if err != nil {
-		t.Fatalf("GetTotalUsers error: %v", err)
-	}
-	if total != 5 {
-		t.Errorf("total = %d, want 5", total)
-	}
-
-	// Validate an insight with count within total
-	insights := []models.Insight{
-		{ID: "1", Name: "Test", AffectedCount: 3, AnalysisArea: "churn"},
-	}
-	results := v.ValidateInsights(context.Background(), insights)
-	if len(results) != 1 {
-		t.Fatalf("results = %d", len(results))
-	}
-	if results[0].Status != "confirmed" {
-		t.Errorf("status = %q, want confirmed", results[0].Status)
-	}
-}
-
-// =====================================================================
-// InsightValidator with BigQuery + Mock LLM
-// =====================================================================
-
-func TestInteg_InsightValidator_WithBigQuery(t *testing.T) {
-	llmProvider := testutil.NewMockLLMProvider()
-	// LLM generates a valid verification query
-	llmProvider.DefaultResponse.Content = fmt.Sprintf(
-		"SELECT COUNT(DISTINCT user_id) as count FROM `%s.sessions` WHERE app_id = 'test-app'",
-		testBQDataset)
-
-	aiClient, _ := ai.New(llmProvider, "test-model")
-
-	v := validation.NewInsightValidator(validation.InsightValidatorOptions{
-		AIClient:  aiClient,
-		Warehouse: testWarehouse,
-		Dataset:   testBQDataset,
-		Filter:    "WHERE app_id = 'test-app'",
-	})
-	// The validator requires the orchestrator to wire the exploration log
-	// before validating insights — this happy-path integration test does not
-	// rely on source-step grounding, so an empty log satisfies the contract.
-	v.SetExplorationLog([]models.ExplorationStep{})
-
-	insights := []models.Insight{
-		{ID: "1", Name: "Test Churn", AffectedCount: 5, AnalysisArea: "churn"},
-	}
-
-	results := v.ValidateInsights(context.Background(), insights)
-	if len(results) != 1 {
-		t.Fatalf("results = %d", len(results))
-	}
-	if results[0].Status != "confirmed" {
-		t.Errorf("status = %q, want confirmed (5 users match 5 in warehouse)", results[0].Status)
-	}
-	if results[0].Query == "" {
-		t.Error("verification query should be captured")
-	}
-	if results[0].VerifiedCount != 5 {
-		t.Errorf("verified = %d, want 5", results[0].VerifiedCount)
-	}
-}
+// The pre-plan-v5 UserCountValidator + InsightValidator integration
+// tests that used to live here have been removed alongside the legacy
+// validator packages (Phase D). The plan-v5 verifier + refuter agent
+// pair is unit-tested in services/agent/internal/validation/verifier/
+// and exercised end-to-end by the validation-replay CLI in
+// services/agent/cmd/validation-replay/. The single-doc manual-
+// validation path Phase I.3 adds will get its own integration test
+// alongside the agent --mode validate-doc handler.
 
 // =====================================================================
 // MongoDB Repository Tests

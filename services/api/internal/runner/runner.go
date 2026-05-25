@@ -29,6 +29,28 @@ type Runner interface {
 	// API's indexing worker loop — the worker owns the project lifecycle
 	// status transitions around this call.
 	RunIndexSchema(ctx context.Context, opts IndexSchemaOptions) error
+	// RunValidateDoc synchronously runs the manual-validation mode of
+	// the agent for one insight or recommendation. Returns when the
+	// agent process exits or ctx is cancelled. Progress is surfaced
+	// out-of-band via the validation_jobs collection (heartbeat_at +
+	// step + final status). On K8s ctx-cancel, the implementation MUST
+	// delete the Job with foreground propagation — silently returning
+	// (as RunIndexSchema historically did) leaves the work running
+	// uncancellable on the cluster.
+	RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error
+}
+
+// ValidateDocOptions configures one manual-validation agent invocation.
+// The agent loads the actual job state from Mongo by JobID; everything
+// else here is for log labelling / debug visibility (so the operator
+// can correlate a stuck Job with its target without joining against
+// Mongo).
+type ValidateDocOptions struct {
+	JobID       string
+	ProjectID   string
+	DiscoveryID string
+	DocKind     string
+	DocID       string
 }
 
 // IndexSchemaOptions configures a schema-indexing agent invocation.

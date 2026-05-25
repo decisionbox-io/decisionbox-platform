@@ -107,6 +107,25 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		// here for K8s runs. Subprocess runs already inherit it from
 		// the API process's env.
 		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
+		// VALIDATION_* knobs (Phase 4.5/5.5 of the LLM-native
+		// verifier+refuter pipeline). All consumed by the agent via
+		// verifier.LoadConfigFromEnv during discovery + the
+		// Phase I.3 validate-doc handler. Without forwarding,
+		// operators setting these on the API deployment silently get
+		// defaults inside agent Jobs. Codex prod-r2 P2.
+		{"VALIDATION_REFUTER_ENABLED", "VALIDATION_REFUTER_ENABLED"},
+		{"VALIDATION_MAX_INSIGHTS_PER_RUN", "VALIDATION_MAX_INSIGHTS_PER_RUN"},
+		{"VALIDATION_MAX_RECOMMENDATIONS_PER_RUN", "VALIDATION_MAX_RECOMMENDATIONS_PER_RUN"},
+		{"VALIDATION_VERIFIER_MAX_ROUNDS", "VALIDATION_VERIFIER_MAX_ROUNDS"},
+		{"VALIDATION_VERIFIER_TOKEN_CAP", "VALIDATION_VERIFIER_TOKEN_CAP"},
+		{"VALIDATION_VERIFIER_MAX_OUTPUT", "VALIDATION_VERIFIER_MAX_OUTPUT"},
+		{"VALIDATION_REFUTER_MAX_ROUNDS", "VALIDATION_REFUTER_MAX_ROUNDS"},
+		{"VALIDATION_REFUTER_TOKEN_CAP", "VALIDATION_REFUTER_TOKEN_CAP"},
+		{"VALIDATION_REFUTER_MAX_OUTPUT", "VALIDATION_REFUTER_MAX_OUTPUT"},
+		{"VALIDATION_BUNDLE_SAMPLE_ROWS", "VALIDATION_BUNDLE_SAMPLE_ROWS"},
+		{"VALIDATION_MAX_READ_STEP_ROWS", "VALIDATION_MAX_READ_STEP_ROWS"},
+		{"VALIDATION_NUMERIC_TOLERANCE", "VALIDATION_NUMERIC_TOLERANCE"},
+		{"VALIDATION_MIN_SAMPLE_SIZE", "VALIDATION_MIN_SAMPLE_SIZE"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
@@ -378,6 +397,112 @@ func (r *KubernetesRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaO
 				errMsg := r.getPodErrorMessage(ctx, jobName)
 				if errMsg == "" {
 					errMsg = "index-schema job failed"
+				}
+				return fmt.Errorf("%s", errMsg)
+			}
+		}
+	}
+}
+
+// RunValidateDoc runs the agent in --mode=validate-doc as a K8s Job
+// for one insight / recommendation. Blocks until the Job completes or
+// ctx is cancelled.
+//
+// ON ctx.Done() the implementation issues
+// Jobs.Delete(name, propagation=Foreground) BEFORE returning so the
+// validation work actually stops running on the cluster. The earlier
+// RunIndexSchema shortcut (just `return ctx.Err()`) leaks running
+// Jobs every time the worker is killed or the user cancels — a
+// regression that was caught by Codex prod-r2 review of the I.3 plan.
+func (r *KubernetesRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error {
+	if opts.JobID == "" {
+		return fmt.Errorf("validate-doc: job_id is required")
+	}
+	safeJobID := opts.JobID
+	if len(safeJobID) > 24 {
+		safeJobID = safeJobID[:24]
+	}
+	jobName := fmt.Sprintf("validate-%s", safeJobID)
+	args := []string{"--mode", "validate-doc", "--job-id", opts.JobID}
+	// 30 minutes is generous — a single doc takes ~60s on the
+	// production benchmark; the headroom covers cold-start +
+	// outliers.
+	deadline := int64(30 * 60)
+
+	job := r.buildJob(jobSpec{
+		name: jobName,
+		labels: map[string]string{
+			"app":          "decisionbox-agent",
+			"type":         "validate-doc",
+			"project-id":   opts.ProjectID,
+			"discovery-id": opts.DiscoveryID,
+			"doc-kind":     opts.DocKind,
+			"job-id":       opts.JobID,
+		},
+		podLabels: map[string]string{
+			"app":  "decisionbox-agent",
+			"type": "validate-doc",
+		},
+		args:     args,
+		ttl:      300,
+		deadline: &deadline,
+		cpuReq:   r.config.CPURequest, cpuLim: r.config.CPULimit,
+		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
+	})
+
+	if _, err := r.client.BatchV1().Jobs(r.config.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create validate-doc Job: %w", err)
+	}
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "job_id": opts.JobID, "project_id": opts.ProjectID,
+	}).Info("Agent validate-doc K8s Job created")
+
+	// deleteJob runs the foreground-propagation delete. Used both on
+	// ctx-cancel (the documented bug fix) and on success paths that
+	// want to short-circuit the TTL.
+	deleteJob := func() {
+		// Detached ctx so the delete actually runs even when the
+		// caller's ctx is already cancelled.
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		propagation := metav1.DeletePropagationForeground
+		if err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(delCtx, jobName, metav1.DeleteOptions{
+			PropagationPolicy: &propagation,
+		}); err != nil {
+			apilog.WithFields(apilog.Fields{
+				"job":    jobName,
+				"job_id": opts.JobID,
+				"error":  err.Error(),
+			}).Warn("Failed to delete validate-doc Job on cancel")
+		} else {
+			apilog.WithFields(apilog.Fields{
+				"job": jobName, "job_id": opts.JobID,
+			}).Info("validate-doc K8s Job deleted on cancel")
+		}
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			deleteJob()
+			return ctx.Err()
+		case <-ticker.C:
+			j, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if j.Status.Succeeded > 0 {
+				apilog.WithFields(apilog.Fields{
+					"job": jobName, "job_id": opts.JobID,
+				}).Info("Agent validate-doc K8s Job completed")
+				return nil
+			}
+			if j.Status.Failed > 0 {
+				errMsg := r.getPodErrorMessage(ctx, jobName)
+				if errMsg == "" {
+					errMsg = "validate-doc job failed"
 				}
 				return fmt.Errorf("%s", errMsg)
 			}

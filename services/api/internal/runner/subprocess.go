@@ -258,6 +258,81 @@ func (r *SubprocessRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaO
 	return nil
 }
 
+// RunValidateDoc executes the agent in --mode=validate-doc for one
+// insight / recommendation and blocks until the process exits or ctx
+// is cancelled. SIGTERM is delivered automatically by
+// exec.CommandContext when ctx fires; the agent's signal handler
+// records "cancelled" on the validation_jobs row.
+func (r *SubprocessRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error {
+	if opts.JobID == "" {
+		return fmt.Errorf("validate-doc: job_id is required")
+	}
+	args := []string{
+		"--mode", "validate-doc",
+		"--job-id", opts.JobID,
+	}
+	cmd := exec.CommandContext(ctx, "decisionbox-agent", args...) //nolint:gosec // controlled binary name
+	cmd.Env = append(os.Environ(),
+		"MONGODB_URI="+getEnv("MONGODB_URI", "mongodb://localhost:27017"),
+		"MONGODB_DB="+getEnv("MONGODB_DB", "decisionbox"),
+	)
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("agent stderr pipe: %w", err)
+	}
+
+	apilog.WithFields(apilog.Fields{
+		"job_id":       opts.JobID,
+		"project_id":   opts.ProjectID,
+		"discovery_id": opts.DiscoveryID,
+		"doc_kind":     opts.DocKind,
+		"doc_id":       opts.DocID,
+	}).Info("Agent validate-doc subprocess starting")
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("agent start: %w", err)
+	}
+
+	// Forward stderr line-by-line to the API's stderr (so the operator
+	// sees agent progress in real time) and capture a tail for the
+	// post-exit error extraction.
+	const tailCap = 64 * 1024
+	var tail bytes.Buffer
+	tail.Grow(tailCap)
+	prefix := fmt.Sprintf("[validate-doc %s] ", opts.JobID)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scanner := bufio.NewScanner(stderrPipe)
+		scanner.Buffer(make([]byte, 0, 128*1024), 512*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			_, _ = io.WriteString(os.Stderr, prefix)
+			_, _ = os.Stderr.Write(line)
+			_, _ = os.Stderr.Write([]byte{'\n'})
+			if tail.Len()+len(line)+1 > tailCap {
+				tail.Reset()
+			}
+			tail.Write(line)
+			tail.WriteByte('\n')
+		}
+	}()
+
+	waitErr := cmd.Wait()
+	<-done
+
+	if waitErr != nil {
+		msg := extractErrorMessage(tail.String(), waitErr)
+		apilog.WithFields(apilog.Fields{
+			"job_id": opts.JobID, "error": msg,
+		}).Warn("Agent validate-doc subprocess failed")
+		return fmt.Errorf("agent --mode validate-doc: %s", msg)
+	}
+	apilog.WithField("job_id", opts.JobID).Info("Agent validate-doc subprocess completed")
+	return nil
+}
+
 func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
 	r.mu.Lock()
 	proc, ok := r.processes[runID]

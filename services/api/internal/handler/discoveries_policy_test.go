@@ -25,6 +25,9 @@ func (quietRunner) Cancel(_ context.Context, _ string) error { return nil }
 func (quietRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
 	return nil
 }
+func (quietRunner) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error {
+	return nil
+}
 
 // failingRunner simulates a runner that cannot spawn the agent.
 type failingRunner struct{ err error }
@@ -35,6 +38,9 @@ func (f failingRunner) RunSync(_ context.Context, _ runner.RunSyncOptions) (*run
 }
 func (failingRunner) Cancel(_ context.Context, _ string) error { return nil }
 func (failingRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
+	return nil
+}
+func (failingRunner) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error {
 	return nil
 }
 
