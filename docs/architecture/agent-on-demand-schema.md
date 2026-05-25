@@ -128,37 +128,36 @@ The verification-grounding fix layers in three steps:
 | 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop (up to `MaxLookupsPerVerification = 6` rounds per insight) for cross-table cases that source steps don't cover. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. A shared action parser (`ai.ParseAction(response, allowed)`) takes an allow-list so the verifier loop accepts only `lookup_schema` and `query_data` — `complete` and other explorer-only actions are rejected. When the lookup budget is exhausted before the model emits a query, one forced final round (NOT counted against the budget) is allowed; failure to emit a query after that surfaces as `validation.status="error"` with a clear telemetry signal. |
 
 Layer 1 is implemented in `services/agent/internal/validation/render` (the
-`RenderVerificationContext` helper) and consumed by
-`services/agent/internal/validation/insight_validator.go`. The orchestrator
-wires the full `explorationResult.Steps` into the validator via
-`SetExplorationLog` after the exploration phase completes and before the
-analysis loop runs — `ValidateInsights` panics if this wiring is missing,
-by design (no-backward-compat stance).
+`RenderVerificationContext` helper) and consumed by the verifier prompt
+builder at `services/agent/internal/validation/verifier/prompt.go`. The
+orchestrator wires the cited source-step rows into the verifier `Bundle`
+(`services/agent/internal/validation/verifier/bundle.go`) before each
+per-doc verification round so the verifier always has authoritative SQL
+evidence for any claim that cites a step.
 
-Layer 2 lives in `services/agent/internal/queryexec` (`FixOpts`, the new
-`ExecuteWithFixOpts` entry point, and the `Execute` shim that calls it with
-empty opts) and `services/agent/internal/ai/sql_fixer.go` (`applySection`
-mustache-style conditional helper, `{{VERIFICATION_CONTEXT}}` substitution).
-Each per-warehouse `prompts/sql_fix.md` declares a
+Layer 2 lives in `services/agent/internal/queryexec` (`FixOpts`,
+`ExecuteWithFixOpts` entry point, plus the `Execute` shim that calls it
+with empty opts) and `services/agent/internal/ai/sql_fixer.go`
+(`{{VERIFICATION_CONTEXT}}` substitution). Each per-warehouse
+`prompts/sql_fix.md` declares a
 `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` block that can host
 warehouse-specific phrasing of the column-grounding rule alongside the
 shared evidence. Adding a new warehouse means keeping that contract — the
 provider's `provider_test.go` asserts the markers are present so a missed
 template never silently strips the layer's evidence.
 
-Layer 3 lives in `services/agent/internal/validation/insight_validator.go`
-(`runVerificationLoop`, `MaxLookupsPerVerification`, `mergeLookups`) and
-reuses the catalog/Qdrant `CacheSchemaProvider` the explorer already uses —
-the orchestrator forwards the same instance via `SetSchemaProvider` after
-exploration completes. The shared parser is `ai.ParseAction(response,
-allowed)` with the explorer wrapping it via `(e *ExplorationEngine).
-parseAction(response)` (full allow-list = nil) and the verifier passing
-`[]string{"lookup_schema", "query_data"}`. Drift between the two callers is
-prevented by a single source-of-truth parser; new explorer-only actions
-(e.g. `summarize_table`) are rejected by the verifier rather than silently
-mishandled.
+Layer 3 lives in `services/agent/internal/validation/verifier/agent.go`
+(`(*Agent).Verify` / `(*Agent).Refute` run the tool loop;
+`Verifier.MaxRounds` / `Refuter.MaxRounds` in `verifier/config.go` cap it,
+tunable via `VALIDATION_VERIFIER_MAX_ROUNDS` / `VALIDATION_REFUTER_MAX_ROUNDS`).
+The verifier reuses the catalog/Qdrant `CacheSchemaProvider` the explorer
+already uses; the orchestrator forwards the same instance via the bundle
+so cross-table lookups hit the same cache. The shared action parser
+(`verifier/action.go ParseAction`) takes an allow-list; the verifier passes
+`{lookup_schema, query_warehouse, read_step_rows, submit_verdict}` and
+refuses any other top-level key.
 
 When an insight cites no `source_steps` AND no SchemaProvider is wired,
-Layer 1 contributes nothing and the verifier falls through to a single-shot
-catalog-only generation. With a SchemaProvider wired, the verifier's first
-round can issue `lookup_schema` to fetch the column detail it needs.
+Layer 1 contributes nothing and the verifier falls through to catalog-only
+reasoning. With a SchemaProvider wired, the verifier's first round can
+issue `lookup_schema` to fetch the column detail it needs.

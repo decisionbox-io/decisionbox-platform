@@ -72,9 +72,9 @@ import (
 // Plugins (auth providers, etc.) can register via init() in their
 // packages — import them with blank imports before calling Run().
 //
-// Subcommands handled here so any caller of Run() (community main.go,
-// enterprise cmd/api/main.go, future custom builds) inherits CLI tooling
-// without per-binary main.go drift:
+// Subcommands handled here so any caller of Run() — the stock main.go or
+// any custom build wrapping it — inherits CLI tooling without per-binary
+// main.go drift:
 //
 //	decisionbox-api backfill-embeddings [flags]
 //

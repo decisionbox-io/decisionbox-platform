@@ -484,8 +484,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 // to the action types in `allowed`. Pass nil or empty for "any action" — the
 // explorer's full set. The verifier (insight validation) passes
 // {"lookup_schema", "query_data"} to keep the model from "completing"
-// mid-verify. Background:
-// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.3 / §6.6.
+// mid-verify.
 //
 // The response must contain a JSON object with ONE of:
 //   - {"query": "SELECT ..."}              → execute the query
@@ -672,8 +671,7 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // cannot hijack parsing when the real action lives later outside fences.
 // extractJSON is a free function — the body never uses *ExplorationEngine
 // state. Lifting it to package level lets the verifier reuse the same parser
-// without depending on the engine. See plans/PLAN-INSIGHT-VERIFICATION-
-// GROUNDING.md §4.3 / §6.6 for the shared-parser rationale.
+// without depending on the engine.
 func extractJSON(text string) string {
 	candidates := collectJSONCandidates(text)
 	if len(candidates) == 0 {

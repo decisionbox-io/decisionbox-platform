@@ -13,17 +13,11 @@ import (
 // field — same wrapper every other endpoint in this server uses.
 //
 // All authenticated dashboards reach this endpoint to populate "who
-// am I" surfaces (sidebar avatar, account menu, audit metadata for
+// am I" surfaces (sidebar avatar, account menu, request metadata for
 // client-side actions). Because the endpoint reads exclusively from
-// the request context, every auth backend works identically:
-//
-//   - NoAuth deployments — middleware injects the anonymous principal,
-//     this handler returns it.
-//   - OIDC / customer-IdP — middleware validates the JWT and writes
-//     the principal; this handler returns it.
-//   - Cloud-SSO chain — middleware dispatches to cloud-auth or OIDC by
-//     issuer; whichever validator matched produces the principal and
-//     this handler returns it.
+// the request context, every registered auth backend works
+// identically: whichever middleware injected the principal, this
+// handler returns it as-is.
 //
 // 200 with the principal on success; 401 if no principal is in the
 // context (which is unusual — the auth middleware should already have

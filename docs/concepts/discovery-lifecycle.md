@@ -6,21 +6,25 @@ A discovery run is the core operation of DecisionBox. The agent autonomously exp
 
 | Phase | What happens | Duration |
 |-------|-------------|----------|
-| 1. Initialization | Load project config, secrets, providers | ~2s |
-| 2. Context Loading | Fetch previous discoveries + feedback | ~1s |
-| 3. Schema Discovery | List tables, read schemas | 5-30s |
-| 4. Exploration | AI writes + executes SQL queries | 2-30 min |
-| 5. Analysis | Generate insights per analysis area | 1-5 min |
-| 5.5. Insight validation | LLM verifier + refuter check insights against row evidence | 1-5 min |
-| 6. Recommendations | Generate actionable advice from supported insights | 1-3 min |
-| 6.5. Recommendation validation | Same verifier + refuter check recommendations | 1-3 min |
-| 7. Saving | Write results to MongoDB | ~1s |
+| Startup | Load project config, secrets, providers (pre-phase) | ~2s |
+| 1. Load project context | Fetch previous discoveries + feedback | ~1s |
+| 2. Load schemas | List tables, read schemas from cache | 5-30s |
+| 3. Exploration | AI writes + executes SQL queries | 2-30 min |
+| 4. Analysis | Generate insights per analysis area | 1-5 min |
+| 4.5. Insight validation | LLM verifier + refuter check insights against row evidence | 1-5 min |
+| 5. Recommendations | Generate actionable advice from supported insights | 1-3 min |
+| 5.5. Recommendation validation | Same verifier + refuter check recommendations | 1-3 min |
+| 6. Update project context | Write rolling context for the next run | <1s |
+| 7. Save | Write results to MongoDB | ~1s |
+| 9. Embed + index | Denormalize insights + recommendations to Qdrant for dashboard search (non-fatal) | 5-30s |
 
 Total time depends on exploration steps, LLM speed, and warehouse query time. A typical 100-step run with Claude Sonnet takes 5-15 minutes.
 
-## Phase 1: Initialization
+The phase numbers above match the orchestrator's logged phase numbers — find any phase in the agent log by grepping for the relevant numeric prefix. <!-- lint-allow: log-grep-hint -->
 
-The agent starts with a project ID and loads everything it needs.
+## Startup (pre-phase)
+
+The agent starts with a project ID and loads everything it needs before Phase 1.
 The entry point is `agentserver.Run()`, which parses CLI flags, initializes providers, and runs the discovery pipeline.
 Custom builds can import `agentserver` and register plugins (e.g., warehouse middleware) via `init()` blank imports before calling `Run()`.
 
@@ -49,7 +53,7 @@ Loads project-level prompt overrides from MongoDB (if any)
 2. Read `warehouse-credentials` from secret provider (optional, for cross-cloud)
 3. These credentials are passed to the LLM/warehouse provider constructors
 
-## Phase 2: Context Loading
+## Phase 1: Load project context
 
 The agent loads context from previous runs to avoid repetition:
 
@@ -67,7 +71,7 @@ Build previous context:
 
 This context is injected into all prompts via the `{{PREVIOUS_CONTEXT}}` template variable in `base_context.md`.
 
-## Phase 3: Schema Discovery
+## Phase 2: Load schemas
 
 The agent reads your warehouse structure:
 
@@ -85,7 +89,7 @@ For each dataset in project.warehouse.datasets:
 
 A compact Level-0 catalog (one line per table: name, column count, row count, keyword hints, joins) is injected into the exploration prompt via `{{SCHEMA_INFO}}`. The agent fetches per-table column lists and sample rows on demand during exploration via `lookup_schema` (up to 10 tables per call, 30 calls per run) or `search_tables` (semantic query against the per-project Qdrant index, 30 calls per run). See [On-Demand Schema](../architecture/agent-on-demand-schema.md) for the rationale (the previous "always inject L1 detail" approach exhausted the Bedrock 1M-token context on long runs).
 
-## Phase 4: Exploration
+## Phase 3: Exploration
 
 The core phase. The AI writes SQL queries, executes them, analyzes results, and decides what to query next.
 
@@ -130,7 +134,7 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 - `validation` — Insight validation result
 - `error` — Something went wrong (with error message)
 
-## Phase 5: Analysis
+## Phase 4: Analysis
 
 For each analysis area defined by the domain pack (e.g., churn, engagement, monetization for gaming; growth, engagement, retention for social), the agent:
 
@@ -218,7 +222,7 @@ The validator **does NOT overwrite** the writer's `affected_count`. The `Validat
 
 See [Insight validation](../architecture/insight-validation.md) for the architecture and the [Configuration → Validation](../reference/configuration.md#validation) reference for every knob.
 
-## Phase 7: Recommendations
+## Phase 5: Recommendations
 
 Only insights with `Combined ∈ {supported, confirmed}` are fed to the recommendations prompt — `partial`, `rejected`, `unverifiable`, and `skipped_budget_cap` insights are filtered out at this gate.
 
@@ -259,7 +263,7 @@ LLM responds with JSON:
   }
 ```
 
-**Related insight IDs:** Each recommendation references the insights it addresses via `related_insight_ids`. These are the IDs assigned in Phase 5. The dashboard shows bidirectional links — recommendations show which insights they address, and insight detail pages show related recommendations.
+**Related insight IDs:** Each recommendation references the insights it addresses via `related_insight_ids`. These are the IDs assigned in Phase 4. The dashboard shows bidirectional links — recommendations show which insights they address, and insight detail pages show related recommendations.
 
 ## Phase 5.5: Recommendation validation (LLM-native)
 
@@ -267,7 +271,7 @@ Each kept recommendation is then validated by the same verifier + refuter pair. 
 
 Per-run cap: `VALIDATION_MAX_RECOMMENDATIONS_PER_RUN` (default 15). Output: `recommendation.Validation` populated with the same `StructuredVerdict` shape used for insights.
 
-## Phase 8: Saving
+## Phase 7: Save
 
 The agent writes the complete `DiscoveryResult` to MongoDB:
 

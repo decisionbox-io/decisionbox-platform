@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Editor for the per-project Blurb LLM (PLAN-SCHEMA-RETRIEVAL.md §6.2).
- * Wraps the shared <ProviderCredentialsPhase> with the LLM-specific
- * model picker (LiveModelCombobox with wire/price/lifecycle metadata).
+ * Editor for the per-project Blurb LLM. Wraps the shared
+ * <ProviderCredentialsPhase> with the LLM-specific model picker
+ * (LiveModelCombobox with wire/price/lifecycle metadata).
  *
  * A "Use analysis LLM" switch gates the whole thing — when off, we
  * send no `blurb_llm` on the project and the agent falls back to the
