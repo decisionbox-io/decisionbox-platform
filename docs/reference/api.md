@@ -29,10 +29,10 @@ curl http://localhost:8080/health/ready
 ```
 
 ```json
-{"status": "ok", "checks": {"mongodb": "ok"}}
+{"status": "ok", "services": {"mongodb": {"status": "ok"}}}
 ```
 
-Returns `503` if MongoDB is unreachable.
+Returns `503` (with `"status": "degraded"` and per-service errors under `services`) if a dependency is unreachable.
 
 ---
 
@@ -229,12 +229,15 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "name": "Puzzle Quest Analytics",
     "domain": "gaming",
     "category": "match3",
-    "created_at": "2026-03-14T10:00:00Z"
+    "status": "active",
+    "warehouse": { "type": "bigquery", "config": { /* ... */ } },
+    "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" },
+    "schedule":  { "enabled": false, "cron_expr": "0 2 * * *", "max_steps": 100 }
   }
 }
 ```
 
-Domain pack prompts are automatically seeded into the project on creation.
+The full saved project is echoed back in `data`. Domain pack prompts are automatically seeded into the project on creation.
 
 ### GET /api/v1/projects
 
@@ -290,73 +293,6 @@ Delete a project and all its data (discoveries, feedback, secrets, prompts).
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011
 ```
-
----
-
-## Pack Generation
-
-These endpoints exist on every build but return `404 Not Found` unless a pack-generation provider is registered (the stock community build returns 404; deployments that load the generator plugin handle them).
-
-### POST /api/v1/projects/{id}/pack-generate
-
-Launch domain-pack generation on a project that is currently in `pack_generation_pending` state. The agent reads the project's knowledge sources and warehouse schema, synthesizes a `DomainPack`, persists it, and parks the project at `pack_generation_done` for user review.
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/pack-generate
-```
-
-```json
-{
-  "data": {
-    "run_id": "run_abc",
-    "async": true,
-    "pack_slug": "acme-marketplace",
-    "attempts": 0
-  }
-}
-```
-
-- `async: true` (HTTP 202) — generation is running; poll `GET /api/v1/projects/{id}` for `state` to flip to `pack_generation_done`.
-- `async: false` (HTTP 200) — generation finished synchronously; `attempts` is the number of validator passes.
-
-Errors:
-- `404 Not Found` — pack generation is not enabled on this deployment.
-- `409 Conflict` — project is not in `pack_generation_pending`.
-- `400 Bad Request` — project does not have `generate_pack` populated.
-
-### POST /api/v1/projects/{id}/pack-generate/regenerate
-
-Re-emit a single section of the saved pack with user feedback. Valid only after the pack has been generated (project in `pack_generation_done`).
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/pack-generate/regenerate \
-  -H "Content-Type: application/json" \
-  -d '{ "section": "analysis_areas", "feedback": "Add more retention focus." }'
-```
-
-```json
-{
-  "data": {
-    "pack_slug": "acme-marketplace",
-    "section": "analysis_areas",
-    "attempts": 1
-  }
-}
-```
-
-Recognised sections: `metadata`, `categories`, `analysis_areas`, `profile_schema`, `base_context`, `exploration`, `recommendations`.
-
-### Accepting a generated pack
-
-Move the project from `pack_generation_done` to `ready` via the standard project update endpoint:
-
-```bash
-curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011 \
-  -H "Content-Type: application/json" \
-  -d '{ "state": "ready" }'
-```
-
-After this, the project behaves like any other — discovery is unlocked.
 
 ---
 
@@ -792,7 +728,7 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets
 ## Bookmark Lists
 
 Named collections of insights and recommendations.
-Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` in community (NoAuth) mode, the OIDC `sub` claim in enterprise mode.
+Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` under the default no-auth setup.
 
 ### POST /api/v1/projects/{id}/lists
 

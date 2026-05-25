@@ -7,9 +7,9 @@ import (
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
-// InsightValidation is an alias for the shared validation type so
-// every model package references one struct. Plan v5 §"Wire-type
-// ownership".
+// InsightValidation is an alias for the shared validation type in
+// libs/go-common/models/validation so every model package references
+// one struct on the wire.
 type InsightValidation = valmodels.InsightValidation
 
 // StandaloneInsight is a denormalized insight document stored in the "insights" collection.

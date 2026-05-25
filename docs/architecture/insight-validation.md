@@ -65,9 +65,7 @@ Both agents consume a read-only `verifier.Bundle` assembled at the start of each
 - `SourceStepsTruncated` + `SourceStepsOmitted` — set when a recommendation's source-step union exceeded the token budget (`VALIDATION_REC_STEPS_TOKEN_BUDGET`, default 12 000).
 - `PriorClaims` — the verifier's enumerated claim set, copied verbatim into the refuter's bundle so both agents attack the same surface.
 
-The bundle is built in-memory from `explorationResult.Steps` (the live slice the orchestrator already holds); no Mongo round-trip is required. The replay CLI (`services/agent/cmd/validation-replay/`) builds the same bundle from the persisted `discovery_exploration_steps` collection — useful for replay-testing a discovery without re-running the agent.
-
-**Production vs MVP-CLI deviation**: the orchestrator wires the production `ai.SchemaProvider` (Qdrant-backed retrieval + ranking) for `lookup_schema`; the MVP CLI bypasses Qdrant and uses a `warehouse.GetTableSchemaInDataset` shim. Bundle correctness and validator behavior are identical — only the `lookup_schema` tool's ranking layer differs, and the validation finaliser doesn't depend on it.
+The bundle is built in-memory from `explorationResult.Steps` (the live slice the orchestrator already holds); no Mongo round-trip is required. The replay CLI (`services/agent/cmd/validation-replay/`) builds the same bundle from the persisted `discovery_exploration_steps` collection — useful for replay-testing a discovery without re-running the agent. The replay CLI uses a direct `warehouse.GetTableSchemaInDataset` shim for `lookup_schema` instead of the production `ai.SchemaProvider` (Qdrant-backed retrieval + ranking); bundle correctness and validator behaviour are identical because the finaliser doesn't depend on schema-ranking layer.
 
 ## The four tools
 
@@ -129,7 +127,7 @@ After the agent submits, the verifier package's `finalise()` runs deterministic 
 | 5 | If the headline claim is `unverifiable`, overall is `unverifiable`. If every claim is `unverifiable`, overall is `unverifiable`. If any claim is `unverifiable`, overall downgrades to `partial`. |
 | 6 | If the model omitted top-level `Overall`, derive it conservatively from per-claim verdicts (any rejected → rejected; all confirmed and no supported → confirmed; any supported/confirmed → supported; else unverifiable). |
 
-These checks are what mechanically distinguish "the model claimed coverage" from "the model actually achieved structurally-valid coverage." The MVP smoke runs showed each one fires against real LLM output — see the running notes in `open-source/plans/PLAN-LLM-NATIVE-VALIDATION-MVP-FINDINGS.md`.
+These checks are what mechanically distinguish "the model claimed coverage" from "the model actually achieved structurally-valid coverage." Each fires routinely against real LLM output.
 
 ## Refuter discipline
 
@@ -187,11 +185,11 @@ The evidence cell handles three kinds:
 - `warehouse_query` — renders the SQL the refuter ran plus the result row.
 - `none` — explicit "No evidence attached." line so the reader knows the agent declined to back the claim with a citation.
 
-All UI lives under `ui/dashboard/src/components/validation/`. A single router, `<ValidationPanel />`, dispatches between the new shape and the legacy (pre-plan-v5) `<LegacyValidationCard />` using a tiny `validationShape.ts` predicate. When legacy docs are retired, the legacy card and the predicate can be deleted in one commit — the router collapses to `return <NewValidationPanel ... />`, and no page-level call site changes.
+All UI lives under `ui/dashboard/src/components/validation/`. A single router, `<ValidationPanel />`, dispatches between the new verdict shape and the legacy verdict shape `<LegacyValidationCard />` using a tiny `validationShape.ts` predicate. When legacy docs are retired, the legacy card and the predicate can be deleted in one commit — the router collapses to `return <NewValidationPanel ... />`, and no page-level call site changes.
 
 Decision-maker status copy (label + tagline + tone) lives in `statusMeta.ts` — single source of truth so changing how we describe `unverifiable` is a one-file edit.
 
-## Per-project toggle + on-demand manual validation (Phase I)
+## Per-project toggle + on-demand manual validation
 
 Validation can be turned off per-project (`Project.ValidationEnabled`, default-on for legacy projects) and re-run on-demand against a single insight or recommendation. The toggle lives in **Settings → Advanced → Validation**; the on-demand path lives in the existing detail-page sidebar.
 
@@ -228,11 +226,9 @@ The router owns 2-second polling. On any terminal status (including `failed` / `
 - **Live row-cap on `ExplorationStep.QueryResult`** (separate plan). The verifier reads from the in-memory step snapshot; persistence is downstream.
 - **Stricter executor-side filter check** (separate plan). `queryexec.verifyFilter` checks for the filter field NAME in the SQL, not predicate position. If telemetry shows the model exploits the gap, a follow-up plan tightens the executor.
 - **`headline_claim` writer-side field**. Deferred unless coverage telemetry warrants it.
-- **Migration of legacy `InsightValidation` shape**. Additive — no script needed; legacy fields stay populated on pre-plan docs.
+- **Migration of legacy `InsightValidation` shape**. Additive — no script needed; legacy fields stay populated on pre-existing documents.
 
 ## See also
 
 - [Discovery lifecycle](../concepts/discovery-lifecycle.md) — where Phase 4.5 and Phase 5.5 sit in the run.
 - [Configuration → Validation](../reference/configuration.md#validation) — every env var documented.
-- `open-source/plans/PLAN-LLM-NATIVE-VALIDATION.md` — design doc + revision history.
-- `open-source/plans/PLAN-LLM-NATIVE-VALIDATION-MVP-FINDINGS.md` — running notes from the standalone MVP smoke runs.

@@ -56,12 +56,12 @@ export default function NewProjectPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  // Optional per-project blurb LLM override (PLAN-SCHEMA-RETRIEVAL.md §6.2).
+  // Optional per-project blurb LLM override.
   // Defaults to "use analysis LLM" — when the user turns the switch on,
   // the component renders a full provider + live-model picker.
   const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
   // Embedding provider is mandatory — schema indexing will not start
-  // without one (plan §3.7). We require it up front instead of letting
+  // without one. We require it up front instead of letting
   // the user finish creation and then immediately hit a "failed" banner
   // on the project-detail page.
   const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);

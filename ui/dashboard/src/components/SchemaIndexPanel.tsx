@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * SchemaIndexPanel renders the per-project schema-indexing lifecycle
- * (PLAN-SCHEMA-RETRIEVAL.md §8.5). Always shows:
+ * SchemaIndexPanel renders the per-project schema-indexing lifecycle.
+ * Always shows:
  *   - a progress bar (fills during schema_discovery, resets for blurb
  *     generation, fills again for embedding)
  *   - a phase label

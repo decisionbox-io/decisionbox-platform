@@ -21,8 +21,7 @@
 // is about the rule's *reach*, not the prose's *target* language.
 //
 // The four exported functions return the rule text for their respective
-// injection sites. See PLAN-PROMPT-CLAIM-DISCIPLINE.md in the plans repo
-// for the full design.
+// injection sites.
 package discipline
 
 // BaseContextRules returns the rule text appended to the rendered base

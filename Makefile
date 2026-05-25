@@ -1,4 +1,4 @@
-.PHONY: help up down build test lint dev agent-run clean
+.PHONY: help up down build test lint lint-docs dev agent-run clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -161,7 +161,11 @@ test-ui: ## Run dashboard tests
 
 # --- Lint ---
 
-lint: lint-go lint-ui ## Run all linters
+lint: lint-go lint-ui lint-docs ## Run all linters
+
+lint-docs: ## Scan docs/ + CHANGELOG.md for plan-leakage and enterprise-leakage tokens
+	./scripts/lint-docs.sh docs
+	@mkdir -p .tmp/lint-docs && cp CHANGELOG.md .tmp/lint-docs/CHANGELOG.md && ./scripts/lint-docs.sh .tmp/lint-docs && rm -rf .tmp/lint-docs
 
 lint-go: ## Run golangci-lint on all Go modules (install: https://golangci-lint.run/welcome/install/)
 	cd libs/go-common && golangci-lint run ./...

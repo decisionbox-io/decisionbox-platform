@@ -8,9 +8,9 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 )
 
-// Services provides access to shared infrastructure for enterprise plugins.
+// Services provides access to shared infrastructure for plugin code.
 // Populated during Run() after all connections are established.
-// Enterprise plugins access these at request time (not init time) via GetServices().
+// Plugins access these at request time (not init time) via GetServices().
 type Services struct {
 	DB             *database.DB
 	SecretProvider gosecrets.Provider
@@ -22,7 +22,7 @@ var (
 	sharedServices *Services
 )
 
-// RegisterServices makes shared infrastructure available to enterprise plugins.
+// RegisterServices makes shared infrastructure available to plugin code.
 // Called during Run() after all connections are established.
 func RegisterServices(s *Services) {
 	servicesMu.Lock()
@@ -31,7 +31,7 @@ func RegisterServices(s *Services) {
 }
 
 // GetServices returns the shared infrastructure, or nil if not yet initialized.
-// Enterprise plugins should call this at request time, not init time.
+// Plugins should call this at request time, not init time.
 func GetServices() *Services {
 	servicesMu.RLock()
 	defer servicesMu.RUnlock()

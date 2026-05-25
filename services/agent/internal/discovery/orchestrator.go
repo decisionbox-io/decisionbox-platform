@@ -619,10 +619,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// runs. The verifier renders the SQL of cited source_steps into its
 	// generation prompt as authoritative column-grounding evidence — without
 	// this wiring it would hallucinate column names on warehouses with
-	// non-English / abbreviated columns (customer ticket 2026-04-30, see
-	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). The validation
-	// agent now reads explorationResult.Steps directly via the
-	// executor; the previous local rebinding here was a refactor
+	// non-English / abbreviated columns (customer ticket 2026-04-30).
+	// The validation agent now reads explorationResult.Steps directly via
+	// the executor; the previous local rebinding here was a refactor
 	// leftover (assigned but never used after the scope closed).
 
 	// Phase 4: Analysis by area (dynamic from domain pack)
