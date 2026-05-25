@@ -221,6 +221,28 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 func boolPtr(b bool) *bool    { return &b }
 func int64Ptr(i int64) *int64 { return &i }
 
+// sanitizeK8sLabelSegment trims an identifier to maxLen characters
+// AND strips any leading/trailing dashes so the result satisfies the
+// DNS-1123 label rule (lowercase alphanumeric + dashes, first and
+// last character must be alphanumeric). UUID-v4 ids have hyphens at
+// positions 8, 13, 18, and 23; truncating to 24 chars would leave
+// the last position on a hyphen, producing an invalid label.
+// Codex prod-r4 P1.
+func sanitizeK8sLabelSegment(id string, maxLen int) string {
+	if maxLen > 0 && len(id) > maxLen {
+		id = id[:maxLen]
+	}
+	// Trim trailing dashes (the common UUID-truncation failure
+	// mode) plus any leading dashes for symmetry.
+	for len(id) > 0 && id[len(id)-1] == '-' {
+		id = id[:len(id)-1]
+	}
+	for len(id) > 0 && id[0] == '-' {
+		id = id[1:]
+	}
+	return id
+}
+
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
 
@@ -426,10 +448,16 @@ func (r *KubernetesRunner) RunValidateDoc(ctx context.Context, opts ValidateDocO
 	if opts.JobID == "" {
 		return fmt.Errorf("validate-doc: job_id is required")
 	}
-	safeJobID := opts.JobID
-	if len(safeJobID) > 24 {
-		safeJobID = safeJobID[:24]
-	}
+	// K8s DNS-1123 labels: lowercase alphanumeric + dashes, but the
+	// last character MUST NOT be a dash. The enqueue handler stamps
+	// ValidationJob.ID as a UUID-v4 which has hyphens at positions
+	// 8, 13, 18, 23. A blind 24-char truncation lands the final
+	// character on position 23's hyphen, producing
+	// `validate-xxxxxxxx-xxxx-xxxx-xxxx-` — rejected by the
+	// apiserver and every manual K8s validation would fail at
+	// creation before the agent could run. Trim trailing dashes
+	// after truncation. Codex prod-r4 P1.
+	safeJobID := sanitizeK8sLabelSegment(opts.JobID, 24)
 	jobName := fmt.Sprintf("validate-%s", safeJobID)
 	args := []string{"--mode", "validate-doc", "--job-id", opts.JobID}
 	// 30 minutes is generous — a single doc takes ~60s on the

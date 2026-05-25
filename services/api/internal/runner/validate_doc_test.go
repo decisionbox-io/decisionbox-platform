@@ -132,3 +132,35 @@ func TestSubprocessRunner_RunValidateDoc_RejectsEmptyJobID(t *testing.T) {
 func isDeletingOrGone(j batchv1.Job) bool {
 	return j.DeletionTimestamp != nil
 }
+
+// Codex prod-r4 P1 — sanitizeK8sLabelSegment must never let a
+// hyphen land on the last character. UUID v4 hyphens at positions
+// 8/13/18/23 made the original 24-char truncation produce
+// `validate-xxxxxxxx-xxxx-xxxx-xxxx-` which the apiserver rejects.
+func TestSanitizeK8sLabelSegment_StripsTrailingDashFromUUIDTruncation(t *testing.T) {
+	uuid := "abcd1234-5678-90ab-cdef-1234567890ab"
+	got := sanitizeK8sLabelSegment(uuid, 24)
+	if got == "" {
+		t.Fatalf("sanitizer returned empty string")
+	}
+	if got[len(got)-1] == '-' {
+		t.Errorf("trailing dash not stripped, got %q", got)
+	}
+	if got[0] == '-' {
+		t.Errorf("leading dash not stripped, got %q", got)
+	}
+}
+
+func TestSanitizeK8sLabelSegment_PreservesShortIDs(t *testing.T) {
+	got := sanitizeK8sLabelSegment("short-id", 24)
+	if got != "short-id" {
+		t.Errorf("got %q, want short-id", got)
+	}
+}
+
+func TestSanitizeK8sLabelSegment_HandlesAllDashes(t *testing.T) {
+	got := sanitizeK8sLabelSegment("------", 24)
+	if got != "" {
+		t.Errorf("all-dash input should produce empty string, got %q", got)
+	}
+}

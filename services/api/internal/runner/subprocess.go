@@ -323,6 +323,20 @@ func (r *SubprocessRunner) RunValidateDoc(ctx context.Context, opts ValidateDocO
 	<-done
 
 	if waitErr != nil {
+		// When the worker / API process is shutting down, ctx is
+		// cancelled and exec.CommandContext kills the subprocess.
+		// cmd.Wait then returns a signal/exit error rather than
+		// context.Canceled, which would route the worker into its
+		// "mark failed" branch instead of the cancellation branch.
+		// Surfacing ctx.Err() directly preserves the intended
+		// classification so a shutdown doesn't permanently mark
+		// in-flight jobs as failed. Codex prod-r4 P2.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			apilog.WithFields(apilog.Fields{
+				"job_id": opts.JobID, "ctx_err": ctxErr.Error(),
+			}).Info("Agent validate-doc subprocess cancelled via context")
+			return ctxErr
+		}
 		msg := extractErrorMessage(tail.String(), waitErr)
 		apilog.WithFields(apilog.Fields{
 			"job_id": opts.JobID, "error": msg,
