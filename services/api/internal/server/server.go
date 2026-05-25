@@ -129,6 +129,8 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
 	schemaCacheRepo := database.NewSchemaCacheRepository(db)
 	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
+	validationJobsRepo := database.NewValidationJobRepository(db)
+	validationJobs := handler.NewValidationJobsHandler(validationJobsRepo, discoveryRepo, projectRepo)
 
 	// RBAC helpers — wrap a handler with role-based access control.
 	// With NoAuth (default), all requests get "admin" role — all routes pass.
@@ -225,6 +227,13 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/validation-results", withRole(viewer, discoveries.ListValidationResults))
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/recommendation-log", withRole(viewer, discoveries.GetRecommendationLog))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
+
+	// Manual validation — enqueue / cancel / list.
+	// member role for enqueue + cancel (write-side); viewer for list.
+	mux.HandleFunc("POST /api/v1/discoveries/{did}/insights/{iid}/validate", withRole(member, validationJobs.ValidateInsight))
+	mux.HandleFunc("POST /api/v1/discoveries/{did}/recommendations/{rid}/validate", withRole(member, validationJobs.ValidateRecommendation))
+	mux.HandleFunc("POST /api/v1/validation-jobs/{jid}/cancel", withRole(member, validationJobs.Cancel))
+	mux.HandleFunc("GET /api/v1/discoveries/{did}/validation-jobs", withRole(viewer, validationJobs.ListByDoc))
 
 	// Feedback — member for submit, viewer for read, admin for delete
 	mux.HandleFunc("POST /api/v1/discoveries/{runId}/feedback", withRole(member, feedback.Submit))
