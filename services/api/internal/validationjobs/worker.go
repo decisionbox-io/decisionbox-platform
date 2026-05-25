@@ -229,8 +229,10 @@ func (w *Worker) tickOneProject(ctx context.Context, projectID string) {
 	// naturally bounded by the partial-unique-on-active index
 	// (one active job per doc) + per-project sequential claim —
 	// a caller cannot fan out more than (num_projects × queue_depth)
-	// agents.
-	go w.runClaimedJob(ctx, job)
+	// agents. The goroutine uses a detached context.Background()
+	// for its post-failure MarkFailed write because the run ctx may
+	// already be cancelled at that point.
+	go w.runClaimedJob(ctx, job) //nolint:gosec // G118: see runClaimedJob's MarkFailed branch
 }
 
 func (w *Worker) runClaimedJob(ctx context.Context, job *models.ValidationJob) {
@@ -273,6 +275,12 @@ func (w *Worker) runClaimedJob(ctx context.Context, job *models.ValidationJob) {
 		// died before connecting to Mongo). Write the failure marker
 		// from the worker so the dashboard doesn't sit on a stale
 		// "running" row.
+		//
+		// context.Background here is deliberate: the run ctx is
+		// likely already cancelled (that's how we ended up in the
+		// failure branch) and we still want the MarkFailed write
+		// to land. The 5-second timeout caps the detached write.
+		//nolint:gosec // G118 — Background is intentional; see comment above.
 		mfCtx, mfCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		mfErr := w.cfg.Jobs.MarkFailed(mfCtx, job.ID, job.Attempt, err.Error())
 		mfCancel()
