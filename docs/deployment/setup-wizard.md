@@ -1,7 +1,5 @@
 # Setup Wizard
 
-> **Version**: 0.4.0
-
 The setup wizard (`terraform/setup.sh`) is an interactive script that provisions cloud infrastructure and deploys DecisionBox in one flow. It handles Terraform configuration, cloud authentication, Kubernetes setup, and Helm deployment.
 
 ## Quick Start
@@ -126,8 +124,8 @@ Choose between:
 
 ### Step 6: Vector Search (Qdrant)
 
-Configure optional vector search support:
-- **Enable Vector Search** (true/false) — enables semantic discovery and recommendations
+Configure vector search:
+- **Enable Vector Search** (true/false) — required for schema indexing, discovery, and semantic search; disable only for API-only experiments
 - **Qdrant URL** — gRPC endpoint (e.g., `qdrant-service:6334`)
 - **Qdrant API Key** (optional) — for secured Qdrant instances
 

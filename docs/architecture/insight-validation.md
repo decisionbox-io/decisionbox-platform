@@ -26,7 +26,7 @@ Validation runs in two phases of the discovery lifecycle, both inside `services/
 - **Phase 4.5 — insight validation.** After each analysis area produces insights, the verifier + refuter pair runs on every insight, in `affected_count` descending order. The run-level cap (`VALIDATION_MAX_INSIGHTS_PER_RUN`, default 30) stops validation past the threshold; surplus insights get `combined = "skipped_budget_cap"`.
 - **Phase 5.5 — recommendation validation.** After Phase 5 generates recommendations, the verifier + refuter pair runs on every kept recommendation against the token-budgeted union of source steps from its related insights.
 
-Phase 5 also gains a **pre-generation filter**: only insights with `combined ∈ {supported, confirmed}` are forwarded to the recommendation prompt. When that set is empty, recommendation generation is skipped entirely and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
+Phase 5 also gains a **pre-generation filter**: insights with `combined ∈ {supported, confirmed}` are forwarded to the recommendation prompt. The filter is **fail-open**: insights with `combined == "validation_disabled"` (and legacy docs whose `Validation` field is missing entirely) are also forwarded, on the principle that the recommendation phase should not penalise documents for an absent validator. When the resulting set is empty, recommendation generation is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
 
 ```
 Phase 3   exploration              ────► explorationResult.Steps (in-memory)
@@ -222,9 +222,9 @@ The router owns 2-second polling. On any terminal status (including `failed` / `
 
 ## What's deliberately out of scope
 
-- **Parallel doc-level validation** (v1.5). Today the loop is sequential — `VALIDATION_CONCURRENCY` is not exposed until `go test -race` proves the verifier package's shared paths are safe.
-- **Live row-cap on `ExplorationStep.QueryResult`** (separate plan). The verifier reads from the in-memory step snapshot; persistence is downstream.
-- **Stricter executor-side filter check** (separate plan). `queryexec.verifyFilter` checks for the filter field NAME in the SQL, not predicate position. If telemetry shows the model exploits the gap, a follow-up plan tightens the executor.
+- **Parallel doc-level validation.** Today the loop is sequential; there is no `VALIDATION_CONCURRENCY` runtime setting until `go test -race` proves the verifier package's shared paths are safe.
+- **Live row-cap on `ExplorationStep.QueryResult`**. Not implemented in the current OSS build. The verifier reads from the in-memory step snapshot; persistence is downstream.
+- **Stricter executor-side filter check**. Not implemented in the current OSS build. `queryexec.verifyFilter` checks for the filter field NAME in the SQL, not predicate position.
 - **`headline_claim` writer-side field**. Deferred unless coverage telemetry warrants it.
 - **Migration of legacy `InsightValidation` shape**. Additive — no script needed; legacy fields stay populated on pre-existing documents.
 

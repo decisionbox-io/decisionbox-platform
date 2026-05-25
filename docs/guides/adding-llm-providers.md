@@ -1,7 +1,5 @@
 # Adding LLM Providers
 
-> **Version**: 0.5.0
-
 There are two kinds of "adding": adding a **new model** to an existing cloud, which is one `ModelEntry` in that provider's catalog; and adding a **new cloud**, which is a full Go package. Pick the right one.
 
 ## Adding a new model to an existing cloud
@@ -59,6 +57,8 @@ Called by the "Test Connection" button in the dashboard.
 | `Messages` | []Message | Conversation messages (`{Role, Content}`) |
 | `MaxTokens` | int | Maximum output tokens |
 | `Temperature` | float64 | Sampling temperature (0.0–1.0) |
+| `Tools` | []Tool | Tool definitions the model may call (omit for text-only chat) |
+| `ToolChoice` | ToolChoice | `none`, `auto`, `required`, or `{type:"tool", name:"..."}` |
 
 **ChatResponse:**
 
@@ -69,6 +69,7 @@ Called by the "Test Connection" button in the dashboard.
 | `StopReason` | string | Why generation stopped |
 | `Usage.InputTokens` | int | Input tokens consumed |
 | `Usage.OutputTokens` | int | Output tokens generated |
+| `ToolCalls` | []ToolCall | Tool invocations the model emitted (empty when no tools were called) |
 
 ## Step 1: Create the Package
 
@@ -113,7 +114,7 @@ func init() {
         Name:        "My LLM Provider",
         Description: "Description shown in the dashboard",
         ConfigFields: []gollm.ConfigField{
-            {Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "your-key-here"},
+            {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-key-here"},
             {Key: "model", Label: "Model", Required: true, Type: "string"},
             {Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog."},
         },
@@ -135,9 +136,9 @@ func init() {
 }
 
 func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
-    apiKey := cfg["api_key"]
+    apiKey := cfg["credentials_json"]
     if apiKey == "" {
-        return nil, fmt.Errorf("myprovider: api_key is required")
+        return nil, fmt.Errorf("myprovider: credentials_json is required")
     }
     model := cfg["model"]
     if model == "" {
@@ -293,7 +294,7 @@ func TestFactoryMissingKey(t *testing.T) {
 
 func TestFactorySuccess(t *testing.T) {
     _, err := gollm.NewProvider("myprovider", gollm.ProviderConfig{
-        "api_key": "test-key",
+        "credentials_json": "test-key",
         "model":   "test-model",
     })
     if err != nil {
@@ -326,7 +327,7 @@ func TestIntegration_BasicChat(t *testing.T) {
     }
 
     provider, _ := gollm.NewProvider("myprovider", gollm.ProviderConfig{
-        "api_key": apiKey, "model": "default-model",
+        "credentials_json": apiKey, "model": "default-model",
     })
 
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -1,7 +1,5 @@
 # Docker Compose Deployment
 
-> **Version**: 0.4.0
-
 This guide covers deploying DecisionBox with Docker Compose for single-server environments.
 
 ## Quick Start
@@ -19,6 +17,7 @@ Open **http://localhost:3000**.
 | Service | Image | Port | Description |
 |---------|-------|------|-------------|
 | `mongodb` | `mongo:7.0` | 27017 | Database |
+| `qdrant` | `qdrant/qdrant:v1.13.6` <!-- lint-allow: qdrant-image-tag --> | 6333/6334 | Vector search and schema-index storage |
 | `api` | `decisionbox-api` | 8080 | REST API + agent spawning |
 | `dashboard` | `decisionbox-dashboard` | 3000 | Web UI |
 
@@ -75,11 +74,12 @@ services:
 
 ### Persistent Data
 
-MongoDB data is stored in a Docker volume:
+MongoDB and Qdrant data are stored in Docker volumes:
 
 ```yaml
 volumes:
   mongodb_data:   # Survives container restarts
+  qdrant_data:    # Schema-index + insight/recommendation vectors
 ```
 
 To back up:

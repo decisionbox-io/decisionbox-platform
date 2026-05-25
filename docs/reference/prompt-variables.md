@@ -1,7 +1,5 @@
 # Prompt Variables Reference
 
-> **Version**: 0.4.0
-
 Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent replaces them with project-specific values at runtime before sending to the LLM.
 
 ## All Variables
@@ -23,6 +21,7 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 | `{{DISCOVERY_DATE}}` | `recommendations.md` | Current date (ISO format) | Date string |
 | `{{INSIGHTS_SUMMARY}}` | `recommendations.md` | Text summary of insight counts | Text |
 | `{{INSIGHTS_DATA}}` | `recommendations.md` | Full insight array with IDs | JSON array |
+| `{{LANGUAGE}}` | `base_context.md` | Project output language (defaults to `English`) used to localize narrative fields | Plain text |
 
 ## Detailed Reference
 
@@ -218,29 +217,29 @@ Formatted list of all analysis areas the agent should explore.
 
 ### {{QUERY_RESULTS}}
 
-**Source:** Exploration results filtered by area keywords
+**Source:** Exploration results selected for the current analysis area by the area's step picker (vector retrieval + keyword boost + token-budget trim).
 
-JSON array of exploration steps relevant to the current analysis area. Each entry includes:
+JSON array of compacted exploration-step digests. Each entry carries the step's purpose / SQL / thinking plus a `query_result` field whose value is a `CompactResult` produced by `services/agent/internal/discovery/render_query_results.go` — head and tail rows, per-column statistics, and small-result inlining when the row count fits — not the raw row blob.
 
 **Example value:**
 ```json
 [
   {
     "step": 1,
-    "timestamp": "2026-03-14T10:30:05Z",
     "action": "query_data",
-    "thinking": "Let me check retention rates by cohort...",
     "query": "SELECT cohort_date, day_1_retention FROM retention_cohorts WHERE app_id = '...' ORDER BY cohort_date DESC LIMIT 30",
-    "query_result": [
-      {"cohort_date": "2026-03-01", "day_1_retention": 33.2},
-      {"cohort_date": "2026-02-28", "day_1_retention": 31.8}
-    ],
+    "query_purpose": "Check retention rates by cohort",
+    "thinking": "Let me check retention rates by cohort...",
     "row_count": 30,
-    "execution_time_ms": 450
+    "query_result": {
+      "head": [{"cohort_date": "2026-03-01", "day_1_retention": 33.2}],
+      "tail": [{"cohort_date": "2026-02-01", "day_1_retention": 30.4}],
+      "column_stats": {"day_1_retention": {"min": 30.4, "max": 33.2, "mean": 31.7}}
+    }
   },
   {
     "step": 3,
-    "thinking": "Retention is declining. Let me look at session patterns...",
+    "query_purpose": "Look at session patterns",
     "query": "SELECT user_id, total_sessions, days_active FROM ...",
     "row_count": 100
   }

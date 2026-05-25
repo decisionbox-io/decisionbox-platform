@@ -1,7 +1,5 @@
 # Configuring LLM Providers
 
-> **Version**: 0.4.0
-
 DecisionBox supports six LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through their inline catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
 
 ## Provider Comparison
@@ -33,9 +31,9 @@ Sign up at [console.anthropic.com](https://console.anthropic.com) and create an 
 
 | Model | Quality | Speed | Cost |
 |-------|---------|-------|------|
-| `claude-opus-4-6` | Highest | Slow | $15/$75 per million tokens |
+| `claude-opus-4-6` | Highest | Slow | $5/$25 per million tokens |
 | `claude-sonnet-4-6` | High | Fast | $3/$15 per million tokens |
-| `claude-haiku-4-5` | Good | Fastest | $0.80/$4 per million tokens |
+| `claude-haiku-4-5` | Good | Fastest | $1/$5 per million tokens |
 
 **Recommendation:** Start with Sonnet for a balance of quality and cost. Use Opus for complex datasets.
 

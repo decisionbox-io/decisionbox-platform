@@ -1,7 +1,5 @@
 # Testing
 
-> **Version**: 0.1.0
-
 DecisionBox has 350+ tests across unit and integration suites. This guide covers running tests and writing new ones.
 
 ## Running Tests
@@ -39,7 +37,7 @@ The CI workflow runs automatically on every PR and push to main:
 | Go Lint | golangci-lint on all modules | Go files changed |
 | Dashboard Build | Next.js build | Dashboard files changed |
 | Dashboard Test & Lint | Jest + ESLint | Dashboard files changed |
-| License Check | SBOM generation (Syft) + license policy validation (Grant) | Go or Dashboard files changed |
+| License Check | License policy validation (Grant) — direct directory scan, no SBOM intermediary | Go or Dashboard files changed |
 | Integration Tests | MongoDB integration tests | Push to main, or PR with `run-integration-tests` label |
 
 To trigger integration tests on a PR, add the `run-integration-tests` label.
@@ -67,12 +65,12 @@ Tests live alongside the code they test:
 services/agent/
 ├── internal/
 │   ├── models/
-│   │   ├── discovery.go           # Code
-│   │   └── discovery_test.go      # Unit tests
+│   │   ├── discovery.go                                # Code
+│   │   └── discovery_test.go                           # Unit tests
 │   ├── discovery/
 │   │   ├── orchestrator.go
-│   │   ├── selective_test.go      # Unit tests
-│   │   └── integration_test.go    # Integration tests (//go:build integration)
+│   │   ├── analysis_step_picker_test.go                # Unit tests
+│   │   └── cache_schema_provider_integration_test.go   # Integration tests (//go:build integration)
 ```
 
 ### Integration Tests

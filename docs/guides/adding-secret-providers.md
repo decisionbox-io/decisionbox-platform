@@ -1,7 +1,5 @@
 # Adding Secret Providers
 
-> **Version**: 0.1.0
-
 Secret providers store per-project credentials (LLM API keys, warehouse service account keys). This guide shows how to add a new secret backend.
 
 ## Interface
@@ -63,11 +61,11 @@ import (
 
 func init() {
     secrets.Register("vault", func(cfg secrets.Config) (secrets.Provider, error) {
-        addr := cfg.Extra["vault_addr"]
+        addr := os.Getenv("VAULT_ADDR")
         if addr == "" {
             return nil, fmt.Errorf("vault: VAULT_ADDR is required")
         }
-        token := cfg.Extra["vault_token"]
+        token := os.Getenv("VAULT_TOKEN")
         if token == "" {
             return nil, fmt.Errorf("vault: VAULT_TOKEN is required")
         }
@@ -118,21 +116,20 @@ The `secrets.Config` struct:
 
 ```go
 type Config struct {
-    Provider      string            // "vault" (from SECRET_PROVIDER env var)
-    Namespace     string            // From SECRET_NAMESPACE env var
-    EncryptionKey string            // From SECRET_ENCRYPTION_KEY env var (MongoDB only)
-    GCPProjectID  string            // From SECRET_GCP_PROJECT_ID env var
-    AWSRegion     string            // From SECRET_AWS_REGION env var
-    AzureVaultURL string            // From SECRET_AZURE_VAULT_URL env var
-    Extra         map[string]string // Additional provider-specific config
+    Provider      string // "vault" (from SECRET_PROVIDER env var)
+    Namespace     string // From SECRET_NAMESPACE env var
+    EncryptionKey string // From SECRET_ENCRYPTION_KEY env var (MongoDB only)
+    GCPProjectID  string // From SECRET_GCP_PROJECT_ID env var
+    AWSRegion     string // From SECRET_AWS_REGION env var
+    AzureVaultURL string // From SECRET_AZURE_VAULT_URL env var
 }
 ```
 
-For custom env vars (like `VAULT_ADDR`), read them from `os.Getenv()` in your factory function or use `cfg.Extra`.
+For custom env vars (like `VAULT_ADDR`), read them from `os.Getenv()` in your factory function.
 
 ## Registration and Testing
 
-1. Import in `services/agent/main.go` and `services/api/main.go`
+1. Import in `services/agent/agentserver/agentserver.go` and `services/api/apiserver/apiserver.go`
 2. Add `replace` directives in both go.mod files
 3. Write tests:
    - Interface compliance (`var _ secrets.Provider = (*VaultProvider)(nil)`)

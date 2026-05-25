@@ -1,7 +1,5 @@
 # Production Considerations
 
-> **Version**: 0.1.0
-
 Recommendations for running DecisionBox in production.
 
 ## Security
@@ -155,7 +153,7 @@ db.discoveries.deleteMany({
 1. Pull new images (or rebuild from source)
 2. Stop services
 3. Start services — the API re-creates indexes automatically (idempotent)
-4. No database migrations needed — MongoDB is schema-flexible
+4. Let the API run its idempotent startup migrations and index setup (e.g. seeding schema-index status for pre-existing projects); keep one API replica during upgrades
 
 ## Next Steps
 

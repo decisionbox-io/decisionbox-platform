@@ -1,7 +1,5 @@
 # Domain Packs
 
-> **Version**: 0.4.0
-
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 
 ## Available Domain Packs
@@ -14,7 +12,7 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 | **System Test** | Quick, Standard, Thorough | Connectivity, Schema Discovery | Diagnostic pack for warehouse validation and data profiling (not an industry pack) |
 
 > **Note:** The System Test domain pack is intended for testing and onboarding only.
-> It is hidden by default and requires setting `DECISIONBOX_ENABLE_SYSTEM_TEST=true` to enable.
+> It is seeded with `is_published: false` so it does not appear in the new-project domain picker, but it is visible in the Domain Packs admin list and can be launched manually for diagnostic runs.
 
 ## What's in a Domain Pack
 

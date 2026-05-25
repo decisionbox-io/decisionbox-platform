@@ -93,9 +93,11 @@ sudo cp bin/decisionbox-agent /usr/local/bin/
 Download pre-built binaries from [GitHub Releases](https://github.com/decisionbox-io/decisionbox-platform/releases).
 
 ```bash
-# Download (example for Linux amd64)
-curl -L https://github.com/decisionbox-io/decisionbox-platform/releases/download/v0.1.0/decisionbox-api-linux-amd64 -o decisionbox-api
-curl -L https://github.com/decisionbox-io/decisionbox-platform/releases/download/v0.1.0/decisionbox-agent-linux-amd64 -o decisionbox-agent
+# Browse https://github.com/decisionbox-io/decisionbox-platform/releases
+# and download the binaries for your platform from the latest release.
+# Example (Linux amd64, replace VERSION with the release tag you picked):
+curl -L https://github.com/decisionbox-io/decisionbox-platform/releases/download/VERSION/decisionbox-api-linux-amd64 -o decisionbox-api
+curl -L https://github.com/decisionbox-io/decisionbox-platform/releases/download/VERSION/decisionbox-agent-linux-amd64 -o decisionbox-agent
 
 chmod +x decisionbox-api decisionbox-agent
 sudo mv decisionbox-agent /usr/local/bin/

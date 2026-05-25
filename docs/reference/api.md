@@ -1,7 +1,5 @@
 # API Reference
 
-> **Version**: 0.3.0
->
 > Base URL: `http://localhost:8080` (direct) or `http://localhost:3000/api` (via dashboard proxy)
 >
 > All endpoints return JSON. Error responses use `{"error": "message"}`.
@@ -55,7 +53,7 @@ curl http://localhost:8080/api/v1/providers/llm
       "description": "Anthropic Claude API - direct access",
       "config_fields": [
         {"key": "api_key", "label": "API Key", "required": true, "type": "string", "placeholder": "sk-ant-..."},
-        {"key": "model", "label": "Model", "required": true, "type": "string", "default": "claude-sonnet-4-20250514"}
+        {"key": "model", "label": "Model", "required": true, "type": "string", "default": "claude-sonnet-4-6"}
       ],
       "default_pricing": {
         "claude-sonnet-4": {"input_per_million": 3.0, "output_per_million": 15.0},
@@ -73,8 +71,8 @@ curl http://localhost:8080/api/v1/providers/llm
 
 ### GET /api/v1/projects/{id}/llm/extended-models
 
-List project-scoped LLM model entries contributed by any registered external model registry (see [Hook 7 — External model registry](../concepts/plugin-hooks.md#hook-7--external-model-registry)).
-Returns an empty array on the default community build (no extenders registered).
+List project-scoped LLM model entries contributed by any registered external model registry (see [Plugin hooks: External model registry](../concepts/plugin-hooks.md#external-model-registry)).
+Returns an empty array when no external model registry extender is registered.
 Each entry has the same shape as a model row inside `GET /api/v1/providers/llm`, so the dashboard's model picker can merge both lists without reshaping.
 
 ```bash
@@ -230,7 +228,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "domain": "gaming",
     "category": "match3",
     "status": "active",
-    "warehouse": { "type": "bigquery", "config": { /* ... */ } },
+    "warehouse": { "provider": "bigquery", "datasets": ["analytics_data"], "location": "US", "config": { /* ... */ } },
     "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" },
     "schedule":  { "enabled": false, "cron_expr": "0 2 * * *", "max_steps": 100 }
   }
@@ -800,7 +798,7 @@ Add a bookmark. **Idempotent** — calling with the same `(target_type, target_i
 {"target_type": "insight", "target_id": "...", "discovery_id": "...", "note": "optional"}
 ```
 
-`target_type` must be `"insight"` or `"recommendation"`. Returns `404` if the list is not owned by the caller or if the target does not exist in its source collection.
+`target_type` must be `"insight"` or `"recommendation"`. Returns `404` if the list is not owned by the caller.
 
 ### DELETE /api/v1/projects/{id}/lists/{listId}/items/{bookmarkId}
 

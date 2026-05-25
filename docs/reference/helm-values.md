@@ -1,7 +1,5 @@
 # Helm Values Reference
 
-> **Version**: 0.1.0
-
 Complete reference for all Helm chart values.
 Charts are published to the DecisionBox Helm repository:
 
@@ -59,8 +57,8 @@ Source code for the charts is in `helm-charts/`.
 | `env.DISCOVERY_MAX_DURATION` | string | unset → agent default `24h` | In-agent ctx cap. Go duration format (`24h`, `168h`). Set to `0` to disable and rely only on per-step budgets. Must be **less than** `AGENT_JOB_TIMEOUT_HOURS` so the agent fails gracefully rather than getting killed mid-write. |
 | `env.QDRANT_URL` | string | — | Qdrant gRPC URL (e.g., `qdrant:6334`) |
 | `env.QDRANT_API_KEY` | string | — | Qdrant API key (injected via Secret if `qdrant.enabled=true`) |
-| `extraEnv` | list | `[]` | Additional env vars as `{name, value}` pairs |
-| `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`) |
+| `extraEnv` | map | `{}` | Additional env vars (key/value map; values must be strings) merged with `env`. |
+| `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`). |
 
 ### Resources
 
@@ -174,6 +172,10 @@ You can pass any values to the Qdrant subchart via the `qdrant` key. Common over
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `env.API_URL` | string | `http://decisionbox-api-service:8080` | API service URL (internal) |
+| `extraEnv` | map | `{}` | Additional env vars (key/value map; values must be strings) merged with `env`. |
+| `extraEnvFrom` | list | `[]` | Additional env sources (e.g., `secretRef`). |
+| `cloudArmor.enabled` | bool | `false` | When true, the GCE ingress is annotated with `cloud.google.com/backend-config` so a Cloud Armor security policy applies to incoming requests. |
+| `cloudArmor.securityPolicy` | string | `""` | Name of the Cloud Armor security policy to attach (required when `cloudArmor.enabled` is true). |
 
 The dashboard proxies `/api/*` requests to the API URL. This must point to the API's ClusterIP service.
 

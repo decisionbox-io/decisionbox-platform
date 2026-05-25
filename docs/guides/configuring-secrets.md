@@ -1,7 +1,5 @@
 # Configuring Secret Providers
 
-> **Version**: 0.1.0
-
 Secrets store per-project credentials like LLM API keys and warehouse service account keys. DecisionBox supports four secret backends.
 
 ## Provider Comparison
@@ -47,7 +45,7 @@ MongoDB stores:
 {
   "namespace": "decisionbox",
   "project_id": "507f1f77bcf86cd799439011",
-  "key": "llm-api-key",
+  "key": "llm-credentials",
   "value": "<encrypted-base64>",
   "nonce": "<base64-nonce>",
   "updated_at": "2026-03-14T10:00:00Z"
@@ -78,7 +76,7 @@ SECRET_NAMESPACE=decisionbox
 ### How It Works
 
 - Secrets stored as GCP Secret Manager secrets
-- Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-api-key`)
+- Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-credentials`)
 - Labels: `managed-by=decisionbox`, `namespace=...`, `project-id=...`
 - Listing filtered by labels (only shows DecisionBox-managed secrets)
 - New values added as new secret versions
@@ -112,7 +110,7 @@ SECRET_NAMESPACE=decisionbox
 ### How It Works
 
 - Secrets stored as AWS Secrets Manager secrets
-- Naming: `{namespace}/{projectID}/{key}` (e.g., `decisionbox/507f1f/llm-api-key`)
+- Naming: `{namespace}/{projectID}/{key}` (e.g., `decisionbox/507f1f/llm-credentials`)
 - Tags: `managed-by=decisionbox`, `namespace=...`, `project-id=...`
 - Listing filtered by name prefix and tags
 - Updates use `PutSecretValue` (creates new version)
@@ -144,7 +142,7 @@ SECRET_NAMESPACE=decisionbox
 ### How It Works
 
 - Secrets stored as Azure Key Vault secrets
-- Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-api-key`)
+- Naming: `{namespace}-{projectID}-{key}` (e.g., `decisionbox-507f1f-llm-credentials`)
 - Tags: `managed-by=decisionbox`, `namespace=...`, `project-id=...`
 - Listing filtered by tags (only shows DecisionBox-managed secrets)
 - Updates create new secret versions automatically
@@ -166,7 +164,7 @@ The key is saved as an encrypted secret immediately after the project is created
 ### Setting Secrets (API)
 
 ```bash
-curl -X PUT http://localhost:8080/api/v1/projects/{id}/secrets/llm-api-key \
+curl -X PUT http://localhost:8080/api/v1/projects/{id}/secrets/llm-credentials \
   -H "Content-Type: application/json" \
   -d '{"value": "sk-ant-api03-..."}'
 ```
@@ -174,8 +172,10 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/secrets/llm-api-key \
 ### How the Agent Reads Secrets
 
 1. Agent initializes the secret provider (same config as API)
-2. Reads `llm-api-key` for the project → passes to LLM provider
-3. Warehouse uses the agent's cloud credentials (ADC on GCP, IAM role on AWS, Workload Identity on Azure)
+2. Reads `llm-credentials` for the project → passes to LLM provider
+3. Reads `warehouse-credentials` when present → passes to warehouse provider (cross-cloud connections). When absent, the warehouse uses the agent's cloud credentials (ADC on GCP, IAM role on AWS, Workload Identity on Azure)
+4. Reads `embedding-credentials` for the embedding provider used by schema indexing and `/ask` RAG
+5. Reads `blurb-llm-credentials` when a project-specific blurb LLM is configured; otherwise reuses `llm-credentials`
 
 ### No Delete Via API
 

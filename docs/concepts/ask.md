@@ -38,7 +38,8 @@ Each model carries a `MaxInputTokens` in its catalog entry — the upstream-publ
 | Bedrock | Llama 4 Maverick | 1000000 |
 | Bedrock | Llama 3.x, Qwen 3.x, DeepSeek R1, Mistral Large | 128000 |
 | Bedrock | Mixtral 8x22B | 65536 |
-| Ollama | Llama 4, Qwen 3.x, Llama 3.x, DeepSeek R1, Gemma 3 | 128000 |
+| Ollama | Llama 4 | 1048576 |
+| Ollama | Qwen 3.x, Llama 3.x, DeepSeek R1, Gemma 3 | 128000 |
 | Ollama | Llama 3, Gemma 2 | 8192 |
 
 Unknown models fall back to a global default of **32000 tokens** (deliberately conservative — over-trimming is recoverable, under-trimming and 4xx is not).

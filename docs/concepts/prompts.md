@@ -1,7 +1,5 @@
 # Prompts
 
-> **Version**: 0.4.0
-
 Prompts control how the AI reasons about your data. DecisionBox uses markdown template files with variables that are replaced at runtime with project-specific context.
 
 ## Prompt Types
