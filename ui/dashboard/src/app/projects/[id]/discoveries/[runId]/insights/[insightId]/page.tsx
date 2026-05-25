@@ -15,6 +15,7 @@ import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/list
 import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationPanel } from '@/components/validation/ValidationPanel';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
+import { isLegacyValidation } from '@/components/validation/validationShape';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
@@ -108,10 +109,16 @@ export default function InsightDetailPage() {
   // Get the analysis step for this insight's area
   const analysisStep = analysisLog.find((a) => a.area_id === insight.analysis_area);
 
-  // Get validation entries for this insight's area
-  const validationEntries = validationLog.filter(
-    (v) => v.analysis_area === insight.analysis_area
-  );
+  // Validation log entries for this insight's area. The new-shape verdict
+  // (verifier + refuter + per-claim breakdown) is reachable from the
+  // sidebar ValidationPanel's "Show breakdown" drawer — duplicating it
+  // in the technical-details drawer would just create two paths to the
+  // same data. Legacy entries lack a per-claim breakdown, so for them
+  // the technical-details accordion is still the place to see the
+  // historical probes.
+  const legacyValidationEntries = validationLog
+    .filter((v) => v.analysis_area === insight.analysis_area)
+    .filter((v) => isLegacyValidation(v));
 
   // Related recommendations — recs in this discovery that cite this insight id.
   const relatedRecs = (discovery?.recommendations || []).filter(
@@ -385,17 +392,17 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
 
-          {/* Validation log entries scoped to this insight's analysis area.
-              ValidationLogRow auto-dispatches new vs legacy shape and owns
-              its own breakdown drawer. */}
-          {validationEntries.length > 0 && (
+          {/* Legacy validation log entries only — new-shape verdicts are
+              rendered in the sidebar ValidationPanel + its "Show breakdown"
+              drawer, so showing them here too would duplicate the surface. */}
+          {legacyValidationEntries.length > 0 && (
             <Accordion.Item value="validation">
               <Accordion.Control>
-                <Text size="sm" fw={600}>Validation ({validationEntries.length} checks)</Text>
+                <Text size="sm" fw={600}>Validation ({legacyValidationEntries.length} legacy checks)</Text>
               </Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="sm">
-                  {validationEntries.map((v, idx) => (
+                  {legacyValidationEntries.map((v, idx) => (
                     <ValidationLogRow key={idx} entry={v} />
                   ))}
                 </Stack>
