@@ -11,6 +11,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
+import { ValidationPanel } from '@/components/validation/ValidationPanel';
 import { markRead } from '@/lib/readState';
 import {
   Pill, normalizeConfidence,
@@ -214,15 +215,29 @@ export default function RecommendationDetailPage() {
 
         {/* Related insights and similar recommendations moved to the right
             sidebar (or top chip strip on narrow screens). */}
+
+        {/* Narrow-screen fallback for the validation card — the sidebar
+            is hidden below the lg breakpoint so we render it inline at
+            the bottom of the main column. */}
+        <Box hiddenFrom="lg">
+          {recommendation.validation && (
+            <ValidationPanel validation={recommendation.validation} />
+          )}
+        </Box>
       </Stack>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, lg: 3 }} visibleFrom="lg">
           <Box style={{ position: 'sticky', top: 16 }}>
-            <RelatedSidebar
-              relatedLabel="Related Insights"
-              related={relatedItems}
-            />
+            <Stack gap="md">
+              <RelatedSidebar
+                relatedLabel="Related Insights"
+                related={relatedItems}
+              />
+              {recommendation.validation && (
+                <ValidationPanel validation={recommendation.validation} />
+              )}
+            </Stack>
           </Box>
         </Grid.Col>
       </Grid>

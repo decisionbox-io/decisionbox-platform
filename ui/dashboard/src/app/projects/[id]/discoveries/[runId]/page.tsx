@@ -15,6 +15,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
+import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
@@ -362,22 +363,7 @@ export default function DiscoveryDetailPage() {
                 <Accordion.Panel>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {validationLog.map((v, idx) => (
-                      <div key={idx} style={{
-                        border: '1px solid var(--db-border-default)',
-                        borderRadius: 'var(--db-radius)',
-                        padding: '10px 12px',
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <span style={{ fontSize: 12 }}>{v.analysis_area}</span>
-                          <SeverityBadge severity={v.status} type="validation" />
-                        </div>
-                        {v.claimed_count > 0 && (
-                          <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                            Claimed: {v.claimed_count.toLocaleString()} → Verified: {v.verified_count.toLocaleString()}
-                          </div>
-                        )}
-                        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{v.reasoning}</div>
-                      </div>
+                      <ValidationLogRow key={idx} entry={v} />
                     ))}
                   </div>
                 </Accordion.Panel>

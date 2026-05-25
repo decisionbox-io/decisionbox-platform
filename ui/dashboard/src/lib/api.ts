@@ -414,11 +414,76 @@ export interface Insight {
   discovered_at: string;
 }
 
-export interface InsightValidation {
-  status: string;
-  verified_count: number;
-  original_count: number;
+// Status values come from the seven-status taxonomy plus the legacy
+// values that pre-plan docs may still carry. The dashboard sorts /
+// filters on `combined` (the new plan v5 field); the older `status`
+// field is only meaningful on legacy docs.
+export type ValidationStatus =
+  | "confirmed"
+  | "supported"
+  | "rejected"
+  | "partial"
+  | "unverifiable"
+  | "validation_disabled"
+  | "skipped_budget_cap"
+  // Legacy values (pre-plan):
+  | "adjusted"
+  | "unverified"
+  | "error"
+  | "";
+
+export type ValidationDocKind = "insight" | "recommendation";
+
+export type ValidationAgentMode = "verifier" | "refuter";
+
+export interface ClaimEvidence {
+  kind: "step_row" | "warehouse_query" | "none" | "";
+  step_id?: number;
+  query_sql?: string;
+  row?: Record<string, unknown>;
+  additional_rows?: number;
+}
+
+export interface ClaimVerdict {
+  claim_text: string;
+  claim_kind: string;
+  is_headline: boolean;
+  status: ValidationStatus;
   reasoning: string;
+  evidence: ClaimEvidence;
+}
+
+export interface StructuredVerdict {
+  doc_id: string;
+  doc_kind: ValidationDocKind;
+  mode: ValidationAgentMode;
+  claims_considered: string[];
+  claim_verdicts: ClaimVerdict[];
+  overall: ValidationStatus;
+  overall_reason: string;
+  lookups_used: number;
+  queries_issued: number;
+  step_reads_used: number;
+  llm_tokens_in: number;
+  llm_tokens_out: number;
+  duration_millis: number;
+}
+
+export interface InsightValidation {
+  // --- legacy fields (pre-plan v5) ---
+  status?: string;
+  verified_count?: number;
+  original_count?: number;
+  query?: string;
+  reasoning?: string;
+  validated_at?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  // --- new fields (plan v5) ---
+  verifier?: StructuredVerdict;
+  refuter?: StructuredVerdict;
+  combined?: ValidationStatus;
+  refuter_disabled?: boolean;
 }
 
 export interface Recommendation {
@@ -433,6 +498,7 @@ export interface Recommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  validation?: InsightValidation;
 }
 
 export interface Summary {
@@ -494,6 +560,12 @@ export interface ValidationLogEntry {
   reasoning: string;
   query: string;
   validated_at: string;
+  // --- new fields (plan v5) ---
+  doc_kind?: ValidationDocKind;
+  verifier?: StructuredVerdict;
+  refuter?: StructuredVerdict;
+  combined?: ValidationStatus;
+  refuter_disabled?: boolean;
 }
 
 export interface ProjectStatus {
@@ -856,6 +928,7 @@ export interface StandaloneRecommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  validation?: InsightValidation;
   embedding_text?: string;
   embedding_model?: string;
   duplicate_of?: string;

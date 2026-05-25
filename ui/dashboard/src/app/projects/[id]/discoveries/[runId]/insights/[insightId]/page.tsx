@@ -6,59 +6,21 @@ import {
   Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
-  IconAlertTriangle, IconArrowLeft, IconCheck, IconCode, IconDatabase, IconSearch, IconX,
+  IconAlertTriangle, IconArrowLeft, IconCode, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
+import { ValidationPanel } from '@/components/validation/ValidationPanel';
+import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
-
-// CompactValidationCard is sized for the right sidebar (and the narrow-screen
-// fallback that lives at the bottom of the main column). Trades the big
-// padding + wide Group layout of the old inline Validation card for a tighter
-// presentation — status badge, counts on one row, reasoning clipped — so it
-// sits next to the related-items sidebar without dominating.
-function CompactValidationCard({ validation }: { validation: NonNullable<Insight['validation']> }) {
-  const statusColor = validation.status === 'confirmed' ? 'green'
-    : validation.status === 'adjusted' ? 'yellow'
-    : validation.status === 'rejected' ? 'red' : 'gray';
-  const statusIcon = validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />;
-  return (
-    <Card withBorder p="md">
-      <Group justify="space-between" mb={6}>
-        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.5px' }}>
-          Validation
-        </Text>
-        <Badge size="sm" color={statusColor} leftSection={statusIcon} variant="light">
-          {validation.status}
-        </Badge>
-      </Group>
-      {(validation.original_count != null || validation.verified_count != null) && (
-        <Group gap={4} mb={6}>
-          {validation.original_count != null && (
-            <Text size="xs" c="dimmed">{validation.original_count.toLocaleString()}</Text>
-          )}
-          {validation.verified_count != null && (
-            <>
-              <Text size="xs" c="dimmed">→</Text>
-              <Text size="xs" fw={600}>{validation.verified_count.toLocaleString()} verified</Text>
-            </>
-          )}
-        </Group>
-      )}
-      {validation.reasoning && (
-        <Text size="xs" c="dimmed" lineClamp={3}>{validation.reasoning}</Text>
-      )}
-    </Card>
-  );
-}
 
 export default function InsightDetailPage() {
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
@@ -281,7 +243,7 @@ export default function InsightDetailPage() {
         <Box hiddenFrom="lg">
           <Stack gap="md">
             {insight.validation && (
-              <CompactValidationCard validation={insight.validation} />
+              <ValidationPanel validation={insight.validation} />
             )}
             <Button
               variant="subtle"
@@ -312,7 +274,7 @@ export default function InsightDetailPage() {
                 related={relatedItems}
               />
               {insight.validation && (
-                <CompactValidationCard validation={insight.validation} />
+                <ValidationPanel validation={insight.validation} />
               )}
               <Button
                 variant="subtle"
@@ -423,7 +385,9 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
 
-          {/* Validation entries */}
+          {/* Validation log entries scoped to this insight's analysis area.
+              ValidationLogRow auto-dispatches new vs legacy shape and owns
+              its own breakdown drawer. */}
           {validationEntries.length > 0 && (
             <Accordion.Item value="validation">
               <Accordion.Control>
@@ -432,25 +396,7 @@ export default function InsightDetailPage() {
               <Accordion.Panel>
                 <Stack gap="sm">
                   {validationEntries.map((v, idx) => (
-                    <Card key={idx} withBorder p="sm" radius="sm">
-                      <Group justify="space-between" mb={4}>
-                        <Badge size="xs" variant="light"
-                          color={v.status === 'confirmed' ? 'green' : v.status === 'adjusted' ? 'yellow' : v.status === 'error' ? 'red' : 'gray'}>
-                          {v.status}
-                        </Badge>
-                        {v.claimed_count > 0 && (
-                          <Text size="xs" c="dimmed">
-                            {v.claimed_count.toLocaleString()} → {v.verified_count.toLocaleString()}
-                          </Text>
-                        )}
-                      </Group>
-                      <Text size="xs" c="dimmed">{v.reasoning}</Text>
-                      {v.query && (
-                        <Code block mt={4} style={{ fontSize: '10px', maxHeight: 80, overflow: 'auto' }}>
-                          {v.query}
-                        </Code>
-                      )}
-                    </Card>
+                    <ValidationLogRow key={idx} entry={v} />
                   ))}
                 </Stack>
               </Accordion.Panel>

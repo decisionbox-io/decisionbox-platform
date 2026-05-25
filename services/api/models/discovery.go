@@ -1,6 +1,14 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+)
+
+// InsightValidation aliases the shared validation type so the API and
+// the agent see one struct. Plan v5 §"Wire-type ownership".
+type InsightValidation = valmodels.InsightValidation
 
 // DiscoveryResult — read-only view of agent's discovery output.
 // Same BSON schema as agent's model.
@@ -45,19 +53,6 @@ type Insight struct {
 	DiscoveredAt  time.Time              `bson:"discovered_at" json:"discovered_at"`
 }
 
-type InsightValidation struct {
-	Status        string    `bson:"status" json:"status"`
-	VerifiedCount int       `bson:"verified_count,omitempty" json:"verified_count,omitempty"`
-	OriginalCount int       `bson:"original_count,omitempty" json:"original_count,omitempty"`
-	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
-	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
-
-	// Per-insight LLM token usage, summed across the verifier's LLM
-	// calls. API-side mirror.
-	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
-	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
-}
-
 type Recommendation struct {
 	ID          string `bson:"id" json:"id"`
 	Category    string `bson:"category" json:"category"`
@@ -70,6 +65,10 @@ type Recommendation struct {
 	Actions           []string `bson:"actions" json:"actions"`
 	RelatedInsightIDs []string `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
 	Confidence        float64  `bson:"confidence" json:"confidence"`
+
+	// Validation is the verifier+refuter verdict attached after the
+	// agent's Phase 5.5. Nil on pre-plan docs.
+	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
 type Impact struct {
@@ -125,6 +124,11 @@ type DroppedAnalysisStep struct {
 	Reason string  `bson:"reason" json:"reason"`
 }
 
+// ValidationLogEntry is the API-side mirror of agent ValidationResult.
+// Same BSON shape so MongoDB decode round-trips between agent writes
+// and API reads. Legacy fields cover pre-plan docs; the v5 verifier
+// fields (DocKind, Verifier, Refuter, Combined, RefuterDisabled) are
+// populated by the new pipeline.
 type ValidationLogEntry struct {
 	InsightID     string    `bson:"insight_id" json:"insight_id"`
 	AnalysisArea  string    `bson:"analysis_area" json:"analysis_area"`
@@ -134,6 +138,14 @@ type ValidationLogEntry struct {
 	Reasoning     string    `bson:"reasoning" json:"reasoning"`
 	Query         string    `bson:"query,omitempty" json:"query,omitempty"`
 	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
+
+	// --- new fields (plan v5) ---
+
+	DocKind         valmodels.DocKind            `bson:"doc_kind,omitempty"         json:"doc_kind,omitempty"`
+	Verifier        *valmodels.StructuredVerdict `bson:"verifier,omitempty"         json:"verifier,omitempty"`
+	Refuter         *valmodels.StructuredVerdict `bson:"refuter,omitempty"          json:"refuter,omitempty"`
+	Combined        valmodels.Status             `bson:"combined,omitempty"         json:"combined,omitempty"`
+	RefuterDisabled bool                         `bson:"refuter_disabled,omitempty" json:"refuter_disabled,omitempty"`
 }
 
 type Summary struct {

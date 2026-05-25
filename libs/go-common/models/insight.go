@@ -3,7 +3,14 @@ package models
 import (
 	"fmt"
 	"time"
+
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
+
+// InsightValidation is an alias for the shared validation type so
+// every model package references one struct. Plan v5 §"Wire-type
+// ownership".
+type InsightValidation = valmodels.InsightValidation
 
 // StandaloneInsight is a denormalized insight document stored in the "insights" collection.
 // Each insight has a UUID _id shared with its Qdrant vector point.
@@ -47,21 +54,6 @@ type StandaloneInsight struct {
 type InsightSQLMetadata struct {
 	Query    string `bson:"query,omitempty" json:"query,omitempty"`
 	RowCount int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
-}
-
-// InsightValidation holds the result of warehouse verification for an insight.
-type InsightValidation struct {
-	Status        string    `bson:"status" json:"status"`
-	VerifiedCount int       `bson:"verified_count,omitempty" json:"verified_count,omitempty"`
-	OriginalCount int       `bson:"original_count,omitempty" json:"original_count,omitempty"`
-	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
-	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
-
-	// Per-insight LLM token usage, summed across every verifier LLM
-	// call for this insight. Mirror of the agent-side field; populated
-	// when the verifier writes the insight validation embed.
-	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
-	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 }
 
 // BuildEmbeddingText returns the text to embed for semantic search.
