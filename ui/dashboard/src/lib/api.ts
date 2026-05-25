@@ -558,6 +558,39 @@ export interface DroppedAnalysisStep {
   reason: string; // "below_min_score" | "over_budget"
 }
 
+// Manual-validation job — one queued / running / completed
+// run-validation request. Mirrors services/api/models/validation_job.go.
+// Status lifecycle: pending → running → completed | failed | cancelled.
+export type ValidationJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type ValidationJobStep = 'verifier' | 'refuter' | 'combining';
+
+export interface ValidationJob {
+  id: string;
+  project_id: string;
+  discovery_id: string;
+  doc_kind: ValidationDocKind;
+  doc_id: string;
+  status: ValidationJobStatus;
+  step?: ValidationJobStep;
+  error?: string;
+  attempt: number;
+  requested_by?: string;
+  worker_id?: string;
+  enqueued_at: string;
+  claimed_at?: string;
+  started_at?: string;
+  heartbeat_at?: string;
+  completed_at?: string;
+  cancelled_at?: string;
+  run_id?: string;
+}
+
 export interface ValidationLogEntry {
   insight_id: string;
   analysis_area: string;
@@ -1175,6 +1208,21 @@ export const api = {
     request<AnalysisLogStep[]>(`/api/v1/discoveries/${discoveryId}/analysis-steps`),
   listValidationResults: (discoveryId: string) =>
     request<ValidationLogEntry[]>(`/api/v1/discoveries/${discoveryId}/validation-results`),
+
+  // Manual-validation jobs — enqueue / cancel / list.
+  // listValidationJobs returns 0..N rows most-recent-first; the
+  // dashboard router picks the most-recent non-terminal one to drive
+  // the in-flight progress card.
+  listValidationJobs: (discoveryId: string, docKind: ValidationDocKind, docId: string) => {
+    const qs = new URLSearchParams({ doc_kind: docKind, doc_id: docId }).toString();
+    return request<ValidationJob[]>(`/api/v1/discoveries/${discoveryId}/validation-jobs?${qs}`);
+  },
+  enqueueValidateInsight: (discoveryId: string, insightId: string) =>
+    request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/insights/${insightId}/validate`, { method: 'POST' }),
+  enqueueValidateRecommendation: (discoveryId: string, recommendationId: string) =>
+    request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/recommendations/${recommendationId}/validate`, { method: 'POST' }),
+  cancelValidationJob: (jobId: string) =>
+    request<void>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
   getRecommendationLog: (discoveryId: string) =>
     request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
   // Live run-step stream. The dashboard polls with the last `id` it

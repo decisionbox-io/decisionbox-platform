@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Badge, Box, Button, Card, Grid, Group, Loader, Stack, Text, Title,
@@ -11,12 +11,12 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
-import { ValidationPanel } from '@/components/validation/ValidationPanel';
+import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { markRead } from '@/lib/readState';
 import {
   Pill, normalizeConfidence,
 } from '@/components/common/UIComponents';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation, SearchResultItem } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
@@ -41,9 +41,17 @@ export default function RecommendationDetailPage() {
   };
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarRecs, setSimilarRecs] = useState<SearchResultItem[]>([]);
+
+  const refetchDiscovery = useCallback(async () => {
+    const disc = await api.getDiscoveryById(runId);
+    setDiscovery(disc);
+    const found = (disc?.recommendations || []).find((r) => r.id === recommendationId) || null;
+    setRecommendation(found);
+  }, [runId, recommendationId]);
 
   useEffect(() => {
     Promise.all([
@@ -56,6 +64,7 @@ export default function RecommendationDetailPage() {
         const found = recs.find((r) => r.id === recommendationId) || null;
         setRecommendation(found);
       }),
+      api.getProject(id).then(setProject).catch(() => setProject(null)),
       api.listFeedback(runId).then((fb) => {
         const match = (fb || []).find((f) => f.target_type === 'recommendation' && f.target_id === recommendationId);
         if (match) setFeedback(match);
@@ -63,7 +72,7 @@ export default function RecommendationDetailPage() {
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
-  }, [runId, recommendationId]);
+  }, [id, runId, recommendationId]);
 
   // Record that the user has opened this recommendation. See insight detail
   // page for the rationale — fire-and-forget, server-side dedupe.
@@ -220,9 +229,15 @@ export default function RecommendationDetailPage() {
             is hidden below the lg breakpoint so we render it inline at
             the bottom of the main column. */}
         <Box hiddenFrom="lg">
-          {recommendation.validation && (
-            <ValidationPanel validation={recommendation.validation} />
-          )}
+          <ValidationRouter
+            validation={recommendation.validation}
+            discoveryId={runId}
+            docKind="recommendation"
+            docId={recommendation.id}
+            validationEnabled={project?.validation_enabled !== false}
+            projectSettingsHref={`/projects/${id}/settings#advanced`}
+            onTerminal={refetchDiscovery}
+          />
         </Box>
       </Stack>
         </Grid.Col>
@@ -234,9 +249,15 @@ export default function RecommendationDetailPage() {
                 relatedLabel="Related Insights"
                 related={relatedItems}
               />
-              {recommendation.validation && (
-                <ValidationPanel validation={recommendation.validation} />
-              )}
+              <ValidationRouter
+                validation={recommendation.validation}
+                discoveryId={runId}
+                docKind="recommendation"
+                docId={recommendation.id}
+                validationEnabled={project?.validation_enabled !== false}
+                projectSettingsHref={`/projects/${id}/settings#advanced`}
+                onTerminal={refetchDiscovery}
+              />
             </Stack>
           </Box>
         </Grid.Col>

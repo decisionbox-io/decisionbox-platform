@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
@@ -13,11 +13,11 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
-import { ValidationPanel } from '@/components/validation/ValidationPanel';
+import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
 import { markRead } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
@@ -41,6 +41,7 @@ export default function InsightDetailPage() {
   };
   const [insight, setInsight] = useState<Insight | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
@@ -53,6 +54,17 @@ export default function InsightDetailPage() {
   // opened explicitly via a button in the sidebar. The Drawer gets the full
   // viewport width, so code blocks don't have to squeeze into the sidebar.
   const [techOpen, setTechOpen] = useState(false);
+
+  // refetchDiscovery is called by the validation router on terminal
+  // job status so the embedded insight picks up the new verdict the
+  // agent wrote back. Defined as a useCallback so the router's
+  // useEffect dependency stays stable across renders.
+  const refetchDiscovery = useCallback(async () => {
+    const disc = await api.getDiscoveryById(runId);
+    setDiscovery(disc);
+    const found = (disc?.insights || []).find((i) => i.id === insightId) || null;
+    setInsight(found);
+  }, [runId, insightId]);
 
   useEffect(() => {
     Promise.all([
@@ -67,6 +79,7 @@ export default function InsightDetailPage() {
         const found = insights.find((i) => i.id === insightId) || null;
         setInsight(found);
       }),
+      api.getProject(id).then(setProject).catch(() => setProject(null)),
       api.listFeedback(runId).then((fb) => {
         const match = (fb || []).find((f) => f.target_type === 'insight' && f.target_id === insightId);
         if (match) setFeedback(match);
@@ -77,7 +90,7 @@ export default function InsightDetailPage() {
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
-  }, [runId, insightId]);
+  }, [id, runId, insightId]);
 
   // Record that the user has opened this insight. Fire-and-forget —
   // markRead dedupes at the server layer (unique index) and optimistically
@@ -249,9 +262,15 @@ export default function InsightDetailPage() {
             at the bottom of the main column so they're still accessible. */}
         <Box hiddenFrom="lg">
           <Stack gap="md">
-            {insight.validation && (
-              <ValidationPanel validation={insight.validation} />
-            )}
+            <ValidationRouter
+              validation={insight.validation}
+              discoveryId={runId}
+              docKind="insight"
+              docId={insight.id}
+              validationEnabled={project?.validation_enabled !== false}
+              projectSettingsHref={`/projects/${id}/settings#advanced`}
+              onTerminal={refetchDiscovery}
+            />
             <Button
               variant="subtle"
               size="sm"
@@ -280,9 +299,15 @@ export default function InsightDetailPage() {
                 relatedLabel="Related Recommendations"
                 related={relatedItems}
               />
-              {insight.validation && (
-                <ValidationPanel validation={insight.validation} />
-              )}
+              <ValidationRouter
+                validation={insight.validation}
+                discoveryId={runId}
+                docKind="insight"
+                docId={insight.id}
+                validationEnabled={project?.validation_enabled !== false}
+                projectSettingsHref={`/projects/${id}/settings#advanced`}
+                onTerminal={refetchDiscovery}
+              />
               <Button
                 variant="subtle"
                 size="sm"
