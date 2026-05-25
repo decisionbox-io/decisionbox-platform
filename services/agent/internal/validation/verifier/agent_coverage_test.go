@@ -236,3 +236,50 @@ func TestFinalise_OverridesUnknownOverallByDeriving(t *testing.T) {
 		t.Errorf("post-finalise Overall is still unknown: %q", out.Overall)
 	}
 }
+
+// Codex prod-r5 P2 — `partial` belongs in the evidence-required
+// branch (step 4). Without that, a per-claim `partial` with no
+// attached row laundered through the coverage rules and the doc
+// kept its supported/confirmed overall.
+func TestFinalise_PartialClaimWithoutEvidenceIsDowngraded(t *testing.T) {
+	v := baseVerdict()
+	// Replace the second claim (sub claim) with a partial verdict
+	// that has no row attached.
+	v.ClaimVerdicts[1].Status = valmodels.StatusPartial
+	v.ClaimVerdicts[1].Evidence = valmodels.ClaimEvidence{} // empty
+	out := runFinalise(v)
+	if out.Overall != valmodels.StatusPartial {
+		t.Errorf("got %s, want partial; reason=%q", out.Overall, out.OverallReason)
+	}
+	if !strings.Contains(out.OverallReason, "missing evidence") {
+		t.Errorf("reason should call out the missing evidence: %q", out.OverallReason)
+	}
+}
+
+// Codex prod-r5 P2 — deriveOverall now folds partial verdicts in
+// (used to silently skip them). One supported + one partial must
+// resolve to partial, not supported.
+func TestDeriveOverall_PartialDemotesSupported(t *testing.T) {
+	cvs := []valmodels.ClaimVerdict{
+		{Status: valmodels.StatusSupported, IsHeadline: true},
+		{Status: valmodels.StatusPartial},
+	}
+	got := deriveOverall(cvs)
+	if got != valmodels.StatusPartial {
+		t.Errorf("deriveOverall = %q, want partial (one supported + one partial)", got)
+	}
+}
+
+// All-partial used to return unverifiable. The fold now returns
+// partial — which is a real, communicable verdict — instead of
+// pretending we had no evidence.
+func TestDeriveOverall_AllPartialReturnsPartial(t *testing.T) {
+	cvs := []valmodels.ClaimVerdict{
+		{Status: valmodels.StatusPartial, IsHeadline: true},
+		{Status: valmodels.StatusPartial},
+	}
+	got := deriveOverall(cvs)
+	if got != valmodels.StatusPartial {
+		t.Errorf("deriveOverall = %q, want partial (all partial)", got)
+	}
+}

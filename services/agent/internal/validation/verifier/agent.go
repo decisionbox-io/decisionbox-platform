@@ -403,9 +403,14 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 	}
 
 	// Step 4 — evidence requirement for non-unverifiable claims.
+	// `partial` belongs in this list too: it asserts a non-trivial
+	// quantitative judgment (e.g. "headline figure off by 8%") that
+	// must be backed by a row, otherwise the model can launder
+	// uncited claims through `partial` without tripping any of the
+	// other coverage rules. Codex prod-r5 P2.
 	for i, c := range v.ClaimVerdicts {
 		switch c.Status {
-		case valmodels.StatusConfirmed, valmodels.StatusSupported, valmodels.StatusRejected:
+		case valmodels.StatusConfirmed, valmodels.StatusSupported, valmodels.StatusRejected, valmodels.StatusPartial:
 			if c.Evidence.Kind == "" || c.Evidence.Kind == "none" || c.Evidence.Row == nil {
 				v.Overall = valmodels.StatusPartial
 				v.OverallReason = appendReason(v.OverallReason, fmt.Sprintf("coverage: missing evidence on claim_verdicts[%d] (status=%s)", i, c.Status))
@@ -479,12 +484,21 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 }
 
 // deriveOverall conservatively folds per-claim verdicts into a single
-// Overall when the model omitted the top-level field.
+// Overall when the model omitted the top-level field (or returned a
+// known-bad value the finaliser is correcting).
+//
+// Codex prod-r5 P2 — `partial` claims used to be ignored entirely,
+// so one supported + one partial promoted to `supported` and an
+// all-partial verdict collapsed to `unverifiable`. Both undercounted
+// the partial signal: a single partial claim taints the whole
+// document. The fold now treats partial similarly to a soft-reject:
+// any partial demotes a would-be supported/confirmed overall to
+// partial; all-partial returns partial (not unverifiable).
 func deriveOverall(cvs []valmodels.ClaimVerdict) valmodels.Status {
 	if len(cvs) == 0 {
 		return valmodels.StatusUnverifiable
 	}
-	rej, sup, conf := 0, 0, 0
+	rej, sup, conf, partial := 0, 0, 0, 0
 	for _, c := range cvs {
 		switch c.Status {
 		case valmodels.StatusRejected:
@@ -493,10 +507,15 @@ func deriveOverall(cvs []valmodels.ClaimVerdict) valmodels.Status {
 			sup++
 		case valmodels.StatusConfirmed:
 			conf++
+		case valmodels.StatusPartial:
+			partial++
 		}
 	}
 	if rej > 0 {
 		return valmodels.StatusRejected
+	}
+	if partial > 0 {
+		return valmodels.StatusPartial
 	}
 	if conf > 0 && sup == 0 {
 		return valmodels.StatusConfirmed
