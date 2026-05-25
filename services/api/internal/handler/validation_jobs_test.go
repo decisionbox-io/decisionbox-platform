@@ -281,11 +281,49 @@ func TestValidationJobsHandler_Cancel_HappyPath(t *testing.T) {
 	req.SetPathValue("jid", "job-1")
 	rec := httptest.NewRecorder()
 	h.Cancel(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want 204", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
 	}
 	if jobs.jobs["job-1"].Status != models.ValidationJobStatusCancelled {
 		t.Errorf("status not flipped to cancelled")
+	}
+	// Codex prod-r3 P2 — verify the body is a parseable JSON
+	// envelope so the dashboard's request() helper doesn't reject
+	// the success as a non-JSON misconfigured-proxy error.
+	if !strings.Contains(rec.Body.String(), "cancelled") {
+		t.Errorf("response body should carry the cancelled status, got %q", rec.Body.String())
+	}
+}
+
+// Codex prod-r3 P2 — the in-flight agent process must receive the
+// cancel signal, not just the Mongo row. WithCanceller injects a
+// worker; Cancel must call its Cancel(jobID) method.
+type spyCanceller struct{ called []string }
+
+func (s *spyCanceller) Cancel(jobID string) bool {
+	s.called = append(s.called, jobID)
+	return true
+}
+
+func TestValidationJobsHandler_Cancel_SignalsTheWorker(t *testing.T) {
+	h, jobs, _, _, _, _, _, _ := setupHandler(t, true)
+	spy := &spyCanceller{}
+	h = h.WithCanceller(spy)
+
+	jobs.jobs["job-running"] = &models.ValidationJob{
+		ID:     "job-running",
+		Status: models.ValidationJobStatusRunning,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.SetPathValue("jid", "job-running")
+	rec := httptest.NewRecorder()
+	h.Cancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(spy.called) != 1 || spy.called[0] != "job-running" {
+		t.Errorf("worker.Cancel was not called for the job, got %+v", spy.called)
 	}
 }
 

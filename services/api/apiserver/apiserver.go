@@ -307,6 +307,7 @@ func Run() {
 	handler := server.NewWithRouteGroups(
 		db, healthHandler, secretProvider, authProvider,
 		droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker),
+		validationWorker,
 		RegisteredRouteGroups(),
 		qdrantProvider,
 	)

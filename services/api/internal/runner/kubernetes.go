@@ -126,6 +126,14 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		{"VALIDATION_MAX_READ_STEP_ROWS", "VALIDATION_MAX_READ_STEP_ROWS"},
 		{"VALIDATION_NUMERIC_TOLERANCE", "VALIDATION_NUMERIC_TOLERANCE"},
 		{"VALIDATION_MIN_SAMPLE_SIZE", "VALIDATION_MIN_SAMPLE_SIZE"},
+		// Bundle truncation + recommendation-bundle token budget +
+		// pre-flight estimate ratio — missing from the initial
+		// fan-out (Codex prod-r3 P2). Operators setting these on
+		// the API deployment were silently getting defaults inside
+		// agent Jobs.
+		{"VALIDATION_BUNDLE_CELL_CHAR_CAP", "VALIDATION_BUNDLE_CELL_CHAR_CAP"},
+		{"VALIDATION_REC_STEPS_TOKEN_BUDGET", "VALIDATION_REC_STEPS_TOKEN_BUDGET"},
+		{"VALIDATION_ESTIMATE_TOKEN_RATIO", "VALIDATION_ESTIMATE_TOKEN_RATIO"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})

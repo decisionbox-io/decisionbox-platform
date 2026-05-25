@@ -62,7 +62,17 @@ type DefaultExecutor struct {
 // LookupSchema delegates to ai.SchemaProvider.Lookup. The agent's
 // prompt accepts either "dataset.table" or "table"; SchemaProvider
 // rehydrates the canonical qualified form.
+//
+// When no SchemaProvider is wired (e.g. the manual validate-doc path
+// runs without Qdrant), this returns a non-fatal tool error rather
+// than nil-derefencing — Codex prod-r3 P1. The verifier's tool-error
+// handling renders the message back to the model, which then either
+// asks for a different action or marks the dependent claim
+// unverifiable. The agent loop never panics.
 func (e *DefaultExecutor) LookupSchema(ctx context.Context, refs []string) (map[string]any, error) {
+	if e.SchemaProvider == nil {
+		return nil, fmt.Errorf("lookup_schema is not available for this run (no schema provider configured) — fall back to the catalog already attached to cited source steps, or mark the dependent claim unverifiable")
+	}
 	res, err := e.SchemaProvider.Lookup(ctx, refs)
 	if err != nil {
 		return nil, err

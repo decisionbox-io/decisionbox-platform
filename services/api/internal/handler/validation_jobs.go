@@ -37,18 +37,35 @@ import (
 	"github.com/google/uuid"
 )
 
+// ValidationJobCanceller is the minimum worker surface the Cancel
+// handler needs to actually stop in-flight work. The worker's
+// inflight map holds the runCtx cancel fn for each job it claimed;
+// without signalling that cancel the agent subprocess / K8s Job
+// keeps spending LLM tokens after the user clicked Cancel — Codex
+// prod-r3 P2. Implemented by validationjobs.Worker.
+type ValidationJobCanceller interface {
+	Cancel(jobID string) bool
+}
+
 // ValidationJobsHandler bundles the dependencies the four routes
 // share — the job repo (writes + reads), the discovery repo (404
-// preflight), and the project repo (validation_enabled gate). All
-// three are interface-typed so handler tests can inject in-memory
-// mocks (see validation_jobs_test.go).
+// preflight), the project repo (validation_enabled gate), and the
+// worker canceller (so Cancel propagates beyond the Mongo row).
+// All except the canceller are interface-typed for handler tests;
+// the canceller is nullable so unit tests that don't spin up a
+// worker can still exercise the row-write side of Cancel.
 type ValidationJobsHandler struct {
 	jobs        database.ValidationJobRepo
 	discoveries database.DiscoveryRepo
 	projects    database.ProjectRepo
+	canceller   ValidationJobCanceller
 }
 
 // NewValidationJobsHandler wires the handler against its repos.
+// canceller may be nil — the handler still flips the Mongo row to
+// cancelled, but the in-flight agent process won't get the signal.
+// Production wiring in apiserver.Run always passes a non-nil
+// canceller; unit tests pass nil when they don't care.
 func NewValidationJobsHandler(
 	jobs database.ValidationJobRepo,
 	discoveries database.DiscoveryRepo,
@@ -59,6 +76,14 @@ func NewValidationJobsHandler(
 		discoveries: discoveries,
 		projects:    projects,
 	}
+}
+
+// WithCanceller injects the validation-jobs worker so the Cancel
+// handler can signal the in-flight agent process. Returns the
+// handler for chaining.
+func (h *ValidationJobsHandler) WithCanceller(c ValidationJobCanceller) *ValidationJobsHandler {
+	h.canceller = c
+	return h
 }
 
 // ValidateInsight enqueues a manual-validation job for one insight.
@@ -142,7 +167,12 @@ func (h *ValidationJobsHandler) enqueue(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, job)
 }
 
-// Cancel marks a non-terminal job as cancelled.
+// Cancel marks a non-terminal job as cancelled AND signals the
+// worker so the in-flight agent process (subprocess SIGTERM /
+// K8s Job delete) actually stops. The two halves are independent —
+// the row flip is the source of truth for the dashboard; the
+// canceller is best-effort, but without it the agent would keep
+// spending LLM tokens after the user clicked Cancel.
 // POST /api/v1/validation-jobs/{jid}/cancel
 func (h *ValidationJobsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("jid")
@@ -153,7 +183,23 @@ func (h *ValidationJobsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	err := h.jobs.Cancel(r.Context(), id)
 	switch {
 	case err == nil:
-		w.WriteHeader(http.StatusNoContent)
+		// Signal the worker AFTER the row flip so the agent's
+		// post-cancel writes (e.g. heartbeat just before SIGTERM
+		// lands) see the cancelled status and silently no-op via
+		// the attempt+status filter. Returning IsRunning's value
+		// would let the caller distinguish "this worker had it"
+		// from "another replica owns it" but the dashboard doesn't
+		// branch on that today — keep the response shape simple.
+		if h.canceller != nil {
+			h.canceller.Cancel(id)
+		}
+		// Return a JSON envelope rather than 204. The shared
+		// frontend request() helper throws on non-JSON success
+		// bodies (treats them as misconfigured proxies); returning
+		// the cancelled job lets the UI also pick up
+		// cancelled_at/status without a follow-up GET. Codex
+		// prod-r3 P2.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 	case errors.Is(err, database.ErrNotFound):
 		writeError(w, http.StatusNotFound, "validation job not found")
 	case errors.Is(err, database.ErrAlreadyTerminal):

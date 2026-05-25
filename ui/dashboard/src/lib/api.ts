@@ -1221,8 +1221,12 @@ export const api = {
     request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/insights/${insightId}/validate`, { method: 'POST' }),
   enqueueValidateRecommendation: (discoveryId: string, recommendationId: string) =>
     request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/recommendations/${recommendationId}/validate`, { method: 'POST' }),
+  // Cancel returns a small JSON envelope ({status: "cancelled"})
+  // rather than 204 — the shared request() helper rejects non-JSON
+  // bodies on success, which would surface a misleading "Cancel
+  // failed" toast for every successful cancel. Codex prod-r3 P2.
   cancelValidationJob: (jobId: string) =>
-    request<void>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
+    request<{ status: string }>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
   getRecommendationLog: (discoveryId: string) =>
     request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
   // Live run-step stream. The dashboard polls with the last `id` it
