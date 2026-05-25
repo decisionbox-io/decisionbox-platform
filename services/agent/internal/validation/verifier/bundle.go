@@ -55,6 +55,25 @@ type DocDigest struct {
 	Metrics       map[string]any    `json:"metrics,omitempty"`
 	SourceStepIDs []int             `json:"source_step_ids"`
 	Language      string            `json:"language"`
+
+	// Recommendation-specific fields. These are the quantitative
+	// + actionable surface the dashboard renders on the
+	// recommendation detail page; without them in the digest the
+	// verifier never sees the impact claim ("X% improvement") or
+	// the action list and would silently mark recommendations
+	// supported despite the displayed impact being unverified.
+	// Codex prod-r6 P2.
+	ExpectedImpact *ExpectedImpactDigest `json:"expected_impact,omitempty"`
+	Actions        []string              `json:"actions,omitempty"`
+}
+
+// ExpectedImpactDigest mirrors the shape the dashboard renders so
+// the verifier can build claims against the same fields. Maps 1:1
+// to models.Recommendation.ExpectedImpact.
+type ExpectedImpactDigest struct {
+	Metric                string `json:"metric,omitempty"`
+	EstimatedImprovement  string `json:"estimated_improvement,omitempty"`
+	Reasoning             string `json:"reasoning,omitempty"`
 }
 
 // SourceStepDigest is one exploration step boiled down to schema +
@@ -207,16 +226,34 @@ func BuildRecommendationBundle(rec *agentmodels.Recommendation, insightByID map[
 		stepIDs = append(stepIDs, k)
 	}
 	sort.Ints(stepIDs)
+	// Include ExpectedImpact and Actions in the digest so the
+	// verifier can build claims against the impact statement and
+	// each action — the dashboard displays both, and recommending
+	// a doc as "supported" without checking those fields means a
+	// fabricated "10% conversion lift" sentence passes silently.
+	// Codex prod-r6 P2.
+	var impact *ExpectedImpactDigest
+	if rec.ExpectedImpact.Metric != "" ||
+		rec.ExpectedImpact.EstimatedImprovement != "" ||
+		rec.ExpectedImpact.Reasoning != "" {
+		impact = &ExpectedImpactDigest{
+			Metric:               rec.ExpectedImpact.Metric,
+			EstimatedImprovement: rec.ExpectedImpact.EstimatedImprovement,
+			Reasoning:            rec.ExpectedImpact.Reasoning,
+		}
+	}
 	return Bundle{
 		Doc: DocDigest{
-			Kind:          valmodels.DocRecommendation,
-			ID:            rec.ID,
-			Description:   rec.Description,
-			Headline:      rec.Title,
-			Priority:      priorityLabel(rec.Priority),
-			SegmentSize:   rec.SegmentSize,
-			SourceStepIDs: stepIDs,
-			Language:      disc.Language,
+			Kind:           valmodels.DocRecommendation,
+			ID:             rec.ID,
+			Description:    rec.Description,
+			Headline:       rec.Title,
+			Priority:       priorityLabel(rec.Priority),
+			SegmentSize:    rec.SegmentSize,
+			SourceStepIDs:  stepIDs,
+			Language:       disc.Language,
+			ExpectedImpact: impact,
+			Actions:        append([]string(nil), rec.Actions...),
 		},
 		SourceSteps:          digests,
 		Warehouse:            wh,

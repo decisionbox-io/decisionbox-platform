@@ -23,6 +23,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // DefaultPollInterval — 2 seconds keeps "click Run" → "agent
@@ -222,7 +223,19 @@ func (w *Worker) tickOneProject(ctx context.Context, projectID string) {
 	if job == nil {
 		return // idle queue for this project
 	}
+	// Codex prod-r6 P2 — historically this ran the agent
+	// synchronously, which blocked the poll + stale-sweep tickers
+	// for ~90s per job and defeated the heartbeat-based recovery
+	// path in single-replica deployments. The work runs in its own
+	// goroutine now so tick() returns immediately and staleSweep()
+	// keeps cadence. Concurrency is naturally bounded by the
+	// partial-unique-on-active index (one active job per doc) +
+	// per-project sequential claim — a malicious caller cannot
+	// fan out more than (num_projects × queue_depth) agents.
+	go w.runClaimedJob(ctx, job)
+}
 
+func (w *Worker) runClaimedJob(ctx context.Context, job *models.ValidationJob) {
 	logFields := apilog.Fields{
 		"job_id":       job.ID,
 		"project_id":   job.ProjectID,
@@ -240,7 +253,7 @@ func (w *Worker) tickOneProject(ctx context.Context, projectID string) {
 		w.deregister(job.ID)
 	}()
 
-	err = w.cfg.Runner.RunValidateDoc(runCtx, runner.ValidateDocOptions{
+	err := w.cfg.Runner.RunValidateDoc(runCtx, runner.ValidateDocOptions{
 		JobID:       job.ID,
 		ProjectID:   job.ProjectID,
 		DiscoveryID: job.DiscoveryID,

@@ -236,6 +236,27 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 
 	// Persist the embedded-array update + the ValidationResult row.
 	_ = markJobStep(ctx, jobsCol, job.ID, attempt, "combining")
+
+	// Re-check the job is still ours before mutating the discovery
+	// doc. If another API replica cancelled it (status=cancelled),
+	// or stale recovery requeued it (attempt bumped), or the user
+	// retry created a fresh attempt, we MUST NOT overwrite the
+	// discovery with this orphan's verdict — the user could see a
+	// validation they explicitly cancelled, or a stale verdict could
+	// clobber the later attempt's results. Codex prod-r6 P2.
+	//
+	// The job-row writes (markJobCompleted etc.) already filter on
+	// (id, attempt, status=running), so they silently no-op on
+	// orphan agents — but the discovery write didn't have any such
+	// guard until now.
+	current, lookupErr := loadValidationJob(ctx, jobsCol, job.ID)
+	if lookupErr != nil {
+		return fmt.Errorf("recheck job before persist: %w", lookupErr)
+	}
+	if current == nil || current.Status != "running" || current.Attempt != attempt {
+		return fmt.Errorf("job %s no longer owned by this attempt (status=%s, attempt=%d, want running/%d) — refusing to persist verdict", job.ID, currentOrEmpty(current), currentAttemptOrZero(current), attempt)
+	}
+
 	switch valmodels.DocKind(job.DocKind) {
 	case valmodels.DocInsight:
 		// Find the matching insight on the loaded discovery slice (
@@ -294,6 +315,23 @@ type validationJobDoc struct {
 	DocID       string `bson:"doc_id"`
 	Status      string `bson:"status"`
 	Attempt     int    `bson:"attempt"`
+}
+
+// currentOrEmpty + currentAttemptOrZero are tiny nil-safety helpers
+// for the prePersistGuard error message — Go's lazy-eval shortcuts
+// don't apply across the struct-field arrow, so we centralise the
+// nil check here.
+func currentOrEmpty(j *validationJobDoc) string {
+	if j == nil {
+		return "missing"
+	}
+	return j.Status
+}
+func currentAttemptOrZero(j *validationJobDoc) int {
+	if j == nil {
+		return 0
+	}
+	return j.Attempt
 }
 
 func loadValidationJob(ctx context.Context, col *mongo.Collection, jobID string) (*validationJobDoc, error) {
