@@ -73,6 +73,12 @@ func (r *DiscoveryRepository) GetByID(ctx context.Context, idHex string) (*model
 // matching embedded insight via positional array-filter, leaving the
 // other insights' validation untouched. The element filter scopes the
 // write so a concurrent discovery save doesn't clobber sibling docs.
+//
+// The main filter includes `insights.id` so a missing or wrong
+// insightID surfaces as MatchedCount=0 — without that predicate the
+// UpdateOne still matches the discovery doc, updates `updated_at`,
+// touches no array element, and returns nil (silent no-op on bad
+// IDs).
 func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, discoveryIDHex, insightID string, validation interface{}) error {
 	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
 	if err != nil {
@@ -82,7 +88,7 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 		Filters: []interface{}{bson.M{"el.id": insightID}},
 	})
 	res, err := r.collection.UpdateOne(ctx,
-		bson.M{"_id": oid},
+		bson.M{"_id": oid, "insights.id": insightID},
 		bson.M{"$set": bson.M{"insights.$[el].validation": validation, "updated_at": time.Now()}},
 		opts,
 	)
@@ -90,13 +96,16 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 		return fmt.Errorf("update insight validation: %w", err)
 	}
 	if res.MatchedCount == 0 {
-		return fmt.Errorf("discovery %s not found", discoveryIDHex)
+		return fmt.Errorf("discovery %s or insight %s not found", discoveryIDHex, insightID)
 	}
 	return nil
 }
 
 // UpdateRecommendationValidation is the recommendation twin of
-// UpdateInsightValidation. Same positional array-filter contract.
+// UpdateInsightValidation. Same positional array-filter contract +
+// the same `recommendations.id` predicate on the main filter so a
+// missing recID returns an error instead of silently no-op'ing the
+// array filter while updating `updated_at`.
 func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context, discoveryIDHex, recID string, validation interface{}) error {
 	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
 	if err != nil {
@@ -106,7 +115,7 @@ func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context
 		Filters: []interface{}{bson.M{"el.id": recID}},
 	})
 	res, err := r.collection.UpdateOne(ctx,
-		bson.M{"_id": oid},
+		bson.M{"_id": oid, "recommendations.id": recID},
 		bson.M{"$set": bson.M{"recommendations.$[el].validation": validation, "updated_at": time.Now()}},
 		opts,
 	)
@@ -114,7 +123,7 @@ func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context
 		return fmt.Errorf("update recommendation validation: %w", err)
 	}
 	if res.MatchedCount == 0 {
-		return fmt.Errorf("discovery %s not found", discoveryIDHex)
+		return fmt.Errorf("discovery %s or recommendation %s not found", discoveryIDHex, recID)
 	}
 	return nil
 }
