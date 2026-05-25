@@ -260,6 +260,13 @@ export interface Project {
   schema_index_status?: string;
   schema_index_error?: string;
   schema_index_updated_at?: string;
+  // Per-project toggle for the LLM-native verifier + refuter pipeline.
+  // Undefined → use deployment default (true). False → orchestrator
+  // skips Phase 4.5/5.5 and stamps every doc with
+  // combined: "validation_disabled". The validation panel reads the
+  // *current* value of this field (not a snapshot from discovery time)
+  // when deciding whether to show "Run validation" or "Disabled".
+  validation_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }

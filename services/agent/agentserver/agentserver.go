@@ -816,6 +816,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		IncludeExplorationLog: includeLog,
 		TestMode:              testMode,
 		SelectedAreas:         selectedAreas,
+		ValidationEnabled:     project.EffectiveValidationEnabled(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{

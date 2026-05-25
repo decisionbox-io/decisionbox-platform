@@ -356,6 +356,15 @@ type DiscoveryOptions struct {
 	IncludeExplorationLog bool
 	TestMode              bool
 	SelectedAreas         []string // if set, only run these analysis areas (partial run)
+
+	// ValidationEnabled is the resolved per-project toggle for the
+	// LLM-native verifier + refuter pipeline. The caller resolves
+	// project.EffectiveValidationEnabled() into a bool. When false the
+	// orchestrator skips constructing the verifier agent for this run —
+	// validationPhase falls through to the nil-agent branch, stamping
+	// every insight + recommendation with combined=validation_disabled
+	// (and backfilling the legacy Status field for old consumers).
+	ValidationEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -401,8 +410,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// Initialize the LLM-native validation agent (plan v5).
 	// Construction requires aiClient; an absent client → no agent →
-	// every doc gets Combined=validation_disabled.
-	if o.aiClient != nil {
+	// every doc gets Combined=validation_disabled. We ALSO skip
+	// construction when the project's ValidationEnabled toggle is off
+	// — same end state, no LLM cost burned. The nil-agent branch in
+	// validationPhase.validateInsights / validateRecommendations stamps
+	// every doc with combined=validation_disabled + backfills the
+	// legacy Status field.
+	if o.aiClient != nil && opts.ValidationEnabled {
 		o.validationCfg, o.validationCaps = verifier.LoadConfigFromEnv()
 		va, vErr := verifier.NewAgent(o.aiClient, o.validationCfg)
 		if vErr != nil {

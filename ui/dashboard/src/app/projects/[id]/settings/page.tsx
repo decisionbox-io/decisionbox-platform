@@ -77,6 +77,11 @@ export default function ProjectSettingsPage() {
   // Advanced — local-only preference, not on the project document.
   const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
 
+  // Advanced — Validation toggle (lives on the project document).
+  // Defaults to true for legacy projects (validation_enabled === undefined).
+  const [validationEnabled, setValidationEnabled] = useState(true);
+  const [savingValidation, setSavingValidation] = useState(false);
+
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab.
   const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'schedule', 'profile', 'advanced'];
@@ -107,6 +112,7 @@ export default function ProjectSettingsPage() {
         setName(proj.name);
         setDescription(proj.description || '');
         setLanguage(proj.language || 'English');
+        setValidationEnabled(proj.validation_enabled !== false);
         setScheduleEnabled(proj.schedule?.enabled || false);
         setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
         setMaxSteps(proj.schedule?.max_steps || 100);
@@ -175,6 +181,29 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingGeneral(false);
+    }
+  };
+
+  // Save the validation toggle. Optimistic update + rollback on failure
+  // so the switch never lies about persisted state.
+  const saveValidationEnabled = async (next: boolean) => {
+    const prev = validationEnabled;
+    setValidationEnabled(next);
+    setSavingValidation(true);
+    try {
+      const saved = await api.updateProject(id, { validation_enabled: next });
+      setProject(saved);
+      setValidationEnabled(saved.validation_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Validation enabled' : 'Validation disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setValidationEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingValidation(false);
     }
   };
 
@@ -339,6 +368,15 @@ export default function ProjectSettingsPage() {
         <Tabs.Panel value="advanced">
           <SettingsSection>
             <Stack gap="sm">
+              <Text size="sm" fw={500}>Validation</Text>
+              <Switch
+                label="Run validation on insights and recommendations"
+                description="When on, every discovery runs the verifier + refuter pair against each insight and recommendation, surfacing per-claim evidence in the dashboard. When off, future discoveries skip validation and stamp each item as 'Disabled' — individual items can still be validated manually from their detail pages."
+                checked={validationEnabled}
+                disabled={savingValidation}
+                onChange={(e) => saveValidationEnabled(e.currentTarget.checked)}
+              />
+              <Divider my="xs" />
               <Text size="sm" fw={500}>Debugging</Text>
               <Switch
                 label="Show debug logs during discovery and indexing"

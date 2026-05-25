@@ -40,10 +40,16 @@ type validationPhase struct {
 func (p *validationPhase) validateInsights(ctx context.Context, insights []models.Insight, stepByID map[int]*models.ExplorationStep, areaID string, runValidated int) ([]models.ValidationResult, int) {
 	results := make([]models.ValidationResult, 0, len(insights))
 	if p.agent == nil {
+		// Validation is disabled (project setting off, or no aiClient
+		// wired). Stamp every insight with combined=validation_disabled
+		// AND backfill the legacy Status field so consumers reading the
+		// pre-plan shape still see the verdict (Codex prod-r1 MEDIUM).
+		now := time.Now()
 		for i := range insights {
 			insights[i].Validation = &valmodels.InsightValidation{
+				Status:      string(valmodels.StatusValidationDisabled),
 				Combined:    valmodels.StatusValidationDisabled,
-				ValidatedAt: time.Now(),
+				ValidatedAt: now,
 			}
 		}
 		return results, runValidated
@@ -125,10 +131,13 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 func (p *validationPhase) validateRecommendations(ctx context.Context, recommendations []models.Recommendation, allInsights []models.Insight, stepByID map[int]*models.ExplorationStep) []models.ValidationResult {
 	results := make([]models.ValidationResult, 0, len(recommendations))
 	if p.agent == nil {
+		// Same legacy-Status backfill as the insight nil-agent branch.
+		now := time.Now()
 		for i := range recommendations {
 			recommendations[i].Validation = &valmodels.InsightValidation{
+				Status:      string(valmodels.StatusValidationDisabled),
 				Combined:    valmodels.StatusValidationDisabled,
-				ValidatedAt: time.Now(),
+				ValidatedAt: now,
 			}
 		}
 		return results
