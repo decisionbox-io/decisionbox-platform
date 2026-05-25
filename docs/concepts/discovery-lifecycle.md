@@ -35,7 +35,7 @@ Initializes secret provider (reads LLM API key, warehouse credentials)
   ↓
 Initializes warehouse provider (BigQuery/Redshift with credentials)
   ↓
-Applies warehouse middleware (warehouse.ApplyMiddleware — e.g., governance)
+Applies warehouse middleware (warehouse.ApplyMiddleware)
   ↓
 Initializes LLM provider (Claude/OpenAI/etc. with API key from secrets)
   ↓
@@ -222,7 +222,7 @@ See [Insight validation](../architecture/insight-validation.md) for the architec
 
 Only insights with `Combined ∈ {supported, confirmed}` are fed to the recommendations prompt — `partial`, `rejected`, `unverifiable`, and `skipped_budget_cap` insights are filtered out at this gate.
 
-**Fail-open exception**: insights with `Combined == "validation_disabled"` (and pre-plan docs whose `Validation` field is missing entirely) **are** treated as eligible. The rationale is permissive: when validation didn't run at all (no LLM client, no schema provider), it would be misleading to penalise insights for the agent's absence — those insights should flow through unchanged. Operators who want strict gating should ensure validation is configured. When the eligible set is empty the recommendation phase is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
+**Fail-open exception**: insights with `Combined == "validation_disabled"` (and legacy docs whose `Validation` field is missing entirely) **are** treated as eligible. The rationale is permissive: when validation didn't run at all (no LLM client, no schema provider), it would be misleading to penalise insights for the agent's absence — those insights should flow through unchanged. Operators who want strict gating should ensure validation is configured. When the eligible set is empty the recommendation phase is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
 
 After generation, `validateRelatedInsightIDs` drops any recommendation whose `related_insight_ids` list is empty or references an insight not in the eligible set. The dropped recommendation is logged with the bad IDs so operators can trace the cause.
 

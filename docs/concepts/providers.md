@@ -300,7 +300,7 @@ apiserver.RegisterGlobalMiddleware(func(next http.Handler) http.Handler {
 
 The API server applies all registered middleware via `apiserver.ApplyGlobalMiddlewares(handler)`.
 
-Use cases: request audit logging, custom authentication, route interception.
+Use cases: request logging, custom authentication, route interception.
 
 ### Project Context
 

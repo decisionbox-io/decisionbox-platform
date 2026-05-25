@@ -725,7 +725,7 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets
 ## Bookmark Lists
 
 Named collections of insights and recommendations.
-Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` in community (NoAuth) mode, the OIDC `sub` claim in enterprise mode.
+Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` under the default no-auth setup.
 
 ### POST /api/v1/projects/{id}/lists
 
