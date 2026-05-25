@@ -61,6 +61,9 @@ The LLM-native verifier + refuter run in Phase 4.5 (insights) and Phase 5.5 (rec
 | `VALIDATION_BUNDLE_CELL_CHAR_CAP` | `200` | Per-cell character cap on row values in the rendered bundle. Strings over the cap are truncated with an ellipsis. |
 | `VALIDATION_REC_STEPS_TOKEN_BUDGET` | `12000` | Token budget for the union of source steps a recommendation bundle includes. Over-budget steps are omitted and `source_steps_truncated: true` is surfaced in the prompt. |
 | `VALIDATION_ESTIMATE_TOKEN_RATIO` | `3.5` | Characters-to-token ratio used for the in-loop prompt-size estimate. Lower → more conservative budgeting. |
+| `VALIDATION_MAX_READ_STEP_ROWS` | `200` | Per-call cap on the row count the `read_step_rows` tool returns. The agent may still ask for more; we silently clamp and the result carries `truncated: true` so the agent knows further rows are available. |
+| `VALIDATION_NUMERIC_TOLERANCE` | `0.20` | Relative tolerance (±20% by default) for comparing a claim's quantitative figure against row evidence. Prevents rounding-noise rejections — e.g. a "27% spike" claim with evidence of 26.5% stays `supported`. Only applies to magnitude/figure components; ranking and superlative claims are exact-match. |
+| `VALIDATION_MIN_SAMPLE_SIZE` | `30` | Minimum row population the refuter must observe before using a row as counter-evidence for a market-wide superlative claim. Below this, a contradicting outlier is dismissed (apples-to-apples — small-sample contradictions don't disprove the headline). |
 
 ### Vector Search (Qdrant)
 
