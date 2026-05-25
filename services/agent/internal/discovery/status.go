@@ -253,12 +253,23 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 // RunStep row, so the live UI carries its per-step token usage alongside
 // exploration and analysis steps. When errStr is non-empty the row is
 // written with Type="error" so the dashboard renders the failure.
-func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendationCount int, errStr string, inputTokens, outputTokens int) {
+//
+// droppedCount is the number of recommendations the orchestrator parsed
+// from the LLM response but discarded because their related_insight_ids
+// could not be resolved to an eligible insight. When non-zero, it is
+// appended to the message so users see "Generated N recommendations
+// (M dropped due to invalid related_insight_ids)" — without that hint
+// a discovery where the model emits slug-style ids instead of UUIDs
+// silently shows fewer recs than expected.
+func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendationCount, droppedCount int, errStr string, inputTokens, outputTokens int) {
 	if !s.enabled() {
 		return
 	}
 
 	msg := fmt.Sprintf("Generated %d recommendations", recommendationCount)
+	if droppedCount > 0 {
+		msg = fmt.Sprintf("%s (%d dropped due to invalid related_insight_ids)", msg, droppedCount)
+	}
 	stepType := "recommendation"
 	if errStr != "" {
 		msg = fmt.Sprintf("Recommendation generation failed: %s", errStr)

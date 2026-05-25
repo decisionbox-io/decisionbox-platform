@@ -271,6 +271,28 @@ language the recommendation is being written in.
    ` + "`source_steps`" + `. ` + "`related_insight_ids`" + ` must point at the insights the
    numbers actually come from.
 
+R. RELATED_INSIGHT_IDS MUST BE VERBATIM UUIDs FROM THE INPUT
+   Each entry in ` + "`related_insight_ids`" + ` MUST be an exact, character-
+   for-character copy of the ` + "`id`" + ` field of an insight provided as
+   input above. The ` + "`id`" + ` is a 36-character UUID with four hyphens,
+   in the shape ` + "`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`" + ` (lowercase
+   hex). Examples of acceptable values:
+     "6e9261f5-c4ec-404b-bdf0-760a4644f384"
+     "02665b9e-468f-41eb-b50e-28702b95e999"
+   You MUST NOT invent identifiers, abbreviate them, normalize them
+   to lowercase if the input was already lowercase, drop hyphens, or
+   substitute a category/severity/theme slug. The following formats
+   are FORBIDDEN even when they look descriptive:
+     "ecommerce-conversion-funnel:critical:inconsistent-product-category"
+     "churn-1"
+     "insight-id-1"
+     "insight-abc"
+   If you cannot quote a real UUID from the inputs above for a given
+   recommendation, OMIT that recommendation rather than guessing an
+   id. A recommendation whose ` + "`related_insight_ids`" + ` cannot be
+   matched to an actual input insight will be discarded server-side
+   before it reaches the user.
+
 NON-DRAMATIC LANGUAGE (recommendation prose)
    Recommendation ` + "`title`" + `, ` + "`description`" + `, and ` + "`actions`" + ` are subject to
    the same non-dramatic-language rule as insight prose: describe

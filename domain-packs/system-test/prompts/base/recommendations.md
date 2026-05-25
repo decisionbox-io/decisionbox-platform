@@ -38,14 +38,14 @@ Respond with ONLY valid JSON:
       "success_metrics": [
         "How to verify this is resolved or confirmed"
       ],
-      "related_insight_ids": ["insight-id-1"],
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384"],
       "confidence": 0.95
     }
   ]
 }
 ```
 
-**IMPORTANT:** Each action item MUST include `related_insight_ids` — an array of insight `id` values from the input data that this action item addresses.
+**IMPORTANT:** Each action item MUST include `related_insight_ids` — an array of insight `id` values copied verbatim from the input. The example UUID above is illustrative ONLY; copy the actual `id` strings from the insights provided below. Each id is a 36-character UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Do NOT invent ids, do NOT use category/severity/theme slugs, do NOT shorten or rewrite the UUIDs.
 
 ## Action Item Categories
 

@@ -866,16 +866,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		recStep = &models.RecommendationStep{Status: "skipped_no_eligible_insights", RunAt: time.Now(), InsightCount: 0}
 	} else {
 		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
-		recommendations = validateRelatedInsightIDs(recommendations, recommenderInput)
+		var dropStats RecommendationDropStats
+		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
+		// Stamp the drop counters on the persisted recommendation step
+		// so the discovery_recommendation_log row carries the same
+		// telemetry the live RunStep below renders. Zero values stay
+		// omitempty so a clean run does not pollute the document.
+		recStep.RecommendationsDropped = dropStats.Total
+		recStep.RecommendationsDroppedMissingIDs = dropStats.MissingIDs
+		recStep.RecommendationsDroppedUnknownID = dropStats.UnknownOrIneligibleID
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
 	// LLM call's tokens alongside exploration/analysis steps. recStep
 	// is non-nil when the recommendation phase ran at all —
 	// generateRecommendations always returns a step (even on
-	// parse/LLM failure it stamps Error).
+	// parse/LLM failure it stamps Error). recStep.RecommendationsDropped
+	// surfaces server-side filtering (e.g. recs whose related_insight_ids
+	// were hallucinated as slugs by the LLM) so the dashboard can render
+	// a "N dropped due to invalid related_insight_ids" hint instead of
+	// silently showing fewer recs than the model emitted.
 	if recStep != nil {
-		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.Error, recStep.TokensIn, recStep.TokensOut)
+		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.RecommendationsDropped, recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
 	// Phase 5.5: Validate recommendations via the LLM-native verifier

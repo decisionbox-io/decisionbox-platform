@@ -73,3 +73,115 @@ func TestValidateRecommendations_NilAgentStampsValidationDisabledWithLegacyBackf
 		}
 	}
 }
+
+// validateRelatedInsightIDs is the server-side defense against LLMs
+// that hallucinate slug-style ids instead of copying the input UUIDs
+// (see issue #237). These tests pin the keep/drop contract and the
+// per-reason counters that drive the per-run dropped-rec telemetry.
+func TestValidateRelatedInsightIDs_KeepsRecsWithFullyMatchingUUIDs(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+		{ID: "02665b9e-468f-41eb-b50e-28702b95e999"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", Title: "ok-single", RelatedInsightIDs: []string{"6e9261f5-c4ec-404b-bdf0-760a4644f384"}},
+		{ID: "r2", Title: "ok-multi", RelatedInsightIDs: []string{
+			"6e9261f5-c4ec-404b-bdf0-760a4644f384",
+			"02665b9e-468f-41eb-b50e-28702b95e999",
+		}},
+	}
+
+	kept, stats := validateRelatedInsightIDs(recs, insights)
+	if len(kept) != 2 {
+		t.Errorf("kept %d recs, want 2", len(kept))
+	}
+	if stats.Total != 0 || stats.MissingIDs != 0 || stats.UnknownOrIneligibleID != 0 {
+		t.Errorf("expected zero drops, got %+v", stats)
+	}
+}
+
+func TestValidateRelatedInsightIDs_DropsHallucinatedSlugFormat(t *testing.T) {
+	// Real-world failure mode from issue #237: Vertex Gemini emits
+	// category:severity:theme slugs in place of UUIDs. None match the
+	// input insight set so every such rec must be dropped, and the
+	// drop reason must be UnknownOrIneligibleID (NOT MissingIDs).
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", Title: "slug-1", RelatedInsightIDs: []string{
+			"ecommerce-conversion-funnel:critical:inconsistent-product-category",
+		}},
+		{ID: "r2", Title: "slug-2", RelatedInsightIDs: []string{
+			"product-merchandising-performance:critical:100-cart-abandonment",
+			"ecommerce-conversion-funnel:high:high-friction-in-checkout-funnel",
+		}},
+	}
+
+	kept, stats := validateRelatedInsightIDs(recs, insights)
+	if len(kept) != 0 {
+		t.Errorf("kept %d recs, want 0 (all slugs are unknown)", len(kept))
+	}
+	if stats.Total != 2 {
+		t.Errorf("stats.Total = %d, want 2", stats.Total)
+	}
+	if stats.UnknownOrIneligibleID != 2 {
+		t.Errorf("stats.UnknownOrIneligibleID = %d, want 2", stats.UnknownOrIneligibleID)
+	}
+	if stats.MissingIDs != 0 {
+		t.Errorf("stats.MissingIDs = %d, want 0 (rec cited ids, they were just bogus)", stats.MissingIDs)
+	}
+}
+
+func TestValidateRelatedInsightIDs_DropsEmptyRelatedIDsAsMissing(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", Title: "no-ids", RelatedInsightIDs: nil},
+		{ID: "r2", Title: "empty-ids", RelatedInsightIDs: []string{}},
+		{ID: "r3", Title: "ok", RelatedInsightIDs: []string{"6e9261f5-c4ec-404b-bdf0-760a4644f384"}},
+	}
+
+	kept, stats := validateRelatedInsightIDs(recs, insights)
+	if len(kept) != 1 || kept[0].ID != "r3" {
+		t.Errorf("kept = %+v, want only r3", kept)
+	}
+	if stats.Total != 2 || stats.MissingIDs != 2 || stats.UnknownOrIneligibleID != 0 {
+		t.Errorf("stats = %+v, want Total=2 MissingIDs=2 UnknownID=0", stats)
+	}
+}
+
+func TestValidateRelatedInsightIDs_PartialBadIDsDropsWholeRec(t *testing.T) {
+	// A rec that cites two ids — one valid, one slug — must be dropped
+	// entirely: keeping it while silently filtering the bad id would
+	// mask the underlying hallucination from operators.
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", Title: "mixed", RelatedInsightIDs: []string{
+			"6e9261f5-c4ec-404b-bdf0-760a4644f384",
+			"some-slug-thing",
+		}},
+	}
+
+	kept, stats := validateRelatedInsightIDs(recs, insights)
+	if len(kept) != 0 {
+		t.Errorf("kept %d recs, want 0 (any bad id drops the whole rec)", len(kept))
+	}
+	if stats.UnknownOrIneligibleID != 1 || stats.Total != 1 {
+		t.Errorf("stats = %+v, want UnknownID=1 Total=1", stats)
+	}
+}
+
+func TestValidateRelatedInsightIDs_EmptyInputsReturnEmptyAndZeroStats(t *testing.T) {
+	// Defensive: empty inputs must not panic, and stats must be zero.
+	kept, stats := validateRelatedInsightIDs(nil, nil)
+	if len(kept) != 0 {
+		t.Errorf("kept = %d, want 0", len(kept))
+	}
+	if stats.Total != 0 || stats.MissingIDs != 0 || stats.UnknownOrIneligibleID != 0 {
+		t.Errorf("stats on empty input = %+v, want zero", stats)
+	}
+}

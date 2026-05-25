@@ -237,25 +237,49 @@ func filterEligibleInsights(all []models.Insight) []models.Insight {
 	return out
 }
 
+// RecommendationDropStats counts the recommendations dropped by
+// validateRelatedInsightIDs, broken down by reason. The orchestrator
+// stamps this onto the per-run RecommendationStep so the dashboard /
+// API can surface how many recs were silently discarded and which
+// failure mode dominated — important for measuring LLM regression
+// rates (e.g. some providers emit category:severity:theme slugs
+// instead of UUIDs, which all fall into UnknownOrIneligibleID).
+//
+// MissingIDs counts recs whose related_insight_ids array was empty
+// or absent. UnknownOrIneligibleID counts recs whose array cited at
+// least one id not present in the eligible insight set (after the
+// {supported, confirmed} filter). The two reasons are mutually
+// exclusive per recommendation; Total equals their sum.
+type RecommendationDropStats struct {
+	Total                 int
+	MissingIDs            int
+	UnknownOrIneligibleID int
+}
+
 // validateRelatedInsightIDs drops recommendations whose
 // related_insight_ids reference unknown / ineligible insights, or
 // whose list is empty (the discipline rule requires every rec to
-// cite at least one insight). Returns the kept recommendations and
-// logs a warning per dropped one.
-func validateRelatedInsightIDs(recs []models.Recommendation, eligible []models.Insight) []models.Recommendation {
+// cite at least one insight). Returns the kept recommendations and a
+// RecommendationDropStats summarizing how many were dropped and why.
+// A warning is logged per dropped recommendation so the agent log
+// retains the offending ids for post-mortem analysis.
+func validateRelatedInsightIDs(recs []models.Recommendation, eligible []models.Insight) ([]models.Recommendation, RecommendationDropStats) {
 	eligibleSet := make(map[string]struct{}, len(eligible))
 	for _, ins := range eligible {
 		eligibleSet[ins.ID] = struct{}{}
 	}
+	stats := RecommendationDropStats{}
 	out := make([]models.Recommendation, 0, len(recs))
-	for i := range recs {
-		ids := recs[i].RelatedInsightIDs
+	for _, rec := range recs {
+		ids := rec.RelatedInsightIDs
 		if len(ids) == 0 {
 			applog.WithFields(applog.Fields{
-				"recommendation_id": recs[i].ID,
-				"title":             recs[i].Title,
+				"recommendation_id": rec.ID,
+				"title":             rec.Title,
 				"reason":            "missing_related_insight_ids",
 			}).Warn("Dropping recommendation: no related insight IDs cited")
+			stats.MissingIDs++
+			stats.Total++
 			continue
 		}
 		bad := make([]string, 0)
@@ -266,16 +290,18 @@ func validateRelatedInsightIDs(recs []models.Recommendation, eligible []models.I
 		}
 		if len(bad) > 0 {
 			applog.WithFields(applog.Fields{
-				"recommendation_id": recs[i].ID,
-				"title":             recs[i].Title,
+				"recommendation_id": rec.ID,
+				"title":             rec.Title,
 				"bad_ids":           bad,
 				"reason":            "ineligible_or_unknown_insight_id",
 			}).Warn("Dropping recommendation: cites insights that are not eligible")
+			stats.UnknownOrIneligibleID++
+			stats.Total++
 			continue
 		}
-		out = append(out, recs[i])
+		out = append(out, rec)
 	}
-	return out
+	return out, stats
 }
 
 // buildStepIndex turns the exploration step slice into a map keyed by
