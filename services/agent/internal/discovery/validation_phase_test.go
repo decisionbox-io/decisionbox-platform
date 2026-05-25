@@ -185,3 +185,67 @@ func TestValidateRelatedInsightIDs_EmptyInputsReturnEmptyAndZeroStats(t *testing
 		t.Errorf("stats on empty input = %+v, want zero", stats)
 	}
 }
+
+func TestApplyRecommendationDropStats_SyncsStructuredRecsAndCounters(t *testing.T) {
+	// The orchestrator's persistence path writes recStep verbatim into
+	// discovery_recommendation_log. generateRecommendations seeds
+	// recStep.Recommendations with the unfiltered LLM output BEFORE
+	// validateRelatedInsightIDs runs; without this helper the persisted
+	// log would carry the bogus rows the drop counters claim were
+	// discarded. Pin both halves of the reconcile: the structured slice
+	// is replaced AND the three counters are stamped.
+	unfiltered := []models.Recommendation{
+		{ID: "r1", Title: "kept"},
+		{ID: "r2", Title: "dropped"},
+	}
+	kept := []models.Recommendation{unfiltered[0]}
+	stats := RecommendationDropStats{
+		Total:                 1,
+		MissingIDs:            0,
+		UnknownOrIneligibleID: 1,
+	}
+	step := &models.RecommendationStep{
+		Recommendations: unfiltered,
+		Response:        "raw LLM output preserved for diagnosis",
+	}
+
+	applyRecommendationDropStats(step, kept, stats)
+
+	if len(step.Recommendations) != 1 || step.Recommendations[0].ID != "r1" {
+		t.Errorf("Recommendations not synced to kept slice: %+v", step.Recommendations)
+	}
+	if step.RecommendationsDropped != 1 {
+		t.Errorf("RecommendationsDropped = %d, want 1", step.RecommendationsDropped)
+	}
+	if step.RecommendationsDroppedUnknownID != 1 {
+		t.Errorf("RecommendationsDroppedUnknownID = %d, want 1", step.RecommendationsDroppedUnknownID)
+	}
+	if step.RecommendationsDroppedMissingIDs != 0 {
+		t.Errorf("RecommendationsDroppedMissingIDs = %d, want 0", step.RecommendationsDroppedMissingIDs)
+	}
+	if step.Response == "" {
+		t.Errorf("Response was clobbered; raw LLM text must survive for diagnostics")
+	}
+}
+
+func TestApplyRecommendationDropStats_NilStepIsNoOp(t *testing.T) {
+	// Defensive: helper must tolerate a nil step rather than panicking,
+	// so the orchestrator does not need a nil-guard at the call site.
+	applyRecommendationDropStats(nil, nil, RecommendationDropStats{Total: 5})
+}
+
+func TestApplyRecommendationDropStats_CleanRunZerosCountersAndKeepsSlice(t *testing.T) {
+	// On the happy path the helper still runs, and must NOT pollute the
+	// step with non-zero counters or strip the kept recs.
+	kept := []models.Recommendation{{ID: "r1"}, {ID: "r2"}}
+	step := &models.RecommendationStep{Recommendations: kept}
+
+	applyRecommendationDropStats(step, kept, RecommendationDropStats{})
+
+	if len(step.Recommendations) != 2 {
+		t.Errorf("clean run lost recs: %+v", step.Recommendations)
+	}
+	if step.RecommendationsDropped != 0 || step.RecommendationsDroppedMissingIDs != 0 || step.RecommendationsDroppedUnknownID != 0 {
+		t.Errorf("clean run set non-zero counter: %+v", step)
+	}
+}

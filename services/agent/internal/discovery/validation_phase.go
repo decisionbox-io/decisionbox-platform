@@ -304,6 +304,31 @@ func validateRelatedInsightIDs(recs []models.Recommendation, eligible []models.I
 	return out, stats
 }
 
+// applyRecommendationDropStats reconciles a RecommendationStep after
+// validateRelatedInsightIDs has dropped recommendations:
+//
+//  1. stamps the three per-reason counters so the persisted
+//     discovery_recommendation_log row + the live RunStep message both
+//     surface how many recs were discarded; and
+//  2. syncs RecommendationStep.Recommendations to the kept slice so
+//     the persisted structured rec list stays consistent with the
+//     counters — without this sync, the log would still contain the
+//     unfiltered LLM output (generateRecommendations sets it before
+//     the validation gate runs) and operators querying the new
+//     telemetry would see the bogus rows the drop counters claim were
+//     discarded. The raw LLM text remains available on
+//     RecommendationStep.Response for diagnosing why an id was
+//     hallucinated in the first place.
+func applyRecommendationDropStats(step *models.RecommendationStep, kept []models.Recommendation, stats RecommendationDropStats) {
+	if step == nil {
+		return
+	}
+	step.Recommendations = kept
+	step.RecommendationsDropped = stats.Total
+	step.RecommendationsDroppedMissingIDs = stats.MissingIDs
+	step.RecommendationsDroppedUnknownID = stats.UnknownOrIneligibleID
+}
+
 // buildStepIndex turns the exploration step slice into a map keyed by
 // step number. The verifier indexes by step number internally; this
 // function lets the orchestrator pass either form depending on the

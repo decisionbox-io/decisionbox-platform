@@ -868,13 +868,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
 		var dropStats RecommendationDropStats
 		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
-		// Stamp the drop counters on the persisted recommendation step
-		// so the discovery_recommendation_log row carries the same
-		// telemetry the live RunStep below renders. Zero values stay
-		// omitempty so a clean run does not pollute the document.
-		recStep.RecommendationsDropped = dropStats.Total
-		recStep.RecommendationsDroppedMissingIDs = dropStats.MissingIDs
-		recStep.RecommendationsDroppedUnknownID = dropStats.UnknownOrIneligibleID
+		applyRecommendationDropStats(recStep, recommendations, dropStats)
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
