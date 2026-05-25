@@ -33,7 +33,7 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MAX_RETRIES` | `3` | Number of retries on LLM API errors (rate limits, timeouts). Set to `0` for no retries. |
-| `LLM_TIMEOUT` | *(provider-specific)* | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by **both** the agent process (discovery) and the API process (`/ask`). Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. When unset, providers use their hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). |
+| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by the agent at startup and threaded through to every provider as `cfg["timeout_seconds"]`. Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall back to the `300s` default. The API process reads the same env var but with no default — when unset, each provider keeps its own hard-coded fallback (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry); see the API Configuration section below. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
 ### Discovery Run Budget

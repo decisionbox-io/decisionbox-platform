@@ -29,10 +29,10 @@ curl http://localhost:8080/health/ready
 ```
 
 ```json
-{"status": "ok", "checks": {"mongodb": "ok"}}
+{"status": "ok", "services": {"mongodb": {"status": "ok"}}}
 ```
 
-Returns `503` if MongoDB is unreachable.
+Returns `503` (with `"status": "degraded"` and per-service errors under `services`) if a dependency is unreachable.
 
 ---
 
@@ -229,12 +229,15 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "name": "Puzzle Quest Analytics",
     "domain": "gaming",
     "category": "match3",
-    "created_at": "2026-03-14T10:00:00Z"
+    "status": "active",
+    "warehouse": { "type": "bigquery", "config": { /* ... */ } },
+    "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" },
+    "schedule":  { "enabled": false, "cron_expr": "0 2 * * *", "max_steps": 100 }
   }
 }
 ```
 
-Domain pack prompts are automatically seeded into the project on creation.
+The full saved project is echoed back in `data`. Domain pack prompts are automatically seeded into the project on creation.
 
 ### GET /api/v1/projects
 
