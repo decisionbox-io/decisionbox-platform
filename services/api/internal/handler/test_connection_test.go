@@ -26,6 +26,7 @@ type runnerStub struct {
 func (s *runnerStub) Run(_ context.Context, _ runner.RunOptions) error                    { return nil }
 func (s *runnerStub) Cancel(_ context.Context, _ string) error                            { return nil }
 func (s *runnerStub) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error { return nil }
+func (s *runnerStub) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error  { return nil }
 func (s *runnerStub) RunSync(_ context.Context, opts runner.RunSyncOptions) (*runner.RunSyncResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

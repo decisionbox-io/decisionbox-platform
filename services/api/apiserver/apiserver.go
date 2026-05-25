@@ -33,6 +33,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/schemaindex"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/validationjobs"
 
 	// Secret provider registrations
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
@@ -216,7 +217,18 @@ func Run() {
 	// set), and /reindex returns a nil dropper so the handler falls back
 	// on the worker's own pre-run drop.
 	var schemaIndexCancel context.CancelFunc
+	var validationWorkerCancel context.CancelFunc
 	var schemaDropper *schemaindex.QdrantDropper
+	// Build the runner once up front — both the schema-index worker
+	// (Qdrant-gated) and the validation-jobs worker (always-on)
+	// share it.
+	runnerCfg := runner.LoadConfig()
+	sharedRunner, err := runner.New(runnerCfg)
+	if err != nil {
+		apilog.WithError(err).Error("runner: failed to create")
+		os.Exit(1)
+	}
+
 	var indexWorker *schemaindex.Worker
 	if cfg.Qdrant.URL != "" {
 		host, port := parseQdrantHostPort(cfg.Qdrant.URL)
@@ -228,12 +240,7 @@ func Run() {
 		schemaDropper = dropper
 		defer func() { _ = dropper.Close() }()
 
-		runnerCfg := runner.LoadConfig()
-		r, err := runner.New(runnerCfg)
-		if err != nil {
-			apilog.WithError(err).Error("schemaindex: failed to create runner")
-			os.Exit(1)
-		}
+		r := sharedRunner
 		worker, err := schemaindex.New(schemaindex.WorkerConfig{
 			Projects: database.NewProjectRepository(db),
 			Progress: database.NewSchemaIndexProgressRepository(db),
@@ -273,10 +280,34 @@ func Run() {
 		apilog.Warn("Qdrant not configured — schema-index worker disabled (discovery will be blocked until Qdrant is set)")
 	}
 
+	// Validation-jobs worker: processes manual "Run validation"
+	// requests by spawning agent --mode=validate-doc per claim. Lives
+	// independent of Qdrant — the manual path uses the catalog
+	// already attached to cited source steps when lookup_schema isn't
+	// wired (same fall-back the orchestrator's Phase 4.5/5.5 has).
+	// Hostname-based worker_id so a stuck job's owner is identifiable
+	// in multi-replica deployments. (Single-replica OSS gets
+	// "validation-worker-local".)
+	validationJobsRepo := database.NewValidationJobRepository(db)
+	validationWorker, err := validationjobs.New(validationjobs.WorkerConfig{
+		Jobs:              validationJobsRepo,
+		Runner:            sharedRunner,
+		WorkerID:          workerIDFromHost(),
+		ProjectIDProvider: validationjobs.DefaultProjectIDProvider(validationJobsRepo),
+	})
+	if err != nil {
+		apilog.WithError(err).Error("validationjobs: failed to create worker")
+		os.Exit(1)
+	}
+	var validationWorkerCtx context.Context
+	validationWorkerCtx, validationWorkerCancel = context.WithCancel(ctx)
+	go validationWorker.Start(validationWorkerCtx)
+
 	// HTTP server
 	handler := server.NewWithRouteGroups(
 		db, healthHandler, secretProvider, authProvider,
 		droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker),
+		validationWorker,
 		RegisteredRouteGroups(),
 		qdrantProvider,
 	)
@@ -317,6 +348,9 @@ func Run() {
 	// final status transition.
 	if schemaIndexCancel != nil {
 		schemaIndexCancel()
+	}
+	if validationWorkerCancel != nil {
+		validationWorkerCancel()
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -405,4 +439,15 @@ func deploymentMethod() string {
 		return "docker"
 	}
 	return "binary"
+}
+
+// workerIDFromHost returns a short identifier for the API replica
+// that claimed a validation job — surfaced in
+// ValidationJob.worker_id for debugging. Hostname when available,
+// "validation-worker-local" as a fallback for non-K8s deployments.
+func workerIDFromHost() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "validation-worker-local"
 }

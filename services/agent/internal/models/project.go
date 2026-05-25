@@ -57,6 +57,16 @@ type Project struct {
 	SchemaIndexError     string     `bson:"schema_index_error,omitempty" json:"schema_index_error,omitempty"`
 	SchemaIndexUpdatedAt *time.Time `bson:"schema_index_updated_at,omitempty" json:"schema_index_updated_at,omitempty"`
 
+	// ValidationEnabled is the per-project toggle for the LLM-native
+	// verifier + refuter pipeline (Phase 4.5 / 5.5 of the orchestrator).
+	// Nil pointer means "use the deployment default" — see
+	// EffectiveValidationEnabled. When false, the orchestrator skips
+	// validation and stamps every insight + recommendation with
+	// combined: "validation_disabled" (cost saver). The user can still
+	// trigger manual validation per item from the dashboard; that path
+	// reads the same field via EffectiveValidationEnabled at click time.
+	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -150,6 +160,17 @@ func (p *Project) EffectiveLanguage() string {
 		return "English"
 	}
 	return p.Language
+}
+
+// EffectiveValidationEnabled resolves the per-project validation toggle.
+// Returns true when the field is unset (default-on for legacy projects
+// that pre-date the toggle, and for any project the user has not
+// explicitly opted out of). Returns the stored value when set.
+func (p *Project) EffectiveValidationEnabled() bool {
+	if p.ValidationEnabled == nil {
+		return true
+	}
+	return *p.ValidationEnabled
 }
 
 // GeneratePackConfig holds the user's pack-generation intent for a project.

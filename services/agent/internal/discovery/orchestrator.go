@@ -24,7 +24,7 @@ import (
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 )
 
 // discoveryLogPersister is the slice of *database.DiscoveryLogRepository
@@ -140,8 +140,15 @@ type Orchestrator struct {
 	debugLogRepo     *database.DebugLogRepository
 
 	explorationEngine    *ai.ExplorationEngine
-	userCountValidator   *validation.UserCountValidator
-	insightValidator     *validation.InsightValidator
+
+	// validationAgent runs the LLM-native verifier + refuter pair on
+	// every insight and recommendation. Constructed inside
+	// RunDiscovery once the schema provider + query executor exist.
+	// Nil when aiClient is nil; the orchestrator's validation phase
+	// stamps Combined=validation_disabled on every doc in that case.
+	validationAgent *verifier.Agent
+	validationCfg   verifier.Config
+	validationCaps  verifier.RunCaps
 
 	// runStepIndex is the per-run Qdrant collection of exploration
 	// steps. Populated inline as exploration runs; queried by the
@@ -285,23 +292,9 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		opts.AIClient.SetDebugLogger(debugLogger)
 	}
 
-	// Initialize user count validator
-	filterClause := ""
-	if opts.FilterField != "" && opts.FilterValue != "" {
-		filterClause = fmt.Sprintf("WHERE %s = '%s'", opts.FilterField, opts.FilterValue)
-	}
-
-	var ucValidator *validation.UserCountValidator
-	if opts.Warehouse != nil {
-		ucValidator = validation.NewUserCountValidator(validation.UserCountValidatorOptions{
-			Warehouse:   opts.Warehouse,
-			DebugLogger: debugLogger,
-			Dataset:     opts.Warehouse.GetDataset(),
-			Filter:      filterClause,
-		})
-	}
-
-	// InsightValidator created in RunDiscovery where QueryExecutor is available
+	// Verifier agent is constructed inside RunDiscovery once the
+	// schema provider + query executor exist; the older single-pass
+	// validators have been removed.
 
 	// Status reporter for live updates. Per-step rows go to the
 	// discovery_run_steps collection via RunStepRepo (split out of the
@@ -331,7 +324,6 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
 		statusReporter:     statusReporter,
-		userCountValidator: ucValidator,
 		projectID:          opts.ProjectID,
 		domain:             opts.Domain,
 		category:           opts.Category,
@@ -364,6 +356,15 @@ type DiscoveryOptions struct {
 	IncludeExplorationLog bool
 	TestMode              bool
 	SelectedAreas         []string // if set, only run these analysis areas (partial run)
+
+	// ValidationEnabled is the resolved per-project toggle for the
+	// LLM-native verifier + refuter pipeline. The caller resolves
+	// project.EffectiveValidationEnabled() into a bool. When false the
+	// orchestrator skips constructing the verifier agent for this run —
+	// validationPhase falls through to the nil-agent branch, stamping
+	// every insight + recommendation with combined=validation_disabled
+	// (and backfilling the legacy Status field for old consumers).
+	ValidationEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -407,25 +408,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		FilterValue: o.filterValue,
 	})
 
-	// Initialize insight validator with self-healing executor
-	if o.aiClient != nil {
-		o.insightValidator = validation.NewInsightValidator(validation.InsightValidatorOptions{
-			AIClient:  o.aiClient,
-			Warehouse: o.warehouse,
-			Executor:  &executorAdapter{executor: executor},
-			Dataset:   datasetsStr,
-			Filter:    filterClause,
-		})
-	}
-
-	// Wire the self-healing executor into the user-count validator (Layer 4).
-	// The validator's hardcoded user_id probes hallucinate on warehouses with
-	// non-`user_id` user-id columns; routing through the executor with
-	// FixOpts lets the SQL fixer substitute the real column name on retry
-	// using the same source-step grounding evidence the insight verifier
-	// uses. plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.4.
-	if o.userCountValidator != nil {
-		o.userCountValidator.SetExecutor(&executorAdapter{executor: executor})
+	// Initialize the LLM-native validation agent.
+	// Construction requires aiClient; an absent client → no agent →
+	// every doc gets Combined=validation_disabled. We ALSO skip
+	// construction when the project's ValidationEnabled toggle is off
+	// — same end state, no LLM cost burned. The nil-agent branch in
+	// validationPhase.validateInsights / validateRecommendations stamps
+	// every doc with combined=validation_disabled + backfills the
+	// legacy Status field.
+	if o.aiClient != nil && opts.ValidationEnabled {
+		o.validationCfg, o.validationCaps = verifier.LoadConfigFromEnv()
+		va, vErr := verifier.NewAgent(o.aiClient, o.validationCfg)
+		if vErr != nil {
+			return nil, fmt.Errorf("init validation agent: %w", vErr)
+		}
+		o.validationAgent = va
 	}
 
 	// Note: live SchemaDiscovery is intentionally NOT constructed here.
@@ -490,9 +487,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// full retrieved block (sample rows aren't useful when the goal is
 	// to map an error back to a table name).
 	sqlFixer.SetSchemaContext(rendered.Catalog)
-	if o.insightValidator != nil {
-		o.insightValidator.SetSchemaContext(rendered.Catalog)
-	}
 
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
 	if len(o.profile) > 0 {
@@ -566,14 +560,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, fmt.Errorf("build schema provider: %w", spErr)
 	}
 
-	// Share the SchemaProvider with the verifier so its Layer 3 tool loop
-	// can issue lookup_schema actions for tables source_steps did not cover.
-	// Without this wiring the verifier falls through to single-shot
-	// generation (Layer 1 + 2 only). Background:
-	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.3.
-	if o.insightValidator != nil {
-		o.insightValidator.SetSchemaProvider(schemaProvider)
-	}
+	// schemaProvider is captured here for use by the validationAgent
+	// executor constructed below.
+	validationSchemaProvider := schemaProvider
 
 	// Counting decorator: every successful upsert bumps the
 	// run-level analysis_step_index_upserts counter so the dashboard
@@ -631,20 +620,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// generation prompt as authoritative column-grounding evidence — without
 	// this wiring it would hallucinate column names on warehouses with
 	// non-English / abbreviated columns (customer ticket 2026-04-30, see
-	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). ValidateInsights
-	// panics if this wiring is missing, by design.
-	{
-		steps := explorationResult.Steps
-		if steps == nil {
-			steps = []models.ExplorationStep{}
-		}
-		if o.insightValidator != nil {
-			o.insightValidator.SetExplorationLog(steps)
-		}
-		if o.userCountValidator != nil {
-			o.userCountValidator.SetExplorationLog(steps)
-		}
-	}
+	// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md). The validation
+	// agent now reads explorationResult.Steps directly via the
+	// executor; the previous local rebinding here was a refactor
+	// leftover (assigned but never used after the scope closed).
 
 	// Phase 4: Analysis by area (dynamic from domain pack)
 	// Filter areas if selective run requested
@@ -673,6 +652,37 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
+
+	// Build the validation phase helper once per run. The step index
+	// is built once now and mutated as exploration proceeds (the
+	// orchestrator's explorationResult.Steps slice is the live source
+	// the executor reads at validation time).
+	stepByID := buildStepIndex(explorationResult.Steps)
+	valPhase := &validationPhase{
+		agent: o.validationAgent,
+		cfg:   o.validationCfg,
+		caps:  o.validationCaps,
+		wh: verifier.WarehouseInfo{
+			Dialect:     o.warehouse.SQLDialect(),
+			Dataset:     o.warehouse.GetDataset(),
+			FilterField: o.filterField,
+			FilterValue: o.filterValue,
+		},
+		disc: verifier.DiscoveryContext{
+			ProjectID: o.projectID,
+			RunID:     o.runID,
+			Domain:    o.domain,
+			Language:  o.language,
+		},
+		executor: &verifier.DefaultExecutor{
+			SchemaProvider:      validationSchemaProvider,
+			QueryExec:           executor,
+			StepByID:            stepByID,
+			Cfg:                 o.validationCfg.Bundle,
+			MaxReadStepRowsCall: o.validationCaps.MaxReadStepRowsCall,
+		},
+	}
+	insightsValidatedThisRun := 0
 
 	// Vector-ranked step picker for the analysis phase. The closure
 	// over runStepIndex.Search keeps the picker decoupled from the
@@ -789,23 +799,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		step.Insights = insights
 
-		// Phase 4.5: Validate insights
+		// Phase 4.5: Validate insights via the LLM-native verifier
+		// agent. Walks insights in affected_count-desc order,
+		// applies the per-run cap (insightsValidatedThisRun is threaded
+		// across areas), and stamps Validation on each insight in
+		// place. Returns one ValidationResult per insight.
 		if len(insights) > 0 {
-			var areaValidation []models.ValidationResult
-
-			// First: validate user counts against total users
-			if o.userCountValidator != nil {
-				countResults := o.userCountValidator.ValidateInsights(ctx, insights)
-				areaValidation = append(areaValidation, countResults...)
-			}
-
-			// Second: verify insights by querying the warehouse
-			if o.insightValidator != nil {
-				warehouseResults := o.insightValidator.ValidateInsights(ctx, insights)
-				areaValidation = append(areaValidation, warehouseResults...)
-			}
-
-			step.ValidationResults = areaValidation
+			var areaResults []models.ValidationResult
+			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
+			step.ValidationResults = areaResults
 		}
 
 		analysisLog = append(analysisLog, step)
@@ -846,10 +848,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Warn("Some analysis areas failed")
 	}
 
-	// Phase 5: Generate recommendations
+	// Phase 5: Generate recommendations — only insights with
+	// Combined∈{supported,confirmed} flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
-	recommendations, recStep := o.generateRecommendations(ctx, prompts.Recommendations, allInsights, baseContext, datasetsStr)
+	recommenderInput := filterEligibleInsights(allInsights)
+	applog.WithFields(applog.Fields{
+		"total_insights":     len(allInsights),
+		"eligible_insights":  len(recommenderInput),
+	}).Info("Filtered insights for recommendation generation")
+
+	var recommendations []models.Recommendation
+	var recStep *models.RecommendationStep
+	if len(recommenderInput) == 0 {
+		applog.Warn("No eligible insights for recommendation generation; skipping")
+		recommendations = []models.Recommendation{}
+		recStep = &models.RecommendationStep{Status: "skipped_no_eligible_insights", RunAt: time.Now(), InsightCount: 0}
+	} else {
+		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
+		recommendations = validateRelatedInsightIDs(recommendations, recommenderInput)
+	}
+
 	// Emit a per-call RunStep so the live UI carries the recommendation
 	// LLM call's tokens alongside exploration/analysis steps. recStep
 	// is non-nil when the recommendation phase ran at all —
@@ -859,10 +878,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
-	// Validate recommendation segment sizes
+	// Phase 5.5: Validate recommendations via the LLM-native verifier
+	// agent. Bundle's source-steps are the token-budgeted union of
+	// related insights' source_steps; the agent runs verifier +
+	// (optionally) refuter and stamps Validation on each rec in
+	// place.
 	var recValidationResults []models.ValidationResult
-	if o.userCountValidator != nil && len(recommendations) > 0 {
-		recValidationResults = o.userCountValidator.ValidateRecommendations(ctx, recommendations)
+	if len(recommendations) > 0 {
+		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID)
 	}
 
 	// Phase 6: Update project context with discovered patterns
@@ -1579,21 +1602,6 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 		})
 	}
 	return out
-}
-
-// executorAdapter adapts queryexec.QueryExecutor to validation.SelfHealingExecutor.
-// It forwards per-call FixOpts via ExecuteWithFixOpts so the validator's
-// rendered VerificationContext reaches the SQL fixer on every retry attempt.
-type executorAdapter struct {
-	executor *queryexec.QueryExecutor
-}
-
-func (a *executorAdapter) Execute(ctx context.Context, query string, purpose string, opts queryexec.FixOpts) ([]map[string]interface{}, error) {
-	result, err := a.executor.ExecuteWithFixOpts(ctx, query, purpose, opts)
-	if err != nil {
-		return nil, err
-	}
-	return result.Data, nil
 }
 
 func cleanJSONResponse(response string) string {

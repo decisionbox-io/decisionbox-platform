@@ -165,6 +165,19 @@ type SchemaIndexProgressRepo interface {
 	Delete(ctx context.Context, projectID string) error
 }
 
+// ValidationJobRepo abstracts the manual-validation queue + state
+// machine for handler unit testing. Backed by ValidationJobRepository.
+// Worker tests and integration tests bind against the concrete struct
+// (see schemaindex.Worker for the analogous pattern); only HTTP
+// handlers go through this interface so they can be mocked.
+type ValidationJobRepo interface {
+	Enqueue(ctx context.Context, job *models.ValidationJob) error
+	GetByID(ctx context.Context, id string) (*models.ValidationJob, error)
+	ListByDoc(ctx context.Context, discoveryID, docKind, docID string, limit int) ([]models.ValidationJob, error)
+	Cancel(ctx context.Context, id string) error
+	CountActiveByDoc(ctx context.Context, discoveryID, docKind, docID string) (int64, error)
+}
+
 // DomainPackRepo abstracts domain pack CRUD operations for handler unit testing.
 type DomainPackRepo interface {
 	Create(ctx context.Context, pack *models.DomainPack) error
@@ -193,4 +206,5 @@ var (
 	_ BookmarkRepo       = (*BookmarkRepository)(nil)
 	_ ReadMarkRepo       = (*ReadMarkRepository)(nil)
 	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
+	_ ValidationJobRepo       = (*ValidationJobRepository)(nil)
 )

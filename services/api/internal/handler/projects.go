@@ -472,6 +472,13 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.State = models.ProjectStateReady
 	}
 
+	// ValidationEnabled is a pointer field — nil in the request means
+	// "do not touch", non-nil means "set to this value" (including
+	// false, which is the whole point of the toggle).
+	if incoming.ValidationEnabled != nil {
+		existing.ValidationEnabled = incoming.ValidationEnabled
+	}
+
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
 		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())

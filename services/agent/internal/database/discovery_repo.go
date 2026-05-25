@@ -51,6 +51,83 @@ func (r *DiscoveryRepository) Save(ctx context.Context, result *models.Discovery
 	return nil
 }
 
+// GetByID retrieves a discovery by its ObjectID hex string. Used by
+// the validate-doc agent mode to load the target discovery + its
+// embedded insights / recommendations.
+func (r *DiscoveryRepository) GetByID(ctx context.Context, idHex string) (*models.DiscoveryResult, error) {
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid discovery id %q: %w", idHex, err)
+	}
+	var result models.DiscoveryResult
+	if err := r.collection.FindOne(ctx, bson.M{"_id": oid}).Decode(&result); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get discovery by id: %w", err)
+	}
+	return &result, nil
+}
+
+// UpdateInsightValidation writes the new Validation pointer onto the
+// matching embedded insight via positional array-filter, leaving the
+// other insights' validation untouched. The element filter scopes the
+// write so a concurrent discovery save doesn't clobber sibling docs.
+//
+// The main filter includes `insights.id` so a missing or wrong
+// insightID surfaces as MatchedCount=0 — without that predicate the
+// UpdateOne still matches the discovery doc, updates `updated_at`,
+// touches no array element, and returns nil (silent no-op on bad
+// IDs).
+func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, discoveryIDHex, insightID string, validation interface{}) error {
+	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
+	if err != nil {
+		return fmt.Errorf("invalid discovery id %q: %w", discoveryIDHex, err)
+	}
+	opts := options.Update().SetArrayFilters(options.ArrayFilters{
+		Filters: []interface{}{bson.M{"el.id": insightID}},
+	})
+	res, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": oid, "insights.id": insightID},
+		bson.M{"$set": bson.M{"insights.$[el].validation": validation, "updated_at": time.Now()}},
+		opts,
+	)
+	if err != nil {
+		return fmt.Errorf("update insight validation: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("discovery %s or insight %s not found", discoveryIDHex, insightID)
+	}
+	return nil
+}
+
+// UpdateRecommendationValidation is the recommendation twin of
+// UpdateInsightValidation. Same positional array-filter contract +
+// the same `recommendations.id` predicate on the main filter so a
+// missing recID returns an error instead of silently no-op'ing the
+// array filter while updating `updated_at`.
+func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context, discoveryIDHex, recID string, validation interface{}) error {
+	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
+	if err != nil {
+		return fmt.Errorf("invalid discovery id %q: %w", discoveryIDHex, err)
+	}
+	opts := options.Update().SetArrayFilters(options.ArrayFilters{
+		Filters: []interface{}{bson.M{"el.id": recID}},
+	})
+	res, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": oid, "recommendations.id": recID},
+		bson.M{"$set": bson.M{"recommendations.$[el].validation": validation, "updated_at": time.Now()}},
+		opts,
+	)
+	if err != nil {
+		return fmt.Errorf("update recommendation validation: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("discovery %s or recommendation %s not found", discoveryIDHex, recID)
+	}
+	return nil
+}
+
 // GetLatest retrieves the most recent discovery for a project.
 func (r *DiscoveryRepository) GetLatest(ctx context.Context, projectID string) (*models.DiscoveryResult, error) {
 	filter := bson.M{"project_id": projectID}

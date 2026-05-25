@@ -78,7 +78,7 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			Indicators:    ins.Indicators,
 			TargetSegment: ins.TargetSegment,
 			SourceSteps:   ins.SourceSteps,
-			Validation:    convertValidation(ins.Validation),
+			Validation:    ins.Validation,
 			DiscoveredAt:  ins.DiscoveredAt,
 			CreatedAt:     now,
 		})
@@ -119,6 +119,7 @@ func (o *Orchestrator) denormalizeRecommendations(result *models.DiscoveryResult
 			Actions:           rec.Actions,
 			RelatedInsightIDs: rec.RelatedInsightIDs,
 			Confidence:        rec.Confidence,
+			Validation:        rec.Validation,
 			CreatedAt:         now,
 		})
 	}
@@ -283,18 +284,3 @@ func (o *Orchestrator) checkAndMarkDuplicate(ctx context.Context, docID string, 
 	}
 }
 
-// convertValidation converts agent-side validation to shared model validation.
-func convertValidation(v *models.InsightValidation) *commonmodels.InsightValidation {
-	if v == nil {
-		return nil
-	}
-	return &commonmodels.InsightValidation{
-		Status:        v.Status,
-		VerifiedCount: v.VerifiedCount,
-		OriginalCount: v.OriginalCount,
-		Reasoning:     v.Reasoning,
-		ValidatedAt:   v.ValidatedAt,
-		InputTokens:   v.InputTokens,
-		OutputTokens:  v.OutputTokens,
-	}
-}

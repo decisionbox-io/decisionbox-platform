@@ -803,3 +803,7 @@ func (m *mockRunner) Cancel(_ context.Context, runID string) error {
 func (m *mockRunner) RunIndexSchema(_ context.Context, _ runner.IndexSchemaOptions) error {
 	return nil // discovery-trigger tests don't exercise indexing
 }
+
+func (m *mockRunner) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error {
+	return nil // discovery-trigger tests don't exercise validate-doc
+}

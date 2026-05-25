@@ -3,6 +3,8 @@ package models
 import (
 	"fmt"
 	"time"
+
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
 // StandaloneRecommendation is a denormalized recommendation document stored in the "recommendations" collection.
@@ -27,6 +29,12 @@ type StandaloneRecommendation struct {
 	Actions                []string        `bson:"actions" json:"actions"`
 	RelatedInsightIDs      []string        `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
 	Confidence             float64         `bson:"confidence" json:"confidence"`
+
+	// Validation is the verifier+refuter verdict attached after
+	// Phase 5.5. Nil on legacy docs and on docs written before this
+	// plan landed; populated by the orchestrator for every
+	// recommendation that fits within the per-run validation cap.
+	Validation *valmodels.InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 
 	// Embedding fields
 	EmbeddingText  string `bson:"embedding_text,omitempty" json:"embedding_text,omitempty"`

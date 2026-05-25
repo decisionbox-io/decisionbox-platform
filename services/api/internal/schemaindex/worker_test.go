@@ -25,6 +25,9 @@ func (f *fakeRunner) RunIndexSchema(_ context.Context, opts runner.IndexSchemaOp
 	f.calls = append(f.calls, opts)
 	return f.err
 }
+func (f *fakeRunner) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error {
+	return nil
+}
 
 // New's nil-dependency checks are purely structural — they fire before
 // any Mongo call, so unit tests can pass empty struct pointers.

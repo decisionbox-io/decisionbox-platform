@@ -107,6 +107,31 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		// here for K8s runs. Subprocess runs already inherit it from
 		// the API process's env.
 		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
+		// VALIDATION_* knobs for the LLM-native verifier+refuter
+		// pipeline. All consumed by the agent via
+		// verifier.LoadConfigFromEnv during both full-discovery
+		// validation and manual `--mode=validate-doc` runs. Without
+		// forwarding here, operators setting these on the API
+		// deployment silently get defaults inside agent Jobs.
+		{"VALIDATION_REFUTER_ENABLED", "VALIDATION_REFUTER_ENABLED"},
+		{"VALIDATION_MAX_INSIGHTS_PER_RUN", "VALIDATION_MAX_INSIGHTS_PER_RUN"},
+		{"VALIDATION_MAX_RECOMMENDATIONS_PER_RUN", "VALIDATION_MAX_RECOMMENDATIONS_PER_RUN"},
+		{"VALIDATION_VERIFIER_MAX_ROUNDS", "VALIDATION_VERIFIER_MAX_ROUNDS"},
+		{"VALIDATION_VERIFIER_TOKEN_CAP", "VALIDATION_VERIFIER_TOKEN_CAP"},
+		{"VALIDATION_VERIFIER_MAX_OUTPUT", "VALIDATION_VERIFIER_MAX_OUTPUT"},
+		{"VALIDATION_REFUTER_MAX_ROUNDS", "VALIDATION_REFUTER_MAX_ROUNDS"},
+		{"VALIDATION_REFUTER_TOKEN_CAP", "VALIDATION_REFUTER_TOKEN_CAP"},
+		{"VALIDATION_REFUTER_MAX_OUTPUT", "VALIDATION_REFUTER_MAX_OUTPUT"},
+		{"VALIDATION_BUNDLE_SAMPLE_ROWS", "VALIDATION_BUNDLE_SAMPLE_ROWS"},
+		{"VALIDATION_MAX_READ_STEP_ROWS", "VALIDATION_MAX_READ_STEP_ROWS"},
+		{"VALIDATION_NUMERIC_TOLERANCE", "VALIDATION_NUMERIC_TOLERANCE"},
+		{"VALIDATION_MIN_SAMPLE_SIZE", "VALIDATION_MIN_SAMPLE_SIZE"},
+		// Bundle truncation + recommendation-bundle token budget +
+		// pre-flight estimate ratio. Same forwarding rule as the
+		// other VALIDATION_* knobs above.
+		{"VALIDATION_BUNDLE_CELL_CHAR_CAP", "VALIDATION_BUNDLE_CELL_CHAR_CAP"},
+		{"VALIDATION_REC_STEPS_TOKEN_BUDGET", "VALIDATION_REC_STEPS_TOKEN_BUDGET"},
+		{"VALIDATION_ESTIMATE_TOKEN_RATIO", "VALIDATION_ESTIMATE_TOKEN_RATIO"},
 	} {
 		if v := getEnv(kv.envKey, ""); v != "" {
 			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
@@ -193,6 +218,27 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 
 func boolPtr(b bool) *bool    { return &b }
 func int64Ptr(i int64) *int64 { return &i }
+
+// sanitizeK8sLabelSegment trims an identifier to maxLen characters
+// AND strips any leading/trailing dashes so the result satisfies the
+// DNS-1123 label rule (lowercase alphanumeric + dashes, first and
+// last character must be alphanumeric). UUID-v4 ids have hyphens at
+// positions 8, 13, 18, and 23; truncating to 24 chars would leave
+// the last position on a hyphen, producing an invalid label.
+func sanitizeK8sLabelSegment(id string, maxLen int) string {
+	if maxLen > 0 && len(id) > maxLen {
+		id = id[:maxLen]
+	}
+	// Trim trailing dashes (the common UUID-truncation failure
+	// mode) plus any leading dashes for symmetry.
+	for len(id) > 0 && id[len(id)-1] == '-' {
+		id = id[:len(id)-1]
+	}
+	for len(id) > 0 && id[0] == '-' {
+		id = id[1:]
+	}
+	return id
+}
 
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
@@ -378,6 +424,119 @@ func (r *KubernetesRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaO
 				errMsg := r.getPodErrorMessage(ctx, jobName)
 				if errMsg == "" {
 					errMsg = "index-schema job failed"
+				}
+				return fmt.Errorf("%s", errMsg)
+			}
+		}
+	}
+}
+
+// RunValidateDoc runs the agent in --mode=validate-doc as a K8s Job
+// for one insight / recommendation. Blocks until the Job completes or
+// ctx is cancelled.
+//
+// ON ctx.Done() the implementation issues
+// Jobs.Delete(name, propagation=Foreground) BEFORE returning so the
+// validation work actually stops running on the cluster. Silently
+// returning ctx.Err() (as RunIndexSchema historically did) would
+// leave the Job running uncancellable on the cluster every time the
+// worker is killed or the user cancels — `TestKubernetesRunner_
+// RunValidateDoc_DeletesJobOnContextCancel` pins the fixed behaviour.
+func (r *KubernetesRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error {
+	if opts.JobID == "" {
+		return fmt.Errorf("validate-doc: job_id is required")
+	}
+	// K8s DNS-1123 labels: lowercase alphanumeric + dashes, but the
+	// last character MUST NOT be a dash. The enqueue handler stamps
+	// ValidationJob.ID as a UUID-v4 which has hyphens at positions
+	// 8, 13, 18, 23. A blind 24-char truncation lands the final
+	// character on position 23's hyphen, producing
+	// `validate-xxxxxxxx-xxxx-xxxx-xxxx-` — rejected by the
+	// apiserver and every manual K8s validation would fail at
+	// creation before the agent could run. Trim trailing dashes
+	// after truncation.
+	safeJobID := sanitizeK8sLabelSegment(opts.JobID, 24)
+	jobName := fmt.Sprintf("validate-%s", safeJobID)
+	args := []string{"--mode", "validate-doc", "--job-id", opts.JobID}
+	// 30 minutes is generous — a single doc takes ~60s on the
+	// production benchmark; the headroom covers cold-start +
+	// outliers.
+	deadline := int64(30 * 60)
+
+	job := r.buildJob(jobSpec{
+		name: jobName,
+		labels: map[string]string{
+			"app":          "decisionbox-agent",
+			"type":         "validate-doc",
+			"project-id":   opts.ProjectID,
+			"discovery-id": opts.DiscoveryID,
+			"doc-kind":     opts.DocKind,
+			"job-id":       opts.JobID,
+		},
+		podLabels: map[string]string{
+			"app":  "decisionbox-agent",
+			"type": "validate-doc",
+		},
+		args:     args,
+		ttl:      300,
+		deadline: &deadline,
+		cpuReq:   r.config.CPURequest, cpuLim: r.config.CPULimit,
+		memReq: r.config.MemoryRequest, memLim: r.config.MemoryLimit,
+	})
+
+	if _, err := r.client.BatchV1().Jobs(r.config.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create validate-doc Job: %w", err)
+	}
+	apilog.WithFields(apilog.Fields{
+		"job": jobName, "job_id": opts.JobID, "project_id": opts.ProjectID,
+	}).Info("Agent validate-doc K8s Job created")
+
+	// deleteJob runs the foreground-propagation delete. Used both on
+	// ctx-cancel (the documented bug fix) and on success paths that
+	// want to short-circuit the TTL.
+	deleteJob := func() {
+		// Detached ctx so the delete actually runs even when the
+		// caller's ctx is already cancelled.
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		propagation := metav1.DeletePropagationForeground
+		if err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(delCtx, jobName, metav1.DeleteOptions{
+			PropagationPolicy: &propagation,
+		}); err != nil {
+			apilog.WithFields(apilog.Fields{
+				"job":    jobName,
+				"job_id": opts.JobID,
+				"error":  err.Error(),
+			}).Warn("Failed to delete validate-doc Job on cancel")
+		} else {
+			apilog.WithFields(apilog.Fields{
+				"job": jobName, "job_id": opts.JobID,
+			}).Info("validate-doc K8s Job deleted on cancel")
+		}
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			deleteJob()
+			return ctx.Err()
+		case <-ticker.C:
+			j, err := r.client.BatchV1().Jobs(r.config.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+			if err != nil {
+				continue
+			}
+			if j.Status.Succeeded > 0 {
+				apilog.WithFields(apilog.Fields{
+					"job": jobName, "job_id": opts.JobID,
+				}).Info("Agent validate-doc K8s Job completed")
+				return nil
+			}
+			if j.Status.Failed > 0 {
+				errMsg := r.getPodErrorMessage(ctx, jobName)
+				if errMsg == "" {
+					errMsg = "validate-doc job failed"
 				}
 				return fmt.Errorf("%s", errMsg)
 			}

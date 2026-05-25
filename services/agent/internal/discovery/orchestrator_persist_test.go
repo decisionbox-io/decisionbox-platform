@@ -218,20 +218,20 @@ func TestFinalizeStatus_HappyPathCompletes(t *testing.T) {
 }
 
 func TestFinalizeStatus_ComputeCancelledCallsFailNotComplete(t *testing.T) {
-	// Codex r6 [P1] regression guard. If DISCOVERY_MAX_DURATION
-	// expired mid-compute (or any other parent ctx cancellation
-	// surfaced as a recorded error), finalizeStatus MUST NOT mark
-	// the run as completed — that would trigger the
-	// EventDiscoveryCompleted success notification on a run that
-	// actually failed mid-way. The partial result has been saved
-	// for the dashboard, but the terminal status is Fail and the
-	// compute-phase error is wrapped + returned so the caller
-	// routes through the failed-notification path.
+	// If DISCOVERY_MAX_DURATION expired mid-compute (or any other
+	// parent ctx cancellation surfaced as a recorded error),
+	// finalizeStatus MUST NOT mark the run as completed — that
+	// would trigger the EventDiscoveryCompleted success
+	// notification on a run that actually failed mid-way. The
+	// partial result has been saved for the dashboard, but the
+	// terminal status is Fail and the compute-phase error is
+	// wrapped + returned so the caller routes through the
+	// failed-notification path.
 	//
-	// Codex r7 [P2] additional guard: Fail must receive the
-	// result.ID so the failed run carries the discovery_id
-	// back-reference. Without that, plugin-hooks Hook 5 / the
-	// discovery-log APIs can't navigate to the partial result.
+	// Additional guard: Fail must receive the result.ID so the
+	// failed run carries the discovery_id back-reference. Without
+	// that, the discovery-log APIs can't navigate to the partial
+	// result.
 	rep := &fakeRunFinalizer{}
 	result := &models.DiscoveryResult{ID: "disc-456"}
 
