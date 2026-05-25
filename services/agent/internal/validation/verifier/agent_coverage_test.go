@@ -214,3 +214,25 @@ func TestFinalise_DeriveOverallWhenOmitted(t *testing.T) {
 		t.Errorf("reason should mention derivation: %q", out.OverallReason)
 	}
 }
+
+// Codex prod-r2 P2 — when the LLM emits a known-bad top-level Overall
+// (typo like "supportd") the finaliser used to persist it; Combine()
+// then treated the verifier as Unknown and the doc collapsed to
+// Unverifiable, getting filtered out of recommendations even though
+// every per-claim verdict was supported. The finaliser now treats
+// unknown Overall the same as missing Overall — derive from per-claim
+// verdicts.
+func TestFinalise_OverridesUnknownOverallByDeriving(t *testing.T) {
+	v := baseVerdict()
+	v.Overall = valmodels.Status("supportd") // typo
+	out := runFinalise(v)
+	if out.Overall != valmodels.StatusSupported {
+		t.Errorf("invalid Overall not corrected: got %q, want supported", out.Overall)
+	}
+	if !strings.Contains(out.OverallReason, "supportd") {
+		t.Errorf("reason should mention the invalid value the model returned: %q", out.OverallReason)
+	}
+	if !out.Overall.IsKnown() {
+		t.Errorf("post-finalise Overall is still unknown: %q", out.Overall)
+	}
+}

@@ -460,10 +460,19 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 
 	// Step 6 — derive Overall when the model omitted it (plan v5
 	// MVP F4 — observed when every per-claim is supported and the
-	// model "feels" the overall is implied).
-	if v.Overall == "" {
+	// model "feels" the overall is implied) OR when the model emitted
+	// an unknown value (typos like "supportd"). Codex prod-r2 P2 —
+	// the per-claim enum check above doesn't cover the top-level field,
+	// so an invalid Overall used to slip through and collapse the
+	// combined verdict to "unverifiable" downstream.
+	if v.Overall == "" || !v.Overall.IsKnown() {
+		original := v.Overall
 		v.Overall = deriveOverall(v.ClaimVerdicts)
-		v.OverallReason = appendReason(v.OverallReason, "overall derived from per-claim verdicts (model omitted)")
+		if original == "" {
+			v.OverallReason = appendReason(v.OverallReason, "overall derived from per-claim verdicts (model omitted)")
+		} else {
+			v.OverallReason = appendReason(v.OverallReason, fmt.Sprintf("overall derived from per-claim verdicts (model returned invalid %q)", string(original)))
+		}
 	}
 
 	return v

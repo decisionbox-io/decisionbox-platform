@@ -41,20 +41,28 @@ export function AgentVerdictCard({ verdict }: { verdict: StructuredVerdict }) {
           <Text size="xs">{verdict.overall_reason}</Text>
         )}
         <AgentRunStats verdict={verdict} />
-        {verdict.claim_verdicts.length > 0 && (
-          <Stack gap={4} mt={4}>
-            <Text
-              size="xs"
-              fw={700}
-              tt="uppercase"
-              c="dimmed"
-              style={{ letterSpacing: '0.5px' }}
-            >
-              Per-claim breakdown ({verdict.claim_verdicts.length})
-            </Text>
-            <ClaimList claims={verdict.claim_verdicts} />
-          </Stack>
-        )}
+        {/* Go encodes a nil `[]ClaimVerdict` as JSON null, which happens
+            on failed / unverifiable verdicts (LLM chat failure,
+            forced-final parse failure). Defensively coerce to an empty
+            array so opening the drawer on those runs doesn't throw. */}
+        {(() => {
+          const claims = verdict.claim_verdicts ?? [];
+          if (claims.length === 0) return null;
+          return (
+            <Stack gap={4} mt={4}>
+              <Text
+                size="xs"
+                fw={700}
+                tt="uppercase"
+                c="dimmed"
+                style={{ letterSpacing: '0.5px' }}
+              >
+                Per-claim breakdown ({claims.length})
+              </Text>
+              <ClaimList claims={claims} />
+            </Stack>
+          );
+        })()}
       </Stack>
     </Card>
   );

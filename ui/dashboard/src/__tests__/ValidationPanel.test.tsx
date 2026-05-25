@@ -94,6 +94,35 @@ describe('ValidationPanel — new shape', () => {
   });
 });
 
+describe('ValidationPanel — drawer with malformed agent payloads', () => {
+  // Codex prod-r2 P2 — Go encodes a nil `[]ClaimVerdict` slice as JSON
+  // null. The drawer used to read `verdict.claim_verdicts.length`
+  // unguarded and threw on every failed / unverifiable verdict.
+  it('does not crash when an agent verdict has claim_verdicts: null', async () => {
+    // Cast through unknown — the public type forbids null but the
+    // wire format allows it (Go nil slice → JSON null on failed runs).
+    const verifierWithNull = {
+      ...makeVerdict({ mode: 'verifier', overall: 'unverifiable', overall_reason: 'LLM chat failed' }),
+      claim_verdicts: null as unknown as ClaimVerdict[],
+    };
+    const refuterWithNull = {
+      ...makeVerdict({ mode: 'refuter', overall: 'unverifiable', overall_reason: 'LLM chat failed' }),
+      claim_verdicts: null as unknown as ClaimVerdict[],
+    };
+    const v: InsightValidation = {
+      combined: 'unverifiable',
+      verifier: verifierWithNull,
+      refuter: refuterWithNull,
+    };
+    wrap(<ValidationPanel validation={v} />);
+    fireEvent.click(screen.getByRole('button', { name: /Show breakdown/ }));
+    expect(await screen.findByText('Verifier')).toBeInTheDocument();
+    expect(screen.getByText('Refuter')).toBeInTheDocument();
+    // No per-claim breakdown section should render — empty array path.
+    expect(screen.queryByText(/Per-claim breakdown/)).not.toBeInTheDocument();
+  });
+});
+
 describe('ValidationPanel — legacy shape', () => {
   it('renders legacy fields when only the status field is set', () => {
     const v: InsightValidation = {
