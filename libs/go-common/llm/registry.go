@@ -175,6 +175,20 @@ type ModelEntry struct {
 	// "ACTIVE" or "LEGACY" so the dashboard can grey out deprecated
 	// models.
 	Lifecycle string
+
+	// Reasoning declares that this model emits a hidden chain-of-
+	// thought before its final answer (gemma4 / gemma3 / deepseek-r1
+	// / qwen3 / OpenAI o-series / extended-thinking Claude). Providers
+	// that surface reasoning controls (Ollama's `think`, OpenAI's
+	// `reasoning.effort`) consult this flag so a ChatRequest with a
+	// non-default ReasoningEffort is silently ignored on models that
+	// would otherwise return a 400 — Ollama rejects `think=true` and
+	// rejects effort-string values for non-thinking models with
+	// "<model> does not support thinking".
+	//
+	// Default false. Catalog entries set it explicitly when the
+	// model's published capabilities include reasoning / thinking.
+	Reasoning bool
 }
 
 // matches reports whether id resolves to this entry. Exact,
@@ -682,4 +696,25 @@ func GetEncoding(providerName, model string) string {
 		return ""
 	}
 	return meta.EncodingFor(model)
+}
+
+// IsReasoningModel reports whether the catalog row for (provider,
+// model) declares the model as reasoning-capable. Returns false when
+// the provider is not registered or the model does not match any
+// catalog entry (including alias) — providers that hand the request
+// to an upstream that defaults reasoning on still get the upstream's
+// default because callers omit the per-request reasoning field when
+// this returns false.
+func IsReasoningModel(providerName, model string) bool {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return false
+	}
+	e, ok := meta.FindModel(model)
+	if !ok {
+		return false
+	}
+	return e.Reasoning
 }

@@ -200,7 +200,7 @@ func TestOllamaProvider_DefaultHost(t *testing.T) {
 }
 
 func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
-	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b", 0, 0)
+	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
 }
 
 func TestNewOllamaProvider_InvalidURL(t *testing.T) {
-	_, err := NewOllamaProvider("://invalid", "model", 0, 0)
+	_, err := NewOllamaProvider("://invalid", "model", 0)
 	if err == nil {
 		t.Error("should error on invalid URL")
 	}

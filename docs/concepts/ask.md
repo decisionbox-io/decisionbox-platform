@@ -75,7 +75,7 @@ Different providers expose different token-counting capabilities:
 | Vertex AI — Gemini (Google-native wire) | `:countTokens` REST endpoint | Exact. One extra RTT per call; uses the same ADC bearer the Chat path uses, does not consume generation quota. |
 | Vertex AI — Claude (Anthropic wire) | Rune-count approximation | Vertex's Anthropic publisher does not expose a public count_tokens endpoint. |
 | Vertex AI — Llama / Qwen / DeepSeek / Mistral MaaS (OpenAI-compat) | Rune-count approximation | SentencePiece-based tokenizers; tiktoken would be systematically wrong. |
-| Ollama | Rune-count approximation | Model-specific tokenizers vary. The provider pins `num_ctx` from the catalog's `MaxInputTokens` and sends `truncate=false`, so an oversize prompt fails fast instead of being silently trimmed. Operators on tighter VRAM can clamp the per-request context via the `num_ctx_cap` config field on the project's LLM settings. |
+| Ollama | Rune-count approximation | Model-specific tokenizers vary. The provider pins `num_ctx` from the catalog's `MaxInputTokens` on every request and sends `truncate=false`, so an oversize prompt fails fast instead of being silently trimmed. Operators on tighter VRAM cap the server's context via the `OLLAMA_CONTEXT_LENGTH` env var on the Ollama host. |
 | Unknown provider / model | Rune-count approximation | Default fallback. |
 
 The handler picks the right counter automatically. When the provider does not implement `gollm.TokenCounterProvider`, the handler uses `gollm.ApproximateCounter` and widens the safety margin from 5% to 15% to absorb the inaccuracy — under-counting causes the exact 400 the budget layer is designed to prevent, so we err generously toward over-trimming.

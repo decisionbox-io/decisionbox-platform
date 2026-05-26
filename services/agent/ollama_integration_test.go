@@ -47,10 +47,7 @@ func setupOllama(t *testing.T) (gollm.Provider, func()) {
 		t.Fatalf("Failed to get endpoint: %v", err)
 	}
 
-	// Create provider — zero numCtxCap means "no operator cap; use
-	// the catalog value". A non-zero cap is exercised by unit tests in
-	// providers/llm/ollama/wiring_test.go.
-	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0, 0)
+	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0)
 	if err != nil {
 		container.Terminate(ctx)
 		t.Fatalf("Failed to create Ollama provider: %v", err)
@@ -218,13 +215,14 @@ Respond with ONLY valid JSON:
 	}
 }
 
-// TestOllama_ReasoningEffortValuesAccepted runs every documented
-// ReasoningEffort value end-to-end against a real container. The tiny
-// non-reasoning model used here cannot produce a Thinking field, so we
-// don't assert content — we assert the request didn't fail. A
-// regression that mis-mapped an effort string to something the server
-// rejects would show up here.
-func TestOllama_ReasoningEffortValuesAccepted(t *testing.T) {
+// TestOllama_ReasoningEffortValuesAcceptedOnNonReasoningModel runs
+// every documented ReasoningEffort value end-to-end against a real
+// container that hosts a non-reasoning model (qwen2.5:0.5b). The
+// provider must omit Think for "on" / "low" / "medium" / "high"
+// against models flagged Reasoning:false, otherwise Ollama returns
+// HTTP 400 "<model> does not support thinking". "off" still serialises
+// because think=false is harmless on any model.
+func TestOllama_ReasoningEffortValuesAcceptedOnNonReasoningModel(t *testing.T) {
 	provider, cleanup := setupOllama(t)
 	defer cleanup()
 
@@ -254,48 +252,4 @@ func TestOllama_ReasoningEffortValuesAccepted(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestOllama_TruncateFalseRejectsOverflow asserts the provider sets
-// truncate=false so a prompt exceeding the effective context returns
-// an error from the server. A numCtxCap of 256 forces overflow with
-// a modest prompt, exercising the failure path that protects callers
-// from silent prompt-history truncation.
-func TestOllama_TruncateFalseRejectsOverflow(t *testing.T) {
-	t.Helper()
-	ctx := context.Background()
-	applog.Init("ollama-test", "warn")
-	container, err := ollama.Run(ctx, "ollama/ollama:0.18.1")
-	if err != nil {
-		t.Fatalf("Failed to start Ollama: %v", err)
-	}
-	defer container.Terminate(ctx)
-	if code, _, err := container.Exec(ctx, []string{"ollama", "pull", testOllamaModel}); err != nil || code != 0 {
-		t.Fatalf("pull failed (code=%d): %v", code, err)
-	}
-	endpoint, err := container.ConnectionString(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Build a provider with a deliberately tiny cap so the prompt
-	// overflows.
-	prov, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0, 256)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// 4 KB of filler — well above 256 tokens of context.
-	filler := strings.Repeat("the quick brown fox jumps over the lazy dog ", 200)
-
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	_, err = prov.Chat(tctx, gollm.ChatRequest{
-		Model:    testOllamaModel,
-		Messages: []gollm.Message{{Role: "user", Content: filler}},
-		MaxTokens: 50,
-	})
-	if err == nil {
-		t.Fatal("expected error for prompt exceeding effective num_ctx, got nil — truncate=false may not be wired")
-	}
-	t.Logf("expected error: %v", err)
 }

@@ -72,6 +72,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "DeepSeek R1",
 			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
+			Reasoning:       true,
 		},
 
 		// Qwen 3 — thinking mode is on by default; reasoning tokens are
@@ -90,6 +91,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "Qwen 3",
 			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
+			Reasoning:       true,
 		},
 
 		// DeepSeek V3.
@@ -125,6 +127,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemma 3",
 			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
+			Reasoning:       true,
 		},
 
 		// Llama 4 — huge context (1M+ on Scout), 8k practical output.
@@ -211,6 +214,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemma 4 (small)",
 			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
+			Reasoning:       true,
 		},
 		// Gemma 4 (26B/31B) — medium models publish a 256k window. Aliases
 		// cover the bare sizes plus the standard instruct quants
@@ -230,6 +234,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemma 4 (26B/31B)",
 			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx256K,
+			Reasoning:       true,
 		},
 
 		// Qwen3-Coder — 256k native window (extendable to 1M).
