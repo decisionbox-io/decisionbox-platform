@@ -19,23 +19,23 @@ func TestOllamaCatalog_Resolution(t *testing.T) {
 		wantInput int
 	}{
 		// Gemma 4 small tier (128k).
-		{"gemma4", 8192, ctx128K},
-		{"gemma4:latest", 8192, ctx128K},
-		{"gemma4:e4b", 8192, ctx128K},
+		{"gemma4", 16384, ctx128K},
+		{"gemma4:latest", 16384, ctx128K},
+		{"gemma4:e4b", 16384, ctx128K},
 		// Gemma 4 26B/31B tier (256k), including a quant tag users pull.
-		{"gemma4:31b", 32768, ctx256K},
-		{"gemma4:31b-it-bf16", 32768, ctx256K},
-		{"gemma4:26b-it-q4_K_M", 32768, ctx256K},
+		{"gemma4:31b", 16384, ctx256K},
+		{"gemma4:31b-it-bf16", 16384, ctx256K},
+		{"gemma4:26b-it-q4_K_M", 16384, ctx256K},
 		// Other new families.
-		{"qwen3-coder:30b", 65536, ctx256K},
+		{"qwen3-coder:30b", 16384, ctx256K},
 		{"qwen2:7b", 16384, ctx128K},
-		{"gpt-oss:20b", 32768, ctx128K},
-		{"phi4", 8192, ctx16K},
-		{"mistral:7b", 8192, ctx32K},
+		{"gpt-oss:20b", 16384, ctx128K},
+		{"phi4", 16384, ctx16K},
+		{"mistral:7b", 16384, ctx32K},
 		{"mistral-small:24b", 16384, ctx128K},
-		{"codellama:13b", 8192, ctx16K},
-		{"llama2:7b", 2048, ctx4K},
-		{"tinyllama", 1024, ctx2K},
+		{"codellama:13b", 16384, ctx16K},
+		{"llama2:7b", 4096, ctx4K},
+		{"tinyllama", 2048, ctx2K},
 		// Uncatalogued tags (an unlisted quant/format, or an unknown
 		// model) fall back to the provider defaults.
 		{"gemma4:31b-mlx", ollamaDefaultMaxOutputTokens, ctx128K},

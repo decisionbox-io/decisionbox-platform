@@ -23,11 +23,13 @@ const (
 	ctx2K   = 2048
 )
 
-// Output-token caps for popular Ollama model families. Values come
-// from each model card's documented synchronous generation limit; the
-// agent caps requests at these so a poorly-specified prompt doesn't
-// truncate before the final answer. Pricing is zero — Ollama runs
-// locally so the user pays for compute, not tokens.
+// Output-token caps for popular Ollama model families. Where a model
+// publishes a documented generation limit we use it; otherwise the cap
+// defaults to 16384, capped at the context window for smaller models.
+// (A few long-standing entries predate this and keep their original
+// model-card / practical caps.) The agent caps requests at these so a
+// poorly-specified prompt doesn't truncate before the final answer.
+// Pricing is zero — Ollama runs locally so the user pays for compute.
 //
 // Wire is WireUnknown for every Ollama entry: Ollama's Chat()
 // dispatches through ollamaapi directly with no wire switch, so the
@@ -200,7 +202,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "gemma4",
 			Aliases:         []string{"gemma4:latest", "gemma4:e2b", "gemma4:e4b"},
 			DisplayName:     "Gemma 4 (small)",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx128K,
 		},
 		// Gemma 4 (26B/31B) — medium models publish a 256k window. Aliases
@@ -218,7 +220,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 				"gemma4:26b-it-q8_0",
 			},
 			DisplayName:     "Gemma 4 (26B/31B)",
-			MaxOutputTokens: 32768,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx256K,
 		},
 
@@ -227,7 +229,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "qwen3-coder",
 			Aliases:         []string{"qwen3-coder:latest", "qwen3-coder:30b", "qwen3-coder:480b"},
 			DisplayName:     "Qwen3 Coder",
-			MaxOutputTokens: 65536,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx256K,
 		},
 		// Qwen 2 — 128k on the 7b/72b tiers.
@@ -244,7 +246,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "gpt-oss",
 			Aliases:         []string{"gpt-oss:latest", "gpt-oss:20b", "gpt-oss:120b"},
 			DisplayName:     "GPT-OSS",
-			MaxOutputTokens: 32768,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx128K,
 		},
 		// Phi-4 — 16k context.
@@ -252,7 +254,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "phi4",
 			Aliases:         []string{"phi4:latest", "phi4:14b"},
 			DisplayName:     "Phi 4",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx16K,
 		},
 
@@ -261,7 +263,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "mistral",
 			Aliases:         []string{"mistral:latest", "mistral:7b"},
 			DisplayName:     "Mistral 7B",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx32K,
 		},
 		// Mistral NeMo — 128k context (12B, built with NVIDIA).
@@ -286,7 +288,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "codellama",
 			Aliases:         []string{"codellama:latest", "codellama:7b", "codellama:13b", "codellama:34b", "codellama:70b"},
 			DisplayName:     "Code Llama",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx16K,
 		},
 		// CodeGemma — 8k context.
@@ -294,7 +296,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "codegemma",
 			Aliases:         []string{"codegemma:latest", "codegemma:2b", "codegemma:7b"},
 			DisplayName:     "CodeGemma",
-			MaxOutputTokens: 4096,
+			MaxOutputTokens: 8192,
 			MaxInputTokens:  ctx8K,
 		},
 		// DeepSeek Coder — 16k context.
@@ -302,7 +304,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "deepseek-coder",
 			Aliases:         []string{"deepseek-coder:latest", "deepseek-coder:1.3b", "deepseek-coder:6.7b", "deepseek-coder:33b"},
 			DisplayName:     "DeepSeek Coder",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx16K,
 		},
 
@@ -311,7 +313,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "dolphin3",
 			Aliases:         []string{"dolphin3:latest", "dolphin3:8b"},
 			DisplayName:     "Dolphin 3",
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 16384,
 			MaxInputTokens:  ctx128K,
 		},
 
@@ -320,7 +322,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "gemma",
 			Aliases:         []string{"gemma:latest", "gemma:2b", "gemma:7b"},
 			DisplayName:     "Gemma",
-			MaxOutputTokens: 4096,
+			MaxOutputTokens: 8192,
 			MaxInputTokens:  ctx8K,
 		},
 		// Llama 2 — 4k context.
@@ -328,7 +330,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "llama2",
 			Aliases:         []string{"llama2:latest", "llama2:7b", "llama2:13b", "llama2:70b"},
 			DisplayName:     "Llama 2",
-			MaxOutputTokens: 2048,
+			MaxOutputTokens: 4096,
 			MaxInputTokens:  ctx4K,
 		},
 		// SmolLM2 — 8k context.
@@ -336,7 +338,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "smollm2",
 			Aliases:         []string{"smollm2:latest", "smollm2:135m", "smollm2:360m", "smollm2:1.7b"},
 			DisplayName:     "SmolLM2",
-			MaxOutputTokens: 4096,
+			MaxOutputTokens: 8192,
 			MaxInputTokens:  ctx8K,
 		},
 		// OLMo 2 — 4k context.
@@ -344,7 +346,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "olmo2",
 			Aliases:         []string{"olmo2:latest", "olmo2:7b", "olmo2:13b"},
 			DisplayName:     "OLMo 2",
-			MaxOutputTokens: 2048,
+			MaxOutputTokens: 4096,
 			MaxInputTokens:  ctx4K,
 		},
 		// TinyLlama — 2k context.
@@ -352,7 +354,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			ID:              "tinyllama",
 			Aliases:         []string{"tinyllama:latest", "tinyllama:1.1b"},
 			DisplayName:     "TinyLlama",
-			MaxOutputTokens: 1024,
+			MaxOutputTokens: 2048,
 			MaxInputTokens:  ctx2K,
 		},
 	}
