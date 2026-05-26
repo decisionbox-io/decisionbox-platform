@@ -313,15 +313,16 @@ func TestPackGenerate_Generate_AsyncEnqueue_202(t *testing.T) {
 		t.Errorf("provider received RunID=%q, handler returned %q (must match)", stub.lastGen.RunID, resp.RunID)
 	}
 
-	// Marker was set on the project; defer cleared it after Generate returned.
+	// Stub returned cleanly (Async:true, nil err) — the handler's
+	// safety-net defer trusts the provider's contract and does NOT
+	// fire. The marker stays set; a real provider would have written
+	// its own terminal state (done + $unset marker) before returning.
 	got, _ := repo.GetByID(context.Background(), p.ID)
-	if got.PackGenRequest != nil {
-		t.Errorf("marker should be cleared by safety-net defer (stub finished successfully + no terminal write means defer's FinalizePackGenIfStuck reverted state); got %+v", got.PackGenRequest)
+	if got.PackGenRequest == nil {
+		t.Error("marker should remain set after a clean provider return — the provider owns its own terminal-state cleanup; the safety-net defer must NOT clear the marker on success")
 	}
-	// State should have been reverted to pending by the safety-net defer
-	// (the stub's "success" returns nil without writing terminal state).
-	if got.EffectiveState() != models.ProjectStatePackGenerationPending {
-		t.Errorf("state = %q after defer cleanup, want pack_generation_pending", got.State)
+	if got.PackGenLastError != "" {
+		t.Errorf("pack_gen_last_error = %q, want empty after a clean provider return (defer must not have run)", got.PackGenLastError)
 	}
 }
 
@@ -724,6 +725,40 @@ func TestPackGenerate_Generate_EnqueueRepoError_500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPackGenerate_Generate_SafetyNetFiresOnProviderError asserts the
+// safety-net defer DOES fire when the provider returns an error. This
+// covers the case where the orchestrator's own revert-on-error closure
+// failed (e.g. its detached-ctx Mongo write timed out) — the marker
+// would otherwise leak. The orchestrator-revert-succeeded case is
+// covered by SafetyNetNoOpWhenOrchestratorWroteDone above.
+func TestPackGenerate_Generate_SafetyNetFiresOnProviderError(t *testing.T) {
+	stub := &stubPackgenProvider{
+		genErr: errors.New("simulated LLM failure"),
+		done:   make(chan struct{}),
+	}
+	installStubProvider(t, stub)
+
+	repo := newMockProjectRepo()
+	p := seedPendingPackGen(t, repo, "p-prov-err", "acme", "")
+
+	h, hwg := newTestHandler(repo)
+	w := doGenerate(t, h, hwg, p.ID)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+
+	got, _ := repo.GetByID(context.Background(), p.ID)
+	if got.PackGenRequest != nil {
+		t.Error("marker should be cleared by safety-net defer after provider error")
+	}
+	if got.EffectiveState() != models.ProjectStatePackGenerationPending {
+		t.Errorf("state = %q, want pack_generation_pending", got.State)
+	}
+	if !strings.Contains(got.PackGenLastError, "interrupted") {
+		t.Errorf("pack_gen_last_error = %q, want canned 'generation interrupted; please retry'", got.PackGenLastError)
 	}
 }
 

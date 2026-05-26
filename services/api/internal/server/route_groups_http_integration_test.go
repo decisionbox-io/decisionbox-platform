@@ -85,6 +85,8 @@ func TestInteg_RouteGroups_MountedThroughFullServerPipeline(t *testing.T) {
 		nil, // schemaCollectionDropper — not exercised here
 		nil, // indexCanceller — not exercised here
 		nil, // validationCanceller — not exercised here
+		context.Background(),                            // serverBackgroundCtx — not exercised here
+		nil,                                              // packgenWG — handler builds its own when nil
 		[]RouteGroup{{Prefix: "/api/plugin-integ", Handler: pluginMux}},
 	)
 

@@ -368,22 +368,30 @@ func Run() {
 		validationWorkerCancel()
 	}
 
-	// Cancel the pack-generation goroutines' parent context and wait
-	// (bounded) for them to complete their cleanup before draining HTTP.
-	// Order matters: Mongo must still be connected when each goroutine's
-	// orchestrator-revert + FinalizePackGenIfStuck defer write terminal
-	// state. The bound covers the orchestrator's own 5-second detached
-	// revert + the handler defer's 5-second `FinalizePackGenIfStuck` +
-	// slack, and runs OUTSIDE the HTTP shutdownCtx's 10-second budget.
-	cancelServerBackground()
-	waitWithTimeout(&packgenWG, 15*time.Second)
-
+	// Shutdown order is strict:
+	//   1. srv.Shutdown — stops accepting new requests AND waits for
+	//      in-flight HTTP handlers to return. Pack-gen handlers return
+	//      202 fast, so this drains quickly. Critically, this is the
+	//      step that prevents a new POST /pack-generate from arriving
+	//      AFTER we cancel the server-background context and starting
+	//      a goroutine that never gets included in the WaitGroup
+	//      drain below.
+	//   2. cancelServerBackground — propagates cancel to every
+	//      in-flight pack-gen goroutine spawned before shutdown began.
+	//   3. waitWithTimeout — bounded wait for those goroutines'
+	//      orchestrator-revert AND FinalizePackGenIfStuck safety-net
+	//      defer to land terminal state. 15s covers orchestrator 5s +
+	//      handler defer 5s + slack, independent of the HTTP shutdownCtx.
+	//   4. (deferred) Mongo disconnect — runs only after this function
+	//      returns, so terminal writes in step 3 still hit Mongo.
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		apilog.WithError(err).Error("Shutdown error")
 	}
+
+	cancelServerBackground()
+	waitWithTimeout(&packgenWG, 15*time.Second)
 	apilog.Info("Server stopped")
 }
 

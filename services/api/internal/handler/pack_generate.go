@@ -186,17 +186,31 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 
 	// Spawn the goroutine on the server-lifetime context so a client
 	// disconnect (proxy timeout, browser close) does not abort the run.
-	// The defer is the safety net: it always runs FinalizePackGenIfStuck
-	// after the orchestrator returns (or panics), which conditionally
-	// reverts state + clears the marker if the orchestrator's own
-	// revertOnError closure did not get to run. The conditional update
-	// is a no-op when the orchestrator already wrote a clean terminal
-	// state.
+	// The defer is the safety net for the two cases the orchestrator
+	// itself can't cover: a panic, or a returned error where the
+	// orchestrator's own revert-on-error closure also failed (e.g.
+	// the detached-context Mongo write timed out). It is NOT fired on
+	// a clean provider return — that contract is the provider's job:
+	//   - Async:false providers write terminal state synchronously
+	//     before returning (the current in-process enterprise
+	//     orchestrator does this) — running the safety net would at
+	//     best be a no-op (predicate misses), at worst race the
+	//     provider's own success write.
+	//   - Async:true providers (hypothetical future contract) return
+	//     to acknowledge handoff while their own worker continues with
+	//     the marker still legitimately set — running the safety net
+	//     would falsely clear that marker mid-run.
 	h.wg.Add(1)
 	go func(projectID string) {
 		defer h.wg.Done()
+		var provErr error
 		defer func() {
-			if recovered := recover(); recovered != nil {
+			recovered := recover()
+			// Clean return — trust the provider's terminal-state contract.
+			if recovered == nil && provErr == nil {
+				return
+			}
+			if recovered != nil {
 				apilog.WithFields(apilog.Fields{
 					"project_id": projectID,
 					"recover":    recovered,
@@ -212,17 +226,21 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
-		if _, err := packgen.GetProvider().Generate(h.serverCtx, req); err != nil {
+		var res *packgen.GenerateResult
+		res, provErr = packgen.GetProvider().Generate(h.serverCtx, req)
+		if provErr != nil {
 			apilog.WithFields(apilog.Fields{
 				"project_id": projectID,
 				"run_id":     runID,
-				"error":      err.Error(),
-			}).Info("pack-generate: in-process generation returned error (orchestrator owns state writes)")
+				"error":      provErr.Error(),
+			}).Info("pack-generate: in-process generation returned error (orchestrator owns state writes; safety net may follow)")
 			return
 		}
+		async := res != nil && res.Async
 		apilog.WithFields(apilog.Fields{
 			"project_id": projectID,
 			"run_id":     runID,
+			"async":      async,
 		}).Info("pack-generate: in-process generation completed")
 	}(p.ID)
 
