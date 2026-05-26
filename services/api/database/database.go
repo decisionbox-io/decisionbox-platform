@@ -480,105 +480,24 @@ func (r *ProjectRepository) EnqueuePackGen(ctx context.Context, id, runID string
 	return "", false, fmt.Errorf("%w (current: %s)", ErrPackGenStateMismatch, p.EffectiveState())
 }
 
-// ResetInFlightPackGenMarkers clears every `pack_gen_request` marker
-// on the projects collection. Called once at API startup.
-//
-// Why this is safe regardless of state: pack-gen runs inside the API
-// process as a goroutine. When the API restarts the goroutine is gone
-// — by definition every surviving marker is stale (left over from a
-// crashed, SIGKILLed, or otherwise hard-stopped previous instance
-// whose graceful-shutdown drain didn't complete). The handler's
-// marker-first idempotent-202 check would otherwise return the stale
-// run_id forever and the dashboard would poll for a goroutine that
-// no longer exists.
-//
-// Per project state on clear:
-//   - state == pack_generation_pending: leave state alone (the wizard
-//     UI already shows "ready to generate"); the user clicks Generate
-//     again from a clean slate.
-//   - state == pack_generation: revert to pack_generation_pending +
-//     stamp pack_gen_last_error so the wizard shows the failure.
-//   - state == pack_generation_done: just unset the marker — the run
-//     actually completed but somehow didn't $unset on the success
-//     write (very rare; defensive).
-//
-// Returns the number of projects updated. Callers log this on boot.
-//
-// Distinct from schemaindex.ResetStaleIndexingProjects, which is
-// time-windowed because indexing work runs as an out-of-process agent
-// subprocess that CAN survive an API restart. Pack-gen work cannot —
-// no time window is needed here.
-func (r *ProjectRepository) ResetInFlightPackGenMarkers(ctx context.Context) (int, error) {
-	now := time.Now().UTC()
-	stuckErrMsg := "previous generation interrupted by API restart — please retry"
-
-	// (1) state == pack_generation_pending + marker: just unset.
-	resPending, err := r.col.UpdateMany(ctx,
-		bson.M{
-			"state":            models.ProjectStatePackGenerationPending,
-			"pack_gen_request": bson.M{"$exists": true},
-		},
-		bson.M{
-			"$set":   bson.M{"updated_at": now},
-			"$unset": bson.M{"pack_gen_request": ""},
-		},
-	)
-	if err != nil {
-		return 0, fmt.Errorf("reset pending pack-gen markers: %w", err)
-	}
-
-	// (2) state == pack_generation + marker: revert state + stamp error
-	// + unset marker.
-	resRunning, err := r.col.UpdateMany(ctx,
-		bson.M{
-			"state":            models.ProjectStatePackGeneration,
-			"pack_gen_request": bson.M{"$exists": true},
-		},
-		bson.M{
-			"$set": bson.M{
-				"state":               models.ProjectStatePackGenerationPending,
-				"pack_gen_last_error": stuckErrMsg,
-				"updated_at":          now,
-			},
-			"$unset": bson.M{"pack_gen_request": ""},
-		},
-	)
-	if err != nil {
-		return 0, fmt.Errorf("reset in-flight pack-gen markers: %w", err)
-	}
-
-	// (3) state == pack_generation_done + marker: just unset.
-	resDone, err := r.col.UpdateMany(ctx,
-		bson.M{
-			"state":            models.ProjectStatePackGenerationDone,
-			"pack_gen_request": bson.M{"$exists": true},
-		},
-		bson.M{
-			"$set":   bson.M{"updated_at": now},
-			"$unset": bson.M{"pack_gen_request": ""},
-		},
-	)
-	if err != nil {
-		return 0, fmt.Errorf("reset done pack-gen markers: %w", err)
-	}
-
-	return int(resPending.ModifiedCount + resRunning.ModifiedCount + resDone.ModifiedCount), nil
-}
-
 // FinalizePackGenIfStuck — see ProjectRepo for the contract.
-func (r *ProjectRepository) FinalizePackGenIfStuck(ctx context.Context, id, errMsg string) error {
+func (r *ProjectRepository) FinalizePackGenIfStuck(ctx context.Context, id, runID, errMsg string) error {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		return fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 
+	// Predicate includes run_id match so this defer only acts on the
+	// marker it OWNS. Otherwise: if an old defer fires after a fresh
+	// retry has already enqueued a new run, it would clear the new
+	// run's marker and orphan the retry.
 	filter := bson.M{
 		"_id": oid,
 		"state": bson.M{"$in": []string{
 			models.ProjectStatePackGenerationPending,
 			models.ProjectStatePackGeneration,
 		}},
-		"pack_gen_request": bson.M{"$exists": true},
+		"pack_gen_request.run_id": runID,
 	}
 	update := bson.M{
 		"$set": bson.M{

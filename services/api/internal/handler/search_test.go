@@ -61,7 +61,7 @@ func (m *mockProjectRepoForSearch) SetSchemaIndexStatus(_ context.Context, _, _,
 func (m *mockProjectRepoForSearch) EnqueuePackGen(_ context.Context, _, runID string) (string, bool, error) {
 	return runID, false, nil
 }
-func (m *mockProjectRepoForSearch) FinalizePackGenIfStuck(_ context.Context, _, _ string) error {
+func (m *mockProjectRepoForSearch) FinalizePackGenIfStuck(_ context.Context, _, _, _ string) error {
 	return nil
 }
 

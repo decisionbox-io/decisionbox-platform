@@ -5,7 +5,6 @@ package database
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,7 +227,7 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_FromPending(t *testing.T) {
 		t.Fatalf("enqueue: %v", err)
 	}
 	// State stays pending (orchestrator hasn't flipped yet).
-	if err := repo.FinalizePackGenIfStuck(ctx, id, "generation interrupted"); err != nil {
+	if err := repo.FinalizePackGenIfStuck(ctx, id, "run-pending", "generation interrupted"); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, id)
@@ -267,7 +266,7 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_FromPackGeneration(t *testing.
 	}
 	id := oid.Hex()
 
-	if err := repo.FinalizePackGenIfStuck(ctx, id, "interrupted mid-run"); err != nil {
+	if err := repo.FinalizePackGenIfStuck(ctx, id, "run-mid", "interrupted mid-run"); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, id)
@@ -298,7 +297,7 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenDone(t *testing.T) {
 	}
 	id := oid.Hex()
 
-	if err := repo.FinalizePackGenIfStuck(ctx, id, "should not apply"); err != nil {
+	if err := repo.FinalizePackGenIfStuck(ctx, id, "any-run-id", "should not apply"); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, id)
@@ -315,7 +314,7 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenMarkerAbsent(t *testin
 	repo := NewProjectRepository(testDB)
 	id := seedPackGenProject(t) // pending state, no marker
 
-	if err := repo.FinalizePackGenIfStuck(ctx, id, "should not apply"); err != nil {
+	if err := repo.FinalizePackGenIfStuck(ctx, id, "any-run-id", "should not apply"); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, id)
@@ -324,124 +323,34 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenMarkerAbsent(t *testin
 	}
 }
 
-// TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_AllStates exercises
-// the boot-time stale-marker sweep across all three state-with-marker
-// combinations a previous API crash could have left behind, plus
-// projects WITHOUT markers (which must not be touched). The count
-// returned must equal exactly the three updated rows.
-func TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_AllStates(t *testing.T) {
+// TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenRunIDMismatch
+// covers the retry-after-failure race: a goroutine whose provider
+// errored already had the orchestrator's revert run; an operator then
+// retries and EnqueuePackGen writes a FRESH marker with a NEW run_id.
+// The old goroutine's deferred safety-net call must NOT clobber the
+// new marker. Predicate is scoped on `pack_gen_request.run_id`.
+func TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenRunIDMismatch(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)
+	id := seedPackGenProject(t)
 
-	// (A) state=pack_generation_pending + marker — claim-before-spawn crash.
-	idPending := seedPackGenProject(t)
-	if _, _, err := repo.EnqueuePackGen(ctx, idPending, "stale-pending"); err != nil {
-		t.Fatalf("seed pending+marker: %v", err)
-	}
-
-	// (B) state=pack_generation + marker — mid-run crash.
-	oidRunning := primitive.NewObjectID()
-	if _, err := testDB.Collection("projects").InsertOne(ctx, bson.M{
-		"_id":   oidRunning,
-		"name":  "running",
-		"state": models.ProjectStatePackGeneration,
-		"generate_pack": bson.M{
-			"enabled": true, "pack_name": "Acme", "pack_slug": "acme",
-		},
-		"pack_gen_request": bson.M{
-			"run_id":       "stale-running",
-			"requested_at": time.Now(),
-		},
-		"created_at": time.Now(),
-		"updated_at": time.Now(),
-	}); err != nil {
-		t.Fatalf("seed running+marker: %v", err)
-	}
-	idRunning := oidRunning.Hex()
-
-	// (C) state=pack_generation_done + marker — orchestrator success
-	// write didn't unset for some reason.
-	oidDone := primitive.NewObjectID()
-	if _, err := testDB.Collection("projects").InsertOne(ctx, bson.M{
-		"_id":    oidDone,
-		"name":   "done",
-		"state":  models.ProjectStatePackGenerationDone,
-		"domain": "acme",
-		"pack_gen_request": bson.M{
-			"run_id":       "stale-done",
-			"requested_at": time.Now(),
-		},
-		"created_at": time.Now(),
-		"updated_at": time.Now(),
-	}); err != nil {
-		t.Fatalf("seed done+marker: %v", err)
-	}
-	idDone := oidDone.Hex()
-
-	// (D) state=pack_generation_pending WITHOUT marker — must NOT be touched.
-	idClean := seedPackGenProject(t)
-
-	count, err := repo.ResetInFlightPackGenMarkers(ctx)
-	if err != nil {
-		t.Fatalf("ResetInFlightPackGenMarkers: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("count = %d, want 3 (A+B+C, NOT D)", count)
+	// Simulate: a FRESH retry has just enqueued a new marker.
+	if _, _, err := repo.EnqueuePackGen(ctx, id, "run-new"); err != nil {
+		t.Fatalf("seed fresh marker: %v", err)
 	}
 
-	// (A) pending+marker → marker cleared, state unchanged, no error stamped.
-	gotPending, _ := repo.GetByID(ctx, idPending)
-	if gotPending.PackGenRequest != nil {
-		t.Error("(A) marker should be cleared")
+	// An OLD goroutine's defer fires with a stale run_id — must no-op.
+	if err := repo.FinalizePackGenIfStuck(ctx, id, "run-old", "OLD defer fired"); err != nil {
+		t.Fatalf("finalize: %v", err)
 	}
-	if gotPending.EffectiveState() != models.ProjectStatePackGenerationPending {
-		t.Errorf("(A) state = %q, want pack_generation_pending unchanged", gotPending.State)
+	got, _ := repo.GetByID(ctx, id)
+	if got.PackGenRequest == nil {
+		t.Fatal("fresh marker was unexpectedly cleared by stale-run-id defer")
 	}
-	if gotPending.PackGenLastError != "" {
-		t.Errorf("(A) pack_gen_last_error = %q, want empty (pending+marker is the claim-before-spawn case — no user-visible error)", gotPending.PackGenLastError)
+	if got.PackGenRequest.RunID != "run-new" {
+		t.Errorf("marker.RunID = %q, want %q (fresh marker must be preserved)", got.PackGenRequest.RunID, "run-new")
 	}
-
-	// (B) pack_generation+marker → state reverted to pending + error stamped + marker cleared.
-	gotRunning, _ := repo.GetByID(ctx, idRunning)
-	if gotRunning.PackGenRequest != nil {
-		t.Error("(B) marker should be cleared")
-	}
-	if gotRunning.EffectiveState() != models.ProjectStatePackGenerationPending {
-		t.Errorf("(B) state = %q, want pack_generation_pending (reverted)", gotRunning.State)
-	}
-	if !strings.Contains(gotRunning.PackGenLastError, "interrupted") {
-		t.Errorf("(B) pack_gen_last_error = %q, want substring 'interrupted'", gotRunning.PackGenLastError)
-	}
-
-	// (C) done+marker → marker cleared, state unchanged.
-	gotDone, _ := repo.GetByID(ctx, idDone)
-	if gotDone.PackGenRequest != nil {
-		t.Error("(C) marker should be cleared")
-	}
-	if gotDone.EffectiveState() != models.ProjectStatePackGenerationDone {
-		t.Errorf("(C) state = %q, want pack_generation_done unchanged", gotDone.State)
-	}
-
-	// (D) untouched.
-	gotClean, _ := repo.GetByID(ctx, idClean)
-	if gotClean.PackGenRequest != nil {
-		t.Error("(D) project without marker should be untouched")
-	}
-	if gotClean.PackGenLastError != "" {
-		t.Errorf("(D) pack_gen_last_error = %q, want empty (project was clean)", gotClean.PackGenLastError)
-	}
-}
-
-func TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_EmptyIsNoOp(t *testing.T) {
-	ctx := context.Background()
-	repo := NewProjectRepository(testDB)
-	// Fresh DB scope: ResetInFlight on the existing fixtures already
-	// cleared markers. Calling it again should return 0.
-	count, err := repo.ResetInFlightPackGenMarkers(ctx)
-	if err != nil {
-		t.Fatalf("ResetInFlightPackGenMarkers: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("count = %d after the sweep already ran; want 0", count)
+	if got.PackGenLastError != "" {
+		t.Errorf("pack_gen_last_error = %q, want empty (stale-run-id defer must not stamp an error)", got.PackGenLastError)
 	}
 }

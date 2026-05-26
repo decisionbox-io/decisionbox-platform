@@ -213,19 +213,18 @@ func Run() {
 		apilog.WithError(err).Warn("Pack-generation provider configuration failed; pack-generate endpoints will return 404")
 	}
 
-	// Clear any pack-gen launch markers left over from a previous API
-	// process that didn't complete its graceful-shutdown drain (SIGKILL,
-	// OOM, hardware loss). Pack-gen goroutines run inside the API
-	// process and cannot survive a restart, so every surviving marker
-	// at boot is stale by definition. Without this, the handler's
-	// marker-first idempotent 202 path would return the stale run_id
-	// forever and the dashboard would poll for a goroutine that no
-	// longer exists.
-	if reset, err := database.NewProjectRepository(db).ResetInFlightPackGenMarkers(ctx); err != nil {
-		apilog.WithError(err).Warn("pack-gen: stale-marker recovery failed at boot; orphan markers may require manual cleanup")
-	} else if reset > 0 {
-		apilog.WithField("count", reset).Info("pack-gen: cleared stale launch markers from previous API instance")
-	}
+	// Note on stale-marker recovery: a SIGKILL / OOM / hardware-loss
+	// crash leaves `pack_gen_request` set on a project whose goroutine
+	// is gone. We do NOT clear those markers automatically at boot
+	// because the platform's only supported deployment shape — single
+	// API instance, possibly with a brief rolling-update overlap —
+	// cannot distinguish a stale marker from one that another live
+	// pod still owns. Operator recovery for the rare zombie marker
+	// is documented in the enterprise runbook (mongo shell:
+	// `db.projects.updateOne({_id: ObjectId("<id>")}, {$unset: {pack_gen_request: ""}})`,
+	// then user clicks Generate). Graceful-shutdown drain
+	// (cancelServerBackground + waitWithTimeout in the shutdown path
+	// below) handles every clean-termination case.
 
 	// Schema-index worker + /reindex dropper: both need Qdrant. Without
 	// it the worker is disabled (discovery will 409 until QDRANT_URL is

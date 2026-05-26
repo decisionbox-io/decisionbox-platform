@@ -215,9 +215,9 @@ func (m *mockProjectRepo) EnqueuePackGen(_ context.Context, id, runID string) (s
 }
 
 // FinalizePackGenIfStuck mirrors database.ProjectRepository.FinalizePackGenIfStuck.
-// No-op when state is already pack_generation_done or when the marker is
-// absent (orchestrator's own terminal write already won).
-func (m *mockProjectRepo) FinalizePackGenIfStuck(_ context.Context, id, errMsg string) error {
+// No-op when state is already pack_generation_done, when the marker is
+// absent, or when the marker's run_id does NOT match runID.
+func (m *mockProjectRepo) FinalizePackGenIfStuck(_ context.Context, id, runID, errMsg string) error {
 	if m.finalizePackGenErr != nil {
 		return m.finalizePackGenErr
 	}
@@ -229,6 +229,11 @@ func (m *mockProjectRepo) FinalizePackGenIfStuck(_ context.Context, id, errMsg s
 		return nil
 	}
 	if p.PackGenRequest == nil {
+		return nil
+	}
+	if p.PackGenRequest.RunID != runID {
+		// Marker belongs to a different run (operator-retry after this
+		// goroutine's provider call failed) — must not clobber it.
 		return nil
 	}
 	state := p.EffectiveState()

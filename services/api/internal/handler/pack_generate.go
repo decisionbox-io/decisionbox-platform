@@ -201,7 +201,7 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	//     the marker still legitimately set — running the safety net
 	//     would falsely clear that marker mid-run.
 	h.wg.Add(1)
-	go func(projectID string) {
+	go func(projectID, ownedRunID string) {
 		defer h.wg.Done()
 		var provErr error
 		defer func() {
@@ -213,14 +213,20 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 			if recovered != nil {
 				apilog.WithFields(apilog.Fields{
 					"project_id": projectID,
+					"run_id":     ownedRunID,
 					"recover":    recovered,
 				}).Error("pack-generate: goroutine panic")
 			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), finalizeBudget)
 			defer cancel()
-			if err := h.repo.FinalizePackGenIfStuck(cleanupCtx, projectID, finalizeInterruptedErr); err != nil {
+			// Scoped to ownedRunID so this defer only acts on the
+			// marker IT wrote — an operator retry after a previous
+			// failure may have replaced the marker with a fresh
+			// run_id, and we must not clobber that.
+			if err := h.repo.FinalizePackGenIfStuck(cleanupCtx, projectID, ownedRunID, finalizeInterruptedErr); err != nil {
 				apilog.WithFields(apilog.Fields{
 					"project_id": projectID,
+					"run_id":     ownedRunID,
 					"error":      err.Error(),
 				}).Warn("pack-generate: safety-net finalize failed")
 			}
@@ -231,7 +237,7 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		if provErr != nil {
 			apilog.WithFields(apilog.Fields{
 				"project_id": projectID,
-				"run_id":     runID,
+				"run_id":     ownedRunID,
 				"error":      provErr.Error(),
 			}).Info("pack-generate: in-process generation returned error (orchestrator owns state writes; safety net may follow)")
 			return
@@ -239,10 +245,10 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		async := res != nil && res.Async
 		apilog.WithFields(apilog.Fields{
 			"project_id": projectID,
-			"run_id":     runID,
+			"run_id":     ownedRunID,
 			"async":      async,
 		}).Info("pack-generate: in-process generation completed")
-	}(p.ID)
+	}(p.ID, runID)
 
 	apilog.WithFields(apilog.Fields{
 		"project_id": id,

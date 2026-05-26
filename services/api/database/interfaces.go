@@ -50,16 +50,18 @@ type ProjectRepo interface {
 
 	// FinalizePackGenIfStuck is the handler-side safety net. Conditional
 	// UpdateOne: writes only when `state` is in {pack_generation_pending,
-	// pack_generation} AND `pack_gen_request` is still set. Sets state to
-	// pack_generation_pending, `pack_gen_last_error` to errMsg, and
-	// $unsets pack_gen_request. No-op when state is already
-	// pack_generation_done or when the marker is absent (the orchestrator's
-	// own terminal write already won the race).
+	// pack_generation} AND `pack_gen_request.run_id` MATCHES runID.
+	// Sets state to pack_generation_pending, `pack_gen_last_error` to
+	// errMsg, and $unsets pack_gen_request. No-op when state is already
+	// pack_generation_done, when the marker is absent, or when the
+	// marker belongs to a DIFFERENT run_id (operator already retried
+	// after a previous failure → the in-flight run is the new one;
+	// the old defer must not clear the new run's marker).
 	//
 	// Called via `defer` in the handler-spawned goroutine to clean up
 	// the early-cancel window (ctx canceled before the orchestrator's
 	// in-process revertOnError closure exists) and the panic case.
-	FinalizePackGenIfStuck(ctx context.Context, id, errMsg string) error
+	FinalizePackGenIfStuck(ctx context.Context, id, runID, errMsg string) error
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.

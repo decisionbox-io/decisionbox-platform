@@ -145,7 +145,7 @@ func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, 
 func (r *stubProjectRepo) EnqueuePackGen(_ context.Context, _, runID string) (string, bool, error) {
 	return runID, false, nil
 }
-func (r *stubProjectRepo) FinalizePackGenIfStuck(context.Context, string, string) error {
+func (r *stubProjectRepo) FinalizePackGenIfStuck(context.Context, string, string, string) error {
 	return nil
 }
 
