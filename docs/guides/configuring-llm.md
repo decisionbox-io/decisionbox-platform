@@ -82,6 +82,15 @@ you set the project's optional **Context window (num_ctx)** field —
 otherwise the Ollama server's `OLLAMA_CONTEXT_LENGTH` (or model
 default) applies. This stays out of your way on tight-VRAM hosts.
 
+**If you see `context length exceeded` errors from Ollama**: the
+prompt-budgeting layer trims to the catalog's published window for
+your model, but your Ollama server is configured for a smaller
+window than the catalog. Either raise `OLLAMA_CONTEXT_LENGTH` on
+the Ollama host to match your needs, or set the project's
+**Context window (num_ctx)** field to your server's effective
+limit — that value is used both for the per-request `num_ctx`
+override and for budgeting, so the two stay aligned.
+
 Two things to know:
 
 - **Memory grows with `num_ctx`.** The Ollama server allocates a KV
