@@ -1,7 +1,5 @@
 # Development Setup
 
-> **Version**: 0.4.0
-
 This guide covers setting up a local development environment for contributing to DecisionBox.
 
 ## Prerequisites
@@ -83,7 +81,7 @@ When adding a new provider, create a new `go.mod` and add `replace` directives t
 ### Adding Functionality
 
 1. **Read existing code** — Understand the patterns before changing them
-2. **Follow the plugin pattern** — For new providers, use `Register()` in `init()`
+2. **Follow the plugin pattern** — For LLM/warehouse providers, use `RegisterWithMeta()` in `init()`; for secret providers, use `secrets.Register()`
 3. **Write tests first** — Unit tests for logic, integration tests for external services
 4. **No hardcoded values** — Use config or environment variables
 
@@ -94,7 +92,7 @@ When adding a new provider, create a new `go.mod` and add `replace` directives t
 | `services/api/internal/server/server.go` | All route registrations |
 | `services/agent/internal/discovery/orchestrator.go` | Discovery logic (the brain) |
 | `services/agent/agentserver/agentserver.go` | Agent startup, provider initialization (exported `Run()`) |
-| `libs/go-common/llm/registry.go` | LLM provider interface + registry |
+| `libs/go-common/llm/provider.go` / `libs/go-common/llm/registry.go` | LLM provider interface / registry + metadata |
 | `libs/go-common/warehouse/provider.go` | Warehouse provider interface |
 | `libs/go-common/secrets/provider.go` | Secret provider interface |
 | `ui/dashboard/src/lib/api.ts` | TypeScript API client (all types + endpoints) |

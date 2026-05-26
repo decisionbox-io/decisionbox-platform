@@ -1,7 +1,5 @@
 # Kubernetes Deployment
 
-> **Version**: 0.1.0
-
 Deploy DecisionBox on any Kubernetes cluster using Helm charts.
 
 ## Prerequisites
@@ -21,18 +19,18 @@ Ingress
 API Service (Go, port 8080, ClusterIP)
   ├── spawns Agent as K8s Jobs
   ├── connects to MongoDB
-  ├── connects to Qdrant (optional, for vector search)
+  ├── connects to Qdrant (required)
   ├── manages secrets (AES-256 or cloud provider)
   └── reads domain pack prompts from /app/domain-packs/
 
 Agent Jobs (Go, spawned per discovery run)
   ├── connects to MongoDB
-  ├── connects to Qdrant (optional, for indexing)
+  ├── connects to Qdrant (required for schema indexing)
   ├── calls LLM provider
   └── queries data warehouse
 
 MongoDB (standalone or Atlas)
-Qdrant (optional, for vector search)
+Qdrant (required for schema indexing, discovery, and semantic search)
 ```
 
 The API is internal only (`ClusterIP`) — never exposed to the internet. The dashboard is the only public-facing service and proxies all API requests server-side.
@@ -333,7 +331,7 @@ helm upgrade decisionbox-dashboard decisionbox/decisionbox-dashboard \
   -n decisionbox
 ```
 
-The API re-creates MongoDB indexes on startup (idempotent). No database migrations needed.
+The API re-creates MongoDB indexes on startup (idempotent) and runs idempotent startup migrations (e.g. seeding schema-index status for pre-existing projects). Keep one API replica during upgrades so a partially-applied migration isn't interleaved with new request traffic.
 
 ## Uninstalling
 

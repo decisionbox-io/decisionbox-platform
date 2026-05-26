@@ -1,8 +1,6 @@
 # Plugin Hooks
 
-> **Version**: Unreleased
-
-DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the community code.
+DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the platform code.
 Each hook is a leaf-level registry: a plugin imports it (often with a blank import) and calls `Register*` from `init()`; the platform consults the registry at the right moment in its normal flow.
 
 This page documents the seven hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
@@ -42,7 +40,7 @@ Behavior:
 - Calling `RegisterContextProvider` with a duplicate name or a nil provider panics.
 
 The platform's built-in knowledge-sources retriever registers itself through this hook (`libs/go-common/sources/contextprovider.go`).
-That registration is the canonical example — community behavior is identical to a single-call site, but the registry lets future plugins (column hints, area priorities, …) attach without orchestrator edits.
+That registration is the canonical example — built-in behavior is identical to a single-call site, but the registry lets future plugins (column hints, area priorities, …) attach without orchestrator edits.
 
 ## Hook 2 — `ListTables` filter
 
@@ -78,7 +76,7 @@ Rules:
 
 ## Hook 3 — Ask handler override
 
-Plugins can replace the community handler for `POST /api/v1/projects/{id}/ask` so they can add tool-use loops, agentic flows, or alternative synthesis on top of the platform.
+Plugins can replace the built-in handler for `POST /api/v1/projects/{id}/ask` so they can add tool-use loops, agentic flows, or alternative synthesis on top of the platform.
 
 ```go
 import (
@@ -100,8 +98,8 @@ func init() {
 
 Behavior:
 
-- The community route reads the override on every request, so plugins can register from `init()` or later.
-- With no override registered the community RAG handler runs unchanged.
+- The built-in route reads the override on every request, so plugins can register from `init()` or later.
+- With no override registered the built-in RAG handler runs unchanged.
 - Calling `RegisterAskOverride` with `nil` or twice panics — the override is process-global and silent shadowing would be a footgun.
 - The override receives the raw `*http.Request` after RBAC middleware (the route is gated at `viewer`); it is responsible for any further role checks (e.g. requiring `member` to mutate state).
 
@@ -142,7 +140,7 @@ Rules:
 ## Hook 5 — Discovery run completion
 
 Plugins can react to every discovery run that reaches a terminal state (`completed`, `failed`, or `cancelled`).
-Use it to enqueue a downstream side effect — generate an executive summary, post a Slack notification, write an audit record — without patching the agent or the run-completion path.
+Use it to enqueue a downstream side effect — generate a summary document, fire a webhook, write a record to an internal operational log — without patching the agent or the run-completion path.
 
 ```go
 import (
@@ -168,7 +166,7 @@ Behavior:
 - The API spins up a 15-second-tick background dispatcher only when at least one hook is registered. The dispatcher scans for runs in a terminal state (`completed` / `failed` / `cancelled`) whose `completion_hooks_fired_at` field is unset, fires every hook in registration order, and stamps the field once every hook returns `nil`.
 - A non-nil return from any hook leaves the run unmarked so every hook re-fires on the next tick. Hooks MUST therefore be idempotent — a peer hook failing on the same run will cause successful peers to be invoked again.
 - A hook that panics is recovered; its result records a panic-tagged error and subsequent hooks still run.
-- Hook execution is sequential within one run so an upstream hook (e.g. an audit record) finishes before a downstream one (e.g. a Slack notification) observes its side effect.
+- Hook execution is sequential within one run so an upstream hook (e.g. an internal record write) finishes before a downstream one (e.g. a webhook fire) observes its side effect.
 - The `RunCompletion` payload carries `RunID`, `DiscoveryID`, `ProjectID`, `Status`, `CompletedAt`, and `Error` (set only for `failed` runs). `RunID` is the `discovery_runs._id`; `DiscoveryID` is the `discoveries._id` the run produced and is what consumers should use to query `insights` / `recommendations` / `executive_summaries` / any collection keyed on `discovery_id`. The agent stamps `DiscoveryID` in `RunRepository.Complete` immediately before flipping the run to `completed`, so successful runs always carry it. `DiscoveryID` is empty for `failed` / `cancelled` runs (no discovery was produced) and for completed runs that pre-date the field (legacy data — a one-off backfill is the supported recovery path; a hook seeing an empty value should treat it as a hard error rather than guess).
 
 ## Hook 6 — Plugin route groups
@@ -199,7 +197,7 @@ Behavior:
 - Prefixes must start with `/` and must not end with one (the mux appends the trailing slash). The empty string, a `nil` handler, and a duplicate prefix all panic at registration time so a typo fails noisily during boot rather than silently shadowing a built-in route.
 - Groups are mounted after built-in routes; Go's longest-match rule keeps built-in routes preferred for the exact prefixes they own.
 
-The community build registers no route groups; the registry is a no-op until a plugin attaches.
+The default build registers no route groups; the registry is a no-op until a plugin attaches.
 
 ## Hook 7 — External model registry
 
@@ -241,11 +239,11 @@ Behavior:
 - Empty project IDs / model IDs on the wrapper functions return an error so plugins don't accidentally expose entries without project scope.
 - Registering `nil` panics. Order of registration is preserved; later extenders see calls only when earlier ones disclaim ownership (for `Resolve`) or after earlier ones finish (for `Extend`).
 
-The community build registers no extenders; both endpoints return empty lists until a plugin attaches.
+The default build registers no extenders; both endpoints return empty lists until a plugin attaches.
 
 ## Migration & compatibility
 
 These hooks are additive — plugins that don't care about a given hook simply do not register.
-The community code paths invoke the registries unconditionally; an empty registry is a no-op.
+The platform code paths invoke the registries unconditionally; an empty registry is a no-op.
 
 A reference consumer for context providers (`libs/go-common/sources`) and a regression guard in the orchestrator (`orchestrator_plugin_hooks_test.go`) keep the prompt output byte-for-byte stable when no plugin is loaded.

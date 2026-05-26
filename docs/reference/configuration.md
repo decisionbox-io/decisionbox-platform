@@ -1,7 +1,5 @@
 # Configuration Reference
 
-> **Version**: 0.4.0
-
 All DecisionBox services are configured via environment variables. This page lists every variable, its default, and which service uses it.
 
 ## Agent
@@ -97,7 +95,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--mode` | No | `run` | Agent mode. `run` performs discovery (default). |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema`, `pack-gen`, or `validate-doc`. Empty runs discovery (the default). |
 | `--project-id` | Yes | — | Project ID to run discovery for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
@@ -107,6 +105,8 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 | `--skip-cache` | No | `false` | Force re-discovery of warehouse schemas (ignore cache). |
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to MongoDB (TTL: 30 days). |
 | `--test` | No | `false` | Test mode — limits analysis for faster runs. |
+| `--test-connection` | No | *(empty)* | Test a provider connection and exit. One of `warehouse`, `llm`, `embedding`, `blurb-llm`. |
+| `--job-id` | No | *(empty)* | ValidationJob `_id` when `--mode=validate-doc`. Ignored in other modes. |
 
 ---
 

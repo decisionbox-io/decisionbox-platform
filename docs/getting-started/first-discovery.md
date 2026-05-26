@@ -55,22 +55,20 @@ For provider-specific configuration (Vertex AI project ID, Bedrock region), addi
 
 ### Schedule
 
-Leave **disabled** for now. You'll trigger runs manually. Scheduling can be enabled later in project settings.
+Scheduling is **enabled by default** for nightly runs. Turn it off if you'd rather trigger runs manually.
 
 Click **Create Project**.
 
-## Step 2: Add Your API Key
+## Step 2: Credentials
 
-After creating the project, go to **Settings** → **AI Provider** tab.
+The project-creation wizard already collected the credentials it needs and stored them as project-scoped secrets:
 
-1. Select **LLM API Key** from the dropdown
-2. Enter your API key
-3. Click **Save Secret**
+- `llm-credentials` — your LLM API key
+- `warehouse-credentials` — your warehouse SA key / DB password (skipped when the warehouse uses the cluster's cloud identity)
+- `embedding-credentials` — your embedding provider key (required — schema indexing and `/ask` both depend on it)
+- `blurb-llm-credentials` — only present when you configured a separate per-project Blurb LLM
 
-If your warehouse requires credentials (e.g., BigQuery from outside GCP):
-1. Select **Warehouse Credentials (SA Key JSON)**
-2. Paste your service account JSON key
-3. Click **Save Secret**
+To rotate any of these later, open **Settings** → **Data Warehouse** or **AI Provider** and re-save the field.
 
 ## Step 3: Fill in Your Profile (Optional but Recommended)
 
@@ -90,7 +88,7 @@ The form is generated from the domain pack's JSON Schema — different domains h
 
 ## Step 4: Run Discovery
 
-Click **Run discovery** in the top bar.
+Wait for **Settings → Schema Index** to reach **Ready** — the Run discovery button stays disabled until the schema index is built. Then click **Run discovery** in the top bar.
 
 The dropdown lets you configure:
 - **Exploration steps**: More steps = more comprehensive (default: 100). Start with 50-100 for your first run.

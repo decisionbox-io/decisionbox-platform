@@ -1,7 +1,5 @@
 # Terraform — Azure
 
-> **Version**: 0.2.0
-
 Provision a production-ready AKS cluster for DecisionBox using the included Terraform module.
 
 ## What It Creates
@@ -44,7 +42,8 @@ The wizard prompts for:
 5. Terraform state (Azure Storage Account, auto-creates if needed)
 6. VM size and node scaling
 7. Key Vault (optional)
-8. `SECRET_ENCRYPTION_KEY` (auto-generates or user-provided)
+8. Vector search / Qdrant configuration
+9. `SECRET_ENCRYPTION_KEY` (auto-generates or user-provided)
 
 After provisioning, it automatically:
 - Configures `kubectl` credentials via `az aks get-credentials`

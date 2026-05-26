@@ -1,7 +1,5 @@
 # CLI Reference
 
-> **Version**: 0.4.0
-
 The DecisionBox agent (`decisionbox-agent`) is a standalone Go binary. It's typically spawned by the API, but can be run directly for testing and debugging.
 
 ## Usage
@@ -24,6 +22,9 @@ decisionbox-agent [flags]
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to the `discovery_debug_logs` MongoDB collection (TTL: 30 days). Includes full LLM requests/responses. |
 | `--test` | No | `false` | Test mode. Limits analysis to one area for faster iteration. |
 | `--include-log` | No | `false` | Include the full exploration log in discovery result output. |
+| `--test-connection` | No | *(empty)* | Test a provider connection and exit. One of `warehouse`, `llm`, `embedding`, or `blurb-llm`. |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` (build the project's schema retrieval index and exit), `pack-gen` (generate a domain pack — requires a registered pack-generation provider), or `validate-doc` (validate one insight or recommendation for the job named by `--job-id`). Empty runs discovery. |
+| `--job-id` | No | *(empty)* | ValidationJob `_id` when `--mode=validate-doc`. Ignored in other modes. |
 
 ## Examples
 
@@ -98,7 +99,7 @@ The agent writes structured logs to **stderr** (not stdout). In `dev` mode, logs
 ```bash
 # Dev mode (default)
 2026-03-14T10:30:00.000Z  INFO  Starting DecisionBox Agent  {"project_id": "507f...", "max_steps": 100}
-2026-03-14T10:30:01.000Z  INFO  Phase 2: Discovering schemas  {"datasets": ["analytics"]}
+2026-03-14T10:30:01.000Z  INFO  Discovering schemas  {"datasets": ["analytics"]}
 2026-03-14T10:30:05.000Z  INFO  Exploration step starting  {"step": 1, "max": 100}
 
 # Prod mode (ENV=prod)

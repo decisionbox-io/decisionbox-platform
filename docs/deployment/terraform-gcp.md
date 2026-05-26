@@ -1,7 +1,5 @@
 # Terraform — GCP
 
-> **Version**: 0.3.0
-
 Provision a production-ready GKE cluster for DecisionBox using the included Terraform module.
 
 ## What It Creates
@@ -42,7 +40,8 @@ The wizard prompts for:
 5. Terraform state bucket (auto-creates if needed)
 6. Machine type and node scaling
 7. BigQuery IAM (optional)
-8. `SECRET_ENCRYPTION_KEY` (auto-generates or user-provided)
+8. Vector search / Qdrant configuration
+9. `SECRET_ENCRYPTION_KEY` (auto-generates or user-provided)
 
 After provisioning, it automatically:
 - Configures `kubectl` credentials
@@ -269,7 +268,7 @@ All variables are defined in `terraform/gcp/modules/decisionbox/variables.tf`.
 
 ## Workload Identity
 
-The module creates a GCP service account and binds it to a Kubernetes service account via [Workload Identity](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity). This allows the API pod to authenticate to GCP services (Secret Manager, BigQuery) without storing credentials.
+The module creates GCP service accounts and binds them to Kubernetes service accounts via [Workload Identity](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity). This allows the API pod to authenticate to Secret Manager and the Agent pod to authenticate to BigQuery / Vertex AI without storing credentials.
 
 ```
 K8s ServiceAccount: decisionbox/decisionbox-api

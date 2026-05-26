@@ -1,7 +1,5 @@
 # Creating Domain Packs
 
-> **Version**: 0.4.0
-
 A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one.
 
 Domain packs are JSON documents stored in MongoDB. No Go code is needed. You can create domain packs in two ways:
@@ -395,8 +393,8 @@ The `decisionbox-domain-pack` format is a self-contained JSON document:
 ```json
 {
   "format": "decisionbox-domain-pack",
-  "version": 1,
-  "domain_pack": {
+  "format_version": 1,
+  "pack": {
     "name": "E-Commerce",
     "slug": "ecommerce",
     "description": "Purchase funnel, revenue, and retention analytics for online stores",

@@ -111,13 +111,13 @@ Per-action counters live on `discovery_runs`:
 
 The same "catalog alone is not enough" pressure that drove the on-demand
 schema retrieval design above hits the verification phase too. The verifier
-is a single LLM call per insight (no exploration tool loop), so it cannot
-issue `lookup_schema` mid-prompt. On warehouses with non-English /
-abbreviated column names a customer report against an MSSQL Netsis-style
-warehouse on 2026-04-30 saw 9 of 10 insights end with
-`validation.status = "error"` and `Invalid column name 'TARIiH' /
-'STHAR_SUBE' / 'SUBEKODU' / …` — the verifier had no column information,
-so it guessed.
+now runs a bounded tool loop per insight/recommendation, so it can issue
+`lookup_schema`, `query_warehouse`, `read_step_rows`, and `submit_verdict`
+envelopes during validation. On warehouses with non-English / abbreviated
+column names a customer report against an MSSQL Netsis-style warehouse on
+2026-04-30 saw 9 of 10 insights end with `validation.status = "error"` and
+`Invalid column name 'TARIiH' / 'STHAR_SUBE' / 'SUBEKODU' / …` — the
+verifier had no column information, so it guessed.
 
 The verification-grounding fix layers in three steps:
 
@@ -125,7 +125,7 @@ The verification-grounding fix layers in three steps:
 |-------|-----------|
 | 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). |
 | 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. Per-warehouse `prompts/sql_fix.md` templates gain a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` section that's stripped on the explore path (zero opts) and populated on the validate path. |
-| 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop (up to `MaxLookupsPerVerification = 6` rounds per insight) for cross-table cases that source steps don't cover. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. A shared action parser (`ai.ParseAction(response, allowed)`) takes an allow-list so the verifier loop accepts only `lookup_schema` and `query_data` — `complete` and other explorer-only actions are rejected. When the lookup budget is exhausted before the model emits a query, one forced final round (NOT counted against the budget) is allowed; failure to emit a query after that surfaces as `validation.status="error"` with a clear telemetry signal. |
+| 3     | Verifier owns its own `SchemaProvider` and runs through `VALIDATION_VERIFIER_MAX_ROUNDS` (default 8); the refuter uses `VALIDATION_REFUTER_MAX_ROUNDS` (default 6). The verifier action parser accepts only `lookup_schema`, `query_warehouse`, `read_step_rows`, and `submit_verdict`. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. |
 
 Layer 1 is implemented in `services/agent/internal/validation/render` (the
 `RenderVerificationContext` helper) and consumed by the verifier prompt
@@ -153,7 +153,8 @@ tunable via `VALIDATION_VERIFIER_MAX_ROUNDS` / `VALIDATION_REFUTER_MAX_ROUNDS`).
 The verifier reuses the catalog/Qdrant `CacheSchemaProvider` the explorer
 already uses; the orchestrator forwards the same instance via the bundle
 so cross-table lookups hit the same cache. The shared action parser
-(`verifier/action.go ParseAction`) takes an allow-list; the verifier passes
+(`services/agent/internal/validation/verifier/action.go`'s `ParseAction`)
+takes an allow-list; the verifier passes
 `{lookup_schema, query_warehouse, read_step_rows, submit_verdict}` and
 refuses any other top-level key.
 

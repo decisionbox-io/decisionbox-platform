@@ -1,7 +1,5 @@
 # Makefile Targets Reference
 
-> **Version**: 0.4.0
-
 All common commands are available via `make`. Run `make help` to see the full list.
 
 ## Docker Compose
@@ -27,7 +25,7 @@ All common commands are available via `make`. Run `make help` to see the full li
 
 | Target | Description | Requirements |
 |--------|-------------|--------------|
-| `make test` | Run all tests (Go + UI) | Docker for integration tests |
+| `make test` | Run all unit tests (Go + UI) | Go toolchain, Node.js |
 | `make test-go` | Run all Go unit tests across all modules | None |
 | `make test-integration` | Run integration tests (MongoDB testcontainer) | Docker |
 | `make test-k8s` | Run K8s runner integration tests (K3s testcontainer) | Docker |
@@ -52,6 +50,8 @@ export INTEGRATION_TEST_ANTHROPIC_API_KEY=sk-ant-...    # Claude
 export INTEGRATION_TEST_OPENAI_API_KEY=sk-...           # OpenAI
 export INTEGRATION_TEST_VERTEX_PROJECT_ID=my-gcp-proj   # Vertex AI (+ GCP ADC)
 export INTEGRATION_TEST_BEDROCK_REGION=us-east-1        # Bedrock (+ AWS creds)
+export INTEGRATION_TEST_AZURE_FOUNDRY_ENDPOINT=https://<resource>.openai.azure.com  # Azure Foundry
+export INTEGRATION_TEST_AZURE_FOUNDRY_API_KEY=<key>     # Azure Foundry
 
 make test-llm
 ```
@@ -94,8 +94,8 @@ make dev-dashboard
 ### Custom Registry and Tags
 
 ```bash
-make docker-build REGISTRY=my-registry.com/myorg TAG=v0.2.0
-make docker-push REGISTRY=my-registry.com/myorg TAG=v0.2.0
+make docker-build REGISTRY=my-registry.com/myorg TAG=latest
+make docker-push REGISTRY=my-registry.com/myorg TAG=latest
 ```
 
 Defaults: `REGISTRY=ghcr.io/decisionbox-io`, `TAG=latest`.

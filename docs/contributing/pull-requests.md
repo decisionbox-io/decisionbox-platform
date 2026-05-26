@@ -1,7 +1,5 @@
 # Pull Requests
 
-> **Version**: 0.1.0
-
 Guidelines for contributing code to DecisionBox.
 
 ## Before You Start
@@ -81,7 +79,7 @@ test(llm): add Claude integration tests with error paths
 - [ ] ConfigFields defined for dashboard form rendering
 - [ ] LLM providers: `ProviderMeta.Models` populated with `Wire`, `MaxOutputTokens`, `Pricing`, plus `Aliases` covering every cross-region / suffix / short-form variant; `DefaultMaxOutputTokens` set
 - [ ] Warehouse providers: `DefaultPricing` set
-- [ ] Imported in both `services/agent/main.go` and `services/api/main.go`
+- [ ] Imported in both `services/agent/agentserver/agentserver.go` and `services/api/apiserver/apiserver.go`
 - [ ] `replace` directive in both service go.mod files
 - [ ] Dockerfile COPY line for go.mod/go.sum
 - [ ] Added to Makefile test targets
@@ -90,14 +88,13 @@ test(llm): add Claude integration tests with error paths
 
 ### For Domain Pack PRs
 
-- [ ] areas.json with proper field structure
-- [ ] All prompt files referenced in areas.json exist
-- [ ] base_context.md includes `{{PROFILE}}` and `{{PREVIOUS_CONTEXT}}`
+- [ ] Portable JSON envelope: top-level `format`, `format_version`, `pack` keys
+- [ ] `pack.analysis_areas` carries an inline `prompt` string per area (not a `prompt_file` reference)
+- [ ] `pack.base_context` includes `{{PROFILE}}` and `{{PREVIOUS_CONTEXT}}`
 - [ ] Analysis prompts include `{{QUERY_RESULTS}}`
 - [ ] Recommendations prompt includes `related_insight_ids` instruction
 - [ ] Profile schema is valid JSON Schema (draft 2020-12)
-- [ ] Go implementation with tests
-- [ ] Registered in both services
+- [ ] Pack imported via the dashboard or `POST /api/v1/domain-packs/import` and verified end-to-end
 
 ## PR Template
 

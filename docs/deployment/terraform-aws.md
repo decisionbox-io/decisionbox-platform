@@ -1,7 +1,5 @@
 # Terraform — AWS
 
-> **Version**: 0.3.0
-
 Provision a production-ready EKS cluster for DecisionBox using the included Terraform module.
 
 ## What It Creates

@@ -15,11 +15,12 @@ cd decisionbox-platform
 docker compose up -d
 ```
 
-This starts three containers:
+This starts four containers:
 
 | Service | Port | Description |
 |---------|------|-------------|
 | MongoDB | 27017 | Database (projects, discoveries, secrets) |
+| Qdrant | 6333/6334 | Vector store (schema-index + insight/recommendation vectors) |
 | API | 8080 | REST API (not exposed publicly — dashboard proxies to it) |
 | Dashboard | 3000 | Web UI |
 
@@ -31,8 +32,8 @@ Click **New Project** and fill in:
 
 1. **Basics** — Project name, domain (e.g., Gaming or Social Network), category (e.g., Match-3, Idle, Casual, Content Sharing)
 2. **Data Warehouse** — Select your warehouse provider and enter connection details
-3. **AI Provider** — Select your LLM provider, model, and API key (Claude, OpenAI). Providers that use cloud auth (Vertex AI, Bedrock, Ollama) don't need a key.
-4. **Schedule** — Leave disabled for now (you'll trigger runs manually)
+3. **AI Provider + Embedding** — Select your LLM provider, model, and API key (Claude, OpenAI); also pick an embedding provider (required — schema indexing and `/ask` both depend on it). Providers that use cloud auth (Vertex AI, Bedrock, Ollama) don't need a key.
+4. **Schedule** — Enabled by default for nightly runs; turn it off if you'd rather trigger runs manually.
 
 Click **Create Project**. Your API key is encrypted and stored per-project.
 
@@ -42,7 +43,7 @@ Go to **Settings** → **Data Warehouse** or **AI Provider** tab and click **Tes
 
 ## 4. Run Your First Discovery
 
-Click the **Run discovery** button in the top bar. The AI agent will:
+Wait for **Settings → Schema Index** to reach **Ready** — the discovery button stays disabled until the schema index is built. Then click the **Run discovery** button in the top bar. The AI agent will:
 
 1. Discover your warehouse table schemas
 2. Autonomously write and execute SQL queries

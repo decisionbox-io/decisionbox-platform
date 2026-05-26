@@ -1,7 +1,5 @@
 # Schema Indexing
 
-> **Version**: 0.4.0+
-
 Every project builds a persistent, searchable schema index before its
 first discovery run. The index lets discovery work on warehouses of any
 size (ERPs with 2K+ tables) without dumping every table's columns into
@@ -35,13 +33,10 @@ rebuilt on every user-triggered re-index.
 
 ## Default models
 
-Defaults are the winning combo from the FINDINGS.md spike against a
-real 2K-table ERP warehouse:
+Defaults were validated against a real 2K-table ERP warehouse:
 
-- **Blurb model**: `bedrock/qwen.qwen3-32b-v1:0` — perfect MRR on
-  curated queries, ~$0.004 / 50 tables, 830 ms/table.
-- **Embedding model**: `openai/text-embedding-3-large` — top R@5 on
-  every combination tested; Turkish + English queries equivalent.
+- **Blurb model**: the project's analysis LLM unless a project-specific blurb LLM is configured in Settings → Schema Index. (Earlier installs defaulted to `bedrock/qwen.qwen3-32b-v1:0` — perfect MRR on curated queries, ~$0.004 / 50 tables, 830 ms/table — which remains a strong opt-in choice.)
+- **Embedding model**: `openai/text-embedding-3-large` — top R@5 across every combination tested; Turkish and English queries are equivalent.
 
 Fallbacks by preference:
 
@@ -58,12 +53,14 @@ produced empty blurbs in every spike combo.
 
 ## Lifecycle
 
-Four states on `project.schema_index_status`:
+Six states on `project.schema_index_status`:
 
 ```
-pending_indexing ──┬─> indexing ──┬─> ready    ── Run discovery works
-                   │              └─> failed   ── Retry indexing button
-                   └── (user clicks Re-index at any time)
+pending_indexing ──┬─> indexing ──┬─> ready          ── Run discovery works
+                   │              ├─> failed         ── Retry indexing button
+                   │              └─> cancelled      ── User stopped an in-flight run
+                   ├── (user clicks Re-index at any time)
+                   └── needs_reindex                 ── Set when warehouse / dataset config drifts
 ```
 
 - **`pending_indexing`** — project needs indexing; worker hasn't
@@ -74,11 +71,12 @@ pending_indexing ──┬─> indexing ──┬─> ready    ── Run discov
 - **`ready`** — collection populated; discovery + `/ask` work.
 - **`failed`** — last attempt failed. Error surfaced in the dashboard;
   user clicks Retry indexing → back to `pending_indexing`.
+- **`cancelled`** — the user stopped the in-flight indexer. Partial progress is discarded; user clicks Retry to start over.
+- **`needs_reindex`** — the platform detected a drift (warehouse swap, dataset list change) that invalidates the current index. The dashboard surfaces a banner; user clicks Re-index to rebuild.
 
 ## Triggering a re-index
 
-Re-indexing is **user-triggered only** (plan §3.3). None of these
-auto-reindex:
+Re-indexing is **user-triggered only**. None of these auto-reindex:
 
 - Warehouse config change
 - Dataset / filter change
@@ -130,17 +128,11 @@ usually trips them on a single account.)
 
 ## Failure modes
 
-Indexing runs are all-or-nothing per plan §3.2: on failure the
-collection is left dropped and the next user-triggered retry starts
-from a clean slate. Partial progress is thrown away. A 30-min FINPORT
-rebuild that dies at minute 25 costs $0.60 + 6 min to redo — the
-simplicity of full rebuilds is worth the occasional redo.
+Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo.
 
 ## Qdrant is required
 
-Qdrant is a hard dependency for the platform. Without it, discovery
-and `/ask` both return 409 with an explicit error. The API server
-logs a warning at startup when `QDRANT_URL` is not set.
+Qdrant is a hard dependency for the platform. Without `QDRANT_URL` set, schema indexing fails and discovery stays blocked until the index is ready; vector search and `/ask` return `503 Service Unavailable` with an explicit error body. The API server logs a warning at startup when `QDRANT_URL` is not set.
 
 ## Relevant env vars
 
@@ -156,7 +148,7 @@ in the agent today; if a per-deployment override becomes useful it
 should be wired through `RenderOptions.Budget` rather than re-introduced
 as an env var.
 
-The pre-v0.4 knobs `SCHEMA_RETRIEVAL_TOP_K`, `SCHEMA_RETRIEVAL_TOP_K_NOTOOL`,
+The legacy knobs `SCHEMA_RETRIEVAL_TOP_K`, `SCHEMA_RETRIEVAL_TOP_K_NOTOOL`,
 and the per-project `project.schema_retrieval.top_k` field were retired
 when discovery moved to on-demand schema actions — discovery no longer
 performs an upfront top-K retrieval at all, and `search_tables`

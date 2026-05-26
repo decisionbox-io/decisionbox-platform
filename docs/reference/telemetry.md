@@ -1,7 +1,5 @@
 # Telemetry
 
-> **Version**: 0.4.0
-
 DecisionBox collects anonymous usage telemetry to help us understand how the platform is used, prioritize features, and improve reliability.
 Telemetry is enabled by default and can be disabled with a single environment variable.
 
@@ -43,7 +41,7 @@ No PII, query content, table names, credentials, or warehouse data is ever colle
 | Signal | Example | Purpose |
 |--------|---------|---------|
 | Install ID | Random UUID | Count unique deployments |
-| Version | `0.4.0` | Version distribution |
+| Version | `<release>` | Version distribution |
 | Go version | `go1.25.0` | Runtime compatibility |
 | OS / architecture | `linux/amd64` | Platform support |
 | Deployment method | `kubernetes` | Deployment prioritization |

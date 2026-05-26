@@ -1,7 +1,5 @@
 # Architecture
 
-> **Version**: 0.3.0
-
 DecisionBox has three services, one database, and a plugin system for extensibility. There are no message queues, caches, or event streams — just MongoDB.
 
 ## System Overview
@@ -181,7 +179,7 @@ warehouse.RegisterMiddleware("my-plugin", func(p warehouse.Provider) warehouse.P
 })
 
 // HTTP middleware — wraps all API requests
-apiserver.RegisterGlobalMiddleware(func(next http.Handler) http.Handler {
+apiserver.RegisterGlobalMiddleware("my-plugin", func(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         // custom logic before/after
         next.ServeHTTP(w, r)
