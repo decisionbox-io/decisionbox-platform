@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -303,11 +304,25 @@ func Run() {
 	validationWorkerCtx, validationWorkerCancel = context.WithCancel(ctx)
 	go validationWorker.Start(validationWorkerCtx)
 
+	// Pack-generation goroutines run inside the API process (not in a
+	// spawned subprocess), so we need a dedicated context whose lifetime
+	// is the API process — NOT the inbound HTTP request — for them to
+	// inherit from. The handler passes this context to the orchestrator
+	// when spawning a goroutine; the shutdown sequence below cancels it
+	// before HTTP drain to give in-flight runs a chance to land terminal
+	// state through the orchestrator's revert path. packgenWG tracks
+	// every spawned goroutine so we can bound-wait for them all to
+	// finish their cleanup before Mongo disconnects.
+	serverBackgroundCtx, cancelServerBackground := context.WithCancel(context.Background())
+	defer cancelServerBackground()
+	var packgenWG sync.WaitGroup
+
 	// HTTP server
 	handler := server.NewWithRouteGroups(
 		db, healthHandler, secretProvider, authProvider,
 		droppersAsHandlerInterface(schemaDropper), indexCancellerOrNil(indexWorker),
 		validationWorker,
+		serverBackgroundCtx, &packgenWG,
 		RegisteredRouteGroups(),
 		qdrantProvider,
 	)
@@ -353,6 +368,16 @@ func Run() {
 		validationWorkerCancel()
 	}
 
+	// Cancel the pack-generation goroutines' parent context and wait
+	// (bounded) for them to complete their cleanup before draining HTTP.
+	// Order matters: Mongo must still be connected when each goroutine's
+	// orchestrator-revert + FinalizePackGenIfStuck defer write terminal
+	// state. The bound covers the orchestrator's own 5-second detached
+	// revert + the handler defer's 5-second `FinalizePackGenIfStuck` +
+	// slack, and runs OUTSIDE the HTTP shutdownCtx's 10-second budget.
+	cancelServerBackground()
+	waitWithTimeout(&packgenWG, 15*time.Second)
+
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -360,6 +385,21 @@ func Run() {
 		apilog.WithError(err).Error("Shutdown error")
 	}
 	apilog.Info("Server stopped")
+}
+
+// waitWithTimeout blocks until either the WaitGroup completes or the
+// duration elapses. Returns silently in both cases — the caller treats
+// "drain incomplete" as best-effort and proceeds with HTTP shutdown.
+func waitWithTimeout(wg *sync.WaitGroup, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
 }
 
 func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, func(), error) {

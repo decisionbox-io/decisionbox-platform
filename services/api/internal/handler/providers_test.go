@@ -142,6 +142,12 @@ func (r *stubProjectRepo) CountWithWarehouse(context.Context) (int, error)      
 func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, string) error {
 	return nil
 }
+func (r *stubProjectRepo) EnqueuePackGen(_ context.Context, _, runID string) (string, bool, error) {
+	return runID, false, nil
+}
+func (r *stubProjectRepo) FinalizePackGenIfStuck(context.Context, string, string) error {
+	return nil
+}
 
 func TestProvidersHandler_ListLiveLLMModelsForProject_ProjectNotFound(t *testing.T) {
 	repo := &stubProjectRepo{project: nil}

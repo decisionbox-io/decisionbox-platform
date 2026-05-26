@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
@@ -26,7 +27,7 @@ import (
 // nil when Qdrant is not configured; /reindex then relies on the
 // worker's pre-run drop as the source of truth.
 func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, vectorStore ...vectorstore.Provider) http.Handler {
-	return NewWithRouteGroups(db, healthHandler, secretProvider, authProvider, schemaCollectionDropper, indexCanceller, nil, nil, vectorStore...)
+	return NewWithRouteGroups(db, healthHandler, secretProvider, authProvider, schemaCollectionDropper, indexCanceller, nil, context.Background(), nil, nil, vectorStore...)
 }
 
 // NewWithRouteGroups is New with an explicit slice of additional route
@@ -38,7 +39,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 // The community Run() retrieves its groups from apiserver's registry and
 // forwards them here; tests pass groups directly to avoid touching the
 // global registry.
-func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, validationCanceller handler.ValidationJobCanceller, routeGroups []RouteGroup, vectorStore ...vectorstore.Provider) http.Handler {
+func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, validationCanceller handler.ValidationJobCanceller, serverBackgroundCtx context.Context, packgenWG *sync.WaitGroup, routeGroups []RouteGroup, vectorStore ...vectorstore.Provider) http.Handler {
 	var vs vectorstore.Provider
 	if len(vectorStore) > 0 {
 		vs = vectorStore[0]
@@ -111,7 +112,16 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
 		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller)
-	packGenerate := handler.NewPackGenerateHandler(projectRepo)
+	// Pack-generate runs asynchronously; the handler spawns a goroutine
+	// on the server-lifetime context and tracks it on packgenWG so the
+	// apiserver's shutdown drain can wait for in-flight runs.
+	pgWG := packgenWG
+	if pgWG == nil {
+		// Tests / `New` use this fallback so the handler can still
+		// service synchronous validation paths without a real drain.
+		pgWG = &sync.WaitGroup{}
+	}
+	packGenerate := handler.NewPackGenerateHandler(projectRepo, serverBackgroundCtx, pgWG)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)

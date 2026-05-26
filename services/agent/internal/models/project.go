@@ -49,6 +49,14 @@ type Project struct {
 	// successful Generate.
 	PackGenLastError string `bson:"pack_gen_last_error,omitempty" json:"pack_gen_last_error,omitempty"`
 
+	// PackGenRequest is the durable launch marker the pack-generate
+	// HTTP handler writes when the user kicks off an async run. The
+	// agent only reads this for visibility — every orchestrator
+	// terminal write unsets the field as part of the same Mongo update
+	// that flips state. Mirrors services/api/models.Project — keep the
+	// two struct definitions in sync.
+	PackGenRequest *PackGenRequest `bson:"pack_gen_request,omitempty" json:"pack_gen_request,omitempty"`
+
 	Status        string     `bson:"status" json:"status"`
 	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 	LastRunStatus string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
@@ -179,4 +187,13 @@ type GeneratePackConfig struct {
 	PackName    string `bson:"pack_name" json:"pack_name"`
 	PackSlug    string `bson:"pack_slug" json:"pack_slug"`
 	Description string `bson:"description,omitempty" json:"description,omitempty"`
+}
+
+// PackGenRequest is the durable in-flight marker the pack-generate
+// handler writes when a generation is kicked off. Mirrors
+// services/api/models.PackGenRequest — keep the two struct definitions
+// in sync.
+type PackGenRequest struct {
+	RunID       string    `bson:"run_id" json:"run_id"`
+	RequestedAt time.Time `bson:"requested_at" json:"requested_at"`
 }

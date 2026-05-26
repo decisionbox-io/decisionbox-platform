@@ -28,6 +28,38 @@ type ProjectRepo interface {
 	// invariants (ready stamps updated_at, failed carries the error,
 	// others clear it).
 	SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error
+
+	// EnqueuePackGen atomically marks a project as having an in-flight
+	// pack-generation run. Predicate: state == pack_generation_pending
+	// AND generate_pack.enabled == true AND pack_gen_request == null.
+	// On match it sets `pack_gen_request` to {RunID, RequestedAt} and
+	// clears `pack_gen_last_error` in the same update so the wizard's
+	// retry-after-failure flow lands at a clean slate.
+	//
+	// Returns:
+	//   - alreadyQueued=true + existingRunID populated when the predicate
+	//     failed because a marker is already set (idempotent path —
+	//     handler returns 202 with this run_id).
+	//   - alreadyQueued=false + ErrPackGenStateMismatch when state is
+	//     wrong (handler maps to 409).
+	//   - alreadyQueued=false + ErrPackGenNotEnabled when GeneratePack
+	//     is not enabled (handler maps to 400).
+	//   - alreadyQueued=false + nil err on a fresh successful enqueue
+	//     (handler spawns goroutine + returns 202).
+	EnqueuePackGen(ctx context.Context, id, runID string) (existingRunID string, alreadyQueued bool, err error)
+
+	// FinalizePackGenIfStuck is the handler-side safety net. Conditional
+	// UpdateOne: writes only when `state` is in {pack_generation_pending,
+	// pack_generation} AND `pack_gen_request` is still set. Sets state to
+	// pack_generation_pending, `pack_gen_last_error` to errMsg, and
+	// $unsets pack_gen_request. No-op when state is already
+	// pack_generation_done or when the marker is absent (the orchestrator's
+	// own terminal write already won the race).
+	//
+	// Called via `defer` in the handler-spawned goroutine to clean up
+	// the early-cancel window (ctx canceled before the orchestrator's
+	// in-process revertOnError closure exists) and the panic case.
+	FinalizePackGenIfStuck(ctx context.Context, id, errMsg string) error
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.

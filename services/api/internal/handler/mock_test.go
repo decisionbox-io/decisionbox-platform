@@ -29,14 +29,16 @@ type mockProjectRepo struct {
 	projects map[string]*models.Project
 	nextID   int
 
-	createErr        error
-	getErr           error
-	listErr          error
-	updateErr        error
-	deleteErr        error
-	deleteCascadeErr error
-	setStatusErr     error
-	cascadeCalls     []string
+	createErr          error
+	getErr             error
+	listErr            error
+	updateErr          error
+	deleteErr          error
+	deleteCascadeErr   error
+	setStatusErr       error
+	enqueuePackGenErr  error
+	finalizePackGenErr error
+	cascadeCalls       []string
 }
 
 func newMockProjectRepo() *mockProjectRepo {
@@ -178,6 +180,65 @@ func (m *mockProjectRepo) SetSchemaIndexStatus(_ context.Context, id, status, er
 	} else {
 		p.SchemaIndexError = ""
 	}
+	return nil
+}
+
+// EnqueuePackGen mirrors database.ProjectRepository.EnqueuePackGen.
+// Implements the same predicate-fail classification rules so handler
+// tests exercise every HTTP response branch.
+func (m *mockProjectRepo) EnqueuePackGen(_ context.Context, id, runID string) (string, bool, error) {
+	if m.enqueuePackGenErr != nil {
+		return "", false, m.enqueuePackGenErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.projects[id]
+	if !ok {
+		return "", false, fmt.Errorf("project not found")
+	}
+	if p.PackGenRequest != nil {
+		return p.PackGenRequest.RunID, true, nil
+	}
+	if p.GeneratePack == nil || !p.GeneratePack.Enabled {
+		return "", false, database.ErrPackGenNotEnabled
+	}
+	if p.EffectiveState() != models.ProjectStatePackGenerationPending {
+		return "", false, fmt.Errorf("%w (current: %s)", database.ErrPackGenStateMismatch, p.EffectiveState())
+	}
+	p.PackGenRequest = &models.PackGenRequest{
+		RunID:       runID,
+		RequestedAt: time.Now(),
+	}
+	p.PackGenLastError = ""
+	p.UpdatedAt = time.Now()
+	return runID, false, nil
+}
+
+// FinalizePackGenIfStuck mirrors database.ProjectRepository.FinalizePackGenIfStuck.
+// No-op when state is already pack_generation_done or when the marker is
+// absent (orchestrator's own terminal write already won).
+func (m *mockProjectRepo) FinalizePackGenIfStuck(_ context.Context, id, errMsg string) error {
+	if m.finalizePackGenErr != nil {
+		return m.finalizePackGenErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.projects[id]
+	if !ok {
+		// Mongo's UpdateOne is a no-op on missing _id; mirror that.
+		return nil
+	}
+	if p.PackGenRequest == nil {
+		return nil
+	}
+	state := p.EffectiveState()
+	if state != models.ProjectStatePackGenerationPending && state != models.ProjectStatePackGeneration {
+		return nil
+	}
+	p.State = models.ProjectStatePackGenerationPending
+	p.PackGenLastError = errMsg
+	p.PackGenRequest = nil
+	p.UpdatedAt = time.Now()
 	return nil
 }
 

@@ -106,6 +106,13 @@ containerSecurityContext:
 
 automountServiceAccountToken: true
 
+# Pods are SIGTERM'd by the kubelet on rolling-deploy / scale-down /
+# eviction. The API drains pack-generation goroutines (up to 15 s) and
+# then drains HTTP (up to 10 s) before exiting, total ≤ 25 s worst-case.
+# Default 45 s leaves headroom for signal delivery, scheduler latency,
+# and Mongo round-trip without truncating long pack-gen runs.
+terminationGracePeriodSeconds: 45
+
 resources:
   requests:
     cpu: "100m"

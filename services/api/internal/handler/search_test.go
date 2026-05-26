@@ -58,6 +58,12 @@ func (m *mockProjectRepoForSearch) CountWithWarehouse(_ context.Context) (int, e
 func (m *mockProjectRepoForSearch) SetSchemaIndexStatus(_ context.Context, _, _, _ string) error {
 	return nil
 }
+func (m *mockProjectRepoForSearch) EnqueuePackGen(_ context.Context, _, runID string) (string, bool, error) {
+	return runID, false, nil
+}
+func (m *mockProjectRepoForSearch) FinalizePackGenIfStuck(_ context.Context, _, _ string) error {
+	return nil
+}
 
 // mockVectorStoreForSearch returns pre-set search results.
 type mockVectorStoreForSearch struct {

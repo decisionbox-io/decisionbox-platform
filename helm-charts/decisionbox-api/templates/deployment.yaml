@@ -21,6 +21,13 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      # K8s allows up to terminationGracePeriodSeconds for the pod to
+      # exit cleanly after SIGTERM. The API's shutdown sequence runs:
+      # cancel pack-gen goroutines → bounded 15 s drain for their
+      # terminal-state writes → 10 s HTTP graceful drain. Default 30 s
+      # only leaves 5 s above the designed 25 s — not enough for
+      # signal delivery + scheduler latency + Mongo round-trip.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 45 }}
       automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

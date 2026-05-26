@@ -412,6 +412,103 @@ func isValidSchemaIndexStatus(s string) bool {
 	return false
 }
 
+// ErrPackGenStateMismatch is returned by EnqueuePackGen when the project
+// is not in pack_generation_pending state (a duplicate "Generate" click
+// while a previous run is already in pack_generation, or after a project
+// has finished generating). The handler maps this to HTTP 409.
+var ErrPackGenStateMismatch = fmt.Errorf("project is not in pack_generation_pending state")
+
+// ErrPackGenNotEnabled is returned by EnqueuePackGen when the project's
+// GeneratePack field is absent or has Enabled=false. The handler maps
+// this to HTTP 400 ("no pending pack-generation request").
+var ErrPackGenNotEnabled = fmt.Errorf("project has no pending pack-generation request")
+
+// EnqueuePackGen — see ProjectRepo for the contract.
+func (r *ProjectRepository) EnqueuePackGen(ctx context.Context, id, runID string) (string, bool, error) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return "", false, fmt.Errorf("invalid project id %q: %w", id, err)
+	}
+
+	now := time.Now().UTC()
+	filter := bson.M{
+		"_id":                     oid,
+		"state":                   models.ProjectStatePackGenerationPending,
+		"generate_pack.enabled":   true,
+		"pack_gen_request":        bson.M{"$exists": false},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"pack_gen_request": bson.M{
+				"run_id":       runID,
+				"requested_at": now,
+			},
+			"updated_at": now,
+		},
+		// Clear any prior failure error in the same write so the
+		// retry-after-failure flow lands at a clean slate.
+		"$unset": bson.M{"pack_gen_last_error": ""},
+	}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return "", false, fmt.Errorf("enqueue pack-gen: %w", err)
+	}
+	if res.MatchedCount == 1 {
+		return runID, false, nil
+	}
+
+	// Predicate failed — diagnose by reading the doc once. The classification
+	// determines the handler's HTTP response code, so it must be precise.
+	var p models.Project
+	if err := r.col.FindOne(ctx, bson.M{"_id": oid}).Decode(&p); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return "", false, fmt.Errorf("project not found")
+		}
+		return "", false, fmt.Errorf("classify enqueue failure: %w", err)
+	}
+	if p.PackGenRequest != nil {
+		// Idempotent path — another POST already queued this run.
+		return p.PackGenRequest.RunID, true, nil
+	}
+	if p.GeneratePack == nil || !p.GeneratePack.Enabled {
+		return "", false, ErrPackGenNotEnabled
+	}
+	// State must be wrong — we already established marker is absent
+	// AND generate_pack is enabled, so the only remaining predicate that
+	// could have failed is `state`.
+	return "", false, fmt.Errorf("%w (current: %s)", ErrPackGenStateMismatch, p.EffectiveState())
+}
+
+// FinalizePackGenIfStuck — see ProjectRepo for the contract.
+func (r *ProjectRepository) FinalizePackGenIfStuck(ctx context.Context, id, errMsg string) error {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid project id %q: %w", id, err)
+	}
+
+	filter := bson.M{
+		"_id": oid,
+		"state": bson.M{"$in": []string{
+			models.ProjectStatePackGenerationPending,
+			models.ProjectStatePackGeneration,
+		}},
+		"pack_gen_request": bson.M{"$exists": true},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"state":               models.ProjectStatePackGenerationPending,
+			"pack_gen_last_error": errMsg,
+			"updated_at":          time.Now().UTC(),
+		},
+		"$unset": bson.M{"pack_gen_request": ""},
+	}
+	if _, err := r.col.UpdateOne(ctx, filter, update); err != nil {
+		return fmt.Errorf("finalize pack-gen: %w", err)
+	}
+	return nil
+}
+
 // --- Discovery Repository ---
 
 type DiscoveryRepository struct {

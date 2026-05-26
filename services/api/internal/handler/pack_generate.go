@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/packgen"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -11,32 +14,77 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
-// PackGenerateHandler exposes pack-generation endpoints. The handler is
-// intentionally thin — it validates input, looks up the project, and
-// delegates to packgen.GetProvider(). When no provider is configured
-// the registry returns the no-op Provider whose methods all return
-// packgen.ErrNotConfigured; this handler maps that to HTTP 404 so the
-// dashboard can hide the feature on deployments where it isn't
-// available.
+// finalizeBudget bounds the safety-net `FinalizePackGenIfStuck` call the
+// goroutine runs in its defer. Kept generous because the orchestrator's
+// own revert path may already have updated the document under us; the
+// detached context here just guarantees the cleanup attempt completes
+// even when the inbound request's context is gone.
+const finalizeBudget = 5 * time.Second
+
+// finalizeInterruptedErr is the message the safety-net defer writes to
+// `pack_gen_last_error` when it has to clean up after a goroutine that
+// did not reach a terminal write. The wizard surfaces this string verbatim,
+// so it must be self-explanatory to a non-technical operator.
+const finalizeInterruptedErr = "generation interrupted; please retry"
+
+// PackGenerateHandler exposes pack-generation endpoints.
+//
+// Generate is now asynchronous: the handler validates inputs, atomically
+// writes a `pack_gen_request` launch marker to the project document via
+// EnqueuePackGen, spawns a goroutine that runs the orchestrator on a
+// server-lifetime context (decoupled from the inbound HTTP request),
+// and returns 202 immediately. The dashboard polls project state to
+// observe transitions.
+//
+// RegenerateSection remains synchronous — it is a single LLM call that
+// fits comfortably inside the dashboard proxy's request budget.
 type PackGenerateHandler struct {
 	repo database.ProjectRepo
+
+	// serverCtx is canceled by apiserver shutdown BEFORE the HTTP drain
+	// completes, giving each in-flight goroutine its chance to write a
+	// terminal state via the orchestrator's revertOnError closure or
+	// (failing that) via the handler-side defer below.
+	serverCtx context.Context
+
+	// wg is the apiserver's pack-gen goroutine WaitGroup. The shutdown
+	// path waits on this (bounded) after canceling serverCtx so Mongo
+	// is still connected while terminal writes execute.
+	wg *sync.WaitGroup
 }
 
 // NewPackGenerateHandler constructs a PackGenerateHandler.
-func NewPackGenerateHandler(repo database.ProjectRepo) *PackGenerateHandler {
-	return &PackGenerateHandler{repo: repo}
+//
+// serverCtx and wg are required (apiserver.Run passes them). Both nil
+// is acceptable only in tests that exercise only the validation path
+// (where no goroutine is ever spawned).
+func NewPackGenerateHandler(repo database.ProjectRepo, serverCtx context.Context, wg *sync.WaitGroup) *PackGenerateHandler {
+	return &PackGenerateHandler{repo: repo, serverCtx: serverCtx, wg: wg}
 }
 
-// Generate kicks off pack generation for the given project. POST
+// generateResponse is the JSON body the async Generate handler returns.
+// Field shape preserves the public `GenerateResult` contract (run_id +
+// async flag) so downstream consumers do not break.
+type generateResponse struct {
+	RunID string `json:"run_id"`
+	Async bool   `json:"async"`
+}
+
+// Generate kicks off an async pack generation. POST
 // /api/v1/projects/{id}/pack-generate.
 //
-// Pre-conditions:
-//   - Project must exist (404 if not).
-//   - A non-no-op packgen Provider must be configured (404 otherwise).
-//   - Project state must be pack_generation_pending (409 otherwise).
-//   - Project.GeneratePack must be populated (400 otherwise).
-//
-// Body is ignored — generation inputs come from the project document.
+// Response codes:
+//   - 202 Accepted on a fresh enqueue OR an idempotent duplicate (marker
+//     already set for an in-flight run); body carries the run_id.
+//   - 404 when no pack-gen provider is registered, or the project does
+//     not exist.
+//   - 409 when the project state is not pack_generation_pending AND the
+//     marker is absent — typically the project already completed
+//     generation, or has been hand-edited into an inconsistent state
+//     (operator runbook covers recovery).
+//   - 400 when the project's GeneratePack payload is missing or disabled.
+//   - 500 on a transient state-classification failure (race between our
+//     enqueue and another writer that subsequent retries should clear).
 func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -59,7 +107,40 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.EffectiveState() != models.ProjectStatePackGenerationPending {
+	// Marker-first idempotency: if a run is already in flight for this
+	// project, return 202 with its run_id regardless of the project's
+	// current state. The dashboard polls and observes the eventual
+	// transition.
+	if p.PackGenRequest != nil {
+		if p.EffectiveState() == models.ProjectStatePackGenerationDone {
+			// Stale-marker case — the orchestrator's success write should
+			// have unset the field. Returning 202 here would mislead the
+			// dashboard into expecting more transitions.
+			writeError(w, http.StatusConflict, "pack generation already complete")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, generateResponse{
+			RunID: p.PackGenRequest.RunID,
+			Async: true,
+		})
+		return
+	}
+
+	// No marker — classify from state before attempting the enqueue so
+	// the user gets a precise 400/409 instead of a generic 500.
+	switch p.EffectiveState() {
+	case models.ProjectStatePackGenerationPending:
+		// Proceed to enqueue.
+	case models.ProjectStatePackGenerationDone:
+		writeError(w, http.StatusConflict, "pack generation already complete")
+		return
+	case models.ProjectStatePackGeneration:
+		// Marker is absent but state says a run is in progress — the
+		// previous run died WITHOUT writing a terminal state. Operator
+		// recovery is documented in the enterprise runbook.
+		writeError(w, http.StatusInternalServerError, "project is in pack_generation without an active run marker; operator intervention required")
+		return
+	default:
 		writeError(w, http.StatusConflict, "project is not in pack_generation_pending state (current: "+p.EffectiveState()+")")
 		return
 	}
@@ -68,35 +149,93 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Run-ID format mirrors the schema-indexer's so log scraping and
+	// dashboard correlation work consistently across run modes.
+	runID := time.Now().UTC().Format("20060102T150405.000Z")
+
+	existingRunID, alreadyQueued, err := h.repo.EnqueuePackGen(r.Context(), id, runID)
+	if err != nil {
+		switch {
+		case errors.Is(err, database.ErrPackGenNotEnabled):
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		case errors.Is(err, database.ErrPackGenStateMismatch):
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to enqueue pack-gen: "+err.Error())
+		return
+	}
+	if alreadyQueued {
+		// Race: another POST won between our GetByID + EnqueuePackGen.
+		// The winner's run_id is what we report; no goroutine spawn.
+		writeJSON(w, http.StatusAccepted, generateResponse{
+			RunID: existingRunID,
+			Async: true,
+		})
+		return
+	}
+
 	req := packgen.GenerateRequest{
 		ProjectID:   p.ID,
+		RunID:       runID,
 		PackName:    p.GeneratePack.PackName,
 		PackSlug:    p.GeneratePack.PackSlug,
 		Description: p.GeneratePack.Description,
 	}
-	res, err := packgen.GetProvider().Generate(r.Context(), req)
-	if err != nil {
-		if errors.Is(err, packgen.ErrNotConfigured) {
-			writeError(w, http.StatusNotFound, "pack generation is not available on this deployment")
+
+	// Spawn the goroutine on the server-lifetime context so a client
+	// disconnect (proxy timeout, browser close) does not abort the run.
+	// The defer is the safety net: it always runs FinalizePackGenIfStuck
+	// after the orchestrator returns (or panics), which conditionally
+	// reverts state + clears the marker if the orchestrator's own
+	// revertOnError closure did not get to run. The conditional update
+	// is a no-op when the orchestrator already wrote a clean terminal
+	// state.
+	h.wg.Add(1)
+	go func(projectID string) {
+		defer h.wg.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				apilog.WithFields(apilog.Fields{
+					"project_id": projectID,
+					"recover":    recovered,
+				}).Error("pack-generate: goroutine panic")
+			}
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), finalizeBudget)
+			defer cancel()
+			if err := h.repo.FinalizePackGenIfStuck(cleanupCtx, projectID, finalizeInterruptedErr); err != nil {
+				apilog.WithFields(apilog.Fields{
+					"project_id": projectID,
+					"error":      err.Error(),
+				}).Warn("pack-generate: safety-net finalize failed")
+			}
+		}()
+
+		if _, err := packgen.GetProvider().Generate(h.serverCtx, req); err != nil {
+			apilog.WithFields(apilog.Fields{
+				"project_id": projectID,
+				"run_id":     runID,
+				"error":      err.Error(),
+			}).Info("pack-generate: in-process generation returned error (orchestrator owns state writes)")
 			return
 		}
-		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("pack-generate: provider returned error")
-		writeError(w, http.StatusInternalServerError, "pack generation failed: "+err.Error())
-		return
-	}
+		apilog.WithFields(apilog.Fields{
+			"project_id": projectID,
+			"run_id":     runID,
+		}).Info("pack-generate: in-process generation completed")
+	}(p.ID)
 
 	apilog.WithFields(apilog.Fields{
 		"project_id": id,
 		"pack_slug":  req.PackSlug,
-		"run_id":     res.RunID,
-		"async":      res.Async,
-	}).Info("pack-generate: dispatched")
+		"run_id":     runID,
+	}).Info("pack-generate: dispatched async")
 
-	if res.Async {
-		writeJSON(w, http.StatusAccepted, res)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusAccepted, generateResponse{
+		RunID: runID,
+		Async: true,
+	})
 }
 
 // regenerateSectionRequest is the JSON body shape of POST

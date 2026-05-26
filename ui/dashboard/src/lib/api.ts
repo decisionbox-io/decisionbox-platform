@@ -286,13 +286,17 @@ export const PROJECT_STATE_PACK_GENERATION_DONE = 'pack_generation_done';
 export const PROJECT_STATE_READY = 'ready';
 
 // Pack generation results, mirrored from the Go packgen package.
+//
+// POST /api/v1/projects/{id}/pack-generate now always responds 202 with
+// only `run_id` + `async: true`. The dashboard polls project state for
+// completion. `pack_slug` and `attempts` are preserved as optional so
+// any legacy consumer that read them does not break, but they are not
+// populated by the async handler.
 export interface PackGenerateResult {
   run_id: string;
-  // True when the response was returned before generation finished.
-  // Dashboard polls project state for completion in this case.
   async: boolean;
-  pack_slug: string;
-  attempts: number;
+  pack_slug?: string;
+  attempts?: number;
 }
 
 export interface PackRegenerateSectionResult {
