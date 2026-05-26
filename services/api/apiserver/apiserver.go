@@ -213,6 +213,20 @@ func Run() {
 		apilog.WithError(err).Warn("Pack-generation provider configuration failed; pack-generate endpoints will return 404")
 	}
 
+	// Clear any pack-gen launch markers left over from a previous API
+	// process that didn't complete its graceful-shutdown drain (SIGKILL,
+	// OOM, hardware loss). Pack-gen goroutines run inside the API
+	// process and cannot survive a restart, so every surviving marker
+	// at boot is stale by definition. Without this, the handler's
+	// marker-first idempotent 202 path would return the stale run_id
+	// forever and the dashboard would poll for a goroutine that no
+	// longer exists.
+	if reset, err := database.NewProjectRepository(db).ResetInFlightPackGenMarkers(ctx); err != nil {
+		apilog.WithError(err).Warn("pack-gen: stale-marker recovery failed at boot; orphan markers may require manual cleanup")
+	} else if reset > 0 {
+		apilog.WithField("count", reset).Info("pack-gen: cleared stale launch markers from previous API instance")
+	}
+
 	// Schema-index worker + /reindex dropper: both need Qdrant. Without
 	// it the worker is disabled (discovery will 409 until QDRANT_URL is
 	// set), and /reindex returns a nil dropper so the handler falls back

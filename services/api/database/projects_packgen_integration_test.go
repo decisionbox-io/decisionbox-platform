@@ -5,6 +5,7 @@ package database
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -320,5 +321,127 @@ func TestInteg_ProjectRepo_FinalizePackGenIfStuck_NoOpWhenMarkerAbsent(t *testin
 	got, _ := repo.GetByID(ctx, id)
 	if got.PackGenLastError != "" {
 		t.Errorf("pack_gen_last_error = %q, want empty (no marker → no-op)", got.PackGenLastError)
+	}
+}
+
+// TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_AllStates exercises
+// the boot-time stale-marker sweep across all three state-with-marker
+// combinations a previous API crash could have left behind, plus
+// projects WITHOUT markers (which must not be touched). The count
+// returned must equal exactly the three updated rows.
+func TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_AllStates(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProjectRepository(testDB)
+
+	// (A) state=pack_generation_pending + marker — claim-before-spawn crash.
+	idPending := seedPackGenProject(t)
+	if _, _, err := repo.EnqueuePackGen(ctx, idPending, "stale-pending"); err != nil {
+		t.Fatalf("seed pending+marker: %v", err)
+	}
+
+	// (B) state=pack_generation + marker — mid-run crash.
+	oidRunning := primitive.NewObjectID()
+	if _, err := testDB.Collection("projects").InsertOne(ctx, bson.M{
+		"_id":   oidRunning,
+		"name":  "running",
+		"state": models.ProjectStatePackGeneration,
+		"generate_pack": bson.M{
+			"enabled": true, "pack_name": "Acme", "pack_slug": "acme",
+		},
+		"pack_gen_request": bson.M{
+			"run_id":       "stale-running",
+			"requested_at": time.Now(),
+		},
+		"created_at": time.Now(),
+		"updated_at": time.Now(),
+	}); err != nil {
+		t.Fatalf("seed running+marker: %v", err)
+	}
+	idRunning := oidRunning.Hex()
+
+	// (C) state=pack_generation_done + marker — orchestrator success
+	// write didn't unset for some reason.
+	oidDone := primitive.NewObjectID()
+	if _, err := testDB.Collection("projects").InsertOne(ctx, bson.M{
+		"_id":    oidDone,
+		"name":   "done",
+		"state":  models.ProjectStatePackGenerationDone,
+		"domain": "acme",
+		"pack_gen_request": bson.M{
+			"run_id":       "stale-done",
+			"requested_at": time.Now(),
+		},
+		"created_at": time.Now(),
+		"updated_at": time.Now(),
+	}); err != nil {
+		t.Fatalf("seed done+marker: %v", err)
+	}
+	idDone := oidDone.Hex()
+
+	// (D) state=pack_generation_pending WITHOUT marker — must NOT be touched.
+	idClean := seedPackGenProject(t)
+
+	count, err := repo.ResetInFlightPackGenMarkers(ctx)
+	if err != nil {
+		t.Fatalf("ResetInFlightPackGenMarkers: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3 (A+B+C, NOT D)", count)
+	}
+
+	// (A) pending+marker → marker cleared, state unchanged, no error stamped.
+	gotPending, _ := repo.GetByID(ctx, idPending)
+	if gotPending.PackGenRequest != nil {
+		t.Error("(A) marker should be cleared")
+	}
+	if gotPending.EffectiveState() != models.ProjectStatePackGenerationPending {
+		t.Errorf("(A) state = %q, want pack_generation_pending unchanged", gotPending.State)
+	}
+	if gotPending.PackGenLastError != "" {
+		t.Errorf("(A) pack_gen_last_error = %q, want empty (pending+marker is the claim-before-spawn case — no user-visible error)", gotPending.PackGenLastError)
+	}
+
+	// (B) pack_generation+marker → state reverted to pending + error stamped + marker cleared.
+	gotRunning, _ := repo.GetByID(ctx, idRunning)
+	if gotRunning.PackGenRequest != nil {
+		t.Error("(B) marker should be cleared")
+	}
+	if gotRunning.EffectiveState() != models.ProjectStatePackGenerationPending {
+		t.Errorf("(B) state = %q, want pack_generation_pending (reverted)", gotRunning.State)
+	}
+	if !strings.Contains(gotRunning.PackGenLastError, "interrupted") {
+		t.Errorf("(B) pack_gen_last_error = %q, want substring 'interrupted'", gotRunning.PackGenLastError)
+	}
+
+	// (C) done+marker → marker cleared, state unchanged.
+	gotDone, _ := repo.GetByID(ctx, idDone)
+	if gotDone.PackGenRequest != nil {
+		t.Error("(C) marker should be cleared")
+	}
+	if gotDone.EffectiveState() != models.ProjectStatePackGenerationDone {
+		t.Errorf("(C) state = %q, want pack_generation_done unchanged", gotDone.State)
+	}
+
+	// (D) untouched.
+	gotClean, _ := repo.GetByID(ctx, idClean)
+	if gotClean.PackGenRequest != nil {
+		t.Error("(D) project without marker should be untouched")
+	}
+	if gotClean.PackGenLastError != "" {
+		t.Errorf("(D) pack_gen_last_error = %q, want empty (project was clean)", gotClean.PackGenLastError)
+	}
+}
+
+func TestInteg_ProjectRepo_ResetInFlightPackGenMarkers_EmptyIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProjectRepository(testDB)
+	// Fresh DB scope: ResetInFlight on the existing fixtures already
+	// cleared markers. Calling it again should return 0.
+	count, err := repo.ResetInFlightPackGenMarkers(ctx)
+	if err != nil {
+		t.Fatalf("ResetInFlightPackGenMarkers: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d after the sweep already ran; want 0", count)
 	}
 }
