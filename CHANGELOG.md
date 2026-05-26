@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-26
+
 ### Added
 
 - **Ollama model catalog expanded with 18 common families** — `providers/llm/ollama/catalog.go`. Added catalog entries (canonical ID + alias coverage + published context window + output-token cap) for the most-pulled Ollama models that were not yet catalogued: Gemma 4 — split into a 128k small tier (`e2b` / `e4b` / `latest`) and a 256k `26b` / `31b` tier, the latter aliasing the standard instruct quants (`…-it-bf16` / `…-it-q4_K_M` / `…-it-q8_0`) so the pulled tags resolve — plus Qwen3-Coder (256k), Qwen 2 (128k), GPT-OSS (128k), Phi-4 (16k), Mistral 7B (32k), Mistral NeMo / Small (128k), Code Llama (16k), CodeGemma (8k), DeepSeek Coder (16k), Dolphin 3 (128k), Gemma 1 (8k), Llama 2 (4k), SmolLM2 (8k), OLMo 2 (4k), and TinyLlama (2k). Matching is still exact ID/alias (no fuzzy filter), so unlisted quant/format tags fall back to the provider defaults. New `catalog_test.go` pins resolution for every family (including the 256k 31B quant tag), the defaults, and an invariant that no entry's output cap exceeds its context window. Embedding-only models (nomic-embed-text, mxbai-embed-large, …) are intentionally excluded — they belong to the embedding provider.
@@ -358,7 +360,8 @@ Initial public release.
 - 85%+ unit test coverage across all modules
 - Comprehensive documentation (28 files across 6 sections)
 
-[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/decisionbox-io/decisionbox-platform/compare/v0.5.0...v0.6.0
