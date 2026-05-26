@@ -219,11 +219,11 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	// Extract token counts from timing metrics
 	promptTokens := 0
 	completionTokens := 0
-	if finalResp.Metrics.PromptEvalCount > 0 {
-		promptTokens = finalResp.Metrics.PromptEvalCount
+	if finalResp.PromptEvalCount > 0 {
+		promptTokens = finalResp.PromptEvalCount
 	}
-	if finalResp.Metrics.EvalCount > 0 {
-		completionTokens = finalResp.Metrics.EvalCount
+	if finalResp.EvalCount > 0 {
+		completionTokens = finalResp.EvalCount
 	}
 
 	// Determine stop reason
