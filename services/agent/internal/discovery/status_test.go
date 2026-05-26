@@ -76,7 +76,7 @@ func TestStatusReporter_AddValidationStep_NoOp_WhenDisabled(t *testing.T) {
 func TestStatusReporter_AddRecommendationStep_NoOp_WhenDisabled(t *testing.T) {
 	sr := NewStatusReporter(nil, nil, "", "", 10)
 	// Should not panic when disabled
-	sr.AddRecommendationStep(context.TODO(), 4, "", 0, 0)
+	sr.AddRecommendationStep(context.TODO(), 4, 0, "", 0, 0)
 }
 
 func TestStatusReporter_Complete_NoOp_WhenDisabled(t *testing.T) {
@@ -158,8 +158,8 @@ func TestStatusReporter_AllMethods_NoOp_WhenEmptyRunID(t *testing.T) {
 	sr.AddInsightStep(ctx, "Revenue Drop", "high", "monetization")
 	sr.AddValidationStep(ctx, "affected_count", "adjusted", 500, 350, 200, 50)
 	sr.AddValidationStep(ctx, "user_count", "confirmed", 0, 0, 0, 0)
-	sr.AddRecommendationStep(ctx, 5, "", 1500, 800)
-	sr.AddRecommendationStep(ctx, 0, "LLM unreachable", 0, 0)
+	sr.AddRecommendationStep(ctx, 5, 0, "", 1500, 800)
+	sr.AddRecommendationStep(ctx, 0, 0, "LLM unreachable", 0, 0)
 	sr.RecordSchemaTelemetry(ctx, 4096, 12)
 	sr.IncrementSchemaActionCalls(ctx, "lookup_schema", 1)
 	sr.IncrementAnalysisCounter(ctx, "step_index_upserts", 1)

@@ -90,7 +90,7 @@ Used in `recommendations.md`.
 |----------|--------|-------------|---------|
 | `{{DISCOVERY_DATE}}` | Current date | ISO date string of when this discovery run started. | `"2026-03-14"` |
 | `{{INSIGHTS_SUMMARY}}` | All insights from analysis | Text summary with counts per area. | `"Total: 7 insights (churn: 3, engagement: 2, monetization: 2)"` |
-| `{{INSIGHTS_DATA}}` | All insights from analysis | Full JSON array of all validated insights, including their IDs. The LLM uses these IDs to populate `related_insight_ids` on recommendations. | `[{"id": "churn-1", "name": "Day 0-to-Day 1 Drop", "severity": "critical", "affected_count": 8298, ...}]` |
+| `{{INSIGHTS_DATA}}` | All insights from analysis | Full JSON array of all validated insights, including their UUID ids. The LLM must copy each `id` verbatim into `related_insight_ids` on the recommendations it emits — any recommendation whose `related_insight_ids` cannot be resolved to an input insight is dropped server-side and recorded in the `RecommendationStep.recommendations_dropped*` counters. | `[{"id": "6e9261f5-c4ec-404b-bdf0-760a4644f384", "name": "Day 0-to-Day 1 Drop", "severity": "critical", "affected_count": 8298, ...}]` |
 
 ## Per-Project Prompt Overrides
 

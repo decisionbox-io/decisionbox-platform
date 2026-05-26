@@ -45,14 +45,14 @@ Respond with ONLY valid JSON:
         "Track completion rate for level 42 (target: increase from 22% to 35%)",
         "Monitor D7 retention for this segment (target: improve by 15%)"
       ],
-      "related_insight_ids": ["insight-id-1", "insight-id-2"],
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"],
       "confidence": 0.85
     }
   ]
 }
 ```
 
-**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — an array of insight `id` values from the input data that this recommendation addresses. Copy the exact `id` values from the insights provided below.
+**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — an array of insight `id` values copied verbatim from the input. The example UUIDs above are illustrative ONLY; copy the actual `id` strings from the insights provided below. Each id is a 36-character UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Do NOT invent ids, do NOT use category/severity/theme slugs (e.g. `gaming-difficulty:critical:foo`), do NOT shorten or rewrite the UUIDs.
 
 ## Requirements
 

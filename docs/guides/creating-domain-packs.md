@@ -274,14 +274,14 @@ You are an e-commerce analytics expert creating **specific, actionable recommend
         "reasoning": "Why we expect this"
       },
       "actions": ["Step 1", "Step 2", "Step 3"],
-      "related_insight_ids": ["conversion-1", "retention-2"],
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"],
       "confidence": 0.85
     }
   ]
 }
 ```
 
-**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — copy the exact `id` values from the insights below.
+**IMPORTANT:** Each recommendation MUST include `related_insight_ids` — copy the exact `id` values verbatim from the insights below. Each id is a 36-character UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). The example UUIDs above are illustrative ONLY; do NOT invent ids, do NOT use category/severity/theme slugs (e.g. `conversion:critical:cart-abandonment`), do NOT shorten or rewrite the UUIDs. Any recommendation whose `related_insight_ids` cannot be matched to an input insight is dropped server-side — counts surface as `recommendations_dropped_unknown_id` on the persisted `RecommendationStep` so you can spot a regression on a specific LLM model.
 
 ## Discovered Insights
 

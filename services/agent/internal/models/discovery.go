@@ -356,6 +356,19 @@ type RecommendationStep struct {
 	// a clear reason for the empty recommendations section.
 	Status string `bson:"status,omitempty" json:"status,omitempty"`
 
+	// Telemetry for recommendations the orchestrator parsed from the
+	// LLM response but discarded before persistence because their
+	// `related_insight_ids` could not be resolved to an eligible
+	// insight. RecommendationsDropped is the total; the per-reason
+	// fields break it down so we can measure regression rates per LLM
+	// provider (e.g. some models emit category:severity:theme slugs
+	// instead of UUIDs and all of those fall into
+	// RecommendationsDroppedUnknownID). Zero values are omitted to
+	// keep legacy documents from gaining noisy fields when re-read.
+	RecommendationsDropped           int `bson:"recommendations_dropped,omitempty" json:"recommendations_dropped,omitempty"`
+	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
+	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
+
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
 
