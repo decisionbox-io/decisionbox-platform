@@ -327,6 +327,25 @@ func TestProject_EffectiveState_EmptyIsReady(t *testing.T) {
 	}
 }
 
+// Default-on contract: nil pointer resolves to true so legacy projects
+// keep validation running without a backfill migration.
+func TestProject_EffectiveValidationEnabled_NilIsTrue(t *testing.T) {
+	p := &Project{}
+	if !p.EffectiveValidationEnabled() {
+		t.Errorf("EffectiveValidationEnabled() with nil pointer = false, want true")
+	}
+}
+
+func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
+	yes, no := true, false
+	if !(&Project{ValidationEnabled: &yes}).EffectiveValidationEnabled() {
+		t.Errorf("EffectiveValidationEnabled() with *true = false")
+	}
+	if (&Project{ValidationEnabled: &no}).EffectiveValidationEnabled() {
+		t.Errorf("EffectiveValidationEnabled() with *false = true")
+	}
+}
+
 func TestProject_EffectiveState_PassThrough(t *testing.T) {
 	for _, state := range []string{
 		ProjectStatePackGenerationPending,

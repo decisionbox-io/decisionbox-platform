@@ -1,7 +1,5 @@
 # Production Considerations
 
-> **Version**: 0.1.0
-
 Recommendations for running DecisionBox in production.
 
 ## Security
@@ -18,7 +16,7 @@ Without it, LLM API keys are stored in plaintext in MongoDB.
 
 ### API Access
 
-The API has **no authentication** in v0.1.0. It should not be exposed to the internet:
+The API has **no authentication** by default. It should not be exposed to the internet:
 
 - **Docker Compose**: Only expose the dashboard port (3000). The API port (8080) should not be mapped to the host or should be restricted to the Docker network.
 - **Kubernetes**: The API service should be `ClusterIP` (internal only). Only the dashboard needs an ingress.
@@ -155,7 +153,7 @@ db.discoveries.deleteMany({
 1. Pull new images (or rebuild from source)
 2. Stop services
 3. Start services — the API re-creates indexes automatically (idempotent)
-4. No database migrations needed — MongoDB is schema-flexible
+4. Let the API run its idempotent startup migrations and index setup (e.g. seeding schema-index status for pre-existing projects); keep one API replica during upgrades
 
 ## Next Steps
 

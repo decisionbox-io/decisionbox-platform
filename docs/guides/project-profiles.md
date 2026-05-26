@@ -1,7 +1,5 @@
 # Project Profiles
 
-> **Version**: 0.1.0
-
 Project profiles provide domain-specific context to the AI. A well-filled profile dramatically improves insight quality — the AI understands your specific product instead of making generic assumptions.
 
 ## What Profiles Do

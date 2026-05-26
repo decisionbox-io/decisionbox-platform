@@ -1,7 +1,5 @@
 # Domain Packs
 
-> **Version**: 0.4.0
-
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 
 ## Available Domain Packs
@@ -14,7 +12,7 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 | **System Test** | Quick, Standard, Thorough | Connectivity, Schema Discovery | Diagnostic pack for warehouse validation and data profiling (not an industry pack) |
 
 > **Note:** The System Test domain pack is intended for testing and onboarding only.
-> It is hidden by default and requires setting `DECISIONBOX_ENABLE_SYSTEM_TEST=true` to enable.
+> It is seeded with `is_published: false` so it does not appear in the new-project domain picker, but it is visible in the Domain Packs admin list and can be launched manually for diagnostic runs.
 
 ## What's in a Domain Pack
 
@@ -231,13 +229,8 @@ The agent reads only from `project.prompts` at runtime.
 
 See the [Creating Domain Packs](../guides/creating-domain-packs.md) guide for a step-by-step tutorial on building a domain pack for your industry.
 
-## Generation
-
-If you'd rather not author a pack by hand, DecisionBox can synthesize one from your knowledge sources and warehouse schema. See the [Generating Domain Packs](../guides/generating-domain-packs.md) guide. Generation is implemented in an enterprise plugin; the community build exposes the API surface but returns `404` until that plugin is loaded.
-
 ## Next Steps
 
 - [Providers](providers.md) — Plugin architecture for LLM, warehouse, and secrets
 - [Prompts](prompts.md) — Template variables and prompt customization
 - [Creating Domain Packs](../guides/creating-domain-packs.md) — Build your own
-- [Generating Domain Packs](../guides/generating-domain-packs.md) — Have the agent author one for you

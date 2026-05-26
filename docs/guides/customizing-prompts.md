@@ -1,7 +1,5 @@
 # Customizing Prompts
 
-> **Version**: 0.1.0
-
 Every prompt in DecisionBox can be customized per-project. This lets you fine-tune how the AI reasons about your specific data without modifying the domain pack.
 
 ## How It Works
@@ -68,7 +66,7 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/prompts \
   }'
 ```
 
-Partial updates are supported — only include the fields you want to change.
+`PUT` replaces the project prompt object — include every prompt field and the full `analysis_areas` map you want to keep. To clear a single override and fall back to the domain pack default, send the request without that field set.
 
 ## Adding Custom Analysis Areas
 

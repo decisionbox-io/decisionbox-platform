@@ -1,7 +1,5 @@
 # Agent Analysis Phase Compaction
 
-> **Version**: 0.4.0+
-
 ## Why
 
 Before this change, the analysis phase of discovery built a per-area
@@ -99,7 +97,7 @@ For each analysis area:
 ```
 area_query = area.Name + " — " + area.Description + ". Keywords: " + keywords
 v          = embedding.Embed(area_query)
-hits       = run_step_index.Search(v, TopK=24, MinScore=0.30)
+hits       = run_step_index.Search(v, TopK=24, MinScore=0)  // picker applies AnalysisAreaMinScore=0.30
 ```
 
 After vector retrieval, an exact-match boost promotes any step whose
@@ -143,7 +141,7 @@ Orchestrator
   ├─ Phase 4: Analysis (one iteration per area)
   │    │
   │    ├─ picker.Pick(area, steps) →
-  │    │    ├─ run_step_index.Search(area_query, TopK=24, MinScore=0.30)
+  │    │    ├─ run_step_index.Search(area_query, TopK=24, MinScore=0)
   │    │    │   └─ bumps analysis_step_index_search_calls
   │    │    ├─ exact-match boost (verbatim keyword in step text)
   │    │    ├─ sort by score desc, step asc on ties

@@ -1,47 +1,30 @@
 # Discovery Lifecycle
 
-> **Version**: 0.3.0
-
 A discovery run is the core operation of DecisionBox. The agent autonomously explores your data warehouse, finds patterns, validates them, and generates recommendations. This page explains each phase in detail.
-
-## Project state machine
-
-Every project carries a lifecycle state. Most projects spend their entire life in `ready`; only projects created via the "Generate one for me" wizard cycle through the pack-generation states.
-
-| State | Meaning | Discovery allowed? |
-|-------|---------|--------------------|
-| `pack_generation_pending` | Draft project; user is filling the wizard (sources, warehouse, providers) before launching pack-gen. | No |
-| `pack_generation` | Agent is running `--mode=pack-gen` to synthesize the domain pack. | No |
-| `pack_generation_done` | Pack is generated; awaiting the user's "Start discovery" gate. | No |
-| `ready` | Normal runtime state. | Yes |
-
-A project with no state field set is treated as `ready` (legacy behavior for projects created before pack generation existed).
-
-Transitions:
-- New project → `ready` (default for "use a built-in pack" flow).
-- New project with `generate_pack.enabled=true` → `pack_generation_pending`.
-- `pack_generation_pending` → `pack_generation` when the user posts to `/api/v1/projects/{id}/pack-generate`.
-- `pack_generation` → `pack_generation_done` when the agent finishes successfully.
-- `pack_generation_done` → `ready` when the user accepts the draft pack (PUT `/api/v1/projects/{id}` with `state: "ready"`).
 
 ## Phases Overview
 
 | Phase | What happens | Duration |
 |-------|-------------|----------|
-| 1. Initialization | Load project config, secrets, providers | ~2s |
-| 2. Context Loading | Fetch previous discoveries + feedback | ~1s |
-| 3. Schema Discovery | List tables, read schemas | 5-30s |
-| 4. Exploration | AI writes + executes SQL queries | 2-30 min |
-| 5. Analysis | Generate insights per analysis area | 1-5 min |
-| 6. Validation | Verify insights against warehouse | 30s-2 min |
-| 7. Recommendations | Generate actionable advice from insights | 1-3 min |
-| 8. Saving | Write results to MongoDB | ~1s |
+| Startup | Load project config, secrets, providers (pre-phase) | ~2s |
+| 1. Load project context | Fetch previous discoveries + feedback | ~1s |
+| 2. Load schemas | List tables, read schemas from cache | 5-30s |
+| 3. Exploration | AI writes + executes SQL queries | 2-30 min |
+| 4. Analysis | Generate insights per analysis area | 1-5 min |
+| 4.5. Insight validation | LLM verifier + refuter check insights against row evidence | 1-5 min |
+| 5. Recommendations | Generate actionable advice from supported insights | 1-3 min |
+| 5.5. Recommendation validation | Same verifier + refuter check recommendations | 1-3 min |
+| 6. Update project context | Write rolling context for the next run | <1s |
+| 7. Save | Write results to MongoDB | ~1s |
+| 9. Embed + index | Denormalize insights + recommendations to Qdrant for dashboard search (non-fatal) | 5-30s |
 
 Total time depends on exploration steps, LLM speed, and warehouse query time. A typical 100-step run with Claude Sonnet takes 5-15 minutes.
 
-## Phase 1: Initialization
+The phase numbers above match the orchestrator's logged phase numbers — find any phase in the agent log by grepping for the relevant numeric prefix. <!-- lint-allow: log-grep-hint -->
 
-The agent starts with a project ID and loads everything it needs.
+## Startup (pre-phase)
+
+The agent starts with a project ID and loads everything it needs before Phase 1.
 The entry point is `agentserver.Run()`, which parses CLI flags, initializes providers, and runs the discovery pipeline.
 Custom builds can import `agentserver` and register plugins (e.g., warehouse middleware) via `init()` blank imports before calling `Run()`.
 
@@ -56,7 +39,7 @@ Initializes secret provider (reads LLM API key, warehouse credentials)
   ↓
 Initializes warehouse provider (BigQuery/Redshift with credentials)
   ↓
-Applies warehouse middleware (warehouse.ApplyMiddleware — e.g., governance)
+Applies warehouse middleware (warehouse.ApplyMiddleware)
   ↓
 Initializes LLM provider (Claude/OpenAI/etc. with API key from secrets)
   ↓
@@ -70,7 +53,7 @@ Loads project-level prompt overrides from MongoDB (if any)
 2. Read `warehouse-credentials` from secret provider (optional, for cross-cloud)
 3. These credentials are passed to the LLM/warehouse provider constructors
 
-## Phase 2: Context Loading
+## Phase 1: Load project context
 
 The agent loads context from previous runs to avoid repetition:
 
@@ -88,7 +71,7 @@ Build previous context:
 
 This context is injected into all prompts via the `{{PREVIOUS_CONTEXT}}` template variable in `base_context.md`.
 
-## Phase 3: Schema Discovery
+## Phase 2: Load schemas
 
 The agent reads your warehouse structure:
 
@@ -106,7 +89,7 @@ For each dataset in project.warehouse.datasets:
 
 A compact Level-0 catalog (one line per table: name, column count, row count, keyword hints, joins) is injected into the exploration prompt via `{{SCHEMA_INFO}}`. The agent fetches per-table column lists and sample rows on demand during exploration via `lookup_schema` (up to 10 tables per call, 30 calls per run) or `search_tables` (semantic query against the per-project Qdrant index, 30 calls per run). See [On-Demand Schema](../architecture/agent-on-demand-schema.md) for the rationale (the previous "always inject L1 detail" approach exhausted the Bedrock 1M-token context on long runs).
 
-## Phase 4: Exploration
+## Phase 3: Exploration
 
 The core phase. The AI writes SQL queries, executes them, analyzes results, and decides what to query next.
 
@@ -151,7 +134,7 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 - `validation` — Insight validation result
 - `error` — Something went wrong (with error message)
 
-## Phase 5: Analysis
+## Phase 4: Analysis
 
 For each analysis area defined by the domain pack (e.g., churn, engagement, monetization for gaming; growth, engagement, retention for social), the agent:
 
@@ -201,43 +184,51 @@ Agent parses insights, assigns IDs (e.g., "churn-1", "churn-2")
 
 **If analysis fails** (e.g., LLM timeout), the error is recorded in `analysis_log` and the area is skipped. If ALL areas fail, the run is marked as `run_type: "failed"`. If some fail, it's `run_type: "partial"`. The errors are surfaced in the dashboard as a red banner.
 
-## Phase 6: Validation
+## Phase 4.5: Insight validation (LLM-native)
 
-Each insight with an `affected_count` is verified:
+Immediately after each analysis area produces its insights, the orchestrator runs the **verifier + refuter agent pair** on every insight, in `affected_count` descending order. Per-run cap: `VALIDATION_MAX_INSIGHTS_PER_RUN` (default 30).
 
 ```
-For each insight with affected_count > 0:
+For each insight (desc by affected_count):
   ↓
-  Generate a verification SQL query
-    Grounded on the SQL of the exploration steps the analyst LLM cited as
-    `source_steps` — those queries already executed successfully against the
-    warehouse, so their column references are authoritative. The verifier is
-    instructed to adapt one of them into a SELECT COUNT(...) AS count rather
-    than invent column names from the table catalog. The compact catalog
-    (one line per table) is supplied as supplementary context for tables the
-    source steps didn't touch.
+  Build verifier.Bundle:
+    - Doc digest (headline + description + severity + source_steps)
+    - SourceSteps[] from explorationResult.Steps (sample-capped + cell-capped)
+    - Warehouse info (dialect, dataset, run-wide filter)
+    - Discovery context (project, run, domain, language)
   ↓
-  Execute against warehouse (self-healing retry on dialect errors)
+  Run verifier agent (defender frame):
+    - Enumerate claims_considered (headline first)
+    - Gather evidence via lookup_schema / query_warehouse / read_step_rows
+    - Submit StructuredVerdict with per-claim evidence rows
   ↓
-  Compare claimed count vs verified count
+  Run refuter agent (skeptic frame, if VALIDATION_REFUTER_ENABLED):
+    - Bundle carries PriorClaims (verifier's enumerated set, verbatim)
+    - Attempt to refute each claim; tool-less verdicts are rejected
+    - Submit StructuredVerdict with row-level contradicting evidence
   ↓
-  Status:
-    - "confirmed" — within 20% tolerance
-    - "adjusted" — count differs, validator records the verified value
-    - "rejected" — verification query returned 0
-    - "error" — verification query failed even after retries
+  Coverage finaliser runs deterministic checks:
+    - duplicate detection, headline positional rule, set-equality,
+      evidence-required, status-enum validation, derive-Overall fallback
+  ↓
+  Combine(verifier, refuter, refuterDisabled) → one of 7 statuses:
+    confirmed | supported | rejected | partial | unverifiable
+    | validation_disabled | skipped_budget_cap
+  ↓
+  Stamp insight.Validation = {Verifier, Refuter, Combined, RefuterDisabled}
 ```
 
-Validation results are stored on each insight and shown in the dashboard.
+The validator **does NOT overwrite** the writer's `affected_count`. The `Validation` block carries the verifier+refuter verdicts and the dashboard surfaces them alongside the writer's number — when row-level evidence disagrees, both numbers stay visible.
 
-The validator does NOT overwrite the original `affected_count` — only the
-`Validation` block (`verified_count`, `original_count`, `status`, `query`,
-`reasoning`) is written. The dashboard surfaces the verification badge
-alongside the analysis-claimed count.
+See [Insight validation](../architecture/insight-validation.md) for the architecture and the [Configuration → Validation](../reference/configuration.md#validation) reference for every knob.
 
-## Phase 7: Recommendations
+## Phase 5: Recommendations
 
-All validated insights are fed to the recommendations prompt:
+Only insights with `Combined ∈ {supported, confirmed}` are fed to the recommendations prompt — `partial`, `rejected`, `unverifiable`, and `skipped_budget_cap` insights are filtered out at this gate.
+
+**Fail-open exception**: insights with `Combined == "validation_disabled"` (and legacy docs whose `Validation` field is missing entirely) **are** treated as eligible. The rationale is permissive: when validation didn't run at all (no LLM client, no schema provider), it would be misleading to penalise insights for the agent's absence — those insights should flow through unchanged. Operators who want strict gating should ensure validation is configured. When the eligible set is empty the recommendation phase is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
+
+After generation, `validateRelatedInsightIDs` drops any recommendation whose `related_insight_ids` list is empty or references an insight not in the eligible set. The dropped recommendation is logged with the bad IDs so operators can trace the cause, and the per-run drop counts are stamped onto the persisted `RecommendationStep` (`recommendations_dropped`, `recommendations_dropped_missing_ids`, `recommendations_dropped_unknown_id` — see the [RecommendationStep data model](../reference/data-models.md#recommendationstep)). The live dashboard run-step message reads "Generated N recommendations (M dropped due to invalid related_insight_ids)" when the drop counter is non-zero. The most common cause of `recommendations_dropped_unknown_id` is an LLM that emits category/severity/theme slug strings in place of the input insight's actual UUID (issue #237); the recommendation discipline rules explicitly forbid this shape, but a regression on a specific model surfaces here.
 
 ```
 Load recommendations.md prompt
@@ -272,9 +263,15 @@ LLM responds with JSON:
   }
 ```
 
-**Related insight IDs:** Each recommendation references the insights it addresses via `related_insight_ids`. These are the IDs assigned in Phase 5. The dashboard shows bidirectional links — recommendations show which insights they address, and insight detail pages show related recommendations.
+**Related insight IDs:** Each recommendation references the insights it addresses via `related_insight_ids`. These are the IDs assigned in Phase 4. The dashboard shows bidirectional links — recommendations show which insights they address, and insight detail pages show related recommendations.
 
-## Phase 8: Saving
+## Phase 5.5: Recommendation validation (LLM-native)
+
+Each kept recommendation is then validated by the same verifier + refuter pair. The bundle's source steps are the **token-budgeted union** (`VALIDATION_REC_STEPS_TOKEN_BUDGET`, default 12 000) of source steps from the recommendation's related insights. When over-budget steps are dropped, `source_steps_truncated: true` is surfaced in the prompt so the agent can mark claims dependent on omitted steps as `unverifiable`.
+
+Per-run cap: `VALIDATION_MAX_RECOMMENDATIONS_PER_RUN` (default 15). Output: `recommendation.Validation` populated with the same `StructuredVerdict` shape used for insights.
+
+## Phase 7: Save
 
 The agent writes the complete `DiscoveryResult` to MongoDB:
 

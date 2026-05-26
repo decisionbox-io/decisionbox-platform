@@ -1,7 +1,5 @@
 # Configuration Reference
 
-> **Version**: 0.4.0
-
 All DecisionBox services are configured via environment variables. This page lists every variable, its default, and which service uses it.
 
 ## Agent
@@ -33,14 +31,37 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MAX_RETRIES` | `3` | Number of retries on LLM API errors (rate limits, timeouts). Set to `0` for no retries. |
-| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by **both** the agent process (discovery) and the API process (executive summary, ask, pack-gen). Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall through to the provider's hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). |
+| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by the agent at startup and threaded through to every provider as `cfg["timeout_seconds"]`. Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall back to the `300s` default. The API process reads the same env var but with no default — when unset, each provider keeps its own hard-coded fallback (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry); see the API Configuration section below. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
 ### Discovery Run Budget
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DISCOVERY_MAX_DURATION` | `24h` | In-agent ctx cap on a single discovery run. Go duration format: `2h`, `24h`, `168h`. Acts as a runaway-loop safety net — per-step budgets (warehouse `QueryTimeout`, `LLM_TIMEOUT` + `LLM_RETRY_*`, per-table schema timeout) are what keep stuck operations responsive within a run. Set to `0` to disable the in-agent cap entirely for installs that prefer to rely solely on per-step budgets (typical for enterprise warehouses with multi-hour SQL scans). Invalid or negative values log a warning and fall back to `24h`. The tail-end persistence step (Mongo writes, embed/index, status update) always runs under its own 10-minute budget regardless of this setting, so a completed run is never lost to a deadline. **Must coexist with `AGENT_JOB_TIMEOUT_HOURS` on the API side:** the API's K8s Job `ActiveDeadlineSeconds` and the subprocess watcher are driven by `AGENT_JOB_TIMEOUT_HOURS`, so the agent is killed outright at that wall-clock cap regardless of `DISCOVERY_MAX_DURATION`. Keep `DISCOVERY_MAX_DURATION` < `AGENT_JOB_TIMEOUT_HOURS` so the in-agent cap fires first and the agent saves partial results gracefully. For multi-hour SQL, raise both consistently (e.g. `AGENT_JOB_TIMEOUT_HOURS=25` + `DISCOVERY_MAX_DURATION=24h`). |
+| `DISCOVERY_MAX_DURATION` | `24h` | In-agent ctx cap on a single discovery run. Go duration format: `2h`, `24h`, `168h`. Acts as a runaway-loop safety net — per-step budgets (warehouse `QueryTimeout`, `LLM_TIMEOUT` + `LLM_RETRY_*`, per-table schema timeout) are what keep stuck operations responsive within a run. Set to `0` to disable the in-agent cap entirely for installs that prefer to rely solely on per-step budgets (typical for very large warehouses with multi-hour SQL scans). Invalid or negative values log a warning and fall back to `24h`. The tail-end persistence step (Mongo writes, embed/index, status update) always runs under its own 10-minute budget regardless of this setting, so a completed run is never lost to a deadline. **Must coexist with `AGENT_JOB_TIMEOUT_HOURS` on the API side:** the API's K8s Job `ActiveDeadlineSeconds` and the subprocess watcher are driven by `AGENT_JOB_TIMEOUT_HOURS`, so the agent is killed outright at that wall-clock cap regardless of `DISCOVERY_MAX_DURATION`. Keep `DISCOVERY_MAX_DURATION` < `AGENT_JOB_TIMEOUT_HOURS` so the in-agent cap fires first and the agent saves partial results gracefully. For multi-hour SQL, raise both consistently (e.g. `AGENT_JOB_TIMEOUT_HOURS=25` + `DISCOVERY_MAX_DURATION=24h`). |
+
+### Validation
+
+The LLM-native verifier + refuter run in Phase 4.5 (insights) and Phase 5.5 (recommendations) of every discovery. See [Insight validation](../architecture/insight-validation.md) for the architectural overview.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VALIDATION_REFUTER_ENABLED` | `true` | When `false`, only the verifier runs. The refuter side carries no weight in Combine() and every doc is stamped `refuter_disabled: true`. Useful when refuter telemetry shows ≤5% rejection rate and the cost isn't pulling its weight. |
+| `VALIDATION_MAX_INSIGHTS_PER_RUN` | `30` | Run-level cap on validated insights. Insights are ordered by `affected_count` descending; surplus get `combined = "skipped_budget_cap"`. |
+| `VALIDATION_MAX_RECOMMENDATIONS_PER_RUN` | `15` | Run-level cap on validated recommendations. |
+| `VALIDATION_VERIFIER_MAX_ROUNDS` | `8` | Max LLM rounds per verifier run before forced-final. |
+| `VALIDATION_VERIFIER_TOKEN_CAP` | `30000` | Soft cap on cumulative tokens (input + output) per verifier run. When exceeded, the loop bails to forced-final. |
+| `VALIDATION_VERIFIER_MAX_OUTPUT` | `4000` | Per-call max output tokens for the verifier. |
+| `VALIDATION_REFUTER_MAX_ROUNDS` | `6` | Same as the verifier knob, refuter side. |
+| `VALIDATION_REFUTER_TOKEN_CAP` | `20000` | Soft token cap for the refuter. |
+| `VALIDATION_REFUTER_MAX_OUTPUT` | `3000` | Per-call max output tokens for the refuter. |
+| `VALIDATION_BUNDLE_SAMPLE_ROWS` | `50` | How many rows per source step the bundle samples for `read_step_rows`. |
+| `VALIDATION_BUNDLE_CELL_CHAR_CAP` | `200` | Per-cell character cap on row values in the rendered bundle. Strings over the cap are truncated with an ellipsis. |
+| `VALIDATION_REC_STEPS_TOKEN_BUDGET` | `12000` | Token budget for the union of source steps a recommendation bundle includes. Over-budget steps are omitted and `source_steps_truncated: true` is surfaced in the prompt. |
+| `VALIDATION_ESTIMATE_TOKEN_RATIO` | `3.5` | Characters-to-token ratio used for the in-loop prompt-size estimate. Lower → more conservative budgeting. |
+| `VALIDATION_MAX_READ_STEP_ROWS` | `200` | Per-call cap on the row count the `read_step_rows` tool returns. The agent may still ask for more; we silently clamp and the result carries `truncated: true` so the agent knows further rows are available. |
+| `VALIDATION_NUMERIC_TOLERANCE` | `0.20` | Relative tolerance (±20% by default) for comparing a claim's quantitative figure against row evidence. Prevents rounding-noise rejections — e.g. a "27% spike" claim with evidence of 26.5% stays `supported`. Only applies to magnitude/figure components; ranking and superlative claims are exact-match. |
+| `VALIDATION_MIN_SAMPLE_SIZE` | `30` | Minimum row population the refuter must observe before using a row as counter-evidence for a market-wide superlative claim. Below this, a contradicting outlier is dismissed (apples-to-apples — small-sample contradictions don't disprove the headline). |
 
 ### Vector Search (Qdrant)
 
@@ -74,8 +95,8 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--mode` | No | `run` | Agent mode. `run` performs discovery (default). `pack-gen` synthesizes a domain pack from the project's knowledge sources + warehouse schema and saves it to MongoDB. `pack-gen` requires a registered pack-generation provider; the stock community build exits with an error. |
-| `--project-id` | Yes | — | Project ID to run discovery (or pack generation) for. |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema`, `pack-gen`, or `validate-doc`. Empty runs discovery (the default). |
+| `--project-id` | Yes | — | Project ID to run discovery for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
 | `--max-steps` | No | `100` | Maximum exploration steps. More steps = more comprehensive but slower and more expensive. |
@@ -84,6 +105,8 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 | `--skip-cache` | No | `false` | Force re-discovery of warehouse schemas (ignore cache). |
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to MongoDB (TTL: 30 days). |
 | `--test` | No | `false` | Test mode — limits analysis for faster runs. |
+| `--test-connection` | No | *(empty)* | Test a provider connection and exit. One of `warehouse`, `llm`, `embedding`, `blurb-llm`. |
+| `--job-id` | No | *(empty)* | ValidationJob `_id` when `--mode=validate-doc`. Ignored in other modes. |
 
 ---
 
@@ -123,7 +146,7 @@ The API uses Qdrant to perform semantic searches and retrieval of indexed data.
 
 ### LLM Behavior
 
-The API talks to LLMs for `/ask`, pack-gen, and the enterprise executive-summary feature. Per-project LLM credentials and `timeout_seconds` are read from the project's LLM config (set in the dashboard); these env vars are deployment-wide defaults.
+The API talks to LLMs for `/ask`. Per-project LLM credentials and `timeout_seconds` are read from the project's LLM config (set in the dashboard); these env vars are deployment-wide defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

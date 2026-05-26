@@ -260,6 +260,13 @@ export interface Project {
   schema_index_status?: string;
   schema_index_error?: string;
   schema_index_updated_at?: string;
+  // Per-project toggle for the LLM-native verifier + refuter pipeline.
+  // Undefined → use deployment default (true). False → orchestrator
+  // skips Phase 4.5/5.5 and stamps every doc with
+  // combined: "validation_disabled". The validation panel reads the
+  // *current* value of this field (not a snapshot from discovery time)
+  // when deciding whether to show "Run validation" or "Disabled".
+  validation_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -414,11 +421,76 @@ export interface Insight {
   discovered_at: string;
 }
 
-export interface InsightValidation {
-  status: string;
-  verified_count: number;
-  original_count: number;
+// Status values come from the seven-status taxonomy plus the legacy
+// values older docs may still carry. The dashboard sorts / filters
+// on `combined` (the canonical field on new docs); the older
+// `status` field is only meaningful on legacy docs.
+export type ValidationStatus =
+  | "confirmed"
+  | "supported"
+  | "rejected"
+  | "partial"
+  | "unverifiable"
+  | "validation_disabled"
+  | "skipped_budget_cap"
+  // Legacy values:
+  | "adjusted"
+  | "unverified"
+  | "error"
+  | "";
+
+export type ValidationDocKind = "insight" | "recommendation";
+
+export type ValidationAgentMode = "verifier" | "refuter";
+
+export interface ClaimEvidence {
+  kind: "step_row" | "warehouse_query" | "none" | "";
+  step_id?: number;
+  query_sql?: string;
+  row?: Record<string, unknown>;
+  additional_rows?: number;
+}
+
+export interface ClaimVerdict {
+  claim_text: string;
+  claim_kind: string;
+  is_headline: boolean;
+  status: ValidationStatus;
   reasoning: string;
+  evidence: ClaimEvidence;
+}
+
+export interface StructuredVerdict {
+  doc_id: string;
+  doc_kind: ValidationDocKind;
+  mode: ValidationAgentMode;
+  claims_considered: string[];
+  claim_verdicts: ClaimVerdict[];
+  overall: ValidationStatus;
+  overall_reason: string;
+  lookups_used: number;
+  queries_issued: number;
+  step_reads_used: number;
+  llm_tokens_in: number;
+  llm_tokens_out: number;
+  duration_millis: number;
+}
+
+export interface InsightValidation {
+  // --- legacy fields ---
+  status?: string;
+  verified_count?: number;
+  original_count?: number;
+  query?: string;
+  reasoning?: string;
+  validated_at?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  // --- new fields ---
+  verifier?: StructuredVerdict;
+  refuter?: StructuredVerdict;
+  combined?: ValidationStatus;
+  refuter_disabled?: boolean;
 }
 
 export interface Recommendation {
@@ -433,6 +505,7 @@ export interface Recommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  validation?: InsightValidation;
 }
 
 export interface Summary {
@@ -485,6 +558,39 @@ export interface DroppedAnalysisStep {
   reason: string; // "below_min_score" | "over_budget"
 }
 
+// Manual-validation job — one queued / running / completed
+// run-validation request. Mirrors services/api/models/validation_job.go.
+// Status lifecycle: pending → running → completed | failed | cancelled.
+export type ValidationJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type ValidationJobStep = 'verifier' | 'refuter' | 'combining';
+
+export interface ValidationJob {
+  id: string;
+  project_id: string;
+  discovery_id: string;
+  doc_kind: ValidationDocKind;
+  doc_id: string;
+  status: ValidationJobStatus;
+  step?: ValidationJobStep;
+  error?: string;
+  attempt: number;
+  requested_by?: string;
+  worker_id?: string;
+  enqueued_at: string;
+  claimed_at?: string;
+  started_at?: string;
+  heartbeat_at?: string;
+  completed_at?: string;
+  cancelled_at?: string;
+  run_id?: string;
+}
+
 export interface ValidationLogEntry {
   insight_id: string;
   analysis_area: string;
@@ -494,6 +600,12 @@ export interface ValidationLogEntry {
   reasoning: string;
   query: string;
   validated_at: string;
+  // --- new fields ---
+  doc_kind?: ValidationDocKind;
+  verifier?: StructuredVerdict;
+  refuter?: StructuredVerdict;
+  combined?: ValidationStatus;
+  refuter_disabled?: boolean;
 }
 
 export interface ProjectStatus {
@@ -856,6 +968,7 @@ export interface StandaloneRecommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  validation?: InsightValidation;
   embedding_text?: string;
   embedding_model?: string;
   duplicate_of?: string;
@@ -1095,6 +1208,25 @@ export const api = {
     request<AnalysisLogStep[]>(`/api/v1/discoveries/${discoveryId}/analysis-steps`),
   listValidationResults: (discoveryId: string) =>
     request<ValidationLogEntry[]>(`/api/v1/discoveries/${discoveryId}/validation-results`),
+
+  // Manual-validation jobs — enqueue / cancel / list.
+  // listValidationJobs returns 0..N rows most-recent-first; the
+  // dashboard router picks the most-recent non-terminal one to drive
+  // the in-flight progress card.
+  listValidationJobs: (discoveryId: string, docKind: ValidationDocKind, docId: string) => {
+    const qs = new URLSearchParams({ doc_kind: docKind, doc_id: docId }).toString();
+    return request<ValidationJob[]>(`/api/v1/discoveries/${discoveryId}/validation-jobs?${qs}`);
+  },
+  enqueueValidateInsight: (discoveryId: string, insightId: string) =>
+    request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/insights/${insightId}/validate`, { method: 'POST' }),
+  enqueueValidateRecommendation: (discoveryId: string, recommendationId: string) =>
+    request<ValidationJob>(`/api/v1/discoveries/${discoveryId}/recommendations/${recommendationId}/validate`, { method: 'POST' }),
+  // Cancel returns a small JSON envelope ({status: "cancelled"})
+  // rather than 204 — the shared request() helper rejects non-JSON
+  // bodies on success, which would surface a misleading "Cancel
+  // failed" toast for every successful cancel.
+  cancelValidationJob: (jobId: string) =>
+    request<{ status: string }>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
   getRecommendationLog: (discoveryId: string) =>
     request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
   // Live run-step stream. The dashboard polls with the last `id` it

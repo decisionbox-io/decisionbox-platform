@@ -4,7 +4,13 @@ import (
 	"time"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
+
+// InsightValidation is an alias for the shared validation type in
+// libs/go-common/models/validation so the agent and the API see one
+// struct on the wire.
+type InsightValidation = valmodels.InsightValidation
 
 // DiscoveryResult represents the complete output of a discovery run.
 // Every LLM interaction is stored for traceability and fine-tuning.
@@ -96,22 +102,6 @@ type Insight struct {
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
-// InsightValidation holds the result of warehouse verification for an insight.
-type InsightValidation struct {
-	Status        string    `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "unverified"
-	VerifiedCount int       `bson:"verified_count,omitempty" json:"verified_count,omitempty"`
-	OriginalCount int       `bson:"original_count,omitempty" json:"original_count,omitempty"`
-	Query         string    `bson:"query,omitempty" json:"query,omitempty"`
-	Reasoning     string    `bson:"reasoning,omitempty" json:"reasoning,omitempty"`
-	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
-
-	// Per-insight LLM token usage, summed across every verifier LLM
-	// call for this insight (initial verification, lookup-loop rounds,
-	// forced final round).
-	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
-	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
-}
-
 // Recommendation is an actionable suggestion based on discovered insights.
 type Recommendation struct {
 	ID          string `bson:"id" json:"id"`
@@ -129,6 +119,11 @@ type Recommendation struct {
 
 	Confidence float64   `bson:"confidence" json:"confidence"`
 	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
+
+	// Validation is the verifier+refuter verdict attached after the
+	// orchestrator's recommendation-validation phase runs. Nil on
+	// legacy docs.
+	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
 // Impact represents the expected impact of a recommendation.
@@ -354,33 +349,76 @@ type RecommendationStep struct {
 	// Parsed results
 	Recommendations []Recommendation `bson:"recommendations" json:"recommendations"`
 
+	// Status is an optional observability marker. Empty on the
+	// regular happy path; set to "skipped_no_eligible_insights" when
+	// the orchestrator skips Phase 5 because no insight survived the
+	// {supported, confirmed} eligibility filter. The dashboard renders
+	// a clear reason for the empty recommendations section.
+	Status string `bson:"status,omitempty" json:"status,omitempty"`
+
+	// Telemetry for recommendations the orchestrator parsed from the
+	// LLM response but discarded before persistence because their
+	// `related_insight_ids` could not be resolved to an eligible
+	// insight. RecommendationsDropped is the total; the per-reason
+	// fields break it down so we can measure regression rates per LLM
+	// provider (e.g. some models emit category:severity:theme slugs
+	// instead of UUIDs and all of those fall into
+	// RecommendationsDroppedUnknownID). Zero values are omitted to
+	// keep legacy documents from gaining noisy fields when re-read.
+	RecommendationsDropped           int `bson:"recommendations_dropped,omitempty" json:"recommendations_dropped,omitempty"`
+	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
+	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
+
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
 
-// ValidationResult captures warehouse verification for an insight or count.
+// ValidationResult captures warehouse verification for an insight or
+// recommendation. The legacy fields are populated by old discoveries;
+// the new fields (DocKind, Verifier, Refuter, Combined,
+// RefuterDisabled) are populated by the v5 LLM-native verifier.
 type ValidationResult struct {
 	InsightID    string    `bson:"insight_id" json:"insight_id"`
 	AnalysisArea string    `bson:"analysis_area" json:"analysis_area"`
 	ValidatedAt  time.Time `bson:"validated_at" json:"validated_at"`
 
-	// What was claimed
+	// What was claimed (legacy)
 	ClaimedCount  int    `bson:"claimed_count" json:"claimed_count"`
 	ClaimedMetric string `bson:"claimed_metric,omitempty" json:"claimed_metric,omitempty"`
 
-	// What the warehouse returned
+	// What the warehouse returned (legacy)
 	VerifiedCount int    `bson:"verified_count" json:"verified_count"`
 	Query         string `bson:"query" json:"query"`
 	QueryError    string `bson:"query_error,omitempty" json:"query_error,omitempty"`
 
-	// Assessment
-	Status    string `bson:"status" json:"status"` // "confirmed", "adjusted", "rejected", "error"
+	// Assessment (legacy)
+	Status    string `bson:"status" json:"status"`
 	Reasoning string `bson:"reasoning" json:"reasoning"`
 
-	// Per-insight LLM token usage, summed across every verifier LLM
-	// call for this insight (initial verification, lookup-loop rounds,
-	// forced final round).
+	// Per-insight LLM token usage (legacy field, also populated by the
+	// new verifier as the sum of verifier+refuter tokens).
 	InputTokens  int `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
+
+	// --- new-shape fields ---
+
+	// DocKind discriminates "insight" from "recommendation" so the
+	// dashboard can render the right view. Empty on legacy docs.
+	DocKind valmodels.DocKind `bson:"doc_kind,omitempty" json:"doc_kind,omitempty"`
+
+	// Verifier carries the structured defender verdict (claims +
+	// per-claim evidence + overall).
+	Verifier *valmodels.StructuredVerdict `bson:"verifier,omitempty" json:"verifier,omitempty"`
+
+	// Refuter carries the structured skeptic verdict. Nil when
+	// RefuterDisabled or when the refuter run failed at transport.
+	Refuter *valmodels.StructuredVerdict `bson:"refuter,omitempty" json:"refuter,omitempty"`
+
+	// Combined is the merge of Verifier and Refuter via Combine().
+	Combined valmodels.Status `bson:"combined,omitempty" json:"combined,omitempty"`
+
+	// RefuterDisabled distinguishes "refuter intentionally not run"
+	// from "refuter expected but missing" — see Combine().
+	RefuterDisabled bool `bson:"refuter_disabled,omitempty" json:"refuter_disabled,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

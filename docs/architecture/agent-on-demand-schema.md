@@ -1,26 +1,24 @@
 # Agent On-Demand Schema Retrieval
 
-> **Version**: 0.4.0
->
 > **See also**: [agent-analysis-compaction.md](agent-analysis-compaction.md)
 > applies the same prompt-bounding pattern to the analysis phase
 > (vector-ranked step selection + per-step compact digest).
 
 ## Why
 
-Before v0.4 the exploration prompt always carried a Level-0 catalog **plus**
-a Level-1 block — full column lists and 3 sample rows for the top-K tables
-the retriever matched up front. That payload sat at the top of the system
-prompt for every step of the run, and every step also appended the previous
-turn's full SQL result to the conversation. On long runs against a wide
-warehouse the two sources combined: a customer report against ~2K tables
-hit the Bedrock 1M-token limit at step 98 with a `prompt is too long:
-1002763 tokens > 1000000 maximum` error, killing an otherwise healthy
-discovery.
+A naïve exploration prompt that carries a Level-0 catalog **plus** a Level-1
+block — full column lists and 3 sample rows for the top-K tables the
+retriever matched up front — sits at the top of the system prompt for every
+step of the run, and every step also appends the previous turn's full SQL
+result to the conversation. On long runs against a wide warehouse the two
+sources combine and bump into model token limits: a customer report against
+~2K tables hit the Bedrock 1M-token limit at step 98 with a
+`prompt is too long: 1002763 tokens > 1000000 maximum` error, killing an
+otherwise healthy discovery.
 
-The v0.4 architecture fixes this at the source rather than papering over it
-with token-based trimming or summarisation. Two new actions let the model
-fetch L1 detail only for tables it actually wants to use:
+The on-demand schema architecture fixes this at the source rather than
+papering over it with token-based trimming or summarisation. Two actions let
+the model fetch L1 detail only for tables it actually wants to use:
 
 | Action          | What it does                                                | Per-call limit | Per-run budget |
 |-----------------|-------------------------------------------------------------|----------------|----------------|
@@ -34,7 +32,7 @@ domain-pack exploration prompt. Changing a constant requires updating both.
 
 ## Token math
 
-| Slice                                | Pre-v0.4                           | Post-v0.4                              |
+| Slice                                | Without on-demand schema          | With on-demand schema                  |
 |--------------------------------------|------------------------------------|----------------------------------------|
 | Schema in system prompt              | catalog + L1 block (~80–200K)      | catalog only (~5–30K)                  |
 | Per-step user message                | ~1 KB SQL result                   | ~1.2 KB (mix of SQL + lookup + search) |
@@ -84,7 +82,7 @@ Orchestrator
 | `services/agent/internal/ai/schema_provider.go`                              | `SchemaProvider` interface, `Lookup*` / `Search*` types, run-level constants      |
 | `services/agent/internal/ai/exploration.go`                                  | Action parser + budget enforcement + result formatters                            |
 | `services/agent/internal/discovery/cache_schema_provider.go`                 | Production `SchemaProvider` — in-memory schemas map + Qdrant retriever            |
-| `services/agent/internal/discovery/schema_context.go`                        | Catalog-only renderer; old `BuildOnce` (catalog + L1) replaced by `BuildCatalog`  |
+| `services/agent/internal/discovery/schema_context.go`                        | Catalog-only renderer (`BuildCatalog`)                                            |
 | `services/agent/internal/discovery/orchestrator.go`                          | Wires the catalog + provider into the engine, substitutes `{{SCHEMA_INFO}}`       |
 | `services/agent/internal/database/run_repo.go`                               | Telemetry: `IncrementSchemaActionCalls(ctx, runID, "lookup_schema"\|"search_tables")` |
 | `domain-packs/{gaming,social,ecommerce,system-test}/prompts/base/exploration.md` | Action contract — exact JSON shapes + budgets                                |
@@ -95,9 +93,6 @@ Per-action counters live on `discovery_runs`:
 
 - `schema_lookup_calls` — increments on every `lookup_schema` step
 - `schema_search_calls` — increments on every `search_tables` step
-
-The pre-v0.4 single counter `schema_inspect_table_calls` is gone. Dashboards
-that referenced it must move to the per-action counters.
 
 ## Tests
 
@@ -112,68 +107,58 @@ that referenced it must move to the per-action counters.
   context cancellation, Search forwarding (projectID, topK, vector,
   RowCountPrior), defaults, error paths.
 
-## Migration
-
-DecisionBox is pre-1.0; no backwards-compatibility shims were carried.
-Existing customised prompts on existing projects must be re-saved from the
-new domain-pack defaults to pick up the action contract — see the runbook
-in `PLAN-SCHEMA-RETRIEVAL.md` for the migration script.
-
 ## Verification phase column grounding
 
 The same "catalog alone is not enough" pressure that drove the on-demand
 schema retrieval design above hits the verification phase too. The verifier
-is a single LLM call per insight (no exploration tool loop), so it cannot
-issue `lookup_schema` mid-prompt. On warehouses with non-English /
-abbreviated column names a customer report against an MSSQL Netsis-style
-warehouse on 2026-04-30 saw 9 of 10 insights end with
-`validation.status = "error"` and `Invalid column name 'TARIiH' /
-'STHAR_SUBE' / 'SUBEKODU' / …` — the verifier had no column information,
-so it guessed.
+now runs a bounded tool loop per insight/recommendation, so it can issue
+`lookup_schema`, `query_warehouse`, `read_step_rows`, and `submit_verdict`
+envelopes during validation. On warehouses with non-English / abbreviated
+column names a customer report against an MSSQL Netsis-style warehouse on
+2026-04-30 saw 9 of 10 insights end with `validation.status = "error"` and
+`Invalid column name 'TARIiH' / 'STHAR_SUBE' / 'SUBEKODU' / …` — the
+verifier had no column information, so it guessed.
 
-The verification-grounding fix layers in three steps; **all three are
-in v0.4**:
+The verification-grounding fix layers in three steps:
 
-| Layer | Mechanism | Status |
-|-------|-----------|--------|
-| 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). | Shipped in v0.4 |
-| 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. Per-warehouse `prompts/sql_fix.md` templates gain a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` section that's stripped on the explore path (zero opts) and populated on the validate path. | Shipped in v0.4 |
-| 3     | Verifier owns its own `SchemaProvider` and runs a small `lookup_schema` tool loop (up to `MaxLookupsPerVerification = 6` rounds per insight) for cross-table cases that source steps don't cover. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. A shared action parser (`ai.ParseAction(response, allowed)`) takes an allow-list so the verifier loop accepts only `lookup_schema` and `query_data` — `complete` and other explorer-only actions are rejected. When the lookup budget is exhausted before the model emits a query, one forced final round (NOT counted against the budget) is allowed; failure to emit a query after that surfaces as `validation.status="error"` with a clear telemetry signal. | Shipped in v0.4 |
+| Layer | Mechanism |
+|-------|-----------|
+| 1     | Render the SQL of cited `source_steps` into the verification prompt as priority-1 column evidence (above the catalog). |
+| 2     | The self-healing SQL fixer receives the same evidence on retry via per-call `FixOpts`, so it does not re-emit the same hallucinated column. Per-warehouse `prompts/sql_fix.md` templates gain a conditional `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` section that's stripped on the explore path (zero opts) and populated on the validate path. |
+| 3     | Verifier owns its own `SchemaProvider` and runs through `VALIDATION_VERIFIER_MAX_ROUNDS` (default 8); the refuter uses `VALIDATION_REFUTER_MAX_ROUNDS` (default 6). The verifier action parser accepts only `lookup_schema`, `query_warehouse`, `read_step_rows`, and `submit_verdict`. Lookup results land in the rendered `VerificationContext` after the source-queries block, so the SQL fixer benefits from them too on retry. |
 
 Layer 1 is implemented in `services/agent/internal/validation/render` (the
-`RenderVerificationContext` helper) and consumed by
-`services/agent/internal/validation/insight_validator.go`. The orchestrator
-wires the full `explorationResult.Steps` into the validator via
-`SetExplorationLog` after the exploration phase completes and before the
-analysis loop runs — `ValidateInsights` panics if this wiring is missing,
-by design (no-backward-compat stance,
-`plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md` §1.1).
+`RenderVerificationContext` helper) and consumed by the verifier prompt
+builder at `services/agent/internal/validation/verifier/prompt.go`. The
+orchestrator wires the cited source-step rows into the verifier `Bundle`
+(`services/agent/internal/validation/verifier/bundle.go`) before each
+per-doc verification round so the verifier always has authoritative SQL
+evidence for any claim that cites a step.
 
-Layer 2 lives in `services/agent/internal/queryexec` (`FixOpts`, the new
-`ExecuteWithFixOpts` entry point, and the `Execute` shim that calls it with
-empty opts) and `services/agent/internal/ai/sql_fixer.go` (`applySection`
-mustache-style conditional helper, `{{VERIFICATION_CONTEXT}}` substitution).
-Each per-warehouse `prompts/sql_fix.md` declares a
+Layer 2 lives in `services/agent/internal/queryexec` (`FixOpts`,
+`ExecuteWithFixOpts` entry point, plus the `Execute` shim that calls it
+with empty opts) and `services/agent/internal/ai/sql_fixer.go`
+(`{{VERIFICATION_CONTEXT}}` substitution). Each per-warehouse
+`prompts/sql_fix.md` declares a
 `{{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}}` block that can host
 warehouse-specific phrasing of the column-grounding rule alongside the
 shared evidence. Adding a new warehouse means keeping that contract — the
 provider's `provider_test.go` asserts the markers are present so a missed
 template never silently strips the layer's evidence.
 
-Layer 3 lives in `services/agent/internal/validation/insight_validator.go`
-(`runVerificationLoop`, `MaxLookupsPerVerification`, `mergeLookups`) and
-reuses the catalog/Qdrant `CacheSchemaProvider` the explorer already uses —
-the orchestrator forwards the same instance via `SetSchemaProvider` after
-exploration completes. The shared parser is `ai.ParseAction(response,
-allowed)` with the explorer wrapping it via `(e *ExplorationEngine).
-parseAction(response)` (full allow-list = nil) and the verifier passing
-`[]string{"lookup_schema", "query_data"}`. Drift between the two callers is
-prevented by a single source-of-truth parser; new explorer-only actions
-(e.g. `summarize_table`) are rejected by the verifier rather than silently
-mishandled (plan §6.6).
+Layer 3 lives in `services/agent/internal/validation/verifier/agent.go`
+(`(*Agent).Verify` / `(*Agent).Refute` run the tool loop;
+`Verifier.MaxRounds` / `Refuter.MaxRounds` in `verifier/config.go` cap it,
+tunable via `VALIDATION_VERIFIER_MAX_ROUNDS` / `VALIDATION_REFUTER_MAX_ROUNDS`).
+The verifier reuses the catalog/Qdrant `CacheSchemaProvider` the explorer
+already uses; the orchestrator forwards the same instance via the bundle
+so cross-table lookups hit the same cache. The shared action parser
+(`services/agent/internal/validation/verifier/action.go`'s `ParseAction`)
+takes an allow-list; the verifier passes
+`{lookup_schema, query_warehouse, read_step_rows, submit_verdict}` and
+refuses any other top-level key.
 
 When an insight cites no `source_steps` AND no SchemaProvider is wired,
-Layer 1 contributes nothing and the verifier falls through to a single-shot
-catalog-only generation. With a SchemaProvider wired, the verifier's first
-round can issue `lookup_schema` to fetch the column detail it needs; this
-is the "Layer-1.5" fallback described in plan §10.5 / §10.18 fix #4.
+Layer 1 contributes nothing and the verifier falls through to catalog-only
+reasoning. With a SchemaProvider wired, the verifier's first round can
+issue `lookup_schema` to fetch the column detail it needs.

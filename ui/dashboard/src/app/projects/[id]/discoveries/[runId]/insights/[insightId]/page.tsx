@@ -1,64 +1,27 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
 import {
-  IconAlertTriangle, IconArrowLeft, IconCheck, IconCode, IconDatabase, IconSearch, IconX,
+  IconAlertTriangle, IconArrowLeft, IconCode, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
+import { ValidationRouter } from '@/components/validation/ValidationRouter';
+import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
+import { isLegacyValidation } from '@/components/validation/validationShape';
 import { markRead } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
-
-// CompactValidationCard is sized for the right sidebar (and the narrow-screen
-// fallback that lives at the bottom of the main column). Trades the big
-// padding + wide Group layout of the old inline Validation card for a tighter
-// presentation — status badge, counts on one row, reasoning clipped — so it
-// sits next to the related-items sidebar without dominating.
-function CompactValidationCard({ validation }: { validation: NonNullable<Insight['validation']> }) {
-  const statusColor = validation.status === 'confirmed' ? 'green'
-    : validation.status === 'adjusted' ? 'yellow'
-    : validation.status === 'rejected' ? 'red' : 'gray';
-  const statusIcon = validation.status === 'confirmed' ? <IconCheck size={12} /> : <IconX size={12} />;
-  return (
-    <Card withBorder p="md">
-      <Group justify="space-between" mb={6}>
-        <Text size="xs" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.5px' }}>
-          Validation
-        </Text>
-        <Badge size="sm" color={statusColor} leftSection={statusIcon} variant="light">
-          {validation.status}
-        </Badge>
-      </Group>
-      {(validation.original_count != null || validation.verified_count != null) && (
-        <Group gap={4} mb={6}>
-          {validation.original_count != null && (
-            <Text size="xs" c="dimmed">{validation.original_count.toLocaleString()}</Text>
-          )}
-          {validation.verified_count != null && (
-            <>
-              <Text size="xs" c="dimmed">→</Text>
-              <Text size="xs" fw={600}>{validation.verified_count.toLocaleString()} verified</Text>
-            </>
-          )}
-        </Group>
-      )}
-      {validation.reasoning && (
-        <Text size="xs" c="dimmed" lineClamp={3}>{validation.reasoning}</Text>
-      )}
-    </Card>
-  );
-}
 
 export default function InsightDetailPage() {
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
@@ -78,6 +41,7 @@ export default function InsightDetailPage() {
   };
   const [insight, setInsight] = useState<Insight | null>(null);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
@@ -90,6 +54,17 @@ export default function InsightDetailPage() {
   // opened explicitly via a button in the sidebar. The Drawer gets the full
   // viewport width, so code blocks don't have to squeeze into the sidebar.
   const [techOpen, setTechOpen] = useState(false);
+
+  // refetchDiscovery is called by the validation router on terminal
+  // job status so the embedded insight picks up the new verdict the
+  // agent wrote back. Defined as a useCallback so the router's
+  // useEffect dependency stays stable across renders.
+  const refetchDiscovery = useCallback(async () => {
+    const disc = await api.getDiscoveryById(runId);
+    setDiscovery(disc);
+    const found = (disc?.insights || []).find((i) => i.id === insightId) || null;
+    setInsight(found);
+  }, [runId, insightId]);
 
   useEffect(() => {
     Promise.all([
@@ -104,6 +79,7 @@ export default function InsightDetailPage() {
         const found = insights.find((i) => i.id === insightId) || null;
         setInsight(found);
       }),
+      api.getProject(id).then(setProject).catch(() => setProject(null)),
       api.listFeedback(runId).then((fb) => {
         const match = (fb || []).find((f) => f.target_type === 'insight' && f.target_id === insightId);
         if (match) setFeedback(match);
@@ -114,7 +90,7 @@ export default function InsightDetailPage() {
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
-  }, [runId, insightId]);
+  }, [id, runId, insightId]);
 
   // Record that the user has opened this insight. Fire-and-forget —
   // markRead dedupes at the server layer (unique index) and optimistically
@@ -146,10 +122,16 @@ export default function InsightDetailPage() {
   // Get the analysis step for this insight's area
   const analysisStep = analysisLog.find((a) => a.area_id === insight.analysis_area);
 
-  // Get validation entries for this insight's area
-  const validationEntries = validationLog.filter(
-    (v) => v.analysis_area === insight.analysis_area
-  );
+  // Validation log entries for this insight's area. The new-shape verdict
+  // (verifier + refuter + per-claim breakdown) is reachable from the
+  // sidebar ValidationPanel's "Show breakdown" drawer — duplicating it
+  // in the technical-details drawer would just create two paths to the
+  // same data. Legacy entries lack a per-claim breakdown, so for them
+  // the technical-details accordion is still the place to see the
+  // historical probes.
+  const legacyValidationEntries = validationLog
+    .filter((v) => v.analysis_area === insight.analysis_area)
+    .filter((v) => isLegacyValidation(v));
 
   // Related recommendations — recs in this discovery that cite this insight id.
   const relatedRecs = (discovery?.recommendations || []).filter(
@@ -280,9 +262,15 @@ export default function InsightDetailPage() {
             at the bottom of the main column so they're still accessible. */}
         <Box hiddenFrom="lg">
           <Stack gap="md">
-            {insight.validation && (
-              <CompactValidationCard validation={insight.validation} />
-            )}
+            <ValidationRouter
+              validation={insight.validation}
+              discoveryId={runId}
+              docKind="insight"
+              docId={insight.id}
+              validationEnabled={project?.validation_enabled !== false}
+              projectSettingsHref={`/projects/${id}/settings#advanced`}
+              onTerminal={refetchDiscovery}
+            />
             <Button
               variant="subtle"
               size="sm"
@@ -311,9 +299,15 @@ export default function InsightDetailPage() {
                 relatedLabel="Related Recommendations"
                 related={relatedItems}
               />
-              {insight.validation && (
-                <CompactValidationCard validation={insight.validation} />
-              )}
+              <ValidationRouter
+                validation={insight.validation}
+                discoveryId={runId}
+                docKind="insight"
+                docId={insight.id}
+                validationEnabled={project?.validation_enabled !== false}
+                projectSettingsHref={`/projects/${id}/settings#advanced`}
+                onTerminal={refetchDiscovery}
+              />
               <Button
                 variant="subtle"
                 size="sm"
@@ -423,34 +417,18 @@ export default function InsightDetailPage() {
             </Accordion.Item>
           )}
 
-          {/* Validation entries */}
-          {validationEntries.length > 0 && (
+          {/* Legacy validation log entries only — new-shape verdicts are
+              rendered in the sidebar ValidationPanel + its "Show breakdown"
+              drawer, so showing them here too would duplicate the surface. */}
+          {legacyValidationEntries.length > 0 && (
             <Accordion.Item value="validation">
               <Accordion.Control>
-                <Text size="sm" fw={600}>Validation ({validationEntries.length} checks)</Text>
+                <Text size="sm" fw={600}>Validation ({legacyValidationEntries.length} legacy checks)</Text>
               </Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="sm">
-                  {validationEntries.map((v, idx) => (
-                    <Card key={idx} withBorder p="sm" radius="sm">
-                      <Group justify="space-between" mb={4}>
-                        <Badge size="xs" variant="light"
-                          color={v.status === 'confirmed' ? 'green' : v.status === 'adjusted' ? 'yellow' : v.status === 'error' ? 'red' : 'gray'}>
-                          {v.status}
-                        </Badge>
-                        {v.claimed_count > 0 && (
-                          <Text size="xs" c="dimmed">
-                            {v.claimed_count.toLocaleString()} → {v.verified_count.toLocaleString()}
-                          </Text>
-                        )}
-                      </Group>
-                      <Text size="xs" c="dimmed">{v.reasoning}</Text>
-                      {v.query && (
-                        <Code block mt={4} style={{ fontSize: '10px', maxHeight: 80, overflow: 'auto' }}>
-                          {v.query}
-                        </Code>
-                      )}
-                    </Card>
+                  {legacyValidationEntries.map((v, idx) => (
+                    <ValidationLogRow key={idx} entry={v} />
                   ))}
                 </Stack>
               </Accordion.Panel>

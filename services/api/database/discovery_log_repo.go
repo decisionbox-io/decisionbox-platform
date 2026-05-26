@@ -102,7 +102,20 @@ type RecommendationLogEntry struct {
 	TokensIn     int       `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
 	TokensOut    int       `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
 	DurationMs   int64     `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
-	Error        string    `bson:"error,omitempty" json:"error,omitempty"`
+
+	// Recommendation drop telemetry mirrored from the agent's
+	// RecommendationStep so the dashboard surfaces "N dropped due to
+	// invalid related_insight_ids" on the recommendation-log endpoint
+	// without forcing operators to query MongoDB directly. Zero values
+	// are omitted to keep clean runs from inflating the payload.
+	// RecommendationsDropped is the total; the per-reason fields break
+	// it down (see issue #237 for the slug-style hallucination that
+	// motivates RecommendationsDroppedUnknownID).
+	RecommendationsDropped           int `bson:"recommendations_dropped,omitempty" json:"recommendations_dropped,omitempty"`
+	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
+	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
+
+	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
 
 // GetRecommendationLog returns the recommendation-phase row for a

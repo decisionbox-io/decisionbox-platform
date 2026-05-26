@@ -26,7 +26,7 @@ import (
 // nil when Qdrant is not configured; /reindex then relies on the
 // worker's pre-run drop as the source of truth.
 func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, vectorStore ...vectorstore.Provider) http.Handler {
-	return NewWithRouteGroups(db, healthHandler, secretProvider, authProvider, schemaCollectionDropper, indexCanceller, nil, vectorStore...)
+	return NewWithRouteGroups(db, healthHandler, secretProvider, authProvider, schemaCollectionDropper, indexCanceller, nil, nil, vectorStore...)
 }
 
 // NewWithRouteGroups is New with an explicit slice of additional route
@@ -38,7 +38,7 @@ func New(db *database.DB, healthHandler *health.Handler, secretProvider secrets.
 // The community Run() retrieves its groups from apiserver's registry and
 // forwards them here; tests pass groups directly to avoid touching the
 // global registry.
-func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, routeGroups []RouteGroup, vectorStore ...vectorstore.Provider) http.Handler {
+func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretProvider secrets.Provider, authProvider auth.Provider, schemaCollectionDropper handler.CollectionDropper, indexCanceller handler.IndexCanceller, validationCanceller handler.ValidationJobCanceller, routeGroups []RouteGroup, vectorStore ...vectorstore.Provider) http.Handler {
 	var vs vectorstore.Provider
 	if len(vectorStore) > 0 {
 		vs = vectorStore[0]
@@ -129,6 +129,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
 	schemaCacheRepo := database.NewSchemaCacheRepository(db)
 	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
+	validationJobsRepo := database.NewValidationJobRepository(db)
+	validationJobs := handler.NewValidationJobsHandler(validationJobsRepo, discoveryRepo, projectRepo)
+	if validationCanceller != nil {
+		validationJobs = validationJobs.WithCanceller(validationCanceller)
+	}
 
 	// RBAC helpers — wrap a handler with role-based access control.
 	// With NoAuth (default), all requests get "admin" role — all routes pass.
@@ -225,6 +230,13 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/validation-results", withRole(viewer, discoveries.ListValidationResults))
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/recommendation-log", withRole(viewer, discoveries.GetRecommendationLog))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
+
+	// Manual validation — enqueue / cancel / list.
+	// member role for enqueue + cancel (write-side); viewer for list.
+	mux.HandleFunc("POST /api/v1/discoveries/{did}/insights/{iid}/validate", withRole(member, validationJobs.ValidateInsight))
+	mux.HandleFunc("POST /api/v1/discoveries/{did}/recommendations/{rid}/validate", withRole(member, validationJobs.ValidateRecommendation))
+	mux.HandleFunc("POST /api/v1/validation-jobs/{jid}/cancel", withRole(member, validationJobs.Cancel))
+	mux.HandleFunc("GET /api/v1/discoveries/{did}/validation-jobs", withRole(viewer, validationJobs.ListByDoc))
 
 	// Feedback — member for submit, viewer for read, admin for delete
 	mux.HandleFunc("POST /api/v1/discoveries/{runId}/feedback", withRole(member, feedback.Submit))

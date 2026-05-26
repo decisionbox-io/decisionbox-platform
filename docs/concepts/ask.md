@@ -38,8 +38,9 @@ Each model carries a `MaxInputTokens` in its catalog entry — the upstream-publ
 | Bedrock | Llama 4 Maverick | 1000000 |
 | Bedrock | Llama 3.x, Qwen 3.x, DeepSeek R1, Mistral Large | 128000 |
 | Bedrock | Mixtral 8x22B | 65536 |
+| Ollama | Llama 4 | 1048576 |
 | Ollama | Gemma 4 (26B/31B), Qwen3-Coder | 262144 |
-| Ollama | Llama 4, Qwen 3.x / 2.x, Llama 3.x, DeepSeek R1, Gemma 3, Gemma 4 (small), GPT-OSS, Mistral NeMo / Small | 128000 |
+| Ollama | Qwen 3.x / 2.x, Llama 3.x, DeepSeek R1, Gemma 3, Gemma 4 (small), GPT-OSS, Mistral NeMo / Small | 128000 |
 | Ollama | Mistral 7B | 32768 |
 | Ollama | Phi-4, Code Llama, DeepSeek Coder | 16384 |
 | Ollama | Llama 3, Gemma 1 / 2, CodeGemma, SmolLM2 | 8192 |

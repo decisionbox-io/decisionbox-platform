@@ -71,6 +71,16 @@ type Project struct {
 	SchemaIndexError     string     `bson:"schema_index_error,omitempty" json:"schema_index_error,omitempty"`
 	SchemaIndexUpdatedAt *time.Time `bson:"schema_index_updated_at,omitempty" json:"schema_index_updated_at,omitempty"`
 
+	// ValidationEnabled is the per-project toggle for the LLM-native
+	// verifier + refuter pipeline. Nil means "use the deployment
+	// default" (true). When false, the discovery orchestrator skips
+	// Phase 4.5 / 5.5 and stamps every insight + recommendation with
+	// combined: "validation_disabled". The dashboard's manual-run path
+	// resolves this same field at click time. The agent reads its own
+	// copy of this field via the agent's models.Project — keep the two
+	// definitions in sync.
+	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -178,6 +188,16 @@ func (p *Project) EffectiveLanguage() string {
 		return "English"
 	}
 	return p.Language
+}
+
+// EffectiveValidationEnabled resolves the per-project validation
+// toggle. Nil pointer → true (default-on for legacy projects). The
+// matching helper on the agent's models.Project must stay in sync.
+func (p *Project) EffectiveValidationEnabled() bool {
+	if p.ValidationEnabled == nil {
+		return true
+	}
+	return *p.ValidationEnabled
 }
 
 // GeneratePackConfig holds the user's pack-generation intent for a project.

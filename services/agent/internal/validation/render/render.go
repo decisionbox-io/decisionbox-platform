@@ -13,9 +13,10 @@
 // can adapt the existing, already-successfully-executed SQL into a
 // `SELECT COUNT(...)` shape without inventing names.
 //
-// The full design lives in plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md; this
-// package implements §4.1 (Layer 1) and is reused by §4.2 (Layer 2 fixer) and
-// §4.3 (Layer 3 lookup_schema results).
+// The block is also reused by the SQL fixer when the verifier's generated SQL
+// fails on the warehouse, and by the verifier's tool loop when an
+// on-demand `lookup_schema` returns column detail for tables the source
+// steps did not touch.
 package render
 
 import (

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -170,6 +171,71 @@ func TestGetRecommendationLog_NotFound(t *testing.T) {
 	h.GetRecommendationLog(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetRecommendationLog_DroppedCountersFlowThroughResponse(t *testing.T) {
+	// Issue #237 regression: the agent persists per-reason drop counts
+	// on RecommendationStep, and the API's RecommendationLogEntry has
+	// to mirror them or dashboard consumers cannot see how many recs
+	// were dropped due to invalid related_insight_ids.
+	repo := &mockDiscoveryLogRepo{rec: &database.RecommendationLogEntry{
+		InsightCount:                     5,
+		RecommendationsDropped:           4,
+		RecommendationsDroppedMissingIDs: 1,
+		RecommendationsDroppedUnknownID:  3,
+	}}
+	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	// writeJSON wraps the entry in {"data": {...}} — decode through
+	// that wrapper so the field-level assertions reflect the wire shape
+	// dashboards actually see.
+	var wrapper struct {
+		Data database.RecommendationLogEntry `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	got := wrapper.Data
+	if got.RecommendationsDropped != 4 {
+		t.Errorf("RecommendationsDropped = %d, want 4 (body: %s)", got.RecommendationsDropped, w.Body.String())
+	}
+	if got.RecommendationsDroppedMissingIDs != 1 {
+		t.Errorf("RecommendationsDroppedMissingIDs = %d, want 1", got.RecommendationsDroppedMissingIDs)
+	}
+	if got.RecommendationsDroppedUnknownID != 3 {
+		t.Errorf("RecommendationsDroppedUnknownID = %d, want 3", got.RecommendationsDroppedUnknownID)
+	}
+}
+
+func TestGetRecommendationLog_CleanRunOmitsDropCounters(t *testing.T) {
+	// On the happy path the per-reason fields must not appear in the
+	// JSON payload — keeps the wire shape stable for clients that do
+	// not expect them.
+	repo := &mockDiscoveryLogRepo{rec: &database.RecommendationLogEntry{InsightCount: 5}}
+	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	for _, banned := range []string{
+		`"recommendations_dropped"`,
+		`"recommendations_dropped_missing_ids"`,
+		`"recommendations_dropped_unknown_id"`,
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("clean run leaked %s into payload: %s", banned, body)
+		}
 	}
 }
 

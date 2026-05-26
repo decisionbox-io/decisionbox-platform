@@ -1,7 +1,5 @@
 # API Reference
 
-> **Version**: 0.3.0
->
 > Base URL: `http://localhost:8080` (direct) or `http://localhost:3000/api` (via dashboard proxy)
 >
 > All endpoints return JSON. Error responses use `{"error": "message"}`.
@@ -29,10 +27,10 @@ curl http://localhost:8080/health/ready
 ```
 
 ```json
-{"status": "ok", "checks": {"mongodb": "ok"}}
+{"status": "ok", "services": {"mongodb": {"status": "ok"}}}
 ```
 
-Returns `503` if MongoDB is unreachable.
+Returns `503` (with `"status": "degraded"` and per-service errors under `services`) if a dependency is unreachable.
 
 ---
 
@@ -54,18 +52,25 @@ curl http://localhost:8080/api/v1/providers/llm
       "name": "Claude (Anthropic)",
       "description": "Anthropic Claude API - direct access",
       "config_fields": [
-        {"key": "api_key", "label": "API Key", "required": true, "type": "string", "placeholder": "sk-ant-..."},
-        {"key": "model", "label": "Model", "required": true, "type": "string", "default": "claude-sonnet-4-20250514"}
+        {"key": "model", "label": "Model", "required": true, "type": "string", "default": "claude-sonnet-4-6"}
       ],
-      "default_pricing": {
-        "claude-sonnet-4": {"input_per_million": 3.0, "output_per_million": 15.0},
-        "claude-opus-4": {"input_per_million": 15.0, "output_per_million": 75.0}
-      },
-      "max_output_tokens": {
-        "claude-sonnet-4": 16384,
-        "claude-opus-4": 16384,
-        "claude-haiku-4-5": 8192
-      }
+      "auth_methods": [
+        {
+          "id": "api_key",
+          "name": "API Key",
+          "description": "Anthropic Claude API key.",
+          "fields": [
+            {"key": "credentials_json", "label": "API Key", "required": true, "type": "credential", "placeholder": "sk-ant-..."}
+          ]
+        }
+      ],
+      "models": [
+        {"id": "claude-opus-4-7",  "display_name": "Claude Opus 4.7",  "wire": "anthropic", "max_output_tokens": 128000, "pricing": {"input_per_million": 5.0, "output_per_million": 25.0}},
+        {"id": "claude-sonnet-4-6","display_name": "Claude Sonnet 4.6","wire": "anthropic", "max_output_tokens":  64000, "pricing": {"input_per_million": 3.0, "output_per_million": 15.0}},
+        {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "wire": "anthropic", "max_output_tokens":  64000, "pricing": {"input_per_million": 1.0, "output_per_million":  5.0}}
+      ],
+      "default_max_output_tokens": 16384,
+      "supports_tools": true
     }
   ]
 }
@@ -73,8 +78,8 @@ curl http://localhost:8080/api/v1/providers/llm
 
 ### GET /api/v1/projects/{id}/llm/extended-models
 
-List project-scoped LLM model entries contributed by any registered external model registry (see [Hook 7 — External model registry](../concepts/plugin-hooks.md#hook-7--external-model-registry)).
-Returns an empty array on the default community build (no extenders registered).
+List project-scoped LLM model entries contributed by any registered external model registry (see [Plugin hooks: External model registry](../concepts/plugin-hooks.md#external-model-registry)).
+Returns an empty array when no external model registry extender is registered.
 Each entry has the same shape as a model row inside `GET /api/v1/providers/llm`, so the dashboard's model picker can merge both lists without reshaping.
 
 ```bash
@@ -211,7 +216,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     },
     "llm": {
       "provider": "claude",
-      "model": "claude-sonnet-4-20250514",
+      "model": "claude-sonnet-4-6",
       "config": {}
     },
     "schedule": {
@@ -229,12 +234,15 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "name": "Puzzle Quest Analytics",
     "domain": "gaming",
     "category": "match3",
-    "created_at": "2026-03-14T10:00:00Z"
+    "status": "active",
+    "warehouse": { "provider": "bigquery", "datasets": ["analytics_data"], "location": "US", "config": { /* ... */ } },
+    "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" },
+    "schedule":  { "enabled": false, "cron_expr": "0 2 * * *", "max_steps": 100 }
   }
 }
 ```
 
-Domain pack prompts are automatically seeded into the project on creation.
+The full saved project is echoed back in `data`. Domain pack prompts are automatically seeded into the project on creation.
 
 ### GET /api/v1/projects
 
@@ -290,73 +298,6 @@ Delete a project and all its data (discoveries, feedback, secrets, prompts).
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011
 ```
-
----
-
-## Pack Generation
-
-These endpoints exist on every build but return `404 Not Found` unless a pack-generation provider is registered (the stock community build returns 404; deployments that load the generator plugin handle them).
-
-### POST /api/v1/projects/{id}/pack-generate
-
-Launch domain-pack generation on a project that is currently in `pack_generation_pending` state. The agent reads the project's knowledge sources and warehouse schema, synthesizes a `DomainPack`, persists it, and parks the project at `pack_generation_done` for user review.
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/pack-generate
-```
-
-```json
-{
-  "data": {
-    "run_id": "run_abc",
-    "async": true,
-    "pack_slug": "acme-marketplace",
-    "attempts": 0
-  }
-}
-```
-
-- `async: true` (HTTP 202) — generation is running; poll `GET /api/v1/projects/{id}` for `state` to flip to `pack_generation_done`.
-- `async: false` (HTTP 200) — generation finished synchronously; `attempts` is the number of validator passes.
-
-Errors:
-- `404 Not Found` — pack generation is not enabled on this deployment.
-- `409 Conflict` — project is not in `pack_generation_pending`.
-- `400 Bad Request` — project does not have `generate_pack` populated.
-
-### POST /api/v1/projects/{id}/pack-generate/regenerate
-
-Re-emit a single section of the saved pack with user feedback. Valid only after the pack has been generated (project in `pack_generation_done`).
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/pack-generate/regenerate \
-  -H "Content-Type: application/json" \
-  -d '{ "section": "analysis_areas", "feedback": "Add more retention focus." }'
-```
-
-```json
-{
-  "data": {
-    "pack_slug": "acme-marketplace",
-    "section": "analysis_areas",
-    "attempts": 1
-  }
-}
-```
-
-Recognised sections: `metadata`, `categories`, `analysis_areas`, `profile_schema`, `base_context`, `exploration`, `recommendations`.
-
-### Accepting a generated pack
-
-Move the project from `pack_generation_done` to `ready` via the standard project update endpoint:
-
-```bash
-curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011 \
-  -H "Content-Type: application/json" \
-  -d '{ "state": "ready" }'
-```
-
-After this, the project behaves like any other — discovery is unlocked.
 
 ---
 
@@ -681,7 +622,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
   "data": {
     "llm": {
       "provider": "claude",
-      "model": "claude-sonnet-4-20250514",
+      "model": "claude-sonnet-4-6",
       "estimated_input_tokens": 250000,
       "estimated_output_tokens": 50000,
       "cost_usd": 0.825
@@ -745,7 +686,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test
   "data": {
     "success": true,
     "provider": "claude",
-    "model": "claude-sonnet-4-20250514"
+    "model": "claude-sonnet-4-6"
   }
 }
 ```
@@ -792,7 +733,7 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets
 ## Bookmark Lists
 
 Named collections of insights and recommendations.
-Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` in community (NoAuth) mode, the OIDC `sub` claim in enterprise mode.
+Every list and bookmark is scoped by `(project_id, user_id)` where `user_id` comes from the authenticated principal — `"anonymous"` under the default no-auth setup.
 
 ### POST /api/v1/projects/{id}/lists
 
@@ -864,7 +805,7 @@ Add a bookmark. **Idempotent** — calling with the same `(target_type, target_i
 {"target_type": "insight", "target_id": "...", "discovery_id": "...", "note": "optional"}
 ```
 
-`target_type` must be `"insight"` or `"recommendation"`. Returns `404` if the list is not owned by the caller or if the target does not exist in its source collection.
+`target_type` must be `"insight"` or `"recommendation"`. Returns `404` if the list is not owned by the caller.
 
 ### DELETE /api/v1/projects/{id}/lists/{listId}/items/{bookmarkId}
 

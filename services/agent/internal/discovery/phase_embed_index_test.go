@@ -189,31 +189,11 @@ func TestDenormalizeRecommendations(t *testing.T) {
 	}
 }
 
-func TestConvertValidation(t *testing.T) {
-	// nil input
-	if convertValidation(nil) != nil {
-		t.Error("expected nil for nil input")
-	}
-
-	// non-nil input
-	v := &models.InsightValidation{
-		Status:        "confirmed",
-		VerifiedCount: 100,
-		OriginalCount: 120,
-		Reasoning:     "Verified via SQL",
-		ValidatedAt:   time.Now(),
-	}
-	result := convertValidation(v)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.Status != "confirmed" {
-		t.Errorf("expected status=confirmed, got %s", result.Status)
-	}
-	if result.VerifiedCount != 100 {
-		t.Errorf("expected verified_count=100, got %d", result.VerifiedCount)
-	}
-}
+// convertValidation has been removed — both agent-side and
+// go-common-side InsightValidation are now the same valmodels type,
+// so the conversion is a no-op identity. phase_embed_index now
+// passes ins.Validation directly. If a future renaming reintroduces
+// a conversion shim, add tests for it then.
 
 // mockEmbedIndexStore implements EmbedIndexStore for testing.
 type mockEmbedIndexStore struct {

@@ -1,7 +1,5 @@
 # Adding Warehouse Providers
 
-> **Version**: 0.1.0
-
 This guide shows how to add support for a new SQL data warehouse (e.g., Snowflake, PostgreSQL, Databricks).
 
 ## Interface
@@ -53,7 +51,7 @@ type CostEstimator interface {
 }
 ```
 
-`DryRunResult` includes `EstimatedBytesProcessed` and `EstimatedRowsProcessed`.
+`DryRunResult` carries `BytesProcessed` — the warehouse's reported scan size in bytes. Providers without a native dry-run skip this interface; the agent falls back to a coarse heuristic when no estimate is available.
 
 ### Return Types
 
@@ -249,7 +247,7 @@ The `SQLFixPrompt()` is crucial. When the AI writes invalid SQL, the agent feeds
 
 Same pattern as LLM providers:
 
-1. Import in `services/agent/main.go` and `services/api/main.go`
+1. Import in `services/agent/agentserver/agentserver.go` and `services/api/apiserver/apiserver.go`
 2. Add `replace` directives in go.mod files
 3. Update Dockerfiles with COPY line
 4. Write unit tests (registration, config validation, type normalization)
@@ -258,7 +256,7 @@ Same pattern as LLM providers:
 
 ## Checklist
 
-- [ ] All 11 interface methods implemented
+- [ ] All 13 interface methods implemented, including `ValidateSQL`
 - [ ] Type normalization (warehouse types → STRING, INT64, FLOAT64, etc.)
 - [ ] System tables filtered from ListTables (e.g., `pg_*`, `information_schema`)
 - [ ] SQLFixPrompt includes warehouse-specific SQL rules

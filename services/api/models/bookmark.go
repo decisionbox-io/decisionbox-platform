@@ -14,8 +14,8 @@ func IsValidTargetType(t string) bool {
 }
 
 // BookmarkList is a named collection of bookmarked insights and recommendations.
-// Scoped by (project_id, user_id): in community (NoAuth) user_id is "anonymous",
-// in enterprise (OIDC) user_id is the authenticated principal's sub claim.
+// Scoped by (project_id, user_id): under the default no-auth setup user_id is
+// "anonymous"; with an authenticated principal it is that principal's sub claim.
 type BookmarkList struct {
 	ID          string    `bson:"_id,omitempty" json:"id"`
 	ProjectID   string    `bson:"project_id" json:"project_id"`

@@ -15,6 +15,7 @@ Thank you for your interest in contributing to DecisionBox! This document covers
 - [Testing Requirements](#testing-requirements)
 - [Pull Request Process](#pull-request-process)
 - [Issue Guidelines](#issue-guidelines)
+- [Documentation Hygiene](#documentation-hygiene)
 - [Community](#community)
 
 ## Code of Conduct
@@ -55,6 +56,8 @@ Documentation contributions are highly valued. You can:
 - Add missing documentation for existing features
 - Improve guides with real-world scenarios
 - No issue needed for doc-only changes -- just open a PR
+
+Doc changes are subject to the [Documentation Hygiene](#documentation-hygiene) rules below.
 
 ### Submitting Code
 
@@ -357,6 +360,38 @@ Issues are categorized with labels:
 | `type:` | Category | `type: feature`, `type: chore`, `type: test`, `type: security` |
 | `status:` | Workflow state | `status: blocked`, `status: needs-design`, `status: needs-review` |
 | (no prefix) | Special | `good first issue`, `help wanted` |
+
+## Documentation Hygiene
+
+Every public-doc PR (anything under `docs/`, the Docusaurus site at `decisionbox-platform-docs`, or `CHANGELOG.md`) must satisfy the following rules. `make lint-docs` enforces the mechanical subset; the rest is on the reviewer.
+
+1. **No internal-plan references.** Forbidden tokens: `PLAN-*.md` filenames, `plans/` paths, plan-tracker labels (`Phase A` / `Phase I.3a` / `MVP-r1`), review-round provenance (`Codex prod-r5`).
+2. **No hand-rolled version markers in body prose.** Pages must not say "added in v0.5.0" or "as of v0.3.0" in narrative text. Docusaurus owns the snapshot version. The only exception is a `:::note Compatibility` callout flagging a current-version breaking change.
+3. **Decision-maker-friendly UX language.** No jargon-shaped agent names, no internal acronyms in user-facing strings, no plan-internal "Phase 4.5" style labels in the doc reader's path. Internal mechanical terms that show up in the dashboard UI (`verifier`, `refuter`, `combined`) are fine; plan letters (`Phase G`, `Phase I`) are not.
+4. **Code references must be real.** Any path or symbol a doc cites must exist in current `main`. Open the file and confirm before merging; aspirational citations rot.
+5. **Examples match current schema.** Sample JSON / SQL / Mongo / response bodies must match what the running services emit. Stale fields are worse than no example.
+6. **Docs match the code, not the other way around.** Before merging any doc change, open the file or run the cited command and verify the doc tells the truth. When the code is right and the docs are wrong, the docs change. When the code is unintuitive and the docs paper over the UX debt, the docs still change and a follow-up issue captures the code fix.
+7. **No enterprise leakage.** OSS docs describe OSS only. Forbidden in `docs/` and `CHANGELOG.md`:
+   - The word "enterprise" / "Enterprise" used as a product / tier / feature name.
+   - References to `decisionbox-enterprise` the repo or any `*-enterprise:*` Docker image.
+   - Enterprise-only feature names: OIDC SSO, SAML, RBAC roles as a paid-tier feature, compliance-grade audit log, governance policies, Slack notifications, customer-IdP federation.
+   - Enterprise-only env vars: `AUTH_ENABLED`, `OIDC_*`, `AUDIT_LOG_*`, `GOVERNANCE_*`, `SLACK_NOTIFICATION_*`, `BREVO_*`.
+
+   Disambiguation aids — some terms are context-dependent:
+   - "RBAC" / "role-based access control" — fine for OSS's NoAuth admin role; a leak when advertising multi-role SSO.
+   - "Audit" — fine for the OSS discovery debug log (`discovery_debug_logs` collection); a leak for the compliance-grade audit log.
+   - "Authentication" — fine for the NoAuth default; a leak when listing OIDC / SAML providers.
+   - "Notifications" — fine for webhooks (OSS); a leak for Slack / email notification plugins.
+
+### Enforcement
+
+```bash
+make lint-docs
+```
+
+Wired into CI on every PR that touches `docs/`, `CHANGELOG.md`, or `scripts/lint-docs.sh`. Exits non-zero on any forbidden-token hit. Per-line override: append `<!-- lint-allow: <reason> -->` to the offending line; reviewer scrutinises the reason.
+
+The lint script catches mechanical violations (tokens, regex hits). Principles 4–7 also need human review — the reviewer opens the cited files and reads the page narratively.
 
 ## Community
 

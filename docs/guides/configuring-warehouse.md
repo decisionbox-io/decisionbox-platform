@@ -1,7 +1,5 @@
 # Configuring Data Warehouses
 
-> **Version**: 0.3.0
-
 DecisionBox connects to your existing data warehouse in read-only mode. This guide covers setup for each supported warehouse.
 
 ## Google BigQuery

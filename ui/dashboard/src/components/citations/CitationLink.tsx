@@ -5,14 +5,13 @@
  * links to the source and reveals a CSS-only hover/focus tooltip
  * with the source name, severity, and description.
  *
- * Two callers share it today:
+ * Callers today:
  *
  *  - The Ask page, which scans markdown answers for `[1,2]` patterns
  *    and emits one CitationLink per matched number.
- *  - The enterprise executive-summary "newspaper" renderer, which
- *    emits one CitationLink per `{{I:id}}` / `{{R:id}}` token in
- *    prose and one per explicit Citation in card / stat / story /
- *    bar / action arrays.
+ *  - Any executive-summary renderer, which emits one CitationLink per
+ *    `{{I:id}}` / `{{R:id}}` token in prose and one per explicit
+ *    Citation in card / stat / story / bar / action arrays.
  *
  * Owning the badge + tooltip in one place means both surfaces look,
  * hover, and link the same way, and a future change (mobile tap

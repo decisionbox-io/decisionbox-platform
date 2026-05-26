@@ -7,7 +7,6 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
@@ -793,43 +792,11 @@ func TestGenerateRecommendations_ParseError(t *testing.T) {
 	}
 }
 
-func TestExecutorAdapter(t *testing.T) {
-	wh := testutil.NewMockWarehouseProvider("test_dataset")
-	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:  wh,
-		MaxRetries: 1,
-	})
-
-	adapter := &executorAdapter{executor: executor}
-
-	data, err := adapter.Execute(context.Background(), "SELECT 1", "test", queryexec.FixOpts{})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if data == nil {
-		t.Fatal("data should not be nil")
-	}
-	if len(data) == 0 {
-		t.Error("data should have rows")
-	}
-}
-
-func TestExecutorAdapter_Error(t *testing.T) {
-	wh := testutil.NewMockWarehouseProvider("test_dataset")
-	wh.QueryError = context.DeadlineExceeded
-
-	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:  wh,
-		MaxRetries: 0,
-	})
-
-	adapter := &executorAdapter{executor: executor}
-
-	_, err := adapter.Execute(context.Background(), "SELECT 1", "test", queryexec.FixOpts{})
-	if err == nil {
-		t.Error("should return error when executor fails")
-	}
-}
+// executorAdapter has been removed alongside the legacy validators.
+// The verifier package's tools.go wires the same QueryExecutor
+// through verifier.DefaultExecutor.QueryWarehouse; the pass-through
+// cases that exercised the adapter are now covered by
+// verifier/tools_test.go.
 
 func TestBuildFilterClause_AllCombinations(t *testing.T) {
 	tests := []struct {

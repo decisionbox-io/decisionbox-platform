@@ -1,7 +1,5 @@
 # Providers
 
-> **Version**: 0.4.0
-
 Providers are DecisionBox's plugin system for external services. Instead of hardcoding support for specific LLMs, warehouses, or secret managers, DecisionBox defines interfaces and lets provider packages implement them.
 
 ## The Pattern
@@ -26,17 +24,20 @@ func NewProvider(name string, cfg ProviderConfig) (Provider, error) { ... }
 
 // 3. Registration (providers/llm/claude/provider.go)
 func init() {
-    llm.Register("claude", func(cfg llm.ProviderConfig) (llm.Provider, error) {
-        return NewClaudeProvider(cfg["api_key"], cfg["model"])
-    })
+    gollm.RegisterWithMeta("claude", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
+        return NewClaudeProvider(ClaudeConfig{
+            APIKey: cfg["credentials_json"],
+            Model:  cfg["model"],
+        })
+    }, ProviderMeta())
 }
 
-// 4. Selection (services/agent/main.go)
+// 4. Selection (services/agent/agentserver/agentserver.go)
 import _ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
 
-provider, err := llm.NewProvider("claude", llm.ProviderConfig{
-    "api_key": apiKey,
-    "model":   "claude-sonnet-4-20250514",
+provider, err := gollm.NewProvider("claude", gollm.ProviderConfig{
+    "credentials_json": apiKey,
+    "model":            "claude-sonnet-4-6",
 })
 ```
 
@@ -47,29 +48,44 @@ The blank import (`import _ "..."`) triggers the `init()` function which registe
 Each provider registers metadata alongside its factory function. This metadata powers the dashboard's dynamic forms — no hardcoded provider lists.
 
 ```go
-llm.RegisterWithMeta("claude", factory, llm.ProviderMeta{
+// import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+
+gollm.RegisterWithMeta("claude", factory, gollm.ProviderMeta{
     Name:        "Claude (Anthropic)",
     Description: "Anthropic Claude API - direct access",
-    ConfigFields: []llm.ConfigField{
-        {Key: "api_key", Label: "API Key", Required: true, Type: "string", Placeholder: "sk-ant-..."},
+    ConfigFields: []gollm.ConfigField{
+        // Non-secret project config. Persisted into `project.llm.config`.
         {Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-6"},
     },
-    Models: []llm.ModelEntry{
+    AuthMethods: []gollm.AuthMethod{
+        // Credentials. The dashboard stores `credentials_json` as a
+        // project-scoped secret (`llm-credentials`), not in
+        // `project.llm.config`.
+        {
+            ID:          "api_key",
+            Name:        "API Key",
+            Description: "Anthropic Claude API key.",
+            Fields: []gollm.ConfigField{
+                {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-ant-..."},
+            },
+        },
+    },
+    Models: []gollm.ModelEntry{
         {
             ID:              "claude-opus-4-7",
             Aliases:         []string{"opus-4-7"},
             DisplayName:     "Claude Opus 4.7",
-            Wire:            llm.WireAnthropic,
+            Wire:            gollm.WireAnthropic,
             MaxOutputTokens: 128000,
-            Pricing:         llm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
+            Pricing:         gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
         },
         {
             ID:              "claude-sonnet-4-6",
             Aliases:         []string{"sonnet-4-6"},
             DisplayName:     "Claude Sonnet 4.6",
-            Wire:            llm.WireAnthropic,
+            Wire:            gollm.WireAnthropic,
             MaxOutputTokens: 64000,
-            Pricing:         llm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 15.0},
+            Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 15.0},
         },
     },
     DefaultMaxOutputTokens: 16384,
@@ -121,9 +137,9 @@ Adding a new model to an existing cloud is a single `ModelEntry` in the provider
 **Location:** `providers/llm/{provider-name}/`
 
 **Config:** Passed as `map[string]string`. Common fields:
-- `api_key` — API key (Claude, OpenAI)
+- `credentials_json` — API key (Claude, OpenAI) or other credential payload
 - `model` — Model identifier
-- `timeout_seconds` — Per-call timeout (default: 300)
+- `timeout_seconds` — Per-call timeout (default: `LLM_TIMEOUT` env var; provider fallback is 60s for Claude direct API and 300s for OpenAI / Ollama / Bedrock / Vertex / Azure Foundry)
 - Provider-specific: `project_id` + `location` (Vertex AI), `region` (Bedrock), `host` (Ollama)
 
 See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your own.
@@ -210,7 +226,7 @@ See [Adding Secret Providers](../guides/adding-secret-providers.md) to implement
 The agent imports all providers and selects based on project configuration:
 
 ```go
-// services/agent/main.go
+// services/agent/agentserver/agentserver.go
 
 // Import all providers (triggers init() registration)
 import (
@@ -230,11 +246,11 @@ import (
 
 // Create providers from project config
 secretProv, _ := secrets.NewProvider(secretsCfg)
-apiKey, _ := secretProv.Get(ctx, projectID, "llm-api-key")
+apiKey, _ := secretProv.Get(ctx, projectID, "llm-credentials")
 
-llmProv, _ := llm.NewProvider(project.LLM.Provider, llm.ProviderConfig{
-    "api_key": apiKey,
-    "model":   project.LLM.Model,
+llmProv, _ := gollm.NewProvider(project.LLM.Provider, gollm.ProviderConfig{
+    "credentials_json": apiKey,
+    "model":            project.LLM.Model,
 })
 
 whProv, _ := warehouse.NewProvider(project.Warehouse.Provider, warehouse.ProviderConfig{
@@ -250,7 +266,7 @@ The API imports providers for two reasons:
 2. **Pricing** — Seeds default pricing from provider registrations
 
 ```go
-// services/api/main.go
+// services/api/apiserver/apiserver.go
 import (
     _ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
     // ... same imports as agent
@@ -300,7 +316,7 @@ apiserver.RegisterGlobalMiddleware(func(next http.Handler) http.Handler {
 
 The API server applies all registered middleware via `apiserver.ApplyGlobalMiddlewares(handler)`.
 
-Use cases: request audit logging, custom authentication, route interception.
+Use cases: request logging, custom authentication, route interception.
 
 ### Project Context
 

@@ -82,6 +82,9 @@ func (r *recorderRunner) RunIndexSchema(_ context.Context, opts runner.IndexSche
 	}
 	return nil
 }
+func (r *recorderRunner) RunValidateDoc(_ context.Context, _ runner.ValidateDocOptions) error {
+	return nil
+}
 
 func newWorker(t *testing.T, run runner.Runner) *Worker {
 	t.Helper()

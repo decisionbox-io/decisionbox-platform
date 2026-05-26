@@ -1,7 +1,5 @@
 # Discovery Log Collections
 
-> **Version**: 0.5.0
->
 > **See also**: [agent-analysis-compaction.md](agent-analysis-compaction.md)
 > bounds the per-area analysis prompt; [agent-on-demand-schema.md](agent-on-demand-schema.md)
 > bounds the exploration system prompt. This doc bounds the persisted
@@ -12,7 +10,7 @@
 The agent stores a complete LLM dialog for traceability + fine-tuning:
 the SQL of every exploration step, the full prompt + response of every
 analysis area, every verification result, and the recommendation phase's
-input/output. Through v0.4 these all sat as embedded arrays inside the
+input/output. Previously, these all sat as embedded arrays inside the
 `discoveries` document:
 
 ```yaml
@@ -27,8 +25,8 @@ discoveries:
   recommendation_log: { ... }
 ```
 
-A live customer run (Novo Nordisk, BigQuery, 97-step exploration with
-the new Layer 3 verifier loop) blew past Mongo's 16MB-per-document
+A live customer run (BigQuery, 97-step exploration with the verifier's
+on-demand schema lookup loop active) blew past Mongo's 16MB-per-document
 limit on the first save attempt:
 
 ```

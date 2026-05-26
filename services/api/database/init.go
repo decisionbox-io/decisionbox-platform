@@ -232,6 +232,53 @@ var schema = []struct {
 			},
 		},
 	},
+	{
+		Name: "validation_jobs",
+		Indexes: []mongo.IndexModel{
+			// Worker poll path: scan pending jobs scoped to this
+			// project. Sort key (enqueued_at) is added at the query
+			// site for FIFO claim order.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "status", Value: 1}}},
+			// "Is there a job for this doc?" lookup. doc_kind in the
+			// key prevents a future insight/rec UUID collision from
+			// cross-matching.
+			{Keys: bson.D{{Key: "discovery_id", Value: 1}, {Key: "doc_kind", Value: 1}, {Key: "doc_id", Value: 1}}},
+			// Active-job uniqueness invariant: at most one
+			// non-terminal job per (discovery, doc_kind, doc_id).
+			// Handler-side 409 is racy under concurrent clicks; this
+			// partial unique index makes Mongo enforce the invariant.
+			// Inserts on conflict throw E11000, which the handler
+			// converts to 409.
+			{
+				Keys: bson.D{{Key: "discovery_id", Value: 1}, {Key: "doc_kind", Value: 1}, {Key: "doc_id", Value: 1}},
+				Options: options.Index().
+					SetUnique(true).
+					SetName("uniq_active_validation_job").
+					SetPartialFilterExpression(bson.M{
+						"status": bson.M{"$in": []string{
+							"pending", "running",
+						}},
+					}),
+			},
+			// 7-day TTL on terminal rows. The partial filter scopes the
+			// expiry to (completed | failed | cancelled) — a plain
+			// completed_at TTL would also expire pending/running jobs
+			// that simply haven't reached completed_at yet (it's
+			// undefined on those rows). The partial filter is the
+			// durable safety net.
+			{
+				Keys: bson.D{{Key: "completed_at", Value: 1}},
+				Options: options.Index().
+					SetName("ttl_validation_job_terminal").
+					SetExpireAfterSeconds(7 * 24 * 60 * 60).
+					SetPartialFilterExpression(bson.M{
+						"status": bson.M{"$in": []string{
+							"completed", "failed", "cancelled",
+						}},
+					}),
+			},
+		},
+	},
 }
 
 // InitDatabase creates all collections and indexes on startup.
