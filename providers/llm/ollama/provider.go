@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,11 +25,13 @@ import (
 	ollamaapi "github.com/ollama/ollama/api"
 )
 
-// ollamaDefaultTimeout is the historical default HTTP timeout for
-// Ollama calls. Local inference on consumer hardware regularly exceeds
-// 60 s, so 5 minutes is the floor; operators raise it via
-// LLM_TIMEOUT or per-project timeout_seconds.
-const ollamaDefaultTimeout = 5 * time.Minute
+// ollamaDefaultTimeout is the default HTTP timeout for Ollama calls.
+// At ~20 tokens/sec on a 31B-class local model, 5 minutes capped
+// generation at ~6k tokens — below the working size of a reasoning-on
+// pack-gen response. 15 minutes raises the ceiling to ~18k tokens
+// with comfortable headroom, while still bounding a runaway. Operators
+// override per-call via LLM_TIMEOUT or per-project timeout_seconds.
+const ollamaDefaultTimeout = 15 * time.Minute
 
 // ollamaDefaultMaxOutputTokens is the output-token cap applied to any
 // model the catalog (catalog.go) does not list. Set generously (128k):
@@ -51,7 +54,13 @@ func init() {
 		// empty model at call time and return a clear error there.
 		model := cfg["model"]
 
-		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout))
+		// num_ctx_cap is the operator's per-request upper bound on the
+		// context window. Parsed as a plain integer (token count); zero
+		// or unparseable means "no cap, use the catalog value". The
+		// effective num_ctx at request time is min(catalog, cap).
+		numCtxCap, _ := strconv.Atoi(cfg["num_ctx_cap"])
+
+		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout), numCtxCap)
 	}, gollm.ProviderMeta{
 		Name:        "Ollama (Local)",
 		Description: "Run open-source models locally via Ollama",
@@ -66,6 +75,13 @@ func init() {
 				Default:     "qwen2.5:7b",
 				Placeholder: "qwen2.5:7b",
 				Description: "Any Ollama model you have pulled (run 'ollama list' to see local models).",
+			},
+			{
+				Key:         "num_ctx_cap",
+				Label:       "Max context tokens",
+				Type:        "string",
+				Placeholder: "65536",
+				Description: "Optional upper bound on the per-request context window (num_ctx). Leave blank to use the model's catalog value. Lower this when running large models on tighter VRAM.",
 			},
 		},
 		Models: buildOllamaCatalog(),
@@ -100,12 +116,19 @@ type OllamaProvider struct {
 	client      ollamaClient
 	model       string
 	httpTimeout time.Duration
+	// numCtxCap, when > 0, is an operator-set upper bound on the
+	// per-request num_ctx. The effective context size sent to Ollama is
+	// min(catalog MaxInputTokens, numCtxCap). Zero leaves the catalog
+	// value unbounded.
+	numCtxCap int
 }
 
 // NewOllamaProvider creates a new Ollama LLM provider. A zero or
 // negative timeout falls back to ollamaDefaultTimeout so callers that
-// don't care (mainly tests) don't have to think about it.
-func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvider, error) {
+// don't care (mainly tests) don't have to think about it. numCtxCap
+// of zero or negative means "no operator cap" — the catalog's
+// MaxInputTokens drives the per-request num_ctx alone.
+func NewOllamaProvider(host, model string, timeout time.Duration, numCtxCap int) (*OllamaProvider, error) {
 	parsedURL, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: invalid host URL: %w", err)
@@ -116,10 +139,14 @@ func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvid
 	}
 	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: timeout})
 
+	if numCtxCap < 0 {
+		numCtxCap = 0
+	}
 	return &OllamaProvider{
 		client:      client,
 		model:       model,
 		httpTimeout: timeout,
+		numCtxCap:   numCtxCap,
 	}, nil
 }
 
@@ -198,13 +225,35 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		options["num_predict"] = req.MaxTokens
 	}
 
+	// num_ctx — the model's per-request context window. Set explicitly
+	// so the request doesn't depend on the server's OLLAMA_CONTEXT_LENGTH
+	// env var (whose stock default is small enough — 4k on recent
+	// versions, 2k on older — to silently truncate any non-trivial
+	// prompt). The catalog's MaxInputTokens drives the default; the
+	// operator's num_ctx_cap clamps it lower when running on tight VRAM.
+	ctxTokens := gollm.GetMaxInputTokens("ollama", model)
+	if p.numCtxCap > 0 && p.numCtxCap < ctxTokens {
+		ctxTokens = p.numCtxCap
+	}
+	if ctxTokens > 0 {
+		options["num_ctx"] = ctxTokens
+	}
+
 	// Non-streaming request
 	stream := false
+	// truncate=false makes the server return an error when the rendered
+	// prompt exceeds num_ctx instead of silently trimming the chat
+	// history. Pair with the explicit num_ctx above: silent truncation
+	// at either end produces malformed output without any signal to
+	// the caller.
+	truncate := false
 	ollamaReq := &ollamaapi.ChatRequest{
 		Model:    model,
 		Messages: messages,
 		Stream:   &stream,
 		Options:  options,
+		Truncate: &truncate,
+		Think:    reasoningEffortToThinkValue(req.ReasoningEffort),
 	}
 
 	var finalResp ollamaapi.ChatResponse
@@ -233,6 +282,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	}
 
 	content := strings.TrimSpace(finalResp.Message.Content)
+	reasoning := finalResp.Message.Thinking
 
 	return &gollm.ChatResponse{
 		Content:    content,
@@ -242,5 +292,25 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 			InputTokens:  promptTokens,
 			OutputTokens: completionTokens,
 		},
+		Reasoning: reasoning,
 	}, nil
+}
+
+// reasoningEffortToThinkValue maps the wire-neutral
+// gollm.ChatRequest.ReasoningEffort to Ollama's Think field. Returns
+// nil for the empty / unknown case so the request omits the field
+// entirely (model default applies).
+func reasoningEffortToThinkValue(effort string) *ollamaapi.ThinkValue {
+	switch effort {
+	case gollm.ReasoningEffortDefault:
+		return nil
+	case gollm.ReasoningEffortOff:
+		return &ollamaapi.ThinkValue{Value: false}
+	case gollm.ReasoningEffortOn:
+		return &ollamaapi.ThinkValue{Value: true}
+	case gollm.ReasoningEffortLow, gollm.ReasoningEffortMedium, gollm.ReasoningEffortHigh:
+		return &ollamaapi.ThinkValue{Value: effort}
+	default:
+		return nil
+	}
 }

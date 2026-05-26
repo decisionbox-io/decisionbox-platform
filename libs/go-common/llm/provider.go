@@ -46,7 +46,40 @@ type ChatRequest struct {
 	// "none": model must not call a tool (plain text response).
 	// A specific tool name: the model must call that tool.
 	ToolChoice string
+
+	// ReasoningEffort controls hidden chain-of-thought on models that
+	// support it (Ollama gemma4 / qwen3 / deepseek-r1, OpenAI o-series,
+	// Anthropic extended thinking, …). Empty string means "use the
+	// model's default", which today is reasoning ON for capable models.
+	// Providers ignore the field for non-reasoning models.
+	//
+	// Documented values live as ReasoningEffort* constants below.
+	// Unknown values degrade silently to ReasoningEffortDefault so a
+	// provider rollout never errors on a value an older caller can't
+	// know to omit.
+	ReasoningEffort string
 }
+
+// ReasoningEffort* are the documented values for
+// ChatRequest.ReasoningEffort. Providers map them to their native
+// reasoning controls; see each provider's Chat() for the mapping.
+const (
+	// ReasoningEffortDefault leaves reasoning at the model's default.
+	// Capable Ollama models reason; non-reasoning models ignore it.
+	ReasoningEffortDefault = ""
+	// ReasoningEffortOff explicitly disables reasoning / hidden thinking.
+	ReasoningEffortOff = "off"
+	// ReasoningEffortOn enables reasoning at the provider's default
+	// effort level. Useful when the caller wants reasoning regardless
+	// of what the model defaults to.
+	ReasoningEffortOn = "on"
+	// ReasoningEffortLow / Medium / High are provider-specific effort
+	// hints. Ollama forwards them as ThinkValue string literals;
+	// OpenAI o-series maps to reasoning.effort; others fall back to On.
+	ReasoningEffortLow    = "low"
+	ReasoningEffortMedium = "medium"
+	ReasoningEffortHigh   = "high"
+)
 
 // Message represents a single message in a conversation.
 //
@@ -87,6 +120,15 @@ type ChatResponse struct {
 	// provider-specific equivalent). Callers should execute each tool
 	// and feed the outputs back via Message.ToolResults on the next turn.
 	ToolCalls []ToolCall
+
+	// Reasoning carries the model's hidden chain-of-thought when the
+	// provider exposes it as a separate channel from Content (Ollama
+	// gemma4 / deepseek-r1 / etc.). Empty for providers that either
+	// don't have a reasoning channel or fold it into Content. Callers
+	// must not treat Reasoning as a fallback for Content — an empty
+	// Content with non-empty Reasoning still means the model produced
+	// no answer.
+	Reasoning string
 }
 
 // ToolDefinition describes a tool the model may call. Keep it wire-

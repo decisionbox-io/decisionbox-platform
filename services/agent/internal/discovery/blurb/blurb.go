@@ -162,7 +162,15 @@ type Generator struct {
 
 // Errors the generator can return upfront from New.
 var (
-	ErrReasoningModelNotSupported = errors.New("reasoning-class models are not supported for blurb generation — their <think> channel is not exposed via Converse/Chat, producing empty blurbs (spike finding §4)")
+	// Reasoning-class models stay rejected for blurb generation
+	// regardless of whether the provider surfaces their chain-of-
+	// thought separately: a 2,000-table warehouse runs 2,000 parallel
+	// small blurb calls, and the per-call wall-clock dominates total
+	// indexing time. Reasoning models burn hundreds of hidden tokens
+	// per call before producing the visible answer, blowing the
+	// throughput budget. Operators should pick a fast non-reasoning
+	// model (Haiku-class, gpt-4o-mini, gemini-2.5-flash) for blurbs.
+	ErrReasoningModelNotSupported = errors.New("reasoning-class models are too slow for blurb generation — pick a fast non-reasoning model (Haiku-class, gpt-4o-mini, gemini-2.5-flash, qwen2.5)")
 	ErrLLMMissing                 = errors.New("LLM provider is required")
 	ErrModelMissing               = errors.New("model is required")
 )

@@ -69,9 +69,40 @@ ollama pull llama3.1:8b      # Small, fast, for testing
 
 1. Select **Ollama** as LLM provider
 2. Enter model name: `llama3.1:70b`
-3. No API key needed
+3. (Optional) Set **Max context tokens** if your GPU is tight on VRAM — see *Context window* below.
+4. No API key needed
 
 **Note:** Ollama runs on `http://localhost:11434` by default. If running in Docker, use `http://host.docker.internal:11434` or the host network.
+
+### Context window (`num_ctx`) and reasoning models
+
+DecisionBox sends `num_ctx` on every request, pinned to the catalog's
+declared input window for your chosen model (e.g. 256k for
+`gemma4:31b`, 128k for `qwen3`). The request also sets
+`truncate=false`, so an oversize prompt fails fast rather than being
+silently trimmed.
+
+Two things to know:
+
+- **Memory grows with `num_ctx`.** The Ollama server allocates a KV
+  cache sized for `num_ctx` regardless of how much of it the
+  current prompt actually uses. A 31B-class model in `bf16` quant
+  needs ~67 GB just for weights; adding a 128k context can grow
+  resident VRAM by another ~5 GB. If you OOM, lower the per-project
+  **Max context tokens** field — it clamps `num_ctx` to the smaller
+  of catalog and your value without forking the catalog.
+- **Reasoning models burn output budget on hidden thinking.** Gemma
+  4, Gemma 3, DeepSeek R1, and Qwen 3 emit a chain-of-thought before
+  the answer, and those tokens count against `num_predict`. The
+  catalog already raises the output cap to 131072 for these
+  families so the answer fits alongside the reasoning; no operator
+  action needed. The model's `Message.Thinking` is surfaced on
+  `ChatResponse.Reasoning` for callers that want to inspect it.
+
+To explicitly opt out of reasoning on a per-call basis, callers set
+`ChatRequest.ReasoningEffort = "off"`. Other documented values:
+`"on"`, `"low"`, `"medium"`, `"high"`, and the default (`""`) which
+leaves the model's own behavior unchanged.
 
 ### Quality Considerations
 

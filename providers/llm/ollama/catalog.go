@@ -3,14 +3,11 @@ package ollama
 import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
 // MaxInputTokens here is the model's *upstream-published* native
-// context — what the model architecture supports. Users running
-// Ollama with a lower `num_ctx` (Ollama's default is 2048 unless the
-// modelfile or `OLLAMA_KV_CACHE_TYPE` raises it) will see callers
-// over-fill the prompt and Ollama will silently truncate. The
-// budgeting layer applies a 15% safety margin via the approximation
-// counter, which absorbs minor mismatches; for projects that pin
-// num_ctx well below the native window, users should configure a
-// smaller model in the dashboard.
+// context — what the model architecture supports. The Ollama provider
+// passes this value as `num_ctx` on every Chat() request, capped by
+// the operator's `num_ctx_cap` config field when set. The request
+// also pins `truncate=false` so a prompt that would overflow the
+// effective context fails fast instead of being silently trimmed.
 const (
 	ctx1M   = 1048576 // Llama 4 Scout's published native window
 	ctx256K = 262144  // Gemma 4 (26B/31B), Qwen3-Coder
@@ -59,7 +56,10 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			MaxInputTokens:  ctx128K,
 		},
 
-		// DeepSeek R1 — reasoning chains need the long tail.
+		// DeepSeek R1 — reasoning-only model. Hidden chain-of-thought
+		// counts against num_predict, so the cap must cover both the
+		// reasoning and the final answer; 128k matches the uncatalogued
+		// default and lets long-form completions land cleanly.
 		{
 			ID: "deepseek-r1",
 			Aliases: []string{
@@ -70,11 +70,14 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 				"deepseek-r1:671b",
 			},
 			DisplayName:     "DeepSeek R1",
-			MaxOutputTokens: 32768,
+			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
 		},
 
-		// Qwen 3 — tech report recommends 32k for standard output.
+		// Qwen 3 — thinking mode is on by default; reasoning tokens are
+		// emitted before the answer and consume the same num_predict
+		// budget. Cap matches the uncatalogued default so reasoning
+		// plus answer fit.
 		{
 			ID: "qwen3",
 			Aliases: []string{
@@ -85,7 +88,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 				"qwen3:235b-a22b",
 			},
 			DisplayName:     "Qwen 3",
-			MaxOutputTokens: 32768,
+			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
 		},
 
@@ -113,12 +116,14 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			MaxInputTokens:  ctx128K,
 		},
 
-		// Gemma 3 — paid-tier providers expose 16k output.
+		// Gemma 3 — reasoning-capable; reasoning tokens count against
+		// num_predict, so raise the cap so a reasoning-on response
+		// can still emit a meaningful answer alongside its thinking.
 		{
 			ID:              "gemma3",
 			Aliases:         []string{"gemma3:latest", "gemma3:27b"},
 			DisplayName:     "Gemma 3",
-			MaxOutputTokens: 16384,
+			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
 		},
 
@@ -197,17 +202,20 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			MaxInputTokens:  ctx8K,
 		},
 
-		// Gemma 4 (small) — e2b/e4b/latest ship a 128k window.
+		// Gemma 4 (small) — e2b/e4b/latest ship a 128k window. Thinking
+		// is on by default and consumes generation budget; the cap is
+		// raised so reasoning-on calls don't truncate the answer.
 		{
 			ID:              "gemma4",
 			Aliases:         []string{"gemma4:latest", "gemma4:e2b", "gemma4:e4b"},
 			DisplayName:     "Gemma 4 (small)",
-			MaxOutputTokens: 16384,
+			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx128K,
 		},
 		// Gemma 4 (26B/31B) — medium models publish a 256k window. Aliases
 		// cover the bare sizes plus the standard instruct quants
 		// (bf16 / q4_K_M / q8_0) so the common pulled tags resolve.
+		// Thinking is on by default and consumes generation budget.
 		{
 			ID: "gemma4:31b",
 			Aliases: []string{
@@ -220,7 +228,7 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 				"gemma4:26b-it-q8_0",
 			},
 			DisplayName:     "Gemma 4 (26B/31B)",
-			MaxOutputTokens: 16384,
+			MaxOutputTokens: ollamaDefaultMaxOutputTokens,
 			MaxInputTokens:  ctx256K,
 		},
 

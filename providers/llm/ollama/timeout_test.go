@@ -25,7 +25,7 @@ func TestOllama_FactoryWiresTimeout(t *testing.T) {
 	}{
 		{name: "cfg_wins", cfg: merge(base, "timeout_seconds", "777"), envVal: "11s", want: 777 * time.Second},
 		{name: "env_fills_in", cfg: base, envVal: "888s", want: 888 * time.Second},
-		{name: "fallback_5m", cfg: base, want: ollamaDefaultTimeout},
+		{name: "fallback_default", cfg: base, want: ollamaDefaultTimeout},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,7 +49,7 @@ func TestOllama_FactoryWiresTimeout(t *testing.T) {
 // non-positive timeout falls back to the default.
 func TestNewOllamaProvider_TimeoutFallback(t *testing.T) {
 	for _, in := range []time.Duration{0, -1 * time.Second} {
-		p, err := NewOllamaProvider("http://localhost:11434", "m", in)
+		p, err := NewOllamaProvider("http://localhost:11434", "m", in, 0)
 		if err != nil {
 			t.Fatalf("NewOllamaProvider: %v", err)
 		}
@@ -57,12 +57,22 @@ func TestNewOllamaProvider_TimeoutFallback(t *testing.T) {
 			t.Fatalf("timeout(%v) = %v, want %v", in, p.httpTimeout, ollamaDefaultTimeout)
 		}
 	}
-	p, err := NewOllamaProvider("http://localhost:11434", "m", 42*time.Second)
+	p, err := NewOllamaProvider("http://localhost:11434", "m", 42*time.Second, 0)
 	if err != nil {
 		t.Fatalf("NewOllamaProvider: %v", err)
 	}
 	if p.httpTimeout != 42*time.Second {
 		t.Fatalf("timeout(42s) = %v, want 42s", p.httpTimeout)
+	}
+}
+
+// TestOllamaDefaultTimeout_Floor pins the default at 15 minutes so a
+// future reduction without an accompanying conversation is loud.
+// Reasoning-on calls on a 31B-class local model generate at ~20 tok/s;
+// the default must clear the working size of a pack-gen response.
+func TestOllamaDefaultTimeout_Floor(t *testing.T) {
+	if ollamaDefaultTimeout < 15*time.Minute {
+		t.Fatalf("ollamaDefaultTimeout = %v, want at least 15m", ollamaDefaultTimeout)
 	}
 }
 
