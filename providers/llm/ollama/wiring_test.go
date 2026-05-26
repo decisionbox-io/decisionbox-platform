@@ -378,7 +378,11 @@ func TestCatalogReasoningRowsMarked(t *testing.T) {
 // TestIsReasoningModel_RegistryLookup exercises gollm.IsReasoningModel
 // through the registered Ollama catalog so a registry refactor that
 // breaks alias resolution doesn't silently let "on" reach
-// non-reasoning models.
+// non-reasoning models. Coverage includes every documented size on
+// the Ollama library for each reasoning family — a user-pulled tag
+// that's missing from the alias list would fall through to
+// Reasoning:false and silently strip Think for ReasoningEffort=on /
+// low / medium / high.
 func TestIsReasoningModel_RegistryLookup(t *testing.T) {
 	cases := []struct {
 		model string
@@ -386,15 +390,45 @@ func TestIsReasoningModel_RegistryLookup(t *testing.T) {
 	}{
 		// Canonical IDs.
 		{"gemma4:31b", true},
+		{"gemma4", true},
+		{"gemma3", true},
 		{"deepseek-r1", true},
 		{"qwen3", true},
 		{"qwen2.5", false},
-		// Aliases resolve to the canonical row's flag.
+		// Gemma 4 small-tier aliases.
+		{"gemma4:e2b", true},
+		{"gemma4:e4b", true},
+		// Gemma 4 26B/31B aliases incl. quants.
 		{"gemma4:31b-it-bf16", true},
+		{"gemma4:31b-it-q4_K_M", true},
+		{"gemma4:26b-it-q8_0", true},
+		// Gemma 3 every size on the Ollama library.
+		{"gemma3:1b", true},
+		{"gemma3:4b", true},
+		{"gemma3:12b", true},
+		{"gemma3:27b", true},
+		// DeepSeek R1 every size on the Ollama library.
+		{"deepseek-r1:1.5b", true},
+		{"deepseek-r1:7b", true},
+		{"deepseek-r1:8b", true},
+		{"deepseek-r1:14b", true},
 		{"deepseek-r1:32b", true},
+		{"deepseek-r1:70b", true},
+		{"deepseek-r1:671b", true},
+		// Qwen 3 every size on the Ollama library, including the MoE.
+		{"qwen3:0.6b", true},
+		{"qwen3:1.7b", true},
+		{"qwen3:4b", true},
+		{"qwen3:8b", true},
+		{"qwen3:14b", true},
+		{"qwen3:30b-a3b", true},
+		{"qwen3:32b", true},
 		{"qwen3:235b", true},
-		// Unknown models are not reasoning by default.
+		{"qwen3:235b-a22b", true},
+		// Unknown models / non-reasoning rows / unmarked rows.
 		{"totally-unknown:1b", false},
+		{"qwen3-coder:30b", false},
+		{"gpt-oss:20b", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
