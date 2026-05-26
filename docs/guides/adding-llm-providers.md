@@ -237,7 +237,7 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 - **Support model override** — `req.Model` may differ from the provider default (per-request override).
 - **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object.
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
-- **Populate the catalog** — For every model the provider supports, add a `ModelEntry` to your provider's `ProviderMeta.Models`. Each entry's `Wire`, `MaxOutputTokens`, and `Pricing` is the authoritative record. The agent uses `gollm.GetMaxOutputTokens(provider, model)` to cap completions during phases that need long output (recommendation generation, pack-gen synth). Use `Aliases` for cross-region inference profiles, date-stamped variants, and family-only short forms (`opus-4-7`, `sonnet-4-6`).
+- **Populate the catalog** — For every model the provider supports, add a `ModelEntry` to your provider's `ProviderMeta.Models`. Each entry's `Wire`, `MaxOutputTokens`, and `Pricing` is the authoritative record. The agent uses `gollm.GetMaxOutputTokens(provider, model)` to cap completions during phases that need long output (recommendation generation). Use `Aliases` for cross-region inference profiles, date-stamped variants, and family-only short forms (`opus-4-7`, `sonnet-4-6`).
 
 ## Step 3: Register in Services
 

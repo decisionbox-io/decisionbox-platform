@@ -78,7 +78,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
-		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (enterprise feature); 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit. Default: run discovery.")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'pack-gen' to generate a domain pack for the project and exit (requires a registered pack-generation provider); 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit. Default: run discovery.")
 		jobID           = flag.String("job-id", "", "ValidationJob _id when --mode=validate-doc. Ignored in other modes.")
 	)
 

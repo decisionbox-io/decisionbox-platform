@@ -20,6 +20,7 @@ jobs:
     outputs:
       go: ${{ steps.filter.outputs.go }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +35,27 @@ jobs:
               - '.golangci.yml'
             dashboard:
               - 'ui/dashboard/**'
+            docs:
+              - 'docs/**'
+              - 'CHANGELOG.md'
+              - 'scripts/lint-docs.sh'
+
+  docs-lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint docs/ for plan-leakage and enterprise-leakage tokens
+        run: ./scripts/lint-docs.sh docs
+
+      - name: Lint CHANGELOG.md (via sibling dir)
+        run: |
+          mkdir -p .tmp/lint-changelog
+          cp CHANGELOG.md .tmp/lint-changelog/CHANGELOG.md
+          ./scripts/lint-docs.sh .tmp/lint-changelog
 
   go-build:
     name: Go Build

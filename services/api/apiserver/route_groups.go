@@ -60,9 +60,8 @@ func RegisteredRouteGroups() []server.RouteGroup {
 }
 
 // ResetRouteGroupsForTest clears the registry. Exported so tests in
-// other packages (e.g. enterprise plugin tests that register groups
-// and want to start clean) can wipe state between cases. Not meant
-// for production code.
+// other packages (plugins that register groups and want to start
+// clean) can wipe state between cases. Not meant for production code.
 func ResetRouteGroupsForTest() {
 	routeGroupsMu.Lock()
 	defer routeGroupsMu.Unlock()

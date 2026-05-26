@@ -86,7 +86,7 @@ The REST API. Built with Go's standard `net/http` package (no frameworks). Handl
 - **Feedback** — Like/dislike on insights and recommendations
 - **Health** — Liveness and readiness probes
 
-The API has **no authentication** in v0.1.0. It's designed for internal use — the dashboard sits in front of it.
+The API has **no authentication** by default. It's designed for internal use — the dashboard sits in front of it.
 
 ### Agent
 
@@ -106,9 +106,7 @@ The agent is **stateless** — it reads everything from MongoDB and the domain p
 - A **subprocess** spawned by the API (local development, `RUNNER_MODE=subprocess`)
 - A **Kubernetes Job** created by the API (production, `RUNNER_MODE=kubernetes`)
 
-The agent has two run modes selected via `--mode`:
-- `--mode=run` (default) — discovery: explores the warehouse, generates insights, writes recommendations.
-- `--mode=pack-gen` — domain-pack generation: reads the project's knowledge sources and warehouse schema, synthesizes a complete `DomainPack`, saves it to MongoDB, and parks the project at `pack_generation_done` for the user to accept. Available only when a pack-gen provider is registered (no-op in the stock community build).
+The agent's default mode (`--mode=run`) explores the warehouse, generates insights, and writes recommendations.
 
 ### MongoDB
 
@@ -322,16 +320,8 @@ For deployment guides, see:
 
 ## Security Model
 
-### v0.1.0 (Current)
-
-- **No authentication** — Designed for internal/single-user deployment
+- **No authentication by default** — Designed for internal/single-user deployment
 - **API not publicly exposed** — Dashboard proxies all requests
 - **Secrets encrypted at rest** — AES-256-GCM when using MongoDB provider with `SECRET_ENCRYPTION_KEY`
 - **Warehouse read-only** — Agent only executes SELECT queries
 - **Per-project isolation** — Each project has its own secrets, prompts, discoveries
-
-### Future
-
-- Authentication (OAuth2 / Auth0)
-- Multi-user RBAC
-- API key authentication for external integrations

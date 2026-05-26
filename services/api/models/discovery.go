@@ -6,8 +6,9 @@ import (
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
-// InsightValidation aliases the shared validation type so the API and
-// the agent see one struct. Plan v5 §"Wire-type ownership".
+// InsightValidation aliases the shared validation type in
+// libs/go-common/models/validation so the API and the agent see one
+// struct on the wire.
 type InsightValidation = valmodels.InsightValidation
 
 // DiscoveryResult — read-only view of agent's discovery output.

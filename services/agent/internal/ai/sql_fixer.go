@@ -44,8 +44,7 @@ func NewSQLFixer(opts SQLFixerOptions) *SQLFixer {
 // VerificationContext that the validator wants the fixer to ground on.
 // Exploration callers pass an empty FixOpts and the
 // {{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}} section is stripped
-// from the rendered prompt. Background:
-// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
+// from the rendered prompt.
 func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, attempt int, opts queryexec.FixOpts) (queryexec.FixResult, error) {
 	logger.WithFields(logger.Fields{
 		"attempt": attempt,

@@ -51,8 +51,9 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 // the warehouse provider chose to canonicalise on. Empty slice (not
 // nil) when the cache is empty so JSON marshals it as `[]`. Read-only
 // — the agent owns writes; this method exists so dashboard pages
-// (discovery scope picker, governance allow-lists) can show what the
-// agent actually sees without reaching into the warehouse driver.
+// (the discovery scope picker, table-filter UIs, and similar) can
+// show what the agent actually sees without reaching into the
+// warehouse driver.
 func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID string) ([]string, error) {
 	if projectID == "" {
 		return nil, errors.New("projectID is required")

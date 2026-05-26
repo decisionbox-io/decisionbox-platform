@@ -29,8 +29,7 @@ type QueryExecutor struct {
 // different column-grounding evidence per insight, while exploration queries
 // have none. Empty by default; exploration callers pass FixOpts{}, the
 // validator passes a rendered VerificationContext so the fixer does not
-// re-emit the same hallucinated column on retry. Background:
-// plans/PLAN-INSIGHT-VERIFICATION-GROUNDING.md §4.2.
+// re-emit the same hallucinated column on retry.
 type FixOpts struct {
 	// VerificationContext is the same string the verifier renders into its
 	// own generation prompt: source-step SQL + (in a later layer) lookup_schema

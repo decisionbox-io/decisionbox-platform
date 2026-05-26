@@ -194,7 +194,7 @@ env:
   # partial results via the dedicated persistence ctx) rather than being
   # hard-killed mid-write. Set to "0" to disable and rely only on per-step
   # budgets (warehouse QueryTimeout, LLM_TIMEOUT, schema-discovery per-table
-  # timeout). For enterprise multi-hour SQL, raise BOTH consistently:
+  # timeout). For very large warehouses with multi-hour SQL, raise BOTH consistently:
   #   AGENT_JOB_TIMEOUT_HOURS: "25"
   #   DISCOVERY_MAX_DURATION: "24h"
   DISCOVERY_MAX_DURATION: "24h"

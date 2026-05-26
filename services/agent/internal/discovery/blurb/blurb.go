@@ -2,10 +2,9 @@
 // natural-language descriptions (~80-150 tokens) that the retrieval
 // layer embeds and stores in Qdrant.
 //
-// The prompt is taken verbatim from PLAN-SCHEMA-RETRIEVAL.md §6.1.
-// The spike (blurb-spike/FINDINGS.md) validated that this prompt + a
-// Haiku-class model produces hallucination-free descriptions with
-// top-1 retrieval accuracy on a real 2K-table ERP warehouse.
+// Empirical spike testing validated that this prompt + a Haiku-class
+// model produces hallucination-free descriptions with top-1 retrieval
+// accuracy on a real 2K-table ERP warehouse.
 //
 // The generator is parallelised (default 8 workers, env BLURB_WORKERS).
 // Per-table failures do not abort the run — blurbs are independent, so
