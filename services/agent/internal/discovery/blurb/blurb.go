@@ -185,7 +185,12 @@ func New(cfg Config) (*Generator, error) {
 	if cfg.Model == "" {
 		return nil, ErrModelMissing
 	}
-	if IsReasoningClassModel(cfg.Model) {
+	// Two independent reasoning signals: the substring patterns
+	// (catch families with no shared catalog flag: OpenAI o-series,
+	// GPT-5, extended-thinking Claude) and the registry's catalog
+	// flag (catches Ollama models the catalog declares as Reasoning:
+	// gemma4 / gemma3 / qwen3 / deepseek-r1). Either route rejects.
+	if IsReasoningClassModel(cfg.Model) || gollm.IsReasoningModel(cfg.ProviderName, cfg.Model) {
 		return nil, fmt.Errorf("blurb: %w (model=%q)", ErrReasoningModelNotSupported, cfg.Model)
 	}
 	workers := cfg.Workers

@@ -276,6 +276,19 @@ type ProviderMeta struct {
 	// / vertex-ai / azure-foundry providers for examples.
 	FamilyInferrer ModelFamilyInferrer `json:"-"`
 
+	// EffectiveInputWindow, when non-nil, returns the input window
+	// budgeting call-sites should respect for this provider, given the
+	// project's per-deployment LLM config. Providers that expose a
+	// per-request context override (currently only Ollama's `num_ctx`)
+	// implement this so /ask and other prompt-assemblers trim history
+	// to the operator-chosen window rather than letting the request
+	// be rejected at the server. When nil, callers fall through to
+	// the catalog value via MaxInputTokensFor.
+	//
+	// The cfg argument is the same map passed to the provider factory
+	// (project.LLM.Config). It may be nil.
+	EffectiveInputWindow func(model string, cfg ProviderConfig) int `json:"-"`
+
 	// SupportsTools declares whether the provider's Chat method
 	// honours ChatRequest.Tools. When false, callers with a
 	// tool-dependent flow (e.g. /ask function-calling) must pick a
@@ -717,4 +730,29 @@ func IsReasoningModel(providerName, model string) bool {
 		return false
 	}
 	return e.Reasoning
+}
+
+// GetEffectiveInputWindow returns the input-window size budgeting
+// call-sites should respect for a (provider, model, project-config)
+// triple. Resolution order:
+//  1. ProviderMeta.EffectiveInputWindow hook — providers that expose
+//     a per-deployment override (currently only Ollama's `num_ctx`)
+//     clamp the catalog value here.
+//  2. ProviderMeta.MaxInputTokensFor — same path as GetMaxInputTokens.
+//  3. Package DefaultMaxInputTokens fallback (provider not registered).
+//
+// cfg may be nil; providers that don't read cfg ignore it. Callers
+// pass project.LLM.Config when they have one; tests pass nil when
+// they only care about the catalog-driven value.
+func GetEffectiveInputWindow(providerName, model string, cfg ProviderConfig) int {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return DefaultMaxInputTokens
+	}
+	if meta.EffectiveInputWindow != nil {
+		return meta.EffectiveInputWindow(model, cfg)
+	}
+	return meta.MaxInputTokensFor(model)
 }

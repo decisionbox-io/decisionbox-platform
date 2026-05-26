@@ -110,7 +110,33 @@ func init() {
 		// because the catalog row's aliases include the tagged forms,
 		// so max-tokens enrichment still resolves.
 		PreferLiveModelID: true,
+		// Clamp the input window budgeting call-sites see to the
+		// operator-configured num_ctx when it's lower than the
+		// catalog. Without this, /ask would assemble prompts up to
+		// the model's architectural window and then trip the
+		// server's Truncate=false guard when the operator has
+		// deliberately chosen a smaller context — the request would
+		// fail instead of the prompt trimming gracefully.
+		EffectiveInputWindow: ollamaEffectiveInputWindow,
 	})
+}
+
+// ollamaEffectiveInputWindow returns the input-window cap budgeting
+// callers should respect. It mirrors how Chat() resolves num_ctx:
+// start from the catalog's MaxInputTokens for the model, then clamp
+// to the operator's cfg["num_ctx"] when set and smaller. Zero /
+// missing / unparseable cfg values leave the catalog value
+// untouched.
+func ollamaEffectiveInputWindow(model string, cfg gollm.ProviderConfig) int {
+	base := gollm.GetMaxInputTokens("ollama", model)
+	if cfg == nil {
+		return base
+	}
+	cap, _ := strconv.Atoi(cfg["num_ctx"])
+	if cap > 0 && cap < base {
+		return cap
+	}
+	return base
 }
 
 // OllamaProvider implements llm.Provider using a local Ollama instance.
