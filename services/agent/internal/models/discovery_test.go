@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -586,13 +587,16 @@ func TestSummary_Fields(t *testing.T) {
 
 func TestRecommendationStep_Fields(t *testing.T) {
 	step := RecommendationStep{
-		RunAt:        time.Now(),
-		Prompt:       "Generate recommendations based on insights...",
-		InsightCount: 5,
-		Response:     `{"recommendations": []}`,
-		TokensIn:     1000,
-		TokensOut:    500,
-		DurationMs:   2000,
+		RunAt:                            time.Now(),
+		Prompt:                           "Generate recommendations based on insights...",
+		InsightCount:                     5,
+		Response:                         `{"recommendations": []}`,
+		TokensIn:                         1000,
+		TokensOut:                        500,
+		DurationMs:                       2000,
+		RecommendationsDropped:           3,
+		RecommendationsDroppedMissingIDs: 1,
+		RecommendationsDroppedUnknownID:  2,
 	}
 
 	if step.InsightCount != 5 {
@@ -606,6 +610,41 @@ func TestRecommendationStep_Fields(t *testing.T) {
 	}
 	if step.TokensIn != 1000 {
 		t.Errorf("TokensIn = %d, want 1000", step.TokensIn)
+	}
+	if step.RecommendationsDropped != 3 {
+		t.Errorf("RecommendationsDropped = %d, want 3", step.RecommendationsDropped)
+	}
+	if step.RecommendationsDroppedMissingIDs != 1 {
+		t.Errorf("RecommendationsDroppedMissingIDs = %d, want 1", step.RecommendationsDroppedMissingIDs)
+	}
+	if step.RecommendationsDroppedUnknownID != 2 {
+		t.Errorf("RecommendationsDroppedUnknownID = %d, want 2", step.RecommendationsDroppedUnknownID)
+	}
+}
+
+func TestRecommendationStep_DroppedFieldsOmitEmpty(t *testing.T) {
+	// On the happy path (no drops) the per-reason fields must not
+	// pollute the persisted document. Round-trip through JSON and
+	// verify the dropped fields are absent from the wire shape.
+	step := RecommendationStep{
+		RunAt:        time.Now(),
+		Prompt:       "p",
+		InsightCount: 1,
+		Response:     `{}`,
+	}
+	data, err := json.Marshal(step)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	wire := string(data)
+	for _, banned := range []string{
+		`"recommendations_dropped"`,
+		`"recommendations_dropped_missing_ids"`,
+		`"recommendations_dropped_unknown_id"`,
+	} {
+		if strings.Contains(wire, banned) {
+			t.Errorf("zero-drop step should omit %s, got %s", banned, wire)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -200,7 +201,7 @@ func TestStatusReporter_AddRecommendationStep_StampsTokens(t *testing.T) {
 	w := &fakeRunStepWriter{}
 	sr := newEnabledReporter(t, w)
 
-	sr.AddRecommendationStep(context.Background(), 5, "", 2200, 850)
+	sr.AddRecommendationStep(context.Background(), 5, 0, "", 2200, 850)
 
 	if len(w.steps) != 1 {
 		t.Fatalf("got %d steps, want 1", len(w.steps))
@@ -215,13 +216,46 @@ func TestStatusReporter_AddRecommendationStep_StampsTokens(t *testing.T) {
 	if got.InputTokens != 2200 || got.OutputTokens != 850 {
 		t.Errorf("tokens = (%d, %d), want (2200, 850)", got.InputTokens, got.OutputTokens)
 	}
+	// No drops on this happy path → message should not mention dropped recs.
+	if strings.Contains(got.Message, "dropped") {
+		t.Errorf("happy-path message should not mention dropped recs, got %q", got.Message)
+	}
+}
+
+func TestStatusReporter_AddRecommendationStep_DroppedCountSurfacedInMessage(t *testing.T) {
+	// Per issue #237 the dashboard must reveal when the orchestrator
+	// discarded recommendations because the LLM cited unresolvable
+	// related_insight_ids. The RunStep message is the only surface the
+	// live dashboard reads for this — confirm both the kept count and
+	// the dropped count land in it.
+	w := &fakeRunStepWriter{}
+	sr := newEnabledReporter(t, w)
+
+	sr.AddRecommendationStep(context.Background(), 3, 5, "", 2200, 850)
+
+	if len(w.steps) != 1 {
+		t.Fatalf("got %d steps, want 1", len(w.steps))
+	}
+	got := w.steps[0]
+	if got.Type != "recommendation" {
+		t.Errorf("Type = %q, want recommendation", got.Type)
+	}
+	if !strings.Contains(got.Message, "Generated 3 recommendations") {
+		t.Errorf("kept count missing from message: %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "5 dropped") {
+		t.Errorf("dropped count missing from message: %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "related_insight_ids") {
+		t.Errorf("message should name the offending field for operator triage: %q", got.Message)
+	}
 }
 
 func TestStatusReporter_AddRecommendationStep_ErrorBranch(t *testing.T) {
 	w := &fakeRunStepWriter{}
 	sr := newEnabledReporter(t, w)
 
-	sr.AddRecommendationStep(context.Background(), 0, "LLM unreachable", 0, 0)
+	sr.AddRecommendationStep(context.Background(), 0, 0, "LLM unreachable", 0, 0)
 
 	if len(w.steps) != 1 {
 		t.Fatalf("got %d steps, want 1", len(w.steps))
