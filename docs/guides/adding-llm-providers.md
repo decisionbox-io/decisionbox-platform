@@ -114,9 +114,24 @@ func init() {
         Name:        "My LLM Provider",
         Description: "Description shown in the dashboard",
         ConfigFields: []gollm.ConfigField{
-            {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-key-here"},
+            // Non-secret project config. Persisted into `project.llm.config`.
             {Key: "model", Label: "Model", Required: true, Type: "string"},
             {Key: "wire_override", Label: "Wire override", Type: "string", Description: "Only for models not in the catalog."},
+        },
+        AuthMethods: []gollm.AuthMethod{
+            // Credentials. The dashboard stores `credentials_json` as a
+            // project-scoped secret (`llm-credentials`), NOT in
+            // `project.llm.config`. Always declare credentials here, not in
+            // ConfigFields, even though `Type: "credential"` is accepted in
+            // both places.
+            {
+                ID:          "api_key",
+                Name:        "API Key",
+                Description: "Your provider API key.",
+                Fields: []gollm.ConfigField{
+                    {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "your-key-here"},
+                },
+            },
         },
         Models: []gollm.ModelEntry{
             {

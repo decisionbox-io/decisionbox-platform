@@ -21,7 +21,7 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 | `{{DISCOVERY_DATE}}` | `recommendations.md` | Current date (ISO format) | Date string |
 | `{{INSIGHTS_SUMMARY}}` | `recommendations.md` | Text summary of insight counts | Text |
 | `{{INSIGHTS_DATA}}` | `recommendations.md` | Full insight array with IDs | JSON array |
-| `{{LANGUAGE}}` | `base_context.md` | Project output language (defaults to `English`) used to localize narrative fields | Plain text |
+| `{{LANGUAGE}}` | `base_context.md` + verifier / refuter prompt templates | Project output language (defaults to `English`) used to localize narrative fields | Plain text |
 
 ## Detailed Reference
 

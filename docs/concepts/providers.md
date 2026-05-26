@@ -48,29 +48,44 @@ The blank import (`import _ "..."`) triggers the `init()` function which registe
 Each provider registers metadata alongside its factory function. This metadata powers the dashboard's dynamic forms — no hardcoded provider lists.
 
 ```go
+// import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+
 gollm.RegisterWithMeta("claude", factory, gollm.ProviderMeta{
     Name:        "Claude (Anthropic)",
     Description: "Anthropic Claude API - direct access",
     ConfigFields: []gollm.ConfigField{
-        {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-ant-..."},
+        // Non-secret project config. Persisted into `project.llm.config`.
         {Key: "model", Label: "Model", Required: true, Type: "string", Default: "claude-sonnet-4-6"},
     },
-    Models: []llm.ModelEntry{
+    AuthMethods: []gollm.AuthMethod{
+        // Credentials. The dashboard stores `credentials_json` as a
+        // project-scoped secret (`llm-credentials`), not in
+        // `project.llm.config`.
+        {
+            ID:          "api_key",
+            Name:        "API Key",
+            Description: "Anthropic Claude API key.",
+            Fields: []gollm.ConfigField{
+                {Key: "credentials_json", Label: "API Key", Required: true, Type: "credential", Placeholder: "sk-ant-..."},
+            },
+        },
+    },
+    Models: []gollm.ModelEntry{
         {
             ID:              "claude-opus-4-7",
             Aliases:         []string{"opus-4-7"},
             DisplayName:     "Claude Opus 4.7",
-            Wire:            llm.WireAnthropic,
+            Wire:            gollm.WireAnthropic,
             MaxOutputTokens: 128000,
-            Pricing:         llm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
+            Pricing:         gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
         },
         {
             ID:              "claude-sonnet-4-6",
             Aliases:         []string{"sonnet-4-6"},
             DisplayName:     "Claude Sonnet 4.6",
-            Wire:            llm.WireAnthropic,
+            Wire:            gollm.WireAnthropic,
             MaxOutputTokens: 64000,
-            Pricing:         llm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 15.0},
+            Pricing:         gollm.TokenPricing{InputPerMillion: 3.0, OutputPerMillion: 15.0},
         },
     },
     DefaultMaxOutputTokens: 16384,
@@ -231,7 +246,7 @@ import (
 
 // Create providers from project config
 secretProv, _ := secrets.NewProvider(secretsCfg)
-apiKey, _ := secretProv.Get(ctx, projectID, "llm-api-key")
+apiKey, _ := secretProv.Get(ctx, projectID, "llm-credentials")
 
 llmProv, _ := gollm.NewProvider(project.LLM.Provider, gollm.ProviderConfig{
     "credentials_json": apiKey,

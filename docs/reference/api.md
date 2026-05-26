@@ -52,18 +52,25 @@ curl http://localhost:8080/api/v1/providers/llm
       "name": "Claude (Anthropic)",
       "description": "Anthropic Claude API - direct access",
       "config_fields": [
-        {"key": "api_key", "label": "API Key", "required": true, "type": "string", "placeholder": "sk-ant-..."},
         {"key": "model", "label": "Model", "required": true, "type": "string", "default": "claude-sonnet-4-6"}
       ],
-      "default_pricing": {
-        "claude-sonnet-4": {"input_per_million": 3.0, "output_per_million": 15.0},
-        "claude-opus-4": {"input_per_million": 15.0, "output_per_million": 75.0}
-      },
-      "max_output_tokens": {
-        "claude-sonnet-4": 16384,
-        "claude-opus-4": 16384,
-        "claude-haiku-4-5": 8192
-      }
+      "auth_methods": [
+        {
+          "id": "api_key",
+          "name": "API Key",
+          "description": "Anthropic Claude API key.",
+          "fields": [
+            {"key": "credentials_json", "label": "API Key", "required": true, "type": "credential", "placeholder": "sk-ant-..."}
+          ]
+        }
+      ],
+      "models": [
+        {"id": "claude-opus-4-7",  "display_name": "Claude Opus 4.7",  "wire": "anthropic", "max_output_tokens": 128000, "pricing": {"input_per_million": 5.0, "output_per_million": 25.0}},
+        {"id": "claude-sonnet-4-6","display_name": "Claude Sonnet 4.6","wire": "anthropic", "max_output_tokens":  64000, "pricing": {"input_per_million": 3.0, "output_per_million": 15.0}},
+        {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "wire": "anthropic", "max_output_tokens":  64000, "pricing": {"input_per_million": 1.0, "output_per_million":  5.0}}
+      ],
+      "default_max_output_tokens": 16384,
+      "supports_tools": true
     }
   ]
 }
@@ -209,7 +216,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     },
     "llm": {
       "provider": "claude",
-      "model": "claude-sonnet-4-20250514",
+      "model": "claude-sonnet-4-6",
       "config": {}
     },
     "schedule": {
@@ -615,7 +622,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
   "data": {
     "llm": {
       "provider": "claude",
-      "model": "claude-sonnet-4-20250514",
+      "model": "claude-sonnet-4-6",
       "estimated_input_tokens": 250000,
       "estimated_output_tokens": 50000,
       "cost_usd": 0.825
@@ -679,7 +686,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test
   "data": {
     "success": true,
     "provider": "claude",
-    "model": "claude-sonnet-4-20250514"
+    "model": "claude-sonnet-4-6"
   }
 }
 ```
