@@ -38,10 +38,14 @@ Each model carries a `MaxInputTokens` in its catalog entry — the upstream-publ
 | Bedrock | Llama 4 Maverick | 1000000 |
 | Bedrock | Llama 3.x, Qwen 3.x, DeepSeek R1, Mistral Large | 128000 |
 | Bedrock | Mixtral 8x22B | 65536 |
-| Ollama | Llama 4, Qwen 3.x, Llama 3.x, DeepSeek R1, Gemma 3 | 128000 |
-| Ollama | Llama 3, Gemma 2 | 8192 |
+| Ollama | Gemma 4 (26B/31B), Qwen3-Coder | 262144 |
+| Ollama | Llama 4, Qwen 3.x / 2.x, Llama 3.x, DeepSeek R1, Gemma 3, Gemma 4 (small), GPT-OSS, Mistral NeMo / Small | 128000 |
+| Ollama | Mistral 7B | 32768 |
+| Ollama | Phi-4, Code Llama, DeepSeek Coder | 16384 |
+| Ollama | Llama 3, Gemma 1 / 2, CodeGemma, SmolLM2 | 8192 |
+| Ollama | Llama 2, OLMo 2 | 4096 |
 
-Unknown models fall back to a global default of **32000 tokens** (deliberately conservative — over-trimming is recoverable, under-trimming and 4xx is not).
+Unknown models fall back to a global default of **32000 tokens** (deliberately conservative — over-trimming is recoverable, under-trimming and 4xx is not). The Ollama provider overrides this with a **128000** default, matching the de-facto context window of current local models.
 
 The handler then subtracts:
 
