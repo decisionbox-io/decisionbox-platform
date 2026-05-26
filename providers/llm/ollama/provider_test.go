@@ -23,8 +23,8 @@ func TestOllamaProvider_Registered(t *testing.T) {
 	if len(meta.Models) == 0 {
 		t.Fatal("catalog is empty")
 	}
-	if meta.DefaultMaxOutputTokens != 16384 {
-		t.Errorf("DefaultMaxOutputTokens = %d, want 16384", meta.DefaultMaxOutputTokens)
+	if meta.DefaultMaxOutputTokens != ollamaDefaultMaxOutputTokens {
+		t.Errorf("DefaultMaxOutputTokens = %d, want %d", meta.DefaultMaxOutputTokens, ollamaDefaultMaxOutputTokens)
 	}
 
 	// Per-model caps for the biggest Qwen / Gemma / DeepSeek / Meta models.
@@ -71,9 +71,9 @@ func TestOllamaProvider_Registered(t *testing.T) {
 		{"gemma2:9b", 8192},
 		{"gemma2:27b", 8192},
 
-		// Fallback to _default for unrecognized model tags.
-		{"some-unknown-model:42b", 16384},
-		{"qwen2.5:0.5b", 16384}, // small Qwen not in the focused list — falls to default
+		// Fallback to the provider default for unrecognized model tags.
+		{"some-unknown-model:42b", ollamaDefaultMaxOutputTokens},
+		{"qwen2.5:0.5b", ollamaDefaultMaxOutputTokens}, // small Qwen not in the focused list — falls to default
 	}
 	for _, tc := range cases {
 		if got := gollm.GetMaxOutputTokens("ollama", tc.model); got != tc.want {

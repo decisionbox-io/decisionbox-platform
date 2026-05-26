@@ -30,6 +30,14 @@ import (
 // LLM_TIMEOUT or per-project timeout_seconds.
 const ollamaDefaultTimeout = 5 * time.Minute
 
+// ollamaDefaultMaxOutputTokens is the output-token cap applied to any
+// model the catalog (catalog.go) does not list. Set generously (128k):
+// Ollama treats num_predict as a soft ceiling — generation stops at EOS
+// and an oversized value is never rejected upstream — so a high default
+// keeps long-form generations (e.g. pack synthesis) from truncating on
+// uncatalogued local models. Catalogued models still get their exact cap.
+const ollamaDefaultMaxOutputTokens = 131072
+
 func init() {
 	gollm.RegisterWithMeta("ollama", func(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		host := cfg["host"]
@@ -60,14 +68,19 @@ func init() {
 				Description: "Any Ollama model you have pulled (run 'ollama list' to see local models).",
 			},
 		},
-		Models:                 buildOllamaCatalog(),
-		DefaultMaxOutputTokens: 16384,
+		Models: buildOllamaCatalog(),
+		// Fallbacks for models the catalog does not list. Output uses the
+		// generous local-model cap (see ollamaDefaultMaxOutputTokens);
+		// context defaults to 128k — the de-facto window for current
+		// Ollama models — instead of the conservative global fallback.
+		DefaultMaxOutputTokens: ollamaDefaultMaxOutputTokens,
+		DefaultMaxInputTokens:  ctx128K,
 		// Ollama dispatches every model through one SDK path with no
 		// wire switch, so any model the server has pulled (returned by
 		// /api/tags) is dispatchable. Without this flag, live-only rows
-		// like "gemma4:31b" come back with Wire="" + Dispatchable=false
-		// and the dashboard hides them under the "unsupported wire"
-		// filter.
+		// for tags not in the catalog come back with Wire="" +
+		// Dispatchable=false and the dashboard hides them under the
+		// "unsupported wire" filter.
 		DispatchAnyModelID: true,
 		// Ollama strictly requires the EXACT model:tag the user pulled.
 		// `ollama run qwen3` when only `qwen3:32b` is local returns 404.
@@ -206,11 +219,11 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	// Extract token counts from timing metrics
 	promptTokens := 0
 	completionTokens := 0
-	if finalResp.Metrics.PromptEvalCount > 0 {
-		promptTokens = finalResp.Metrics.PromptEvalCount
+	if finalResp.PromptEvalCount > 0 {
+		promptTokens = finalResp.PromptEvalCount
 	}
-	if finalResp.Metrics.EvalCount > 0 {
-		completionTokens = finalResp.Metrics.EvalCount
+	if finalResp.EvalCount > 0 {
+		completionTokens = finalResp.EvalCount
 	}
 
 	// Determine stop reason

@@ -12,17 +12,24 @@ import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 // num_ctx well below the native window, users should configure a
 // smaller model in the dashboard.
 const (
+	ctx1M   = 1048576 // Llama 4 Scout's published native window
+	ctx256K = 262144  // Gemma 4 (26B/31B), Qwen3-Coder
 	ctx128K = 131072
 	ctx64K  = 65536
+	ctx32K  = 32768
+	ctx16K  = 16384
 	ctx8K   = 8192
-	ctx1M   = 1048576 // Llama 4 Scout's published native window
+	ctx4K   = 4096
+	ctx2K   = 2048
 )
 
-// Output-token caps for popular Ollama model families. Values come
-// from each model card's documented synchronous generation limit; the
-// agent caps requests at these so a poorly-specified prompt doesn't
-// truncate before the final answer. Pricing is zero — Ollama runs
-// locally so the user pays for compute, not tokens.
+// Output-token caps for popular Ollama model families. Where a model
+// publishes a documented generation limit we use it; otherwise the cap
+// defaults to 16384, capped at the context window for smaller models.
+// (A few long-standing entries predate this and keep their original
+// model-card / practical caps.) The agent caps requests at these so a
+// poorly-specified prompt doesn't truncate before the final answer.
+// Pricing is zero — Ollama runs locally so the user pays for compute.
 //
 // Wire is WireUnknown for every Ollama entry: Ollama's Chat()
 // dispatches through ollamaapi directly with no wire switch, so the
@@ -188,6 +195,167 @@ func buildOllamaCatalog() []gollm.ModelEntry {
 			DisplayName:     "Gemma 2",
 			MaxOutputTokens: 8192,
 			MaxInputTokens:  ctx8K,
+		},
+
+		// Gemma 4 (small) — e2b/e4b/latest ship a 128k window.
+		{
+			ID:              "gemma4",
+			Aliases:         []string{"gemma4:latest", "gemma4:e2b", "gemma4:e4b"},
+			DisplayName:     "Gemma 4 (small)",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+		// Gemma 4 (26B/31B) — medium models publish a 256k window. Aliases
+		// cover the bare sizes plus the standard instruct quants
+		// (bf16 / q4_K_M / q8_0) so the common pulled tags resolve.
+		{
+			ID: "gemma4:31b",
+			Aliases: []string{
+				"gemma4:26b",
+				"gemma4:31b-it-bf16",
+				"gemma4:31b-it-q4_K_M",
+				"gemma4:31b-it-q8_0",
+				"gemma4:26b-it-bf16",
+				"gemma4:26b-it-q4_K_M",
+				"gemma4:26b-it-q8_0",
+			},
+			DisplayName:     "Gemma 4 (26B/31B)",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx256K,
+		},
+
+		// Qwen3-Coder — 256k native window (extendable to 1M).
+		{
+			ID:              "qwen3-coder",
+			Aliases:         []string{"qwen3-coder:latest", "qwen3-coder:30b", "qwen3-coder:480b"},
+			DisplayName:     "Qwen3 Coder",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx256K,
+		},
+		// Qwen 2 — 128k on the 7b/72b tiers.
+		{
+			ID:              "qwen2",
+			Aliases:         []string{"qwen2:latest", "qwen2:0.5b", "qwen2:1.5b", "qwen2:7b", "qwen2:72b"},
+			DisplayName:     "Qwen 2",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+
+		// GPT-OSS (OpenAI open-weight) — 128k context.
+		{
+			ID:              "gpt-oss",
+			Aliases:         []string{"gpt-oss:latest", "gpt-oss:20b", "gpt-oss:120b"},
+			DisplayName:     "GPT-OSS",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+		// Phi-4 — 16k context.
+		{
+			ID:              "phi4",
+			Aliases:         []string{"phi4:latest", "phi4:14b"},
+			DisplayName:     "Phi 4",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx16K,
+		},
+
+		// Mistral 7B — 32k context (v0.3).
+		{
+			ID:              "mistral",
+			Aliases:         []string{"mistral:latest", "mistral:7b"},
+			DisplayName:     "Mistral 7B",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx32K,
+		},
+		// Mistral NeMo — 128k context (12B, built with NVIDIA).
+		{
+			ID:              "mistral-nemo",
+			Aliases:         []string{"mistral-nemo:latest", "mistral-nemo:12b"},
+			DisplayName:     "Mistral NeMo",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+		// Mistral Small — 128k context (22b/24b).
+		{
+			ID:              "mistral-small",
+			Aliases:         []string{"mistral-small:latest", "mistral-small:22b", "mistral-small:24b"},
+			DisplayName:     "Mistral Small",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+
+		// Code Llama — 16k practical context.
+		{
+			ID:              "codellama",
+			Aliases:         []string{"codellama:latest", "codellama:7b", "codellama:13b", "codellama:34b", "codellama:70b"},
+			DisplayName:     "Code Llama",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx16K,
+		},
+		// CodeGemma — 8k context.
+		{
+			ID:              "codegemma",
+			Aliases:         []string{"codegemma:latest", "codegemma:2b", "codegemma:7b"},
+			DisplayName:     "CodeGemma",
+			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx8K,
+		},
+		// DeepSeek Coder — 16k context.
+		{
+			ID:              "deepseek-coder",
+			Aliases:         []string{"deepseek-coder:latest", "deepseek-coder:1.3b", "deepseek-coder:6.7b", "deepseek-coder:33b"},
+			DisplayName:     "DeepSeek Coder",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx16K,
+		},
+
+		// Dolphin 3 (Llama 3.1 8B base) — 128k context.
+		{
+			ID:              "dolphin3",
+			Aliases:         []string{"dolphin3:latest", "dolphin3:8b"},
+			DisplayName:     "Dolphin 3",
+			MaxOutputTokens: 16384,
+			MaxInputTokens:  ctx128K,
+		},
+
+		// Gemma 1 — 8k context.
+		{
+			ID:              "gemma",
+			Aliases:         []string{"gemma:latest", "gemma:2b", "gemma:7b"},
+			DisplayName:     "Gemma",
+			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx8K,
+		},
+		// Llama 2 — 4k context.
+		{
+			ID:              "llama2",
+			Aliases:         []string{"llama2:latest", "llama2:7b", "llama2:13b", "llama2:70b"},
+			DisplayName:     "Llama 2",
+			MaxOutputTokens: 4096,
+			MaxInputTokens:  ctx4K,
+		},
+		// SmolLM2 — 8k context.
+		{
+			ID:              "smollm2",
+			Aliases:         []string{"smollm2:latest", "smollm2:135m", "smollm2:360m", "smollm2:1.7b"},
+			DisplayName:     "SmolLM2",
+			MaxOutputTokens: 8192,
+			MaxInputTokens:  ctx8K,
+		},
+		// OLMo 2 — 4k context.
+		{
+			ID:              "olmo2",
+			Aliases:         []string{"olmo2:latest", "olmo2:7b", "olmo2:13b"},
+			DisplayName:     "OLMo 2",
+			MaxOutputTokens: 4096,
+			MaxInputTokens:  ctx4K,
+		},
+		// TinyLlama — 2k context.
+		{
+			ID:              "tinyllama",
+			Aliases:         []string{"tinyllama:latest", "tinyllama:1.1b"},
+			DisplayName:     "TinyLlama",
+			MaxOutputTokens: 2048,
+			MaxInputTokens:  ctx2K,
 		},
 	}
 }
