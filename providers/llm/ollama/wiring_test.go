@@ -8,45 +8,122 @@ import (
 	ollamaapi "github.com/ollama/ollama/api"
 )
 
-// TestChat_NumCtxFromCatalog asserts that every Chat() request carries
-// num_ctx from the registered catalog row. Without this the request
-// relies on the server's OLLAMA_CONTEXT_LENGTH default, which silently
-// truncates any prompt larger than 2-4 k tokens depending on version.
-func TestChat_NumCtxFromCatalog(t *testing.T) {
+// TestChat_NumCtxOptIn covers both branches of the per-request
+// num_ctx forwarding: when the operator left num_ctx unset (zero),
+// the request must NOT carry num_ctx so the server's
+// OLLAMA_CONTEXT_LENGTH default applies and a small-VRAM deployment
+// is not forced into a catalog-sized KV-cache allocation. When the
+// operator set a positive value, that exact value is forwarded.
+func TestChat_NumCtxOptIn(t *testing.T) {
+	t.Run("unset_omits_num_ctx", func(t *testing.T) {
+		mock := &mockOllamaClient{
+			chatResp: ollamaapi.ChatResponse{Done: true, DoneReason: "stop"},
+		}
+		p := newMockOllamaProvider(mock, "gemma4:31b-it-bf16")
+		// p.numCtx defaults to zero — operator did not opt in.
+		if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+			Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+		}); err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+		if _, present := mock.lastChatReq.Options["num_ctx"]; present {
+			t.Errorf("num_ctx present (=%v) when operator did not opt in — "+
+				"would force a catalog-sized KV-cache allocation",
+				mock.lastChatReq.Options["num_ctx"])
+		}
+	})
+	t.Run("operator_value_forwarded", func(t *testing.T) {
+		mock := &mockOllamaClient{
+			chatResp: ollamaapi.ChatResponse{Done: true, DoneReason: "stop"},
+		}
+		p := newMockOllamaProvider(mock, "gemma4:31b-it-bf16")
+		p.numCtx = 32768
+		if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+			Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+		}); err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+		got, ok := mock.lastChatReq.Options["num_ctx"]
+		if !ok {
+			t.Fatal("num_ctx missing from request options")
+		}
+		gotInt, ok := got.(int)
+		if !ok {
+			t.Fatalf("num_ctx type = %T, want int", got)
+		}
+		if gotInt != 32768 {
+			t.Errorf("num_ctx = %d, want 32768", gotInt)
+		}
+	})
+}
+
+// TestFactory_NumCtxParsing exercises every branch of the factory's
+// num_ctx cfg parsing — missing, empty, valid, negative, non-numeric,
+// zero. Negative and unparseable values clamp to zero (no-op) rather
+// than erroring so a typo never breaks startup.
+func TestFactory_NumCtxParsing(t *testing.T) {
+	base := gollm.ProviderConfig{
+		"host":  "http://localhost:11434",
+		"model": "qwen2.5:7b",
+	}
 	cases := []struct {
-		model      string
-		wantNumCtx int
+		name    string
+		ctxStr  string
+		setKey  bool
+		wantCtx int
 	}{
-		{"gemma4:31b-it-bf16", ctx256K},
-		{"qwen2.5:7b", ctx128K},
-		{"phi4", ctx16K},
-		{"gemma2:9b", ctx8K},
-		{"some-unknown:tag", ctx128K}, // falls back to DefaultMaxInputTokens
+		{"missing_key", "", false, 0},
+		{"empty_value", "", true, 0},
+		{"valid_int", "32768", true, 32768},
+		{"negative_clamped_zero", "-5", true, 0},
+		{"non_numeric_fallback_zero", "lots", true, 0},
+		{"zero_value", "0", true, 0},
 	}
 	for _, tc := range cases {
-		t.Run(tc.model, func(t *testing.T) {
-			mock := &mockOllamaClient{
-				chatResp: ollamaapi.ChatResponse{Done: true, DoneReason: "stop"},
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := gollm.ProviderConfig{}
+			for k, v := range base {
+				cfg[k] = v
 			}
-			p := newMockOllamaProvider(mock, tc.model)
-			if _, err := p.Chat(context.Background(), gollm.ChatRequest{
-				Messages: []gollm.Message{{Role: "user", Content: "hi"}},
-			}); err != nil {
-				t.Fatalf("Chat: %v", err)
+			if tc.setKey {
+				cfg["num_ctx"] = tc.ctxStr
 			}
-			got, ok := mock.lastChatReq.Options["num_ctx"]
+			p, err := gollm.NewProvider("ollama", cfg)
+			if err != nil {
+				t.Fatalf("NewProvider: %v", err)
+			}
+			op, ok := p.(*OllamaProvider)
 			if !ok {
-				t.Fatalf("num_ctx not set in request options")
+				t.Fatalf("type = %T, want *OllamaProvider", p)
 			}
-			gotInt, ok := got.(int)
-			if !ok {
-				t.Fatalf("num_ctx type = %T, want int", got)
-			}
-			if gotInt != tc.wantNumCtx {
-				t.Errorf("num_ctx = %d, want %d", gotInt, tc.wantNumCtx)
+			if op.numCtx != tc.wantCtx {
+				t.Errorf("numCtx = %d, want %d", op.numCtx, tc.wantCtx)
 			}
 		})
 	}
+}
+
+// TestFactory_NumCtxConfigField asserts the registered ProviderMeta
+// surfaces num_ctx as a config field so the dashboard renders an
+// input for it. Catches an accidental removal that would silently
+// hide the operator override from the UI.
+func TestFactory_NumCtxConfigField(t *testing.T) {
+	meta, ok := gollm.GetProviderMeta("ollama")
+	if !ok {
+		t.Fatal("ollama provider not registered")
+	}
+	for _, f := range meta.ConfigFields {
+		if f.Key == "num_ctx" {
+			if f.Required {
+				t.Error("num_ctx is Required, want optional (zero = use server default)")
+			}
+			if f.Label == "" {
+				t.Error("num_ctx has no Label — dashboard would render without a header")
+			}
+			return
+		}
+	}
+	t.Error("num_ctx missing from ConfigFields")
 }
 
 // TestChat_TruncateFalse asserts every request pins Truncate=false.

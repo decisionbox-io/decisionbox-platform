@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +54,18 @@ func init() {
 		// empty model at call time and return a clear error there.
 		model := cfg["model"]
 
-		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout))
+		// num_ctx is the per-request context-window override sent to
+		// Ollama. Zero (unset / empty / unparseable / negative) leaves
+		// it off entirely so the server's OLLAMA_CONTEXT_LENGTH default
+		// applies — avoids forcing a 128k KV cache load on hosts that
+		// were running at 4k/8k. Operators raise it deliberately when
+		// they want the model's full architectural window.
+		numCtx, _ := strconv.Atoi(cfg["num_ctx"])
+		if numCtx < 0 {
+			numCtx = 0
+		}
+
+		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout), numCtx)
 	}, gollm.ProviderMeta{
 		Name:        "Ollama (Local)",
 		Description: "Run open-source models locally via Ollama",
@@ -68,6 +80,13 @@ func init() {
 				Default:     "qwen2.5:7b",
 				Placeholder: "qwen2.5:7b",
 				Description: "Any Ollama model you have pulled (run 'ollama list' to see local models).",
+			},
+			{
+				Key:         "num_ctx",
+				Label:       "Context window (num_ctx)",
+				Type:        "string",
+				Placeholder: "32768",
+				Description: "Optional per-request context window override (token count). Leave blank to use the Ollama server's OLLAMA_CONTEXT_LENGTH default. Setting a higher value than the server default forces a larger KV cache allocation and can OOM on tight VRAM.",
 			},
 		},
 		Models: buildOllamaCatalog(),
@@ -102,12 +121,19 @@ type OllamaProvider struct {
 	client      ollamaClient
 	model       string
 	httpTimeout time.Duration
+	// numCtx, when > 0, is forwarded as `options["num_ctx"]` on every
+	// Chat call. Zero leaves the field off entirely so the server's
+	// OLLAMA_CONTEXT_LENGTH default applies — avoids OOMing on hosts
+	// that were running at 4k/8k when a catalog model happens to
+	// publish a much larger architectural window.
+	numCtx int
 }
 
 // NewOllamaProvider creates a new Ollama LLM provider. A zero or
 // negative timeout falls back to ollamaDefaultTimeout so callers that
-// don't care (mainly tests) don't have to think about it.
-func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvider, error) {
+// don't care (mainly tests) don't have to think about it. numCtx of
+// zero or negative means "don't send num_ctx; use server default".
+func NewOllamaProvider(host, model string, timeout time.Duration, numCtx int) (*OllamaProvider, error) {
 	parsedURL, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: invalid host URL: %w", err)
@@ -118,10 +144,14 @@ func NewOllamaProvider(host, model string, timeout time.Duration) (*OllamaProvid
 	}
 	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: timeout})
 
+	if numCtx < 0 {
+		numCtx = 0
+	}
 	return &OllamaProvider{
 		client:      client,
 		model:       model,
 		httpTimeout: timeout,
+		numCtx:      numCtx,
 	}, nil
 }
 
@@ -200,16 +230,18 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		options["num_predict"] = req.MaxTokens
 	}
 
-	// num_ctx — the model's per-request context window. Set explicitly
-	// so the request doesn't depend on the server's OLLAMA_CONTEXT_LENGTH
-	// env var (whose stock default is small enough — 4k on recent
-	// versions, 2k on older — to silently truncate any non-trivial
-	// prompt). The catalog's MaxInputTokens drives the value, matching
-	// what GetMaxInputTokens reports to budgeting call-sites so the
-	// request never carries an oversize prompt against an undersized
-	// num_ctx.
-	if ctxTokens := gollm.GetMaxInputTokens("ollama", model); ctxTokens > 0 {
-		options["num_ctx"] = ctxTokens
+	// num_ctx — sent only when the operator explicitly configured it.
+	// Per-request num_ctx is an OVERRIDE on Ollama (not capped by
+	// OLLAMA_CONTEXT_LENGTH), so a catalog-driven default would force
+	// the server to allocate the model's full architectural window
+	// (often 128k+) on every call — fatal on hosts that were running
+	// the same model at 4k/8k for VRAM reasons. Leaving num_ctx off
+	// here preserves the server's existing per-deployment behaviour.
+	// Combined with Truncate=false below, an oversize prompt against
+	// the server's default window now surfaces as a loud error
+	// instead of silent prompt-history truncation.
+	if p.numCtx > 0 {
+		options["num_ctx"] = p.numCtx
 	}
 
 	// Non-streaming request

@@ -49,7 +49,7 @@ func TestOllama_FactoryWiresTimeout(t *testing.T) {
 // non-positive timeout falls back to the default.
 func TestNewOllamaProvider_TimeoutFallback(t *testing.T) {
 	for _, in := range []time.Duration{0, -1 * time.Second} {
-		p, err := NewOllamaProvider("http://localhost:11434", "m", in)
+		p, err := NewOllamaProvider("http://localhost:11434", "m", in, 0)
 		if err != nil {
 			t.Fatalf("NewOllamaProvider: %v", err)
 		}
@@ -57,7 +57,7 @@ func TestNewOllamaProvider_TimeoutFallback(t *testing.T) {
 			t.Fatalf("timeout(%v) = %v, want %v", in, p.httpTimeout, ollamaDefaultTimeout)
 		}
 	}
-	p, err := NewOllamaProvider("http://localhost:11434", "m", 42*time.Second)
+	p, err := NewOllamaProvider("http://localhost:11434", "m", 42*time.Second, 0)
 	if err != nil {
 		t.Fatalf("NewOllamaProvider: %v", err)
 	}

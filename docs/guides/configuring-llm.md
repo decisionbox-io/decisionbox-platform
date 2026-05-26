@@ -75,11 +75,12 @@ ollama pull llama3.1:8b      # Small, fast, for testing
 
 ### Context window (`num_ctx`) and reasoning models
 
-DecisionBox sends `num_ctx` on every request, pinned to the catalog's
-declared input window for your chosen model (e.g. 256k for
-`gemma4:31b`, 128k for `qwen3`). The request also sets
-`truncate=false`, so an oversize prompt fails fast rather than being
-silently trimmed.
+DecisionBox always sends `truncate=false` on Chat requests, so an
+oversize prompt fails fast with a clear error rather than being
+silently trimmed. The per-request `num_ctx` is only forwarded when
+you set the project's optional **Context window (num_ctx)** field —
+otherwise the Ollama server's `OLLAMA_CONTEXT_LENGTH` (or model
+default) applies. This stays out of your way on tight-VRAM hosts.
 
 Two things to know:
 
@@ -87,9 +88,10 @@ Two things to know:
   cache sized for `num_ctx` regardless of how much of it the
   current prompt actually uses. A 31B-class model in `bf16` quant
   needs ~67 GB just for weights; adding a 128k context can grow
-  resident VRAM by another ~5 GB. If you OOM, lower the
-  `OLLAMA_CONTEXT_LENGTH` env var on the Ollama host — Ollama caps
-  every request to that value.
+  resident VRAM by another ~5 GB. If you want the model's full
+  architectural window, set the **Context window (num_ctx)** field
+  on the project — but verify the host can hold the larger KV
+  cache first.
 - **Reasoning models burn output budget on hidden thinking.** Gemma
   4, Gemma 3, DeepSeek R1, and Qwen 3 emit a chain-of-thought before
   the answer, and those tokens count against `num_predict`. The

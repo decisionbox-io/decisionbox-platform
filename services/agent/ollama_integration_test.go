@@ -47,7 +47,10 @@ func setupOllama(t *testing.T) (gollm.Provider, func()) {
 		t.Fatalf("Failed to get endpoint: %v", err)
 	}
 
-	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0)
+	// Pass num_ctx=0 so the provider relies on the test container's
+	// default OLLAMA_CONTEXT_LENGTH and does not force a large KV-cache
+	// allocation — the container ships with stock defaults.
+	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0, 0)
 	if err != nil {
 		container.Terminate(ctx)
 		t.Fatalf("Failed to create Ollama provider: %v", err)

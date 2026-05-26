@@ -3,11 +3,16 @@ package ollama
 import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
 // MaxInputTokens here is the model's *upstream-published* native
-// context — what the model architecture supports. The Ollama provider
-// passes this value as `num_ctx` on every Chat() request, capped by
-// the operator's `num_ctx_cap` config field when set. The request
-// also pins `truncate=false` so a prompt that would overflow the
-// effective context fails fast instead of being silently trimmed.
+// context — what the model architecture supports. Budgeting call-
+// sites use this to size multi-turn prompt history; the Ollama
+// provider does NOT automatically forward it as `num_ctx`, because
+// per-request `num_ctx` is an override on Ollama (not capped by
+// OLLAMA_CONTEXT_LENGTH) and a catalog-driven default would force
+// large KV-cache allocations on hosts that intentionally run at a
+// lower server window. Operators raise `num_ctx` per-project when
+// they actually want the full window. The provider always pins
+// `truncate=false` so an oversize prompt fails with a clear server
+// error instead of being silently trimmed.
 const (
 	ctx1M   = 1048576 // Llama 4 Scout's published native window
 	ctx256K = 262144  // Gemma 4 (26B/31B), Qwen3-Coder
