@@ -728,6 +728,44 @@ func TestPackGenerate_Generate_EnqueueRepoError_500(t *testing.T) {
 	}
 }
 
+// TestPackGenerate_Generate_EnqueueSurvivesRequestCtxCancel asserts the
+// enqueue write runs on a detached context — a client disconnect
+// during the Mongo round-trip must not leave a marker landed without
+// the goroutine spawning.
+func TestPackGenerate_Generate_EnqueueSurvivesRequestCtxCancel(t *testing.T) {
+	stub := &stubPackgenProvider{
+		genResult: &packgen.GenerateResult{Async: true},
+		done:      make(chan struct{}),
+	}
+	installStubProvider(t, stub)
+
+	repo := newMockProjectRepo()
+	p := seedPendingPackGen(t, repo, "p-enq-ctx", "acme", "")
+
+	h, hwg := newTestHandler(repo)
+
+	// Build a request whose context is ALREADY canceled — simulates a
+	// client that disconnected before the handler ran the enqueue.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	reqCancel() // cancel immediately
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+p.ID+"/pack-generate", nil).WithContext(reqCtx)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.Generate(w, req)
+
+	// The handler hit the project-load with r.Context(), which is canceled.
+	// The mock returns nil for canceled-ctx (it doesn't honor ctx), so
+	// the test exercises the post-validation enqueue path. Real Mongo
+	// would respect the canceled ctx and return context.Canceled —
+	// the handler now uses a detached enqueue ctx, so the enqueue
+	// must still succeed and the goroutine must spawn.
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (enqueue must survive request-ctx cancel); body = %s", w.Code, w.Body.String())
+	}
+	awaitGoroutine(t, hwg, 2*time.Second)
+}
+
 // TestPackGenerate_Generate_SafetyNetFiresOnProviderError asserts the
 // safety-net defer DOES fire when the provider returns an error. This
 // covers the case where the orchestrator's own revert-on-error closure

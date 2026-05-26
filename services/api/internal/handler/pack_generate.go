@@ -21,6 +21,14 @@ import (
 // even when the inbound request's context is gone.
 const finalizeBudget = 5 * time.Second
 
+// enqueueBudget bounds the atomic enqueue write that publishes the
+// in-flight marker. Detached from the inbound request context — if the
+// client disconnects mid-Mongo-write the marker would otherwise land
+// without the goroutine ever spawning, stranding the project on the
+// idempotent-202 path. 5 seconds is generous for a single-document
+// UpdateOne; a stuck Mongo gets the operator a 500 the user can retry.
+const enqueueBudget = 5 * time.Second
+
 // finalizeInterruptedErr is the message the safety-net defer writes to
 // `pack_gen_last_error` when it has to clean up after a goroutine that
 // did not reach a terminal write. The wizard surfaces this string verbatim,
@@ -153,7 +161,14 @@ func (h *PackGenerateHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	// dashboard correlation work consistently across run modes.
 	runID := time.Now().UTC().Format("20060102T150405.000Z")
 
-	existingRunID, alreadyQueued, err := h.repo.EnqueuePackGen(r.Context(), id, runID)
+	// Use a detached context for the enqueue write so a client
+	// disconnect (proxy timeout, browser close) DURING the Mongo
+	// round-trip cannot leave the marker landed but the goroutine
+	// never spawned. The handler is past validation at this point —
+	// the user committed; the server takes ownership.
+	enqueueCtx, cancelEnqueue := context.WithTimeout(context.Background(), enqueueBudget)
+	defer cancelEnqueue()
+	existingRunID, alreadyQueued, err := h.repo.EnqueuePackGen(enqueueCtx, id, runID)
 	if err != nil {
 		switch {
 		case errors.Is(err, database.ErrPackGenNotEnabled):
