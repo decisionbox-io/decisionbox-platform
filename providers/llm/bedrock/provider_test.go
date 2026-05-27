@@ -31,8 +31,8 @@ func TestBedrockProvider_Dispatch_CatalogAnthropic(t *testing.T) {
 }
 
 // TestBedrockProvider_Dispatch_CatalogAnthropicViaCrossRegionAlias is
-// the regression test for the Opus 4.7 pack-gen incident: the user
-// pastes a cross-region inference profile ID (us./eu./apac./global.),
+// the regression test for the cross-region alias lookup path: the
+// user pastes a cross-region inference profile ID (us./eu./apac./global.),
 // which is *not* the canonical catalog ID, but the resolver must
 // still find the entry via the Aliases list and dispatch on the
 // Anthropic wire.

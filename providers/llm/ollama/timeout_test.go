@@ -66,10 +66,11 @@ func TestNewOllamaProvider_TimeoutFallback(t *testing.T) {
 	}
 }
 
-// TestOllamaDefaultTimeout_Floor pins the default at 15 minutes so a
-// future reduction without an accompanying conversation is loud.
-// Reasoning-on calls on a 31B-class local model generate at ~20 tok/s;
-// the default must clear the working size of a pack-gen response.
+// TestOllamaDefaultTimeout_Floor pins the default at 15 minutes so
+// a future reduction without an accompanying conversation is loud.
+// Reasoning-on calls on a 31B-class local model generate at
+// ~20 tok/s; the default must clear the working size of a
+// long-form generation.
 func TestOllamaDefaultTimeout_Floor(t *testing.T) {
 	if ollamaDefaultTimeout < 15*time.Minute {
 		t.Fatalf("ollamaDefaultTimeout = %v, want at least 15m", ollamaDefaultTimeout)

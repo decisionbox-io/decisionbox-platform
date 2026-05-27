@@ -95,7 +95,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--mode` | No | *(empty)* | Alternate run mode: `index-schema`, `pack-gen`, or `validate-doc`. Empty runs discovery (the default). |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` or `validate-doc`. Empty runs discovery (the default). |
 | `--project-id` | Yes | — | Project ID to run discovery for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |

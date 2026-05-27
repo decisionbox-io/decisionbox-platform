@@ -210,10 +210,10 @@ describe('SchemaIndexPanel', () => {
     await waitFor(() => expect(screen.getByText(/network down/i)).toBeInTheDocument());
   });
 
-  // hideWhenReady is the opt-in the project home + pack-gen-pending
-  // surfaces pass — those convey "ready" via their own badge / helper
-  // copy, so the verbose panel banner is duplicative noise in
-  // steady state. Polling continues so the panel re-appears the
+  // hideWhenReady is the opt-in the project home + plugin-overlay
+  // surfaces pass — those convey "ready" via their own badge /
+  // helper copy, so the verbose panel banner is duplicative noise
+  // in steady state. Polling continues so the panel re-appears the
   // moment status flips to anything actionable.
   it('hideWhenReady=true + status=ready renders nothing (steady-state hidden)', async () => {
     const onChange = jest.fn();

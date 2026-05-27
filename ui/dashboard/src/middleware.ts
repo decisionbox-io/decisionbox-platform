@@ -17,13 +17,13 @@ import {
 // Long-running requests:
 //
 // Node's global fetch is undici, which defaults headersTimeout and
-// bodyTimeout to 5 minutes. That cap kills long synchronous endpoints
-// (pack-generation synth on Opus + a 270k-char prompt routinely
-// runs 5–8 minutes). The dispatcher below raises both caps to 20
-// minutes — a safety belt while the synchronous endpoints are still
-// in use; an async-job migration of pack-gen will eliminate the need
-// for this entirely. Browser-side fetch has no comparable timeout, so
-// raising the proxy is sufficient end-to-end.
+// bodyTimeout to 5 minutes. That cap kills long synchronous
+// endpoints — large-prompt LLM calls on slow self-hosted models
+// routinely take 5–8 minutes per call. The dispatcher below raises
+// both caps to 20 minutes as a safety belt for any handler that
+// hasn't migrated to an async-job pattern. Browser-side fetch has
+// no comparable timeout, so raising the proxy is sufficient
+// end-to-end.
 const proxyTimeoutMs = 20 * 60_000;
 const longRunningProxy = new Agent({
   headersTimeout: proxyTimeoutMs,

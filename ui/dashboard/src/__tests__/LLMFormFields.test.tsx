@@ -15,10 +15,11 @@ import {
 import type { ProviderMeta, LiveModel } from '@/lib/api';
 
 /**
- * LLMFormFields is the single source of truth for the LLM provider form
- * in the new-project wizard, settings page, and pack-gen wizard. The
- * tests below cover both phases (credentials + model), the api-key vs
- * cloud-creds split, and the load-models button gating.
+ * LLMFormFields is the single source of truth for the LLM provider
+ * form in the new-project wizard, settings page, and plugin-overlaid
+ * wizards. The tests below cover both phases (credentials + model),
+ * the api-key vs cloud-creds split, and the load-models button
+ * gating.
  */
 
 const openaiMeta: ProviderMeta = {

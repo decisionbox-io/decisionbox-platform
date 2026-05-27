@@ -318,7 +318,7 @@ func TestWarehouseConfig_ConfigMap(t *testing.T) {
 	}
 }
 
-// --- Pack-generation lifecycle ---
+// --- Project lifecycle ---
 
 func TestProject_EffectiveState_EmptyIsReady(t *testing.T) {
 	p := &Project{State: ""}
@@ -347,43 +347,15 @@ func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
 }
 
 func TestProject_EffectiveState_PassThrough(t *testing.T) {
+	// Plugins may decode additional state strings; the community
+	// agent helper just echoes the value back.
 	for _, state := range []string{
-		ProjectStatePackGenerationPending,
-		ProjectStatePackGeneration,
-		ProjectStatePackGenerationDone,
 		ProjectStateReady,
+		"opaque_plugin_state",
 	} {
 		p := &Project{State: state}
 		if got := p.EffectiveState(); got != state {
 			t.Errorf("EffectiveState(State=%q) = %q", state, got)
 		}
-	}
-}
-
-func TestProject_GeneratePack_RoundTrip(t *testing.T) {
-	p := Project{
-		ID:    "wizard-1",
-		Name:  "Acme",
-		State: ProjectStatePackGeneration,
-		GeneratePack: &GeneratePackConfig{
-			Enabled:     true,
-			PackName:    "Acme Gaming",
-			PackSlug:    "acme-gaming",
-			Description: "Match-3 puzzle game",
-		},
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded Project
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.State != ProjectStatePackGeneration {
-		t.Errorf("State = %q", decoded.State)
-	}
-	if decoded.GeneratePack == nil || decoded.GeneratePack.PackSlug != "acme-gaming" {
-		t.Errorf("GeneratePack = %+v", decoded.GeneratePack)
 	}
 }

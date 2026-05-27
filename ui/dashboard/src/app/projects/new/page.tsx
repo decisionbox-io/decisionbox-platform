@@ -3,32 +3,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Group, Loader, SegmentedControl, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconWand } from '@tabler/icons-react';
+import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
 import { WarehouseFormFields, WarehouseFormState, emptyWarehouseFormState, buildDefaults } from '@/components/projects/WarehouseFormFields';
 import { LLMFormFields, LLMFormState, emptyLLMFormState, AIPhase } from '@/components/projects/LLMFormFields';
-import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, LiveModel, PROJECT_STATE_PACK_GENERATION_PENDING } from '@/lib/api';
-
-type Mode = 'builtin' | 'generate';
+import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, LiveModel } from '@/lib/api';
 
 export default function NewProjectPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>('builtin');
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
-
-  // Generate-mode fields (used only when mode === 'generate'). The user
-  // names the pack here; the wizard at /projects/{id}/generate then
-  // collects sources, warehouse, and providers before launching pack-gen.
-  const [genPackName, setGenPackName] = useState('');
-  const [genPackSlug, setGenPackSlug] = useState('');
-  const [genPackSlugTouched, setGenPackSlugTouched] = useState(false);
-  const [genPackDescription, setGenPackDescription] = useState('');
 
   // Data from API (dynamic)
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -194,37 +183,6 @@ export default function NewProjectPage() {
     }
   };
 
-  // Create the draft project for "Generate one for me" mode. The
-  // project starts in pack_generation_pending state with empty
-  // domain/category — those are populated by the agent after the
-  // generated pack is saved. Sources, warehouse, and providers are
-  // collected on the wizard at /projects/{id}/generate.
-  const handleCreateGenerateDraft = async () => {
-    if (!name || !genPackName || !genPackSlug) return;
-    setLoading(true);
-    try {
-      const project = await api.createProject({
-        name,
-        description,
-        domain: '',
-        category: '',
-        state: PROJECT_STATE_PACK_GENERATION_PENDING,
-        generate_pack: {
-          enabled: true,
-          pack_name: genPackName,
-          pack_slug: genPackSlug,
-          ...(genPackDescription ? { description: genPackDescription } : {}),
-        },
-      });
-      notifications.show({ title: 'Draft created', message: 'Continue to the pack-gen wizard', color: 'green' });
-      router.push(`/projects/${project.id}/generate`);
-    } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleCreate = async () => {
     setLoading(true);
     try {
@@ -333,54 +291,6 @@ export default function NewProjectPage() {
         )}
 
         {!dataLoading && !dataError && (
-          <SegmentedControl
-            value={mode}
-            onChange={(v) => setMode(v as Mode)}
-            data={[
-              { value: 'builtin', label: 'Use a built-in pack' },
-              { value: 'generate', label: 'Generate one for me' },
-            ]}
-            fullWidth
-          />
-        )}
-
-        {!dataLoading && !dataError && mode === 'generate' && (
-          <Card withBorder p="lg">
-            <Stack>
-              <Group gap={6}>
-                <IconWand size={18} />
-                <Title order={4}>Generate a domain pack</Title>
-              </Group>
-              <Text size="sm" c="dimmed">
-                We&apos;ll create a draft project, then walk you through uploading knowledge sources and connecting your warehouse. The agent reads everything and synthesizes the full pack — categories, profile, analysis areas, and prompts — for you.
-              </Text>
-              <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Domain Discovery" />
-              <Textarea label="Project Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" />
-              <TextInput label="Pack Name" required value={genPackName}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setGenPackName(v);
-                  if (!genPackSlugTouched) setGenPackSlug(slugify(v));
-                }}
-                placeholder="Acme Marketplace" />
-              <TextInput label="Pack Slug" required value={genPackSlug}
-                onChange={(e) => { setGenPackSlug(e.target.value); setGenPackSlugTouched(true); }}
-                description="Lowercase, hyphen-separated. Used as the pack&apos;s identifier."
-                placeholder="acme-marketplace" />
-              <Textarea label="Description (optional)" value={genPackDescription}
-                onChange={(e) => setGenPackDescription(e.target.value)}
-                placeholder="One or two sentences about the business — anything you want the LLM to weight heavily." />
-              <Group justify="flex-end">
-                <Button onClick={handleCreateGenerateDraft} loading={loading}
-                  disabled={!name || !genPackName || !slugIsValid(genPackSlug)}>
-                  Create draft and continue
-                </Button>
-              </Group>
-            </Stack>
-          </Card>
-        )}
-
-        {!dataLoading && !dataError && mode === 'builtin' && (
           <>
             <Stepper active={active} onStepClick={setActive}>
               <Stepper.Step label="Basics" description="Name and domain">
@@ -511,20 +421,4 @@ export default function NewProjectPage() {
       </Stack>
     </Shell>
   );
-}
-
-// Mirror of the API's slug regex (^[a-z][a-z0-9-]*$). Used to drive the
-// auto-derived slug field in generate-mode and the disabled state on the
-// Create button.
-const SLUG_RE = /^[a-z][a-z0-9-]*$/;
-
-function slugify(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function slugIsValid(slug: string): boolean {
-  return SLUG_RE.test(slug);
 }

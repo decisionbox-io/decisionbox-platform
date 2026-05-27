@@ -9,8 +9,8 @@
 //     rules lived in pack files, custom areas would skip them.
 //  2. Generator-produced packs and customer-edited prompts can drop the
 //     rules by accident. A runtime append cannot be edited away.
-//  3. A single Go source of truth eliminates cross-repo drift between the
-//     filesystem packs and the enterprise pack-generator meta-prompts.
+//  3. A single Go source of truth eliminates cross-repo drift across
+//     every prompt template that targets the same rules.
 //
 // Rule text is intentionally language-neutral. Examples are written in
 // English for clarity, but every rule block carries an explicit LANGUAGE

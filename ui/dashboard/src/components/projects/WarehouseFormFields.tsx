@@ -68,7 +68,7 @@ interface Props {
 // filter). It is fully controlled — the parent owns `value` and reacts
 // to `onChange` events. Used by:
 //   - projects/new/page.tsx       (Step 2 of the new-project wizard)
-//   - WarehouseConfigPanel.tsx    (settings tab + pack-gen wizard wrapper)
+//   - WarehouseConfigPanel.tsx    (settings tab + plugin-overlaid wizards)
 export function WarehouseFormFields({ providers, value, onChange, hasSavedCredential }: Props) {
   const selected = providers.find((p) => p.id === value.provider);
   const authMethods = selected?.auth_methods || [];
