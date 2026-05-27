@@ -296,10 +296,23 @@ func Run() {
 		qdrantProvider,
 	)
 	srv := &http.Server{
-		Addr:         ":" + cfg.Server.Port,
-		Handler:      ApplyGlobalMiddlewares(handler),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:    ":" + cfg.Server.Port,
+		Handler: ApplyGlobalMiddlewares(handler),
+		// ReadTimeout governs slow-client requests; 15s is generous
+		// for the largest legitimate JSON body the dashboard sends.
+		ReadTimeout: 15 * time.Second,
+		// WriteTimeout must outlive the longest legitimate handler.
+		// Synchronous LLM-driven routes (the enterprise pack-gen
+		// regenerate-section endpoint is the canonical case)
+		// routinely take 30-60s of model time; the previous 30s
+		// budget closed the connection before the handler's
+		// writeJSON could fire, leaving the UI to think the request
+		// had failed even though the Mongo side-effects had
+		// committed. 5 minutes covers every LLM provider we ship
+		// plus margin. Per-route control would be tighter but
+		// requires middleware not yet justified by a second use
+		// case.
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
