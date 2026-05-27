@@ -18,15 +18,25 @@ func TestOllamaCatalog_Resolution(t *testing.T) {
 		wantOut   int
 		wantInput int
 	}{
-		// Gemma 4 small tier (128k).
-		{"gemma4", 16384, ctx128K},
-		{"gemma4:latest", 16384, ctx128K},
-		{"gemma4:e4b", 16384, ctx128K},
+		// Gemma 4 small tier (128k) — reasoning-capable, cap raised
+		// to the uncatalogued default so thinking + answer fit.
+		{"gemma4", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"gemma4:latest", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"gemma4:e4b", ollamaDefaultMaxOutputTokens, ctx128K},
 		// Gemma 4 26B/31B tier (256k), including a quant tag users pull.
-		{"gemma4:31b", 16384, ctx256K},
-		{"gemma4:31b-it-bf16", 16384, ctx256K},
-		{"gemma4:26b-it-q4_K_M", 16384, ctx256K},
-		// Other new families.
+		// Reasoning-capable; same cap.
+		{"gemma4:31b", ollamaDefaultMaxOutputTokens, ctx256K},
+		{"gemma4:31b-it-bf16", ollamaDefaultMaxOutputTokens, ctx256K},
+		{"gemma4:26b-it-q4_K_M", ollamaDefaultMaxOutputTokens, ctx256K},
+		// Gemma 3 — reasoning-capable, raised cap.
+		{"gemma3", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"gemma3:27b", ollamaDefaultMaxOutputTokens, ctx128K},
+		// Qwen 3 + DeepSeek R1 — reasoning models, raised caps.
+		{"qwen3", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"qwen3:32b", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"deepseek-r1", ollamaDefaultMaxOutputTokens, ctx128K},
+		{"deepseek-r1:32b", ollamaDefaultMaxOutputTokens, ctx128K},
+		// Non-reasoning rows keep their existing caps.
 		{"qwen3-coder:30b", 16384, ctx256K},
 		{"qwen2:7b", 16384, ctx128K},
 		{"gpt-oss:20b", 16384, ctx128K},

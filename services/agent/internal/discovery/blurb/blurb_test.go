@@ -11,6 +11,11 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+
+	// Register the Ollama provider so gollm.IsReasoningModel can
+	// resolve the catalog flag for gemma4 / gemma3 / qwen3 /
+	// deepseek-r1 in TestNew_RejectsCatalogFlaggedReasoningModels.
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 )
 
 // --- fakeLLM: replaces a Provider for unit tests ---
@@ -173,6 +178,56 @@ func TestIsReasoningClassModel_NoFalsePositives(t *testing.T) {
 		if IsReasoningClassModel(m) {
 			t.Errorf("%q should NOT be reasoning", m)
 		}
+	}
+}
+
+// TestNew_RejectsCatalogFlaggedReasoningModels covers the second
+// rejection route: a model the substring patterns miss (e.g. an
+// Ollama gemma4 / gemma3 / qwen3 / deepseek-r1 tag) but the
+// registry's catalog flags as Reasoning:true. Without this branch
+// the operator would only see the empty-blurb / slow-blurb failure
+// at run time. The pulled tag has to match an alias for the gate to
+// fire, hence using a canonical ID here.
+func TestNew_RejectsCatalogFlaggedReasoningModels(t *testing.T) {
+	cases := []string{
+		"gemma4:31b",
+		"gemma3:27b",
+		"qwen3:32b",
+		"deepseek-r1:32b",
+	}
+	for _, model := range cases {
+		t.Run(model, func(t *testing.T) {
+			_, err := New(Config{
+				LLM:          &fakeLLM{respondWith: "blurb"},
+				Model:        model,
+				ProviderName: "ollama",
+			})
+			if err == nil {
+				t.Fatalf("New(%q) succeeded — catalog flag should have rejected", model)
+			}
+			if !errors.Is(err, ErrReasoningModelNotSupported) {
+				t.Fatalf("New(%q) err = %v, want ErrReasoningModelNotSupported", model, err)
+			}
+		})
+	}
+}
+
+// TestNew_SubstringRouteStillFires guards that the substring path
+// (OpenAI o-series / GPT-5 / extended-thinking Claude) keeps
+// rejecting on a provider whose catalog doesn't flag the model — the
+// two checks are independent OR'd routes, not a single source of
+// truth.
+func TestNew_SubstringRouteStillFires(t *testing.T) {
+	_, err := New(Config{
+		LLM:          &fakeLLM{respondWith: "blurb"},
+		Model:        "o1-preview",
+		ProviderName: "openai",
+	})
+	if err == nil {
+		t.Fatal("substring path should have rejected o1-preview")
+	}
+	if !errors.Is(err, ErrReasoningModelNotSupported) {
+		t.Fatalf("err = %v, want ErrReasoningModelNotSupported", err)
 	}
 }
 

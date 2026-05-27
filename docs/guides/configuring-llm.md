@@ -73,6 +73,50 @@ ollama pull llama3.1:8b      # Small, fast, for testing
 
 **Note:** Ollama runs on `http://localhost:11434` by default. If running in Docker, use `http://host.docker.internal:11434` or the host network.
 
+### Context window (`num_ctx`) and reasoning models
+
+DecisionBox always sends `truncate=false` on Chat requests, so an
+oversize prompt fails fast with a clear error rather than being
+silently trimmed. The per-request `num_ctx` is only forwarded when
+you set the project's optional **Context window (num_ctx)** field —
+otherwise the Ollama server's `OLLAMA_CONTEXT_LENGTH` (or model
+default) applies. This stays out of your way on tight-VRAM hosts.
+
+**If you see `context length exceeded` errors from Ollama**: the
+prompt-budgeting layer trims to the catalog's published window for
+your model, but your Ollama server is configured for a smaller
+window than the catalog. Either raise `OLLAMA_CONTEXT_LENGTH` on
+the Ollama host to match your needs, or set the project's
+**Context window (num_ctx)** field to your server's effective
+limit — that value is used both for the per-request `num_ctx`
+override and for budgeting, so the two stay aligned.
+
+Two things to know:
+
+- **Memory grows with `num_ctx`.** The Ollama server allocates a KV
+  cache sized for `num_ctx` regardless of how much of it the
+  current prompt actually uses. A 31B-class model in `bf16` quant
+  needs ~67 GB just for weights; adding a 128k context can grow
+  resident VRAM by another ~5 GB. If you want the model's full
+  architectural window, set the **Context window (num_ctx)** field
+  on the project — but verify the host can hold the larger KV
+  cache first.
+- **Reasoning models burn output budget on hidden thinking.** Gemma
+  4, Gemma 3, DeepSeek R1, and Qwen 3 emit a chain-of-thought before
+  the answer, and those tokens count against `num_predict`. The
+  catalog already raises the output cap to 131072 for these
+  families so the answer fits alongside the reasoning; no operator
+  action needed. The model's `Message.Thinking` is surfaced on
+  `ChatResponse.Reasoning` for callers that want to inspect it.
+
+To explicitly opt out of reasoning on a per-call basis, callers set
+`ChatRequest.ReasoningEffort = "off"`. Other documented values:
+`"on"`, `"low"`, `"medium"`, `"high"`, and the default (`""`) which
+leaves the model's own behavior unchanged. Effort values other than
+`"off"` are silently ignored on models the catalog flags as
+non-reasoning so the request doesn't 400 against an upstream that
+rejects `think=true` on a non-thinking model.
+
 ### Quality Considerations
 
 Local models are significantly less capable than Claude or GPT-4o for complex data analysis. They work for:
