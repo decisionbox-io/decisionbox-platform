@@ -752,11 +752,11 @@ func TestClose(t *testing.T) {
 	}
 }
 
-// SearchSchemaIndex tests cover the per-project schema-blurb collection
-// (decisionbox_schema_{projectID}) lookup added for pack-gen. Without
-// these the unit-test signal for the new method was zero (the
-// integration test against a real qdrant container exercised it but
-// codecov runs unit tests only).
+// SearchSchemaIndex tests cover the per-project schema-blurb
+// collection (decisionbox_schema_{projectID}) lookup. Without these
+// the unit-test signal for the method was zero — the integration
+// test against a real qdrant container exercised it, but codecov
+// runs unit tests only.
 
 func TestSearchSchemaIndex_HappyPath(t *testing.T) {
 	mock := newMockClient()

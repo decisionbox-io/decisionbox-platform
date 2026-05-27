@@ -21,6 +21,16 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      # SIGTERM-to-SIGKILL window. The API's graceful-shutdown
+      # sequence is: HTTP drain (10s) → background-jobs drain
+      # (15s, accommodates plugin-spawned long-running goroutines
+      # whose terminal Mongo writes must land before disconnect) →
+      # deferred Mongo disconnect. Worst-case wall-clock is 25s;
+      # the 45s default leaves 20s of slack for signal delivery,
+      # Go scheduler latency, kubelet variance, and Mongo
+      # round-trip. Override via .Values.terminationGracePeriodSeconds
+      # when no plugin extends the shutdown drain.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

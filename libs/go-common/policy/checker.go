@@ -94,6 +94,13 @@ type CounterSnapshot struct {
 // and any matching control-plane lookup. The control-plane handler
 // must accept every constant here and nothing else — any drift is
 // caught by AllFeatures below, which both sides import.
+//
+// The constants below are deliberately named after plugin features
+// (Audit, Governance, PackGen, ...) so the policy hook stays a
+// single source of truth for the cross-repo wire vocabulary. The
+// community policy hook does not implement any of these features —
+// it only knows their names so plugins can be entitled or denied
+// uniformly.
 const (
 	FeatureAudit          = "audit_enabled"
 	FeatureGovernance     = "governance_enabled"

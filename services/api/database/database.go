@@ -115,8 +115,7 @@ func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Pro
 	// _id field, but restore it on the way out — handlers reuse the
 	// passed-in struct as their JSON response, and a wiped id leaks
 	// to the dashboard as "" causing the next PUT to /api/v1/projects/
-	// → 405. Saw this bite the pack-gen wizard's blurb step on
-	// 2026-04-28.
+	// → 405 (regression bite on 2026-04-28 in a wizard blurb step).
 	p.ID = ""
 	p.UpdatedAt = time.Now()
 	update := bson.M{"$set": p}

@@ -456,6 +456,79 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// TestDiscoveriesHandler_TriggerDiscovery_RefusesNonReadyState locks in
+// the lifecycle gate: a project sitting in any plugin-managed state
+// (anything other than empty or "ready") must NOT be able to launch
+// discovery, even if its schema index has already finished. This is
+// the API-side counterpart to the dashboard's project-page early
+// return — a direct curl from a stale dashboard or a careless
+// integration must still refuse.
+func TestDiscoveriesHandler_TriggerDiscovery_RefusesNonReadyState(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
+
+	p := &models.Project{
+		Name:     "Plugin-managed",
+		Domain:   "gaming",
+		Category: "match3",
+		State:    "plugin_in_progress",
+	}
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	if len(mockRun.runCalls) != 0 {
+		t.Errorf("runner must NOT have been called for a plugin-managed project state (got %d calls)", len(mockRun.runCalls))
+	}
+	if len(runRepo.runs) != 0 {
+		t.Errorf("no run row must be created for a plugin-managed project state (got %d)", len(runRepo.runs))
+	}
+}
+
+// TestDiscoveriesHandler_TriggerDiscovery_AcceptsReadyState pins the
+// happy-path counterpart: an explicitly-ready project (not just
+// empty-state) reaches the schema-index gate and proceeds.
+func TestDiscoveriesHandler_TriggerDiscovery_AcceptsReadyState(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	discRepo := newMockDiscoveryRepo()
+	runRepo := newMockRunRepo()
+	mockRun := newMockRunner()
+	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
+
+	p := &models.Project{
+		Name:     "Ready",
+		Domain:   "gaming",
+		Category: "match3",
+		State:    models.ProjectStateReady,
+	}
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.TriggerDiscovery(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(mockRun.runCalls) != 1 {
+		t.Errorf("runner should have been called once, got %d", len(mockRun.runCalls))
+	}
+}
+
 // TestDiscoveriesHandler_TriggerDiscovery_MinSteps_* exercises the min_steps
 // plumbing added alongside PR #176's agent-side --min-steps flag. The
 // handler must:

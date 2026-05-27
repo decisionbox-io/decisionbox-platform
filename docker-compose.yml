@@ -149,7 +149,8 @@ services:
       - AGENT_JOB_TIMEOUT_HOURS=6
 
       # HTTP timeout per LLM API call made by the API (executive
-      # summary, /ask, pack-gen). Go duration string (e.g. 5m, 15m).
+      # summary, /ask, plugin-driven long-context calls). Go duration
+      # string (e.g. 5m, 15m).
       # Per-project timeout_seconds in the LLM config overrides this.
       # When unset, providers use their hard-coded default (60s for
       # Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure

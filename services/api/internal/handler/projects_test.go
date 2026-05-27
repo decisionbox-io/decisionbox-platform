@@ -193,6 +193,40 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// TestProjectsHandler_Create_ForcesReadyState pins the invariant
+// that the core /projects route can ONLY create a ready project.
+// A client (or a stale dashboard) that includes a non-ready state
+// in the request body has its value overwritten — combined with
+// the discovery-gate refusing non-ready and the Update handler
+// ignoring state, accepting any other value here would trap the
+// project in an unrecoverable shape.
+func TestProjectsHandler_Create_ForcesReadyState(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Stale","domain":"gaming","category":"match3","state":"opaque_plugin_state"}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+
+	if len(repo.projects) != 1 {
+		t.Fatalf("repo should have 1 project, got %d", len(repo.projects))
+	}
+	var saved *models.Project
+	for _, p := range repo.projects {
+		saved = p
+	}
+	if saved.State != models.ProjectStateReady {
+		t.Errorf("persisted state = %q, want %q (core route must force ready)", saved.State, models.ProjectStateReady)
+	}
+}
+
 func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.createErr = fmt.Errorf("database connection failed")
@@ -401,48 +435,12 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	}
 }
 
-// TestProjectsHandler_Update_AcceptsPackGenDoneToReady covers the
-// only state transition the PUT /projects/{id} endpoint allows on the
-// state field — the wizard's "Accept and continue" / "Skip review"
-// buttons fire this when the user is happy with the generated pack
-// and wants the discovery UI to take over the project page. Without
-// this transition the merge silently drops `state: "ready"` from the
-// request body and the project is stuck on pack_generation_done
-// forever (regression: fizbot project on 2026-04-27 sat in
-// pack_generation_done after the user clicked Accept because the
-// merge had no state branch).
-func TestProjectsHandler_Update_AcceptsPackGenDoneToReady(t *testing.T) {
-	repo := newMockProjectRepo()
-	h := NewProjectsHandler(repo, nil)
-
-	p := &models.Project{
-		Name:  "Done Project",
-		State: models.ProjectStatePackGenerationDone,
-		LLM:   models.LLMConfig{Provider: "openai", Model: "gpt-test"},
-	}
-	repo.Create(context.Background(), p)
-
-	body := `{"state":"ready"}`
-	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.SetPathValue("id", p.ID)
-	w := httptest.NewRecorder()
-	h.Update(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	updated, _ := repo.GetByID(context.Background(), p.ID)
-	if updated.State != models.ProjectStateReady {
-		t.Errorf("state = %q, want %q", updated.State, models.ProjectStateReady)
-	}
-}
-
 // TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
-// flip side: any state-write attempt that ISN'T the
-// pack_generation_done → ready transition is silently dropped (the
-// merge ignores it). Critical so a stale dashboard or curl can't
-// roll a project back into pack-gen mid-flight.
+// invariant: the PUT /projects/{id} merge silently drops any
+// incoming `state` field. Lifecycle transitions belong to dedicated
+// endpoints (typically plugin-owned), not the catch-all Update
+// handler. A stale dashboard or curl must not be able to flip a
+// project into a plugin-managed state through Update.
 func TestProjectsHandler_Update_DropsArbitraryStateWrites(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -450,10 +448,8 @@ func TestProjectsHandler_Update_DropsArbitraryStateWrites(t *testing.T) {
 		incomingBody string
 		wantState    string
 	}{
-		{"ready → pack_generation refused", models.ProjectStateReady, `{"state":"pack_generation"}`, models.ProjectStateReady},
-		{"ready → pack_generation_pending refused", models.ProjectStateReady, `{"state":"pack_generation_pending"}`, models.ProjectStateReady},
-		{"pack_generation_pending → ready refused", models.ProjectStatePackGenerationPending, `{"state":"ready"}`, models.ProjectStatePackGenerationPending},
-		{"pack_generation → ready refused", models.ProjectStatePackGeneration, `{"state":"ready"}`, models.ProjectStatePackGeneration},
+		{"ready → opaque refused", models.ProjectStateReady, `{"state":"opaque_plugin_state"}`, models.ProjectStateReady},
+		{"opaque → ready refused", "opaque_plugin_state", `{"state":"ready"}`, "opaque_plugin_state"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

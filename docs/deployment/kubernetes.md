@@ -333,6 +333,8 @@ helm upgrade decisionbox-dashboard decisionbox/decisionbox-dashboard \
 
 The API re-creates MongoDB indexes on startup (idempotent) and runs idempotent startup migrations (e.g. seeding schema-index status for pre-existing projects). Keep one API replica during upgrades so a partially-applied migration isn't interleaved with new request traffic.
 
+The API pod ships with `terminationGracePeriodSeconds: 45` so a SIGTERM can drain in-flight HTTP requests (10 s) plus plugin-spawned background goroutines (15 s — they own their cleanup writes back to Mongo) before Kubernetes sends SIGKILL. Lower the value via `terminationGracePeriodSeconds` in your values file only when no plugin extends the shutdown drain — otherwise an in-flight terminal write can race the Mongo disconnect on rollout.
+
 ## Uninstalling
 
 ```bash

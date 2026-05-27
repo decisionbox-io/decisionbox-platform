@@ -29,8 +29,7 @@ interface Props {
   onStatusChange?: (status: SchemaIndexStatus) => void;
   /**
    * Optional override for the heading. Defaults to "Schema index".
-   * Used by the pack-gen panel which wraps this component as
-   * "Step 1 of 2 — Indexing schema".
+   * Plugin overlays may wrap this component with a custom title.
    */
   title?: string;
   /**
@@ -38,11 +37,8 @@ interface Props {
    * Polling continues internally so the panel re-appears the moment
    * the status flips to anything actionable (`needs_reindex`,
    * `indexing`, `failed`, `cancelled`). Used by surfaces where the
-   * "Ready" steady state is visual noise (the project home + the
-   * pack-gen panel — the badge / helper copy already convey the
-   * "ready" signal). The wizard's last step keeps the default
-   * (false) so operators see the explicit "Ready" affordance
-   * before clicking Generate pack.
+   * "Ready" steady state is visual noise — the badge / helper copy
+   * already convey the "ready" signal.
    */
   hideWhenReady?: boolean;
 }
@@ -249,8 +245,8 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       : <Text size="sm" c="dimmed">Loading schema index status...</Text>;
   }
 
-  // hideWhenReady is the project-home / pack-gen-panel opt-in:
-  // those surfaces convey "ready" through their own badge / helper
+  // hideWhenReady is the opt-in for surfaces (project home, plugin
+  // overlays) that convey "ready" through their own badge / helper
   // copy, so the verbose "Schema index: Ready · last built X · Re-index"
   // banner is redundant visual noise in steady state. Polling
   // continues (the useEffect above still runs), so the panel

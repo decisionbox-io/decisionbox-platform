@@ -1,12 +1,11 @@
 'use client';
 
 /**
- * Default knowledge-sources panel renderer. Replaced at build time when
- * a downstream overlay ships a richer implementation. The pack-gen
- * wizard dynamically imports this path at runtime
- * (`import('@/components/projects/KnowledgeSourcesPanel')`); shipping a
- * default keeps the bundler resolution static so the production build
- * never trips a "Module not found" error.
+ * Default knowledge-sources panel renderer. Replaced at build time
+ * when a downstream overlay ships a richer implementation. Callers
+ * dynamically import this path at runtime; shipping a default keeps
+ * the bundler resolution static so the production build never trips
+ * a "Module not found" error.
  */
 
 import { Alert, Card, Stack, Text, Title } from '@mantine/core';

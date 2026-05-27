@@ -23,7 +23,7 @@ decisionbox-agent [flags]
 | `--test` | No | `false` | Test mode. Limits analysis to one area for faster iteration. |
 | `--include-log` | No | `false` | Include the full exploration log in discovery result output. |
 | `--test-connection` | No | *(empty)* | Test a provider connection and exit. One of `warehouse`, `llm`, `embedding`, or `blurb-llm`. |
-| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` (build the project's schema retrieval index and exit), `pack-gen` (generate a domain pack — requires a registered pack-generation provider), or `validate-doc` (validate one insight or recommendation for the job named by `--job-id`). Empty runs discovery. |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` (build the project's schema retrieval index and exit) or `validate-doc` (validate one insight or recommendation for the job named by `--job-id`). Empty runs discovery. |
 | `--job-id` | No | *(empty)* | ValidationJob `_id` when `--mode=validate-doc`. Ignored in other modes. |
 
 ## Examples

@@ -56,7 +56,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 // embedding-credentials) rotate only when the user enters a new value.
 // Used by:
 //   - settings/page.tsx          (variant="page")
-//   - pack-gen wizard            (variant="wizard")
+//   - plugin-overlaid wizards    (variant="wizard")
 export default function ProvidersPanel({ projectId, variant, onSaved }: ProvidersPanelProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);

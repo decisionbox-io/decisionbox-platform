@@ -241,17 +241,11 @@ export interface Project {
   // human-readable names rendered into prompt {{LANGUAGE}} substitutions
   // — e.g. "English", "Turkish", "German".
   language?: string;
-  // Project lifecycle state. Empty = legacy project, treated as "ready".
-  // Pack-generation states: "pack_generation_pending", "pack_generation",
-  // "pack_generation_done". Normal runtime: "ready".
+  // Project lifecycle state. Empty = legacy project, treated as
+  // "ready". Plugins may decode additional state strings via their
+  // own model types — the community dashboard treats unknown values
+  // as opaque.
   state?: string;
-  // Pack-generation intent. Present only while State is one of the
-  // pack_generation_* values; cleared when the project transitions to ready.
-  generate_pack?: GeneratePackConfig;
-  // Most recent pack-generation failure (e.g., 3-retry-exceeded validator
-  // error or LLM error). Set by the orchestrator when it reverts state to
-  // pack_generation_pending; cleared on the next successful Generate.
-  pack_gen_last_error?: string;
   status: string;
   last_run_at: string | null;
   last_run_status: string;
@@ -271,35 +265,10 @@ export interface Project {
   updated_at: string;
 }
 
-export interface GeneratePackConfig {
-  enabled: boolean;
-  pack_name: string;
-  pack_slug: string;
-  description?: string;
-}
-
-// Project lifecycle constants. Mirrors the Go-side models.ProjectState*
-// constants; keep both lists in sync when a state is added or renamed.
-export const PROJECT_STATE_PACK_GENERATION_PENDING = 'pack_generation_pending';
-export const PROJECT_STATE_PACK_GENERATION = 'pack_generation';
-export const PROJECT_STATE_PACK_GENERATION_DONE = 'pack_generation_done';
+// Project lifecycle constants. Mirrors the Go-side
+// models.ProjectState* constants; keep in sync when states are
+// added or renamed.
 export const PROJECT_STATE_READY = 'ready';
-
-// Pack generation results, mirrored from the Go packgen package.
-export interface PackGenerateResult {
-  run_id: string;
-  // True when the response was returned before generation finished.
-  // Dashboard polls project state for completion in this case.
-  async: boolean;
-  pack_slug: string;
-  attempts: number;
-}
-
-export interface PackRegenerateSectionResult {
-  pack_slug: string;
-  section: string;
-  attempts: number;
-}
 
 export interface BlurbLLMConfig {
   provider: string;
@@ -1092,20 +1061,6 @@ export const api = {
     request<{ deleted: string; secrets_skipped: boolean }>(
       `/api/v1/projects/${id}`,
       { method: 'DELETE' }
-    ),
-
-  // Pack generation. Both endpoints return 404 when no provider is
-  // configured for the deployment; the dashboard hides the wizard entry
-  // point in that case rather than surfacing a useless launch button.
-  packGenerate: (projectId: string) =>
-    request<PackGenerateResult>(
-      `/api/v1/projects/${projectId}/pack-generate`,
-      { method: 'POST' }
-    ),
-  packRegenerateSection: (projectId: string, body: { section: string; feedback: string }) =>
-    request<PackRegenerateSectionResult>(
-      `/api/v1/projects/${projectId}/pack-generate/regenerate`,
-      { method: 'POST', body: JSON.stringify(body) }
     ),
 
   // Prompts

@@ -27,10 +27,11 @@ import (
 
 // ollamaDefaultTimeout is the default HTTP timeout for Ollama calls.
 // At ~20 tokens/sec on a 31B-class local model, 5 minutes capped
-// generation at ~6k tokens — below the working size of a reasoning-on
-// pack-gen response. 15 minutes raises the ceiling to ~18k tokens
-// with comfortable headroom, while still bounding a runaway. Operators
-// override per-call via LLM_TIMEOUT or per-project timeout_seconds.
+// generation at ~6k tokens — below the working size of a
+// reasoning-on long-form response. 15 minutes raises the ceiling
+// to ~18k tokens with comfortable headroom, while still bounding a
+// runaway. Operators override per-call via LLM_TIMEOUT or
+// per-project timeout_seconds.
 const ollamaDefaultTimeout = 15 * time.Minute
 
 // ollamaDefaultMaxOutputTokens is the output-token cap applied to any
