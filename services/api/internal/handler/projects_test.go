@@ -193,6 +193,40 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// TestProjectsHandler_Create_ForcesReadyState pins the invariant
+// that the core /projects route can ONLY create a ready project.
+// A client (or a stale dashboard) that includes a non-ready state
+// in the request body has its value overwritten — combined with
+// the discovery-gate refusing non-ready and the Update handler
+// ignoring state, accepting any other value here would trap the
+// project in an unrecoverable shape.
+func TestProjectsHandler_Create_ForcesReadyState(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Stale","domain":"gaming","category":"match3","state":"opaque_plugin_state"}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+
+	if len(repo.projects) != 1 {
+		t.Fatalf("repo should have 1 project, got %d", len(repo.projects))
+	}
+	var saved *models.Project
+	for _, p := range repo.projects {
+		saved = p
+	}
+	if saved.State != models.ProjectStateReady {
+		t.Errorf("persisted state = %q, want %q (core route must force ready)", saved.State, models.ProjectStateReady)
+	}
+}
+
 func TestProjectsHandler_Create_RepoError_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	repo.createErr = fmt.Errorf("database connection failed")

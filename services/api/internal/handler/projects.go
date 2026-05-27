@@ -160,12 +160,17 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "category is required")
 		return
 	}
-	// Default state so the field is always meaningful for downstream
-	// code (legacy projects with empty State are still treated as
-	// ready by EffectiveState).
-	if p.State == "" {
-		p.State = models.ProjectStateReady
-	}
+	// Force ready state on every core-route create. Plugins that
+	// need to start a project in a lifecycle state they own mount
+	// their own creation endpoint via apiserver.RegisterRouteGroup;
+	// the core route refuses to persist any other value because:
+	//   - PUT /projects/{id} silently drops state changes (so the
+	//     project can't be repaired through the public API).
+	//   - POST /discover refuses any non-ready state.
+	// Together those would trap a project in an unrecoverable shape
+	// if a stale client or unrelated POST included a plugin-owned
+	// state string.
+	p.State = models.ProjectStateReady
 
 	if msg := validateLLMConfig(p.LLM.Provider, p.LLM.Config); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
