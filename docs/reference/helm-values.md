@@ -69,6 +69,12 @@ Source code for the charts is in `helm-charts/`.
 | `resources.limits.cpu` | string | `1000m` | CPU limit |
 | `resources.limits.memory` | string | `2Gi` | Memory limit |
 
+### Lifecycle
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `terminationGracePeriodSeconds` | int | `45` | SIGTERM-to-SIGKILL window. The API's graceful-shutdown sequence is: HTTP drain (10 s) → background-jobs drain (15 s, accommodates plugin-spawned long-running goroutines whose terminal Mongo writes must land before disconnect) → deferred Mongo disconnect. Worst case is 25 s; 45 s leaves 20 s of slack for signal delivery, scheduler latency, kubelet variance, and Mongo round-trip. Lower this only when no plugin extends the shutdown drain. |
+
 ### Service
 
 | Key | Type | Default | Description |
