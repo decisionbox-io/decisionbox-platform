@@ -10,7 +10,6 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
-	"github.com/decisionbox-io/decisionbox/services/api/models"
 
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
@@ -95,70 +94,8 @@ func TestDecodeJSON_Invalid(t *testing.T) {
 	}
 }
 
-// --- Validate Domain Pack ---
-
-func TestValidateDomainPack_Valid(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	if err := models.ValidateDomainPack(pack); err != nil {
-		t.Errorf("valid pack should pass: %v", err)
-	}
-}
-
-func TestValidateDomainPack_MissingSlug(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Slug = ""
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require slug")
-	}
-}
-
-func TestValidateDomainPack_MissingCategories(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Categories = nil
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require at least one category")
-	}
-}
-
-func TestValidateDomainPack_MissingBaseContext(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Prompts.Base.BaseContext = ""
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require base_context")
-	}
-}
-
-func TestValidateDomainPack_MissingProfileTemplate(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Prompts.Base.BaseContext = "no profile variable"
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require {{PROFILE}} in base_context")
-	}
-}
-
-func TestValidateDomainPack_MissingAnalysisAreas(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.AnalysisAreas.Base = nil
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require at least one base analysis area")
-	}
-}
-
-func TestValidateDomainPack_AreaMissingPrompt(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.AnalysisAreas.Base[0].Prompt = ""
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require prompt in analysis area")
-	}
-}
-
-func TestValidateDomainPack_AreaMissingKeywords(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.AnalysisAreas.Base[0].Keywords = nil
-	if err := models.ValidateDomainPack(pack); err == nil {
-		t.Error("should require keywords in analysis area")
-	}
-}
+// Validator tests live in services/api/models/domainpack_validator_test.go
+// alongside the function under test.
 
 // --- Provider Endpoints ---
 
