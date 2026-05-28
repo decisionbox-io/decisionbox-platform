@@ -61,7 +61,7 @@ func (h *DomainPacksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := ValidateDomainPack(&pack); err != nil {
+	if err := models.ValidateDomainPack(&pack); err != nil {
 		writeError(w, http.StatusBadRequest, "validation error: "+err.Error())
 		return
 	}
@@ -104,7 +104,7 @@ func (h *DomainPacksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Preserve slug from URL
 	pack.Slug = slug
 
-	if err := ValidateDomainPack(&pack); err != nil {
+	if err := models.ValidateDomainPack(&pack); err != nil {
 		writeError(w, http.StatusBadRequest, "validation error: "+err.Error())
 		return
 	}
@@ -157,7 +157,7 @@ func (h *DomainPacksHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pack := &portable.Pack
-	if err := ValidateDomainPack(pack); err != nil {
+	if err := models.ValidateDomainPack(pack); err != nil {
 		writeError(w, http.StatusBadRequest, "validation error: "+err.Error())
 		return
 	}
