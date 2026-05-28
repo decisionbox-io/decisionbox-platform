@@ -572,7 +572,7 @@ func TestValidateDomainPack_CategoryAreaValidation(t *testing.T) {
 	pack.AnalysisAreas.Categories["match3"] = []models.PackAnalysisArea{
 		{ID: "", Name: "Bad", Keywords: []string{"x"}, Prompt: "x"},
 	}
-	err := ValidateDomainPack(pack)
+	err := models.ValidateDomainPack(pack)
 	if err == nil {
 		t.Error("should reject category area with empty ID")
 	}
@@ -581,7 +581,7 @@ func TestValidateDomainPack_CategoryAreaValidation(t *testing.T) {
 func TestValidateDomainPack_ExplorationMissingSchemaInfo(t *testing.T) {
 	pack := testDomainPack("gaming", "match3")
 	pack.Prompts.Base.Exploration = "Explore {{DATASET}} with {{ANALYSIS_AREAS}}"
-	err := ValidateDomainPack(pack)
+	err := models.ValidateDomainPack(pack)
 	if err == nil {
 		t.Error("should require {{SCHEMA_INFO}} in exploration")
 	}
@@ -590,7 +590,7 @@ func TestValidateDomainPack_ExplorationMissingSchemaInfo(t *testing.T) {
 func TestValidateDomainPack_RecommendationsMissingInsightsData(t *testing.T) {
 	pack := testDomainPack("gaming", "match3")
 	pack.Prompts.Base.Recommendations = "Generate recommendations"
-	err := ValidateDomainPack(pack)
+	err := models.ValidateDomainPack(pack)
 	if err == nil {
 		t.Error("should require {{INSIGHTS_DATA}} in recommendations")
 	}
@@ -599,7 +599,7 @@ func TestValidateDomainPack_RecommendationsMissingInsightsData(t *testing.T) {
 func TestValidateDomainPack_CategoryMissingName(t *testing.T) {
 	pack := testDomainPack("gaming", "match3")
 	pack.Categories[0].Name = ""
-	err := ValidateDomainPack(pack)
+	err := models.ValidateDomainPack(pack)
 	if err == nil {
 		t.Error("should require category name")
 	}
