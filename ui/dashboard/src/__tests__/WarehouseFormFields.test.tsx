@@ -18,7 +18,7 @@ import type { ConfigField, ProviderMeta } from '@/lib/api';
  * WarehouseFormFields is the single source of truth for warehouse-form
  * rendering. Consumed by:
  *   - projects/new/page.tsx       (new-project wizard)
- *   - WarehouseConfigPanel.tsx    (settings tab + pack-gen wizard)
+ *   - WarehouseConfigPanel.tsx    (settings tab + plugin-overlaid wizards)
  *
  * These tests cover the full provider/auth/credential/filter contract
  * and lock in the metadata-driven behavior so the BigQuery-flavored

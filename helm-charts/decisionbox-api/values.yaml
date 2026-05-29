@@ -106,6 +106,16 @@ containerSecurityContext:
 
 automountServiceAccountToken: true
 
+# SIGTERM-to-SIGKILL window for the API pod. The API's
+# graceful-shutdown sequence is: HTTP drain (10s) →
+# background-jobs drain (15s, accommodates plugin-spawned
+# long-running goroutines whose terminal Mongo writes must land
+# before disconnect) → deferred Mongo disconnect. Worst case is
+# 25s; 45s leaves 20s of slack for signal delivery, Go scheduler
+# latency, kubelet variance, and Mongo round-trip. Lower this
+# only when no plugin extends the shutdown drain.
+terminationGracePeriodSeconds: 45
+
 resources:
   requests:
     cpu: "100m"

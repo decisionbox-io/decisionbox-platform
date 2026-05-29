@@ -17,12 +17,10 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/packgen"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
-	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/backfill"
@@ -198,20 +196,6 @@ func Run() {
 		apilog.WithError(err).Warn("Knowledge sources provider configuration failed; /ask and discovery prompts will not include source context")
 	}
 
-	// Activate the pack-generation provider if a plugin registered a
-	// factory. No-op otherwise — POST /api/v1/projects/{id}/pack-generate
-	// then returns 404. Sources is configured first because the pack-gen
-	// Provider relies on the same retriever for its prompt context.
-	if err := packgen.Configure(ctx, packgen.Dependencies{
-		Mongo:            mongoClient.Database(),
-		Vectorstore:      qdrantProvider,
-		SecretProvider:   secretProvider,
-		Sources:          gosources.GetProvider(),
-		EmbeddingFactory: goembedding.NewProvider,
-	}); err != nil {
-		apilog.WithError(err).Warn("Pack-generation provider configuration failed; pack-generate endpoints will return 404")
-	}
-
 	// Schema-index worker + /reindex dropper: both need Qdrant. Without
 	// it the worker is disabled (discovery will 409 until QDRANT_URL is
 	// set), and /reindex returns a nil dropper so the handler falls back
@@ -312,10 +296,23 @@ func Run() {
 		qdrantProvider,
 	)
 	srv := &http.Server{
-		Addr:         ":" + cfg.Server.Port,
-		Handler:      ApplyGlobalMiddlewares(handler),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:    ":" + cfg.Server.Port,
+		Handler: ApplyGlobalMiddlewares(handler),
+		// ReadTimeout governs slow-client requests; 15s is generous
+		// for the largest legitimate JSON body the dashboard sends.
+		ReadTimeout: 15 * time.Second,
+		// WriteTimeout must outlive the longest legitimate handler.
+		// Synchronous LLM-driven routes (the enterprise pack-gen
+		// regenerate-section endpoint is the canonical case)
+		// routinely take 30-60s of model time; the previous 30s
+		// budget closed the connection before the handler's
+		// writeJSON could fire, leaving the UI to think the request
+		// had failed even though the Mongo side-effects had
+		// committed. 5 minutes covers every LLM provider we ship
+		// plus margin. Per-route control would be tighter but
+		// requires middleware not yet justified by a second use
+		// case.
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -353,12 +350,26 @@ func Run() {
 		validationWorkerCancel()
 	}
 
+	// Shutdown order is strict:
+	//   1. srv.Shutdown — refuses new HTTP requests AND waits for
+	//      in-flight handlers. Plugins that 202 + spawn a background
+	//      job finish their request handler quickly; what we drain
+	//      next is the goroutines they spawned.
+	//   2. shutdownBackgroundJobs — atomic-set the shutting-down
+	//      flag (rejects new SpawnBackgroundJob calls), cancel the
+	//      shared background context, bounded-wait for in-flight
+	//      goroutines to land their cleanup writes.
+	//   3. (deferred) Mongo disconnect — only runs after this
+	//      function returns, so terminal writes from step 2 still
+	//      reach Mongo.
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		apilog.WithError(err).Error("Shutdown error")
 	}
+
+	shutdownBackgroundJobs(15 * time.Second)
 	apilog.Info("Server stopped")
 }
 

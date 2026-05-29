@@ -47,8 +47,10 @@ func setupOllama(t *testing.T) (gollm.Provider, func()) {
 		t.Fatalf("Failed to get endpoint: %v", err)
 	}
 
-	// Create provider
-	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0)
+	// Pass num_ctx=0 so the provider relies on the test container's
+	// default OLLAMA_CONTEXT_LENGTH and does not force a large KV-cache
+	// allocation — the container ships with stock defaults.
+	provider, err := ollamaprovider.NewOllamaProvider(endpoint, testOllamaModel, 0, 0)
 	if err != nil {
 		container.Terminate(ctx)
 		t.Fatalf("Failed to create Ollama provider: %v", err)
@@ -213,5 +215,44 @@ Respond with ONLY valid JSON:
 	// Verify it attempted to return JSON
 	if !strings.Contains(result.Content, "{") {
 		t.Error("response should contain JSON")
+	}
+}
+
+// TestOllama_ReasoningEffortValuesAcceptedOnNonReasoningModel runs
+// every documented ReasoningEffort value end-to-end against a real
+// container that hosts a non-reasoning model (qwen2.5:0.5b). The
+// provider must omit Think for "on" / "low" / "medium" / "high"
+// against models flagged Reasoning:false, otherwise Ollama returns
+// HTTP 400 "<model> does not support thinking". "off" still serialises
+// because think=false is harmless on any model.
+func TestOllama_ReasoningEffortValuesAcceptedOnNonReasoningModel(t *testing.T) {
+	provider, cleanup := setupOllama(t)
+	defer cleanup()
+
+	for _, effort := range []string{
+		gollm.ReasoningEffortDefault,
+		gollm.ReasoningEffortOff,
+		gollm.ReasoningEffortOn,
+		gollm.ReasoningEffortLow,
+		gollm.ReasoningEffortMedium,
+		gollm.ReasoningEffortHigh,
+	} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			resp, err := provider.Chat(ctx, gollm.ChatRequest{
+				Model:           testOllamaModel,
+				ReasoningEffort: effort,
+				Messages:        []gollm.Message{{Role: "user", Content: "Reply with exactly: HELLO"}},
+				MaxTokens:       50,
+			})
+			if err != nil {
+				t.Fatalf("Chat with effort=%q failed: %v", effort, err)
+			}
+			if resp == nil {
+				t.Fatal("response is nil")
+			}
+		})
 	}
 }

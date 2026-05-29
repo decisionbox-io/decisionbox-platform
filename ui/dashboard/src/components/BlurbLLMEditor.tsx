@@ -48,7 +48,7 @@ interface Props {
    * so the user doesn't have to re-enter the API key on Settings.
    * Falls back to the in-flight credentials endpoint when the user
    * has just typed a new key, switched provider, or there's no
-   * projectId (new-project / packgen flows).
+   * projectId (new-project / plugin-overlaid wizard flows).
    */
   projectId?: string;
   /** Provider the project currently has saved for the blurb slot. The

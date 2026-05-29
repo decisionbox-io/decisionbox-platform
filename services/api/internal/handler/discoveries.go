@@ -152,12 +152,26 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Gate on schema-index lifecycle (plan §4 + §8.4): discovery
-	// requires a ready index. Empty status means the project was
-	// created before schema indexing shipped and never migrated —
-	// treat it the same as pending_indexing so the migration path
-	// kicks in on first run. The dashboard polls
-	// /schema-index/status to tell the user what to do next.
+	// Gate on lifecycle state. Discovery is only valid for projects
+	// in the ready (or legacy-empty) state. Plugins may transition
+	// projects into their own opaque states (e.g. while a
+	// long-running setup flow is in progress) and own the
+	// transition back to ready — discovery must refuse to run while
+	// those states are active even though the schema index might
+	// already be ready. A direct API call from a stale dashboard
+	// or curl that bypassed the UI gate must not be able to start
+	// the agent.
+	if effectiveState := p.EffectiveState(); effectiveState != models.ProjectStateReady {
+		writeError(w, http.StatusConflict, "project is in state \""+effectiveState+"\" — discovery cannot run until the managing plugin transitions it to \""+models.ProjectStateReady+"\"")
+		return
+	}
+
+	// Gate on schema-index lifecycle: discovery requires a ready
+	// index. Empty status means the project was created before
+	// schema indexing shipped and never migrated — treat it the
+	// same as pending_indexing so the migration path kicks in on
+	// first run. The dashboard polls /schema-index/status to tell
+	// the user what to do next.
 	switch p.SchemaIndexStatus {
 	case models.SchemaIndexStatusReady:
 		// ok — proceed

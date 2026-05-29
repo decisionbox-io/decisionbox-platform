@@ -591,7 +591,11 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// provider has no exact counter (Bedrock, Ollama, …), the
 	// approximate walk's 15% margin is the safety net.
 	counter := gollm.ApproximateCounter{}
-	modelMaxInput := gollm.GetMaxInputTokens(project.LLM.Provider, project.LLM.Model)
+	// EffectiveInputWindow respects per-deployment overrides (Ollama's
+	// num_ctx) so the budgeter trims to the operator-chosen window
+	// instead of letting the request hit the server's Truncate=false
+	// guard with an oversize prompt.
+	modelMaxInput := gollm.GetEffectiveInputWindow(project.LLM.Provider, project.LLM.Model, project.LLM.Config)
 	budget := gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
 
 	questionTokens, _ := counter.Count(ctx, req.Question)

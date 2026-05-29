@@ -35,19 +35,9 @@ type Project struct {
 	Language string `bson:"language,omitempty" json:"language,omitempty"`
 
 	// State tracks the project's lifecycle stage. Empty State is treated
-	// as ProjectStateReady — see EffectiveState.
+	// as ProjectStateReady — see EffectiveState. Plugins may decode
+	// additional state strings via their own model types.
 	State string `bson:"state,omitempty" json:"state,omitempty"`
-
-	// GeneratePack carries the user's intent to auto-generate a domain
-	// pack for this project. Only meaningful while State is one of the
-	// pack_generation_* values; cleared on transition to ready.
-	GeneratePack *GeneratePackConfig `bson:"generate_pack,omitempty" json:"generate_pack,omitempty"`
-
-	// PackGenLastError records the most recent generation failure
-	// (3-retry-exceeded or LLM error). Set by the orchestrator after
-	// reverting state to pack_generation_pending; cleared on the next
-	// successful Generate.
-	PackGenLastError string `bson:"pack_gen_last_error,omitempty" json:"pack_gen_last_error,omitempty"`
 
 	Status        string     `bson:"status" json:"status"`
 	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
@@ -130,16 +120,11 @@ type ScheduleConfig struct {
 	MaxSteps int    `bson:"max_steps" json:"max_steps"`
 }
 
-// Project lifecycle states. The agent currently consumes
-// ProjectStatePackGeneration (it's the only state in which the agent
-// runs in --mode=pack-gen). The other constants are mirrored here from
-// the API model so both processes can refer to them by name without
-// importing across module boundaries.
+// Project lifecycle state — the only value the agent knows about.
+// Mirrored from the API model so both processes can refer to it by
+// name without importing across module boundaries.
 const (
-	ProjectStatePackGenerationPending = "pack_generation_pending"
-	ProjectStatePackGeneration        = "pack_generation"
-	ProjectStatePackGenerationDone    = "pack_generation_done"
-	ProjectStateReady                 = "ready"
+	ProjectStateReady = "ready"
 )
 
 // EffectiveState returns the state the runtime should treat the project
@@ -173,10 +158,3 @@ func (p *Project) EffectiveValidationEnabled() bool {
 	return *p.ValidationEnabled
 }
 
-// GeneratePackConfig holds the user's pack-generation intent for a project.
-type GeneratePackConfig struct {
-	Enabled     bool   `bson:"enabled" json:"enabled"`
-	PackName    string `bson:"pack_name" json:"pack_name"`
-	PackSlug    string `bson:"pack_slug" json:"pack_slug"`
-	Description string `bson:"description,omitempty" json:"description,omitempty"`
-}

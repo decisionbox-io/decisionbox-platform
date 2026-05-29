@@ -385,12 +385,20 @@ func payloadFromBlurb(b TableBlurb, projectID string) map[string]interface{} {
 func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 	table := strVal(payload, "table")
 	dataset := strVal(payload, "dataset")
-	// Rehydrate the qualified form the rest of the agent expects.
-	// Defensive against legacy payloads written before the payload
-	// split (those already stored a qualified Table): only prefix if
-	// the stored table doesn't already start with the dataset.
+	// Rehydrate the qualified key the rest of the agent expects (it must
+	// match the schemas-map key exactly). The "table" field holds either the
+	// bare table name (payloadFromBlurb strips a leading "dataset." for the
+	// common single-project case) or an already-qualified ref: cross-project
+	// BigQuery keys are "dataproject.dataset.table" — the dataset sits in the
+	// middle, so the strip is a no-op and the full three-part name is stored;
+	// legacy payloads also stored the qualified form. A bare BigQuery/SQL
+	// table identifier never contains a dot, so treat any dotted value as
+	// already-qualified and prepend the dataset only to a dot-less bare name.
+	// (Prefixing a three-part name here would corrupt the key, e.g.
+	// "census.bigquery-public-data.census.Variable", and the search hit would
+	// be dropped as not-in-schemas.)
 	qualified := table
-	if dataset != "" && !strings.HasPrefix(table, dataset+".") {
+	if dataset != "" && !strings.Contains(table, ".") {
 		qualified = dataset + "." + table
 	}
 	return TableBlurb{

@@ -134,3 +134,66 @@ func TestSchemaDiscovery_SampleQuery_FallsBackWhenProviderDoesNotImplement(t *te
 		t.Errorf("fallback query should use LIMIT 5; got %q", got)
 	}
 }
+
+// refQualifierMock wraps MockWarehouseProvider and adds a RefQualifier
+// implementation that prepends a data project — the BigQuery cross-project
+// shape. Used to verify schema discovery keys the schema map (and the
+// schema-cache key, since Save uses the same map key) on the provider's
+// fully-qualified three-part name instead of the plain dataset.table form.
+type refQualifierMock struct {
+	*testutil.MockWarehouseProvider
+}
+
+func (r *refQualifierMock) QualifiedName(dataset, table string) string {
+	return "data-proj." + dataset + "." + table
+}
+
+var _ gowarehouse.RefQualifier = (*refQualifierMock)(nil)
+
+func TestSchemaDiscovery_QualifiedName_UsesRefQualifierWhenProviderImplements(t *testing.T) {
+	// A provider implementing RefQualifier (BigQuery cross-project reads)
+	// must have its three-part name used as BOTH the schema-map key and the
+	// TableName, so the catalog the LLM sees and the cache key resolve
+	// against the data project. A two-part dataset.table would 404 on
+	// BigQuery cross-project reads.
+	base := testutil.NewMockWarehouseProvider("dbo")
+	base.Tables = []string{"orders"}
+	wh := &refQualifierMock{MockWarehouseProvider: base}
+
+	sd := newSchemaDiscoveryForTest(t, wh)
+	schemas, err := sd.DiscoverSchemas(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverSchemas: %v", err)
+	}
+
+	const want = "data-proj.dbo.orders"
+	sch, ok := schemas[want]
+	if !ok {
+		keys := make([]string, 0, len(schemas))
+		for k := range schemas {
+			keys = append(keys, k)
+		}
+		t.Fatalf("schema map not keyed on qualified name %q; got keys %v", want, keys)
+	}
+	if sch.TableName != want {
+		t.Errorf("TableName = %q, want %q", sch.TableName, want)
+	}
+}
+
+func TestSchemaDiscovery_QualifiedName_FallsBackToTwoPartWhenNotImplemented(t *testing.T) {
+	// Providers that don't implement RefQualifier (every single-project
+	// warehouse) keep the plain dataset.table key — byte-for-byte
+	// pre-feature behaviour.
+	wh := testutil.NewMockWarehouseProvider("dbo")
+	wh.Tables = []string{"orders"}
+
+	sd := newSchemaDiscoveryForTest(t, wh)
+	schemas, err := sd.DiscoverSchemas(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverSchemas: %v", err)
+	}
+
+	if _, ok := schemas["dbo.orders"]; !ok {
+		t.Errorf("expected plain two-part key %q in %v", "dbo.orders", schemas)
+	}
+}

@@ -44,7 +44,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 // single source of truth for field layout, defaults, and auth-method
 // rendering. Used by:
 //   - settings/page.tsx          (variant="page")
-//   - pack-gen wizard            (variant="wizard")
+//   - plugin-overlaid wizards    (variant="wizard")
 export default function WarehouseConfigPanel({ projectId, variant, onSaved }: WarehouseConfigPanelProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [providers, setProviders] = useState<ProviderMeta[]>([]);

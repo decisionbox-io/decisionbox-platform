@@ -31,7 +31,7 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MAX_RETRIES` | `3` | Number of retries on LLM API errors (rate limits, timeouts). Set to `0` for no retries. |
-| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by the agent at startup and threaded through to every provider as `cfg["timeout_seconds"]`. Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall back to the `300s` default. The API process reads the same env var but with no default — when unset, each provider keeps its own hard-coded fallback (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry); see the API Configuration section below. |
+| `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by the agent at startup and threaded through to every provider as `cfg["timeout_seconds"]`. Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall back to the `300s` default. The API process reads the same env var but with no default — when unset, each provider keeps its own hard-coded fallback (60s for Claude direct API, 5m for OpenAI/Bedrock/Vertex/Azure Foundry, 15m for Ollama (reasoning-on local generations want a longer window)); see the API Configuration section below. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 
 ### Discovery Run Budget
@@ -95,7 +95,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--mode` | No | *(empty)* | Alternate run mode: `index-schema`, `pack-gen`, or `validate-doc`. Empty runs discovery (the default). |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` or `validate-doc`. Empty runs discovery (the default). |
 | `--project-id` | Yes | — | Project ID to run discovery for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
@@ -150,7 +150,7 @@ The API talks to LLMs for `/ask`. Per-project LLM credentials and `timeout_secon
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_TIMEOUT` | *(provider-specific)* | HTTP timeout per LLM API call, applied to every registered provider. Go duration format: `30s`, `2m`, `15m`. Per-project `timeout_seconds` overrides this when set. When unset, providers use their hard-coded default (60s for Claude direct API, 5m for OpenAI/Ollama/Bedrock/Vertex/Azure Foundry). Raise this when long-form generations (e.g. executive summaries on Opus-class models) exceed 5 minutes. Same env var the agent reads — set it once on both containers. |
+| `LLM_TIMEOUT` | *(provider-specific)* | HTTP timeout per LLM API call, applied to every registered provider. Go duration format: `30s`, `2m`, `15m`. Per-project `timeout_seconds` overrides this when set. When unset, providers use their hard-coded default (60s for Claude direct API, 5m for OpenAI/Bedrock/Vertex/Azure Foundry, 15m for Ollama (reasoning-on local generations want a longer window)). Raise this when long-form generations (e.g. executive summaries on Opus-class models) exceed 5 minutes. Same env var the agent reads — set it once on both containers. |
 
 **No env vars are needed for `/ask` context budgeting.** The handler reads each model's published context window from its catalog entry (`MaxInputTokens`) and sizes the prompt against it automatically. Models with no declared window fall back to a conservative 32K. See [Ask: Token-Aware Context Budgeting](../concepts/ask.md) for the full algorithm and the typed error codes the dashboard branches on.
 

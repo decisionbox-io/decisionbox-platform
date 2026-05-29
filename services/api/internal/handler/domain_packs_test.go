@@ -565,45 +565,8 @@ func TestProjectsHandler_Create_DomainPackNotFound(t *testing.T) {
 	}
 }
 
-// --- Seed validation edge cases ---
-
-func TestValidateDomainPack_CategoryAreaValidation(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.AnalysisAreas.Categories["match3"] = []models.PackAnalysisArea{
-		{ID: "", Name: "Bad", Keywords: []string{"x"}, Prompt: "x"},
-	}
-	err := ValidateDomainPack(pack)
-	if err == nil {
-		t.Error("should reject category area with empty ID")
-	}
-}
-
-func TestValidateDomainPack_ExplorationMissingSchemaInfo(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Prompts.Base.Exploration = "Explore {{DATASET}} with {{ANALYSIS_AREAS}}"
-	err := ValidateDomainPack(pack)
-	if err == nil {
-		t.Error("should require {{SCHEMA_INFO}} in exploration")
-	}
-}
-
-func TestValidateDomainPack_RecommendationsMissingInsightsData(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Prompts.Base.Recommendations = "Generate recommendations"
-	err := ValidateDomainPack(pack)
-	if err == nil {
-		t.Error("should require {{INSIGHTS_DATA}} in recommendations")
-	}
-}
-
-func TestValidateDomainPack_CategoryMissingName(t *testing.T) {
-	pack := testDomainPack("gaming", "match3")
-	pack.Categories[0].Name = ""
-	err := ValidateDomainPack(pack)
-	if err == nil {
-		t.Error("should require category name")
-	}
-}
+// Validator tests live in services/api/models/domainpack_validator_test.go
+// alongside the function under test.
 
 func TestMergeProfileSchema_NilBase(t *testing.T) {
 	pack := &models.DomainPack{

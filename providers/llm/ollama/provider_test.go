@@ -23,8 +23,8 @@ func TestOllamaProvider_Registered(t *testing.T) {
 	if len(meta.Models) == 0 {
 		t.Fatal("catalog is empty")
 	}
-	if meta.DefaultMaxOutputTokens != 16384 {
-		t.Errorf("DefaultMaxOutputTokens = %d, want 16384", meta.DefaultMaxOutputTokens)
+	if meta.DefaultMaxOutputTokens != ollamaDefaultMaxOutputTokens {
+		t.Errorf("DefaultMaxOutputTokens = %d, want %d", meta.DefaultMaxOutputTokens, ollamaDefaultMaxOutputTokens)
 	}
 
 	// Per-model caps for the biggest Qwen / Gemma / DeepSeek / Meta models.
@@ -39,25 +39,26 @@ func TestOllamaProvider_Registered(t *testing.T) {
 		{"qwen3.5", 65536},
 		{"qwen3.5:122b", 65536},
 
-		// Qwen 3 — recommended 32K output.
-		{"qwen3", 32768},
-		{"qwen3:32b", 32768},
-		{"qwen3:235b", 32768},
+		// Qwen 3 — reasoning-capable; cap raised to fit thinking +
+		// answer in a single budget.
+		{"qwen3", ollamaDefaultMaxOutputTokens},
+		{"qwen3:32b", ollamaDefaultMaxOutputTokens},
+		{"qwen3:235b", ollamaDefaultMaxOutputTokens},
 
-		// DeepSeek R1 reasoning — 32K default.
-		{"deepseek-r1", 32768},
-		{"deepseek-r1:70b", 32768},
-		{"deepseek-r1:671b", 32768},
+		// DeepSeek R1 reasoning — cap raised for the same reason.
+		{"deepseek-r1", ollamaDefaultMaxOutputTokens},
+		{"deepseek-r1:70b", ollamaDefaultMaxOutputTokens},
+		{"deepseek-r1:671b", ollamaDefaultMaxOutputTokens},
 
-		// Qwen 2.5 — 16K.
+		// Qwen 2.5 — non-reasoning, 16K.
 		{"qwen2.5:72b", 16384},
 		{"qwen2.5-coder:32b", 16384},
 
-		// DeepSeek V3 — 16K.
+		// DeepSeek V3 — non-reasoning, 16K.
 		{"deepseek-v3", 16384},
 
-		// Gemma 3 — 16K on the big 27B.
-		{"gemma3:27b", 16384},
+		// Gemma 3 — reasoning-capable; cap raised.
+		{"gemma3:27b", ollamaDefaultMaxOutputTokens},
 
 		// Llama 4 / Llama 3.x — 8K practical generation cap.
 		{"llama4:maverick", 8192},
@@ -71,9 +72,9 @@ func TestOllamaProvider_Registered(t *testing.T) {
 		{"gemma2:9b", 8192},
 		{"gemma2:27b", 8192},
 
-		// Fallback to _default for unrecognized model tags.
-		{"some-unknown-model:42b", 16384},
-		{"qwen2.5:0.5b", 16384}, // small Qwen not in the focused list — falls to default
+		// Fallback to the provider default for unrecognized model tags.
+		{"some-unknown-model:42b", ollamaDefaultMaxOutputTokens},
+		{"qwen2.5:0.5b", ollamaDefaultMaxOutputTokens}, // small Qwen not in the focused list — falls to default
 	}
 	for _, tc := range cases {
 		if got := gollm.GetMaxOutputTokens("ollama", tc.model); got != tc.want {
@@ -199,7 +200,7 @@ func TestOllamaProvider_DefaultHost(t *testing.T) {
 }
 
 func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
-	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b", 0)
+	p, err := NewOllamaProvider("http://localhost:1", "qwen2.5:0.5b", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +210,7 @@ func TestOllamaProvider_Validate_ServerDown(t *testing.T) {
 }
 
 func TestNewOllamaProvider_InvalidURL(t *testing.T) {
-	_, err := NewOllamaProvider("://invalid", "model", 0)
+	_, err := NewOllamaProvider("://invalid", "model", 0, 0)
 	if err == nil {
 		t.Error("should error on invalid URL")
 	}
