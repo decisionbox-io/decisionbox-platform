@@ -151,6 +151,10 @@ func TestBigQueryProvider_QuoteRef_CrossProject(t *testing.T) {
 	}{
 		{name: "dataset.table gets data project prepended", parts: []string{"census_ds", "Variable"}, want: "`bigquery-public-data`.`census_ds`.`Variable`"},
 		{name: "already project-qualified is not double-prefixed", parts: []string{"bigquery-public-data", "census_ds", "Variable"}, want: "`bigquery-public-data`.`census_ds`.`Variable`"},
+		// A lone table part stays bare — prepending only the project would
+		// make a bogus two-part `project`.`table` ref. Bare names resolve via
+		// the query's default dataset (set by applyDefaultProject).
+		{name: "single bare table stays bare", parts: []string{"Variable"}, want: "`Variable`"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

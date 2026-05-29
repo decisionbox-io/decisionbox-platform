@@ -354,13 +354,19 @@ func (p *BigQueryProvider) SQLDialect() string {
 
 // QuoteRef returns a backtick-quoted, dot-joined identifier in BigQuery
 // Standard SQL form, e.g. `dataset`.`table`. For cross-project reads the
-// data project is prepended, so the reference is three-part
-// (`dataProjectID`.`dataset`.`table`) — see crossProject for why a
-// two-part ref would 404. The prepend is skipped when the caller already
-// passes the data project as the leading part, so an explicitly
-// project-qualified ref is not double-prefixed.
+// data project is prepended to a dataset+table pair, so the reference is
+// three-part (`dataProjectID`.`dataset`.`table`) — see crossProject for why
+// a two-part `dataset`.`table` would 404.
+//
+// The prepend applies only when at least a dataset and table are present
+// (len >= 2) and the leading part isn't already the data project (so an
+// explicitly project-qualified ref is not double-prefixed). A lone table
+// part is left bare: turning `table` into `dataProjectID`.`table` would be a
+// bogus two-part ref (BigQuery reads it as dataset.table in the jobs
+// project); a bare table instead resolves against the query's default
+// dataset, which applyDefaultProject sets for cross-project reads.
 func (p *BigQueryProvider) QuoteRef(parts ...string) string {
-	if p.crossProject() && (len(parts) == 0 || parts[0] != p.dataProjectID) {
+	if p.crossProject() && len(parts) >= 2 && parts[0] != p.dataProjectID {
 		parts = append([]string{p.dataProjectID}, parts...)
 	}
 	return gowarehouse.QuotePartsWith("`", "`", parts)

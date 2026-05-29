@@ -98,23 +98,22 @@ func TestBuildIndex_MissingRetriever(t *testing.T) {
 	}
 }
 
-// --- pure helper: indexDot ---
+// --- pure helper: datasetFromQualified ---
 
-func TestIndexDot(t *testing.T) {
+func TestDatasetFromQualified(t *testing.T) {
 	cases := []struct {
 		in   string
-		want int
+		want string
 	}{
-		{"", -1},
-		{"abc", -1},
-		{"a.b", 1},
-		{".x", 0},
-		{"dataset.t", 7},
-		{"a.b.c", 1}, // first dot only
+		{"", ""},
+		{"table", ""}, // bare name, no dataset
+		{"dataset.table", "dataset"},
+		{"bigquery-public-data.census.Variable", "census"}, // 3-part cross-project: dataset is the middle segment, NOT the data project
+		{".x", ""}, // leading dot → empty dataset segment
 	}
 	for _, c := range cases {
-		if got := indexDot(c.in); got != c.want {
-			t.Errorf("indexDot(%q) = %d, want %d", c.in, got, c.want)
+		if got := datasetFromQualified(c.in); got != c.want {
+			t.Errorf("datasetFromQualified(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
