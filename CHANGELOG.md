@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Llama 4 Scout added to the Vertex AI MaaS model catalog** — `providers/llm/vertex-ai/catalog.go`. Adds `meta/llama-4-scout-17b-16e-instruct-maas` as an OpenAI-compat MaaS entry: 10M context, 8192 max output, Vertex list price $0.25 / $0.70 per 1M input/output tokens. Both Llama 4 models are served only from `us-east5`, and Vertex caps their max output at 8192 (verified against the live endpoint — a higher `maxOutputTokens` returns a 400).
 
+- **Gemma 4 26B added to the Vertex AI MaaS model catalog** — `providers/llm/vertex-ai/catalog.go`. Adds `google/gemma-4-26b-a4b-it-maas` as an OpenAI-compat MaaS entry: 262K context, 128000 max output, Vertex list price $0.06 / $0.33 per 1M input/output tokens, `Reasoning: true`. Served from `global`. Unlike Llama 4 / R1, Vertex does not enforce a lower output cap for this model (a 200K `maxOutputTokens` request is accepted), so the model-card limit of 128K is used. Previously uncatalogued, so `GetMaxOutputTokens` fell back to the provider default (16384).
+
 ### Fixed
 
 - **Llama 4 Maverick catalog entry corrected** — `providers/llm/vertex-ai/catalog.go`. The model ID was `meta/llama-4-maverick-17b-instruct-maas`, which does not exist on Vertex (404 in every region); corrected to the real ID `meta/llama-4-maverick-17b-128e-instruct-maas`. Also fixes the output price ($1.40 → $1.15 per 1M). Max output stays 8192 (Vertex's enforced cap).

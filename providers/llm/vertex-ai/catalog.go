@@ -48,6 +48,7 @@ const (
 	qwenMaaSInputWindow           = 256000
 	mistralMaaSInputWindow        = 128000
 	deepseekMaaSInputWindow       = 128000
+	gemma4MaaSInputWindow         = 262144
 )
 
 // buildVertexCatalog returns every Vertex AI model DecisionBox ships
@@ -265,6 +266,19 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			MaxOutputTokens: 32768,
 			MaxInputTokens:  deepseekMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.56, OutputPerMillion: 1.68},
+		},
+		{
+			// Gemma 4 on Vertex MaaS speaks the OpenAI-compat wire and
+			// is served from global. Max output 128K; Vertex does not
+			// enforce a lower cap (a 200K maxOutputTokens request is
+			// accepted). Emits a reasoning trace, so Reasoning=true.
+			ID:              "google/gemma-4-26b-a4b-it-maas",
+			DisplayName:     "Gemma 4 26B A4B (Vertex MaaS)",
+			Wire:            gollm.WireOpenAICompat,
+			MaxOutputTokens: 128000,
+			MaxInputTokens:  gemma4MaaSInputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.06, OutputPerMillion: 0.33},
+			Reasoning:       true,
 		},
 	}
 	// Claude 4.x on Vertex shares the 200K standard context window —
