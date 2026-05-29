@@ -40,13 +40,14 @@ const (
 // as well (Google publishes 1M for the entire 1.5 / 2.x line). MaaS
 // models vary — set per-entry below.
 const (
-	claude4InputWindow      = 200000
-	gemini1MInputWindow     = 1000000
-	llama3MaaSInputWindow   = 128000
-	llama4MaaSInputWindow   = 1000000
-	qwenMaaSInputWindow     = 256000
-	mistralMaaSInputWindow  = 128000
-	deepseekMaaSInputWindow = 128000
+	claude4InputWindow            = 200000
+	gemini1MInputWindow           = 1000000
+	llama3MaaSInputWindow         = 128000
+	llama4MaverickMaaSInputWindow = 1000000
+	llama4ScoutMaaSInputWindow    = 10000000
+	qwenMaaSInputWindow           = 256000
+	mistralMaaSInputWindow        = 128000
+	deepseekMaaSInputWindow       = 128000
 )
 
 // buildVertexCatalog returns every Vertex AI model DecisionBox ships
@@ -201,12 +202,25 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			Pricing:         gollm.TokenPricing{InputPerMillion: 0.72, OutputPerMillion: 0.72},
 		},
 		{
-			ID:              "meta/llama-4-maverick-17b-instruct-maas",
-			DisplayName:     "Llama 4 Maverick 17B (Vertex MaaS)",
+			// Llama 4 Maverick + Scout MaaS endpoints use the
+			// "-maas"-suffixed publisher IDs and are served only from
+			// us-east5 (global / us-central1 return 404). Vertex caps
+			// max output at 8192 for both — a higher maxOutputTokens
+			// 400s with "supported range ... to 8193 (exclusive)".
+			ID:              "meta/llama-4-maverick-17b-128e-instruct-maas",
+			DisplayName:     "Llama 4 Maverick 17B 128E (Vertex MaaS)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 8192,
-			MaxInputTokens:  llama4MaaSInputWindow,
-			Pricing:         gollm.TokenPricing{InputPerMillion: 0.35, OutputPerMillion: 1.40},
+			MaxInputTokens:  llama4MaverickMaaSInputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.35, OutputPerMillion: 1.15},
+		},
+		{
+			ID:              "meta/llama-4-scout-17b-16e-instruct-maas",
+			DisplayName:     "Llama 4 Scout 17B 16E (Vertex MaaS)",
+			Wire:            gollm.WireOpenAICompat,
+			MaxOutputTokens: 8192,
+			MaxInputTokens:  llama4ScoutMaaSInputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.25, OutputPerMillion: 0.70},
 		},
 		{
 			ID:              "qwen/qwen3-coder-480b-a35b-instruct-maas",
