@@ -240,6 +240,17 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			MaxInputTokens:  deepseekMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.35, OutputPerMillion: 5.40},
 		},
+		{
+			// Same: DeepSeek V3.2's chat-capable MaaS endpoint is the
+			// "-maas"-suffixed ID. 128K context, 32K max output.
+			ID:              "deepseek-ai/deepseek-v3.2-maas",
+			Aliases:         []string{"deepseek-ai/deepseek-v3.2"},
+			DisplayName:     "DeepSeek V3.2 (Vertex MaaS)",
+			Wire:            gollm.WireOpenAICompat,
+			MaxOutputTokens: 32768,
+			MaxInputTokens:  deepseekMaaSInputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: 0.56, OutputPerMillion: 1.68},
+		},
 	}
 	// Claude 4.x on Vertex shares the 200K standard context window —
 	// fill once rather than duplicate the value on every entry.
