@@ -129,8 +129,13 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 				continue
 			}
 
-			key := fmt.Sprintf("%s.%s", dataset, tableName)
-			allSchemas[key] = *schema
+			// Key on the schema's own qualified name (set by discoverTable
+			// via the provider's RefQualifier) so the map key, the
+			// schema-cache schema_key, the catalog line, and the refIndex
+			// canonical key are all the same string — three-part
+			// `dataproject.dataset.table` for cross-project BigQuery, the
+			// plain "dataset.table" form everywhere else.
+			allSchemas[schema.TableName] = *schema
 			if s.onTableDiscovered != nil {
 				s.onTableDiscovered(dataset, tableName, true)
 			}
@@ -159,7 +164,15 @@ const perTableTimeout = 2 * time.Minute
 // Enforces perTableTimeout so a single stuck catalog query doesn't block
 // the rest of the discovery pass.
 func (s *SchemaDiscovery) discoverTable(ctx context.Context, dataset, tableName string) (*models.TableSchema, error) {
+	// Canonical qualified name shown to the LLM in the schema catalog and
+	// used as the schema-cache / Qdrant key. Providers whose fully-qualified
+	// ref needs a component the agent can't derive (BigQuery cross-project
+	// reads need the data project: `dataproject.dataset.table`) supply it via
+	// RefQualifier; everything else uses the plain "dataset.table" form.
 	qualifiedName := fmt.Sprintf("%s.%s", dataset, tableName)
+	if q, ok := s.warehouse.(gowarehouse.RefQualifier); ok {
+		qualifiedName = q.QualifiedName(dataset, tableName)
+	}
 
 	tableCtx, cancel := context.WithTimeout(ctx, perTableTimeout)
 	defer cancel()

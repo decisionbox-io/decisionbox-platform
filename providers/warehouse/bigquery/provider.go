@@ -145,21 +145,52 @@ func NewBigQueryProvider(ctx context.Context, cfg BigQueryConfig) (*BigQueryProv
 // reads to the dataset's home project even though the client was
 // constructed against the jobs project.
 func (p *BigQueryProvider) datasetRef(name string) *bq.Dataset {
-	if p.dataProjectID != p.config.ProjectID {
+	if p.crossProject() {
 		return p.client.DatasetInProject(p.dataProjectID, name)
 	}
 	return p.client.Dataset(name)
 }
 
-// applyDefaultProject sets Query.DefaultProjectID when the data
-// project differs from the jobs project, so unqualified
-// dataset.table references in agent-generated SQL resolve against
-// the data project rather than the jobs project (where the data
-// likely doesn't exist).
+// crossProject reports whether reads target a different GCP project than
+// the one running query jobs (the bigquery-public-data shape). When true,
+// every table reference the agent shows the LLM must be three-part
+// (`dataProjectID.dataset.table`): BigQuery resolves the project of a
+// two-part `dataset.table` reference to the jobs/billing project, so a
+// two-part ref to a dataset the jobs project doesn't own fails with
+// "Dataset <jobsProject>:<dataset> was not found".
+func (p *BigQueryProvider) crossProject() bool {
+	return p.dataProjectID != p.config.ProjectID
+}
+
+// applyDefaultProject sets the query's default dataset (project + dataset)
+// for cross-project reads. With the schema catalog now handing the LLM
+// fully-qualified three-part refs, this is a robustness aid for the
+// occasional bare `table` reference: the BigQuery SDK requires
+// DefaultProjectID and DefaultDatasetID to be set together (a project-only
+// default is silently ignored), so both are set and a bare name resolves
+// against the default dataset in the data project. It does NOT rescue a
+// two-part `dataset.table` — BigQuery always resolves that ref's project to
+// the jobs project regardless of the default dataset.
 func (p *BigQueryProvider) applyDefaultProject(q *bq.Query) {
-	if p.dataProjectID != p.config.ProjectID {
+	if p.crossProject() {
 		q.DefaultProjectID = p.dataProjectID
+		q.DefaultDatasetID = p.defaultDatasetID()
 	}
+}
+
+// defaultDatasetID returns a single, format-valid dataset id for the
+// query's default dataset. The provider's dataset field may be a
+// comma-joined list for multi-dataset projects, but BigQuery's
+// defaultDataset accepts exactly one dataset id and rejects a comma string
+// with "400 Invalid dataset ID" — even when the query's table refs are
+// fully qualified and the default would never be consulted. So we take the
+// first dataset; that is the one a bare `table` reference resolves against.
+func (p *BigQueryProvider) defaultDatasetID() string {
+	ds := p.dataset
+	if i := strings.IndexByte(ds, ','); i >= 0 {
+		ds = ds[:i]
+	}
+	return strings.TrimSpace(ds)
 }
 
 func (p *BigQueryProvider) Query(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
@@ -321,20 +352,38 @@ func (p *BigQueryProvider) SQLDialect() string {
 	return "BigQuery Standard SQL"
 }
 
-// QuoteRef returns a backtick-quoted, dot-joined identifier in
-// BigQuery Standard SQL form, e.g. `dataset`.`table`. BigQuery also
-// accepts `dataset.table` (single backtick pair around the whole ref);
-// the per-part form chosen here is equivalent and produces a uniform
-// shape across providers.
+// QuoteRef returns a backtick-quoted, dot-joined identifier in BigQuery
+// Standard SQL form, e.g. `dataset`.`table`. For cross-project reads the
+// data project is prepended, so the reference is three-part
+// (`dataProjectID`.`dataset`.`table`) — see crossProject for why a
+// two-part ref would 404. The prepend is skipped when the caller already
+// passes the data project as the leading part, so an explicitly
+// project-qualified ref is not double-prefixed.
 func (p *BigQueryProvider) QuoteRef(parts ...string) string {
+	if p.crossProject() && (len(parts) == 0 || parts[0] != p.dataProjectID) {
+		parts = append([]string{p.dataProjectID}, parts...)
+	}
 	return gowarehouse.QuotePartsWith("`", "`", parts)
 }
 
+// QualifiedName returns the unquoted, fully-qualified table reference used
+// as the schema-catalog line and the canonical schema-cache key. It is
+// three-part (`dataProjectID.dataset.table`) for cross-project reads and
+// two-part (`dataset.table`) otherwise. Implements gowarehouse.RefQualifier
+// so the discovery agent shows the LLM names that resolve on the first try.
+func (p *BigQueryProvider) QualifiedName(dataset, table string) string {
+	if p.crossProject() {
+		return fmt.Sprintf("%s.%s.%s", p.dataProjectID, dataset, table)
+	}
+	return fmt.Sprintf("%s.%s", dataset, table)
+}
+
 // SampleQuery builds a BigQuery-native "sample N rows" query — backtick-
-// quoted qualified name + LIMIT n. The filter clause (either empty or a
-// full WHERE fragment) is inlined between FROM and LIMIT.
+// quoted fully-qualified name + LIMIT n. The qualified name is three-part
+// for cross-project reads (see QualifiedName). The filter clause (either
+// empty or a full WHERE fragment) is inlined between FROM and LIMIT.
 func (p *BigQueryProvider) SampleQuery(dataset, table, filterClause string, limit int) string {
-	return fmt.Sprintf("SELECT * FROM `%s.%s` %s LIMIT %d", dataset, table, filterClause, limit)
+	return fmt.Sprintf("SELECT * FROM `%s` %s LIMIT %d", p.QualifiedName(dataset, table), filterClause, limit)
 }
 
 func (p *BigQueryProvider) SQLFixPrompt() string {

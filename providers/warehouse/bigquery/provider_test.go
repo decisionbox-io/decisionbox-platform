@@ -4,8 +4,31 @@ import (
 	"context"
 	"testing"
 
+	bq "cloud.google.com/go/bigquery"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
+
+// xProjProvider builds a provider in the cross-project ("read from
+// bigquery-public-data, bill my own project") shape used by the
+// qualification tests below.
+func xProjProvider() *BigQueryProvider {
+	return &BigQueryProvider{
+		dataset:       "census_ds",
+		dataProjectID: "bigquery-public-data",
+		config:        BigQueryConfig{ProjectID: "jobs-proj"},
+	}
+}
+
+// sameProjProvider builds a single-project provider — dataProjectID equals
+// the jobs project, so crossProject() is false and qualification is the
+// pre-cross-project two-part form.
+func sameProjProvider() *BigQueryProvider {
+	return &BigQueryProvider{
+		dataset:       "census_ds",
+		dataProjectID: "jobs-proj",
+		config:        BigQueryConfig{ProjectID: "jobs-proj"},
+	}
+}
 
 func TestBigQueryConfig_DefaultTimeout(t *testing.T) {
 	cfg := BigQueryConfig{
@@ -115,6 +138,98 @@ func TestBigQueryProvider_QuoteRef(t *testing.T) {
 	}
 }
 
+// TestBigQueryProvider_QuoteRef_CrossProject pins the central cross-project
+// fix: for a different data project, QuoteRef must emit a three-part ref so
+// the LLM's SQL resolves against the data project. A two-part `dataset`.
+// `table` resolves its project to the jobs project and 404s.
+func TestBigQueryProvider_QuoteRef_CrossProject(t *testing.T) {
+	p := xProjProvider()
+	cases := []struct {
+		name  string
+		parts []string
+		want  string
+	}{
+		{name: "dataset.table gets data project prepended", parts: []string{"census_ds", "Variable"}, want: "`bigquery-public-data`.`census_ds`.`Variable`"},
+		{name: "already project-qualified is not double-prefixed", parts: []string{"bigquery-public-data", "census_ds", "Variable"}, want: "`bigquery-public-data`.`census_ds`.`Variable`"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.QuoteRef(tc.parts...); got != tc.want {
+				t.Errorf("QuoteRef(%v) = %q, want %q", tc.parts, got, tc.want)
+			}
+		})
+	}
+	// Same-project provider keeps the pre-feature two-part form byte-for-byte.
+	if got := sameProjProvider().QuoteRef("census_ds", "Variable"); got != "`census_ds`.`Variable`" {
+		t.Errorf("same-project QuoteRef = %q, want %q", got, "`census_ds`.`Variable`")
+	}
+}
+
+// TestBigQueryProvider_QualifiedName pins the unqualified catalog/cache-key
+// form: three-part for cross-project, two-part otherwise.
+func TestBigQueryProvider_QualifiedName(t *testing.T) {
+	if got := xProjProvider().QualifiedName("census_ds", "Variable"); got != "bigquery-public-data.census_ds.Variable" {
+		t.Errorf("cross-project QualifiedName = %q, want %q", got, "bigquery-public-data.census_ds.Variable")
+	}
+	if got := sameProjProvider().QualifiedName("census_ds", "Variable"); got != "census_ds.Variable" {
+		t.Errorf("same-project QualifiedName = %q, want %q", got, "census_ds.Variable")
+	}
+	// The provider must satisfy the optional RefQualifier interface so the
+	// agent's type assertion picks it up.
+	var _ gowarehouse.RefQualifier = xProjProvider()
+}
+
+// TestBigQueryProvider_SampleQuery_CrossProject pins that the schema-scan
+// sample query targets the three-part name for cross-project reads.
+func TestBigQueryProvider_SampleQuery_CrossProject(t *testing.T) {
+	got := xProjProvider().SampleQuery("census_ds", "Variable", "", 5)
+	want := "SELECT * FROM `bigquery-public-data.census_ds.Variable`  LIMIT 5"
+	if got != want {
+		t.Errorf("cross-project SampleQuery = %q, want %q", got, want)
+	}
+	gotSame := sameProjProvider().SampleQuery("census_ds", "Variable", "WHERE x = 1", 5)
+	wantSame := "SELECT * FROM `census_ds.Variable` WHERE x = 1 LIMIT 5"
+	if gotSame != wantSame {
+		t.Errorf("same-project SampleQuery = %q, want %q", gotSame, wantSame)
+	}
+}
+
+// TestBigQueryProvider_applyDefaultProject pins the SDK-contract fix: a
+// cross-project query sets BOTH DefaultProjectID and DefaultDatasetID (the
+// SDK ignores a project-only default), and a same-project query sets
+// neither (byte-for-byte pre-feature behaviour).
+func TestBigQueryProvider_applyDefaultProject(t *testing.T) {
+	qx := &bq.Query{}
+	xProjProvider().applyDefaultProject(qx)
+	if qx.DefaultProjectID != "bigquery-public-data" {
+		t.Errorf("cross-project DefaultProjectID = %q, want %q", qx.DefaultProjectID, "bigquery-public-data")
+	}
+	if qx.DefaultDatasetID != "census_ds" {
+		t.Errorf("cross-project DefaultDatasetID = %q, want %q (SDK requires both set together)", qx.DefaultDatasetID, "census_ds")
+	}
+
+	qs := &bq.Query{}
+	sameProjProvider().applyDefaultProject(qs)
+	if qs.DefaultProjectID != "" || qs.DefaultDatasetID != "" {
+		t.Errorf("same-project must set no defaults, got project=%q dataset=%q", qs.DefaultProjectID, qs.DefaultDatasetID)
+	}
+
+	// Multi-dataset project: the dataset field is a comma-joined list, but
+	// BigQuery's defaultDataset accepts exactly one id and rejects a comma
+	// string with "400 Invalid dataset ID" even when it's never consulted.
+	// Only the first dataset (trimmed) may be used.
+	qm := &bq.Query{}
+	multi := &BigQueryProvider{
+		dataset:       "primary_ds, secondary_ds",
+		dataProjectID: "bigquery-public-data",
+		config:        BigQueryConfig{ProjectID: "jobs-proj"},
+	}
+	multi.applyDefaultProject(qm)
+	if qm.DefaultDatasetID != "primary_ds" {
+		t.Errorf("multi-dataset DefaultDatasetID = %q, want %q (first dataset only — a comma string is a 400)", qm.DefaultDatasetID, "primary_ds")
+	}
+}
+
 func TestBigQueryProvider_SQLFixPrompt(t *testing.T) {
 	p := &BigQueryProvider{dataset: "test_dataset"}
 	prompt := p.SQLFixPrompt()
@@ -218,9 +333,9 @@ func TestBigQueryFactory_UnsupportedAuthMethod(t *testing.T) {
 
 func TestBigQueryProvider_AuthMethodSAKey_InvalidJSON(t *testing.T) {
 	_, err := gowarehouse.NewProvider("bigquery", gowarehouse.ProviderConfig{
-		"project_id":      "test-project",
-		"dataset":         "test_dataset",
-		"auth_method":     "sa_key",
+		"project_id":       "test-project",
+		"dataset":          "test_dataset",
+		"auth_method":      "sa_key",
 		"credentials_json": "not-valid-json",
 	})
 	if err == nil {

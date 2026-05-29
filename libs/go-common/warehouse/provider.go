@@ -141,6 +141,29 @@ type SampleQueryBuilder interface {
 	SampleQuery(dataset, table, filterClause string, limit int) string
 }
 
+// RefQualifier is an optional interface for providers whose fully-qualified
+// table reference includes a component the discovery agent cannot derive
+// from the dataset + table alone. BigQuery cross-project reads are the
+// motivating case: the data lives in a different GCP project than the one
+// running the query job, so a correct reference must be three-part
+// (`dataProjectID.dataset.table`). A two-part `dataset.table` resolves its
+// project to the job's billing project and 404s.
+//
+// The agent uses QualifiedName when building the schema catalog and the
+// canonical schema-cache key, so the LLM sees names that resolve on the
+// first try. Providers that do not implement this interface fall back to
+// the plain "dataset.table" form, which is correct for every
+// single-project warehouse.
+//
+// Use type assertion to check: if q, ok := provider.(RefQualifier); ok { ... }
+type RefQualifier interface {
+	// QualifiedName returns the UNQUOTED, provider-native fully-qualified
+	// table name (e.g. "bigquery-public-data.dataset.table" for
+	// cross-project BigQuery, "dataset.table" otherwise). Callers must
+	// validate inputs are plain identifiers; this method does not sanitise.
+	QualifiedName(dataset, table string) string
+}
+
 // DryRunResult holds the result of a dry-run query estimation.
 type DryRunResult struct {
 	BytesProcessed int64
