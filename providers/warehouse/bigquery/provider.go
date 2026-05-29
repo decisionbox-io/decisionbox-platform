@@ -358,15 +358,18 @@ func (p *BigQueryProvider) SQLDialect() string {
 // three-part (`dataProjectID`.`dataset`.`table`) — see crossProject for why
 // a two-part `dataset`.`table` would 404.
 //
-// The prepend applies only when at least a dataset and table are present
-// (len >= 2) and the leading part isn't already the data project (so an
-// explicitly project-qualified ref is not double-prefixed). A lone table
-// part is left bare: turning `table` into `dataProjectID`.`table` would be a
-// bogus two-part ref (BigQuery reads it as dataset.table in the jobs
-// project); a bare table instead resolves against the query's default
-// dataset, which applyDefaultProject sets for cross-project reads.
+// The prepend applies ONLY to an exactly two-part dataset+table ref — the
+// shape the agent emits via {{REF:dataset, table}}. Other arities pass
+// through untouched:
+//   - a lone table part stays bare (prefixing would make a bogus two-part
+//     `dataProjectID`.`table`; a bare table resolves against the query's
+//     default dataset, which applyDefaultProject sets for cross-project
+//     reads), and
+//   - a ref that already has three or more parts is treated as
+//     project-qualified (possibly to a project other than the data project),
+//     so we never build an invalid four-part identifier.
 func (p *BigQueryProvider) QuoteRef(parts ...string) string {
-	if p.crossProject() && len(parts) >= 2 && parts[0] != p.dataProjectID {
+	if p.crossProject() && len(parts) == 2 {
 		parts = append([]string{p.dataProjectID}, parts...)
 	}
 	return gowarehouse.QuotePartsWith("`", "`", parts)
