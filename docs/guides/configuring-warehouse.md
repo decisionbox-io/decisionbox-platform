@@ -60,7 +60,8 @@ When **Data project ID** is set, DecisionBox:
 
 - Constructs the BigQuery client against your **GCP Project ID** so every query job is billed there.
 - Routes metadata reads (`Tables.list`, `Table.Metadata`) to the **Data project ID** via the BigQuery SDK's cross-project dataset reference.
-- Sets `Query.DefaultProjectID` to the **Data project ID** so unqualified `dataset.table` references in agent-generated SQL resolve against the data project rather than the jobs project.
+- Shows the agent fully-qualified three-part `data-project.dataset.table` names in the schema catalog, in dialect-rendered example refs, and in schema-sample queries, so the SQL the model generates resolves against the data project on the first try. (BigQuery resolves the project of a two-part `dataset.table` reference to the query-job project, not the data project, so a two-part ref to a dataset the jobs project doesn't own fails with `404 … Dataset <jobs-project>:<dataset> was not found`.)
+- Sets the query's default dataset (both `DefaultProjectID` and `DefaultDatasetID` — the BigQuery SDK requires them together) to the **Data project ID** and your first dataset, so a bare `table` reference still resolves against the data project.
 
 Leave **Data project ID** empty for the common single-project setup — DecisionBox behaves identically to before (data and jobs both billed to **GCP Project ID**).
 

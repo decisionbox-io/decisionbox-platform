@@ -485,6 +485,31 @@ func TestPayloadStoresBareTableNotQualified(t *testing.T) {
 	}
 }
 
+// TestPayloadRoundTrip_CrossProjectThreePart locks the cross-project
+// BigQuery case: the canonical key is three-part dataproject.dataset.table,
+// with the dataset in the MIDDLE. The payload's bare-table strip is a no-op
+// (the key doesn't start with "dataset."), so the full name is stored, and
+// decode must return it UNCHANGED — re-prepending the dataset would produce
+// "census.bigquery-public-data.census.Variable" and the search hit would be
+// dropped as not-in-schemas.
+func TestPayloadRoundTrip_CrossProjectThreePart(t *testing.T) {
+	in := TableBlurb{
+		Table:   "bigquery-public-data.census.Variable",
+		Dataset: "census",
+	}
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out := blurbFromPayload(pv)
+	if out.Table != "bigquery-public-data.census.Variable" {
+		t.Errorf("Table = %q, want unchanged three-part %q", out.Table, "bigquery-public-data.census.Variable")
+	}
+	if out.Dataset != "census" {
+		t.Errorf("Dataset = %q, want %q", out.Dataset, "census")
+	}
+}
+
 func TestPayloadRoundTrip_EmptyDataset(t *testing.T) {
 	// Providers that don't use a multi-dataset namespace (e.g. BigQuery
 	// single-project mode) write Dataset="" and Table=bare. The payload

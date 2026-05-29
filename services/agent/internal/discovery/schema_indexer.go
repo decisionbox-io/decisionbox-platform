@@ -198,8 +198,10 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	applog.WithField("tables", len(schemas)).Info("schema_indexer: phase=describing_tables (blurb generation)")
 
 	// 4. Build blurb inputs. DiscoverSchemas keys the map as
-	// "dataset.table"; we split that back out so the Blurb input carries
-	// the dataset.
+	// "dataset.table" (single-project) or "dataproject.dataset.table"
+	// (cross-project BigQuery); we split the dataset back out so the Blurb
+	// input and the retrieval metadata carry the real dataset (not the data
+	// project).
 	type orderedRef struct {
 		dataset string
 		schema  models.TableSchema
@@ -207,10 +209,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	refs := make([]orderedRef, 0, len(schemas))
 	inputs := make([]blurb.Input, 0, len(schemas))
 	for qualified, s := range schemas {
-		dataset := ""
-		if i := indexDot(qualified); i > 0 {
-			dataset = qualified[:i]
-		}
+		dataset := datasetFromQualified(qualified)
 		refs = append(refs, orderedRef{dataset: dataset, schema: s})
 		inputs = append(inputs, blurb.Input{
 			Dataset:         dataset,
@@ -370,14 +369,22 @@ func (si *SchemaIndexer) recordErr(ctx context.Context, projectID, msg string) {
 	}
 }
 
-// indexDot returns the index of the first '.' in s (or -1). Used to
-// split "dataset.table" → dataset. strings.Index would work too but
-// this stays dependency-free inside a hot loop.
-func indexDot(s string) int {
+// datasetFromQualified extracts the dataset component from a qualified
+// schema-map key. The key is "dataset.table" for single-project warehouses
+// and "dataproject.dataset.table" for cross-project BigQuery, so the dataset
+// is always the segment immediately before the table — between the last two
+// dots, or before the only dot. Returns "" for a bare (dot-less) name.
+// Dependency-free (no strings.Split) since this runs per table in the
+// indexing hot loop.
+func datasetFromQualified(s string) string {
+	last, prev := -1, -1
 	for i := 0; i < len(s); i++ {
 		if s[i] == '.' {
-			return i
+			prev, last = last, i
 		}
 	}
-	return -1
+	if last < 0 {
+		return ""
+	}
+	return s[prev+1 : last]
 }

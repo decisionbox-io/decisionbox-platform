@@ -149,3 +149,34 @@ func TestWarehouseConfigHash_CollisionResistance(t *testing.T) {
 		t.Error("field-boundary collision: provider+project_id must not hash like a concatenated provider")
 	}
 }
+
+func TestWarehouseConfigHash_CrossProjectShapeInvalidates(t *testing.T) {
+	// Cross-project reads (data_project_id set and differing from project_id)
+	// render table refs as three-part dataproject.dataset.table. That shape
+	// changed in code without changing any hash input, so the hash carries an
+	// explicit cross-project marker — otherwise an existing cross-project
+	// project would cache-hit on its stale two-part keys forever (a re-index
+	// would be a no-op). This locks that a cross-project config lands in a
+	// distinct cache bucket from both a non-cross config and a set-but-equal
+	// (non-cross) data_project_id, and is stable.
+	nonCross := baseCfg() // no data_project_id → two-part shape
+	hashNonCross := WarehouseConfigHash(nonCross)
+
+	cross := baseCfg() // project_id is "my-gcp-project"
+	cross.Config["data_project_id"] = "bigquery-public-data"
+	hashCross := WarehouseConfigHash(cross)
+
+	sameProj := baseCfg()
+	sameProj.Config["data_project_id"] = "my-gcp-project" // == project_id → NOT cross-project
+	hashSameProj := WarehouseConfigHash(sameProj)
+
+	if hashCross == hashNonCross {
+		t.Error("cross-project config must hash differently from a non-cross config so the stale two-part cache is invalidated on upgrade")
+	}
+	if hashCross == hashSameProj {
+		t.Error("cross-project (data_project_id != project_id) must hash differently from a set-but-equal data_project_id (which is not cross-project)")
+	}
+	if hashCross != WarehouseConfigHash(cross) {
+		t.Error("cross-project hash must be deterministic")
+	}
+}

@@ -61,6 +61,20 @@ func WarehouseConfigHash(cfg models.WarehouseConfig) string {
 		b.WriteByte(';')
 	}
 
+	// Cross-project reads (a warehouse whose data lives in a different
+	// project than the one running queries — BigQuery's data_project_id
+	// differing from project_id) render table refs as three-part
+	// `dataproject.dataset.table` in the catalog and as the schema-cache
+	// key, instead of the two-part `dataset.table` form. That shape is a
+	// code-level property the inputs above don't otherwise capture, so
+	// stamp it explicitly: this invalidates exactly the cross-project
+	// caches that need rediscovery after the shape changed, while
+	// single-project caches stay valid (no needless re-index). Bump the
+	// marker version if the cross-project ref shape ever changes again.
+	if dp := cfg.Config["data_project_id"]; dp != "" && dp != cfg.ProjectID {
+		b.WriteString("|xproj-refshape=v2")
+	}
+
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
 }
