@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DeepSeek V3.2 added to the Vertex AI MaaS model catalog** — `providers/llm/vertex-ai/catalog.go`. Adds `deepseek-ai/deepseek-v3.2-maas` (alias `deepseek-ai/deepseek-v3.2`) as an OpenAI-compat MaaS entry: 128K context (`deepseekMaaSInputWindow`), 32768 max output, Vertex list price $0.56 / $1.68 per 1M input/output tokens. Previously the model was only usable as free-text, so `GetMaxOutputTokens` fell back to the vertex-ai provider default (16384) and the model never appeared in the dashboard model picker.
+
+- **Llama 4 Scout added to the Vertex AI MaaS model catalog** — `providers/llm/vertex-ai/catalog.go`. Adds `meta/llama-4-scout-17b-16e-instruct-maas` as an OpenAI-compat MaaS entry: 10M context, 8192 max output, Vertex list price $0.25 / $0.70 per 1M input/output tokens. Both Llama 4 models are served only from `us-east5`, and Vertex caps their max output at 8192 (verified against the live endpoint — a higher `maxOutputTokens` returns a 400).
+
+### Fixed
+
+- **Llama 4 Maverick catalog entry corrected** — `providers/llm/vertex-ai/catalog.go`. The model ID was `meta/llama-4-maverick-17b-instruct-maas`, which does not exist on Vertex (404 in every region); corrected to the real ID `meta/llama-4-maverick-17b-128e-instruct-maas`. Also fixes the output price ($1.40 → $1.15 per 1M). Max output stays 8192 (Vertex's enforced cap).
+
+- **DeepSeek R1 marked as a reasoning model** — `providers/llm/vertex-ai/catalog.go`. The `deepseek-ai/deepseek-r1-0528-maas` entry now sets `Reasoning: true` so `IsReasoningModel` reports correctly (R1 emits hidden chain-of-thought). All other values verified against the live endpoint and unchanged: 32768 max output (Vertex caps higher requests at 32768), ~128K context, $1.35 / $5.40 per 1M; served from `us-central1`.
+
 ## [0.10.0] - 2026-05-28
 
 ### Added
