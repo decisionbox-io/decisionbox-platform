@@ -238,6 +238,36 @@ func TestCacheSchemaProvider_Lookup_CaseInsensitiveFallback(t *testing.T) {
 	}
 }
 
+// crossProjectSchemas mimics a cross-project BigQuery project where the
+// canonical schema key carries the data project (three-part).
+func crossProjectSchemas() map[string]models.TableSchema {
+	return map[string]models.TableSchema{
+		"bigquery-public-data.census.Variable": {
+			TableName: "bigquery-public-data.census.Variable",
+			RowCount:  42,
+			Columns:   []models.ColumnInfo{{Name: "id", Type: "STRING"}},
+		},
+	}
+}
+
+func TestCacheSchemaProvider_Lookup_CrossProjectThreePart_ResolvesAllForms(t *testing.T) {
+	// For a three-part canonical key, lookup_schema must resolve whether the
+	// model passes the full three-part name (from the catalog), the two-part
+	// `dataset.table` form (which the bundled prompts still demonstrate), or
+	// the bare table name.
+	p, _ := NewCacheSchemaProvider(CacheSchemaProviderOptions{Schemas: crossProjectSchemas()})
+	const canonical = "bigquery-public-data.census.Variable"
+	for _, ref := range []string{canonical, "census.Variable", "Variable"} {
+		res, err := p.Lookup(context.Background(), []string{ref})
+		if err != nil {
+			t.Fatalf("Lookup(%q): %v", ref, err)
+		}
+		if len(res.Tables) != 1 || res.Tables[0].Table != canonical {
+			t.Errorf("ref %q should resolve to %q, got tables=%+v notFound=%v", ref, canonical, res.Tables, res.NotFound)
+		}
+	}
+}
+
 func TestCacheSchemaProvider_Lookup_NotFound(t *testing.T) {
 	p, _ := NewCacheSchemaProvider(CacheSchemaProviderOptions{Schemas: sampleSchemas()})
 	res, _ := p.Lookup(context.Background(), []string{"does.not.exist"})

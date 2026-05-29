@@ -302,15 +302,26 @@ func (p *CacheSchemaProvider) toLookupTable(canonical string, ts models.TableSch
 	}
 }
 
-// buildRefIndex maps both qualified ("dataset.table") and bare ("table")
-// forms to the canonical schemas-map key. Bare-form ambiguity is
-// recorded by leaving the bare key OUT of the map entirely — the
-// fallback in resolveRef already handles case-insensitive disambiguation,
-// and we don't want a bare "users" to silently pick the wrong dataset.
+// buildRefIndex maps the shortened ref forms an LLM might use back to the
+// canonical schemas-map key:
+//   - bare "table" (everything after the last dot), and
+//   - two-part "dataset.table" (the last two dot-separated segments), which
+//     is only distinct from the canonical key for three-part cross-project
+//     BigQuery keys ("dataproject.dataset.table"). The bundled exploration
+//     prompts still demonstrate lookup_schema refs as `dataset.table`, so a
+//     model that follows them must resolve even when the canonical key
+//     carries the data project.
+//
+// An alias is added only when it is unambiguous (exactly one canonical key
+// shortens to it) and does not shadow a canonical key — ambiguous forms are
+// left OUT so resolveRef surfaces NotFound rather than silently picking the
+// wrong dataset (the case-insensitive fallback in resolveRef still applies).
 func buildRefIndex(schemas map[string]models.TableSchema) map[string]string {
-	idx := make(map[string]string, len(schemas)*2)
+	idx := make(map[string]string, len(schemas)*3)
 	bareCount := make(map[string]int, len(schemas))
 	bareTo := make(map[string]string, len(schemas))
+	twoCount := make(map[string]int, len(schemas))
+	twoTo := make(map[string]string, len(schemas))
 
 	// Canonical qualified form always indexes to itself.
 	keys := make([]string, 0, len(schemas))
@@ -321,18 +332,32 @@ func buildRefIndex(schemas map[string]models.TableSchema) map[string]string {
 	sort.Strings(keys) // deterministic
 
 	for _, k := range keys {
-		// Bare table is everything after the LAST dot — same convention
-		// the warehouse providers use when building the qualified key.
-		bare := k
-		if dot := strings.LastIndex(k, "."); dot >= 0 {
-			bare = k[dot+1:]
-		}
+		parts := strings.Split(k, ".")
+		// Bare table is the last segment — same convention the warehouse
+		// providers use when building the qualified key.
+		bare := parts[len(parts)-1]
 		bareCount[bare]++
 		bareTo[bare] = k
+		// Two-part dataset.table alias — only meaningful for 3+ part keys;
+		// for a 2-part key it equals the canonical key (already in idx).
+		if len(parts) >= 3 {
+			two := strings.Join(parts[len(parts)-2:], ".")
+			twoCount[two]++
+			twoTo[two] = k
+		}
 	}
 	for bare, n := range bareCount {
 		if n == 1 {
-			idx[bare] = bareTo[bare]
+			if _, taken := idx[bare]; !taken {
+				idx[bare] = bareTo[bare]
+			}
+		}
+	}
+	for two, n := range twoCount {
+		if n == 1 {
+			if _, taken := idx[two]; !taken {
+				idx[two] = twoTo[two]
+			}
 		}
 	}
 	return idx
