@@ -253,6 +253,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			MaxOutputTokens: 32768,
 			MaxInputTokens:  deepseekMaaSInputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.35, OutputPerMillion: 5.40},
+			Reasoning:       true,
 		},
 		{
 			// Same: DeepSeek V3.2's chat-capable MaaS endpoint is the

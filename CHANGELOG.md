@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Llama 4 Maverick catalog entry corrected** — `providers/llm/vertex-ai/catalog.go`. The model ID was `meta/llama-4-maverick-17b-instruct-maas`, which does not exist on Vertex (404 in every region); corrected to the real ID `meta/llama-4-maverick-17b-128e-instruct-maas`. Also fixes the output price ($1.40 → $1.15 per 1M). Max output stays 8192 (Vertex's enforced cap).
 
+- **DeepSeek R1 marked as a reasoning model** — `providers/llm/vertex-ai/catalog.go`. The `deepseek-ai/deepseek-r1-0528-maas` entry now sets `Reasoning: true` so `IsReasoningModel` reports correctly (R1 emits hidden chain-of-thought). All other values verified against the live endpoint and unchanged: 32768 max output (Vertex caps higher requests at 32768), ~128K context, $1.35 / $5.40 per 1M; served from `us-central1`.
+
 ## [0.10.0] - 2026-05-28
 
 ### Added
