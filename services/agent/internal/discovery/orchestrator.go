@@ -60,7 +60,7 @@ const persistTimeout = 10 * time.Minute
 // run as completed. Kept tiny because the only failure mode that
 // matters here is Mongo being genuinely unreachable — and we don't
 // want to share persistTimeout with the heavier embed/index step
-// (Phase 9 can burn most of that budget on large results, which
+// (Phase 8 can burn most of that budget on large results, which
 // would otherwise leave Complete to run against an expired ctx).
 const completeTimeout = 30 * time.Second
 
@@ -242,7 +242,7 @@ type OrchestratorOptions struct {
 	VectorStore       vectorstore.Provider
 	EmbeddingProvider goembedding.Provider
 
-	// EmbedIndexStore is needed for Phase 9 to write to insights/recommendations collections
+	// EmbedIndexStore is needed for Phase 8 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
 
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
@@ -1077,8 +1077,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 //
 // When discoveryLogRepo is nil (test or single-binary builds without
 // MongoDB), this is a no-op.
-
-// Persist structured discovery outputs into separate collections for long-term storage and retrieval
 func (o *Orchestrator) persistSplitLogs(
 	ctx context.Context,
 	discoveryID string,
@@ -1226,8 +1224,6 @@ func (o *Orchestrator) generateRecommendations(
 
 // resolvePrompts extracts prompts and analysis areas from project configuration.
 // All prompts are fully seeded at project creation from the domain pack.
-
-// This resolved configuration is used as the base input for all discovery phases (exploration → analysis → recommendations)
 func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 	if o.projectPrompts == nil {
 		return ResolvedPrompts{}, nil
