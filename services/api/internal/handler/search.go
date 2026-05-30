@@ -81,17 +81,23 @@ type searchResponse struct {
 }
 
 type searchResultItem struct {
-	ID            string  `json:"id"`
-	Type          string  `json:"type"`
-	Score         float64 `json:"score"`
-	Name          string  `json:"name"`
-	Description   string  `json:"description"`
-	Severity      string  `json:"severity,omitempty"`
-	AnalysisArea  string  `json:"analysis_area,omitempty"`
-	DiscoveryID   string  `json:"discovery_id"`
-	DiscoveredAt  string  `json:"discovered_at,omitempty"`
-	ProjectID     string  `json:"project_id,omitempty"`
-	ProjectName   string  `json:"project_name,omitempty"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	Score        float64 `json:"score"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	Severity     string  `json:"severity,omitempty"`
+	AnalysisArea string  `json:"analysis_area,omitempty"`
+	DiscoveryID  string  `json:"discovery_id"`
+	DiscoveredAt string  `json:"discovered_at,omitempty"`
+	ProjectID    string  `json:"project_id,omitempty"`
+	ProjectName  string  `json:"project_name,omitempty"`
+	// Validation carries the insight/recommendation's verifier+refuter
+	// verdict so list surfaces (search, cross-project search) can render
+	// the validation status badge inline, matching the insights list and
+	// discovery results. Nil when the doc was never validated or for
+	// non-validatable result types (e.g. knowledge source chunks).
+	Validation *commonmodels.InsightValidation `json:"validation,omitempty"`
 }
 
 // Search performs project-scoped semantic search.
@@ -229,6 +235,7 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.DiscoveryID = ins.DiscoveryID
 				item.DiscoveredAt = ins.DiscoveredAt.Format(time.RFC3339)
 				item.ProjectID = ins.ProjectID
+				item.Validation = ins.Validation
 			}
 		case "recommendation":
 			if rec, err := h.recRepo.GetByID(ctx, sr.ID); err == nil {
@@ -236,6 +243,7 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.Description = rec.Description
 				item.DiscoveryID = rec.DiscoveryID
 				item.ProjectID = rec.ProjectID
+				item.Validation = rec.Validation
 			}
 		}
 
@@ -925,4 +933,3 @@ func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
-

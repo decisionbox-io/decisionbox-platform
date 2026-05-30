@@ -11,12 +11,25 @@ import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
+import {
+  InsightValidationBadge, resolveValidationStatus, validationSortRank,
+} from '@/components/validation/InsightValidationBadge';
+import { statusMeta } from '@/components/validation/statusMeta';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
 };
+
+// Validation filter options for the Insights tab. Values are the
+// canonical statuses (plus the neutral "unverified" for never-run
+// docs); labels come from statusMeta so the dropdown copy stays in
+// sync with the badges.
+const validationFilterValues = [
+  'confirmed', 'supported', 'partial', 'unverifiable',
+  'rejected', 'validation_disabled', 'skipped_budget_cap', 'unverified',
+] as const;
 
 interface InsightWithContext extends Insight {
   discoveryId: string;
@@ -31,6 +44,7 @@ export default function InsightsListPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState('All');
+  const [validationFilter, setValidationFilter] = useState('All');
   const [sortBy, setSortBy] = useState('Severity');
   const [page, setPage] = useState(1);
   const pageSize = 20;
@@ -110,6 +124,9 @@ export default function InsightsListPage() {
   if (severityFilter !== 'All') {
     filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
   }
+  if (validationFilter !== 'All') {
+    filtered = filtered.filter(i => resolveValidationStatus(i.validation) === validationFilter);
+  }
 
   // Sort
   filtered = [...filtered].sort((a, b) => {
@@ -117,6 +134,7 @@ export default function InsightsListPage() {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
       case 'Confidence': return (b.confidence || 0) - (a.confidence || 0);
       case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
+      case 'Validation': return validationSortRank(a.validation) - validationSortRank(b.validation);
       case 'Date': return new Date(b.discoveryDate).getTime() - new Date(a.discoveryDate).getTime();
       default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
     }
@@ -155,8 +173,14 @@ export default function InsightsListPage() {
           }}>{sev}</button>
         ))}
         <span style={{ flex: 1 }} />
+        <FilterDropdown label="Validation" value={validationFilter}
+          onChange={v => { setValidationFilter(v); setPage(1); }}
+          options={[
+            { value: 'All', label: 'All' },
+            ...validationFilterValues.map(v => ({ value: v, label: statusMeta(v).label })),
+          ]} />
         <SortDropdown value={sortBy} onChange={setSortBy}
-          options={['Severity', 'Confidence', 'Users affected', 'Date']} />
+          options={['Severity', 'Confidence', 'Users affected', 'Validation', 'Date']} />
       </div>
 
       {/* Semantic search results */}
@@ -172,6 +196,7 @@ export default function InsightsListPage() {
                 <Th width="30%">Insight</Th>
                 <Th>Severity</Th>
                 <Th>Area</Th>
+                <Th>Validation</Th>
                 <Th>Date</Th>
               </tr>
             </thead>
@@ -200,6 +225,9 @@ export default function InsightsListPage() {
                   </td>
                   <td style={{ padding: '10px 12px' }}>
                     {r.analysis_area && <AreaBadge area={r.analysis_area} />}
+                  </td>
+                  <td style={{ padding: '10px 12px' }}>
+                    <InsightValidationBadge validation={r.validation} />
                   </td>
                   <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--db-text-tertiary)' }}>
                     {r.discovered_at ? new Date(r.discovered_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
@@ -230,6 +258,7 @@ export default function InsightsListPage() {
                 <Th width="30%">Insight</Th>
                 <Th>Severity</Th>
                 <Th>Area</Th>
+                <Th>Validation</Th>
                 <Th align="right">Affected</Th>
                 <Th>Confidence</Th>
                 <Th>Discovery</Th>
@@ -270,6 +299,9 @@ export default function InsightsListPage() {
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <AreaBadge area={insight.analysis_area} />
                   </td>
+                  <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+                    <InsightValidationBadge validation={insight.validation} />
+                  </td>
                   <td style={{ padding: '10px 12px', textAlign: 'right', verticalAlign: 'top', fontVariantNumeric: 'tabular-nums' }}>
                     {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
                   </td>
@@ -309,6 +341,48 @@ export default function InsightsListPage() {
 
 import { useDisclosure } from '@mantine/hooks';
 import { IconChevronDown } from '@tabler/icons-react';
+
+/* ========== Filter Dropdown (value/label pairs) ========== */
+
+function FilterDropdown({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  const [open, { toggle, close }] = useDisclosure(false);
+  const current = options.find(o => o.value === value)?.label ?? value;
+  return (
+    <div style={{ position: 'relative' }}>
+      <button onClick={toggle} style={{
+        fontSize: 12, color: 'var(--db-text-tertiary)',
+        background: 'none', border: 'none', cursor: 'pointer',
+        fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        {label}: {current} <IconChevronDown size={12} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: '100%', marginTop: 4,
+          background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
+          borderRadius: 'var(--db-radius)', boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+          zIndex: 10, minWidth: 160,
+        }}>
+          {options.map(opt => (
+            <div key={opt.value} onClick={() => { onChange(opt.value); close(); }}
+              style={{
+                padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+                background: opt.value === value ? 'var(--db-bg-muted)' : 'transparent',
+                fontWeight: opt.value === value ? 500 : 400,
+                transition: 'background 120ms ease',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+              onMouseLeave={e => { if (opt.value !== value) e.currentTarget.style.background = 'transparent'; }}
+            >{opt.label}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SortDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: string[] }) {
   const [open, { toggle, close }] = useDisclosure(false);

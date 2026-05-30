@@ -839,6 +839,7 @@ export interface SearchResultItem {
   discovered_at: string;
   project_id?: string;
   project_name?: string;
+  validation?: InsightValidation;
 }
 
 export interface SearchResponse {

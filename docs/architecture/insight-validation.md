@@ -167,11 +167,12 @@ The agent + API model packages alias the local `InsightValidation` to the shared
 
 ## Dashboard rendering
 
-The dashboard surfaces the verdict in three places:
+The dashboard surfaces the verdict in two kinds of place — the detail panels (full breakdown) and the list surfaces (inline badge):
 
 1. **Insight detail page** — sticky right sidebar shows a compact `<ValidationPanel />` with the combined verdict badge, a decision-friendly tagline (e.g. "Evidence disagrees with at least one headline claim."), an optional "refuter was disabled" note, and a "Show breakdown" button.
 2. **Recommendation detail page** — same compact panel, same sidebar position.
 3. **Discovery overview** — "Validation" accordion in the technical-details section renders one `<ValidationLogRow />` per validated insight: analysis area, verdict badge, one-line reason, "Show breakdown" button.
+4. **Insight lists** — a compact `<InsightValidationBadge />` column/badge on every list surface: the Insights tab (client-side table and semantic-search results), the discovery run's insights table, and search results (`<ResultCard />`, including cross-project search). It resolves the canonical `combined` status (legacy `status` as a fallback) and shows a neutral "Unverified" badge when validation never ran, so the column reads consistently across rows. The Insights tab can also sort and filter by validation status.
 
 Clicking **Show breakdown** opens the shared `<ValidationBreakdownDrawer />`. The drawer stacks two cards — verifier above refuter — each showing:
 
