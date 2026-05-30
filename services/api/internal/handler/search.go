@@ -92,12 +92,37 @@ type searchResultItem struct {
 	DiscoveredAt string  `json:"discovered_at,omitempty"`
 	ProjectID    string  `json:"project_id,omitempty"`
 	ProjectName  string  `json:"project_name,omitempty"`
-	// Validation carries the insight/recommendation's verifier+refuter
-	// verdict so list surfaces (search, cross-project search) can render
-	// the validation status badge inline, matching the insights list and
-	// discovery results. Nil when the doc was never validated or for
-	// non-validatable result types (e.g. knowledge source chunks).
-	Validation *commonmodels.InsightValidation `json:"validation,omitempty"`
+	// Validation carries the trimmed validation verdict so list surfaces
+	// (search, cross-project search) can render the status badge inline,
+	// matching the insights list and discovery results. Nil when the doc
+	// was never validated or for non-validatable result types (e.g.
+	// knowledge source chunks). See searchValidationSummary for why this
+	// is not the full verifier/refuter payload.
+	Validation *searchValidationSummary `json:"validation,omitempty"`
+}
+
+// searchValidationSummary is the trimmed validation verdict returned on
+// list/search surfaces. The list UI renders only the verdict badge, so
+// we expose just the canonical combined status (and the legacy status
+// as a fallback) — never the full verifier/refuter payload (claim
+// verdicts, evidence rows, SQL, token metadata), which would bloat
+// broad search responses and leak raw validation evidence.
+type searchValidationSummary struct {
+	Combined string `json:"combined,omitempty"`
+	Status   string `json:"status,omitempty"`
+}
+
+// validationSummary trims a full InsightValidation down to the fields
+// the badge needs. Returns nil when there is no verdict to show so the
+// field is omitted and the client falls back to its neutral state.
+func validationSummary(v *commonmodels.InsightValidation) *searchValidationSummary {
+	if v == nil || (v.Combined == "" && v.Status == "") {
+		return nil
+	}
+	return &searchValidationSummary{
+		Combined: string(v.Combined),
+		Status:   v.Status,
+	}
 }
 
 // Search performs project-scoped semantic search.
@@ -235,7 +260,7 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.DiscoveryID = ins.DiscoveryID
 				item.DiscoveredAt = ins.DiscoveredAt.Format(time.RFC3339)
 				item.ProjectID = ins.ProjectID
-				item.Validation = ins.Validation
+				item.Validation = validationSummary(ins.Validation)
 			}
 		case "recommendation":
 			if rec, err := h.recRepo.GetByID(ctx, sr.ID); err == nil {
@@ -243,7 +268,7 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.Description = rec.Description
 				item.DiscoveryID = rec.DiscoveryID
 				item.ProjectID = rec.ProjectID
-				item.Validation = rec.Validation
+				item.Validation = validationSummary(rec.Validation)
 			}
 		}
 

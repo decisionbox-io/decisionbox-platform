@@ -320,7 +320,17 @@ func TestSearchHandler_Search_IncludesValidation(t *testing.T) {
 				Severity:     "high",
 				AnalysisArea: "churn",
 				DiscoveredAt: time.Now(),
-				Validation:   &commonmodels.InsightValidation{Combined: "supported"},
+				// Full verdict on the stored doc; the search response must
+				// trim it to just the badge fields (combined/status) and drop
+				// the heavy/raw fields (query, reasoning, token metadata).
+				Validation: &commonmodels.InsightValidation{
+					Combined:     "supported",
+					Status:       "supported",
+					Query:        "SELECT secret_col FROM private_table",
+					Reasoning:    "internal reasoning that should not leak to list surfaces",
+					InputTokens:  1234,
+					OutputTokens: 567,
+				},
 			},
 		},
 	}
@@ -359,6 +369,16 @@ func TestSearchHandler_Search_IncludesValidation(t *testing.T) {
 	}
 	if validation["combined"] != "supported" {
 		t.Errorf("expected combined=supported, got %v", validation["combined"])
+	}
+	if validation["status"] != "supported" {
+		t.Errorf("expected status=supported, got %v", validation["status"])
+	}
+	// The trimmed summary must not carry the heavy / raw verdict fields
+	// onto broad list surfaces.
+	for _, leaked := range []string{"query", "reasoning", "verifier", "refuter", "input_tokens", "output_tokens"} {
+		if _, present := validation[leaked]; present {
+			t.Errorf("search validation summary leaked %q field: %v", leaked, validation[leaked])
+		}
 	}
 }
 
