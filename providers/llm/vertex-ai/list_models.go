@@ -98,8 +98,12 @@ func (p *VertexAIProvider) listPublisherModels(ctx context.Context, host, publis
 	// needs a quota project, which the bearer token alone doesn't
 	// carry. Send the project as the quota project so a gcloud-login
 	// user with no `gcloud auth application-default set-quota-project`
-	// doesn't get a 403. Harmless for service-account tokens.
-	req.Header.Set("X-Goog-User-Project", p.projectID)
+	// doesn't get a 403. Skipped for service-account keys, which bill to
+	// their own project and can hit a serviceusage 403 if forced onto a
+	// quota project they lack permission on.
+	if p.useQuotaProjectHeader {
+		req.Header.Set("X-Goog-User-Project", p.projectID)
+	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

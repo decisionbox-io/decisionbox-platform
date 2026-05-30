@@ -491,3 +491,80 @@ describe('LLMFormFields — Bedrock interaction', () => {
     expect(container.querySelector('textarea')).toBeInTheDocument();
   });
 });
+
+// vertexMeta mirrors the vertex-ai provider's config_fields: an optional
+// endpoint_id that, when set, hides the model picker / Load-models step
+// (the deployed endpoint identifies its own model).
+const vertexMeta: ProviderMeta = {
+  id: 'vertex-ai',
+  name: 'Google Vertex AI',
+  description: 'GCP-managed AI platform',
+  config_fields: [
+    { key: 'project_id', label: 'GCP Project ID', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+    { key: 'location', label: 'Region', required: false, type: 'string', placeholder: '', description: '', default: 'us-east5', options: [] },
+    { key: 'endpoint_id', label: 'Endpoint ID', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+    { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: 'gemini-2.5-pro', options: [] },
+    { key: 'wire_override', label: 'Wire override', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+  ],
+  auth_methods: [
+    { id: 'adc', name: 'Application Default Credentials', description: 'Ambient GCP credentials.', fields: [] },
+  ],
+};
+
+describe('LLMFormFields — user-deployed endpoint (endpoint_id) hides the model picker', () => {
+  test('with endpoint_id set, Load models button is hidden and the endpoint note is shown', () => {
+    const initial: LLMFormState = {
+      provider: 'vertex-ai',
+      authMethod: 'adc',
+      config: { project_id: 'p', location: 'us-central1', endpoint_id: 'mg-endpoint-abc', model: 'gemini-2.5-pro' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[vertexMeta]} initial={initial} />);
+    // No "Load models" button — the endpoint serves its own model.
+    expect(screen.queryByRole('button', { name: 'Load models' })).not.toBeInTheDocument();
+    expect(screen.getByText(/serves its own deployed model/i)).toBeInTheDocument();
+    // Endpoint ID stays editable in the credentials phase.
+    expect(screen.getByDisplayValue('mg-endpoint-abc')).toBeInTheDocument();
+  });
+
+  test('without endpoint_id, Load models button is shown (normal MaaS flow)', () => {
+    const initial: LLMFormState = {
+      provider: 'vertex-ai',
+      authMethod: 'adc',
+      config: { project_id: 'p', location: 'us-central1', endpoint_id: '', model: 'gemini-2.5-pro' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[vertexMeta]} initial={initial} />);
+    expect(screen.getByRole('button', { name: 'Load models' })).toBeInTheDocument();
+    expect(screen.queryByText(/serves its own deployed model/i)).not.toBeInTheDocument();
+  });
+
+  test('typing an endpoint ID clears a stale wire_override', async () => {
+    const user = userEvent.setup();
+    const initial: LLMFormState = {
+      provider: 'vertex-ai',
+      authMethod: 'adc',
+      config: { project_id: 'p', location: 'us-central1', endpoint_id: '', model: 'gemini-2.5-pro', wire_override: 'anthropic-messages' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[vertexMeta]} initial={initial} />);
+    await user.type(screen.getByLabelText('Endpoint ID'), 'mg-endpoint-abc');
+    // The stale wire_override must be dropped so the provider doesn't
+    // reject the saved config (an endpoint always uses the OpenAI wire).
+    expect(getDump().value.config.wire_override).toBeUndefined();
+    expect(getDump().value.config.endpoint_id).toBe('mg-endpoint-abc');
+  });
+
+  test('with endpoint_id set, the model picker stays hidden even in the model phase', () => {
+    const initial: LLMFormState = {
+      provider: 'vertex-ai',
+      authMethod: 'adc',
+      config: { project_id: 'p', location: 'us-central1', endpoint_id: 'mg-endpoint-abc', model: 'gemini-2.5-pro' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[vertexMeta]} initial={initial} initialPhase="model" />);
+    // The live-model combobox is never rendered for an endpoint config.
+    expect(screen.queryByRole('button', { name: 'Refresh model list' })).not.toBeInTheDocument();
+    expect(screen.getByText(/serves its own deployed model/i)).toBeInTheDocument();
+  });
+});

@@ -146,6 +146,11 @@ type Config struct {
 	MaxTokens int
 	// MaxFailureRate defaults to DefaultMaxFailureRate.
 	MaxFailureRate float64
+	// AllowEmptyModel permits an empty Model. Set it when the provider
+	// identifies its own model — a user-deployed endpoint serves a single
+	// deployed model and ignores the request's model field — so there is
+	// no model ID to send. Empty Model is otherwise rejected.
+	AllowEmptyModel bool
 }
 
 // Generator turns a batch of TableSchemas into blurbs in parallel.
@@ -182,7 +187,7 @@ func New(cfg Config) (*Generator, error) {
 	if cfg.LLM == nil {
 		return nil, ErrLLMMissing
 	}
-	if cfg.Model == "" {
+	if cfg.Model == "" && !cfg.AllowEmptyModel {
 		return nil, ErrModelMissing
 	}
 	// Two independent reasoning signals: the substring patterns
