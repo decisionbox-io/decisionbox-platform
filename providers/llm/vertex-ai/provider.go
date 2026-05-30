@@ -33,6 +33,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,7 +130,7 @@ func vertexEffectiveInputWindow(model string, cfg gollm.ProviderConfig) int {
 	if !ok {
 		return gollm.DefaultMaxInputTokens
 	}
-	if cfg["endpoint_id"] != "" {
+	if strings.TrimSpace(cfg["endpoint_id"]) != "" {
 		if meta.DefaultMaxInputTokens > 0 {
 			return meta.DefaultMaxInputTokens
 		}
@@ -171,8 +172,10 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	// .../endpoints/{endpoint_id}/chat/completions, which only serves the
 	// OpenAI chat-completions wire. Routing it through any other wire is a
 	// contradiction, so reject a conflicting wire_override up front rather
-	// than silently ignoring it.
-	endpointID := cfg["endpoint_id"]
+	// than silently ignoring it. Trim so a pasted ID with surrounding
+	// whitespace doesn't land in the URL, and a whitespace-only value is
+	// treated as "no endpoint" (matching the dashboard's trimmed check).
+	endpointID := strings.TrimSpace(cfg["endpoint_id"])
 	if endpointID != "" && wireOverride != gollm.WireUnknown && wireOverride != gollm.WireOpenAICompat {
 		return nil, fmt.Errorf(
 			"vertex-ai: endpoint_id routes through the OpenAI chat-completions wire, "+

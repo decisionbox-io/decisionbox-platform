@@ -181,7 +181,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		MaxTokens:    maxTokens,
 		// A user-deployed endpoint serves its own model, so blurbModel is
 		// empty — let the generator accept that instead of demanding an ID.
-		AllowEmptyModel: blurbConfig["endpoint_id"] != "",
+		AllowEmptyModel: strings.TrimSpace(blurbConfig["endpoint_id"]) != "",
 	})
 	if err != nil {
 		return fmt.Errorf("blurb generator: %w", err)
@@ -253,7 +253,7 @@ func resolveBlurbLLM(ctx context.Context, _ *config.Config, project *models.Proj
 	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
 		blurbConfig = project.BlurbLLM.Config
 	}
-	if model == "" && blurbConfig["endpoint_id"] == "" {
+	if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
 		return "", "", "", fmt.Errorf("no model configured for blurb LLM")
 	}
 

@@ -537,6 +537,16 @@ func TestVertexAIProvider_Factory_EndpointID(t *testing.T) {
 			cfg:  gollm.ProviderConfig{"project_id": "proj", "location": "us-central1", "model": "my-model", "endpoint_id": "mg-endpoint-306f661d"},
 			want: "mg-endpoint-306f661d",
 		},
+		{
+			name: "padded_is_trimmed",
+			cfg:  gollm.ProviderConfig{"project_id": "proj", "location": "us-central1", "model": "my-model", "endpoint_id": "  mg-endpoint-abc \n"},
+			want: "mg-endpoint-abc",
+		},
+		{
+			name: "whitespace_only_is_not_an_endpoint",
+			cfg:  gollm.ProviderConfig{"project_id": "proj", "location": "us-central1", "model": "gemini-2.5-pro", "endpoint_id": "   "},
+			want: "",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
