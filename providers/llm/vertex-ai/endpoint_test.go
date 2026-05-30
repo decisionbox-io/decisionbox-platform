@@ -73,6 +73,28 @@ func endpointLookupJSON(dedicated bool, dns string) string {
 	return string(b)
 }
 
+// --- Host normalization ---
+
+func TestNormalizeEndpointHost(t *testing.T) {
+	const bare = "mg-endpoint-abc.us-central1-1234.prediction.vertexai.goog"
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{bare, bare},
+		{"https://" + bare, bare},
+		{"http://" + bare, bare},
+		{"https://" + bare + "/", bare},
+		{"  https://" + bare + "  ", bare},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := normalizeEndpointHost(tc.in); got != tc.want {
+			t.Errorf("normalizeEndpointHost(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // --- Pure URL builders (no network) ---
 
 func TestVertexAIProvider_ChatURLBuilders(t *testing.T) {
@@ -150,6 +172,14 @@ func TestVertexAIProvider_ResolveEndpointHost(t *testing.T) {
 			name:     "dedicated_with_dns",
 			status:   http.StatusOK,
 			body:     endpointLookupJSON(true, dedicatedDNS),
+			wantHost: dedicatedDNS,
+		},
+		{
+			// The aiplatform API documents dedicatedEndpointDns in URL
+			// form (https://…); the host must come out scheme-stripped.
+			name:     "dedicated_dns_with_scheme_is_normalized",
+			status:   http.StatusOK,
+			body:     endpointLookupJSON(true, "https://"+dedicatedDNS+"/"),
 			wantHost: dedicatedDNS,
 		},
 		{

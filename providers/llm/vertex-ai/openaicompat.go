@@ -232,5 +232,21 @@ func (p *VertexAIProvider) fetchEndpointDNS(ctx context.Context) (dns string, de
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return "", false, fmt.Errorf("vertex-ai: failed to parse endpoint lookup response: %w", err)
 	}
-	return decoded.DedicatedEndpointDNS, decoded.DedicatedEndpointEnabled, nil
+	return normalizeEndpointHost(decoded.DedicatedEndpointDNS), decoded.DedicatedEndpointEnabled, nil
+}
+
+// normalizeEndpointHost reduces a dedicatedEndpointDns value to a bare
+// host. The aiplatform API documents the field in URL form
+// (https://{endpoint_id}.{region}-{uid}.prediction.vertexai.goog) while
+// the live v1beta1 surface returns a bare host; accept either by
+// stripping any scheme and trailing slash so endpointChatURL — which
+// prefixes "https://" itself — never builds "https://https://…". An
+// empty value stays empty so the "dedicated but no DNS" case is
+// preserved.
+func normalizeEndpointHost(dns string) string {
+	h := strings.TrimSpace(dns)
+	h = strings.TrimPrefix(h, "https://")
+	h = strings.TrimPrefix(h, "http://")
+	h = strings.TrimSuffix(h, "/")
+	return h
 }
