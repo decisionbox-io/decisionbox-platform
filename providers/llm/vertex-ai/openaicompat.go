@@ -60,13 +60,16 @@ func (p *VertexAIProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatR
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
-	// A user-account ADC token needs a quota project when the request
-	// hits aiplatform.googleapis.com (the MaaS path and non-dedicated
-	// endpoints); without it a gcloud-login user with no configured
-	// quota project gets a 403. Harmless for service-account tokens and
-	// for the dedicated-endpoint DNS, which ignores it. Mirrors the
-	// header the endpoint lookup and ListModels already send.
-	httpReq.Header.Set("X-Goog-User-Project", p.projectID)
+	// A user-account ADC token needs a quota project when the request hits
+	// aiplatform.googleapis.com (the MaaS path and non-dedicated
+	// endpoints); without it a gcloud-login user with no configured quota
+	// project gets a 403. Skipped for service-account keys, which bill to
+	// their own project and can hit a serviceusage 403 if the header
+	// forces a quota project they lack permission on. The dedicated
+	// endpoint DNS ignores the header either way.
+	if p.useQuotaProjectHeader {
+		httpReq.Header.Set("X-Goog-User-Project", p.projectID)
+	}
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -206,10 +209,10 @@ func (p *VertexAIProvider) fetchEndpointDNS(ctx context.Context) (dns string, de
 		return "", false, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
-	// A user-account ADC token needs a quota project on aiplatform; send
-	// it so a gcloud-login user without a configured quota project does
-	// not get a 403. Harmless for service-account tokens.
-	httpReq.Header.Set("X-Goog-User-Project", p.projectID)
+	// Quota-project header for user-account ADC only — see chatOpenAICompat.
+	if p.useQuotaProjectHeader {
+		httpReq.Header.Set("X-Goog-User-Project", p.projectID)
+	}
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {

@@ -95,10 +95,10 @@ func TestListModels_PerPublisherFailureNonFatal(t *testing.T) {
 
 func TestListModels_AuthError(t *testing.T) {
 	p := &VertexAIProvider{
-		projectID: "test-project",
-		location:  "us-central1",
-		model:     "gemini-2.5-pro",
-		auth:      &gcpAuth{tokenSource: &mockTokenSource{err: context.DeadlineExceeded}},
+		projectID:  "test-project",
+		location:   "us-central1",
+		model:      "gemini-2.5-pro",
+		auth:       &gcpAuth{tokenSource: &mockTokenSource{err: context.DeadlineExceeded}},
 		httpClient: &http.Client{},
 	}
 	_, err := p.ListModels(context.Background())

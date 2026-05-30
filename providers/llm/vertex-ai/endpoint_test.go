@@ -59,6 +59,8 @@ func providerWithCapture(serverURL, model, endpointID string) (*VertexAIProvider
 		endpointID: endpointID,
 		auth:       &gcpAuth{tokenSource: &mockTokenSource{token: "test-token-123"}},
 		httpClient: &http.Client{Timeout: 10 * time.Second, Transport: ct},
+		// Simulate ADC (the default), where the quota-project header is sent.
+		useQuotaProjectHeader: true,
 	}
 	return p, ct
 }
@@ -603,6 +605,71 @@ func TestVertexAIProvider_Factory_EndpointIDWireConflict(t *testing.T) {
 				t.Fatalf("unexpected error for wire_override=%q: %v", tc.wire, err)
 			}
 		})
+	}
+}
+
+// TestVertexAIProvider_Factory_QuotaProjectHeader pins which auth
+// methods send X-Goog-User-Project: ADC (user-account tokens need a
+// quota project) yes, service-account keys no (they bill to their own
+// project and the header can trigger a serviceusage 403).
+func TestVertexAIProvider_Factory_QuotaProjectHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		auth string
+		want bool
+	}{
+		{name: "adc", auth: "adc", want: true},
+		{name: "default_empty_is_adc", auth: "", want: true},
+		{name: "sa_key", auth: "sa_key", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubAuth(&gcpAuth{tokenSource: &mockTokenSource{token: "test"}}, nil)
+			defer restore()
+
+			cfg := gollm.ProviderConfig{"project_id": "proj", "location": "us-central1", "model": "gemini-2.5-pro"}
+			if tc.auth != "" {
+				cfg["auth_method"] = tc.auth
+			}
+			p, err := factory(cfg)
+			if err != nil {
+				t.Fatalf("factory: %v", err)
+			}
+			if got := p.(*VertexAIProvider).useQuotaProjectHeader; got != tc.want {
+				t.Errorf("useQuotaProjectHeader = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestVertexAI_OpenAICompatChat_SAKeySkipsQuotaHeader asserts a
+// service-account-key provider does not send X-Goog-User-Project on the
+// chat request.
+func TestVertexAI_OpenAICompatChat_SAKeySkipsQuotaHeader(t *testing.T) {
+	const endpointID = "mg-endpoint-sa"
+	const dedicatedDNS = "mg-endpoint-sa.us-central1-1.prediction.vertexai.goog"
+	var sawQuotaHeader bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(endpointLookupJSON(true, dedicatedDNS)))
+			return
+		}
+		if r.Header.Get("X-Goog-User-Project") != "" {
+			sawQuotaHeader = true
+		}
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p, _ := providerWithCapture(server.URL, "m", endpointID)
+	p.useQuotaProjectHeader = false // service-account key
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sawQuotaHeader {
+		t.Error("service-account key must not send X-Goog-User-Project")
 	}
 }
 

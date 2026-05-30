@@ -200,6 +200,12 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride: wireOverride,
 		auth:         auth,
 		httpClient:   &http.Client{Timeout: timeout},
+		// A user-account ADC token needs a quota project on
+		// aiplatform.googleapis.com; a service-account key already bills
+		// to its own project and adding the header would force a
+		// quota-project that the SA may lack serviceusage.services.use on
+		// (HTTP 403). So send X-Goog-User-Project for ADC, not sa_key.
+		useQuotaProjectHeader: cfg["auth_method"] != gcpcreds.MethodSAKey,
 	}, nil
 }
 
@@ -216,6 +222,11 @@ type VertexAIProvider struct {
 	wireOverride gollm.Wire
 	auth         *gcpAuth
 	httpClient   *http.Client
+	// useQuotaProjectHeader controls whether X-Goog-User-Project is sent
+	// on aiplatform requests. True for ADC (user-account tokens need a
+	// quota project), false for service-account keys (they bill to their
+	// own project and the header can trigger a serviceusage 403).
+	useQuotaProjectHeader bool
 
 	// endpointHost caches the prediction host resolved for endpointID
 	// (its dedicated DNS, or the shared aiplatform host when not
