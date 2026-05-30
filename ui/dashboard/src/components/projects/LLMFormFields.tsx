@@ -69,6 +69,12 @@ export function LLMFormFields({
   const needsCredential = Boolean(credentialField);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // A user-deployed endpoint (e.g. vertex-ai endpoint_id) serves its own
+  // model, so the model picker and the "Load models" step are skipped —
+  // the provider forwards an empty model and the endpoint resolves it.
+  // The credential fields stay visible so the endpoint ID is editable.
+  const usingEndpoint = Boolean(value.config['endpoint_id']?.trim());
+
   const setProvider = (id: string) => {
     const prov = providers.find((p) => p.id === id);
     const methods = prov?.auth_methods ?? [];
@@ -101,7 +107,7 @@ export function LLMFormFields({
       />
       {selected?.description && <Text size="xs" c="dimmed">{selected.description}</Text>}
 
-      {phase === 'credentials' && (
+      {(phase === 'credentials' || usingEndpoint) && (
         <>
           {selected?.config_fields
             .filter((f) => f.key !== 'model' && f.key !== 'wire_override')
@@ -166,21 +172,27 @@ export function LLMFormFields({
             </Text>
           )}
 
-          <Button
-            onClick={onLoadModels}
-            loading={loading}
-            disabled={
-              !value.provider ||
-              (authMethods.length > 0 && !value.authMethod) ||
-              (needsCredential && !value.apiKey && !hasSavedApiKey)
-            }
-          >
-            Load models
-          </Button>
+          {usingEndpoint ? (
+            <Text size="xs" c="dimmed">
+              This endpoint serves its own deployed model — no model selection needed.
+            </Text>
+          ) : (
+            <Button
+              onClick={onLoadModels}
+              loading={loading}
+              disabled={
+                !value.provider ||
+                (authMethods.length > 0 && !value.authMethod) ||
+                (needsCredential && !value.apiKey && !hasSavedApiKey)
+              }
+            >
+              Load models
+            </Button>
+          )}
         </>
       )}
 
-      {phase === 'model' && (
+      {phase === 'model' && !usingEndpoint && (
         <>
           {liveError && (
             <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">

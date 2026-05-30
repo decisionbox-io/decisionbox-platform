@@ -228,7 +228,9 @@ type VertexAIProvider struct {
 // Validate exercises the same dispatch path as a real Chat call with
 // max_tokens=1 so credentials and model availability are both checked.
 func (p *VertexAIProvider) Validate(ctx context.Context) error {
-	if p.model == "" {
+	// A user-deployed endpoint identifies its own model, so a blank
+	// model is expected there — only the MaaS path requires one.
+	if p.model == "" && p.endpointID == "" {
 		return fmt.Errorf("vertex-ai: provider was constructed without a model (list-only); call NewProvider again with cfg[\"model\"] set before validating")
 	}
 	_, err := p.Chat(ctx, gollm.ChatRequest{
@@ -248,12 +250,14 @@ func (p *VertexAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*go
 	if req.Model == "" {
 		req.Model = p.model
 	}
-	if req.Model == "" {
+	if req.Model == "" && p.endpointID == "" {
 		// List-only construction (no model picked at factory time and
 		// no per-request model either) reaches here when a caller
 		// accidentally tries to chat through a provider built for
 		// ListModels(). Surface a clear error instead of letting the
-		// dispatcher fail later on an unresolvable wire.
+		// dispatcher fail later on an unresolvable wire. A user-deployed
+		// endpoint is exempt: it serves its own model, so a blank model
+		// is forwarded verbatim and the endpoint resolves it.
 		return nil, fmt.Errorf("vertex-ai: chat requires a model — neither ChatRequest.Model nor provider model is set (list-only construction)")
 	}
 	return p.dispatch(ctx, req)

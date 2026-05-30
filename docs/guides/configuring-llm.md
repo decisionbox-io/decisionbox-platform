@@ -187,7 +187,7 @@ gcloud ai endpoints list --region={location} --project={project}
 When Endpoint ID is set:
 
 - The chat path becomes `.../endpoints/{endpoint_id}/chat/completions` (no `/openapi/` segment).
-- The **Model** field is passed through verbatim — custom endpoints do not require a publisher prefix, so use whatever model name your serving container expects (for example `qwen3-6-27b`).
+- The dashboard **hides the Model field** — a deployed endpoint serves its own model, so there is nothing to pick. DecisionBox sends an empty model and the endpoint uses what it has deployed. (Endpoints that validate the model name are uncommon for one-click deploys; if you run one, it must accept an empty model.)
 - Authentication is identical to the rest of the provider (GCP ADC or service-account key). No `wire_override` is needed — a deployed endpoint always uses the OpenAI chat-completions wire.
 
 #### Dedicated endpoints are auto-detected
@@ -208,9 +208,9 @@ Leave Endpoint ID blank to use the shared Model Garden MaaS endpoint with publis
 | Project ID | `my-gcp-project` |
 | Location | `us-central1` |
 | Endpoint ID | `mg-endpoint-306f661d-e4c1-4169-8705-92bc60ff2def` |
-| Model | `qwen3-6-27b` |
+| Model | *(hidden — not needed)* |
 
-DecisionBox resolves the endpoint's serving host and sends `"model": "qwen3-6-27b"` to `.../endpoints/mg-endpoint-306f661d-e4c1-4169-8705-92bc60ff2def/chat/completions` on that host.
+DecisionBox resolves the endpoint's serving host and posts the chat request to `.../endpoints/mg-endpoint-306f661d-e4c1-4169-8705-92bc60ff2def/chat/completions` on that host, letting the endpoint use its own deployed model.
 
 ## AWS Bedrock
 

@@ -345,6 +345,55 @@ func TestVertexAI_OpenAICompatChat_RoutesToDedicatedDNS(t *testing.T) {
 	}
 }
 
+// TestVertexAI_OpenAICompatChat_EmptyModelWithEndpoint asserts that a
+// provider configured with an endpoint but no model chats successfully
+// (the dashboard hides the Model field for endpoints) and forwards an
+// empty model verbatim — deployed endpoints identify their own model.
+func TestVertexAI_OpenAICompatChat_EmptyModelWithEndpoint(t *testing.T) {
+	const endpointID = "mg-endpoint-nomodel"
+	const dedicatedDNS = "mg-endpoint-nomodel.us-central1-1.prediction.vertexai.goog"
+
+	var capturedModel string
+	var modelKeyPresent bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(endpointLookupJSON(true, dedicatedDNS)))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(body, &raw)
+		_, modelKeyPresent = raw["model"]
+		var decoded struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &decoded)
+		capturedModel = decoded.Model
+		_, _ = w.Write([]byte(`{"model":"served-model",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p, _ := providerWithCapture(server.URL, "", endpointID) // no model configured
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("chat with endpoint and no model should succeed, got: %v", err)
+	}
+	if !modelKeyPresent {
+		t.Error("request body should still carry a model field (empty), per the OpenAI wire")
+	}
+	if capturedModel != "" {
+		t.Errorf("model = %q, want empty (endpoint identifies its own model)", capturedModel)
+	}
+
+	// Validate must also succeed with an endpoint and no model.
+	if err := p.Validate(context.Background()); err != nil {
+		t.Errorf("Validate with endpoint and no model should succeed, got: %v", err)
+	}
+}
+
 // TestVertexAI_OpenAICompatChat_NonDedicatedUsesSharedHost asserts a
 // non-dedicated user endpoint serves predictions on the shared
 // aiplatform host (the issue's original endpoint shape).

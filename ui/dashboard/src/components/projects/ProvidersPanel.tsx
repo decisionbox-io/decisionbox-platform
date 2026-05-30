@@ -114,10 +114,13 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
           config: proj.embedding?.config || {},
           apiKey: '',
         });
-        if (proj.llm.provider) {
+        if (proj.llm.provider && !proj.llm.config?.['endpoint_id']) {
           // Existing project — jump straight to model phase and
           // pre-load the live model list so the user does not have to
-          // click Load models for an unchanged provider.
+          // click Load models for an unchanged provider. Skipped for
+          // user-deployed endpoints: they have no model picker, so the
+          // form stays in the credentials phase where the endpoint ID is
+          // editable, and the publisher live-list fetch is pointless.
           setAiPhase('model');
           const reqId = ++liveReqIdRef.current;
           api.listLiveLLMModelsForProject(proj.id)
@@ -147,7 +150,7 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
   const embNeedsCredential = (embAuthMethod?.fields ?? []).some((f) => f.type === 'credential');
 
   const isValid = Boolean(
-    llm.provider && llm.config['model'] &&
+    llm.provider && (llm.config['model'] || llm.config['endpoint_id']?.trim()) &&
     (!llmNeedsCredential || llm.apiKey || hasSavedLLMKey) &&
     embedding.provider && embedding.model &&
     (!embNeedsCredential || embedding.apiKey || hasSavedEmbeddingKey),
@@ -218,7 +221,10 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
       const saved = await api.updateProject(projectId, {
         llm: {
           provider: llm.provider,
-          model: llm.config['model'] || '',
+          // A user-deployed endpoint identifies its own model, so persist
+          // an empty model — the hidden picker's catalog default must not
+          // leak into the saved config.
+          model: llm.config['endpoint_id']?.trim() ? '' : (llm.config['model'] || ''),
           config: llmConfig,
         },
         embedding: { provider: embedding.provider, model: embedding.model, config: embConfig },
