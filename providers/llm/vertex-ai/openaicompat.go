@@ -13,17 +13,25 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/openaicompat"
 )
 
-// chatOpenAICompat sends a request to a Model-Garden / Model-as-a-Service
-// model on Vertex AI that speaks the OpenAI /chat/completions wire
-// (Llama MaaS, Qwen MaaS, DeepSeek MaaS, Mistral MaaS, and Gemini's
-// OpenAI-compatible surface). Vertex exposes those via a dedicated
-// endpoint under /v1beta1/.../endpoints/openapi/chat/completions,
-// authenticated with the same GCP bearer token as Gemini.
+// chatOpenAICompat sends a request to a Vertex AI model that speaks the
+// OpenAI /chat/completions wire. Two endpoint shapes are supported,
+// selected by whether endpoint_id is configured:
 //
-// The model ID in the request body is namespaced with the publisher
-// (e.g. "meta/llama-3.3-70b-instruct-maas"); Vertex strips the slash
-// internally. We pass it through verbatim because every documented
-// example from Google uses this form.
+//   - Shared Model Garden MaaS (endpoint_id blank): Llama MaaS, Qwen
+//     MaaS, DeepSeek MaaS, Mistral MaaS, and Gemini's OpenAI-compatible
+//     surface, all served under .../endpoints/openapi/chat/completions.
+//     The model ID is namespaced with the publisher
+//     (e.g. "meta/llama-3.3-70b-instruct-maas"); Vertex strips the slash
+//     internally. We pass it through verbatim because every documented
+//     example from Google uses this form.
+//   - User-deployed endpoint (endpoint_id set): a model the operator
+//     deployed themselves (self-fine-tuned, quantised, …), served under
+//     .../endpoints/{endpoint_id}/chat/completions with no /openapi/
+//     segment. The deployed model is named by its serving container, so
+//     the request body's model is passed through verbatim with no
+//     publisher prefix.
+//
+// Both shapes authenticate with the same GCP bearer token as Gemini.
 func (p *VertexAIProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
@@ -32,14 +40,7 @@ func (p *VertexAIProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatR
 		return nil, fmt.Errorf("vertex-ai/openai-compat: failed to marshal request: %w", err)
 	}
 
-	host := "aiplatform.googleapis.com"
-	if p.location != "global" {
-		host = fmt.Sprintf("%s-aiplatform.googleapis.com", p.location)
-	}
-	endpoint := fmt.Sprintf(
-		"https://%s/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
-		host, p.projectID, p.location,
-	)
+	endpoint := p.openAICompatURL()
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
@@ -83,4 +84,29 @@ func (p *VertexAIProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatR
 		return nil, fmt.Errorf("vertex-ai/openai-compat: %w", err)
 	}
 	return resp, nil
+}
+
+// openAICompatURL builds the chat-completions URL for the configured
+// path. The region-scoped host mirrors the rest of the provider:
+// regional except for the "global" location.
+//
+//   - endpoint_id set → .../endpoints/{endpoint_id}/chat/completions
+//     (user-deployed model, no /openapi/ segment).
+//   - endpoint_id blank → .../endpoints/openapi/chat/completions
+//     (shared Model Garden MaaS).
+func (p *VertexAIProvider) openAICompatURL() string {
+	host := "aiplatform.googleapis.com"
+	if p.location != "global" {
+		host = fmt.Sprintf("%s-aiplatform.googleapis.com", p.location)
+	}
+	if p.endpointID != "" {
+		return fmt.Sprintf(
+			"https://%s/v1beta1/projects/%s/locations/%s/endpoints/%s/chat/completions",
+			host, p.projectID, p.location, p.endpointID,
+		)
+	}
+	return fmt.Sprintf(
+		"https://%s/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+		host, p.projectID, p.location,
+	)
 }

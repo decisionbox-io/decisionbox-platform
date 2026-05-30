@@ -19,6 +19,9 @@
 //	VERTEX_PROJECT_ID=my-gcp-project
 //	VERTEX_LOCATION=us-east5  (us-east5 for Claude, us-central1 for Gemini)
 //	wire_override=google-native|anthropic|openai-compat  (optional)
+//	endpoint_id=1234567890123456789  (optional — a user-deployed Vertex
+//	  endpoint that serves the OpenAI chat-completions wire; blank uses
+//	  the shared Model Garden MaaS endpoint)
 //
 // Authentication: GCP credentials resolved by libs/gcpcreds. Supports
 // Application Default Credentials (ADC — on GKE Workload Identity,
@@ -58,6 +61,15 @@ func init() {
 		ConfigFields: []gollm.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-east5", Description: "GCP region (us-east5 for Claude, us-central1 for Gemini)"},
+			{
+				Key:         "endpoint_id",
+				Label:       "Endpoint ID",
+				Type:        "string",
+				Placeholder: "1234567890123456789",
+				Description: "Vertex endpoint ID for a user-deployed model that serves the " +
+					"OpenAI chat-completions wire (e.g. a self-fine-tuned or quantised model). " +
+					"Leave blank to use the shared Model Garden MaaS endpoint.",
+			},
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -130,6 +142,20 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride = parsed
 	}
 
+	// A user-deployed endpoint is reached at
+	// .../endpoints/{endpoint_id}/chat/completions, which only serves the
+	// OpenAI chat-completions wire. Routing it through any other wire is a
+	// contradiction, so reject a conflicting wire_override up front rather
+	// than silently ignoring it.
+	endpointID := cfg["endpoint_id"]
+	if endpointID != "" && wireOverride != gollm.WireUnknown && wireOverride != gollm.WireOpenAICompat {
+		return nil, fmt.Errorf(
+			"vertex-ai: endpoint_id routes through the OpenAI chat-completions wire, "+
+				"but wire_override=%s was set; clear wire_override or set it to %s",
+			wireOverride, gollm.WireOpenAICompat,
+		)
+	}
+
 	timeout := gollm.ResolveHTTPTimeout(cfg, vertexDefaultTimeout)
 	ctx := context.Background()
 
@@ -145,6 +171,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		projectID:    projectID,
 		location:     location,
 		model:        model,
+		endpointID:   endpointID,
 		wireOverride: wireOverride,
 		auth:         auth,
 		httpClient:   &http.Client{Timeout: timeout},
@@ -153,9 +180,14 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 
 // VertexAIProvider implements llm.Provider for Google Vertex AI.
 type VertexAIProvider struct {
-	projectID    string
-	location     string
-	model        string
+	projectID string
+	location  string
+	model     string
+	// endpointID, when set, names a user-deployed Vertex endpoint. Chat
+	// requests then target .../endpoints/{endpointID}/chat/completions
+	// (the OpenAI chat-completions wire) instead of the shared Model
+	// Garden MaaS endpoint. Empty means MaaS.
+	endpointID   string
 	wireOverride gollm.Wire
 	auth         *gcpAuth
 	httpClient   *http.Client

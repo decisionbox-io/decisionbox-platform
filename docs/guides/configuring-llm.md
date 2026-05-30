@@ -152,6 +152,7 @@ gcloud auth application-default login
 3. Set provider-specific config:
    - **Project ID**: Your GCP project ID
    - **Location**: Region where the model is enabled (e.g., `us-east5` for Claude, `us-central1` for Gemini, `global` also supported)
+   - **Endpoint ID** (optional): leave blank for Model Garden models; set it to target a model you deployed yourself — see [Custom (user-deployed) endpoints](#custom-user-deployed-endpoints)
 
 ### 3. No API Key Needed
 
@@ -164,6 +165,43 @@ Vertex AI uses GCP Application Default Credentials (ADC). No LLM API key secret 
 - **Model Garden MaaS** uses publisher-prefixed IDs: `meta/llama-3.3-70b-instruct-maas`, `qwen/qwen3-coder-480b-a35b-instruct-maas`
 
 The provider looks up the model in the catalog and routes to the correct wire format — you do not need to tell DecisionBox which wire to use.
+
+### Custom (user-deployed) endpoints
+
+The model IDs above all live on Vertex's shared Model Garden MaaS endpoint, which DecisionBox reaches at:
+
+```
+https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions
+```
+
+If you deployed a model yourself — a self-fine-tuned Qwen, a quantised Llama variant, or anything not in Model Garden — it lives on a **Vertex endpoint** with its own numeric ID, at a different URL with no `/openapi/` segment:
+
+```
+https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/{endpoint_id}/chat/completions
+```
+
+To use a deployed endpoint, set the **Endpoint ID** field on the Vertex AI provider config to the endpoint's numeric ID (find it under **Vertex AI → Online prediction → Endpoints** in the GCP console, or via `gcloud ai endpoints list --region={location}`).
+When Endpoint ID is set:
+
+- DecisionBox calls the `endpoints/{endpoint_id}/chat/completions` URL instead of the shared MaaS path.
+- The **Model** field is passed through verbatim — custom endpoints do not require a publisher prefix, so use whatever model name your serving container expects (for example `my-finetuned-qwen-27b`).
+- Authentication is identical to the rest of the provider (GCP ADC or service-account key).
+
+Your endpoint must serve the OpenAI `/chat/completions` wire (the standard OpenAI-compatible serving container).
+Endpoints that speak only Vertex's native `:predict` API are not supported.
+
+Leave Endpoint ID blank to use the shared Model Garden MaaS endpoint with publisher-prefixed model IDs as described above.
+
+#### Example
+
+| Field | Value |
+|-------|-------|
+| Project ID | `my-gcp-project` |
+| Location | `us-central1` |
+| Endpoint ID | `1234567890123456789` |
+| Model | `my-finetuned-qwen-27b` |
+
+This routes chat requests to `https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-gcp-project/locations/us-central1/endpoints/1234567890123456789/chat/completions` with `"model": "my-finetuned-qwen-27b"` in the request body.
 
 ## AWS Bedrock
 
