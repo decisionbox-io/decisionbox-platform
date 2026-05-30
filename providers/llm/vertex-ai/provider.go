@@ -204,11 +204,13 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		auth:         auth,
 		httpClient:   &http.Client{Timeout: timeout},
 		// A user-account ADC token needs a quota project on
-		// aiplatform.googleapis.com; a service-account key already bills
-		// to its own project and adding the header would force a
-		// quota-project that the SA may lack serviceusage.services.use on
-		// (HTTP 403). So send X-Goog-User-Project for ADC, not sa_key.
-		useQuotaProjectHeader: cfg["auth_method"] != gcpcreds.MethodSAKey,
+		// aiplatform.googleapis.com; a real service-account key already
+		// bills to its own project and adding the header would force a
+		// quota project the SA may lack serviceusage.services.use on
+		// (HTTP 403). Send the header for anything but a real SA key —
+		// sa_key with empty credentials falls back to ADC (see
+		// gcpcreds.TokenSource), which still needs the header.
+		useQuotaProjectHeader: cfg["auth_method"] != gcpcreds.MethodSAKey || cfg[gcpcreds.FieldCredentials] == "",
 	}, nil
 }
 

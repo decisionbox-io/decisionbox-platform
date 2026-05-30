@@ -619,18 +619,21 @@ func TestVertexAIProvider_Factory_EndpointIDWireConflict(t *testing.T) {
 }
 
 // TestVertexAIProvider_Factory_QuotaProjectHeader pins which auth
-// methods send X-Goog-User-Project: ADC (user-account tokens need a
-// quota project) yes, service-account keys no (they bill to their own
-// project and the header can trigger a serviceusage 403).
+// methods send X-Goog-User-Project. ADC (user-account tokens) need a
+// quota project. A real service-account key does not (and the header
+// can trigger a serviceusage 403). But sa_key with empty credentials
+// falls back to ADC, so it must still send the header.
 func TestVertexAIProvider_Factory_QuotaProjectHeader(t *testing.T) {
 	tests := []struct {
-		name string
-		auth string
-		want bool
+		name        string
+		auth        string
+		credentials string
+		want        bool
 	}{
 		{name: "adc", auth: "adc", want: true},
 		{name: "default_empty_is_adc", auth: "", want: true},
-		{name: "sa_key", auth: "sa_key", want: false},
+		{name: "sa_key_with_credentials", auth: "sa_key", credentials: `{"type":"service_account"}`, want: false},
+		{name: "sa_key_empty_credentials_falls_back_to_adc", auth: "sa_key", credentials: "", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -640,6 +643,9 @@ func TestVertexAIProvider_Factory_QuotaProjectHeader(t *testing.T) {
 			cfg := gollm.ProviderConfig{"project_id": "proj", "location": "us-central1", "model": "gemini-2.5-pro"}
 			if tc.auth != "" {
 				cfg["auth_method"] = tc.auth
+			}
+			if tc.credentials != "" {
+				cfg["credentials_json"] = tc.credentials
 			}
 			p, err := factory(cfg)
 			if err != nil {
