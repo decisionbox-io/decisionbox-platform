@@ -539,6 +539,22 @@ describe('LLMFormFields — user-deployed endpoint (endpoint_id) hides the model
     expect(screen.queryByText(/serves its own deployed model/i)).not.toBeInTheDocument();
   });
 
+  test('typing an endpoint ID clears a stale wire_override', async () => {
+    const user = userEvent.setup();
+    const initial: LLMFormState = {
+      provider: 'vertex-ai',
+      authMethod: 'adc',
+      config: { project_id: 'p', location: 'us-central1', endpoint_id: '', model: 'gemini-2.5-pro', wire_override: 'anthropic-messages' },
+      apiKey: '',
+    };
+    render(<ControlledHarness providers={[vertexMeta]} initial={initial} />);
+    await user.type(screen.getByLabelText('Endpoint ID'), 'mg-endpoint-abc');
+    // The stale wire_override must be dropped so the provider doesn't
+    // reject the saved config (an endpoint always uses the OpenAI wire).
+    expect(getDump().value.config.wire_override).toBeUndefined();
+    expect(getDump().value.config.endpoint_id).toBe('mg-endpoint-abc');
+  });
+
   test('with endpoint_id set, the model picker stays hidden even in the model phase', () => {
     const initial: LLMFormState = {
       provider: 'vertex-ai',

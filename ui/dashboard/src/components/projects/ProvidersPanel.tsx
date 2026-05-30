@@ -205,8 +205,14 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
     if (!project) return;
     setSaving(true);
     try {
+      // Drop wire_override in endpoint mode: it is hidden in the form but
+      // a stale value would be rejected by the provider (an endpoint
+      // always uses the OpenAI chat-completions wire).
+      const llmUsingEndpoint = Boolean(llm.config['endpoint_id']?.trim());
       const llmConfig: Record<string, string> = Object.fromEntries(
-        Object.entries(llm.config).filter(([k]) => k !== 'model'),
+        Object.entries(llm.config).filter(([k]) =>
+          k !== 'model' && !(k === 'wire_override' && llmUsingEndpoint),
+        ),
       );
       if (llm.authMethod) llmConfig.auth_method = llm.authMethod;
       // Carry every form-state config field for embedding (project_id,

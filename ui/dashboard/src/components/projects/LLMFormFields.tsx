@@ -92,7 +92,15 @@ export function LLMFormFields({
   };
 
   const setConfigField = (key: string, val: string) => {
-    onChange({ ...value, config: { ...value.config, [key]: val } });
+    const config = { ...value.config, [key]: val };
+    // Entering an endpoint ID drops any wire_override: an endpoint always
+    // uses the OpenAI chat-completions wire, and the field is hidden in
+    // endpoint mode, so a stale value would otherwise be persisted and
+    // rejected by the provider at construction time.
+    if (key === 'endpoint_id' && val.trim()) {
+      delete config['wire_override'];
+    }
+    onChange({ ...value, config });
   };
 
   return (
