@@ -111,7 +111,31 @@ func init() {
 		Models:                 buildVertexCatalog(),
 		DefaultMaxOutputTokens: 16384,
 		FamilyInferrer:         inferVertexWire,
+		EffectiveInputWindow:   vertexEffectiveInputWindow,
 	})
+}
+
+// vertexEffectiveInputWindow is the ProviderMeta.EffectiveInputWindow
+// hook. When endpoint_id is set the configured model lives on a
+// user-deployed endpoint, not in the publisher catalog — so its catalog
+// context window must not be used for budgeting (a deployed-model name
+// that collides with a catalog ID like "gemini-2.5-pro" would otherwise
+// budget against Gemini's window and overflow the real endpoint). Fall
+// back to the conservative provider / global default in that case;
+// otherwise preserve the catalog-driven value GetEffectiveInputWindow
+// would have returned with no hook.
+func vertexEffectiveInputWindow(model string, cfg gollm.ProviderConfig) int {
+	meta, ok := gollm.GetProviderMeta(providerName)
+	if !ok {
+		return gollm.DefaultMaxInputTokens
+	}
+	if cfg["endpoint_id"] != "" {
+		if meta.DefaultMaxInputTokens > 0 {
+			return meta.DefaultMaxInputTokens
+		}
+		return gollm.DefaultMaxInputTokens
+	}
+	return meta.MaxInputTokensFor(model)
 }
 
 func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {

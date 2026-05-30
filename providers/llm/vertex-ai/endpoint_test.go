@@ -412,6 +412,57 @@ func TestVertexAI_Dispatch_EndpointIDBeatsCatalog(t *testing.T) {
 	}
 }
 
+// --- Catalog bypass for endpoint-backed models ---
+
+// TestVertexAIProvider_TokenCounter_EndpointBypassesCatalog pins that a
+// provider with endpoint_id set never picks the exact Gemini counter,
+// even when the deployed model's name collides with a Gemini catalog ID
+// — the endpoint serves the OpenAI-compat wire, which has no exact
+// counter.
+func TestVertexAIProvider_TokenCounter_EndpointBypassesCatalog(t *testing.T) {
+	p := &VertexAIProvider{
+		projectID:  "test-project",
+		location:   "us-central1",
+		model:      "gemini-2.5-pro",
+		endpointID: "mg-endpoint-306f661d",
+		auth:       &gcpAuth{tokenSource: &mockTokenSource{token: "test-token"}},
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+	c, err := p.TokenCounter(context.Background(), "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("TokenCounter errored: %v", err)
+	}
+	if _, ok := c.(gollm.ApproximateCounter); !ok {
+		t.Fatalf("got %T, want ApproximateCounter for an endpoint-backed model", c)
+	}
+}
+
+// TestVertexEffectiveInputWindow_EndpointFallsBackToDefault pins that
+// endpoint_id makes the budget window resolve to the conservative
+// default instead of a colliding catalog model's (large) window, while
+// the no-endpoint case still returns the catalog value.
+func TestVertexEffectiveInputWindow_EndpointFallsBackToDefault(t *testing.T) {
+	catalogWindow := gollm.GetEffectiveInputWindow(providerName, "gemini-2.5-pro", nil)
+	if catalogWindow <= gollm.DefaultMaxInputTokens {
+		t.Fatalf("test premise broken: gemini-2.5-pro catalog window %d should exceed default %d",
+			catalogWindow, gollm.DefaultMaxInputTokens)
+	}
+
+	withEndpoint := gollm.GetEffectiveInputWindow(providerName, "gemini-2.5-pro", gollm.ProviderConfig{
+		"endpoint_id": "mg-endpoint-306f661d",
+	})
+	if withEndpoint != gollm.DefaultMaxInputTokens {
+		t.Errorf("endpoint-backed window = %d, want conservative default %d (not the colliding catalog window %d)",
+			withEndpoint, gollm.DefaultMaxInputTokens, catalogWindow)
+	}
+
+	// No endpoint_id → catalog value preserved (no regression).
+	noEndpoint := gollm.GetEffectiveInputWindow(providerName, "gemini-2.5-pro", gollm.ProviderConfig{})
+	if noEndpoint != catalogWindow {
+		t.Errorf("non-endpoint window = %d, want catalog value %d", noEndpoint, catalogWindow)
+	}
+}
+
 // --- Factory parsing / validation (no network) ---
 
 // TestVertexAIProvider_Factory_EndpointID pins that the factory parses
