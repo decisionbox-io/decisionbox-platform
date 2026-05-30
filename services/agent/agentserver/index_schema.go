@@ -179,6 +179,9 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		ProviderName: blurbProvider,
 		Workers:      workers,
 		MaxTokens:    maxTokens,
+		// A user-deployed endpoint serves its own model, so blurbModel is
+		// empty — let the generator accept that instead of demanding an ID.
+		AllowEmptyModel: strings.TrimSpace(blurbConfig["endpoint_id"]) != "",
 	})
 	if err != nil {
 		return fmt.Errorf("blurb generator: %w", err)
@@ -209,11 +212,11 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	}
 
 	applog.WithFields(applog.Fields{
-		"tables":            stats.Tables,
-		"dropped":           stats.Dropped,
-		"blurb_tokens_in":   stats.BlurbTokensIn,
-		"blurb_tokens_out":  stats.BlurbTokensOut,
-		"wall_clock_ms":     time.Since(start).Milliseconds(),
+		"tables":           stats.Tables,
+		"dropped":          stats.Dropped,
+		"blurb_tokens_in":  stats.BlurbTokensIn,
+		"blurb_tokens_out": stats.BlurbTokensOut,
+		"wall_clock_ms":    time.Since(start).Milliseconds(),
 	}).Info("Schema index completed")
 
 	return nil
@@ -243,7 +246,20 @@ func resolveBlurbLLM(ctx context.Context, _ *config.Config, project *models.Proj
 	if providerName == "" {
 		return "", "", "", fmt.Errorf("no LLM provider configured (project.blurb_llm or project.llm)")
 	}
-	if model == "" {
+	// A user-deployed endpoint identifies its own model, so an empty model
+	// is expected when the effective blurb provider config carries an
+	// endpoint_id. Mirror the caller's config selection to detect it.
+	blurbConfig := project.LLM.Config
+	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
+		blurbConfig = project.BlurbLLM.Config
+	}
+	if strings.TrimSpace(blurbConfig["endpoint_id"]) != "" {
+		// A user-deployed endpoint identifies its own model. Force an
+		// empty model so the endpoint resolves it — and so a blurb
+		// endpoint override never inherits the (unrelated) analysis
+		// model left in `model` when BlurbLLM.Model is blank.
+		model = ""
+	} else if model == "" {
 		return "", "", "", fmt.Errorf("no model configured for blurb LLM")
 	}
 

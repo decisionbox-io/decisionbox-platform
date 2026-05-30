@@ -194,7 +194,7 @@ func TestVertexAIProvider_ConfigFields(t *testing.T) {
 	for _, f := range meta.ConfigFields {
 		fieldKeys[f.Key] = true
 	}
-	for _, want := range []string{"project_id", "location", "model", "wire_override"} {
+	for _, want := range []string{"project_id", "location", "endpoint_id", "model", "wire_override"} {
 		if !fieldKeys[want] {
 			t.Errorf("missing %s config field", want)
 		}

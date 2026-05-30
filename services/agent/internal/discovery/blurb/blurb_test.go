@@ -124,6 +124,18 @@ func TestNew_RequiresModel(t *testing.T) {
 	}
 }
 
+// TestNew_AllowEmptyModel pins that an empty model is accepted when the
+// provider identifies its own model (a user-deployed endpoint), and
+// still rejected otherwise.
+func TestNew_AllowEmptyModel(t *testing.T) {
+	if _, err := New(Config{LLM: &fakeLLM{}, AllowEmptyModel: true}); err != nil {
+		t.Errorf("empty model with AllowEmptyModel should be accepted, got %v", err)
+	}
+	if _, err := New(Config{LLM: &fakeLLM{}, AllowEmptyModel: false}); !errors.Is(err, ErrModelMissing) {
+		t.Errorf("empty model without AllowEmptyModel should be rejected, got %v", err)
+	}
+}
+
 func TestNew_DefaultsApplied(t *testing.T) {
 	g, err := New(Config{LLM: &fakeLLM{}, Model: "gpt-4o"})
 	if err != nil {
@@ -550,7 +562,7 @@ func newTestGen(t *testing.T, llm gollm.Provider) *Generator {
 // occasionally returns nothing.
 func TestOneBlurb_RetriesEmptyResponse_WithoutFinishReason(t *testing.T) {
 	llm := &fakeLLM{scripted: []scriptedResp{
-		{text: "", stopReason: ""},           // first attempt: transient empty
+		{text: "", stopReason: ""},                       // first attempt: transient empty
 		{text: "A table of orders.", stopReason: "STOP"}, // retry succeeds
 	}}
 	g := newTestGen(t, llm)

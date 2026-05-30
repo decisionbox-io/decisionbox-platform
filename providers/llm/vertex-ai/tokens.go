@@ -36,6 +36,14 @@ func (p *VertexAIProvider) TokenCounter(_ context.Context, model string) (gollm.
 	if model == "" {
 		model = p.model
 	}
+	// A user-deployed endpoint serves the OpenAI-compat wire and has no
+	// exact counter — same as MaaS. Short-circuit before the catalog
+	// lookup so a deployed model whose name happens to collide with a
+	// Gemini catalog ID is not counted against the publisher Gemini
+	// model's countTokens endpoint.
+	if p.endpointID != "" {
+		return gollm.ApproximateCounter{}, nil
+	}
 	meta, ok := gollm.GetProviderMeta("vertex-ai")
 	if !ok {
 		return gollm.ApproximateCounter{}, nil

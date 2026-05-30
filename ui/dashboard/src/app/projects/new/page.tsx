@@ -129,13 +129,26 @@ export default function NewProjectPage() {
     (f) => f.type === 'credential' || f.key === 'api_key'
   ) ?? false;
 
+  // LLM credential requirement for the selected auth method. The normal
+  // flow gates this via the "Load models" button; the endpoint branch
+  // below has no such step, so it checks the same condition directly.
+  const llmAuthMethods = selectedLLM?.auth_methods || [];
+  const llmSelectedAuthMethod = llmAuthMethods.find((m) => m.id === llm.authMethod);
+  const llmNeedsCredential = (llmSelectedAuthMethod?.fields || []).some((f) => f.type === 'credential');
+
   const canProceed = [
     () => name && domain && category,
     () => warehouse.provider && warehouse.config['dataset'] && (whAuthMethods.length === 0 || warehouse.authMethod) && (!authNeedsCredential || warehouse.credential),
     // AI step: must be in the "model" phase (models loaded) and have a
     // model selected. The credentials phase uses its own "Load models"
-    // button instead of Next.
-    () => aiPhase === 'model' && llm.provider && llm.config['model'],
+    // button instead of Next. A user-deployed endpoint is the exception:
+    // it has no model picker, so the credentials phase alone is complete
+    // once the endpoint ID is filled.
+    () => llm.provider && (
+      llm.config['endpoint_id']?.trim()
+        ? ((llmAuthMethods.length === 0 || llm.authMethod) && (!llmNeedsCredential || llm.apiKey))
+        : (aiPhase === 'model' && llm.config['model'])
+    ),
     // Embedding step: mandatory — schema indexing won't start without
     // a provider + model. API key required when the provider asks for
     // one (OpenAI, Voyage, etc); cloud-creds providers (Bedrock,
@@ -204,10 +217,19 @@ export default function NewProjectPage() {
         },
         llm: {
           provider: llm.provider,
-          model: llm.config['model'] || '',
+          // A user-deployed endpoint identifies its own model, so persist
+          // an empty model — the hidden picker's catalog default must not
+          // leak into the saved config.
+          model: llm.config['endpoint_id']?.trim() ? '' : (llm.config['model'] || ''),
           config: {
             ...Object.fromEntries(
-              Object.entries(llm.config).filter(([k]) => k !== 'model' && k !== 'api_key')
+              // Drop wire_override in endpoint mode: it is hidden in the
+              // form but a stale value would be rejected by the provider
+              // (an endpoint always uses the OpenAI chat-completions wire).
+              Object.entries(llm.config).filter(([k]) =>
+                k !== 'model' && k !== 'api_key' &&
+                !(k === 'wire_override' && llm.config['endpoint_id']?.trim())
+              )
             ),
             ...(llm.authMethod ? { auth_method: llm.authMethod } : {}),
           },
@@ -395,7 +417,7 @@ export default function NewProjectPage() {
                     <Text><strong>Name:</strong> {name}</Text>
                     <Text><strong>Domain:</strong> {domain} / {category}</Text>
                     <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
-                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['model']}</Text>
+                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? `endpoint ${llm.config['endpoint_id']}` : llm.config['model']}</Text>
                     <Text>
                       <strong>Embedding:</strong>{' '}
                       {embProviderMeta?.name || embedding.provider} / {embedding.model}
