@@ -253,7 +253,13 @@ func resolveBlurbLLM(ctx context.Context, _ *config.Config, project *models.Proj
 	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
 		blurbConfig = project.BlurbLLM.Config
 	}
-	if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
+	if strings.TrimSpace(blurbConfig["endpoint_id"]) != "" {
+		// A user-deployed endpoint identifies its own model. Force an
+		// empty model so the endpoint resolves it — and so a blurb
+		// endpoint override never inherits the (unrelated) analysis
+		// model left in `model` when BlurbLLM.Model is blank.
+		model = ""
+	} else if model == "" {
 		return "", "", "", fmt.Errorf("no model configured for blurb LLM")
 	}
 

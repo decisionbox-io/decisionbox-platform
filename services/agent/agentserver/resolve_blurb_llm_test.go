@@ -15,10 +15,11 @@ import (
 func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
 	sp := &fakeSecretProvider{}
 	tests := []struct {
-		name      string
-		project   *models.Project
-		wantErr   string
-		wantModel string
+		name         string
+		project      *models.Project
+		wantErr      string
+		wantModel    string
+		wantProvider string // defaults to project.LLM.Provider when empty
 	}{
 		{
 			name: "endpoint_backed_empty_model_ok",
@@ -41,6 +42,17 @@ func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
 			},
 			wantModel: "gpt-4o",
 		},
+		{
+			// A separate blurb endpoint override with a blank model must
+			// not inherit the analysis model — it stays empty.
+			name: "blurb_endpoint_override_does_not_inherit_analysis_model",
+			project: &models.Project{
+				LLM:      models.LLMConfig{Provider: "openai", Model: "gpt-4o"},
+				BlurbLLM: &models.BlurbLLMConfig{Provider: "vertex-ai", Model: "", Config: map[string]string{"endpoint_id": "mg-endpoint-blurb"}},
+			},
+			wantModel:    "",
+			wantProvider: "vertex-ai",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,8 +66,12 @@ func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if provider != tc.project.LLM.Provider {
-				t.Errorf("provider = %q, want %q", provider, tc.project.LLM.Provider)
+			wantProvider := tc.wantProvider
+			if wantProvider == "" {
+				wantProvider = tc.project.LLM.Provider
+			}
+			if provider != wantProvider {
+				t.Errorf("provider = %q, want %q", provider, wantProvider)
 			}
 			if model != tc.wantModel {
 				t.Errorf("model = %q, want %q", model, tc.wantModel)
