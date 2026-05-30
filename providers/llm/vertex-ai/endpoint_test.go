@@ -281,12 +281,13 @@ func TestVertexAI_OpenAICompatChat_RoutesToDedicatedDNS(t *testing.T) {
 	const endpointID = "mg-endpoint-306f661d"
 	const dedicatedDNS = "mg-endpoint-306f661d.us-central1-114917953805.prediction.vertexai.goog"
 
-	var capturedModel string
+	var capturedModel, capturedQuotaProject string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet: // endpoint lookup
 			_, _ = w.Write([]byte(endpointLookupJSON(true, dedicatedDNS)))
 		case http.MethodPost: // chat completion
+			capturedQuotaProject = r.Header.Get("X-Goog-User-Project")
 			body, _ := io.ReadAll(r.Body)
 			var decoded struct {
 				Model string `json:"model"`
@@ -313,6 +314,11 @@ func TestVertexAI_OpenAICompatChat_RoutesToDedicatedDNS(t *testing.T) {
 	}
 	if capturedModel != customModel {
 		t.Errorf("request model = %q, want verbatim %q", capturedModel, customModel)
+	}
+	// The chat request must carry the quota-project header so user-ADC
+	// callers without a configured quota project are not rejected.
+	if capturedQuotaProject != "test-project" {
+		t.Errorf("chat X-Goog-User-Project = %q, want %q", capturedQuotaProject, "test-project")
 	}
 
 	reqs := ct.snapshot()
