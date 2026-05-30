@@ -168,11 +168,13 @@ The provider looks up the model in the catalog and routes to the correct wire fo
 
 ### Custom (user-deployed) endpoints
 
-The model IDs above all live on Vertex's shared Model Garden MaaS endpoint, which DecisionBox reaches at:
+The Model Garden MaaS model IDs above (Llama / Qwen / DeepSeek / Mistral) live on Vertex's shared MaaS endpoint, which DecisionBox reaches at:
 
 ```
 https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions
 ```
+
+For `location=global`, the host is `aiplatform.googleapis.com` with no region prefix (this applies to every Vertex URL shape, including the endpoint path below).
 
 If you deployed a model yourself — a self-fine-tuned Qwen, a quantised Llama variant, a Model Garden one-click deploy, or anything not in Model Garden MaaS — it lives on a **Vertex endpoint** with its own ID. Set the **Endpoint ID** field on the Vertex AI provider config to that ID and DecisionBox routes chat requests to the endpoint instead of the shared MaaS path.
 
@@ -190,7 +192,7 @@ When Endpoint ID is set:
 
 #### Dedicated endpoints are auto-detected
 
-Most deployed endpoints — including every Model Garden one-click deploy — are **dedicated**: Vertex serves them on a per-endpoint DNS name, not the shared `aiplatform.googleapis.com` host, and rejects predictions sent to the shared host. The dedicated DNS embeds an internal identifier that cannot be derived from your project, so DecisionBox looks the endpoint up once (via the Vertex management API, using the same credentials) to discover it, then sends predictions there. Non-dedicated endpoints are served on the regional `aiplatform.googleapis.com` host. You do not configure any of this — only the Endpoint ID.
+Most deployed endpoints — including every Model Garden one-click deploy — are **dedicated**: Vertex serves them on a per-endpoint DNS name, not the shared `aiplatform.googleapis.com` host, and rejects predictions sent to the shared host. The dedicated DNS embeds an internal identifier that cannot be derived from your project, so DecisionBox looks the endpoint up once (via the Vertex management API, using the same credentials) to discover it, then sends predictions there. That lookup needs the `aiplatform.endpoints.get` permission, which `roles/aiplatform.user` already grants alongside prediction — a service account that can call the model can resolve the DNS. Non-dedicated endpoints are served on the regional `aiplatform.googleapis.com` host. You do not configure any of this — only the Endpoint ID.
 
 The endpoint must:
 
