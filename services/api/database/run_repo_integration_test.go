@@ -26,10 +26,10 @@ func dropRuns(t *testing.T, ctx context.Context) {
 func seedRun(t *testing.T, ctx context.Context, status string, completionHooksFiredAt *time.Time, completedAt *time.Time, startedAt time.Time) string {
 	t.Helper()
 	doc := bson.M{
-		"project_id":  "proj-integ",
-		"status":      status,
-		"started_at":  startedAt,
-		"updated_at":  time.Now(),
+		"project_id": "proj-integ",
+		"status":     status,
+		"started_at": startedAt,
+		"updated_at": time.Now(),
 	}
 	if completedAt != nil {
 		doc["completed_at"] = *completedAt
@@ -43,6 +43,123 @@ func seedRun(t *testing.T, ctx context.Context, status string, completionHooksFi
 	}
 	oid := res.InsertedID.(primitive.ObjectID)
 	return oid.Hex()
+}
+
+// seedRunForProject inserts a discovery_runs doc for a specific project,
+// returning its hex _id. Used by the LatestByProjects tests where the
+// per-project keying matters (seedRun pins a single project_id).
+func seedRunForProject(t *testing.T, ctx context.Context, projectID, status string, startedAt time.Time, completedAt *time.Time) string {
+	t.Helper()
+	doc := bson.M{
+		"project_id": projectID,
+		"status":     status,
+		"started_at": startedAt,
+		"updated_at": time.Now(),
+	}
+	if completedAt != nil {
+		doc["completed_at"] = *completedAt
+	}
+	res, err := testDB.Collection("discovery_runs").InsertOne(ctx, doc)
+	if err != nil {
+		t.Fatalf("seed run for %s: %v", projectID, err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
+}
+
+func TestInteg_RunRepo_LatestByProjects_PicksMostRecentPerProject(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	completedAt := base.Add(30 * time.Minute)
+
+	// proj-a: an older completed run and a newer running run — the
+	// running one must win because it started later.
+	_ = seedRunForProject(t, ctx, "proj-a", "completed", base, &completedAt)
+	aLatest := seedRunForProject(t, ctx, "proj-a", "running", base.Add(1*time.Hour), nil)
+	// proj-b: a single completed run.
+	bCompletedAt := base.Add(2 * time.Hour)
+	bLatest := seedRunForProject(t, ctx, "proj-b", "completed", base.Add(90*time.Minute), &bCompletedAt)
+	// proj-c: a failed run — must still be returned (any latest status).
+	cLatest := seedRunForProject(t, ctx, "proj-c", "failed", base.Add(3*time.Hour), nil)
+	// proj-z: has runs but is NOT requested — must be absent from result.
+	_ = seedRunForProject(t, ctx, "proj-z", "completed", base, &completedAt)
+
+	got, err := repo.LatestByProjects(ctx, []string{"proj-a", "proj-b", "proj-c", "proj-no-runs"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("got %d projects in result, want 3 (a, b, c)", len(got))
+	}
+	if _, ok := got["proj-no-runs"]; ok {
+		t.Error("proj-no-runs has no runs but appeared in result")
+	}
+	if _, ok := got["proj-z"]; ok {
+		t.Error("proj-z was not requested but appeared in result")
+	}
+
+	if a := got["proj-a"]; a == nil {
+		t.Error("proj-a missing from result")
+	} else {
+		if a.ID != aLatest {
+			t.Errorf("proj-a latest run id = %q, want %q (the newer running run)", a.ID, aLatest)
+		}
+		if a.Status != "running" {
+			t.Errorf("proj-a latest status = %q, want running", a.Status)
+		}
+		if a.CompletedAt != nil {
+			t.Errorf("proj-a running run should have nil CompletedAt, got %v", a.CompletedAt)
+		}
+	}
+
+	if b := got["proj-b"]; b == nil {
+		t.Error("proj-b missing from result")
+	} else {
+		if b.ID != bLatest {
+			t.Errorf("proj-b latest run id = %q, want %q", b.ID, bLatest)
+		}
+		if b.Status != "completed" || b.CompletedAt == nil {
+			t.Errorf("proj-b should be completed with a CompletedAt, got status=%q completed_at=%v", b.Status, b.CompletedAt)
+		}
+	}
+
+	if c := got["proj-c"]; c == nil {
+		t.Error("proj-c missing from result")
+	} else if c.ID != cLatest || c.Status != "failed" {
+		t.Errorf("proj-c latest = (%q, %q), want (%q, failed)", c.ID, c.Status, cLatest)
+	}
+}
+
+func TestInteg_RunRepo_LatestByProjects_EmptyInput(t *testing.T) {
+	ctx := context.Background()
+	repo := NewRunRepository(testDB)
+
+	got, err := repo.LatestByProjects(ctx, nil)
+	if err != nil {
+		t.Fatalf("LatestByProjects(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d entries for empty input, want 0", len(got))
+	}
+}
+
+func TestInteg_RunRepo_LatestByProjects_NoMatches(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	seedRunForProject(t, ctx, "proj-other", "completed", time.Now(), nil)
+
+	got, err := repo.LatestByProjects(ctx, []string{"proj-absent"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d entries when no project matches, want 0", len(got))
+	}
 }
 
 func TestInteg_RunRepo_ListTerminalWithoutCompletionHook_FiltersByStatusAndField(t *testing.T) {

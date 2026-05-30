@@ -8,20 +8,43 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
-	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // Compile-time checks: mocks satisfy interfaces.
 var (
-	_ database.ProjectRepo    = (*mockProjectRepo)(nil)
-	_ database.DiscoveryRepo  = (*mockDiscoveryRepo)(nil)
-	_ database.RunRepo        = (*mockRunRepo)(nil)
-	_ database.FeedbackRepo   = (*mockFeedbackRepo)(nil)
-	_ database.PricingRepo    = (*mockPricingRepo)(nil)
-	_ database.DomainPackRepo = (*mockDomainPackRepo)(nil)
-	_ runner.Runner           = (*mockRunner)(nil)
+	_ database.ProjectRepo      = (*mockProjectRepo)(nil)
+	_ database.DiscoveryRepo    = (*mockDiscoveryRepo)(nil)
+	_ database.RunRepo          = (*mockRunRepo)(nil)
+	_ database.FeedbackRepo     = (*mockFeedbackRepo)(nil)
+	_ database.PricingRepo      = (*mockPricingRepo)(nil)
+	_ database.DomainPackRepo   = (*mockDomainPackRepo)(nil)
+	_ runner.Runner             = (*mockRunner)(nil)
+	_ ProjectRunSummaryProvider = (*mockRunSummaryProvider)(nil)
 )
+
+// mockRunSummaryProvider implements ProjectRunSummaryProvider for the
+// project List/Get enrichment tests. It returns only the runs whose
+// project IDs were requested (mirroring the aggregation's $in filter),
+// or err when set so the best-effort path can be exercised.
+type mockRunSummaryProvider struct {
+	runs map[string]*models.DiscoveryRun
+	err  error
+}
+
+func (m *mockRunSummaryProvider) LatestByProjects(_ context.Context, ids []string) (map[string]*models.DiscoveryRun, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	out := make(map[string]*models.DiscoveryRun, len(ids))
+	for _, id := range ids {
+		if run, ok := m.runs[id]; ok {
+			out[id] = run
+		}
+	}
+	return out, nil
+}
 
 // mockProjectRepo implements database.ProjectRepo using an in-memory map.
 type mockProjectRepo struct {
@@ -499,9 +522,9 @@ func (m *mockRunRepo) addRun(run *models.DiscoveryRun) {
 
 // mockFeedbackRepo implements database.FeedbackRepo using an in-memory slice.
 type mockFeedbackRepo struct {
-	mu       sync.Mutex
-	items    []*models.Feedback
-	nextID   int
+	mu     sync.Mutex
+	items  []*models.Feedback
+	nextID int
 
 	upsertErr error
 	listErr   error

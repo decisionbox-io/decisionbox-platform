@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -113,17 +114,76 @@ func validateLLMConfig(provider string, cfg map[string]string) string {
 	return ""
 }
 
+// ProjectRunSummaryProvider supplies the most recent discovery run per
+// project so the List/Get handlers can stamp the read-time
+// last_run_status / last_run_at / last_run_completed_at fields the
+// dashboard project cards render. Satisfied by
+// database.RunRepository.LatestByProjects; kept as a narrow in-package
+// interface so the handler stays unit-testable without Mongo.
+type ProjectRunSummaryProvider interface {
+	LatestByProjects(ctx context.Context, projectIDs []string) (map[string]*models.DiscoveryRun, error)
+}
+
 // ProjectsHandler handles project CRUD endpoints.
 type ProjectsHandler struct {
-	repo            database.ProjectRepo
-	domainPackRepo  database.DomainPackRepo
-	dropper         CollectionDropper      // optional: Qdrant per-project collection
-	secretProvider  secrets.Provider       // optional: only mongo-backed providers get swept
-	indexCanceller  IndexCanceller         // optional: detect in-flight indexing for 409
+	repo           database.ProjectRepo
+	domainPackRepo database.DomainPackRepo
+	dropper        CollectionDropper         // optional: Qdrant per-project collection
+	secretProvider secrets.Provider          // optional: only mongo-backed providers get swept
+	indexCanceller IndexCanceller            // optional: detect in-flight indexing for 409
+	runSummaries   ProjectRunSummaryProvider // optional: latest-run enrichment for List/Get
 }
 
 func NewProjectsHandler(repo database.ProjectRepo, domainPackRepo database.DomainPackRepo) *ProjectsHandler {
 	return &ProjectsHandler{repo: repo, domainPackRepo: domainPackRepo}
+}
+
+// WithRunSummaries attaches the latest-run lookup used to populate the
+// read-time last_run_* fields on List/Get responses. Nullable — when
+// unset, those endpoints simply omit the run summary (the project data
+// itself is unaffected).
+func (h *ProjectsHandler) WithRunSummaries(runSummaries ProjectRunSummaryProvider) *ProjectsHandler {
+	h.runSummaries = runSummaries
+	return h
+}
+
+// enrichLastRun stamps the read-time last_run_status / last_run_at /
+// last_run_completed_at fields on each project from its most recent
+// discovery run. Best-effort: with no provider wired, or if the lookup
+// fails, the projects are returned unchanged (a run-summary outage must
+// not break the project list itself). One batched query covers the
+// whole page.
+func (h *ProjectsHandler) enrichLastRun(ctx context.Context, projects []*models.Project) {
+	if h.runSummaries == nil || len(projects) == 0 {
+		return
+	}
+
+	ids := make([]string, 0, len(projects))
+	for _, p := range projects {
+		if p != nil && p.ID != "" {
+			ids = append(ids, p.ID)
+		}
+	}
+
+	runs, err := h.runSummaries.LatestByProjects(ctx, ids)
+	if err != nil {
+		apilog.WithError(err).Warn("failed to load latest runs for project list; returning projects without run status")
+		return
+	}
+
+	for _, p := range projects {
+		if p == nil {
+			continue
+		}
+		run, ok := runs[p.ID]
+		if !ok || run == nil {
+			continue
+		}
+		p.LastRunStatus = run.Status
+		startedAt := run.StartedAt
+		p.LastRunAt = &startedAt
+		p.LastRunCompletedAt = run.CompletedAt
+	}
 }
 
 // WithDeleteCascadeDeps attaches the optional dependencies the Delete
@@ -306,6 +366,8 @@ func (h *ProjectsHandler) List(w http.ResponseWriter, r *http.Request) {
 		projects = make([]*models.Project, 0)
 	}
 
+	h.enrichLastRun(r.Context(), projects)
+
 	writeJSON(w, http.StatusOK, projects)
 }
 
@@ -323,6 +385,8 @@ func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+
+	h.enrichLastRun(r.Context(), []*models.Project{p})
 
 	writeJSON(w, http.StatusOK, p)
 }

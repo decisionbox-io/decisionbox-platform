@@ -247,8 +247,21 @@ export interface Project {
   // as opaque.
   state?: string;
   status: string;
-  last_run_at: string | null;
+  // Latest-discovery-run summary, derived server-side at read time
+  // (List/Get) from the discovery_runs collection — not stored on the
+  // project. The homepage project cards render run state from these:
+  //   last_run_status      — "" | "pending" | "running" | "completed"
+  //                          | "failed" | "cancelled". Empty = the
+  //                          project has never started a run.
+  //   last_run_at          — when the most recent run started; the card
+  //                          counts elapsed time up from this while it
+  //                          is running.
+  //   last_run_completed_at — when it finished; null while still
+  //                          running (or never completed). Drives the
+  //                          "Completed <timestamp>" label.
   last_run_status: string;
+  last_run_at: string | null;
+  last_run_completed_at?: string | null;
   // Schema-indexing lifecycle: "", "pending_indexing", "indexing", "ready", "failed".
   // Empty string = pre-migration (no index ever built).
   schema_index_status?: string;
