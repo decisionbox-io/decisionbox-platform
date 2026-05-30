@@ -81,11 +81,15 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 // the given project IDs, keyed by project ID. Projects with no runs
 // are simply absent from the returned map.
 //
-// It runs as a single aggregation (match → sort by started_at desc →
-// group $first) so enriching a page of N projects costs one Mongo
-// round-trip rather than N. The `{project_id, started_at desc}` index
-// on discovery_runs backs both the match and the sort. An empty input
-// returns an empty map without touching Mongo.
+// It runs as a single aggregation (match → sort → group $first) so
+// enriching a page of N projects costs one Mongo round-trip rather than
+// N. The sort key is `{project_id: 1, started_at: -1}` — exactly the
+// existing compound index on discovery_runs — so Mongo streams the sort
+// off the index instead of doing a blocking in-memory sort (which would
+// risk the aggregation sort-memory limit on projects with long run
+// histories). Within each project_id group the docs arrive newest-first,
+// so `$first` yields that project's latest run. An empty input returns
+// an empty map without touching Mongo.
 func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []string) (map[string]*models.DiscoveryRun, error) {
 	out := make(map[string]*models.DiscoveryRun, len(projectIDs))
 	if len(projectIDs) == 0 {
@@ -94,7 +98,10 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"project_id": bson.M{"$in": projectIDs}}}},
-		{{Key: "$sort", Value: bson.D{{Key: "started_at", Value: -1}}}},
+		{{Key: "$sort", Value: bson.D{
+			{Key: "project_id", Value: 1},
+			{Key: "started_at", Value: -1},
+		}}},
 		{{Key: "$group", Value: bson.M{
 			"_id": "$project_id",
 			"run": bson.M{"$first": "$$ROOT"},
