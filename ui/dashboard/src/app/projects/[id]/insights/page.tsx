@@ -148,13 +148,22 @@ export default function InsightsListPage() {
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   // The semantic-search path renders API results directly (severity is
-  // filtered server-side). Validation isn't a server-side filter, so
-  // apply the validation filter client-side to those results too —
-  // otherwise selecting a verdict has no effect while a search is
-  // active. `semanticResults` (non-null) still signals "search active".
-  const shownSemanticResults = semanticResults && validationFilter !== 'All'
+  // filtered server-side). Validation isn't a server-side concern, so
+  // apply the validation filter — and the validation sort — client-side
+  // to those results too; otherwise selecting a verdict or the
+  // Validation sort has no effect while a search is active.
+  // `semanticResults` (non-null) still signals "search active". Other
+  // sort options keep the API's relevance order, as before.
+  let shownSemanticResults = semanticResults && validationFilter !== 'All'
     ? semanticResults.filter(r => resolveValidationStatus(r.validation) === validationFilter)
     : semanticResults;
+  if (shownSemanticResults && sortBy === 'Validation') {
+    // Stable sort: groups by verdict while preserving relevance order
+    // within each verdict.
+    shownSemanticResults = [...shownSemanticResults].sort(
+      (a, b) => validationSortRank(a.validation) - validationSortRank(b.validation),
+    );
+  }
 
   const breadcrumb = [
     { label: 'Projects', href: '/' },
