@@ -53,6 +53,25 @@ func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
 			wantModel:    "",
 			wantProvider: "vertex-ai",
 		},
+		{
+			// An endpoint config with an explicit model (strict serving
+			// container) keeps it — blurb must not blank it out.
+			name: "endpoint_with_explicit_model_is_preserved",
+			project: &models.Project{
+				LLM: models.LLMConfig{Provider: "vertex-ai", Model: "served-name", Config: map[string]string{"endpoint_id": "mg-endpoint-strict"}},
+			},
+			wantModel: "served-name",
+		},
+		{
+			// A blurb endpoint override with an explicit model keeps it too.
+			name: "blurb_endpoint_override_explicit_model_is_preserved",
+			project: &models.Project{
+				LLM:      models.LLMConfig{Provider: "openai", Model: "gpt-4o"},
+				BlurbLLM: &models.BlurbLLMConfig{Provider: "vertex-ai", Model: "served-name", Config: map[string]string{"endpoint_id": "mg-endpoint-strict"}},
+			},
+			wantModel:    "served-name",
+			wantProvider: "vertex-ai",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -237,29 +237,28 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 func resolveBlurbLLM(ctx context.Context, _ *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (providerName, model, credential string, err error) {
 	providerName = project.LLM.Provider
 	model = project.LLM.Model
+	blurbConfig := project.LLM.Config
 	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
 		providerName = project.BlurbLLM.Provider
-		if project.BlurbLLM.Model != "" {
-			model = project.BlurbLLM.Model
+		blurbConfig = project.BlurbLLM.Config
+		// Use the blurb override's own model — empty or explicit. Don't
+		// inherit the analysis model into an endpoint override: that would
+		// send an unrelated model the endpoint doesn't serve. The legacy
+		// convenience (a non-endpoint override reusing the analysis model
+		// when its own model is blank) is preserved.
+		model = project.BlurbLLM.Model
+		if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
+			model = project.LLM.Model
 		}
 	}
 	if providerName == "" {
 		return "", "", "", fmt.Errorf("no LLM provider configured (project.blurb_llm or project.llm)")
 	}
-	// A user-deployed endpoint identifies its own model, so an empty model
-	// is expected when the effective blurb provider config carries an
-	// endpoint_id. Mirror the caller's config selection to detect it.
-	blurbConfig := project.LLM.Config
-	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-		blurbConfig = project.BlurbLLM.Config
-	}
-	if strings.TrimSpace(blurbConfig["endpoint_id"]) != "" {
-		// A user-deployed endpoint identifies its own model. Force an
-		// empty model so the endpoint resolves it — and so a blurb
-		// endpoint override never inherits the (unrelated) analysis
-		// model left in `model` when BlurbLLM.Model is blank.
-		model = ""
-	} else if model == "" {
+	// An endpoint-backed config may legitimately run with no model (the
+	// endpoint serves its own) or with an explicit one (strict serving
+	// containers that validate the OpenAI model field) — either is passed
+	// through verbatim. Only a non-endpoint config must supply a model.
+	if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
 		return "", "", "", fmt.Errorf("no model configured for blurb LLM")
 	}
 
