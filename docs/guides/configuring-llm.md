@@ -174,21 +174,28 @@ The model IDs above all live on Vertex's shared Model Garden MaaS endpoint, whic
 https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions
 ```
 
-If you deployed a model yourself — a self-fine-tuned Qwen, a quantised Llama variant, or anything not in Model Garden — it lives on a **Vertex endpoint** with its own numeric ID, at a different URL with no `/openapi/` segment:
+If you deployed a model yourself — a self-fine-tuned Qwen, a quantised Llama variant, a Model Garden one-click deploy, or anything not in Model Garden MaaS — it lives on a **Vertex endpoint** with its own ID. Set the **Endpoint ID** field on the Vertex AI provider config to that ID and DecisionBox routes chat requests to the endpoint instead of the shared MaaS path.
 
-```
-https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/{endpoint_id}/chat/completions
+Find the ID under **Vertex AI → Online prediction → Endpoints** in the GCP console, or with:
+
+```bash
+gcloud ai endpoints list --region={location} --project={project}
 ```
 
-To use a deployed endpoint, set the **Endpoint ID** field on the Vertex AI provider config to the endpoint's numeric ID (find it under **Vertex AI → Online prediction → Endpoints** in the GCP console, or via `gcloud ai endpoints list --region={location}`).
 When Endpoint ID is set:
 
-- DecisionBox calls the `endpoints/{endpoint_id}/chat/completions` URL instead of the shared MaaS path.
-- The **Model** field is passed through verbatim — custom endpoints do not require a publisher prefix, so use whatever model name your serving container expects (for example `my-finetuned-qwen-27b`).
-- Authentication is identical to the rest of the provider (GCP ADC or service-account key).
+- The chat path becomes `.../endpoints/{endpoint_id}/chat/completions` (no `/openapi/` segment).
+- The **Model** field is passed through verbatim — custom endpoints do not require a publisher prefix, so use whatever model name your serving container expects (for example `qwen3-6-27b`).
+- Authentication is identical to the rest of the provider (GCP ADC or service-account key). No `wire_override` is needed — a deployed endpoint always uses the OpenAI chat-completions wire.
 
-Your endpoint must serve the OpenAI `/chat/completions` wire (the standard OpenAI-compatible serving container).
-Endpoints that speak only Vertex's native `:predict` API are not supported.
+#### Dedicated endpoints are auto-detected
+
+Most deployed endpoints — including every Model Garden one-click deploy — are **dedicated**: Vertex serves them on a per-endpoint DNS name, not the shared `aiplatform.googleapis.com` host, and rejects predictions sent to the shared host. The dedicated DNS embeds an internal identifier that cannot be derived from your project, so DecisionBox looks the endpoint up once (via the Vertex management API, using the same credentials) to discover it, then sends predictions there. Non-dedicated endpoints are served on the regional `aiplatform.googleapis.com` host. You do not configure any of this — only the Endpoint ID.
+
+The endpoint must:
+
+- Have a model **deployed** and finished provisioning. If it reports no serving DNS yet (no model deployed, or still provisioning), DecisionBox returns a clear error.
+- Serve the **OpenAI `/chat/completions` wire** (the standard OpenAI-compatible serving container, e.g. vLLM). Endpoints that speak only Vertex's native `:predict` API are not supported.
 
 Leave Endpoint ID blank to use the shared Model Garden MaaS endpoint with publisher-prefixed model IDs as described above.
 
@@ -198,10 +205,10 @@ Leave Endpoint ID blank to use the shared Model Garden MaaS endpoint with publis
 |-------|-------|
 | Project ID | `my-gcp-project` |
 | Location | `us-central1` |
-| Endpoint ID | `1234567890123456789` |
-| Model | `my-finetuned-qwen-27b` |
+| Endpoint ID | `mg-endpoint-306f661d-e4c1-4169-8705-92bc60ff2def` |
+| Model | `qwen3-6-27b` |
 
-This routes chat requests to `https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-gcp-project/locations/us-central1/endpoints/1234567890123456789/chat/completions` with `"model": "my-finetuned-qwen-27b"` in the request body.
+DecisionBox resolves the endpoint's serving host and sends `"model": "qwen3-6-27b"` to `.../endpoints/mg-endpoint-306f661d-e4c1-4169-8705-92bc60ff2def/chat/completions` on that host.
 
 ## AWS Bedrock
 

@@ -33,6 +33,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/gcpcreds"
@@ -191,6 +192,13 @@ type VertexAIProvider struct {
 	wireOverride gollm.Wire
 	auth         *gcpAuth
 	httpClient   *http.Client
+
+	// endpointHost caches the prediction host resolved for endpointID
+	// (its dedicated DNS, or the shared aiplatform host when not
+	// dedicated). Resolved lazily on first chat and reused thereafter;
+	// the mutex guards concurrent Chat calls racing the first lookup.
+	endpointHostMu sync.Mutex
+	endpointHost   string
 }
 
 // Validate exercises the same dispatch path as a real Chat call with

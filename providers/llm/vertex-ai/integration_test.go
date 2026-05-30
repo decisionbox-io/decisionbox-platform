@@ -176,3 +176,49 @@ func TestIntegration_Gemini_ContextCancellation(t *testing.T) {
 	}
 	t.Logf("Cancelled context error: %v", err)
 }
+
+// --- User-deployed endpoint (OpenAI-compat) wire ---
+
+// TestIntegration_UserEndpoint_BasicChat exercises a model the operator
+// deployed on a Vertex endpoint (not Model Garden MaaS). It is gated on
+// INTEGRATION_TEST_VERTEX_ENDPOINT_ID; the served model name is taken
+// from INTEGRATION_TEST_VERTEX_ENDPOINT_MODEL (the name the endpoint's
+// serving container expects, passed through verbatim).
+func TestIntegration_UserEndpoint_BasicChat(t *testing.T) {
+	projectID := vertexProject(t)
+	endpointID := os.Getenv("INTEGRATION_TEST_VERTEX_ENDPOINT_ID")
+	if endpointID == "" {
+		t.Skip("INTEGRATION_TEST_VERTEX_ENDPOINT_ID not set")
+	}
+	model := os.Getenv("INTEGRATION_TEST_VERTEX_ENDPOINT_MODEL")
+	if model == "" {
+		t.Skip("INTEGRATION_TEST_VERTEX_ENDPOINT_MODEL not set")
+	}
+
+	provider, err := gollm.NewProvider("vertex-ai", gollm.ProviderConfig{
+		"project_id":  projectID,
+		"location":    vertexLocation(),
+		"endpoint_id": endpointID,
+		"model":       model,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	resp, err := provider.Chat(ctx, gollm.ChatRequest{
+		SystemPrompt: "You are a helpful assistant. Respond concisely.",
+		Messages:     []gollm.Message{{Role: "user", Content: "Reply with the single word: pong"}},
+		MaxTokens:    64,
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if resp.Content == "" {
+		t.Error("user-endpoint chat returned empty content")
+	}
+	t.Logf("User endpoint chat: %q (model=%s, tokens: in=%d out=%d)",
+		resp.Content, resp.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+}
