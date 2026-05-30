@@ -147,8 +147,8 @@ func (p *VertexAIProvider) chatGoogleNative(ctx context.Context, req gollm.ChatR
 // Gemini API types
 
 type geminiRequest struct {
-	Contents         []geminiContent        `json:"contents"`
-	GenerationConfig geminiGenerationConfig `json:"generationConfig"`
+	Contents         []geminiContent         `json:"contents"`
+	GenerationConfig geminiGenerationConfig  `json:"generationConfig"`
 }
 
 type geminiContent struct {

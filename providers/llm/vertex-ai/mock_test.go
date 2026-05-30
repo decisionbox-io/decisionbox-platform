@@ -1533,10 +1533,10 @@ func TestVertexAI_OpenAICompatChat_APIErrorRawBody(t *testing.T) {
 
 func TestVertexAI_OpenAICompatChat_AuthTokenError(t *testing.T) {
 	p := &VertexAIProvider{
-		projectID:  "test-project",
-		location:   "us-central1",
-		model:      "meta/llama-3.3-70b-instruct-maas",
-		auth:       &gcpAuth{tokenSource: &mockTokenSource{err: context.DeadlineExceeded}},
+		projectID: "test-project",
+		location:  "us-central1",
+		model:     "meta/llama-3.3-70b-instruct-maas",
+		auth:      &gcpAuth{tokenSource: &mockTokenSource{err: context.DeadlineExceeded}},
 		httpClient: &http.Client{},
 	}
 	_, err := p.Chat(context.Background(), gollm.ChatRequest{
