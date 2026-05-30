@@ -89,6 +89,21 @@ describe('ProjectRunStatus', () => {
     expect(screen.getByText('4m 13s')).toBeInTheDocument();
   });
 
+  it('shows the Running badge but no timer when the start time is missing', () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-05-29T14:00:00Z'));
+    mount({ status: 'running', startedAt: null });
+    expect(screen.getByText('Running')).toBeInTheDocument();
+    // No elapsed label without a start time.
+    expect(screen.queryByText(/\d+s$/)).toBeNull();
+  });
+
+  it('shows the Completed badge but no timestamp when completed_at is missing', () => {
+    mount({ status: 'completed', startedAt: '2026-05-29T14:00:00', completedAt: null });
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+    expect(screen.queryByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)).toBeNull();
+  });
+
   it('treats pending the same as running', () => {
     jest.useFakeTimers();
     const start = new Date('2026-05-29T14:00:00Z');
