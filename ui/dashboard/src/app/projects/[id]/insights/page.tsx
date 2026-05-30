@@ -25,10 +25,13 @@ const severityOrder: Record<string, number> = {
 // Validation filter options for the Insights tab. Values are the
 // canonical statuses (plus the neutral "unverified" for never-run
 // docs); labels come from statusMeta so the dropdown copy stays in
-// sync with the badges.
+// sync with the badges. The trailing legacy statuses are what
+// resolveValidationStatus can still return for pre-v5 discoveries, so
+// they are filterable too.
 const validationFilterValues = [
   'confirmed', 'supported', 'partial', 'unverifiable',
   'rejected', 'validation_disabled', 'skipped_budget_cap', 'unverified',
+  'adjusted', 'error',
 ] as const;
 
 interface InsightWithContext extends Insight {
@@ -144,6 +147,15 @@ export default function InsightsListPage() {
   const totalPages = Math.ceil(filtered.length / pageSize);
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
+  // The semantic-search path renders API results directly (severity is
+  // filtered server-side). Validation isn't a server-side filter, so
+  // apply the validation filter client-side to those results too —
+  // otherwise selecting a verdict has no effect while a search is
+  // active. `semanticResults` (non-null) still signals "search active".
+  const shownSemanticResults = semanticResults && validationFilter !== 'All'
+    ? semanticResults.filter(r => resolveValidationStatus(r.validation) === validationFilter)
+    : semanticResults;
+
   const breadcrumb = [
     { label: 'Projects', href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
@@ -152,7 +164,7 @@ export default function InsightsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Insights" count={semanticResults ? semanticResults.length : filtered.length} right={
+      <SectionHeader title="All Insights" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
             placeholder={hasEmbedding ? 'Semantic search insights...' : 'Filter insights...'} />
@@ -184,7 +196,7 @@ export default function InsightsListPage() {
       </div>
 
       {/* Semantic search results */}
-      {semanticResults && semanticResults.length > 0 && (
+      {shownSemanticResults && shownSemanticResults.length > 0 && (
         <div style={{
           background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
           borderRadius: 'var(--db-radius-lg)', overflow: 'hidden',
@@ -201,7 +213,7 @@ export default function InsightsListPage() {
               </tr>
             </thead>
             <tbody>
-              {semanticResults.map(r => (
+              {shownSemanticResults.map(r => (
                 <tr key={r.id} style={{ borderBottom: '1px solid var(--db-border-default)' }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
@@ -239,9 +251,11 @@ export default function InsightsListPage() {
         </div>
       )}
 
-      {semanticResults && semanticResults.length === 0 && !searching && (
+      {shownSemanticResults && shownSemanticResults.length === 0 && !searching && (
         <EmptyState icon={<IconBulb size={32} />} title="No results"
-          description={`No insights matched "${search}". Try different keywords.`} />
+          description={validationFilter !== 'All'
+            ? `No "${statusMeta(validationFilter).label}" insights matched "${search}". Try a different verdict or keywords.`
+            : `No insights matched "${search}". Try different keywords.`} />
       )}
 
       {/* Client-side filtered results (when no semantic search) */}
