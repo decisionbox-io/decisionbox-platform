@@ -13,11 +13,11 @@ type Project struct {
 	Domain      string `bson:"domain" json:"domain"`
 	Category    string `bson:"category" json:"category"`
 
-	Warehouse WarehouseConfig `bson:"warehouse" json:"warehouse"`
-	LLM       LLMConfig       `bson:"llm" json:"llm"`
-	BlurbLLM  *BlurbLLMConfig `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
+	Warehouse WarehouseConfig           `bson:"warehouse" json:"warehouse"`
+	LLM       LLMConfig                 `bson:"llm" json:"llm"`
+	BlurbLLM  *BlurbLLMConfig           `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
-	Schedule  ScheduleConfig  `bson:"schedule" json:"schedule"`
+	Schedule  ScheduleConfig            `bson:"schedule" json:"schedule"`
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
@@ -50,9 +50,25 @@ type Project struct {
 	BusinessSummaryUpdatedAt *time.Time `bson:"business_summary_updated_at,omitempty" json:"business_summary_updated_at,omitempty"`
 	BusinessSummaryError     string     `bson:"business_summary_error,omitempty" json:"business_summary_error,omitempty"`
 
-	Status        string     `bson:"status" json:"status"`
-	LastRunAt     *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
-	LastRunStatus string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
+	Status string `bson:"status" json:"status"`
+
+	// LastRunStatus, LastRunAt, and LastRunCompletedAt summarise the
+	// project's most recent discovery run. They are NOT stored on the
+	// project document — they are derived at read time (the List/Get
+	// handlers join the latest discovery_runs row, see
+	// ProjectsHandler.enrichLastRun) and so carry `bson:"-"`. All three
+	// are empty/nil for a project that has never started a run.
+	//
+	//   - LastRunStatus: the run's lifecycle status — "pending",
+	//     "running", "completed", "failed", or "cancelled".
+	//   - LastRunAt: when the most recent run started. The dashboard
+	//     project cards count "Running — <elapsed>" up from this.
+	//   - LastRunCompletedAt: when it finished; nil while it is still
+	//     running (or never completed). Drives the "Completed
+	//     <timestamp>" label on completed runs.
+	LastRunStatus      string     `bson:"-" json:"last_run_status,omitempty"`
+	LastRunAt          *time.Time `bson:"-" json:"last_run_at,omitempty"`
+	LastRunCompletedAt *time.Time `bson:"-" json:"last_run_completed_at,omitempty"`
 
 	SchemaIndexStatus    string     `bson:"schema_index_status,omitempty" json:"schema_index_status,omitempty"`
 	SchemaIndexError     string     `bson:"schema_index_error,omitempty" json:"schema_index_error,omitempty"`
@@ -106,7 +122,6 @@ type LLMConfig struct {
 	Config   map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: project_id, location, host, etc.
 }
 
-
 type ScheduleConfig struct {
 	Enabled  bool   `bson:"enabled" json:"enabled"`
 	CronExpr string `bson:"cron_expr" json:"cron_expr"`
@@ -155,4 +170,3 @@ func (p *Project) EffectiveValidationEnabled() bool {
 	}
 	return *p.ValidationEnabled
 }
-

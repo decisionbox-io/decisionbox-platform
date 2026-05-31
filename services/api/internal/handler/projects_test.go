@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	secretsapi "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
@@ -323,6 +324,154 @@ func TestProjectsHandler_List_RepoError_MockRepo(t *testing.T) {
 	}
 }
 
+// decodeProjects re-decodes a List response body into typed projects so
+// the read-time last_run_* fields can be asserted (the generic
+// APIResponse.Data is interface{}).
+func decodeProjects(t *testing.T, body []byte) []models.Project {
+	t.Helper()
+	var resp struct {
+		Data []models.Project `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode projects: %v", err)
+	}
+	return resp.Data
+}
+
+func TestProjectsHandler_List_EnrichesLastRun(t *testing.T) {
+	repo := newMockProjectRepo()
+
+	running := &models.Project{Name: "Running", Domain: "gaming", Category: "match3"}
+	completed := &models.Project{Name: "Completed", Domain: "gaming", Category: "match3"}
+	never := &models.Project{Name: "Never", Domain: "gaming", Category: "match3"}
+	repo.Create(context.Background(), running)
+	repo.Create(context.Background(), completed)
+	repo.Create(context.Background(), never)
+
+	startedRunning := time.Date(2026, 5, 29, 14, 0, 0, 0, time.UTC)
+	startedDone := time.Date(2026, 5, 28, 9, 0, 0, 0, time.UTC)
+	completedAt := time.Date(2026, 5, 28, 9, 42, 0, 0, time.UTC)
+	provider := &mockRunSummaryProvider{runs: map[string]*models.DiscoveryRun{
+		running.ID:   {ID: "run-r", ProjectID: running.ID, Status: "running", StartedAt: startedRunning},
+		completed.ID: {ID: "run-c", ProjectID: completed.ID, Status: "completed", StartedAt: startedDone, CompletedAt: &completedAt},
+		// never has no run → absent from the map.
+	}}
+
+	h := NewProjectsHandler(repo, nil).WithRunSummaries(provider)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	byName := map[string]models.Project{}
+	for _, p := range decodeProjects(t, w.Body.Bytes()) {
+		byName[p.Name] = p
+	}
+
+	if got := byName["Running"]; got.LastRunStatus != "running" {
+		t.Errorf("Running.last_run_status = %q, want running", got.LastRunStatus)
+	} else if got.LastRunAt == nil || !got.LastRunAt.Equal(startedRunning) {
+		t.Errorf("Running.last_run_at = %v, want %v", got.LastRunAt, startedRunning)
+	} else if got.LastRunCompletedAt != nil {
+		t.Errorf("Running.last_run_completed_at = %v, want nil", got.LastRunCompletedAt)
+	}
+
+	if got := byName["Completed"]; got.LastRunStatus != "completed" {
+		t.Errorf("Completed.last_run_status = %q, want completed", got.LastRunStatus)
+	} else if got.LastRunCompletedAt == nil || !got.LastRunCompletedAt.Equal(completedAt) {
+		t.Errorf("Completed.last_run_completed_at = %v, want %v", got.LastRunCompletedAt, completedAt)
+	} else if got.LastRunAt == nil || !got.LastRunAt.Equal(startedDone) {
+		t.Errorf("Completed.last_run_at = %v, want %v", got.LastRunAt, startedDone)
+	}
+
+	if got := byName["Never"]; got.LastRunStatus != "" || got.LastRunAt != nil || got.LastRunCompletedAt != nil {
+		t.Errorf("Never project should have no run fields, got status=%q at=%v completed=%v",
+			got.LastRunStatus, got.LastRunAt, got.LastRunCompletedAt)
+	}
+}
+
+func TestProjectsHandler_List_EnrichmentErrorIsBestEffort(t *testing.T) {
+	repo := newMockProjectRepo()
+	p := &models.Project{Name: "P", Domain: "gaming", Category: "match3"}
+	repo.Create(context.Background(), p)
+
+	provider := &mockRunSummaryProvider{err: fmt.Errorf("mongo down")}
+	h := NewProjectsHandler(repo, nil).WithRunSummaries(provider)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	// A run-summary outage must not break the project list itself.
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (enrichment is best-effort)", w.Code)
+	}
+	projects := decodeProjects(t, w.Body.Bytes())
+	if len(projects) != 1 {
+		t.Fatalf("got %d projects, want 1", len(projects))
+	}
+	if projects[0].LastRunStatus != "" || projects[0].LastRunAt != nil {
+		t.Errorf("expected no run fields on enrichment failure, got status=%q at=%v",
+			projects[0].LastRunStatus, projects[0].LastRunAt)
+	}
+}
+
+func TestProjectsHandler_List_NoProviderOmitsRun(t *testing.T) {
+	repo := newMockProjectRepo()
+	p := &models.Project{Name: "P", Domain: "gaming", Category: "match3"}
+	repo.Create(context.Background(), p)
+
+	// No WithRunSummaries — handler must still serve projects, unenriched.
+	h := NewProjectsHandler(repo, nil)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	projects := decodeProjects(t, w.Body.Bytes())
+	if len(projects) != 1 || projects[0].LastRunStatus != "" {
+		t.Errorf("expected 1 unenriched project, got %+v", projects)
+	}
+}
+
+func TestProjectsHandler_Get_EnrichesLastRun(t *testing.T) {
+	repo := newMockProjectRepo()
+	p := &models.Project{Name: "P", Domain: "gaming", Category: "match3"}
+	repo.Create(context.Background(), p)
+
+	started := time.Date(2026, 5, 29, 14, 0, 0, 0, time.UTC)
+	provider := &mockRunSummaryProvider{runs: map[string]*models.DiscoveryRun{
+		p.ID: {ID: "run-1", ProjectID: p.ID, Status: "failed", StartedAt: started},
+	}}
+	h := NewProjectsHandler(repo, nil).WithRunSummaries(provider)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID, nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.Get(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Data models.Project `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.LastRunStatus != "failed" {
+		t.Errorf("last_run_status = %q, want failed", resp.Data.LastRunStatus)
+	}
+	if resp.Data.LastRunAt == nil || !resp.Data.LastRunAt.Equal(started) {
+		t.Errorf("last_run_at = %v, want %v", resp.Data.LastRunAt, started)
+	}
+}
+
 func TestProjectsHandler_Get_Success_MockRepo(t *testing.T) {
 	repo := newMockProjectRepo()
 	h := NewProjectsHandler(repo, nil)
@@ -395,9 +544,9 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 
 	// Create a project first
 	p := &models.Project{
-		Name:     "Original Name",
-		Domain:   "gaming",
-		Category: "match3",
+		Name:      "Original Name",
+		Domain:    "gaming",
+		Category:  "match3",
 		Warehouse: models.WarehouseConfig{Provider: "bigquery"},
 	}
 	repo.Create(context.Background(), p)

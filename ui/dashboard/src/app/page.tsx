@@ -5,6 +5,7 @@ import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Title } fro
 import { IconAlertCircle, IconPlus, IconBrain } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
+import { ProjectRunStatus } from '@/components/projects/ProjectRunStatus';
 import { api, Project } from '@/lib/api';
 
 export default function ProjectsPage() {
@@ -76,11 +77,11 @@ export default function ProjectsPage() {
                 <Badge variant="outline" size="sm">{project.llm.provider}</Badge>
               </Group>
 
-              {project.last_run_at && (
-                <Text size="xs" c="dimmed" mt="sm">
-                  Last run: {new Date(project.last_run_at).toLocaleDateString()}
-                </Text>
-              )}
+              <ProjectRunStatus
+                status={project.last_run_status}
+                startedAt={project.last_run_at}
+                completedAt={project.last_run_completed_at}
+              />
             </Card>
           ))}
         </SimpleGrid>

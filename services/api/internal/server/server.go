@@ -110,7 +110,8 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	domains := handler.NewDomainsHandler(domainPackRepo)
 	domainPacks := handler.NewDomainPacksHandler(domainPackRepo)
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
-		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller)
+		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller).
+		WithRunSummaries(runRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
