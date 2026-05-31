@@ -94,6 +94,16 @@ describe('ResultCard', () => {
     expect(screen.getByText('Acme')).toBeInTheDocument();
   });
 
+  it('renders the validation verdict badge from item.validation', () => {
+    mount({ ...baseInsight, validation: { combined: 'rejected' } });
+    expect(screen.getByText('Rejected')).toBeInTheDocument();
+  });
+
+  it('renders the neutral Unverified badge when validation is absent', () => {
+    mount(baseInsight);
+    expect(screen.getByText('Unverified')).toBeInTheDocument();
+  });
+
   it('renders the score match prefix', () => {
     mount({ ...baseInsight, score: 0.876 });
     expect(screen.getByText('88% match')).toBeInTheDocument();
