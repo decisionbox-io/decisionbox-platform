@@ -74,8 +74,8 @@ func (m *mockVectorStoreForSearch) FindDuplicates(_ context.Context, _ []float64
 	return nil, nil
 }
 func (m *mockVectorStoreForSearch) Delete(_ context.Context, _ []string) error      { return nil }
-func (m *mockVectorStoreForSearch) HealthCheck(_ context.Context) error              { return nil }
-func (m *mockVectorStoreForSearch) EnsureCollection(_ context.Context, _ int) error  { return nil }
+func (m *mockVectorStoreForSearch) HealthCheck(_ context.Context) error             { return nil }
+func (m *mockVectorStoreForSearch) EnsureCollection(_ context.Context, _ int) error { return nil }
 func (m *mockVectorStoreForSearch) SearchSchemaIndex(_ context.Context, _ string, _ []float64, _ int) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
@@ -121,8 +121,8 @@ type mockSecretProviderForSearch struct{}
 func (m *mockSecretProviderForSearch) Get(_ context.Context, _, _ string) (string, error) {
 	return "test-key", nil
 }
-func (m *mockSecretProviderForSearch) Set(_ context.Context, _, _, _ string) error   { return nil }
-func (m *mockSecretProviderForSearch) Delete(_ context.Context, _, _ string) error   { return nil }
+func (m *mockSecretProviderForSearch) Set(_ context.Context, _, _, _ string) error { return nil }
+func (m *mockSecretProviderForSearch) Delete(_ context.Context, _, _ string) error { return nil }
 func (m *mockSecretProviderForSearch) List(_ context.Context, _ string) ([]gosecrets.SecretEntry, error) {
 	return nil, nil
 }
@@ -202,8 +202,8 @@ func (t *testEmbeddingProvider) Embed(_ context.Context, texts []string) ([][]fl
 	}
 	return result, nil
 }
-func (t *testEmbeddingProvider) Dimensions() int        { return 3 }
-func (t *testEmbeddingProvider) ModelName() string       { return "test-model" }
+func (t *testEmbeddingProvider) Dimensions() int                  { return 3 }
+func (t *testEmbeddingProvider) ModelName() string                { return "test-model" }
 func (t *testEmbeddingProvider) Validate(_ context.Context) error { return nil }
 
 func TestSearchHandler_Search(t *testing.T) {
@@ -289,6 +289,144 @@ func TestSearchHandler_Search(t *testing.T) {
 	}
 	if result["name"] != "High churn" {
 		t.Errorf("expected name=High churn, got %v", result["name"])
+	}
+}
+
+// TestSearchHandler_Search_IncludesValidation locks in issue #252: the
+// search result item must carry the insight's validation verdict so the
+// dashboard can render the status badge inline. The canonical status is
+// the new-shape `combined` field.
+func TestSearchHandler_Search_IncludesValidation(t *testing.T) {
+	insightID := "22222222-2222-4222-8222-222222222222"
+
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID:   "proj-1",
+			Name: "Test Project",
+			Embedding: goembedding.ProjectConfig{
+				Provider: "test-embedding",
+				Model:    "test-model",
+			},
+		},
+	}
+
+	insightRepo := &mockInsightRepo{
+		insights: []*commonmodels.StandaloneInsight{
+			{
+				ID:           insightID,
+				ProjectID:    "proj-1",
+				DiscoveryID:  "disc-1",
+				Name:         "Churn spike",
+				Severity:     "high",
+				AnalysisArea: "churn",
+				DiscoveredAt: time.Now(),
+				// Full verdict on the stored doc; the search response must
+				// trim it to just the badge fields (combined/status) and drop
+				// the heavy/raw fields (query, reasoning, token metadata).
+				Validation: &commonmodels.InsightValidation{
+					Combined:     "supported",
+					Status:       "supported",
+					Query:        "SELECT secret_col FROM private_table",
+					Reasoning:    "internal reasoning that should not leak to list surfaces",
+					InputTokens:  1234,
+					OutputTokens: 567,
+				},
+			},
+		},
+	}
+
+	vs := &mockVectorStoreForSearch{
+		results: []vectorstore.SearchResult{
+			{ID: insightID, Score: 0.91, Payload: map[string]interface{}{"type": "insight"}},
+		},
+	}
+
+	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{},
+		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+
+	body, _ := json.Marshal(searchRequest{Query: "churn", Limit: 10})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/search", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	data := resp.Data.(map[string]interface{})
+	results := data["results"].([]interface{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	result := results[0].(map[string]interface{})
+	validation, ok := result["validation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected validation object in result, got %v", result["validation"])
+	}
+	if validation["combined"] != "supported" {
+		t.Errorf("expected combined=supported, got %v", validation["combined"])
+	}
+	if validation["status"] != "supported" {
+		t.Errorf("expected status=supported, got %v", validation["status"])
+	}
+	// The trimmed summary must not carry the heavy / raw verdict fields
+	// onto broad list surfaces.
+	for _, leaked := range []string{"query", "reasoning", "verifier", "refuter", "input_tokens", "output_tokens"} {
+		if _, present := validation[leaked]; present {
+			t.Errorf("search validation summary leaked %q field: %v", leaked, validation[leaked])
+		}
+	}
+}
+
+// TestSearchHandler_Search_OmitsValidationWhenUnvalidated verifies the
+// field is omitted (not an empty object) when an insight was never
+// validated, so the client cleanly falls back to its neutral state.
+func TestSearchHandler_Search_OmitsValidationWhenUnvalidated(t *testing.T) {
+	insightID := "33333333-3333-4333-8333-333333333333"
+
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID:        "proj-1",
+			Name:      "Test Project",
+			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+		},
+	}
+	insightRepo := &mockInsightRepo{
+		insights: []*commonmodels.StandaloneInsight{
+			{ID: insightID, ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "No validation", DiscoveredAt: time.Now()},
+		},
+	}
+	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+		{ID: insightID, Score: 0.7, Payload: map[string]interface{}{"type": "insight"}},
+	}}
+
+	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{},
+		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+
+	body, _ := json.Marshal(searchRequest{Query: "anything", Limit: 10})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/search", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	data := resp.Data.(map[string]interface{})
+	results := data["results"].([]interface{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	result := results[0].(map[string]interface{})
+	if _, present := result["validation"]; present {
+		t.Errorf("expected validation to be omitted for unvalidated insight, got %v", result["validation"])
 	}
 }
 

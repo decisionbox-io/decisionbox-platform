@@ -16,6 +16,7 @@ import {
   StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
+import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
@@ -205,6 +206,7 @@ export default function DiscoveryDetailPage() {
                   <Th width="35%">Insight</Th>
                   <Th>Severity</Th>
                   <Th>Area</Th>
+                  <Th>Validation</Th>
                   <Th align="right">Users affected</Th>
                   <Th>Confidence</Th>
                   <Th width="70px">Feedback</Th>
@@ -407,6 +409,9 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <AreaBadge area={insight.analysis_area} />
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <InsightValidationBadge validation={insight.validation} />
       </td>
       <td style={{ padding: '10px 12px', textAlign: 'right', verticalAlign: 'top', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
