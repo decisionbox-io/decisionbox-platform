@@ -60,7 +60,7 @@ const persistTimeout = 10 * time.Minute
 // run as completed. Kept tiny because the only failure mode that
 // matters here is Mongo being genuinely unreachable — and we don't
 // want to share persistTimeout with the heavier embed/index step
-// (Phase 9 can burn most of that budget on large results, which
+// (Phase 8 can burn most of that budget on large results, which
 // would otherwise leave Complete to run against an expired ctx).
 const completeTimeout = 30 * time.Second
 
@@ -242,7 +242,7 @@ type OrchestratorOptions struct {
 	VectorStore       vectorstore.Provider
 	EmbeddingProvider goembedding.Provider
 
-	// EmbedIndexStore is needed for Phase 9 to write to insights/recommendations collections
+	// EmbedIndexStore is needed for Phase 8 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
 
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
@@ -369,6 +369,21 @@ type DiscoveryOptions struct {
 
 // RunDiscovery executes the complete discovery process.
 func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) (*models.DiscoveryResult, error) {
+
+	// Discovery runs execute as a staged pipeline:
+	//   Phase 1  -> Load historical/project context
+	//   Phase 2  -> Load cached schemas and prepare prompts
+	//   Phase 3  -> Run autonomous exploration against the warehouse
+	//   Phase 4  -> Analyze exploration results by business area
+	//   Phase 4.5-> Validate generated insights
+	//   Phase 5  -> Generate recommendations from validated insights
+	//   Phase 5.5-> Validate recommendations
+	//   Phase 6  -> Update reusable project context
+	//   Phase 7  -> Persist discovery results
+	//   Phase 8  -> Embed/index results for retrieval
+	// Each phase updates the StatusReporter so the UI can track
+	// live discovery progress and intermediate results.
+
 	// Set max steps for accurate progress reporting
 	o.statusReporter.maxSteps = opts.MaxSteps
 	if o.statusReporter.maxSteps <= 0 {
@@ -449,6 +464,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"feedback_items": len(feedbackSummaries),
 	}).Info("Previous context loaded")
 
+	// Previous discovery insights, recommendations, and user feedback are
+	// merged into a reusable context block that gets injected into later
+	// exploration and analysis prompts. This helps the LLM avoid repeating
+	// already-known findings and keeps future discoveries context-aware.
 	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries)
 
 	// Phase 2: Load schemas from the per-project schema cache.
@@ -515,6 +534,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		refDataset = o.datasets[0]
 	}
 
+	// baseContext is reused across exploration, analysis, and
+	// recommendation prompts. It combines project profile data,
+	// previous discoveries, feedback summaries, language settings,
+	// and domain-specific instructions into a single prompt context.
 	baseContext := o.buildBaseContext(prompts.BaseContext, profileStr, previousContextStr, language, refDataset)
 
 	// Prepare exploration prompt: base context + exploration-specific content.
@@ -585,6 +608,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:        datasetsStr,
 		SchemaProvider: schemaProvider,
 		StepIndexer:    stepIndexer,
+		// Stream every exploration step to the StatusReporter so the live
+		// dashboard can track exploration progress, executed queries,
+		// token usage, query fixes, and failures in real time.
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens)
 		},
@@ -628,6 +654,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Filter areas if selective run requested
 	runAreas := analysisAreas
 	runType := "full"
+	// If the run requests specific analysis areas, limit execution to
+	// only those areas instead of running the full domain pack.
 	if len(opts.SelectedAreas) > 0 {
 		runType = "partial"
 		selected := make(map[string]bool)
@@ -703,14 +731,22 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}
 
 		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
+		// Skip the area if step retrieval fails so the remaining areas
+		// can continue processing.
 		if pickErr != nil {
 			applog.WithFields(applog.Fields{"area": area.ID, "error": pickErr.Error()}).Warn("Step picker failed; skipping area")
 			continue
 		}
+
+		// Track analysis-phase metrics so the live status UI can show
+		// step retrieval activity and dropped-step counts.
 		o.statusReporter.IncrementAnalysisCounter(ctx, "step_index_search_calls", 1)
 		if len(pickResult.Dropped) > 0 {
 			o.statusReporter.IncrementAnalysisCounter(ctx, "steps_dropped", len(pickResult.Dropped))
 		}
+
+		// Skip the area when no relevant exploration steps were found.
+		// This avoids sending empty or low-signal prompts to the LLM.
 		if len(pickResult.Picked) == 0 {
 			applog.WithFields(applog.Fields{
 				"area":    area.ID,
@@ -774,6 +810,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Call LLM
 		maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+
+		// Send the selected exploration evidence to the LLM and generate
+		// structured insights for the current analysis area.
 		chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
 		if err != nil {
 			step.Error = err.Error()
@@ -803,6 +842,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// applies the per-run cap (insightsValidatedThisRun is threaded
 		// across areas), and stamps Validation on each insight in
 		// place. Returns one ValidationResult per insight.
+
+		// Skip validation when the analysis step produced no insights.
+		// The verifier only runs for successfully parsed insights.
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
@@ -859,6 +901,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	var recommendations []models.Recommendation
 	var recStep *models.RecommendationStep
+
+	// Skip recommendation generation when no insights passed validation.
+	// Recommendations are only created from validated insights.
 	if len(recommenderInput) == 0 {
 		applog.Warn("No eligible insights for recommendation generation; skipping")
 		recommendations = []models.Recommendation{}
@@ -889,30 +934,43 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// (optionally) refuter and stamps Validation on each rec in
 	// place.
 	var recValidationResults []models.ValidationResult
+
+	// Skip recommendation validation if no recommendations were generated.
+	// Validation is only meaningful when there are recommendations to verify.
 	if len(recommendations) > 0 {
 		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID)
 	}
 
 	// Phase 6: Update project context with discovered patterns
+	// This phase persists learning from the current run so future discoveries
+	// can use historical context (e.g., recurring patterns, trends, and signals).
 	applog.Info("Phase 6: Updating project context")
+
+	// Mark that a successful discovery run occurred for this project
 	projectCtx.RecordDiscovery(true)
+
+	// Merge newly discovered insights into long-term pattern memory
 	projectCtx.UpdatePatterns(allInsights)
+
+	// Persist updated context (best-effort; failures are non-fatal)
 	if err := o.saveProjectContext(ctx, projectCtx); err != nil {
 		applog.WithError(err).Warn("Failed to save project context")
 	}
 
 	// Phase 7: Save discovery result
 	applog.Info("Phase 7: Saving discovery result")
+
+	// Update UI to show that we are now saving final results
 	o.statusReporter.SetPhase(ctx, models.PhaseSaving, "Saving discovery results...", 95)
 
-	// Merge all validation results
+	// Combine validation results from all analysis areas and recommendation phase
 	allValidation := make([]models.ValidationResult, 0)
 	for _, step := range analysisLog {
 		allValidation = append(allValidation, step.ValidationResults...)
 	}
 	allValidation = append(allValidation, recValidationResults...)
 
-	// Determine run type based on failures
+	// Decide final run status based on whether any or all analysis areas failed
 	if failedAreas > 0 && failedAreas == len(runAreas) {
 		// All areas failed — mark as failed run
 		runType = "failed"
@@ -921,6 +979,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		runType = "partial"
 	}
 
+	// Create final result object that will be saved and returned
+	// Contains all insights, recommendations, and execution metadata
 	result := &models.DiscoveryResult{
 		ProjectID:       o.projectID,
 		Domain:          o.domain,
@@ -954,35 +1014,44 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// NOT a success: we Fail it (not Complete it) and propagate the
 	// error so the caller fires the EventDiscoveryFailed notification
 	// rather than EventDiscoveryCompleted.
+
+	// Check if discovery was cancelled or timed out during execution
 	computeErr := ctx.Err()
 
 	// Persistence runs under a dedicated budget — see persistContext
 	// for why it is independent of the compute-phase ctx. The
 	// embed/index phase dominates this budget on large results
 	// (embedding-API calls plus Qdrant upsert).
+
+	// Create separate context for persistence so saving is not affected by compute timeout
 	persistCtx, persistCancel := persistContext(ctx)
 	defer persistCancel()
 
+	// Save final discovery result to repository/database
 	if err := o.discoveryRepo.Save(persistCtx, result); err != nil {
 		return nil, err
 	}
 
+	// Store detailed execution logs (exploration, analysis, validation) for debugging
 	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
-	// Phase 9: Embed & Index (non-fatal — errors logged, discovery still completes).
+	// Phase 8: Embed & Index (non-fatal — errors logged, discovery still completes).
 	// Skipped when compute was cancelled — embedding & dedup against
 	// partial / inconsistent data is wasteful and the indexes would
 	// be stale for the next run anyway. Runs BEFORE Complete on the
-	// happy path because Phase 9's first call is
+	// happy path because Phase 8's first call is
 	// statusReporter.SetPhase(PhaseEmbedIndex, …, 97) which writes
 	// RunStatusRunning. If Complete ran first, SetPhase would silently
 	// downgrade the just-completed run back to "running" with no
 	// follow-up Complete, leaving every successful discovery stuck
 	// non-terminal.
 	if computeErr == nil && o.embedIndexStore != nil {
+
+		// Run embedding + indexing step to store discovery results for future retrieval/search
 		o.runPhaseEmbedIndex(persistCtx, result)
 	}
 
+	// Final step: update run status (success or failure) based on execution result
 	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
 		return result, err
 	}
@@ -995,6 +1064,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"duration":        time.Since(startTime).String(),
 	}).Info("Discovery run completed")
 
+	// Return final discovery result to caller
 	return result, nil
 }
 
@@ -1159,6 +1229,7 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 		return ResolvedPrompts{}, nil
 	}
 
+	// Build a unified prompt structure used by LLM across all phases
 	resolved := ResolvedPrompts{
 		Exploration:     o.projectPrompts.Exploration,
 		Recommendations: o.projectPrompts.Recommendations,
@@ -1167,6 +1238,7 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 	}
 
 	var areas []AnalysisArea
+	// Convert enabled analysis areas into runtime execution format used by analysis engine
 	for id, cfg := range o.projectPrompts.AnalysisAreas {
 		if !cfg.Enabled {
 			continue
@@ -1235,6 +1307,8 @@ func (o *Orchestrator) buildFilterClause() string {
 	return fmt.Sprintf("WHERE %s = '%s'", o.filterField, o.filterValue)
 }
 
+// buildFilterContext returns a natural-language instruction injected into LLM prompts
+// to ensure all generated queries respect the required dataset filter constraint.
 func (o *Orchestrator) buildFilterContext() string {
 	if o.filterField == "" {
 		return ""
@@ -1242,6 +1316,8 @@ func (o *Orchestrator) buildFilterContext() string {
 	return fmt.Sprintf("**Filter**: All queries must include `%s = '%s'`", o.filterField, o.filterValue)
 }
 
+// buildFilterRule returns a strict LLM instruction enforcing query-level filtering rules.
+// This ensures generated SQL always respects project data isolation constraints.
 func (o *Orchestrator) buildFilterRule() string {
 	if o.filterField == "" {
 		return "**No filter required**: This dataset contains only this project's data."
@@ -1249,6 +1325,8 @@ func (o *Orchestrator) buildFilterRule() string {
 	return fmt.Sprintf("**ALWAYS filter by %s**: `WHERE %s = '%s'`", o.filterField, o.filterField, o.filterValue)
 }
 
+// buildAnalysisAreasDescription converts analysis areas into a numbered markdown list
+// used in LLM prompts to describe available analysis categories.
 func (o *Orchestrator) buildAnalysisAreasDescription(areas []AnalysisArea) string {
 	var sb strings.Builder
 	for i, area := range areas {
@@ -1345,7 +1423,6 @@ func (o *Orchestrator) buildPreviousContext(
 
 	return sb.String()
 }
-
 
 func (o *Orchestrator) loadProjectContext(ctx context.Context) (*models.ProjectContext, error) {
 	return o.contextRepo.GetByProjectID(ctx, o.projectID)
