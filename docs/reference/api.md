@@ -261,12 +261,24 @@ curl http://localhost:8080/api/v1/projects
       "domain": "gaming",
       "category": "match3",
       "status": "active",
+      "last_run_status": "completed",
       "last_run_at": "2026-03-14T10:30:00Z",
-      "last_run_status": "completed"
+      "last_run_completed_at": "2026-03-14T10:42:00Z"
     }
   ]
 }
 ```
+
+Each project carries a summary of its most recent discovery run, derived
+from the latest `discovery_runs` record at read time:
+
+- `last_run_status` — the run's lifecycle status: `pending`, `running`,
+  `completed`, `failed`, or `cancelled`. Omitted when the project has
+  never started a run.
+- `last_run_at` — when the most recent run started (RFC 3339). Clients
+  count elapsed time up from this while a run is in progress.
+- `last_run_completed_at` — when it finished (RFC 3339). Omitted while
+  the run is still in progress or never completed.
 
 ### GET /api/v1/projects/{id}
 
@@ -276,7 +288,7 @@ Get a project with full configuration.
 curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011
 ```
 
-Returns the complete project object including warehouse, LLM, schedule, and profile configuration.
+Returns the complete project object including warehouse, LLM, schedule, and profile configuration, plus the same `last_run_status` / `last_run_at` / `last_run_completed_at` run summary as the list endpoint.
 
 ### PUT /api/v1/projects/{id}
 

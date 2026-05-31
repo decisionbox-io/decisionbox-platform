@@ -77,6 +77,58 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
+// LatestByProjects returns the most recent discovery run for each of
+// the given project IDs, keyed by project ID. Projects with no runs
+// are simply absent from the returned map.
+//
+// It runs as a single aggregation (match → sort → group $first) so
+// enriching a page of N projects costs one Mongo round-trip rather than
+// N. The sort key is `{project_id: 1, started_at: -1}` — exactly the
+// existing compound index on discovery_runs — so Mongo streams the sort
+// off the index instead of doing a blocking in-memory sort (which would
+// risk the aggregation sort-memory limit on projects with long run
+// histories). Within each project_id group the docs arrive newest-first,
+// so `$first` yields that project's latest run. An empty input returns
+// an empty map without touching Mongo.
+func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []string) (map[string]*models.DiscoveryRun, error) {
+	out := make(map[string]*models.DiscoveryRun, len(projectIDs))
+	if len(projectIDs) == 0 {
+		return out, nil
+	}
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"project_id": bson.M{"$in": projectIDs}}}},
+		{{Key: "$sort", Value: bson.D{
+			{Key: "project_id", Value: 1},
+			{Key: "started_at", Value: -1},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": "$project_id",
+			"run": bson.M{"$first": "$$ROOT"},
+		}}},
+	}
+
+	cursor, err := r.col.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate latest runs by project: %w", err)
+	}
+	defer cursor.Close(ctx) //nolint:errcheck
+
+	var rows []struct {
+		ProjectID string              `bson:"_id"`
+		Run       models.DiscoveryRun `bson:"run"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("decode latest runs by project: %w", err)
+	}
+
+	for i := range rows {
+		run := rows[i].Run
+		out[rows[i].ProjectID] = &run
+	}
+	return out, nil
+}
+
 // ListTerminalWithoutCompletionHook returns runs that have terminated
 // (status in {completed, failed, cancelled}) and have not had their
 // completion hooks fired yet. The run-completion dispatcher consumes

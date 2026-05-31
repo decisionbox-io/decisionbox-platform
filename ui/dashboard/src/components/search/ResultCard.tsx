@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { SeverityBadge, AreaBadge } from '@/components/common/UIComponents';
+import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import { searchResultHref } from '@/lib/searchNav';
 import type { SearchResultItem } from '@/lib/api';
 
@@ -31,6 +32,7 @@ export function ResultCard({ item, projectId }: { item: SearchResultItem; projec
         </span>
         {item.severity && <SeverityBadge severity={item.severity} type="severity" />}
         {item.analysis_area && <AreaBadge area={item.analysis_area} />}
+        <InsightValidationBadge validation={item.validation} />
         {item.project_name && (
           <span style={{
             fontSize: 11, color: 'var(--db-purple-text)', background: 'var(--db-purple-bg)',
