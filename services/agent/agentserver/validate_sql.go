@@ -269,6 +269,14 @@ type sqlValidationResult struct {
 	Error string `bson:"error,omitempty"`
 }
 
+// agentWorkerID identifies the agent run that claimed a job. The hostname
+// is the pod name under Kubernetes, matching the API worker's convention.
+// Best-effort: an empty string if the hostname can't be read.
+func agentWorkerID() string {
+	h, _ := os.Hostname()
+	return h
+}
+
 // sqlValidationJobClaim carries only the fields needed to claim and route
 // the job. Decoding a minimal subset means the atomic claim can never be
 // broken by a malformed `statements` field (decoded separately, below).
@@ -290,6 +298,18 @@ func claimSQLValidationJob(ctx context.Context, col *mongo.Collection, jobID str
 			"status":       "running",
 			"claimed_at":   now,
 			"heartbeat_at": now,
+			// Stamp the worker so a stuck row can be traced back to the
+			// agent run that owns it (hostname == pod name under K8s).
+			"worker_id": agentWorkerID(),
+		},
+		// Clear any terminal fields a prior attempt may have left behind
+		// so a re-claimed row never exposes stale results/error while it
+		// is running again.
+		"$unset": bson.M{
+			"results":      "",
+			"error":        "",
+			"completed_at": "",
+			"cancelled_at": "",
 		},
 		"$inc": bson.M{"attempt": 1},
 	}

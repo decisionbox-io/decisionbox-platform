@@ -166,9 +166,10 @@ func TestInteg_ValidateSQL_EndToEnd(t *testing.T) {
 
 	// --- assert the persisted verdicts ---
 	var got struct {
-		Status  string `bson:"status"`
-		Error   string `bson:"error"`
-		Results []struct {
+		Status   string `bson:"status"`
+		Error    string `bson:"error"`
+		WorkerID string `bson:"worker_id"`
+		Results  []struct {
 			SQL   string `bson:"sql"`
 			OK    bool   `bson:"ok"`
 			Error string `bson:"error"`
@@ -181,6 +182,10 @@ func TestInteg_ValidateSQL_EndToEnd(t *testing.T) {
 
 	if got.Status != "completed" {
 		t.Fatalf("job status = %q (error=%q), want completed", got.Status, got.Error)
+	}
+	// The claim stamps worker_id so a stuck row is traceable to its run.
+	if got.WorkerID == "" {
+		t.Errorf("worker_id was not stamped on claim")
 	}
 	if len(got.Results) != 3 {
 		t.Fatalf("got %d results, want 3: %+v", len(got.Results), got.Results)

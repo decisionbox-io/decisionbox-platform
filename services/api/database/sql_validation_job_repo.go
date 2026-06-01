@@ -70,6 +70,12 @@ func (r *SQLValidationJobRepository) Enqueue(ctx context.Context, job *models.SQ
 	if job.ProjectID == "" {
 		return errors.New("project_id is required")
 	}
+	// Normalize a nil batch to an empty slice so the stored (and later
+	// returned) shape is a stable `[]`, never `null` — callers polling the
+	// result rely on `statements` being an array.
+	if job.Statements == nil {
+		job.Statements = []string{}
+	}
 	job.Status = models.ValidationJobStatusPending
 	job.EnqueuedAt = time.Now().UTC()
 	job.Attempt = 0 // bumped to 1 on first claim
@@ -102,6 +108,11 @@ func (r *SQLValidationJobRepository) GetByID(ctx context.Context, id string) (*m
 	}
 	if err != nil {
 		return nil, fmt.Errorf("find sql_validation_job: %w", err)
+	}
+	// Keep the wire shape stable: a row stored with a null statements
+	// field (e.g. inserted out-of-band) reads back as `[]`, not `null`.
+	if job.Statements == nil {
+		job.Statements = []string{}
 	}
 	return &job, nil
 }

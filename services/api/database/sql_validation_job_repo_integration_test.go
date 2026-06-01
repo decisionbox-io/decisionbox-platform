@@ -106,6 +106,36 @@ func TestInteg_SQLValidationJobs_EnqueueResetsStaleState(t *testing.T) {
 	}
 }
 
+// A nil statement batch must round-trip as a non-nil empty slice so the
+// JSON/bson wire shape is a stable `[]`, never `null`.
+func TestInteg_SQLValidationJobs_NilStatementsNormalizedToEmpty(t *testing.T) {
+	ctx := context.Background()
+	repo := newSQLJobRepo(t)
+
+	job := &models.SQLValidationJob{
+		ID:        uuid.New().String(),
+		ProjectID: "507f1f77bcf86cd799439011",
+		// Statements left nil.
+	}
+	if err := repo.Enqueue(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if job.Statements == nil {
+		t.Errorf("Enqueue should normalize nil statements to an empty slice")
+	}
+
+	got, err := repo.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Statements == nil {
+		t.Errorf("GetByID returned nil statements, want empty slice")
+	}
+	if len(got.Statements) != 0 {
+		t.Errorf("statements = %v, want empty", got.Statements)
+	}
+}
+
 func TestInteg_SQLValidationJobs_GetMissingReturnsNilNil(t *testing.T) {
 	ctx := context.Background()
 	repo := newSQLJobRepo(t)
