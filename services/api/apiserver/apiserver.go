@@ -208,10 +208,12 @@ func Run() {
 	// share it.
 	runnerCfg := runner.LoadConfig()
 
-	// Record the agent in the system inventory (GET /api/v1/system).
-	// Its version is the tag of the configured agent image — the agent
-	// runs as a Job/subprocess, not a live service the API can query.
-	registerAgentComponent(runnerCfg.AgentImage)
+	// Record the agent in the system inventory (GET /api/v1/system). In
+	// kubernetes mode the version is the configured image tag; in
+	// subprocess mode it is the bundled agent binary's build (same as
+	// the API). Either way the agent is a Job/subprocess, not a live
+	// service the API can query.
+	registerAgentComponent(runnerCfg.Mode, runnerCfg.AgentImage)
 
 	sharedRunner, err := runner.New(runnerCfg)
 	if err != nil {

@@ -57,20 +57,41 @@ func registerInProcessComponents() {
 	})
 }
 
-// registerAgentComponent records the agent in the system inventory using
-// the image the API is configured to launch. The agent is not a live
-// service the API can introspect — it runs as a subprocess (dev) or a
-// Kubernetes Job (prod) — so its reported version is the tag of the
-// configured image, with a note making that explicit.
-func registerAgentComponent(agentImage string) {
+// runnerModeKubernetes mirrors the runner package's RUNNER_MODE value
+// for Kubernetes Job execution. In any other mode (subprocess, the
+// default) the runner ignores AGENT_IMAGE and runs the agent binary
+// bundled in the API image.
+const runnerModeKubernetes = "kubernetes"
+
+// registerAgentComponent records the agent in the system inventory. The
+// agent is never a live service the API can introspect, so what it
+// reports depends on how the API launches it:
+//
+//   - kubernetes mode: each run is a Job created from AGENT_IMAGE, so the
+//     version is that image's tag.
+//   - subprocess mode (default): the API execs the agent binary bundled
+//     in its own image — built with the same version stamp — so AGENT_IMAGE
+//     is unused and the accurate version is the API's own build metadata.
+func registerAgentComponent(mode, agentImage string) {
+	if strings.EqualFold(mode, runnerModeKubernetes) {
+		systeminfo.Register(systeminfo.Descriptor{
+			Name:    "Agent",
+			Kind:    systeminfo.KindService,
+			Version: imageTag(agentImage),
+			Note: fmt.Sprintf(
+				"agent image the API launches as a Kubernetes Job (%s); not a live service",
+				agentImage,
+			),
+		})
+		return
+	}
 	systeminfo.Register(systeminfo.Descriptor{
-		Name:    "Agent",
-		Kind:    systeminfo.KindService,
-		Version: imageTag(agentImage),
-		Note: fmt.Sprintf(
-			"agent image the API is configured to launch (%s); runs as a subprocess (dev) or Kubernetes Job (prod), not a live service",
-			agentImage,
-		),
+		Name:      "Agent",
+		Kind:      systeminfo.KindService,
+		Version:   goversion.Version,
+		Commit:    goversion.Commit,
+		BuildDate: goversion.BuildDate,
+		Note:      "agent binary bundled in the API image, run as a subprocess; shares the API image version",
 	})
 }
 
