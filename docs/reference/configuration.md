@@ -224,7 +224,7 @@ These are Docker **build args** (`--build-arg` / `docker compose build` args), n
 | `COMMIT` | API, Agent | `unknown` | Git commit the binary was built from (`-ldflags`). |
 | `BUILD_DATE` | API, Agent, Dashboard | `unknown` | RFC3339 build timestamp. |
 
-When unset, a binary reports the source-tree default (`0.4.0-dev`).
+A binary built with no `-ldflags` at all — e.g. a plain `go build` — reports the source-tree default (`0.4.0-dev`). Images built via the Dockerfiles always inject `-ldflags`, so an image built without the build args above reports the Dockerfile defaults (`VERSION=dev`, `COMMIT`/`BUILD_DATE=unknown`) rather than `0.4.0-dev`.
 
 `make docker-build` computes these values from the git tag/commit via `.github/scripts/build-metadata.sh` and passes them to each image build, so a built image reports the version it was published as.
 To stamp a build directly:

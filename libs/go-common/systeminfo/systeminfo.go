@@ -78,9 +78,10 @@ type Descriptor struct {
 // Source dynamically contributes Descriptors at collection time. Use it
 // for components whose version is not known in this process — typically
 // out-of-process workers that self-report version + heartbeat into a
-// store the Source reads. A Source that returns an error is skipped (it
-// must not take the whole inventory down); it should return a partial
-// slice plus the error rather than nothing on a transient read failure.
+// store the Source reads. If a Source returns an error, Collect ignores
+// the error (a failing Source must not take the whole inventory down) but
+// still merges any descriptors the Source returned alongside it — so a
+// Source may return partial results on a transient read failure.
 type Source func(ctx context.Context) ([]Descriptor, error)
 
 var (
@@ -114,11 +115,12 @@ func RegisterSource(s Source) {
 
 // Collect returns the full component inventory: every static descriptor,
 // merged with the descriptors returned by each registered source. A
-// source that errors is skipped, but any descriptors it returned
-// alongside the error are still included. When a source reports a Name
-// that is also statically registered, the source's descriptor wins (it
-// is the live reading). The result is sorted deterministically — services
-// before workers, then by name — and is always non-nil.
+// source's error is ignored — it cannot take the inventory down — and any
+// descriptors that source returned alongside the error are still merged.
+// When a source reports a Name that is also statically registered, the
+// source's descriptor wins (it is the live reading). The result is sorted
+// deterministically — services before workers, then by name — and is
+// always non-nil.
 func Collect(ctx context.Context) []Descriptor {
 	mu.RLock()
 	merged := make(map[string]Descriptor, len(statics))
@@ -130,6 +132,8 @@ func Collect(ctx context.Context) []Descriptor {
 	mu.RUnlock()
 
 	for _, src := range srcs {
+		// Error intentionally ignored: a failing source must not take the
+		// inventory down, and it may still return partial descriptors.
 		ds, _ := src(ctx)
 		for _, d := range ds {
 			if d.Name == "" {
