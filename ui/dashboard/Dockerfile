@@ -4,6 +4,14 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+
+# Build metadata surfaced on the dashboard's System page. next.config.ts
+# maps these to NEXT_PUBLIC_DASHBOARD_* (falling back to package.json
+# version when unset). Supplied by the build; see docs/reference/configuration.md.
+ARG VERSION=dev
+ARG BUILD_DATE=
+ENV DASHBOARD_VERSION=$VERSION
+ENV DASHBOARD_BUILD_DATE=$BUILD_DATE
 RUN npm run build
 
 FROM node:22-alpine

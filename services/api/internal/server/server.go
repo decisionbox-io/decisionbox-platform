@@ -161,6 +161,10 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// principal into the request context, this handler reads it back.
 	mux.HandleFunc("GET /api/v1/me", withRole(viewer, handler.Me))
 
+	// System inventory — component + worker versions (viewer). Built
+	// from the systeminfo registry; the handler holds no component list.
+	mux.HandleFunc("GET /api/v1/system", withRole(viewer, handler.SystemInfo))
+
 	// Providers — viewer
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))

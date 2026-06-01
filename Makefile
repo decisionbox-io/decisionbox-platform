@@ -209,14 +209,22 @@ TAG ?= latest
 
 docker-build: docker-build-api docker-build-agent docker-build-dashboard ## Build all Docker images
 
+# Version metadata (shown at GET /api/v1/system) is stamped into the images
+# via build args. The same script feeds CI; here it is eval'd into shell vars.
 docker-build-api: ## Build API Docker image
-	docker build -t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
+	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	docker build --build-arg VERSION="$$version" --build-arg COMMIT="$$commit" --build-arg BUILD_DATE="$$build_date" \
+		-t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
 
 docker-build-agent: ## Build Agent Docker image
-	docker build -t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
+	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	docker build --build-arg VERSION="$$version" --build-arg COMMIT="$$commit" --build-arg BUILD_DATE="$$build_date" \
+		-t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
 
 docker-build-dashboard: ## Build Dashboard Docker image
-	docker build -t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
+	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	docker build --build-arg VERSION="$$version" --build-arg BUILD_DATE="$$build_date" \
+		-t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
 
 docker-push: ## Push all Docker images to registry
 	docker push $(REGISTRY)/decisionbox-api:$(TAG)

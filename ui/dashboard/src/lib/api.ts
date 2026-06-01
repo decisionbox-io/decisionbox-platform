@@ -1015,6 +1015,28 @@ export interface BookmarkListWithItems extends BookmarkList {
   items: BookmarkItem[];
 }
 
+// System inventory (GET /api/v1/system). `kind` is open-ended on purpose
+// — the System page renders whatever the registry reports, so a build that
+// registers a new kind still displays. Keep these fields in sync with
+// libs/go-common/systeminfo.Descriptor.
+export type SystemComponentKind = 'service' | 'worker' | (string & {});
+
+export interface SystemComponent {
+  name: string;
+  kind: SystemComponentKind;
+  version?: string;
+  commit?: string;
+  build_date?: string;
+  // Parent service a worker runs inside (e.g. "API"); empty for services.
+  runs_in?: string;
+  // Clarification — e.g. that a worker shares its parent image's version.
+  note?: string;
+}
+
+export interface SystemInfo {
+  components: SystemComponent[];
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -1035,6 +1057,9 @@ export const api = {
       body: JSON.stringify(slot ? { slot } : {}),
     }),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
+
+  // System inventory — component + worker versions (System page)
+  getSystemInfo: () => request<SystemInfo>('/api/v1/system'),
 
   // Domain Packs (CRUD)
   listDomainPacks: () => request<DomainPack[]>('/api/v1/domain-packs'),

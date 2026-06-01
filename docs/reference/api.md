@@ -34,6 +34,44 @@ Returns `503` (with `"status": "degraded"` and per-service errors under `service
 
 ---
 
+## System
+
+### GET /api/v1/system
+
+Component inventory for the running deployment — the services and the in-process workers that ride inside them, each with the version it reports.
+The list is built from a registry, not hardcoded, so additional components registered by a build appear automatically.
+
+```bash
+curl http://localhost:8080/api/v1/system
+```
+
+```json
+{
+  "data": {
+    "components": [
+      {"name": "API", "kind": "service", "version": "0.10.0", "commit": "a1b2c3d", "build_date": "2026-06-01T12:00:00Z"},
+      {"name": "Agent", "kind": "service", "version": "0.10.0", "note": "agent image the API is configured to launch (ghcr.io/decisionbox-io/decisionbox-agent:0.10.0); runs as a subprocess (dev) or Kubernetes Job (prod), not a live service"},
+      {"name": "Schema indexing", "kind": "worker", "version": "0.10.0", "runs_in": "API", "note": "runs in-process inside the API service; shares its image version"},
+      {"name": "Validation jobs", "kind": "worker", "version": "0.10.0", "runs_in": "API", "note": "runs in-process inside the API service; shares its image version"}
+    ]
+  }
+}
+```
+
+Each component carries:
+
+- `name` — human-facing component name.
+- `kind` — `service` (a deployable image) or `worker` (a background loop running inside a parent service).
+- `version` — the reported version. For a worker this is its parent image's version; for the Agent it is the tag of the configured agent image (`AGENT_IMAGE`).
+- `commit`, `build_date` — git commit and build timestamp, when stamped at build time (see [Configuration → Build metadata](configuration.md#build-metadata)).
+- `runs_in` — for a worker, the parent service it runs inside.
+- `note` — clarification, e.g. that a worker shares its parent image's version, or that the Agent runs as a Job rather than a live service.
+
+The version values are injected at image build time via `-ldflags`; an un-stamped local build reports the source-tree default (`0.4.0-dev`).
+The Dashboard surfaces this inventory on its **System** page, adding its own build version (which the API cannot know, as the dashboard is a separate image).
+
+---
+
 ## Providers
 
 ### GET /api/v1/providers/llm

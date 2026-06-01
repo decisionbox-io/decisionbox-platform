@@ -207,6 +207,12 @@ func Run() {
 	// (Qdrant-gated) and the validation-jobs worker (always-on)
 	// share it.
 	runnerCfg := runner.LoadConfig()
+
+	// Record the agent in the system inventory (GET /api/v1/system).
+	// Its version is the tag of the configured agent image — the agent
+	// runs as a Job/subprocess, not a live service the API can query.
+	registerAgentComponent(runnerCfg.AgentImage)
+
 	sharedRunner, err := runner.New(runnerCfg)
 	if err != nil {
 		apilog.WithError(err).Error("runner: failed to create")
