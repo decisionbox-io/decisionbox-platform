@@ -50,6 +50,16 @@ const defaultSQLValidationMaxStatements = 500
 // claims the job itself here. The claim is atomic (FindOneAndUpdate on
 // status=pending), so a double-dispatch resolves to exactly one runner.
 //
+// Stale recovery is therefore the dispatcher's responsibility, not this
+// package's: if the agent process is killed mid-run (OOM, pod eviction)
+// the row stays `running` until the dispatcher acts. The model carries
+// the same heartbeat_at / claimed_at / attempt fields validate-doc's
+// RequeueStale uses, so a caller can detect a cold heartbeat and re-claim
+// or fail the row. An in-API stale-recovery worker for
+// sql_validation_jobs is intentionally not part of this primitive (it
+// adds no HTTP/worker surface). Terminal rows TTL out after 7 days (see
+// services/api/database/init.go).
+//
 // Exit contract (mirrors runValidateDoc):
 //   - returns nil on success (job marked completed)
 //   - returns a non-nil error on any failure that prevents completing the
@@ -195,19 +205,81 @@ type sqlValidator interface {
 // warehouse's native compile-only path and returns one verdict per
 // statement, in the same order. A per-statement compile failure is
 // recorded as {ok:false, error:<warehouse message>} — never a batch-level
-// error. ValidateSQL is "compile, don't execute", so the statements are
-// never run (an INSERT/DELETE compiles but mutates nothing).
+// error. ValidateSQL is "compile, don't execute", so a single statement
+// (an INSERT/DELETE) compiles but mutates nothing.
+//
+// Multi-statement input is rejected up front (ok:false) and never reaches
+// ValidateSQL. The compile-only providers wrap the input — e.g. Postgres
+// runs `EXPLAIN <sql>` — and EXPLAIN only covers the FIRST statement; a
+// trailing `; DELETE …` would run as a normal command under the driver's
+// simple-query protocol, executing despite the "never executes" contract.
+// Rejecting batched statements closes that hole regardless of how each
+// provider wraps the input.
 func validateStatements(ctx context.Context, v sqlValidator, statements []string) []sqlValidationResult {
 	results := make([]sqlValidationResult, 0, len(statements))
 	for _, stmt := range statements {
 		r := sqlValidationResult{SQL: stmt, OK: true}
-		if err := v.ValidateSQL(ctx, stmt); err != nil {
+		if err := ensureSingleStatement(stmt); err != nil {
+			r.OK = false
+			r.Error = err.Error()
+		} else if err := v.ValidateSQL(ctx, stmt); err != nil {
 			r.OK = false
 			r.Error = err.Error()
 		}
 		results = append(results, r)
 	}
 	return results
+}
+
+// ensureSingleStatement returns an error when sql contains more than one
+// statement. It flags any `;` that sits outside a single-quoted string
+// literal or a double-quoted identifier and is followed by further
+// non-empty content (a lone trailing `;` is fine). The scan deliberately
+// errs toward rejection: it does not parse line/block comments or
+// dollar-quoted bodies, so a `;` inside one of those is treated as a
+// separator and rejected — the safe direction for a compile-only check
+// whose whole point is to never execute a second command.
+func ensureSingleStatement(sql string) error {
+	const multiStatementErr = "multi-statement SQL is not allowed: submit one statement per batch entry"
+	var inSingle, inDouble bool
+	runes := []rune(sql)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case inSingle:
+			if c == '\'' {
+				// Doubled '' is an escaped quote inside the literal.
+				if i+1 < len(runes) && runes[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+		case inDouble:
+			if c == '"' {
+				if i+1 < len(runes) && runes[i+1] == '"' {
+					i++
+					continue
+				}
+				inDouble = false
+			}
+		default:
+			switch c {
+			case '\'':
+				inSingle = true
+			case '"':
+				inDouble = true
+			case ';':
+				// Allow only a terminating `;` (optionally repeated)
+				// followed by nothing but whitespace.
+				rest := strings.TrimLeft(strings.TrimSpace(string(runes[i+1:])), ";")
+				if strings.TrimSpace(rest) != "" {
+					return errors.New(multiStatementErr)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // checkSQLBatchSize rejects an oversized batch at the job level. Returns
