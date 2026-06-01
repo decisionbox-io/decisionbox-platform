@@ -9,7 +9,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   env: {
     NEXT_PUBLIC_DASHBOARD_VERSION: process.env.DASHBOARD_VERSION || pkgVersion,
-    NEXT_PUBLIC_DASHBOARD_BUILD_DATE: process.env.DASHBOARD_BUILD_DATE || "",
+    // "unknown" mirrors the Go images' unstamped default so every
+    // component reports a build date consistently on the System page.
+    NEXT_PUBLIC_DASHBOARD_BUILD_DATE: process.env.DASHBOARD_BUILD_DATE || "unknown",
   },
 };
 

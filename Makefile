@@ -207,22 +207,30 @@ agent-run: ## Run discovery agent for a project (usage: make agent-run PROJECT_I
 REGISTRY ?= ghcr.io/decisionbox-io
 TAG ?= latest
 
-docker-build: docker-build-api docker-build-agent docker-build-dashboard ## Build all Docker images
+# Compute the version stamp ONCE here and pass it to each image build so a
+# single `make docker-build` stamps the API/Agent/Dashboard identically
+# (build_date in particular would otherwise differ between the three).
+docker-build: ## Build all Docker images (one shared version stamp)
+	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	$(MAKE) --no-print-directory docker-build-api docker-build-agent docker-build-dashboard \
+		VERSION="$$version" COMMIT="$$commit" BUILD_DATE="$$build_date"
 
 # Version metadata (shown at GET /api/v1/system) is stamped into the images
-# via build args. The same script feeds CI; here it is eval'd into shell vars.
+# via build args. Each target honors VERSION/COMMIT/BUILD_DATE when passed by
+# the aggregate target above; run on its own it computes a stamp for that
+# one image. The same script feeds CI.
 docker-build-api: ## Build API Docker image
-	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	@eval "$$(VERSION='$(VERSION)' COMMIT='$(COMMIT)' BUILD_DATE='$(BUILD_DATE)' .github/scripts/build-metadata.sh)"; \
 	docker build --build-arg VERSION="$$version" --build-arg COMMIT="$$commit" --build-arg BUILD_DATE="$$build_date" \
 		-t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
 
 docker-build-agent: ## Build Agent Docker image
-	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	@eval "$$(VERSION='$(VERSION)' COMMIT='$(COMMIT)' BUILD_DATE='$(BUILD_DATE)' .github/scripts/build-metadata.sh)"; \
 	docker build --build-arg VERSION="$$version" --build-arg COMMIT="$$commit" --build-arg BUILD_DATE="$$build_date" \
 		-t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
 
 docker-build-dashboard: ## Build Dashboard Docker image
-	@eval "$$(.github/scripts/build-metadata.sh)"; \
+	@eval "$$(VERSION='$(VERSION)' COMMIT='$(COMMIT)' BUILD_DATE='$(BUILD_DATE)' .github/scripts/build-metadata.sh)"; \
 	docker build --build-arg VERSION="$$version" --build-arg BUILD_DATE="$$build_date" \
 		-t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
 

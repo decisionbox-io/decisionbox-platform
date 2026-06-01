@@ -9,7 +9,7 @@ COPY . .
 # maps these to NEXT_PUBLIC_DASHBOARD_* (falling back to package.json
 # version when unset). Supplied by the build; see docs/reference/configuration.md.
 ARG VERSION=dev
-ARG BUILD_DATE=
+ARG BUILD_DATE=unknown
 ENV DASHBOARD_VERSION=$VERSION
 ENV DASHBOARD_BUILD_DATE=$BUILD_DATE
 RUN npm run build
