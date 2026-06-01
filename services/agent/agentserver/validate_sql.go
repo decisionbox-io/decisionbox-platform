@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -18,22 +16,17 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// This file is the Mongo / warehouse wiring of the validate-sql mode —
+// claim, load, write, and the run entrypoints. These talk to a real
+// MongoDB and a real warehouse provider, so they are exercised by the
+// integration test (validate_sql_integration_test.go), not by unit tests.
+// The pure, unit-testable logic lives in validate_sql_check.go.
+
 // sqlValidationJobsCollection is the on-disk Mongo collection name.
 // Mirrored from services/api/database/sql_validation_job_repo.go — the
 // agent cannot import the api package, so the constant lives in both
 // places. Keep in sync.
 const sqlValidationJobsCollection = "sql_validation_jobs"
-
-// sqlValidationMaxStatementsEnv caps how many statements a single job may
-// carry. A batch over the cap is failed at the job level (a runaway or
-// abusive caller shouldn't be able to fire unbounded compile round-trips
-// at the warehouse). Empty / invalid → defaultSQLValidationMaxStatements;
-// a value <= 0 disables the cap entirely.
-const sqlValidationMaxStatementsEnv = "SQL_VALIDATION_MAX_STATEMENTS"
-
-// defaultSQLValidationMaxStatements is generous enough for any realistic
-// batch while still bounding a pathological job.
-const defaultSQLValidationMaxStatements = 500
 
 // runValidateSQL is the entrypoint for `agent --mode=validate-sql`.
 // It claims the SQLValidationJob row (pending → running), builds the
@@ -194,80 +187,12 @@ func runValidateSQLInner(ctx context.Context, db *database.DB, jobsCol *mongo.Co
 	return nil
 }
 
-// sqlValidator is the slice of warehouse.Provider that the batch loop
-// needs. Narrowing to this one method keeps the loop unit-testable with a
-// tiny fake (the full warehouse.Provider interface is large).
-type sqlValidator interface {
-	ValidateSQL(ctx context.Context, sql string) error
-}
-
-// validateStatements compile-checks each statement through the
-// warehouse's native compile-only path and returns one verdict per
-// statement, in the same order. A per-statement compile failure is
-// recorded as {ok:false, error:<warehouse message>} — never a batch-level
-// error. ValidateSQL is "compile, don't execute", so a single statement
-// (an INSERT/DELETE) compiles but mutates nothing. Read-only safety rests
-// on the project's warehouse credentials being read-only, which the
-// platform expects of every connection — this mode does no SQL parsing or
-// statement linting of its own (issue non-goal: validation is delegated to
-// each warehouse's native compile path).
-func validateStatements(ctx context.Context, v sqlValidator, statements []string) []sqlValidationResult {
-	results := make([]sqlValidationResult, 0, len(statements))
-	for _, stmt := range statements {
-		r := sqlValidationResult{SQL: stmt, OK: true}
-		if err := v.ValidateSQL(ctx, stmt); err != nil {
-			r.OK = false
-			r.Error = err.Error()
-		}
-		results = append(results, r)
-	}
-	return results
-}
-
-// checkSQLBatchSize rejects an oversized batch at the job level. Returns
-// nil when the batch is within the configured cap (or the cap is
-// disabled). Kept separate from runValidateSQLInner so the oversized-batch
-// behaviour is unit-testable without a Mongo / warehouse round-trip.
-func checkSQLBatchSize(n int) error {
-	if maxN := sqlValidationMaxStatements(); maxN > 0 && n > maxN {
-		return fmt.Errorf("batch too large: %d statements exceed the limit of %d (set %s to adjust, 0 to disable)", n, maxN, sqlValidationMaxStatementsEnv)
-	}
-	return nil
-}
-
-// sqlValidationMaxStatements returns the per-job statement cap. Empty /
-// invalid env → default; a value <= 0 means "no cap".
-func sqlValidationMaxStatements() int {
-	raw := strings.TrimSpace(os.Getenv(sqlValidationMaxStatementsEnv))
-	if raw == "" {
-		return defaultSQLValidationMaxStatements
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		applog.WithFields(applog.Fields{
-			"env":      sqlValidationMaxStatementsEnv,
-			"value":    raw,
-			"fallback": defaultSQLValidationMaxStatements,
-		}).Warn("invalid SQL_VALIDATION_MAX_STATEMENTS; falling back to default")
-		return defaultSQLValidationMaxStatements
-	}
-	return n
-}
-
 // --- inline sql_validation_jobs reader/writers -----------------------
 //
 // The agent's database package doesn't have a SQLValidationJob repo
 // (sql_validation_jobs is owned by the API). We do the reads/writes
 // inline so the agent doesn't need a hard dep on the API repo. Wire
 // format matches services/api/models/sql_validation_job.go.
-
-// sqlValidationResult mirrors the API's models.SQLValidationResult wire
-// shape ({sql, ok, error}).
-type sqlValidationResult struct {
-	SQL   string `bson:"sql"`
-	OK    bool   `bson:"ok"`
-	Error string `bson:"error,omitempty"`
-}
 
 // agentWorkerID identifies the agent run that claimed a job. The hostname
 // is the pod name under Kubernetes, matching the API worker's convention.
