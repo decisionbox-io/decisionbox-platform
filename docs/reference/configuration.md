@@ -213,6 +213,31 @@ The dashboard (`decisionbox-dashboard`) is a Next.js application that proxies AP
 
 ---
 
+## Build metadata
+
+Version metadata is stamped into the images at **build time** (not runtime) and surfaced by the API's [`GET /api/v1/system`](api.md#get-apiv1system) endpoint and the dashboard's **System** page.
+These are Docker **build args** (`--build-arg` / `docker compose build` args), not environment variables.
+
+| Build arg | Images | Default | Description |
+|-----------|--------|---------|-------------|
+| `VERSION` | API, Agent, Dashboard | `dev` | Release version. The Go binaries receive it via `-ldflags`; the dashboard maps it to `NEXT_PUBLIC_DASHBOARD_VERSION` (falling back to `package.json` when unset). |
+| `COMMIT` | API, Agent | `unknown` | Git commit the binary was built from (`-ldflags`). |
+| `BUILD_DATE` | API, Agent, Dashboard | `unknown` | RFC3339 build timestamp. |
+
+A binary built with no `-ldflags` at all — e.g. a plain `go build` — reports the source-tree default (`0.4.0-dev`). Images built via the Dockerfiles always inject `-ldflags`, so an image built without the build args above reports the Dockerfile defaults (`VERSION=dev`, `COMMIT`/`BUILD_DATE=unknown`) rather than `0.4.0-dev`.
+
+`make docker-build` computes these values from the git tag/commit via `.github/scripts/build-metadata.sh` and passes them to each image build, so a built image reports the version it was published as.
+To stamp a build directly:
+
+```bash
+make docker-build                       # auto-detects version from git
+# or pass explicit values:
+VERSION=0.10.0 COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  docker compose build
+```
+
+---
+
 ## Docker Compose
 
 The `docker-compose.yml` includes all variables with documentation. Here's the minimal configuration:

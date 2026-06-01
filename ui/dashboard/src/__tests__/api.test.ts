@@ -56,6 +56,28 @@ describe('api.listWarehouseProviders', () => {
   });
 });
 
+// --- System ---
+
+describe('api.getSystemInfo', () => {
+  it('returns the component inventory', async () => {
+    mockSuccess({
+      components: [
+        { name: 'API', kind: 'service', version: '1.2.3', commit: 'abc1234' },
+        { name: 'Schema indexing', kind: 'worker', runs_in: 'API', version: '1.2.3', note: 'shares its image version' },
+      ],
+    });
+
+    const result = await api.getSystemInfo();
+    expect(result.components).toHaveLength(2);
+    expect(result.components[0].name).toBe('API');
+    expect(result.components[1].kind).toBe('worker');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/system'),
+      expect.any(Object)
+    );
+  });
+});
+
 // --- Domain Packs (CRUD) ---
 
 describe('api.listDomainPacks', () => {

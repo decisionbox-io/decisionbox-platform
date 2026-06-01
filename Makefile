@@ -207,16 +207,33 @@ agent-run: ## Run discovery agent for a project (usage: make agent-run PROJECT_I
 REGISTRY ?= ghcr.io/decisionbox-io
 TAG ?= latest
 
+# Version stamp (shown at GET /api/v1/system) computed ONCE per make
+# invocation — only when a docker-build* target is requested — and shared
+# by all three image builds so they report identical version/commit/
+# build_date. Values are parsed from the script's key=value output with
+# make's own text functions (no `eval`, so a tag/describe string is never
+# executed as shell). Override any of them on the command line, e.g.
+# `make docker-build VERSION=0.10.0`. The same script feeds CI.
+ifneq (,$(filter docker-build%,$(MAKECMDGOALS)))
+BUILD_META  := $(shell .github/scripts/build-metadata.sh)
+VERSION     ?= $(patsubst version=%,%,$(filter version=%,$(BUILD_META)))
+COMMIT      ?= $(patsubst commit=%,%,$(filter commit=%,$(BUILD_META)))
+BUILD_DATE  ?= $(patsubst build_date=%,%,$(filter build_date=%,$(BUILD_META)))
+endif
+
 docker-build: docker-build-api docker-build-agent docker-build-dashboard ## Build all Docker images
 
 docker-build-api: ## Build API Docker image
-	docker build -t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
+	docker build --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_DATE="$(BUILD_DATE)" \
+		-t $(REGISTRY)/decisionbox-api:$(TAG) -f services/api/Dockerfile .
 
 docker-build-agent: ## Build Agent Docker image
-	docker build -t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
+	docker build --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_DATE="$(BUILD_DATE)" \
+		-t $(REGISTRY)/decisionbox-agent:$(TAG) -f services/agent/Dockerfile .
 
 docker-build-dashboard: ## Build Dashboard Docker image
-	docker build -t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
+	docker build --build-arg VERSION="$(VERSION)" --build-arg BUILD_DATE="$(BUILD_DATE)" \
+		-t $(REGISTRY)/decisionbox-dashboard:$(TAG) -f ui/dashboard/Dockerfile ui/dashboard
 
 docker-push: ## Push all Docker images to registry
 	docker push $(REGISTRY)/decisionbox-api:$(TAG)

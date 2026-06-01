@@ -47,6 +47,12 @@ services:
     build:
       context: .
       dockerfile: services/api/Dockerfile
+      # Stamp build metadata into the binary (shown at GET /api/v1/system).
+      # Override with: VERSION=0.4.0 COMMIT=$(git rev-parse --short HEAD) docker compose build api
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: decisionbox-api
     ports:
       - "8080:8080"
@@ -192,6 +198,11 @@ services:
     build:
       context: .
       dockerfile: services/agent/Dockerfile
+      # Stamp build metadata into the agent binary (reported by telemetry).
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: decisionbox-agent
     profiles:
       - agent  # only starts with: docker compose --profile agent run agent
@@ -271,6 +282,10 @@ services:
     build:
       context: ui/dashboard
       dockerfile: Dockerfile
+      # Stamp the dashboard version shown on the System page.
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: decisionbox-dashboard
     ports:
       - "3000:3000"

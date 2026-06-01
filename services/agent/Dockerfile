@@ -42,8 +42,19 @@ COPY libs/ libs/
 COPY providers/ providers/
 COPY services/agent/ services/agent/
 
+# Build metadata stamped into the binary via -ldflags (reported by the
+# agent's telemetry and, for the configured agent image, the API's
+# GET /api/v1/system). Supplied by the build; defaults mark a local
+# build. See docs/reference/configuration.md.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ENV VERSION_PKG=github.com/decisionbox-io/decisionbox/libs/go-common/version
+
 WORKDIR /workspace/services/agent
-RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-agent .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.Commit=${COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" \
+    -o /decisionbox-agent .
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && \

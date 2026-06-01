@@ -46,15 +46,27 @@ COPY providers/ providers/
 COPY services/api/ services/api/
 COPY services/agent/ services/agent/
 
+# Build metadata stamped into the binary via -ldflags and surfaced at
+# GET /api/v1/system. Supplied by the build (CI / docker-compose); the
+# defaults mark an un-stamped local build. See docs/reference/configuration.md.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ENV VERSION_PKG=github.com/decisionbox-io/decisionbox/libs/go-common/version
+
 # Build API binary
 WORKDIR /workspace/services/api
-RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-api .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.Commit=${COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" \
+    -o /decisionbox-api .
 
 # Build agent binary — required by API subprocess runner (RUNNER_MODE=subprocess),
 # the default mode for docker-compose. In kubernetes mode the agent runs as a Job
 # from its own image and this binary is unused.
 WORKDIR /workspace/services/agent
-RUN CGO_ENABLED=0 GOOS=linux go build -o /decisionbox-agent .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.Commit=${COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" \
+    -o /decisionbox-agent .
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && \

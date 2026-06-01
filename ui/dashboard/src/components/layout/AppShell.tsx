@@ -5,7 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
-  IconBook2, IconBookmark, IconMessageCircle, IconPackages, IconSearch, IconSettings, IconSparkles, IconStack2, IconTool,
+  IconBook2, IconBookmark, IconMessageCircle, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 import SpotlightSearch from '@/components/common/SpotlightSearch';
@@ -220,6 +220,12 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               icon={<IconPackages size={16} />}
               label="Domain Packs"
               active={pathname?.startsWith('/domain-packs') ?? false}
+            />
+            <NavItem
+              href="/system"
+              icon={<IconServer size={16} />}
+              label="System"
+              active={pathname?.startsWith('/system') ?? false}
             />
           </nav>
         )}

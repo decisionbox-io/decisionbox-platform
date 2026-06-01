@@ -207,6 +207,14 @@ func Run() {
 	// (Qdrant-gated) and the validation-jobs worker (always-on)
 	// share it.
 	runnerCfg := runner.LoadConfig()
+
+	// Record the agent in the system inventory (GET /api/v1/system). In
+	// kubernetes mode the version is the configured image tag; in
+	// subprocess mode it is the bundled agent binary's build (same as
+	// the API). Either way the agent is a Job/subprocess, not a live
+	// service the API can query.
+	registerAgentComponent(runnerCfg.Mode, runnerCfg.AgentImage)
+
 	sharedRunner, err := runner.New(runnerCfg)
 	if err != nil {
 		apilog.WithError(err).Error("runner: failed to create")
@@ -260,6 +268,10 @@ func Run() {
 		var workerCtx context.Context
 		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
 		go worker.Start(workerCtx)
+		// Only now that the worker is actually running do we add it to
+		// the system inventory, so a Qdrant-less deployment doesn't
+		// report a worker that never started.
+		registerSchemaIndexComponent()
 	} else {
 		apilog.Warn("Qdrant not configured — schema-index worker disabled (discovery will be blocked until Qdrant is set)")
 	}
