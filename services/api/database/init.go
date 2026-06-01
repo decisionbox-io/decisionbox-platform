@@ -279,6 +279,33 @@ var schema = []struct {
 			},
 		},
 	},
+	{
+		// Batch SQL compile-check jobs (--mode=validate-sql). Unlike
+		// validation_jobs there is no (discovery, doc) active-job
+		// uniqueness invariant — a batch is keyed only by its own id.
+		Name: "sql_validation_jobs",
+		Indexes: []mongo.IndexModel{
+			// Per-project lookup / scan of pending jobs. Mirrors the
+			// validation_jobs worker-poll index even though SQL
+			// validation has no in-API worker today — keeps the claim
+			// scan (status=pending scoped to a project) cheap.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "status", Value: 1}}},
+			// 7-day TTL on terminal rows, scoped to terminal statuses
+			// only so still-queued / in-flight rows (whose
+			// completed_at is undefined) are never expired early.
+			{
+				Keys: bson.D{{Key: "completed_at", Value: 1}},
+				Options: options.Index().
+					SetName("ttl_sql_validation_job_terminal").
+					SetExpireAfterSeconds(7 * 24 * 60 * 60).
+					SetPartialFilterExpression(bson.M{
+						"status": bson.M{"$in": []string{
+							"completed", "failed", "cancelled",
+						}},
+					}),
+			},
+		},
+	},
 }
 
 // InitDatabase creates all collections and indexes on startup.

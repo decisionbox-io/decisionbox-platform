@@ -35,6 +35,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/ollama v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
 	go.mongodb.org/mongo-driver v1.17.9
 	go.uber.org/zap v1.27.1
 	google.golang.org/api v0.265.0
