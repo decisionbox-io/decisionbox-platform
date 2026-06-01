@@ -78,8 +78,8 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
-		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit. Default: run discovery.")
-		jobID           = flag.String("job-id", "", "ValidationJob _id when --mode=validate-doc. Ignored in other modes.")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit. Default: run discovery.")
+		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
 
 	flag.Parse()
@@ -99,6 +99,22 @@ func Run() {
 		err := runValidateDoc(cfg, *jobID)
 		if err != nil {
 			applog.WithError(err).Error("Validate-doc run failed")
+		}
+		applog.Sync()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// validate-sql is keyed by --job-id (the agent reads project_id from
+	// the loaded SQLValidationJob row), so — like validate-doc — it skips
+	// the --project-id requirement and is dispatched ahead of that check.
+	if *mode == "validate-sql" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		err := runValidateSQL(cfg, *jobID)
+		if err != nil {
+			applog.WithError(err).Error("Validate-sql run failed")
 		}
 		applog.Sync()
 		if err != nil {
@@ -130,7 +146,7 @@ func Run() {
 		return
 	}
 	if *mode != "" {
-		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'validate-doc', or empty)\n", *mode)
+		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'validate-doc', 'validate-sql', or empty)\n", *mode)
 		os.Exit(1)
 	}
 

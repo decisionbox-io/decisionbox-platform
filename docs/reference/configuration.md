@@ -63,6 +63,14 @@ The LLM-native verifier + refuter run in Phase 4.5 (insights) and Phase 5.5 (rec
 | `VALIDATION_NUMERIC_TOLERANCE` | `0.20` | Relative tolerance (±20% by default) for comparing a claim's quantitative figure against row evidence. Prevents rounding-noise rejections — e.g. a "27% spike" claim with evidence of 26.5% stays `supported`. Only applies to magnitude/figure components; ranking and superlative claims are exact-match. |
 | `VALIDATION_MIN_SAMPLE_SIZE` | `30` | Minimum row population the refuter must observe before using a row as counter-evidence for a market-wide superlative claim. Below this, a contradicting outlier is dismissed (apples-to-apples — small-sample contradictions don't disprove the headline). |
 
+### Batch SQL Validation
+
+The `--mode=validate-sql` run mode compile-checks a batch of SQL statements against a project's warehouse via the warehouse's native compile-only path (see the [CLI reference](cli.md)).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SQL_VALIDATION_MAX_STATEMENTS` | `500` | Maximum statements a single `validate-sql` job may carry. A batch over the cap fails the job (compile round-trips against the warehouse stay bounded). Set to `0` to disable the cap. |
+
 ### Vector Search (Qdrant)
 
 The agent uses Qdrant to store and index embeddings during the discovery process.
@@ -95,7 +103,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--mode` | No | *(empty)* | Alternate run mode: `index-schema` or `validate-doc`. Empty runs discovery (the default). |
+| `--mode` | No | *(empty)* | Alternate run mode: `index-schema`, `validate-doc`, or `validate-sql` (batch SQL compile-check). Empty runs discovery (the default). |
 | `--project-id` | Yes | — | Project ID to run discovery for. |
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
@@ -106,7 +114,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to MongoDB (TTL: 30 days). |
 | `--test` | No | `false` | Test mode — limits analysis for faster runs. |
 | `--test-connection` | No | *(empty)* | Test a provider connection and exit. One of `warehouse`, `llm`, `embedding`, `blurb-llm`. |
-| `--job-id` | No | *(empty)* | ValidationJob `_id` when `--mode=validate-doc`. Ignored in other modes. |
+| `--job-id` | No | *(empty)* | Job `_id` when `--mode=validate-doc` (`validation_jobs`) or `--mode=validate-sql` (`sql_validation_jobs`). Ignored in other modes. |
 
 ---
 
