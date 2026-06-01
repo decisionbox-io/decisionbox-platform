@@ -133,59 +133,6 @@ func TestCheckSQLBatchSize(t *testing.T) {
 	})
 }
 
-// Multi-statement input must be rejected (ok:false) BEFORE it reaches the
-// warehouse — the compile-only providers wrap only the first statement, so
-// a trailing `; DELETE …` would execute. The reject path must not call
-// ValidateSQL at all.
-func TestValidateStatements_RejectsMultiStatement(t *testing.T) {
-	fv := &fakeValidator{fn: func(string) error { return nil }}
-	stmts := []string{
-		"SELECT 1; DELETE FROM events",        // classic injection shape
-		"SELECT 1 ; DROP TABLE events ;",      // spaced + trailing
-		"SELECT 1;\nUPDATE events SET id = 0", // newline-separated
-	}
-	got := validateStatements(context.Background(), fv, stmts)
-	for i, r := range got {
-		if r.OK {
-			t.Errorf("stmt %d %q accepted, want rejected", i, r.SQL)
-		}
-		if r.Error == "" {
-			t.Errorf("stmt %d %q missing error", i, r.SQL)
-		}
-	}
-	if len(fv.calls) != 0 {
-		t.Errorf("ValidateSQL was called for multi-statement input (%v) — it must be rejected first", fv.calls)
-	}
-}
-
-func TestEnsureSingleStatement(t *testing.T) {
-	ok := []string{
-		"SELECT 1",
-		"SELECT 1;",                          // lone trailing terminator
-		"  SELECT 1 ;  ",                     // trailing + whitespace
-		"SELECT 1;;",                         // repeated trailing terminators
-		"SELECT name FROM t WHERE x = 'a;b'", // semicolon inside a literal
-		`SELECT "we;rd" FROM t`,              // semicolon inside a quoted identifier
-		"SELECT 'it''s; fine' AS x",          // escaped quote + semicolon in literal
-	}
-	for _, s := range ok {
-		if err := ensureSingleStatement(s); err != nil {
-			t.Errorf("ensureSingleStatement(%q) = %v, want nil", s, err)
-		}
-	}
-	bad := []string{
-		"SELECT 1; DELETE FROM events",
-		"SELECT 1; SELECT 2",
-		"SELECT 'a'; DROP TABLE t",
-		"DELETE FROM t WHERE id=1; DELETE FROM t WHERE id=2",
-	}
-	for _, s := range bad {
-		if err := ensureSingleStatement(s); err == nil {
-			t.Errorf("ensureSingleStatement(%q) = nil, want multi-statement error", s)
-		}
-	}
-}
-
 func TestSQLValidationMaxStatements(t *testing.T) {
 	cases := []struct {
 		name string

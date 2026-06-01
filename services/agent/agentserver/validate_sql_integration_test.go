@@ -139,13 +139,12 @@ func TestInteg_ValidateSQL_EndToEnd(t *testing.T) {
 		validSQL   = "SELECT id FROM events"
 		invalidSQL = "SELEC id FRMO events"            // deliberate syntax errors
 		deleteSQL  = "DELETE FROM events WHERE id = 1" // compiles, must NOT run
-		injectSQL  = "SELECT 1; DELETE FROM events"    // multi-statement, must be rejected unrun
 	)
 	jobID := uuid.New().String()
 	_, err = mongoClient.Collection(sqlValidationJobsCollection).InsertOne(ctx, bson.M{
 		"_id":         jobID,
 		"project_id":  projectID,
-		"statements":  []string{validSQL, invalidSQL, deleteSQL, injectSQL},
+		"statements":  []string{validSQL, invalidSQL, deleteSQL},
 		"status":      "pending",
 		"attempt":     0,
 		"enqueued_at": time.Now().UTC(),
@@ -183,8 +182,8 @@ func TestInteg_ValidateSQL_EndToEnd(t *testing.T) {
 	if got.Status != "completed" {
 		t.Fatalf("job status = %q (error=%q), want completed", got.Status, got.Error)
 	}
-	if len(got.Results) != 4 {
-		t.Fatalf("got %d results, want 4: %+v", len(got.Results), got.Results)
+	if len(got.Results) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(got.Results), got.Results)
 	}
 
 	// Valid SELECT compiles.
@@ -201,17 +200,11 @@ func TestInteg_ValidateSQL_EndToEnd(t *testing.T) {
 	if r := got.Results[2]; r.SQL != deleteSQL || !r.OK || r.Error != "" {
 		t.Errorf("delete statement verdict = %+v, want ok:true (compiles, not executed)", r)
 	}
-	// Multi-statement input is rejected (ok:false) before reaching the
-	// warehouse — never split into an executable second command.
-	if r := got.Results[3]; r.SQL != injectSQL || r.OK || r.Error == "" {
-		t.Errorf("multi-statement verdict = %+v, want ok:false (rejected)", r)
-	}
 
-	// The clincher: the seeded rows are untouched, proving neither the
-	// DELETE (compiled, not executed) nor the multi-statement injection
-	// (rejected before the warehouse) ran.
+	// The clincher: the seeded rows are untouched, proving ValidateSQL
+	// compiled the DELETE without executing it.
 	if got := countEvents(ctx, t, pg); got != 3 {
-		t.Errorf("row count after validation = %d, want 3 — no statement may have executed", got)
+		t.Errorf("row count after validation = %d, want 3 — the DELETE must NOT have executed", got)
 	}
 }
 

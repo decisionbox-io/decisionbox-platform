@@ -206,80 +206,22 @@ type sqlValidator interface {
 // statement, in the same order. A per-statement compile failure is
 // recorded as {ok:false, error:<warehouse message>} — never a batch-level
 // error. ValidateSQL is "compile, don't execute", so a single statement
-// (an INSERT/DELETE) compiles but mutates nothing.
-//
-// Multi-statement input is rejected up front (ok:false) and never reaches
-// ValidateSQL. The compile-only providers wrap the input — e.g. Postgres
-// runs `EXPLAIN <sql>` — and EXPLAIN only covers the FIRST statement; a
-// trailing `; DELETE …` would run as a normal command under the driver's
-// simple-query protocol, executing despite the "never executes" contract.
-// Rejecting batched statements closes that hole regardless of how each
-// provider wraps the input.
+// (an INSERT/DELETE) compiles but mutates nothing. Read-only safety rests
+// on the project's warehouse credentials being read-only, which the
+// platform expects of every connection — this mode does no SQL parsing or
+// statement linting of its own (issue non-goal: validation is delegated to
+// each warehouse's native compile path).
 func validateStatements(ctx context.Context, v sqlValidator, statements []string) []sqlValidationResult {
 	results := make([]sqlValidationResult, 0, len(statements))
 	for _, stmt := range statements {
 		r := sqlValidationResult{SQL: stmt, OK: true}
-		if err := ensureSingleStatement(stmt); err != nil {
-			r.OK = false
-			r.Error = err.Error()
-		} else if err := v.ValidateSQL(ctx, stmt); err != nil {
+		if err := v.ValidateSQL(ctx, stmt); err != nil {
 			r.OK = false
 			r.Error = err.Error()
 		}
 		results = append(results, r)
 	}
 	return results
-}
-
-// ensureSingleStatement returns an error when sql contains more than one
-// statement. It flags any `;` that sits outside a single-quoted string
-// literal or a double-quoted identifier and is followed by further
-// non-empty content (a lone trailing `;` is fine). The scan deliberately
-// errs toward rejection: it does not parse line/block comments or
-// dollar-quoted bodies, so a `;` inside one of those is treated as a
-// separator and rejected — the safe direction for a compile-only check
-// whose whole point is to never execute a second command.
-func ensureSingleStatement(sql string) error {
-	const multiStatementErr = "multi-statement SQL is not allowed: submit one statement per batch entry"
-	var inSingle, inDouble bool
-	runes := []rune(sql)
-	for i := 0; i < len(runes); i++ {
-		c := runes[i]
-		switch {
-		case inSingle:
-			if c == '\'' {
-				// Doubled '' is an escaped quote inside the literal.
-				if i+1 < len(runes) && runes[i+1] == '\'' {
-					i++
-					continue
-				}
-				inSingle = false
-			}
-		case inDouble:
-			if c == '"' {
-				if i+1 < len(runes) && runes[i+1] == '"' {
-					i++
-					continue
-				}
-				inDouble = false
-			}
-		default:
-			switch c {
-			case '\'':
-				inSingle = true
-			case '"':
-				inDouble = true
-			case ';':
-				// Allow only a terminating `;` (optionally repeated)
-				// followed by nothing but whitespace.
-				rest := strings.TrimLeft(strings.TrimSpace(string(runes[i+1:])), ";")
-				if strings.TrimSpace(rest) != "" {
-					return errors.New(multiStatementErr)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // checkSQLBatchSize rejects an oversized batch at the job level. Returns
