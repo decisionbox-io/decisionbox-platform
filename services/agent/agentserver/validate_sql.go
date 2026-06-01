@@ -302,14 +302,17 @@ func claimSQLValidationJob(ctx context.Context, col *mongo.Collection, jobID str
 			// agent run that owns it (hostname == pod name under K8s).
 			"worker_id": agentWorkerID(),
 		},
-		// Clear any terminal fields a prior attempt may have left behind
-		// so a re-claimed row never exposes stale results/error while it
-		// is running again.
+		// Clear any lifecycle fields a prior attempt may have left
+		// behind so a re-claimed row never exposes stale results/error/
+		// timestamps while it is running again. started_at is cleared
+		// here too and re-stamped by setStartedAt right after the claim,
+		// so a delayed/failed setStartedAt can't leave a stale value.
 		"$unset": bson.M{
 			"results":      "",
 			"error":        "",
 			"completed_at": "",
 			"cancelled_at": "",
+			"started_at":   "",
 		},
 		"$inc": bson.M{"attempt": 1},
 	}
