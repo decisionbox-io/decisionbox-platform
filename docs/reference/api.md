@@ -67,6 +67,8 @@ Each component carries:
 - `runs_in` — for a worker, the parent service it runs inside.
 - `note` — clarification, e.g. that a worker shares its parent image's version, or that the Agent runs as a Job rather than a live service.
 
+Only components that are actually running are listed: the Schema indexing worker appears only when vector search (Qdrant) is configured, since it does not start otherwise.
+
 The version values are injected at image build time via `-ldflags`; an un-stamped local build reports the source-tree default (`0.4.0-dev`).
 The Dashboard surfaces this inventory on its **System** page, adding its own build version (which the API cannot know, as the dashboard is a separate image).
 

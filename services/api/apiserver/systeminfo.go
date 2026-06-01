@@ -14,22 +14,26 @@ import (
 // worker for an independently-released component.
 const workerSharesImageNote = "runs in-process inside the API service; shares its image version"
 
-// init registers the components the API process knows about itself: the
-// API service (its own ldflags-stamped version) and the two background
-// workers that run in-process inside it. The Agent is registered
-// separately from Run() because its version comes from the configured
-// agent image, which is runtime config (see registerAgentComponent).
+// init registers the components that are always present when the API
+// process runs: the API service itself (its ldflags-stamped version) and
+// the validation-jobs worker (started unconditionally). Components that
+// start conditionally are registered from Run() when they actually start:
+// the schema-index worker (Qdrant-gated, registerSchemaIndexComponent)
+// and the Agent (registerAgentComponent, version depends on runner mode).
+// This keeps GET /api/v1/system honest — it never lists a worker that was
+// not started.
 //
 // Registering here mirrors the codebase's other init()-time registries;
 // out-of-tree builds add their own components the same way without
 // touching the endpoint or the dashboard.
 func init() {
-	registerInProcessComponents()
+	registerAlwaysOnComponents()
 }
 
-// registerInProcessComponents records the API and its two in-process
-// workers. Split out of init() so it is exercisable in isolation.
-func registerInProcessComponents() {
+// registerAlwaysOnComponents records the API and the validation-jobs
+// worker, both present whenever the API runs. Split out of init() so it
+// is exercisable in isolation.
+func registerAlwaysOnComponents() {
 	systeminfo.Register(systeminfo.Descriptor{
 		Name:      "API",
 		Kind:      systeminfo.KindService,
@@ -37,24 +41,28 @@ func registerInProcessComponents() {
 		Commit:    goversion.Commit,
 		BuildDate: goversion.BuildDate,
 	})
-	systeminfo.Register(systeminfo.Descriptor{
-		Name:      "Schema indexing",
+	systeminfo.Register(workerDescriptor("Validation jobs"))
+}
+
+// registerSchemaIndexComponent records the schema-index worker. Called
+// from Run() only when the worker actually starts (Qdrant configured),
+// so a Qdrant-less deployment does not falsely report it as running.
+func registerSchemaIndexComponent() {
+	systeminfo.Register(workerDescriptor("Schema indexing"))
+}
+
+// workerDescriptor builds the descriptor for an in-process API worker —
+// it shares the API image's version and carries the explanatory note.
+func workerDescriptor(name string) systeminfo.Descriptor {
+	return systeminfo.Descriptor{
+		Name:      name,
 		Kind:      systeminfo.KindWorker,
 		RunsIn:    "API",
 		Version:   goversion.Version,
 		Commit:    goversion.Commit,
 		BuildDate: goversion.BuildDate,
 		Note:      workerSharesImageNote,
-	})
-	systeminfo.Register(systeminfo.Descriptor{
-		Name:      "Validation jobs",
-		Kind:      systeminfo.KindWorker,
-		RunsIn:    "API",
-		Version:   goversion.Version,
-		Commit:    goversion.Commit,
-		BuildDate: goversion.BuildDate,
-		Note:      workerSharesImageNote,
-	})
+	}
 }
 
 // runnerModeKubernetes mirrors the runner package's RUNNER_MODE value

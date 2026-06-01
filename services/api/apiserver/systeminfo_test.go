@@ -8,11 +8,11 @@ import (
 	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 )
 
-func TestRegisterInProcessComponents(t *testing.T) {
+func TestRegisterAlwaysOnComponents(t *testing.T) {
 	systeminfo.ResetForTest()
 	t.Cleanup(systeminfo.ResetForTest)
 
-	registerInProcessComponents()
+	registerAlwaysOnComponents()
 
 	got := systeminfo.Collect(context.Background())
 	byName := map[string]systeminfo.Descriptor{}
@@ -25,24 +25,41 @@ func TestRegisterInProcessComponents(t *testing.T) {
 		t.Fatalf("API service not registered: %+v", got)
 	}
 
-	for _, name := range []string{"Schema indexing", "Validation jobs"} {
-		w, ok := byName[name]
-		if !ok {
-			t.Fatalf("%s worker not registered: %+v", name, got)
-		}
-		if w.Kind != systeminfo.KindWorker {
-			t.Errorf("%s kind = %q, want worker", name, w.Kind)
-		}
-		if w.RunsIn != "API" {
-			t.Errorf("%s runs_in = %q, want API", name, w.RunsIn)
-		}
-		if w.Note == "" {
-			t.Errorf("%s must carry an explanatory note (not independently versioned)", name)
-		}
-		// A worker shares its parent image version.
-		if w.Version != api.Version {
-			t.Errorf("%s version = %q, want API version %q", name, w.Version, api.Version)
-		}
+	// Validation jobs always starts → registered here.
+	w, ok := byName["Validation jobs"]
+	if !ok {
+		t.Fatalf("Validation jobs worker not registered: %+v", got)
+	}
+	if w.Kind != systeminfo.KindWorker || w.RunsIn != "API" || w.Note == "" {
+		t.Errorf("Validation jobs descriptor wrong: %+v", w)
+	}
+	if w.Version != api.Version {
+		t.Errorf("worker version = %q, want API version %q", w.Version, api.Version)
+	}
+
+	// Schema indexing is Qdrant-gated — must NOT be registered here
+	// (it is added from Run() only when the worker starts).
+	if _, present := byName["Schema indexing"]; present {
+		t.Errorf("Schema indexing must not be registered unconditionally: %+v", got)
+	}
+}
+
+func TestRegisterSchemaIndexComponent(t *testing.T) {
+	systeminfo.ResetForTest()
+	t.Cleanup(systeminfo.ResetForTest)
+
+	registerSchemaIndexComponent()
+
+	got := systeminfo.Collect(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("want 1 descriptor, got %d: %+v", len(got), got)
+	}
+	w := got[0]
+	if w.Name != "Schema indexing" || w.Kind != systeminfo.KindWorker || w.RunsIn != "API" || w.Note == "" {
+		t.Fatalf("Schema indexing descriptor wrong: %+v", w)
+	}
+	if w.Version != goversion.Version {
+		t.Errorf("version = %q, want API version %q", w.Version, goversion.Version)
 	}
 }
 

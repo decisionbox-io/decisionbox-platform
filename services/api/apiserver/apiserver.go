@@ -268,6 +268,10 @@ func Run() {
 		var workerCtx context.Context
 		workerCtx, schemaIndexCancel = context.WithCancel(ctx)
 		go worker.Start(workerCtx)
+		// Only now that the worker is actually running do we add it to
+		// the system inventory, so a Qdrant-less deployment doesn't
+		// report a worker that never started.
+		registerSchemaIndexComponent()
 	} else {
 		apilog.Warn("Qdrant not configured — schema-index worker disabled (discovery will be blocked until Qdrant is set)")
 	}
