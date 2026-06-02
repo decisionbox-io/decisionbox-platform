@@ -168,7 +168,7 @@ func (r *DockerRunner) reconcileOrphans(ctx context.Context) {
 	}
 	var reaped int
 	for _, c := range list {
-		if rmErr := r.removeContainer(c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
+		if rmErr := r.removeContainer(c.ID); !removalRaceBenign(rmErr) {
 			apilog.WithFields(apilog.Fields{
 				"container": c.ID, "error": rmErr.Error(),
 			}).Warn("docker runner: failed to remove orphaned agent container on startup")
@@ -330,6 +330,14 @@ func (r *DockerRunner) removeContainer(id string) error {
 	return r.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
 }
 
+// removalRaceBenign reports whether a removal error just means the container
+// is already gone or already being removed by a concurrent remover (the Run
+// watcher and Cancel both remove on a cancel, by design — see Cancel). Both
+// outcomes are the desired end state, so they are not real failures.
+func removalRaceBenign(err error) bool {
+	return err == nil || cerrdefs.IsNotFound(err) || cerrdefs.IsConflict(err)
+}
+
 // gracefulStop sends SIGTERM and waits up to dockerStopGraceSeconds before
 // the daemon escalates to SIGKILL, on a detached ctx so a finished HTTP
 // request can't cut the grace period short. A missing container is treated
@@ -350,7 +358,7 @@ func (r *DockerRunner) gracefulStop(id string) error {
 // on the stop grace. Both steps run on their own detached, bounded contexts.
 func (r *DockerRunner) stopAndRemove(id string) {
 	_ = r.gracefulStop(id)
-	if err := r.removeContainer(id); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := r.removeContainer(id); !removalRaceBenign(err) {
 		apilog.WithFields(apilog.Fields{
 			"container": id, "error": err.Error(),
 		}).Warn("Failed to remove agent container after cancellation")
@@ -725,17 +733,22 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 	return fmt.Errorf("agent --mode validate-doc: %w", werr)
 }
 
-// Cancel stops the discovery container(s) for runID with the graceful
-// SIGTERM → grace → SIGKILL sequence (the same termination a K8s pod gets
-// on cancel), then removes them. (Persisting partial results on SIGTERM
-// additionally needs agent-side signal handling — see #270.) A run with
-// no live container is a no-op (already finished).
+// Cancel stops + removes the discovery container(s) for runID with the
+// graceful SIGTERM → grace → SIGKILL sequence (the same termination a K8s
+// pod gets on cancel). (Persisting partial results on SIGTERM additionally
+// needs agent-side signal handling — see #270.) A run with no live
+// container is a no-op (already finished).
 //
-// Cancel removes the container itself rather than relying on the Run
-// watcher: the watcher goroutine is gone after an API restart/crash, so a
-// stop-only cancel would leak the stopped container. The watcher's own
-// best-effort remove and this one are both idempotent (a double-remove
-// just returns NotFound).
+// The stop+remove runs in the BACKGROUND: an agent image that traps/delays
+// SIGTERM could otherwise hold the calling handler for the full grace
+// (~dockerStopGraceSeconds), which exceeds the HTTP server WriteTimeout and
+// would tie up the request goroutine. markCancelled (set synchronously
+// before returning) lets the watcher treat the resulting exit as a
+// cancellation rather than a failure, and the handler's own runRepo.Cancel
+// is the authoritative terminal-status write — so returning before the
+// container is fully gone is safe. Cancel does the removal itself (not only
+// via the Run watcher), so a run is still cleaned up when the watcher is
+// gone after an API restart/crash; double-removes are idempotent (NotFound).
 func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	f := filters.NewArgs()
 	f.Add("label", "app="+dockerAgentLabel)
@@ -757,30 +770,14 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	// resulting exit) treats it as a cancellation, not a failure.
 	r.markCancelled(runID)
 
-	var firstErr error
 	for _, c := range list {
 		apilog.WithFields(apilog.Fields{
 			"run_id": runID, "container": c.ID,
 		}).Info("Stopping agent container (discovery cancelled)")
-		if stopErr := r.gracefulStop(c.ID); stopErr != nil {
-			apilog.WithFields(apilog.Fields{
-				"run_id": runID, "container": c.ID, "error": stopErr.Error(),
-			}).Warn("Failed to stop agent container on cancel")
-			if firstErr == nil {
-				firstErr = fmt.Errorf("stop agent container: %w", stopErr)
-			}
-		}
-		// Best-effort remove so a cancelled run is cleaned up even when no
-		// watcher is active. removeContainer is detached + bounded, so a
-		// finished request can't cut it short; NotFound means the watcher
-		// already removed it.
-		if rmErr := r.removeContainer(c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
-			apilog.WithFields(apilog.Fields{
-				"run_id": runID, "container": c.ID, "error": rmErr.Error(),
-			}).Warn("Failed to remove agent container on cancel")
-		}
+		// Detached so the grace period can't block the request handler.
+		go r.stopAndRemove(c.ID)
 	}
-	return firstErr
+	return nil
 }
 
 // tailBuffer keeps a rolling, size-capped tail of stderr so a non-zero

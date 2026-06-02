@@ -682,15 +682,7 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	if err := r.Cancel(context.Background(), "run-cancel"); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if len(f.stoppedIDs) != 1 || f.stoppedIDs[0] != "cid-running" {
-		t.Errorf("expected cid-running stopped, got %v", f.stoppedIDs)
-	}
-	// Cancel must also remove the container (self-contained cleanup, not
-	// relying on the Run watcher).
-	if len(f.removedIDs) != 1 || f.removedIDs[0] != "cid-running" {
-		t.Errorf("expected cid-running removed, got %v", f.removedIDs)
-	}
-	// Cancel must filter by both the app label and the run-id label.
+	// Cancel must filter by both the app label and the run-id label (sync).
 	if len(f.listFilters) != 1 {
 		t.Fatalf("expected 1 list call, got %d", len(f.listFilters))
 	}
@@ -698,9 +690,23 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	if !contains(labels, "run-id=run-cancel") || !contains(labels, "app="+dockerAgentLabel) {
 		t.Errorf("list filter labels = %v, want run-id + app", labels)
 	}
-	// Cancel must mark the run cancelled so the watcher suppresses OnFailure.
+	// Cancel must mark the run cancelled so the watcher suppresses OnFailure
+	// (set synchronously before returning).
 	if !r.consumeCancelled("run-cancel") {
 		t.Error("Cancel must mark the run cancelled")
+	}
+	// Stop + remove run in the background (so the grace can't block the
+	// handler) — wait for them, then assert the container was targeted.
+	assertStoppedAndRemoved(t, f)
+	f.mu.Lock()
+	stopped := append([]string(nil), f.stoppedIDs...)
+	removed := append([]string(nil), f.removedIDs...)
+	f.mu.Unlock()
+	if len(stopped) != 1 || stopped[0] != "cid-running" {
+		t.Errorf("expected cid-running stopped, got %v", stopped)
+	}
+	if len(removed) != 1 || removed[0] != "cid-running" {
+		t.Errorf("expected cid-running removed, got %v", removed)
 	}
 }
 

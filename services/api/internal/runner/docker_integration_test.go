@@ -192,8 +192,19 @@ func TestInteg_DockerRunner_GracefulCancel(t *testing.T) {
 		t.Fatal("watcher did not finish after graceful cancel")
 	}
 
-	if n := countByRunID(t, r, runID); n != 0 {
-		t.Errorf("expected container removed after cancel, found %d", n)
+	// Cancel's stop/remove is detached (so the grace can't block the handler)
+	// and races the watcher's own removal; the container WILL be gone, just
+	// possibly a moment after `done`. Poll until the daemon has reaped it.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		n := countByRunID(t, r, runID)
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected container removed after cancel, still found %d", n)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
