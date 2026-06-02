@@ -579,10 +579,15 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 
 // Cancel stops the discovery container(s) for runID with the graceful
 // SIGTERM → grace → SIGKILL sequence (the same termination a K8s pod gets
-// on cancel). The background streamWaitRemove watcher observes the exit
-// and removes the container. (Persisting partial results on SIGTERM
+// on cancel), then removes them. (Persisting partial results on SIGTERM
 // additionally needs agent-side signal handling — see #270.) A run with
 // no live container is a no-op (already finished).
+//
+// Cancel removes the container itself rather than relying on the Run
+// watcher: the watcher goroutine is gone after an API restart/crash, so a
+// stop-only cancel would leak the stopped container. The watcher's own
+// best-effort remove and this one are both idempotent (a double-remove
+// just returns NotFound).
 func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	f := filters.NewArgs()
 	f.Add("label", "app="+dockerAgentLabel)
@@ -612,6 +617,14 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("stop agent container: %w", stopErr)
 			}
+		}
+		// Best-effort remove so a cancelled run is cleaned up even when no
+		// watcher is active. Detached ctx so a finished request can't cut
+		// it short; NotFound means the watcher already removed it.
+		if rmErr := r.removeContainer(context.Background(), c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
+			apilog.WithFields(apilog.Fields{
+				"run_id": runID, "container": c.ID, "error": rmErr.Error(),
+			}).Warn("Failed to remove agent container on cancel")
 		}
 	}
 	return firstErr

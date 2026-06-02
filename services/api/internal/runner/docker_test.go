@@ -685,6 +685,11 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	if len(f.stoppedIDs) != 1 || f.stoppedIDs[0] != "cid-running" {
 		t.Errorf("expected cid-running stopped, got %v", f.stoppedIDs)
 	}
+	// Cancel must also remove the container (self-contained cleanup, not
+	// relying on the Run watcher).
+	if len(f.removedIDs) != 1 || f.removedIDs[0] != "cid-running" {
+		t.Errorf("expected cid-running removed, got %v", f.removedIDs)
+	}
 	// Cancel must filter by both the app label and the run-id label.
 	if len(f.listFilters) != 1 {
 		t.Fatalf("expected 1 list call, got %d", len(f.listFilters))
