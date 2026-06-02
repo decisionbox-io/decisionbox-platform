@@ -195,6 +195,12 @@ func (r *DockerRunner) createAndStart(ctx context.Context, spec containerSpec) (
 
 // pullImage pulls ref and drains the progress stream (the pull only
 // completes once the response body is fully read).
+//
+// The pull carries no registry credentials (empty PullOptions): docker
+// mode is a single-host convenience targeting public or locally-built
+// agent images. A private-registry AGENT_IMAGE must be pre-pulled (or
+// otherwise present on the daemon) — the create-then-pull path surfaces a
+// clear "could not be pulled" error otherwise.
 func (r *DockerRunner) pullImage(ctx context.Context, ref string) error {
 	rc, err := r.client.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {

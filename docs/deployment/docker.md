@@ -59,12 +59,15 @@ services:
   api:
     environment:
       - RUNNER_MODE=docker
-      # Image the API launches per run (pulled if not present locally).
+      # Image the API launches per run. A public or locally-built image is
+      # pulled if not present; a private-registry image must be pre-pulled
+      # (the runner pulls with no registry credentials).
       - AGENT_IMAGE=ghcr.io/decisionbox-io/decisionbox-agent:latest
-      # Compose network so the agent reaches mongodb/qdrant by name.
-      # Docker names it "<project>_default"; for this compose file that is
-      # "decisionbox_default" (the directory name is the default project).
-      - AGENT_DOCKER_NETWORK=decisionbox_default
+      # Compose network so the agent reaches mongodb/qdrant by name. Docker
+      # names it "<project>_default"; the project defaults to the directory
+      # name, so a clone of this repo uses "decisionbox-platform_default".
+      # Confirm the exact name with `docker network ls`.
+      - AGENT_DOCKER_NETWORK=decisionbox-platform_default
     volumes:
       # Mount the Docker socket so the API can spawn containers.
       - /var/run/docker.sock:/var/run/docker.sock

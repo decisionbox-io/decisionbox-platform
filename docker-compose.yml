@@ -146,8 +146,10 @@ services:
 
       # Docker network the spawned agent container joins so it resolves
       # mongodb / qdrant / warehouse hosts by service name (RUNNER_MODE=docker).
-      # Compose names it "<project>_default" — for this file: decisionbox_default.
-      # - AGENT_DOCKER_NETWORK=decisionbox_default
+      # Compose names it "<project>_default"; the project defaults to the
+      # directory name, so a clone of this repo uses "decisionbox-platform_default"
+      # (confirm with `docker network ls`). Set it to your actual network.
+      # - AGENT_DOCKER_NETWORK=decisionbox-platform_default
 
       # K8s namespace for agent Jobs (only used when RUNNER_MODE=kubernetes)
       # Values: any valid K8s namespace
