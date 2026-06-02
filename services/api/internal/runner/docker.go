@@ -36,6 +36,39 @@ import (
 type DockerRunner struct {
 	client dockerAPI
 	config Config
+
+	// cancelled records run IDs the operator explicitly cancelled, so the
+	// background watchRun reports the resulting container exit as a
+	// cancellation (silent) rather than a failure — mirroring the K8s
+	// watcher staying quiet after a Job delete. Without it, Cancel's
+	// SIGTERM/remove would surface through OnFailure and trigger the
+	// handler's failure side-effects (e.g. policy "failure" confirmation)
+	// for a user-cancelled run.
+	mu        sync.Mutex
+	cancelled map[string]struct{}
+}
+
+// markCancelled records that runID was explicitly cancelled (lazily
+// initialising the set so a hand-built DockerRunner is safe).
+func (r *DockerRunner) markCancelled(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cancelled == nil {
+		r.cancelled = make(map[string]struct{})
+	}
+	r.cancelled[runID] = struct{}{}
+}
+
+// consumeCancelled reports whether runID was explicitly cancelled, clearing
+// the record so it does not leak.
+func (r *DockerRunner) consumeCancelled(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.cancelled[runID]; ok {
+		delete(r.cancelled, runID)
+		return true
+	}
+	return false
 }
 
 // dockerAPI is the subset of the Docker SDK client the runner uses. It is
@@ -93,7 +126,7 @@ func NewDockerRunner(cfg Config) (*DockerRunner, error) {
 		"network": cfg.AgentDockerNetwork,
 	}).Info("Runner mode: docker")
 
-	r := &DockerRunner{client: cli, config: cfg}
+	r := &DockerRunner{client: cli, config: cfg, cancelled: make(map[string]struct{})}
 	// Reap agent containers orphaned by a prior API lifecycle (crash /
 	// restart) before serving any run — Docker has no daemon-side Job TTL
 	// like K8s, so otherwise they linger.
@@ -511,6 +544,17 @@ func (r *DockerRunner) watchRun(id string, opts RunOptions) {
 	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		logPrefix: fmt.Sprintf("[agent %s] ", opts.RunID),
 	})
+
+	// An operator Cancel marked this run before stopping its container, so
+	// the resulting exit is a cancellation, not a failure — stay silent
+	// (the handler's cancel path owns the terminal status). Mirrors the K8s
+	// watcher going quiet after a Job delete. Checked first so it wins over
+	// both the exit-error and wall-clock paths.
+	if r.consumeCancelled(opts.RunID) {
+		apilog.WithField("run_id", opts.RunID).Info("Agent container cancelled; not reporting as a failure")
+		return
+	}
+
 	if werr == nil {
 		apilog.WithField("run_id", opts.RunID).Info("Agent container completed")
 		return
@@ -677,6 +721,10 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	if len(list) == 0 {
 		return nil // not running (already finished or never started)
 	}
+
+	// Mark BEFORE stopping so the background watchRun (which observes the
+	// resulting exit) treats it as a cancellation, not a failure.
+	r.markCancelled(runID)
 
 	var firstErr error
 	for _, c := range list {

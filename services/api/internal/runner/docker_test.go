@@ -698,6 +698,38 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	if !contains(labels, "run-id=run-cancel") || !contains(labels, "app="+dockerAgentLabel) {
 		t.Errorf("list filter labels = %v, want run-id + app", labels)
 	}
+	// Cancel must mark the run cancelled so the watcher suppresses OnFailure.
+	if !r.consumeCancelled("run-cancel") {
+		t.Error("Cancel must mark the run cancelled")
+	}
+}
+
+// TestDockerRunner_Run_CancelledRunSuppressesOnFailure verifies that once a
+// run is marked cancelled, the background watcher reports the resulting
+// container exit as a cancellation (no OnFailure), not a failure — matching
+// the K8s watcher's silence after a Job delete.
+func TestDockerRunner_Run_CancelledRunSuppressesOnFailure(t *testing.T) {
+	f := newFakeDocker()
+	f.exitCode = 137 // SIGKILL-style non-zero exit, as a stop would produce
+	r := newDockerRunner(f, Config{JobTimeoutHours: 1})
+
+	// Simulate Cancel having marked the run before its container exits.
+	r.markCancelled("run-cancel-suppress")
+
+	failMsg := make(chan string, 1)
+	if err := r.Run(context.Background(), RunOptions{
+		ProjectID: "p", RunID: "run-cancel-suppress",
+		OnFailure: func(_ string, msg string) { failMsg <- msg },
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	waitRemoved(t, f) // watcher finished
+
+	select {
+	case msg := <-failMsg:
+		t.Errorf("OnFailure must be suppressed for a cancelled run, got %q", msg)
+	default:
+	}
 }
 
 func TestDockerRunner_ReconcileOrphans_RemovesLeftovers(t *testing.T) {
