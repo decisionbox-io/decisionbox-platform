@@ -92,7 +92,47 @@ func NewDockerRunner(cfg Config) (*DockerRunner, error) {
 		"network": cfg.AgentDockerNetwork,
 	}).Info("Runner mode: docker")
 
-	return &DockerRunner{client: cli, config: cfg}, nil
+	r := &DockerRunner{client: cli, config: cfg}
+	// Reap agent containers orphaned by a prior API lifecycle (crash /
+	// restart) before serving any run — Docker has no daemon-side Job TTL
+	// like K8s, so otherwise they linger. Runs at startup, before any new
+	// agent is spawned, so every match is genuinely an orphan.
+	reapCtx, reapCancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+	defer reapCancel()
+	r.reconcileOrphans(reapCtx)
+
+	return r, nil
+}
+
+// reconcileOrphans force-removes agent containers left over from a previous
+// API lifecycle. Docker, unlike K8s, has no per-container deadline / TTL, so
+// an API crash or restart would otherwise leave a sibling container running
+// past its budget (or stopped but unremoved) and unreachable via the cancel
+// endpoint once startup marks its run failed. Safe under docker mode's
+// single-host / single-API assumption: every app=decisionbox-agent
+// container belongs to this API. Best-effort — a sweep failure must not
+// block startup.
+func (r *DockerRunner) reconcileOrphans(ctx context.Context) {
+	f := filters.NewArgs()
+	f.Add("label", "app="+dockerAgentLabel)
+	list, err := r.client.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
+	if err != nil {
+		apilog.WithError(err).Warn("docker runner: failed to list orphaned agent containers on startup")
+		return
+	}
+	var reaped int
+	for _, c := range list {
+		if rmErr := r.removeContainer(ctx, c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
+			apilog.WithFields(apilog.Fields{
+				"container": c.ID, "error": rmErr.Error(),
+			}).Warn("docker runner: failed to remove orphaned agent container on startup")
+			continue
+		}
+		reaped++
+	}
+	if reaped > 0 {
+		apilog.WithField("count", reaped).Info("docker runner: reaped orphaned agent containers from a prior lifecycle")
+	}
 }
 
 // containerSpec is the variable per-invocation part of a container: the

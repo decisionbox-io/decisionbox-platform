@@ -700,6 +700,33 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	}
 }
 
+func TestDockerRunner_ReconcileOrphans_RemovesLeftovers(t *testing.T) {
+	f := newFakeDocker()
+	f.listResult = []container.Summary{{ID: "orphan-1"}, {ID: "orphan-2"}}
+	r := newDockerRunner(f, Config{})
+
+	r.reconcileOrphans(context.Background())
+
+	if len(f.removedIDs) != 2 {
+		t.Fatalf("expected 2 orphans removed, got %v", f.removedIDs)
+	}
+	// Must filter by the agent label.
+	if len(f.listFilters) != 1 || !contains(f.listFilters[0].Get("label"), "app="+dockerAgentLabel) {
+		t.Errorf("reconcile must list by app=%s label, got %v", dockerAgentLabel, f.listFilters)
+	}
+}
+
+func TestDockerRunner_ReconcileOrphans_NoneIsNoop(t *testing.T) {
+	f := newFakeDocker()
+	f.listResult = nil
+	r := newDockerRunner(f, Config{})
+
+	r.reconcileOrphans(context.Background()) // must not panic / remove anything
+	if len(f.removedIDs) != 0 {
+		t.Errorf("expected no removals, got %v", f.removedIDs)
+	}
+}
+
 func TestDockerRunner_Cancel_NoContainerIsNoop(t *testing.T) {
 	f := newFakeDocker()
 	f.listResult = nil // nothing running

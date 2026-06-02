@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
@@ -72,13 +73,24 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 		apilog.WithField("count", cleaned).Info("Cleaned up stale discovery runs")
 	}
 
-	// Create agent runner (subprocess or K8s based on RUNNER_MODE env)
+	// Create agent runner (subprocess, docker, or K8s based on RUNNER_MODE env)
 	runnerCfg := runner.LoadConfig()
 	agentRunner, err := runner.New(runnerCfg)
 	if err != nil {
-		apilog.WithError(err).Error("Failed to create agent runner")
-		// Fall back to subprocess mode
-		agentRunner = runner.NewSubprocessRunner()
+		// An explicit non-subprocess mode that fails to initialise (e.g.
+		// docker with an unreachable socket, or kubernetes outside a
+		// cluster) must NOT silently downgrade to the in-process binary —
+		// that runs the wrong isolation mode / wrong image. Only the
+		// default (subprocess / empty) mode is safe to fall back to.
+		if runnerCfg.Mode == "" || runnerCfg.Mode == "subprocess" {
+			apilog.WithError(err).Error("Failed to create agent runner; falling back to subprocess")
+			agentRunner = runner.NewSubprocessRunner()
+		} else {
+			apilog.WithFields(apilog.Fields{
+				"runner_mode": runnerCfg.Mode, "error": err.Error(),
+			}).Error("Failed to create agent runner for the configured RUNNER_MODE; refusing to silently downgrade to subprocess")
+			os.Exit(1)
+		}
 	}
 
 	// Policy-plugin reconciliation + post-completion confirmer only
