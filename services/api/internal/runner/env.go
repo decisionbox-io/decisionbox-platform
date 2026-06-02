@@ -95,10 +95,16 @@ var dockerAgentExtraEnvKeys = []string{
 	"AZURE_TENANT_ID",
 	"AZURE_CLIENT_ID",
 	"AZURE_CLIENT_SECRET",
-	// GCP application-default credentials path. NOTE: this is a file path;
-	// the referenced key file must also be bind-mounted into the agent
-	// container at the same path for it to resolve.
-	"GOOGLE_APPLICATION_CREDENTIALS",
+	// NOTE on GCP: GOOGLE_APPLICATION_CREDENTIALS is deliberately NOT
+	// forwarded. It is a *file path*, and the runner cannot make that file
+	// available inside the sibling agent container — it only knows the path
+	// as seen in the API container, not the host path needed to bind-mount
+	// it. Forwarding just the path would resolve to a non-existent file in
+	// the agent and fail with file-not-found. For GCP in docker mode the
+	// agent must obtain credentials another way (the host's GCE metadata
+	// server / Workload Identity, or a credentials file baked into / mounted
+	// onto a custom AGENT_IMAGE). See docs/reference/configuration.md.
+	//
 	// LLM behaviour knobs the compose agent service also sets, so a Docker
 	// agent matches the API's tuning. (LLM API keys are NOT here — they
 	// live per-project in the secret provider.)
