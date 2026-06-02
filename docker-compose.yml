@@ -206,6 +206,11 @@ services:
     # access — local / single-host use only.
     # volumes:
     #   - /var/run/docker.sock:/var/run/docker.sock
+    # The API runs as non-root (UID/GID 1000) but the socket is usually
+    # root:docker (0660), so the container needs the host's docker group to
+    # use it. Find the GID with: getent group docker | cut -d: -f3
+    # group_add:
+    #   - "${DOCKER_GID:-999}"
     depends_on:
       mongodb:
         condition: service_healthy

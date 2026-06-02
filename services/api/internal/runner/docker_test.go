@@ -779,6 +779,12 @@ func TestDockerRunner_Cancel_NoContainerIsNoop(t *testing.T) {
 	if len(f.stoppedIDs) != 0 {
 		t.Errorf("expected no stops, got %v", f.stoppedIDs)
 	}
+	// Even with no running container to stop, the run must be marked
+	// cancelled so a watcher still consuming an exit suppresses OnFailure
+	// (guards the exit-vs-cancel race).
+	if !r.consumeCancelled("run-gone") {
+		t.Error("Cancel must mark the run cancelled even when no container is running")
+	}
 }
 
 func TestDockerRunner_Cancel_ListErrorSurfaced(t *testing.T) {

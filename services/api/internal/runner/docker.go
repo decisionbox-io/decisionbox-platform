@@ -760,6 +760,15 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 // via the Run watcher), so a run is still cleaned up when the watcher is
 // gone after an API restart/crash; double-removes are idempotent (NotFound).
 func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
+	// Mark FIRST, unconditionally — before listing. A cancel can arrive in
+	// the window after the agent container has exited but before watchRun has
+	// consumed the exit and called OnFailure; marking only when a running
+	// container is found would miss that race and let the watcher report the
+	// cancelled run as failed. The mark is consumed by watchRun on exit, and
+	// the handler only cancels active runs (each of which has a live watcher),
+	// so it does not accumulate.
+	r.markCancelled(runID)
+
 	f := filters.NewArgs()
 	f.Add("label", "app="+dockerAgentLabel)
 	f.Add("label", "run-id="+runID)
@@ -775,10 +784,6 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	if len(list) == 0 {
 		return nil // not running (already finished or never started)
 	}
-
-	// Mark BEFORE stopping so the background watchRun (which observes the
-	// resulting exit) treats it as a cancellation, not a failure.
-	r.markCancelled(runID)
 
 	for _, c := range list {
 		apilog.WithFields(apilog.Fields{

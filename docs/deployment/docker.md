@@ -71,6 +71,12 @@ services:
     volumes:
       # Mount the Docker socket so the API can spawn containers.
       - /var/run/docker.sock:/var/run/docker.sock
+    # The API runs as non-root (UID/GID 1000), but /var/run/docker.sock is
+    # usually root:docker (0660), so the container must join the host's docker
+    # group or it cannot reach the socket (startup fails with "permission
+    # denied"). Find the GID with: getent group docker | cut -d: -f3
+    group_add:
+      - "${DOCKER_GID:-999}"
 ```
 
 > **Security:** mounting the Docker socket grants the API root-equivalent access to the host. Use `RUNNER_MODE=docker` only for local / single-host deployments; in production use the [Kubernetes runner](kubernetes.md), which spawns each agent as an isolated Job without a host socket.
