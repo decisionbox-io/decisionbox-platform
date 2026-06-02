@@ -168,7 +168,7 @@ func (r *DockerRunner) reconcileOrphans(ctx context.Context) {
 	}
 	var reaped int
 	for _, c := range list {
-		if rmErr := r.removeContainer(ctx, c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
+		if rmErr := r.removeContainer(c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
 			apilog.WithFields(apilog.Fields{
 				"container": c.ID, "error": rmErr.Error(),
 			}).Warn("docker runner: failed to remove orphaned agent container on startup")
@@ -278,7 +278,7 @@ func (r *DockerRunner) createAndStart(ctx context.Context, spec containerSpec) (
 
 	if err := r.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		// Best-effort cleanup of the created-but-unstarted container.
-		_ = r.removeContainer(context.Background(), resp.ID)
+		_ = r.removeContainer(resp.ID)
 		return "", fmt.Errorf("start agent container: %w", err)
 	}
 	return resp.ID, nil
@@ -319,7 +319,14 @@ func (r *DockerRunner) pullImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-func (r *DockerRunner) removeContainer(ctx context.Context, id string) error {
+// removeContainer force-removes a container on its own detached, bounded
+// context. It is detached (not the caller's ctx) so removal still runs when
+// the request/run context is already cancelled, and bounded so a
+// slow/unresponsive daemon can't block the caller — and leak its goroutine —
+// indefinitely.
+func (r *DockerRunner) removeContainer(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+	defer cancel()
 	return r.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true})
 }
 
@@ -338,14 +345,12 @@ func (r *DockerRunner) gracefulStop(id string) error {
 	return nil
 }
 
-// stopAndRemove gracefully stops then removes a container, each on its own
-// detached, time-bounded context. Used as the background cleanup for a
-// caller-cancelled run so the caller doesn't block on the stop grace.
+// stopAndRemove gracefully stops then removes a container. Used as the
+// background cleanup for a caller-cancelled run so the caller doesn't block
+// on the stop grace. Both steps run on their own detached, bounded contexts.
 func (r *DockerRunner) stopAndRemove(id string) {
 	_ = r.gracefulStop(id)
-	rmCtx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
-	defer cancel()
-	if err := r.removeContainer(rmCtx, id); err != nil && !cerrdefs.IsNotFound(err) {
+	if err := r.removeContainer(id); err != nil && !cerrdefs.IsNotFound(err) {
 		apilog.WithFields(apilog.Fields{
 			"container": id, "error": err.Error(),
 		}).Warn("Failed to remove agent container after cancellation")
@@ -407,11 +412,11 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 		}
 		logCancel()
 		<-logsDone
-		_ = r.removeContainer(context.Background(), id)
+		_ = r.removeContainer(id)
 		return 0, fmt.Errorf("wait for agent container: %w", werr)
 	case status := <-statusCh:
 		<-logsDone // let the log stream flush to EOF (container stopped)
-		_ = r.removeContainer(context.Background(), id)
+		_ = r.removeContainer(id)
 		if status.StatusCode != 0 {
 			msg := extractErrorMessage(tail.String(), fmt.Errorf("exit status %d", status.StatusCode))
 			return status.StatusCode, fmt.Errorf("%s", msg)
@@ -740,9 +745,10 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 			}
 		}
 		// Best-effort remove so a cancelled run is cleaned up even when no
-		// watcher is active. Detached ctx so a finished request can't cut
-		// it short; NotFound means the watcher already removed it.
-		if rmErr := r.removeContainer(context.Background(), c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
+		// watcher is active. removeContainer is detached + bounded, so a
+		// finished request can't cut it short; NotFound means the watcher
+		// already removed it.
+		if rmErr := r.removeContainer(c.ID); rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
 			apilog.WithFields(apilog.Fields{
 				"run_id": runID, "container": c.ID, "error": rmErr.Error(),
 			}).Warn("Failed to remove agent container on cancel")

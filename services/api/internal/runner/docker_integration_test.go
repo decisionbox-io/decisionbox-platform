@@ -50,6 +50,7 @@ func newRealDockerRunner(t *testing.T, cfg Config) *DockerRunner {
 func countByRunID(t *testing.T, r *DockerRunner, runID string) int {
 	t.Helper()
 	f := filters.NewArgs()
+	f.Add("label", "app="+dockerAgentLabel)
 	f.Add("label", "run-id="+runID)
 	list, err := r.client.ContainerList(context.Background(), container.ListOptions{All: true, Filters: f})
 	if err != nil {
@@ -63,13 +64,14 @@ func cleanupByRunID(t *testing.T, r *DockerRunner, runID string) {
 	t.Helper()
 	t.Cleanup(func() {
 		f := filters.NewArgs()
+		f.Add("label", "app="+dockerAgentLabel)
 		f.Add("label", "run-id="+runID)
 		list, err := r.client.ContainerList(context.Background(), container.ListOptions{All: true, Filters: f})
 		if err != nil {
 			return
 		}
 		for _, c := range list {
-			_ = r.removeContainer(context.Background(), c.ID)
+			_ = r.removeContainer(c.ID)
 		}
 	})
 }
