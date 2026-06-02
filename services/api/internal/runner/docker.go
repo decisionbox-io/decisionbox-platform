@@ -378,7 +378,16 @@ type logHandlers struct {
 //   - non-zero exit → return an error carrying the agent's last
 //     FATAL/ERROR message (extracted from stderr).
 //   - clean exit    → return (0, nil).
-func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHandlers) (int64, error) {
+//
+// waitForCleanup controls the ctx-cancel path. When true (the background
+// watchRun, which reports failure on its wall-clock timeout) the container
+// is stopped + removed SYNCHRONOUSLY before returning, so the caller can't
+// mark the run failed while the agent is still running and could race a
+// terminal-status write. When false (synchronous callers whose request /
+// worker ctx was cancelled — they just unwind and don't report failure)
+// cleanup runs in the background so the caller returns promptly instead of
+// blocking on the SIGTERM grace period.
+func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHandlers, waitForCleanup bool) (int64, error) {
 	statusCh, errCh := r.client.ContainerWait(ctx, id, container.WaitConditionNotRunning)
 
 	tail := newTailBuffer()
@@ -390,13 +399,20 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 		r.streamLogs(logCtx, id, h, tail)
 	}()
 
-	// cancelCleanup stops + removes the container in the BACKGROUND on a
-	// caller cancellation, so we return ctx.Err() promptly instead of
-	// blocking the caller (e.g. RunSync's 90s deadline, or worker shutdown)
-	// for the full SIGTERM grace period. The agent still gets its grace
-	// before SIGKILL; the container is reaped on the next startup if the
-	// process exits before this finishes.
 	cancelCleanup := func() {
+		if waitForCleanup {
+			// Synchronous: wait for the container to actually stop (logs
+			// stream during the grace) and be removed before returning, so
+			// the caller doesn't report failure with the agent still live.
+			_ = r.gracefulStop(id)
+			logCancel()
+			<-logsDone
+			_ = r.removeContainer(id)
+			return
+		}
+		// Background: return promptly; the agent still gets its grace before
+		// SIGKILL, and a container left by an early process exit is reaped on
+		// next startup.
 		logCancel() // stop streaming; the log goroutine unwinds on its own
 		go r.stopAndRemove(id)
 	}
@@ -546,9 +562,12 @@ func (r *DockerRunner) watchRun(id string, opts RunOptions) {
 	}
 	defer cancel()
 
+	// waitForCleanup=true: this watcher reports failure on its wall-clock
+	// timeout, so the container must be fully stopped + removed before we do
+	// (no racing the agent's terminal-status write).
 	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		logPrefix: fmt.Sprintf("[agent %s] ", opts.RunID),
-	})
+	}, true)
 
 	// An operator Cancel marked this run before stopping its container, so
 	// the resulting exit is a cancellation, not a failure — stay silent
@@ -605,10 +624,13 @@ func (r *DockerRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*RunSy
 	}
 
 	var stdout bytes.Buffer
+	// waitForCleanup=false: a cancelled RunSync caller (e.g. the 90s
+	// test-connection deadline) unwinds promptly; cleanup runs in the
+	// background.
 	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		stdout:    &stdout,
 		logPrefix: fmt.Sprintf("[test %s] ", opts.ProjectID),
-	})
+	}, false)
 	if werr != nil {
 		return &RunSyncResult{Output: stdout.Bytes(), Error: werr.Error()}, werr
 	}
@@ -642,10 +664,12 @@ func (r *DockerRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaOptio
 		"project_id": opts.ProjectID, "run_id": opts.RunID, "container": id,
 	}).Info("Agent index-schema container starting")
 
+	// waitForCleanup=false: a cancelled caller (worker shutdown) unwinds
+	// promptly via ctx.Err(); cleanup runs in the background.
 	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		onStderrLine: opts.OnLogLine,
 		logPrefix:    fmt.Sprintf("[agent %s] ", opts.RunID),
-	})
+	}, false)
 	if werr == nil {
 		apilog.WithFields(apilog.Fields{
 			"project_id": opts.ProjectID, "run_id": opts.RunID,
@@ -686,9 +710,11 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 		"job_id": opts.JobID, "project_id": opts.ProjectID, "container": id,
 	}).Info("Agent validate-doc container starting")
 
+	// waitForCleanup=false: a cancelled caller (worker shutdown) unwinds
+	// promptly via ctx.Err(); cleanup runs in the background.
 	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		logPrefix: fmt.Sprintf("[validate-doc %s] ", opts.JobID),
-	})
+	}, false)
 	if werr == nil {
 		apilog.WithField("job_id", opts.JobID).Info("Agent validate-doc container completed")
 		return nil

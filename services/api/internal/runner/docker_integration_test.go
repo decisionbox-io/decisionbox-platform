@@ -98,7 +98,7 @@ func TestInteg_DockerRunner_LifecycleAndLogStreaming(t *testing.T) {
 		stdout:       &stdout,
 		onStderrLine: func(l string) { mu.Lock(); lines = append(lines, l); mu.Unlock() },
 		logPrefix:    "[integ] ",
-	})
+	}, true)
 	if werr != nil {
 		t.Fatalf("streamWaitRemove: %v", werr)
 	}
@@ -136,7 +136,7 @@ func TestInteg_DockerRunner_NonZeroExitSurfacesError(t *testing.T) {
 		t.Fatalf("createAndStart: %v", err)
 	}
 
-	code, werr := r.streamWaitRemove(ctx, id, logHandlers{logPrefix: "[integ-fail] "})
+	code, werr := r.streamWaitRemove(ctx, id, logHandlers{logPrefix: "[integ-fail] "}, true)
 	if werr == nil {
 		t.Fatal("expected error on non-zero exit")
 	}
@@ -176,7 +176,7 @@ func TestInteg_DockerRunner_GracefulCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = r.streamWaitRemove(context.Background(), id, logHandlers{logPrefix: "[integ-cancel] "})
+		_, _ = r.streamWaitRemove(context.Background(), id, logHandlers{logPrefix: "[integ-cancel] "}, true)
 	}()
 
 	// Give the container a moment to start before cancelling.
