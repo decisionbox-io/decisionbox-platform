@@ -349,6 +349,78 @@ func TestDockerRunner_Run_PullsImageWhenMissing(t *testing.T) {
 	waitRemoved(t, f)
 }
 
+func TestDockerRunner_Run_WallClockTimeoutFailsRun(t *testing.T) {
+	prev := dockerRunWatchTimeout
+	dockerRunWatchTimeout = func(int) time.Duration { return 40 * time.Millisecond }
+	defer func() { dockerRunWatchTimeout = prev }()
+
+	f := newFakeDocker()
+	f.hangWait = true // container never exits on its own
+	r := newDockerRunner(f, Config{JobTimeoutHours: 1})
+
+	failMsg := make(chan string, 1)
+	err := r.Run(context.Background(), RunOptions{
+		ProjectID: "p", RunID: "run-timeout",
+		OnFailure: func(_ string, msg string) { failMsg <- msg },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	select {
+	case msg := <-failMsg:
+		if !strings.Contains(msg, "AGENT_JOB_TIMEOUT_HOURS") {
+			t.Errorf("OnFailure msg = %q, want a wall-clock-timeout message", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("wall-clock timeout did not fail the run")
+	}
+	// The wedged container must have been force-stopped and removed.
+	assertStoppedAndRemoved(t, f)
+}
+
+func TestDockerRunner_Run_NoWallClockCapWhenDisabled(t *testing.T) {
+	// JobTimeoutHours <= 0 disables the cap → watchRun uses an
+	// uncancellable context, so a normally-exiting container still
+	// completes cleanly.
+	f := newFakeDocker()
+	f.exitCode = 0
+	r := newDockerRunner(f, Config{JobTimeoutHours: 0})
+
+	called := make(chan struct{}, 1)
+	if err := r.Run(context.Background(), RunOptions{
+		ProjectID: "p", RunID: "run-no-cap",
+		OnFailure: func(_, _ string) { called <- struct{}{} },
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	waitRemoved(t, f)
+	select {
+	case <-called:
+		t.Error("OnFailure must not fire on a clean exit with the cap disabled")
+	default:
+	}
+}
+
+func TestDockerRunner_CreateAndStart_NetworkNotFoundNotPulled(t *testing.T) {
+	f := newFakeDocker()
+	// A missing AGENT_DOCKER_NETWORK surfaces as a NotFound too — it must
+	// NOT be mistaken for a missing image and trigger a pull.
+	f.createErrs = []error{errdefs.NotFound(errors.New("network dbx-missing not found"))}
+	r := newDockerRunner(f, Config{AgentDockerNetwork: "dbx-missing"})
+
+	err := r.Run(context.Background(), RunOptions{ProjectID: "p", RunID: "run-netfail"})
+	if err == nil {
+		t.Fatal("expected error for a missing network")
+	}
+	if len(f.pulledRefs) != 0 {
+		t.Errorf("must NOT pull on a network NotFound, pulled: %v", f.pulledRefs)
+	}
+	if !strings.Contains(err.Error(), "network") {
+		t.Errorf("error = %q, want it to surface the network failure", err.Error())
+	}
+}
+
 func TestDockerRunner_Run_CreateErrorSurfaced(t *testing.T) {
 	f := newFakeDocker()
 	f.createErrs = []error{errors.New("boom")}
@@ -703,6 +775,21 @@ func TestDockerRunner_BuildContainerConfig_ImageOverrideAndLabelFilter(t *testin
 	}
 	if _, ok := cfg.Labels["discovery-id"]; ok {
 		t.Error("empty label values must be dropped")
+	}
+}
+
+func TestLineWriter_CapsUnterminatedLine(t *testing.T) {
+	var got int
+	w := &lineWriter{onLine: func(b []byte) { got += len(b) }}
+
+	// One oversized write with no newline must be force-emitted, not
+	// buffered without bound.
+	_, _ = w.Write(bytes.Repeat([]byte("a"), maxLogLineBytes+10))
+	if got == 0 {
+		t.Fatal("expected the oversized un-terminated line to be force-emitted")
+	}
+	if len(w.buf) >= maxLogLineBytes {
+		t.Errorf("buffer not bounded after force-emit: len=%d", len(w.buf))
 	}
 }
 

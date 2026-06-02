@@ -195,7 +195,7 @@ The agent container receives the same Mongo / secret-provider / Qdrant / validat
 | `AGENT_CPU_LIMIT` | `2` | CPU limit for agent containers. |
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
 | `AGENT_MEMORY_LIMIT` | `1Gi` | Memory limit for agent containers. |
-| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` (hard kill at the cap) **and** as the subprocess watcher timeout — applies in both runner modes. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. |
+| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` and the Docker runner's per-run wall-clock budget — hard kill at the cap in both — as well as the subprocess watcher timeout. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. In docker mode a `0` value disables the per-run cap (rely on `DISCOVERY_MAX_DURATION`). |
 
 ### Telemetry
 

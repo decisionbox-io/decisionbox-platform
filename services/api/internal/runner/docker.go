@@ -175,14 +175,18 @@ func (r *DockerRunner) createAndStart(ctx context.Context, spec containerSpec) (
 	netCfg := r.buildNetworkingConfig()
 
 	resp, err := r.client.ContainerCreate(ctx, cfg, nil, netCfg, nil, "")
-	if err != nil && cerrdefs.IsNotFound(err) {
-		// Image missing locally — try to pull it, then retry create.
+	if isImageNotFound(err, cfg.Image) {
+		// The image (not some other resource) is missing locally — pull it
+		// once, then retry create.
 		if perr := r.pullImage(ctx, cfg.Image); perr != nil {
 			return "", fmt.Errorf("agent image %q is not present locally and could not be pulled: %w", cfg.Image, perr)
 		}
 		resp, err = r.client.ContainerCreate(ctx, cfg, nil, netCfg, nil, "")
 	}
 	if err != nil {
+		// A NotFound here that is NOT the image is most commonly a missing
+		// AGENT_DOCKER_NETWORK — wrapping the daemon's own message surfaces
+		// that instead of masking it as a pull failure.
 		return "", fmt.Errorf("create agent container: %w", err)
 	}
 
@@ -192,6 +196,21 @@ func (r *DockerRunner) createAndStart(ctx context.Context, spec containerSpec) (
 		return "", fmt.Errorf("start agent container: %w", err)
 	}
 	return resp.ID, nil
+}
+
+// isImageNotFound reports whether a ContainerCreate error means the image
+// itself is missing (so a pull is worth trying), as opposed to another
+// NotFound resource. The daemon returns a NotFound-typed error for both a
+// missing image AND a missing network (e.g. a misspelled
+// AGENT_DOCKER_NETWORK), so we additionally disambiguate on the message:
+// missing images surface as "No such image: <ref>". Anything else (network
+// not found, …) is left to bubble up unwrapped, not retried as a pull.
+func isImageNotFound(err error, imageRef string) bool {
+	if err == nil || !cerrdefs.IsNotFound(err) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "No such image") || strings.Contains(msg, imageRef)
 }
 
 // pullImage pulls ref and drains the progress stream (the pull only
@@ -383,31 +402,68 @@ func (r *DockerRunner) Run(ctx context.Context, opts RunOptions) error {
 	}).Info("Agent container started")
 
 	// Watch the run to completion in the background. watchRun owns its own
-	// context.Background() so the run outlives the HTTP request (same
-	// rationale as the K8s watcher).
+	// context (detached from the request) so the run outlives the HTTP
+	// request (same rationale as the K8s watcher).
 	go r.watchRun(id, opts) //nolint:gosec // intentional: the run outlives the request context (same as the K8s watcher)
 
 	return nil
 }
 
+// dockerRunWatchTimeout is the wall-clock budget for a backgrounded
+// discovery container, from AGENT_JOB_TIMEOUT_HOURS. It is the Docker
+// analogue of the K8s Job's ActiveDeadlineSeconds: when it elapses the
+// container is force-stopped and the run is failed, so a wedged agent (or
+// one run with DISCOVERY_MAX_DURATION=0) cannot run forever. A value <= 0
+// disables the cap. A var (not const) so tests can shorten it from hours
+// to milliseconds.
+var dockerRunWatchTimeout = func(jobTimeoutHours int) time.Duration {
+	if jobTimeoutHours <= 0 {
+		return 0
+	}
+	return time.Duration(jobTimeoutHours) * time.Hour
+}
+
 // watchRun streams + waits on a backgrounded discovery container and routes
-// a non-zero exit to OnFailure. It runs detached from any request context
-// because the run outlives the HTTP request that started it.
+// a non-zero exit (or an exceeded wall-clock budget) to OnFailure. It runs
+// detached from any request context because the run outlives the HTTP
+// request that started it.
 func (r *DockerRunner) watchRun(id string, opts RunOptions) {
-	_, werr := r.streamWaitRemove(context.Background(), id, logHandlers{
+	ctx := context.Background()
+	cancel := context.CancelFunc(func() {})
+	if budget := dockerRunWatchTimeout(r.config.JobTimeoutHours); budget > 0 {
+		ctx, cancel = context.WithTimeout(ctx, budget)
+	}
+	defer cancel()
+
+	_, werr := r.streamWaitRemove(ctx, id, logHandlers{
 		logPrefix: fmt.Sprintf("[agent %s] ", opts.RunID),
 	})
-	if werr != nil {
-		errMsg := werr.Error()
+	if werr == nil {
+		apilog.WithField("run_id", opts.RunID).Info("Agent container completed")
+		return
+	}
+
+	// Wall-clock budget exceeded: streamWaitRemove already force-stopped and
+	// removed the container; report the run as failed (matches the K8s
+	// ActiveDeadlineSeconds → failed-condition behaviour).
+	if ctx.Err() != nil {
+		msg := fmt.Sprintf("agent container exceeded the AGENT_JOB_TIMEOUT_HOURS wall-clock budget (%dh)", r.config.JobTimeoutHours)
 		apilog.WithFields(apilog.Fields{
-			"run_id": opts.RunID, "error": errMsg,
-		}).Warn("Agent container exited with error")
+			"run_id": opts.RunID, "timeout_hours": r.config.JobTimeoutHours,
+		}).Warn(msg)
 		if opts.OnFailure != nil {
-			opts.OnFailure(opts.RunID, errMsg)
+			opts.OnFailure(opts.RunID, msg)
 		}
 		return
 	}
-	apilog.WithField("run_id", opts.RunID).Info("Agent container completed")
+
+	errMsg := werr.Error()
+	apilog.WithFields(apilog.Fields{
+		"run_id": opts.RunID, "error": errMsg,
+	}).Warn("Agent container exited with error")
+	if opts.OnFailure != nil {
+		opts.OnFailure(opts.RunID, errMsg)
+	}
 }
 
 // RunSync runs a synchronous agent invocation (e.g. --test-connection) and
@@ -532,7 +588,11 @@ func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	f.Add("label", "app="+dockerAgentLabel)
 	f.Add("label", "run-id="+runID)
 
-	list, err := r.client.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
+	// Default (All:false) lists only running containers — exactly what we
+	// want to stop. An already-exited container the background watcher is
+	// still cleaning up is not our concern (and stopping it would be a
+	// wasted no-op).
+	list, err := r.client.ContainerList(ctx, container.ListOptions{Filters: f})
 	if err != nil {
 		return fmt.Errorf("list agent containers for cancel: %w", err)
 	}
@@ -582,6 +642,13 @@ func (t *tailBuffer) append(line []byte) {
 
 func (t *tailBuffer) String() string { return t.buf.String() }
 
+// maxLogLineBytes caps how much a single un-terminated log line may buffer
+// before lineWriter force-emits it, so a pathological newline-less stream
+// can't grow the buffer without bound (mirrors the subprocess runner's
+// scanner max-token limit). 1 MiB comfortably holds the agent's largest
+// zap JSON lines.
+const maxLogLineBytes = 1 << 20
+
 // lineWriter is an io.Writer that splits its input on '\n' and invokes
 // onLine for each complete line. The byte slice passed to onLine aliases
 // the writer's internal buffer and is only valid for the duration of the
@@ -596,6 +663,12 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 	for {
 		i := bytes.IndexByte(w.buf, '\n')
 		if i < 0 {
+			// No newline yet. Bound memory: if the pending line exceeds the
+			// cap, emit what we have and reset rather than buffering forever.
+			if len(w.buf) >= maxLogLineBytes {
+				w.onLine(w.buf)
+				w.buf = w.buf[:0]
+			}
 			break
 		}
 		w.onLine(w.buf[:i])
