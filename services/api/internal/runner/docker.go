@@ -305,6 +305,20 @@ func (r *DockerRunner) gracefulStop(id string) error {
 	return nil
 }
 
+// stopAndRemove gracefully stops then removes a container, each on its own
+// detached, time-bounded context. Used as the background cleanup for a
+// caller-cancelled run so the caller doesn't block on the stop grace.
+func (r *DockerRunner) stopAndRemove(id string) {
+	_ = r.gracefulStop(id)
+	rmCtx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+	defer cancel()
+	if err := r.removeContainer(rmCtx, id); err != nil && !cerrdefs.IsNotFound(err) {
+		apilog.WithFields(apilog.Fields{
+			"container": id, "error": err.Error(),
+		}).Warn("Failed to remove agent container after cancellation")
+	}
+}
+
 // logHandlers configures how streamWaitRemove routes a container's output.
 type logHandlers struct {
 	// stdout, when non-nil, receives the container's demultiplexed stdout
@@ -338,20 +352,24 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 		r.streamLogs(logCtx, id, h, tail)
 	}()
 
-	cancelAndRemove := func() {
-		_ = r.gracefulStop(id)
-		logCancel()
-		<-logsDone
-		_ = r.removeContainer(context.Background(), id)
+	// cancelCleanup stops + removes the container in the BACKGROUND on a
+	// caller cancellation, so we return ctx.Err() promptly instead of
+	// blocking the caller (e.g. RunSync's 90s deadline, or worker shutdown)
+	// for the full SIGTERM grace period. The agent still gets its grace
+	// before SIGKILL; the container is reaped on the next startup if the
+	// process exits before this finishes.
+	cancelCleanup := func() {
+		logCancel() // stop streaming; the log goroutine unwinds on its own
+		go r.stopAndRemove(id)
 	}
 
 	select {
 	case <-ctx.Done():
-		cancelAndRemove()
+		cancelCleanup()
 		return 0, ctx.Err()
 	case werr := <-errCh:
 		if ctx.Err() != nil {
-			cancelAndRemove()
+			cancelCleanup()
 			return 0, ctx.Err()
 		}
 		logCancel()
@@ -465,10 +483,12 @@ func (r *DockerRunner) Run(ctx context.Context, opts RunOptions) error {
 // dockerRunWatchTimeout is the wall-clock budget for a backgrounded
 // discovery container, from AGENT_JOB_TIMEOUT_HOURS. It is the Docker
 // analogue of the K8s Job's ActiveDeadlineSeconds: when it elapses the
-// container is force-stopped and the run is failed, so a wedged agent (or
-// one run with DISCOVERY_MAX_DURATION=0) cannot run forever. A value <= 0
-// disables the cap. A var (not const) so tests can shorten it from hours
-// to milliseconds.
+// container is force-stopped and the run is failed, so a wedged agent
+// cannot run forever. LoadConfig clamps AGENT_JOB_TIMEOUT_HOURS to a
+// positive value, so in production the cap is always on; the <= 0 guard
+// only protects against a non-positive value passed via a hand-built
+// Config (it disables the cap rather than instantly cancelling). A var
+// (not const) so tests can shorten it from hours to milliseconds.
 var dockerRunWatchTimeout = func(jobTimeoutHours int) time.Duration {
 	if jobTimeoutHours <= 0 {
 		return 0
