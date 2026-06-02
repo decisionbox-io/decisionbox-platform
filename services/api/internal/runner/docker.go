@@ -338,6 +338,18 @@ func removalRaceBenign(err error) bool {
 	return err == nil || cerrdefs.IsNotFound(err) || cerrdefs.IsConflict(err)
 }
 
+// removeContainerBestEffort removes a container and logs a warning on a
+// non-benign failure (a real daemon error, not "already gone / being
+// removed"), so a container that genuinely fails to be removed is visible
+// rather than silently leaked. Startup reconciliation reaps any leftover.
+func (r *DockerRunner) removeContainerBestEffort(id string) {
+	if err := r.removeContainer(id); !removalRaceBenign(err) {
+		apilog.WithFields(apilog.Fields{
+			"container": id, "error": err.Error(),
+		}).Warn("Failed to remove agent container")
+	}
+}
+
 // gracefulStop sends SIGTERM and waits up to dockerStopGraceSeconds before
 // the daemon escalates to SIGKILL, on a detached ctx so a finished HTTP
 // request can't cut the grace period short. A missing container is treated
@@ -358,11 +370,7 @@ func (r *DockerRunner) gracefulStop(id string) error {
 // on the stop grace. Both steps run on their own detached, bounded contexts.
 func (r *DockerRunner) stopAndRemove(id string) {
 	_ = r.gracefulStop(id)
-	if err := r.removeContainer(id); !removalRaceBenign(err) {
-		apilog.WithFields(apilog.Fields{
-			"container": id, "error": err.Error(),
-		}).Warn("Failed to remove agent container after cancellation")
-	}
+	r.removeContainerBestEffort(id)
 }
 
 // logHandlers configures how streamWaitRemove routes a container's output.
@@ -419,7 +427,7 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 			_ = r.gracefulStop(id)
 			logCancel()
 			<-logsDone
-			_ = r.removeContainer(id)
+			r.removeContainerBestEffort(id)
 			return
 		}
 		// Background: return promptly; the agent still gets its grace before
@@ -440,11 +448,11 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 		}
 		logCancel()
 		<-logsDone
-		_ = r.removeContainer(id)
+		r.removeContainerBestEffort(id)
 		return 0, fmt.Errorf("wait for agent container: %w", werr)
 	case status := <-statusCh:
 		<-logsDone // let the log stream flush to EOF (container stopped)
-		_ = r.removeContainer(id)
+		r.removeContainerBestEffort(id)
 		if status.StatusCode != 0 {
 			msg := extractErrorMessage(tail.String(), fmt.Errorf("exit status %d", status.StatusCode))
 			return status.StatusCode, fmt.Errorf("%s", msg)
