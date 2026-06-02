@@ -88,6 +88,13 @@ var dockerAgentExtraEnvKeys = []string{
 	"AWS_SESSION_TOKEN",
 	"AWS_REGION",
 	"AWS_DEFAULT_REGION",
+	// Azure environment-credential passthrough — the Azure secret provider
+	// uses DefaultAzureCredential, whose EnvironmentCredential reads these.
+	// Without them a single-host agent with SECRET_PROVIDER=azure cannot
+	// reach Key Vault (no managed identity to fall back on).
+	"AZURE_TENANT_ID",
+	"AZURE_CLIENT_ID",
+	"AZURE_CLIENT_SECRET",
 	// GCP application-default credentials path. NOTE: this is a file path;
 	// the referenced key file must also be bind-mounted into the agent
 	// container at the same path for it to resolve.

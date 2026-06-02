@@ -651,6 +651,7 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	t.Setenv("MONGODB_DB", "decisionbox")
 	t.Setenv("SECRET_PROVIDER", "mongodb")
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA-test")
+	t.Setenv("AZURE_TENANT_ID", "tenant-test")
 	t.Setenv("ENV", "prod")
 	// Ensure an unset forwarded var stays absent.
 	t.Setenv("QDRANT_URL", "")
@@ -666,6 +667,9 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	}
 	if v, ok := envValue(env, "AWS_ACCESS_KEY_ID"); !ok || v != "AKIA-test" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q, ok=%v", v, ok)
+	}
+	if v, ok := envValue(env, "AZURE_TENANT_ID"); !ok || v != "tenant-test" {
+		t.Errorf("AZURE_TENANT_ID = %q, ok=%v", v, ok)
 	}
 	if v, ok := envValue(env, "ENV"); !ok || v != "prod" {
 		t.Errorf("ENV = %q, ok=%v", v, ok)

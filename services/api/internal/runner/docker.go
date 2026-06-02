@@ -58,12 +58,13 @@ type dockerAPI interface {
 const dockerPingTimeout = 10 * time.Second
 
 // dockerStopGraceSeconds is how long ContainerStop waits after SIGTERM
-// before the daemon escalates to SIGKILL. Sized to the agent's
-// terminal-tail budget (persist + final status write) so a cancelled
-// agent can save partial results before being forcibly killed — the
-// Docker analogue of the K8s pod termination grace period. ContainerStop
-// returns as soon as the agent exits, so this is only an upper bound. A
-// var (not const) so tests can shorten it.
+// before the daemon escalates to SIGKILL — the Docker analogue of the K8s
+// pod termination grace period. Sized to the agent's terminal-tail budget
+// (persist + final status write) so that, once the agent honours SIGTERM
+// (tracked in #270), a cancelled run has room to save partial results
+// before being forcibly killed. ContainerStop returns as soon as the
+// agent exits, so this is only an upper bound. A var (not const) so tests
+// can shorten it.
 var dockerStopGraceSeconds = int(agentTerminalTailHeadroom.Seconds())
 
 // dockerAgentLabel marks every container this runner creates, so Cancel
@@ -248,8 +249,8 @@ type logHandlers struct {
 // for ctx to be cancelled), removes the container, and reports the
 // outcome:
 //
-//   - ctx cancelled → SIGTERM the container (so the agent runs its
-//     terminal tail), remove it, return ctx.Err().
+//   - ctx cancelled → SIGTERM the container (graceful, with the grace
+//     window before SIGKILL), remove it, return ctx.Err().
 //   - non-zero exit → return an error carrying the agent's last
 //     FATAL/ERROR message (extracted from stderr).
 //   - clean exit    → return (0, nil).
@@ -481,8 +482,8 @@ func (r *DockerRunner) RunIndexSchema(ctx context.Context, opts IndexSchemaOptio
 
 // RunValidateDoc runs the agent in --mode=validate-doc for one insight /
 // recommendation and blocks until it exits or ctx is cancelled. On
-// cancellation the container is SIGTERM'd and removed so the agent records
-// its terminal status before exit (mirrors the K8s foreground-delete).
+// cancellation the container is SIGTERM'd (the same signal the K8s
+// foreground-delete sends) and removed.
 func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptions) error {
 	if opts.JobID == "" {
 		return fmt.Errorf("validate-doc: job_id is required")
@@ -520,10 +521,12 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 	return fmt.Errorf("agent --mode validate-doc: %w", werr)
 }
 
-// Cancel gracefully stops the discovery container(s) for runID (SIGTERM →
-// grace → SIGKILL). The background streamWaitRemove watcher observes the
-// exit and removes the container, so the agent gets its terminal tail
-// first. A run with no live container is a no-op (already finished).
+// Cancel stops the discovery container(s) for runID with the graceful
+// SIGTERM → grace → SIGKILL sequence (the same termination a K8s pod gets
+// on cancel). The background streamWaitRemove watcher observes the exit
+// and removes the container. (Persisting partial results on SIGTERM
+// additionally needs agent-side signal handling — see #270.) A run with
+// no live container is a no-op (already finished).
 func (r *DockerRunner) Cancel(ctx context.Context, runID string) error {
 	f := filters.NewArgs()
 	f.Add("label", "app="+dockerAgentLabel)
