@@ -116,6 +116,12 @@ var dockerAgentExtraEnvKeys = []string{
 	// Logging parity with the API process.
 	"ENV",
 	"LOG_LEVEL",
+	// Telemetry opt-out: the agent's telemetry gate reads these from its own
+	// environment and defaults to enabled, so without forwarding them a
+	// docker-mode agent would still emit telemetry despite a deployment
+	// opting out at the API.
+	"TELEMETRY_ENABLED",
+	"DO_NOT_TRACK",
 }
 
 // agentBaseEnv returns the variables every spawned agent gets

@@ -789,6 +789,7 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA-test")
 	t.Setenv("AZURE_TENANT_ID", "tenant-test")
 	t.Setenv("ENV", "prod")
+	t.Setenv("TELEMETRY_ENABLED", "false")
 	// Ensure an unset forwarded var stays absent.
 	t.Setenv("QDRANT_URL", "")
 
@@ -809,6 +810,10 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	}
 	if v, ok := envValue(env, "ENV"); !ok || v != "prod" {
 		t.Errorf("ENV = %q, ok=%v", v, ok)
+	}
+	// Telemetry opt-out must propagate so a docker agent honours it.
+	if v, ok := envValue(env, "TELEMETRY_ENABLED"); !ok || v != "false" {
+		t.Errorf("TELEMETRY_ENABLED = %q, ok=%v", v, ok)
 	}
 	// Writable scratch dirs always present.
 	if v, _ := envValue(env, "HOME"); v != "/tmp" {
