@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -95,14 +96,26 @@ func NewDockerRunner(cfg Config) (*DockerRunner, error) {
 	r := &DockerRunner{client: cli, config: cfg}
 	// Reap agent containers orphaned by a prior API lifecycle (crash /
 	// restart) before serving any run — Docker has no daemon-side Job TTL
-	// like K8s, so otherwise they linger. Runs at startup, before any new
-	// agent is spawned, so every match is genuinely an orphan.
-	reapCtx, reapCancel := context.WithTimeout(context.Background(), dockerPingTimeout)
-	defer reapCancel()
-	r.reconcileOrphans(reapCtx)
+	// like K8s, so otherwise they linger.
+	//
+	// Guarded by a process-level Once: apiserver.Run constructs a
+	// DockerRunner twice (one for the in-process workers, one for the
+	// discovery routes), and reaping on the second construction could
+	// remove a container the first runner's worker has already launched.
+	// The first construction happens before any runner can launch a
+	// container, so a single sweep there is both sufficient and safe.
+	orphanReconcileOnce.Do(func() {
+		reapCtx, reapCancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+		defer reapCancel()
+		r.reconcileOrphans(reapCtx)
+	})
 
 	return r, nil
 }
+
+// orphanReconcileOnce ensures the startup orphan sweep runs at most once
+// per process, regardless of how many DockerRunner instances are built.
+var orphanReconcileOnce sync.Once
 
 // reconcileOrphans force-removes agent containers left over from a previous
 // API lifecycle. Docker, unlike K8s, has no per-container deadline / TTL, so
