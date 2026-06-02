@@ -164,13 +164,27 @@ The API talks to LLMs for `/ask`. Per-project LLM credentials and `timeout_secon
 
 ### Agent Runner
 
-The API spawns the agent for each discovery run. Two modes:
+The API spawns the agent for each discovery run. Three modes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNNER_MODE` | `subprocess` | How to spawn the agent. `subprocess` = exec.Command (local dev, agent binary must be in PATH). `kubernetes` = create a K8s Job per discovery (production). |
+| `RUNNER_MODE` | `subprocess` | How to spawn the agent. `subprocess` = exec.Command (local dev, agent binary must be in PATH). `docker` = spawn the agent as its own container from `AGENT_IMAGE` via the Docker engine (single-host / docker-compose). `kubernetes` = create a K8s Job per discovery (production). |
 
 **Subprocess mode** — No additional configuration. The agent binary (`decisionbox-agent`) must be in the system PATH.
+
+**Docker mode** — The API spawns each agent invocation as its own short-lived container from `AGENT_IMAGE`, on a configurable Docker network, and removes it on completion. Use it when the agent image must differ from the API image, or to mirror the production "API spawns the agent from an image" model on a single host without a cluster.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Container image spawned per run (shared with kubernetes mode). A public or locally-built image works: if it is not present, the runner attempts to pull it and surfaces a clear error if the pull fails. The pull is sent with **no registry credentials**, so a private-registry image must be pre-pulled (or otherwise made available to the daemon). |
+| `AGENT_DOCKER_NETWORK` | `""` | Docker network the agent container joins so it can resolve `mongodb`, `qdrant`, and warehouse hosts by service name on the compose network. Empty = the engine's default network. For docker-compose, set it to the project's default network — `<project>_default`, where `<project>` defaults to the Compose directory name (so `decisionbox-platform_default` for a clone of this repo; confirm with `docker network ls`). |
+| `DOCKER_HOST` | *(unset)* | Standard Docker variable selecting the engine endpoint. Unset = the default Unix socket `/var/run/docker.sock`, which must be mounted into the API container. |
+
+The agent container receives the same Mongo / secret-provider / Qdrant / validation configuration the kubernetes runner forwards, plus passthrough (when set) of: AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`), Azure credentials (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`), the LLM **behaviour** knobs (`LLM_TIMEOUT`, `LLM_MAX_RETRIES`, `LLM_REQUEST_DELAY_MS`, `LLM_RETRY_BASE_BACKOFF`, `LLM_RETRY_MAX_ATTEMPTS`), `ENV` / `LOG_LEVEL`, and the telemetry opt-out (`TELEMETRY_ENABLED`, `DO_NOT_TRACK`) so an opted-out deployment's agent containers stay opted out. LLM **API keys** are NOT forwarded — they are loaded per-project from the secret provider.
+
+**GCP credentials are not auto-forwarded.** `GOOGLE_APPLICATION_CREDENTIALS` is a file path, and the runner cannot bind-mount that file into the spawned agent container (it knows only the path inside the API container, not the host path), so forwarding it would resolve to a missing file. For `SECRET_PROVIDER=gcp` / BigQuery in docker mode, give the agent credentials another way: the host's GCE metadata server / Workload Identity (reachable from the agent network), or a service-account key baked into or mounted onto a custom `AGENT_IMAGE`.
+
+> **Security:** mounting the Docker socket grants the API root-equivalent access to the host. Docker mode is a local / single-host convenience — use the `kubernetes` runner in production.
 
 **Kubernetes mode** — Additional configuration:
 
@@ -183,7 +197,7 @@ The API spawns the agent for each discovery run. Two modes:
 | `AGENT_CPU_LIMIT` | `2` | CPU limit for agent containers. |
 | `AGENT_MEMORY_REQUEST` | `256Mi` | Memory request for agent containers. |
 | `AGENT_MEMORY_LIMIT` | `1Gi` | Memory limit for agent containers. |
-| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` (hard kill at the cap) **and** as the subprocess watcher timeout — applies in both runner modes. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. |
+| `AGENT_JOB_TIMEOUT_HOURS` | `25` | Wall-clock budget for one agent run. Used as the K8s Job's `ActiveDeadlineSeconds` and the Docker runner's per-run wall-clock budget — hard kill at the cap in both — as well as the subprocess watcher timeout. The default is paired with the agent's 24h `DISCOVERY_MAX_DURATION` default so the in-agent cap fires first (with 1h headroom for the agent's 10-minute persistence tail + clock skew) and the agent fails gracefully rather than being killed mid-write. If you change `DISCOVERY_MAX_DURATION` you must keep this value at least 1h above it; a startup `WARN` log fires when they are inconsistent. A non-positive value is normalized back to the default, so the cap is always in effect. |
 
 ### Telemetry
 

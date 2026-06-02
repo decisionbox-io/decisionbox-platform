@@ -1,8 +1,11 @@
 // Package runner provides an abstraction for spawning discovery agent processes.
-// Supports subprocess mode (local dev) and Kubernetes Jobs (production).
+// Supports subprocess mode (local dev), Docker containers (single-host), and
+// Kubernetes Jobs (production).
 //
 // Selection via RUNNER_MODE env var:
 //   - "subprocess" (default): exec.Command, agent binary must be in PATH
+//   - "docker": spawns the agent as its own container from AGENT_IMAGE via
+//     the Docker engine (single-host / docker-compose)
 //   - "kubernetes": creates K8s Job per discovery run
 package runner
 
@@ -98,10 +101,20 @@ type RunOptions struct {
 
 // Config holds runner configuration from environment variables.
 type Config struct {
-	Mode string // "subprocess" or "kubernetes"
+	Mode string // "subprocess", "docker", or "kubernetes"
+
+	// AgentImage is the container image spawned per run. Used by the
+	// docker and kubernetes runners; ignored by subprocess.
+	AgentImage string
+
+	// Docker mode settings
+	//
+	// AgentDockerNetwork is the Docker network the agent container joins
+	// so it can resolve mongodb / qdrant / warehouse hosts by service name
+	// on the compose network. Empty = the engine's default network.
+	AgentDockerNetwork string
 
 	// Kubernetes mode settings
-	AgentImage         string
 	Namespace          string
 	ServiceAccountName string
 	CPURequest         string
@@ -137,15 +150,16 @@ func LoadConfig() Config {
 	warnIfDiscoveryCapShadowed(timeoutHours)
 
 	return Config{
-		Mode:            getEnv("RUNNER_MODE", "subprocess"),
+		Mode:               getEnv("RUNNER_MODE", "subprocess"),
 		AgentImage:         getEnv("AGENT_IMAGE", "ghcr.io/decisionbox-io/decisionbox-agent:latest"),
+		AgentDockerNetwork: getEnv("AGENT_DOCKER_NETWORK", ""),
 		Namespace:          getEnv("AGENT_NAMESPACE", "default"),
 		ServiceAccountName: getEnv("AGENT_SERVICE_ACCOUNT", ""),
-		CPURequest:      getEnv("AGENT_CPU_REQUEST", "250m"),
-		CPULimit:        getEnv("AGENT_CPU_LIMIT", "2"),
-		MemoryRequest:   getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
-		MemoryLimit:     getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
-		JobTimeoutHours: timeoutHours,
+		CPURequest:         getEnv("AGENT_CPU_REQUEST", "250m"),
+		CPULimit:           getEnv("AGENT_CPU_LIMIT", "2"),
+		MemoryRequest:      getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
+		MemoryLimit:        getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
+		JobTimeoutHours:    timeoutHours,
 	}
 }
 
@@ -234,10 +248,12 @@ func New(cfg Config) (Runner, error) {
 	switch cfg.Mode {
 	case "subprocess", "":
 		return NewSubprocessRunner(), nil
+	case "docker":
+		return NewDockerRunner(cfg)
 	case "kubernetes":
 		return NewKubernetesRunner(cfg)
 	default:
-		return nil, fmt.Errorf("unknown RUNNER_MODE: %q (use 'subprocess' or 'kubernetes')", cfg.Mode)
+		return nil, fmt.Errorf("unknown RUNNER_MODE: %q (use 'subprocess', 'docker', or 'kubernetes')", cfg.Mode)
 	}
 }
 

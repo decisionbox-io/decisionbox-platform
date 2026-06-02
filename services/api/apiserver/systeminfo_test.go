@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/systeminfo"
@@ -86,6 +87,35 @@ func TestRegisterAgentComponent_KubernetesMode(t *testing.T) {
 	}
 }
 
+// TestRegisterAgentComponent_DockerMode mirrors the kubernetes case:
+// docker mode spawns the agent from AGENT_IMAGE, so the System inventory
+// must report that image's tag (not the API's bundled binary version).
+func TestRegisterAgentComponent_DockerMode(t *testing.T) {
+	systeminfo.ResetForTest()
+	t.Cleanup(systeminfo.ResetForTest)
+
+	registerAgentComponent("docker", "ghcr.io/decisionbox-io/decisionbox-agent:v3.4.5")
+
+	got := systeminfo.Collect(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("want 1 descriptor, got %d: %+v", len(got), got)
+	}
+	agent := got[0]
+	if agent.Name != "Agent" || agent.Kind != systeminfo.KindService {
+		t.Fatalf("unexpected agent descriptor: %+v", agent)
+	}
+	// Docker mode reports the configured image tag, like kubernetes.
+	if agent.Version != "v3.4.5" {
+		t.Errorf("version = %q, want v3.4.5 (image tag)", agent.Version)
+	}
+	if agent.Version == goversion.Version {
+		t.Errorf("docker mode must not report the bundled binary version")
+	}
+	if !strings.Contains(agent.Note, "Docker container") {
+		t.Errorf("note = %q, want it to mention the Docker container runtime", agent.Note)
+	}
+}
+
 func TestRegisterAgentComponent_SubprocessMode(t *testing.T) {
 	systeminfo.ResetForTest()
 	t.Cleanup(systeminfo.ResetForTest)
@@ -133,12 +163,12 @@ func TestImageTag(t *testing.T) {
 		{"ghcr.io/decisionbox-io/decisionbox-agent:latest", "latest"},
 		{"ghcr.io/decisionbox-io/decisionbox-agent:v0.10.0", "v0.10.0"},
 		{"decisionbox-agent:1.2.3", "1.2.3"},
-		{"decisionbox-agent", "unknown"}, // no tag
+		{"decisionbox-agent", "unknown"},                // no tag
 		{"localhost:5000/decisionbox-agent", "unknown"}, // colon is a registry port, not a tag
 		{"localhost:5000/decisionbox-agent:dev", "dev"},
 		{"ghcr.io/decisionbox-io/decisionbox-agent@sha256:abc123", "unknown"}, // digest, no tag
 		{"ghcr.io/decisionbox-io/decisionbox-agent:1.0@sha256:abc123", "1.0"}, // tag + digest
-		{"agent:", "unknown"}, // trailing colon, empty tag
+		{"agent:", "unknown"},                                                 // trailing colon, empty tag
 		{"", "unknown"},
 	}
 	for _, c := range cases {

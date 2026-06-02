@@ -102,6 +102,7 @@ The autonomous AI data explorer. A standalone Go binary that:
 
 The agent is **stateless** — it reads everything from MongoDB and the domain pack files. It can run as:
 - A **subprocess** spawned by the API (local development, `RUNNER_MODE=subprocess`)
+- A **Docker container** spawned by the API from `AGENT_IMAGE` via the Docker engine (single-host, `RUNNER_MODE=docker`)
 - A **Kubernetes Job** created by the API (production, `RUNNER_MODE=kubernetes`)
 
 The agent's default mode (`--mode=run`) explores the warehouse, generates insights, and writes recommendations.

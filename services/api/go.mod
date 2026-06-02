@@ -3,6 +3,7 @@ module github.com/decisionbox-io/decisionbox/services/api
 go 1.25.0
 
 require (
+	github.com/containerd/errdefs v1.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 	github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai v0.0.0
@@ -27,7 +28,9 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/warehouse/postgres v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/redshift v0.0.0-00010101000000-000000000000
 	github.com/decisionbox-io/decisionbox/providers/warehouse/snowflake v0.0.0-00010101000000-000000000000
+	github.com/docker/docker v28.5.2+incompatible
 	github.com/google/uuid v1.6.0
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/qdrant/go-client v1.17.0
 	github.com/testcontainers/testcontainers-go/modules/k3s v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/mongodb v0.41.0
@@ -92,7 +95,6 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
@@ -106,7 +108,6 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dnephin/pflag v1.0.7 // indirect
-	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dvsekhvalnov/jose2go v1.7.0 // indirect
@@ -169,7 +170,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ollama/ollama v0.18.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect

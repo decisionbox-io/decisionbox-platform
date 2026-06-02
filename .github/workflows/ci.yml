@@ -387,6 +387,12 @@ jobs:
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-handler-integ.txt" ./internal/handler/)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-server-integ.txt" ./internal/server/)
 
+      - name: Docker runner integration tests
+        run: |
+          COV="${GITHUB_WORKSPACE}/coverage"
+          mkdir -p "$COV"
+          cd services/api && go test -tags=integration_docker -count=1 -timeout=5m -coverprofile="$COV/api-docker-runner-integ.txt" ./internal/runner/
+
       - name: Secrets provider integration tests
         env:
           MONGODB_URI: mongodb://localhost:27017
