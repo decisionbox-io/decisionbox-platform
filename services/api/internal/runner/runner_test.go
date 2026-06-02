@@ -97,7 +97,7 @@ func TestNew_EmptyMode(t *testing.T) {
 }
 
 func TestNew_InvalidMode(t *testing.T) {
-	_, err := New(Config{Mode: "docker"})
+	_, err := New(Config{Mode: "nomad"})
 	if err == nil {
 		t.Error("expected error for unknown mode")
 	}
@@ -630,9 +630,9 @@ func TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset(t *testing.T) {
 // cases below pin that behavior.
 func TestLoadConfig_DiscoveryCapShadowWarning(t *testing.T) {
 	cases := []struct {
-		name       string
-		envVal     string
-		jobHours   int
+		name     string
+		envVal   string
+		jobHours int
 	}{
 		{name: "shadow_equal_explicit", envVal: "6h", jobHours: 6},
 		{name: "shadow_greater_explicit", envVal: "24h", jobHours: 6},

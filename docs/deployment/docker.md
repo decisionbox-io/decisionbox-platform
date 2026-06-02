@@ -48,6 +48,30 @@ services:
 
 See [Configuration Reference](../reference/configuration.md) for all variables.
 
+### Agent Runner Mode
+
+By default (`RUNNER_MODE=subprocess`) the API runs the agent as a child process inside the API container, so the agent binary shares the API image.
+
+Set `RUNNER_MODE=docker` to have the API spawn each agent run as its own container from `AGENT_IMAGE` via the Docker engine instead. This is useful when the agent image must differ from the API image, or to mirror the production "API spawns the agent from an image" model on a single host without Kubernetes. The API talks to the engine over the mounted Docker socket and attaches each agent container to `AGENT_DOCKER_NETWORK` so it resolves `mongodb` / `qdrant` / warehouse hosts by service name:
+
+```yaml
+services:
+  api:
+    environment:
+      - RUNNER_MODE=docker
+      # Image the API launches per run (pulled if not present locally).
+      - AGENT_IMAGE=ghcr.io/decisionbox-io/decisionbox-agent:latest
+      # Compose network so the agent reaches mongodb/qdrant by name.
+      # Docker names it "<project>_default"; for this compose file that is
+      # "decisionbox_default" (the directory name is the default project).
+      - AGENT_DOCKER_NETWORK=decisionbox_default
+    volumes:
+      # Mount the Docker socket so the API can spawn containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+> **Security:** mounting the Docker socket grants the API root-equivalent access to the host. Use `RUNNER_MODE=docker` only for local / single-host deployments; in production use the [Kubernetes runner](kubernetes.md), which spawns each agent as an isolated Job without a host socket.
+
 ### Generating Secrets
 
 ```bash

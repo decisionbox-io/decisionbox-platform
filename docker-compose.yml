@@ -130,14 +130,24 @@ services:
       # ============================================================
 
       # Runner mode
-      # Values: subprocess | kubernetes
+      # Values: subprocess | docker | kubernetes
       # subprocess: exec.Command (local dev, agent binary must be in PATH)
+      # docker: spawn the agent as its own container from AGENT_IMAGE via the
+      #         Docker engine (single-host). Requires the Docker socket mount
+      #         (see the `volumes` block below) + AGENT_DOCKER_NETWORK.
+      #         SECURITY: mounting the socket grants root-equivalent host
+      #         access — local / single-host use only; use kubernetes in prod.
       # kubernetes: creates K8s Job per discovery run (production)
       - RUNNER_MODE=subprocess
 
-      # Agent container image (only used when RUNNER_MODE=kubernetes)
+      # Agent container image (used when RUNNER_MODE=docker or kubernetes)
       # Values: any valid container image reference
       - AGENT_IMAGE=ghcr.io/decisionbox-io/decisionbox-agent:latest
+
+      # Docker network the spawned agent container joins so it resolves
+      # mongodb / qdrant / warehouse hosts by service name (RUNNER_MODE=docker).
+      # Compose names it "<project>_default" — for this file: decisionbox_default.
+      # - AGENT_DOCKER_NETWORK=decisionbox_default
 
       # K8s namespace for agent Jobs (only used when RUNNER_MODE=kubernetes)
       # Values: any valid K8s namespace
@@ -189,6 +199,11 @@ services:
       # Values: debug | info | warn | error
       - LOG_LEVEL=info
 
+    # Mount the Docker socket only when using RUNNER_MODE=docker, so the API
+    # can spawn agent containers. SECURITY: this grants root-equivalent host
+    # access — local / single-host use only.
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       mongodb:
         condition: service_healthy

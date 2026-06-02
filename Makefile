@@ -84,6 +84,9 @@ test-integration: ## Run integration tests (requires Docker)
 test-k8s: ## Run K8s runner integration tests (requires Docker, uses K3s testcontainer)
 	cd services/api && go test -tags=integration -count=1 -timeout=5m ./internal/runner/
 
+test-docker-runner: ## Run Docker runner integration tests (requires the host Docker socket)
+	cd services/api && go test -tags=integration_docker -count=1 -timeout=5m ./internal/runner/
+
 test-secrets: ## Run secrets provider integration tests (MongoDB: Docker, GCP/AWS: credentials)
 	@echo "Secret provider integration tests."
 	@echo "  MongoDB                              → always runs (uses Docker/testcontainers)"

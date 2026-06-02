@@ -164,13 +164,25 @@ The API talks to LLMs for `/ask`. Per-project LLM credentials and `timeout_secon
 
 ### Agent Runner
 
-The API spawns the agent for each discovery run. Two modes:
+The API spawns the agent for each discovery run. Three modes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNNER_MODE` | `subprocess` | How to spawn the agent. `subprocess` = exec.Command (local dev, agent binary must be in PATH). `kubernetes` = create a K8s Job per discovery (production). |
+| `RUNNER_MODE` | `subprocess` | How to spawn the agent. `subprocess` = exec.Command (local dev, agent binary must be in PATH). `docker` = spawn the agent as its own container from `AGENT_IMAGE` via the Docker engine (single-host / docker-compose). `kubernetes` = create a K8s Job per discovery (production). |
 
 **Subprocess mode** — No additional configuration. The agent binary (`decisionbox-agent`) must be in the system PATH.
+
+**Docker mode** — The API spawns each agent invocation as its own short-lived container from `AGENT_IMAGE`, on a configurable Docker network, and removes it on completion. Use it when the agent image must differ from the API image, or to mirror the production "API spawns the agent from an image" model on a single host without a cluster.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Container image spawned per run (shared with kubernetes mode). A locally-built image works too; if it is not present, the runner attempts to pull it and surfaces a clear error if the pull fails. |
+| `AGENT_DOCKER_NETWORK` | `""` | Docker network the agent container joins so it can resolve `mongodb`, `qdrant`, and warehouse hosts by service name on the compose network. Empty = the engine's default network. For docker-compose, set it to the project's network (e.g. `decisionbox_default`). |
+| `DOCKER_HOST` | *(unset)* | Standard Docker variable selecting the engine endpoint. Unset = the default Unix socket `/var/run/docker.sock`, which must be mounted into the API container. |
+
+The agent container receives the same Mongo / secret-provider / Qdrant / validation configuration the kubernetes runner forwards, plus AWS credential (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`), `GOOGLE_APPLICATION_CREDENTIALS`, `LLM_*`, and `ENV` / `LOG_LEVEL` passthrough from the API process when set. LLM API keys are loaded per-project from the secret provider, not the environment.
+
+> **Security:** mounting the Docker socket grants the API root-equivalent access to the host. Docker mode is a local / single-host convenience — use the `kubernetes` runner in production.
 
 **Kubernetes mode** — Additional configuration:
 

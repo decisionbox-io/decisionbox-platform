@@ -43,8 +43,8 @@ var watchTotalWindow = func(jobTimeoutHours int) time.Duration {
 const watcherGracePeriod = 5 * time.Minute
 
 type KubernetesRunner struct {
-	client    kubernetes.Interface
-	config    Config
+	client kubernetes.Interface
+	config Config
 }
 
 func NewKubernetesRunner(cfg Config) (*KubernetesRunner, error) {
@@ -86,56 +86,15 @@ type jobSpec struct {
 
 // buildJob creates a K8s Job from the spec, using shared config (image, SA, env vars).
 func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
-	envVars := []corev1.EnvVar{
-		{Name: "MONGODB_URI", Value: getEnv("MONGODB_URI", "mongodb://localhost:27017")},
-		{Name: "MONGODB_DB", Value: getEnv("MONGODB_DB", "decisionbox")},
-		// Point any disk-touching SDKs (gosnowflake OCSP cache, AWS/GCP token
-		// caches) at the /tmp emptyDir below — required because the container
-		// runs with ReadOnlyRootFilesystem=true.
-		{Name: "TMPDIR", Value: "/tmp"},
-		{Name: "HOME", Value: "/tmp"},
+	// Base vars (Mongo connection + writable HOME/TMPDIR for SDKs that
+	// touch disk under ReadOnlyRootFilesystem=true) plus the curated
+	// passthrough set shared with the Docker runner. See env.go.
+	var envVars []corev1.EnvVar
+	for _, kv := range agentBaseEnv() {
+		envVars = append(envVars, corev1.EnvVar{Name: kv.Key, Value: kv.Value})
 	}
-	for _, kv := range []struct{ key, envKey string }{
-		{"SECRET_PROVIDER", "SECRET_PROVIDER"},
-		{"SECRET_NAMESPACE", "SECRET_NAMESPACE"},
-		{"SECRET_ENCRYPTION_KEY", "SECRET_ENCRYPTION_KEY"},
-		{"SECRET_GCP_PROJECT_ID", "SECRET_GCP_PROJECT_ID"},
-		{"QDRANT_URL", "QDRANT_URL"},
-		{"QDRANT_API_KEY", "QDRANT_API_KEY"},
-		// DISCOVERY_MAX_DURATION caps the outer agent ctx — it lives
-		// on the agent side (not the API), so it has to be forwarded
-		// here for K8s runs. Subprocess runs already inherit it from
-		// the API process's env.
-		{"DISCOVERY_MAX_DURATION", "DISCOVERY_MAX_DURATION"},
-		// VALIDATION_* knobs for the LLM-native verifier+refuter
-		// pipeline. All consumed by the agent via
-		// verifier.LoadConfigFromEnv during both full-discovery
-		// validation and manual `--mode=validate-doc` runs. Without
-		// forwarding here, operators setting these on the API
-		// deployment silently get defaults inside agent Jobs.
-		{"VALIDATION_REFUTER_ENABLED", "VALIDATION_REFUTER_ENABLED"},
-		{"VALIDATION_MAX_INSIGHTS_PER_RUN", "VALIDATION_MAX_INSIGHTS_PER_RUN"},
-		{"VALIDATION_MAX_RECOMMENDATIONS_PER_RUN", "VALIDATION_MAX_RECOMMENDATIONS_PER_RUN"},
-		{"VALIDATION_VERIFIER_MAX_ROUNDS", "VALIDATION_VERIFIER_MAX_ROUNDS"},
-		{"VALIDATION_VERIFIER_TOKEN_CAP", "VALIDATION_VERIFIER_TOKEN_CAP"},
-		{"VALIDATION_VERIFIER_MAX_OUTPUT", "VALIDATION_VERIFIER_MAX_OUTPUT"},
-		{"VALIDATION_REFUTER_MAX_ROUNDS", "VALIDATION_REFUTER_MAX_ROUNDS"},
-		{"VALIDATION_REFUTER_TOKEN_CAP", "VALIDATION_REFUTER_TOKEN_CAP"},
-		{"VALIDATION_REFUTER_MAX_OUTPUT", "VALIDATION_REFUTER_MAX_OUTPUT"},
-		{"VALIDATION_BUNDLE_SAMPLE_ROWS", "VALIDATION_BUNDLE_SAMPLE_ROWS"},
-		{"VALIDATION_MAX_READ_STEP_ROWS", "VALIDATION_MAX_READ_STEP_ROWS"},
-		{"VALIDATION_NUMERIC_TOLERANCE", "VALIDATION_NUMERIC_TOLERANCE"},
-		{"VALIDATION_MIN_SAMPLE_SIZE", "VALIDATION_MIN_SAMPLE_SIZE"},
-		// Bundle truncation + recommendation-bundle token budget +
-		// pre-flight estimate ratio. Same forwarding rule as the
-		// other VALIDATION_* knobs above.
-		{"VALIDATION_BUNDLE_CELL_CHAR_CAP", "VALIDATION_BUNDLE_CELL_CHAR_CAP"},
-		{"VALIDATION_REC_STEPS_TOKEN_BUDGET", "VALIDATION_REC_STEPS_TOKEN_BUDGET"},
-		{"VALIDATION_ESTIMATE_TOKEN_RATIO", "VALIDATION_ESTIMATE_TOKEN_RATIO"},
-	} {
-		if v := getEnv(kv.envKey, ""); v != "" {
-			envVars = append(envVars, corev1.EnvVar{Name: kv.key, Value: v})
-		}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		envVars = append(envVars, corev1.EnvVar{Name: kv.Key, Value: kv.Value})
 	}
 
 	backoffLimit := int32(0)
