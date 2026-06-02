@@ -652,6 +652,9 @@ func TestDockerRunner_RunValidateDoc_BuildsSpec(t *testing.T) {
 	if cfg.Labels["type"] != "validate-doc" || cfg.Labels["job-id"] != "job-abc" {
 		t.Errorf("unexpected labels: %+v", cfg.Labels)
 	}
+	if cfg.Labels["discovery-id"] != "disc-1" || cfg.Labels["doc-kind"] != "insight" || cfg.Labels["doc-id"] != "ins-1" {
+		t.Errorf("validate-doc labels missing discovery-id/doc-kind/doc-id: %+v", cfg.Labels)
+	}
 }
 
 func TestDockerRunner_RunValidateDoc_ContextCancelGracefulStop(t *testing.T) {

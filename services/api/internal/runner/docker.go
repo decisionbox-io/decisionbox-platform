@@ -400,7 +400,11 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 
 	tail := newTailBuffer()
 	logsDone := make(chan struct{})
-	logCtx, logCancel := context.WithCancel(ctx)
+	// Detach the log-streaming context from the caller ctx so a ctx
+	// cancellation (e.g. the watcher's wall-clock timeout) doesn't cut the
+	// stream before the subsequent graceful stop — the explicit logCancel()
+	// calls below stop streaming when we're actually done with it.
+	logCtx, logCancel := context.WithCancel(context.Background())
 	defer logCancel()
 	go func() {
 		defer close(logsDone)
@@ -708,6 +712,7 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 			"project-id":   opts.ProjectID,
 			"discovery-id": opts.DiscoveryID,
 			"doc-kind":     opts.DocKind,
+			"doc-id":       opts.DocID,
 		},
 	})
 	if err != nil {
@@ -715,7 +720,12 @@ func (r *DockerRunner) RunValidateDoc(ctx context.Context, opts ValidateDocOptio
 	}
 
 	apilog.WithFields(apilog.Fields{
-		"job_id": opts.JobID, "project_id": opts.ProjectID, "container": id,
+		"job_id":       opts.JobID,
+		"project_id":   opts.ProjectID,
+		"discovery_id": opts.DiscoveryID,
+		"doc_kind":     opts.DocKind,
+		"doc_id":       opts.DocID,
+		"container":    id,
 	}).Info("Agent validate-doc container starting")
 
 	// waitForCleanup=false: a cancelled caller (worker shutdown) unwinds
