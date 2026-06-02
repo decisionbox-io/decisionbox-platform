@@ -430,10 +430,14 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 			r.removeContainerBestEffort(id)
 			return
 		}
-		// Background: return promptly; the agent still gets its grace before
-		// SIGKILL, and a container left by an early process exit is reaped on
-		// next startup.
-		logCancel() // stop streaming; the log goroutine unwinds on its own
+		// Background: return promptly. Cancel the log stream and WAIT for the
+		// log goroutine to finish before returning — otherwise it could still
+		// be demultiplexing into h.stdout (which RunSync returns) or invoking
+		// h.onStderrLine after the caller has moved on (a data race). The wait
+		// is fast: logCancel closes the log reader. Only the slow stop/remove
+		// (the SIGTERM grace) is left to the background.
+		logCancel()
+		<-logsDone
 		go r.stopAndRemove(id)
 	}
 
