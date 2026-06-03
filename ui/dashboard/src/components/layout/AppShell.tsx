@@ -1,7 +1,6 @@
 'use client';
 
 import { ReactNode, useEffect, useState } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
@@ -59,13 +58,12 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
           padding: '16px 20px',
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
           borderBottom: '1px solid var(--db-border-default)',
         }}>
-          <Image src="/logo-icon.png" alt="DecisionBox" width={22} height={22} style={{ flexShrink: 0 }} />
-          <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.3px' }}>
-            DecisionBox
-          </span>
+          {/* Plain <img> for the SVG combined logo — keeps the asset vector-sharp
+              at any DPI and avoids enabling dangerouslyAllowSVG in next/image. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.svg" alt="DecisionBox" style={{ height: 24, width: 'auto', maxWidth: '100%' }} />
         </div>
 
         {/* Project selector */}
