@@ -23,6 +23,9 @@ func TestRedshiftProvider_Registered(t *testing.T) {
 	if meta.Description == "" {
 		t.Error("missing description")
 	}
+	if meta.Dialect != "Amazon Redshift SQL" {
+		t.Errorf("dialect = %q, want %q", meta.Dialect, "Amazon Redshift SQL")
+	}
 }
 
 func TestRedshiftProvider_ConfigFields(t *testing.T) {

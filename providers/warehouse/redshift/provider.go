@@ -72,6 +72,7 @@ func init() {
 	}, gowarehouse.ProviderMeta{
 		Name:        "Amazon Redshift",
 		Description: "AWS cloud data warehouse — Serverless or Provisioned",
+		Dialect:     "Amazon Redshift SQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "workgroup", Label: "Workgroup Name (Serverless)", Type: "string", Placeholder: "default-workgroup", Description: "For Redshift Serverless. Leave empty for provisioned clusters."},
 			{Key: "cluster_id", Label: "Cluster ID (Provisioned)", Type: "string", Placeholder: "my-cluster", Description: "For provisioned clusters. Leave empty for Serverless."},

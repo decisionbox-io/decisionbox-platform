@@ -25,6 +25,9 @@ func TestRegistered(t *testing.T) {
 	if meta.ID != "mssql" {
 		t.Errorf("expected ID 'mssql', got %q", meta.ID)
 	}
+	if meta.Dialect != "T-SQL" {
+		t.Errorf("expected dialect 'T-SQL', got %q", meta.Dialect)
+	}
 	if len(meta.ConfigFields) == 0 {
 		t.Error("expected config fields to be populated")
 	}

@@ -124,6 +124,7 @@ func init() {
 	}, gowarehouse.ProviderMeta{
 		Name:        "Snowflake",
 		Description: "Snowflake cloud data warehouse",
+		Dialect:     "Snowflake SQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "account", Label: "Account Identifier", Required: true, Type: "string", Placeholder: "org-account"},
 			{Key: "user", Label: "Username", Required: true, Type: "string"},

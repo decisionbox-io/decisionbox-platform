@@ -22,12 +22,20 @@ type WarehousePricing struct {
 // ProviderMeta describes a provider for UI rendering and documentation.
 // Providers register this alongside their factory via RegisterWithMeta().
 type ProviderMeta struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Description    string            `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Dialect is a short, consistent SQL-dialect label for display,
+	// metadata, and registry-driven UI — e.g. "BigQuery Standard SQL",
+	// "Snowflake SQL", "PostgreSQL", "T-SQL". Unlike Provider.SQLDialect(),
+	// which returns a verbose, prompt-oriented description and requires a
+	// constructed Provider (and therefore config/credentials), this label is
+	// declared at registration and available by slug with no instantiation.
+	// Every registered provider sets it.
+	Dialect        string            `json:"dialect"`
 	ConfigFields   []ConfigField     `json:"config_fields"`
 	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`
-	DefaultPricing *WarehousePricing  `json:"default_pricing,omitempty"`
+	DefaultPricing *WarehousePricing `json:"default_pricing,omitempty"`
 }
 
 // AuthMethod describes an authentication option for a warehouse provider.

@@ -159,6 +159,8 @@ See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your 
 | Databricks | `databricks` | PAT, OAuth M2M | Databricks SQL |
 | Microsoft SQL Server | `mssql` | SQL Login, Connection String | T-SQL (SQL Server 2016+, Azure SQL) |
 
+Each provider declares the short dialect label above as `ProviderMeta.Dialect`, so callers can read it by slug via `GetProviderMeta(slug)` / `RegisteredProvidersMeta()` (and the `GET /api/v1/providers/warehouse` listing) without constructing a provider. This is the clean display label; `SQLDialect()` remains the verbose, prompt-oriented description.
+
 **Location:** `providers/warehouse/{provider-name}/`
 
 **Interface methods:**
