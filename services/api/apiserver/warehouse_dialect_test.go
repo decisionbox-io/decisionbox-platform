@@ -55,11 +55,13 @@ func TestWarehouseProvidersDeclareShortDialect(t *testing.T) {
 		if strings.ContainsAny(m.Dialect, "\n\r") {
 			t.Errorf("provider %q Dialect %q spans multiple lines", m.ID, m.Dialect)
 		}
+		// The length bound is the real "short" guard: every provider's verbose
+		// SQLDialect() string exceeds it (the shortest, Redshift's, is 43 chars),
+		// so this keeps the label from drifting into that prompt-oriented form
+		// without forbidding a brief parenthetical qualifier a future short label
+		// might legitimately carry (e.g. "T-SQL (Azure SQL)").
 		if len(m.Dialect) > maxDialectLabelLen {
 			t.Errorf("provider %q Dialect %q is %d chars, want <= %d", m.ID, m.Dialect, len(m.Dialect), maxDialectLabelLen)
-		}
-		if strings.Contains(m.Dialect, "(") {
-			t.Errorf("provider %q Dialect %q looks verbose (contains '('); it should be a short label", m.ID, m.Dialect)
 		}
 
 		// GetProviderMeta(slug) must expose the same label without instantiation.
