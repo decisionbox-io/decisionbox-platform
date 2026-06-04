@@ -21,6 +21,9 @@ func TestRegistered(t *testing.T) {
 	if meta.Name != "PostgreSQL" {
 		t.Errorf("expected name 'PostgreSQL', got %q", meta.Name)
 	}
+	if meta.Dialect != "PostgreSQL" {
+		t.Errorf("expected dialect 'PostgreSQL', got %q", meta.Dialect)
+	}
 	if len(meta.ConfigFields) == 0 {
 		t.Error("expected config fields to be populated")
 	}

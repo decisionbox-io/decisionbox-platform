@@ -47,6 +47,7 @@ func init() {
 	}, gowarehouse.ProviderMeta{
 		Name:        "Google BigQuery",
 		Description: "Google Cloud data warehouse for analytics",
+		Dialect:     "BigQuery Standard SQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project", Description: "GCP project the BigQuery client runs query jobs in (jobs.create required). For most setups this is also the project that owns the datasets — leave Data project ID empty."},
 			{Key: "data_project_id", Label: "Data project ID (cross-project reads)", Required: false, Type: "string", Placeholder: "bigquery-public-data", Description: "GCP project that owns the datasets. Defaults to GCP Project ID. Set when reading datasets from a different project — e.g. bigquery-public-data samples — so jobs still bill to your own project while reads target the data's home."},
