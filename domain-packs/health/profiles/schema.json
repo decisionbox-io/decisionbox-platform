@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Health Project Profile",
+  "description": "Profile schema for health, fitness, wellness, and telehealth products.",
+  "type": "object",
+  "properties": {
+    "basic_info": {
+      "type": "object",
+      "title": "Basic Information",
+      "properties": {
+        "app_type": {
+          "type": "string",
+          "title": "Application Type",
+          "enum": [
+            "fitness",
+            "wellness",
+            "meditation",
+            "nutrition",
+            "telehealth",
+            "wearable"
+          ]
+        },
+        "platforms": {
+          "type": "array",
+          "title": "Platforms",
+          "items": {
+            "type": "string",
+            "enum": [
+              "iOS",
+              "Android",
+              "Web",
+              "Wearable"
+            ]
+          }
+        },
+        "target_audience": {
+          "type": "string",
+          "title": "Target Audience",
+          "description": "Primary user demographic (e.g., beginners, athletes, patients, seniors)"
+        },
+        "product_goal": {
+          "type": "string",
+          "title": "Primary Product Goal",
+          "description": "Main outcome users are trying to achieve (e.g., weight loss, muscle gain, stress reduction, chronic care management)"
+        },
+        "description": {
+          "type": "string",
+          "title": "Product Description",
+          "description": "Brief description of the product and its primary use case"
+        }
+      }
+    },
+    "program_design": {
+      "type": "object",
+      "title": "Program Design",
+      "properties": {
+        "tracking_type": {
+          "type": "array",
+          "title": "Tracking Types",
+          "items": {
+            "type": "string",
+            "enum": [
+              "workouts",
+              "steps",
+              "nutrition",
+              "sleep",
+              "vitals",
+              "habits",
+              "consultation",
+              "prescription"
+            ]
+          }
+        },
+        "personalized_plans": {
+          "type": "boolean",
+          "title": "Personalized Plans"
+        },
+        "goal_setting": {
+          "type": "boolean",
+          "title": "Goal Setting"
+        },
+        "coach_supported": {
+          "type": "boolean",
+          "title": "Coach or Professional Support"
+        },
+        "program_duration_days": {
+          "type": "integer",
+          "title": "Typical Program Duration (Days)",
+          "description": "Expected duration of a structured program. Helps classify onboarding, early, mid, and late lifecycle stages."
+        },
+        "milestone_based_program": {
+          "type": "boolean",
+          "title": "Milestone Based Program",
+          "description": "Whether users progress through defined milestones or levels."
+        }
+      }
+    },
+    "engagement_features": {
+      "type": "object",
+      "title": "Engagement Features",
+      "properties": {
+        "has_streaks": {
+          "type": "boolean",
+          "title": "Has Streaks"
+        },
+        "has_reminders": {
+          "type": "boolean",
+          "title": "Has Reminders"
+        },
+        "has_challenges": {
+          "type": "boolean",
+          "title": "Has Challenges"
+        },
+        "has_community_features": {
+          "type": "boolean",
+          "title": "Has Community Features"
+        }
+      }
+    },
+    "monetization": {
+      "type": "object",
+      "title": "Monetization",
+      "properties": {
+        "model": {
+          "type": "string",
+          "title": "Monetization Model",
+          "enum": [
+            "subscription",
+            "freemium",
+            "insurance"
+          ]
+        },
+        "has_subscription": {
+          "type": "boolean",
+          "title": "Has Subscription"
+        },
+        "primary_revenue_source": {
+          "type": "string",
+          "title": "Primary Revenue Source",
+          "enum": [
+            "subscription",
+            "insurance",
+            "coaching",
+            "consultation"
+          ]
+        }
+      }
+    },
+    "kpis": {
+      "type": "object",
+      "title": "Target KPIs",
+      "properties": {
+        "dau_target": {
+          "type": "integer",
+          "title": "DAU Target"
+        },
+        "retention_7d_target": {
+          "type": "number",
+          "title": "7-Day Retention Target (%)"
+        },
+        "retention_30d_target": {
+          "type": "number",
+          "title": "30-Day Retention Target (%)"
+        },
+        "conversion_target": {
+          "type": "number",
+          "title": "Subscription Conversion Target (%)"
+        },
+        "adherence_target": {
+          "type": "number",
+          "title": "Plan Adherence Target (%)"
+        },
+        "outcome_improvement_target": {
+          "type": "number",
+          "title": "Outcome Improvement Target (%)"
+        },
+        "goal_completion_target": {
+          "type": "number",
+          "title": "Goal Completion Target (%)",
+          "description": "Target percentage of users expected to successfully complete goals."
+        },
+        "milestone_completion_target": {
+          "type": "number",
+          "title": "Milestone Completion Target (%)",
+          "description": "Target percentage of users expected to reach key milestones."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fitness Profile Extensions",
+  "description": "Fitness-specific profile fields for workout behavior, adherence, and goal progression.",
+  "type": "object",
+  "properties": {
+    "workouts": {
+      "type": "object",
+      "title": "Workout Behavior",
+      "properties": {
+        "primary_workout_types": {
+          "type": "array",
+          "title": "Primary Workout Types",
+          "items": {
+            "type": "string",
+            "enum": [
+              "strength_training",
+              "cardio",
+              "hiit",
+              "yoga",
+              "pilates",
+              "running",
+              "cycling",
+              "home_workout",
+              "mobility"
+            ]
+          }
+        },
+        "avg_workout_duration_minutes": {
+          "type": "integer",
+          "title": "Average Workout Duration (Minutes)"
+        },
+        "recommended_workouts_per_week": {
+          "type": "integer",
+          "title": "Recommended Workouts Per Week"
+        },
+        "supports_personalized_plans": {
+          "type": "boolean",
+          "title": "Supports Personalized Plans"
+        },
+        "intensity_model": {
+          "type": "string",
+          "title": "Workout Intensity Model",
+          "description": "Typical workout intensity offered by the platform.",
+          "enum": [
+            "low",
+            "moderate",
+            "high",
+            "mixed"
+          ]
+        },
+        "typical_program_duration_days": {
+          "type": "integer",
+          "title": "Typical Program Duration (Days)",
+          "description": "Expected duration of structured fitness programs."
+        }
+      }
+    },
+    "goals": {
+      "type": "object",
+      "title": "Fitness Goals",
+      "properties": {
+        "goal_types": {
+          "type": "array",
+          "title": "Goal Types",
+          "items": {
+            "type": "string",
+            "enum": [
+              "weight_loss",
+              "muscle_gain",
+              "endurance",
+              "flexibility",
+              "general_fitness",
+              "habit_building"
+            ]
+          }
+        },
+        "supports_milestones": {
+          "type": "boolean",
+          "title": "Supports Milestones"
+        },
+        "supports_goal_recommendations": {
+          "type": "boolean",
+          "title": "Supports Goal Recommendations"
+        },
+        "goal_completion_target": {
+          "type": "number",
+          "title": "Goal Completion Target (%)",
+          "description": "Target percentage of users expected to complete fitness goals."
+        },
+        "milestone_completion_target": {
+          "type": "number",
+          "title": "Milestone Completion Target (%)",
+          "description": "Target percentage of users expected to reach defined milestones."
+        }
+      }
+    },
+    "adherence": {
+      "type": "object",
+      "title": "Adherence Tracking",
+      "properties": {
+        "streak_tracking": {
+          "type": "boolean",
+          "title": "Tracks Workout Streaks"
+        },
+        "missed_workout_tracking": {
+          "type": "boolean",
+          "title": "Tracks Missed Workouts"
+        },
+        "avg_weekly_adherence_rate": {
+          "type": "number",
+          "title": "Average Weekly Adherence Rate (%)"
+        },
+        "adherence_target": {
+          "type": "number",
+          "title": "Target Adherence Rate (%)",
+          "description": "Expected adherence rate used for benchmarking and severity calibration."
+        }
+      }
+    },
+    "engagement": {
+      "type": "object",
+      "title": "Engagement Features",
+      "properties": {
+        "has_notifications": {
+          "type": "boolean",
+          "title": "Uses Notifications"
+        },
+        "has_challenges": {
+          "type": "boolean",
+          "title": "Has Fitness Challenges"
+        },
+        "has_community": {
+          "type": "boolean",
+          "title": "Has Community Features"
+        }
+      }
+    }
+  }
+}

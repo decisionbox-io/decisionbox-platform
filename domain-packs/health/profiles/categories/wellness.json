@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Wellness App Profile Extensions",
+  "description": "Additional profile fields specific to wellness applications for analyzing mindfulness, habit-building, sleep, and mental wellness behavior.",
+  "type": "object",
+  "properties": {
+    "wellness_programs": {
+      "type": "object",
+      "title": "Wellness Programs",
+      "properties": {
+        "focus_areas": {
+          "type": "array",
+          "title": "Focus Areas",
+          "items": {
+            "type": "string",
+            "enum": [
+              "stress_management",
+              "mindfulness",
+              "sleep_improvement",
+              "anxiety_reduction",
+              "breathing",
+              "meditation",
+              "mental_clarity",
+              "relaxation"
+            ]
+          }
+        },
+        "supports_guided_sessions": {
+          "type": "boolean",
+          "title": "Supports Guided Sessions"
+        },
+        "avg_session_duration_minutes": {
+          "type": "integer",
+          "title": "Average Session Duration (Minutes)"
+        },
+        "content_formats": {
+          "type": "array",
+          "title": "Content Formats",
+          "items": {
+            "type": "string",
+            "enum": [
+              "audio",
+              "video",
+              "text",
+              "live_sessions"
+            ]
+          }
+        }
+      }
+    },
+    "habit_building": {
+      "type": "object",
+      "title": "Habit Building",
+      "properties": {
+        "supports_daily_habits": {
+          "type": "boolean",
+          "title": "Supports Daily Habits"
+        },
+        "streak_tracking": {
+          "type": "boolean",
+          "title": "Supports Streak Tracking"
+        },
+        "supports_reminders": {
+          "type": "boolean",
+          "title": "Supports Reminders"
+        },
+        "weekly_habit_completion_rate": {
+          "type": "number",
+          "title": "Weekly Habit Completion Rate (%)"
+        }
+      }
+    },
+    "user_engagement": {
+      "type": "object",
+      "title": "User Engagement",
+      "properties": {
+        "sessions_per_week": {
+          "type": "integer",
+          "title": "Sessions Per Week"
+        },
+        "avg_session_completion_rate": {
+          "type": "number",
+          "title": "Average Session Completion Rate (%)"
+        }
+      }
+    },
+    "behavior_lifecycle": {
+      "type": "object",
+      "title": "Behavior Lifecycle Context",
+      "properties": {
+        "typical_program_duration_days": {
+          "type": "integer",
+          "title": "Typical Program Duration (Days)",
+          "description": "Used to classify onboarding, early, mid, and late engagement phases."
+        },
+        "lifecycle_stages_supported": {
+          "type": "array",
+          "title": "Supported Lifecycle Stages",
+          "items": {
+            "type": "string",
+            "enum": [
+              "onboarding",
+              "early",
+              "mid",
+              "late"
+            ]
+          }
+        }
+      }
+    },
+    "kpis": {
+      "type": "object",
+      "title": "Wellness KPI Targets",
+      "properties": {
+        "retention_7d_target": {
+          "type": "number",
+          "title": "7-Day Retention Target (%)"
+        },
+        "retention_30d_target": {
+          "type": "number",
+          "title": "30-Day Retention Target (%)"
+        },
+        "session_completion_target": {
+          "type": "number",
+          "title": "Session Completion Target (%)"
+        },
+        "habit_completion_target": {
+          "type": "number",
+          "title": "Habit Completion Target (%)"
+        },
+        "stress_reduction_target": {
+          "type": "number",
+          "title": "Stress Reduction Target (%)"
+        }
+      }
+    }
+  }
+}

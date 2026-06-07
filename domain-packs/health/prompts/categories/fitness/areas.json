@@ -1,0 +1,19 @@
+[
+  {
+    "id": "workout_patterns",
+    "name": "Workout Patterns",
+    "description": "Exercise type preferences, intensity trends, workout consistency, recovery behavior, and participation patterns",
+    "keywords": ["workout", "exercise", "activity", "intensity", "training", "rest_day", "cardio", "strength", "frequency", "streak", "consistency", "recovery", "participation", "adherence"],
+    "priority": 4,
+    "prompt_file": "analysis_workout_patterns.md"
+  },
+  
+  {
+    "id": "goal_completion",
+    "name": "Goal Completion",
+    "description": "Goal setting, achievement rates, milestone progression, abandonment patterns, and completion success factors",
+    "keywords": ["goal", "milestone", "achievement", "completion", "progress", "target", "adherence", "abandonment", "success","goal_completion"],
+    "priority": 5,
+    "prompt_file": "analysis_goal_completion.md"
+  }
+]

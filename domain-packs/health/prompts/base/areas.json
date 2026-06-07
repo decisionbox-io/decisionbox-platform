@@ -1,0 +1,28 @@
+[
+  {
+    "id": "adherence",
+    "name": "Health Plan Adherence",
+    "description": "User adherence to health, wellness, and fitness plans, activities, and schedules",
+    "keywords": ["workout", "session", "activity", "streak", "goal", "plan", "schedule", "completion", "skip", "habit", "adherence", "compliance", "missed", "engagement"],
+    "priority": 1,
+    "prompt_file": "analysis_adherence.md"
+  },
+  {
+    "id": "retention",
+    "name": "Health Retention",
+    "description": "User retention, churn risk, subscription health, and long-term engagement",
+    "keywords": ["retention", "churn", "returning", "active", "cohort", "lapsed", "reactivation", "subscription", "renewal", "inactive", "last_active", "days_since", "dropout", "abandon"
+    ],
+    "priority": 2,
+    "prompt_file": "analysis_retention.md"
+  },
+  {
+    "id": "outcomes",
+    "name": "Health Outcomes",
+    "description": "Health improvement, progress tracking, and outcome effectiveness",
+    "keywords": ["progress", "improvement", "metric", "weight", "steps", "heart_rate", "sleep", "milestone", "goal_progress", "outcome", "vitals", "recovery", "health_score", "intervention", "program_effectiveness"
+    ],
+    "priority": 3,
+    "prompt_file": "analysis_outcomes.md"
+  }
+]

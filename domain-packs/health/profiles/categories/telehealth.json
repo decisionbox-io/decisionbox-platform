@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Telehealth Profile Extensions",
+  "description": "Additional profile fields specific to telehealth products for analyzing care delivery, provider workflows, and patient engagement.",
+  "type": "object",
+  "properties": {
+    "care_delivery": {
+      "type": "object",
+      "title": "Care Delivery",
+      "properties": {
+        "supports_video_consultations": {
+          "type": "boolean",
+          "title": "Supports Video Consultations"
+        },
+        "supports_chat_consultations": {
+          "type": "boolean",
+          "title": "Supports Chat Consultations"
+        },
+        "supports_prescriptions": {
+          "type": "boolean",
+          "title": "Supports Prescriptions"
+        },
+        "supports_remote_monitoring": {
+          "type": "boolean",
+          "title": "Supports Remote Monitoring"
+        },
+        "appointment_model": {
+          "type": "string",
+          "title": "Appointment Model",
+          "enum": [
+            "scheduled",
+            "on_demand",
+            "hybrid"
+          ]
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "title": "Healthcare Providers",
+      "properties": {
+        "provider_types": {
+          "type": "array",
+          "title": "Provider Types",
+          "items": {
+            "type": "string",
+            "enum": [
+              "general_physician",
+              "specialist",
+              "dermatologist",
+              "psychiatrist",
+              "psychologist",
+              "nutritionist",
+              "pediatrician"
+            ]
+          }
+        },
+        "avg_appointment_duration_minutes": {
+          "type": "integer",
+          "title": "Average Appointment Duration (Minutes)"
+        },
+        "care_model": {
+          "type": "string",
+          "title": "Care Model",
+          "enum": [
+            "single_visit",
+            "ongoing_care",
+            "chronic_care",
+            "preventive_care"
+          ]
+        },
+        "typical_care_episode_days": {
+          "type": "integer",
+          "title": "Typical Care Episode Duration (Days)",
+          "description": "Used to map onboarding → ongoing → chronic care lifecycle stages."
+        }
+      }
+    },
+    "patient_management": {
+      "type": "object",
+      "title": "Patient Management",
+      "properties": {
+        "supports_follow_ups": {
+          "type": "boolean",
+          "title": "Supports Follow-Ups"
+        },
+        "supports_care_plans": {
+          "type": "boolean",
+          "title": "Supports Care Plans"
+        },
+        "supports_medication_reminders": {
+          "type": "boolean",
+          "title": "Supports Medication Reminders"
+        },
+        "supports_patient_messaging": {
+          "type": "boolean",
+          "title": "Supports Patient Messaging"
+        }
+      }
+    },
+    "compliance": {
+      "type": "object",
+      "title": "Compliance & Security",
+      "properties": {
+        "handles_sensitive_health_data": {
+          "type": "boolean",
+          "title": "Handles Sensitive Health Data"
+        },
+        "requires_identity_verification": {
+          "type": "boolean",
+          "title": "Requires Identity Verification"
+        }
+      }
+    },
+    "engagement_and_continuity": {
+      "type": "object",
+      "title": "Engagement & Continuity",
+      "properties": {
+        "patient_followup_rate_target": {
+          "type": "number",
+          "title": "Patient Follow-up Target (%)"
+        },
+        "care_plan_adherence_target": {
+          "type": "number",
+          "title": "Care Plan Adherence Target (%)"
+        },
+        "consultation_completion_target": {
+          "type": "number",
+          "title": "Consultation Completion Target (%)"
+        },
+        "patient_retention_30d_target": {
+          "type": "number",
+          "title": "30-Day Patient Retention Target (%)"
+        }
+      }
+    }
+  }
+}
