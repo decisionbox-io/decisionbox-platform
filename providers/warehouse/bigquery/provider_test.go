@@ -66,6 +66,9 @@ func TestBigQueryProvider_Registered(t *testing.T) {
 	if meta.Name == "" {
 		t.Error("missing provider name")
 	}
+	if meta.Dialect != "BigQuery Standard SQL" {
+		t.Errorf("dialect = %q, want %q", meta.Dialect, "BigQuery Standard SQL")
+	}
 	if meta.DefaultPricing == nil {
 		t.Error("missing default pricing")
 	}

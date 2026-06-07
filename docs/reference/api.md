@@ -157,6 +157,7 @@ curl http://localhost:8080/api/v1/providers/warehouse
       "id": "bigquery",
       "name": "Google BigQuery",
       "description": "Google Cloud BigQuery data warehouse",
+      "dialect": "BigQuery Standard SQL",
       "config_fields": [
         {"key": "project_id", "label": "GCP Project ID", "required": true, "type": "string"},
         {"key": "location", "label": "Location", "type": "string", "default": "US"},

@@ -118,6 +118,7 @@ func init() {
 	}, gowarehouse.ProviderMeta{
 		Name:        "Databricks",
 		Description: "Databricks SQL warehouse (Unity Catalog)",
+		Dialect:     "Databricks SQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "host", Label: "Server Hostname", Required: true, Type: "string", Placeholder: "xxx.cloud.databricks.com"},
 			{Key: "http_path", Label: "HTTP Path", Required: true, Type: "string", Placeholder: "/sql/1.0/warehouses/xxx"},

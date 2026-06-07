@@ -80,6 +80,7 @@ func TestRegisterWithMeta(t *testing.T) {
 		}, ProviderMeta{
 			Name:        "Test Warehouse",
 			Description: "a test warehouse provider",
+			Dialect:     "Test SQL",
 			ConfigFields: []ConfigField{
 				{Key: "project_id", Label: "Project ID", Required: true, Type: "string"},
 				{Key: "dataset", Label: "Dataset", Required: true, Type: "string"},
@@ -100,6 +101,9 @@ func TestRegisterWithMeta(t *testing.T) {
 	}
 	if got.Name != "Test Warehouse" {
 		t.Errorf("ProviderMeta.Name = %q, want %q", got.Name, "Test Warehouse")
+	}
+	if got.Dialect != "Test SQL" {
+		t.Errorf("ProviderMeta.Dialect = %q, want %q", got.Dialect, "Test SQL")
 	}
 	if len(got.ConfigFields) != 2 {
 		t.Fatalf("len(ConfigFields) = %d, want 2", len(got.ConfigFields))

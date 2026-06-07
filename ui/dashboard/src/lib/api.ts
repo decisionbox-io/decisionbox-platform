@@ -622,6 +622,8 @@ export interface ProviderMeta {
   id: string;
   name: string;
   description: string;
+  /** Short SQL dialect label (warehouse providers only), e.g. "BigQuery Standard SQL", "T-SQL". */
+  dialect?: string;
   config_fields: ConfigField[];
   auth_methods?: AuthMethod[];
   models?: ModelInfo[];

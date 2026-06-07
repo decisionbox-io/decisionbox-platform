@@ -45,6 +45,7 @@ func init() {
 	gowarehouse.RegisterWithMeta("mssql", factory, gowarehouse.ProviderMeta{
 		Name:        "Microsoft SQL Server",
 		Description: "Microsoft SQL Server (SQL Server 2016+, Azure SQL Database)",
+		Dialect:     "T-SQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "host", Label: "Host", Required: true, Type: "string", Placeholder: "mssql.example.com"},
 			{Key: "port", Label: "Port", Type: "string", Default: defaultPort},

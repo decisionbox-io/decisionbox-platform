@@ -117,6 +117,7 @@ func init() {
 	}, gowarehouse.ProviderMeta{
 		Name:        "PostgreSQL",
 		Description: "PostgreSQL database",
+		Dialect:     "PostgreSQL",
 		ConfigFields: []gowarehouse.ConfigField{
 			{Key: "host", Label: "Host", Required: true, Type: "string", Placeholder: "db.example.com"},
 			{Key: "port", Label: "Port", Type: "string", Default: "5432"},

@@ -136,6 +136,7 @@ func init() {
     }, gowarehouse.ProviderMeta{
         Name:        "Snowflake",
         Description: "Snowflake cloud data warehouse",
+        Dialect:     "Snowflake SQL", // short label, available by slug without instantiating the provider
         ConfigFields: []gowarehouse.ConfigField{
             {Key: "account", Label: "Account", Required: true, Type: "string", Placeholder: "myorg-myaccount"},
             {Key: "warehouse", Label: "Warehouse", Required: true, Type: "string", Default: "COMPUTE_WH"},
@@ -264,6 +265,7 @@ Same pattern as LLM providers:
 - [ ] AuthMethods declared with `type: "credential"` fields for secrets
 - [ ] Factory uses `switch cfg["auth_method"]` with a `default` error case
 - [ ] ProviderMeta includes DefaultPricing
+- [ ] ProviderMeta declares a short `Dialect` label (e.g. `"Snowflake SQL"`, `"T-SQL"`) — a clean display label, distinct from `SQLDialect()`'s verbose prompt text, available by slug via `GetProviderMeta`
 - [ ] Imported in agent + API, replace directives, Dockerfile COPY
 - [ ] Unit tests: auth method registration, factory validation, unsupported method error
 - [ ] Integration tests (skip without credentials, opt-in via `INTEGRATION_TEST_*` env vars)

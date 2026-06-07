@@ -23,6 +23,9 @@ func TestRegistered(t *testing.T) {
 	if meta.Name != "Snowflake" {
 		t.Errorf("expected name 'Snowflake', got %q", meta.Name)
 	}
+	if meta.Dialect != "Snowflake SQL" {
+		t.Errorf("expected dialect 'Snowflake SQL', got %q", meta.Dialect)
+	}
 	if len(meta.ConfigFields) == 0 {
 		t.Error("expected config fields to be populated")
 	}
