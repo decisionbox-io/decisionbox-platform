@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-09
+
 ### Added
 
 - **Short, consistent SQL dialect label in warehouse `ProviderMeta`** — `libs/go-common/warehouse/registry.go`, `providers/warehouse/{bigquery,databricks,mssql,postgres,redshift,snowflake}/provider.go`, `services/api/apiserver/warehouse_dialect_test.go` (new), `ui/dashboard/src/lib/api.ts`, `docs/concepts/providers.md`, `docs/guides/adding-warehouse-providers.md`, `docs/reference/api.md`. Adds a new `ProviderMeta.Dialect` field — a short, clean dialect label (`"BigQuery Standard SQL"`, `"Snowflake SQL"`, `"PostgreSQL"`, `"Amazon Redshift SQL"`, `"Databricks SQL"`, `"T-SQL"`) declared by every registered warehouse provider at registration. Unlike `warehouse.Provider.SQLDialect()` — which returns a verbose, prompt-oriented description and requires a *constructed* provider (and therefore config/credentials) — this label is available by slug with no instantiation via `GetProviderMeta(slug)` / `RegisteredProvidersMeta()` (and the `GET /api/v1/providers/warehouse` listing, which now includes a `dialect` field), so display / metadata / registry-driven UI can read a stable dialect label without building a provider. `SQLDialect()` behaviour is unchanged.
