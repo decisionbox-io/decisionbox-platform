@@ -61,11 +61,12 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 	for _, idx := range order {
 		ins := &insights[idx]
 		vr := models.ValidationResult{
-			InsightID:    ins.ID,
-			AnalysisArea: areaID,
-			ClaimedCount: ins.AffectedCount,
-			ValidatedAt:  time.Now(),
-			DocKind:      valmodels.DocInsight,
+			InsightID:     ins.ID,
+			AnalysisArea:  areaID,
+			ClaimedCount:  ins.AffectedCount,
+			ClaimedMetric: ins.Name, // display label for the run-log step
+			ValidatedAt:   time.Now(),
+			DocKind:       valmodels.DocInsight,
 		}
 		if runValidated >= p.caps.MaxInsightsPerRun {
 			ins.Validation = &valmodels.InsightValidation{
@@ -150,9 +151,10 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 	for i := range recommendations {
 		rec := &recommendations[i]
 		vr := models.ValidationResult{
-			InsightID:   rec.ID,
-			ValidatedAt: time.Now(),
-			DocKind:     valmodels.DocRecommendation,
+			InsightID:     rec.ID,
+			ClaimedMetric: rec.Title, // display label for the run-log step
+			ValidatedAt:   time.Now(),
+			DocKind:       valmodels.DocRecommendation,
 		}
 		if validated >= p.caps.MaxRecommendationsPerRun {
 			rec.Validation = &valmodels.InsightValidation{

@@ -6,6 +6,7 @@ import (
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 )
 
 // When the validation agent is nil (project toggle off, no aiClient,
@@ -247,5 +248,62 @@ func TestApplyRecommendationDropStats_CleanRunZerosCountersAndKeepsSlice(t *test
 	}
 	if step.RecommendationsDropped != 0 || step.RecommendationsDroppedMissingIDs != 0 || step.RecommendationsDroppedUnknownID != 0 {
 		t.Errorf("clean run set non-zero counter: %+v", step)
+	}
+}
+
+// #279: the run-log validation step renders `Validated "<label>": …`,
+// where <label> comes from ValidationResult.ClaimedMetric. That field was
+// declared but never assigned, so every step showed an empty label. These
+// tests pin that the label is now populated from the source doc's display
+// name on the budget-cap-skipped path — the exact status the bug report
+// captured (skipped_budget_cap). ClaimedMetric is set in the struct literal
+// before the cap branch, so the validated path carries the same value.
+
+func TestValidateInsights_PopulatesClaimedMetricLabel(t *testing.T) {
+	// MaxInsightsPerRun=0 forces the budget-cap skip on the first insight
+	// without ever invoking the (zero-value) agent; a non-nil agent is
+	// needed only to get past the nil-agent early return.
+	p := &validationPhase{
+		agent: &verifier.Agent{},
+		caps:  verifier.RunCaps{MaxInsightsPerRun: 0},
+	}
+	insights := []models.Insight{
+		{ID: "i1", Name: "Office Furniture Category: Single Dominant Seller", AffectedCount: 609},
+	}
+
+	results, _ := p.validateInsights(context.Background(), insights, nil, "area-1", 0)
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if got := results[0].ClaimedMetric; got != "Office Furniture Category: Single Dominant Seller" {
+		t.Errorf("ClaimedMetric = %q, want the insight Name (empty label is the #279 bug)", got)
+	}
+	if results[0].Status != string(valmodels.StatusSkippedBudgetCap) {
+		t.Errorf("Status = %q, want %q", results[0].Status, valmodels.StatusSkippedBudgetCap)
+	}
+}
+
+func TestValidateRecommendations_PopulatesClaimedMetricLabel(t *testing.T) {
+	// Same setup for Phase 5.5: cap of 0 skips the rec on the budget path,
+	// and the label must still be the recommendation Title.
+	p := &validationPhase{
+		agent: &verifier.Agent{},
+		caps:  verifier.RunCaps{MaxRecommendationsPerRun: 0},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", Title: "Reduce checkout funnel friction"},
+	}
+
+	results := p.validateRecommendations(context.Background(), recs, nil, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if got := results[0].ClaimedMetric; got != "Reduce checkout funnel friction" {
+		t.Errorf("ClaimedMetric = %q, want the recommendation Title (empty label is the #279 bug)", got)
+	}
+	if results[0].Status != string(valmodels.StatusSkippedBudgetCap) {
+		t.Errorf("Status = %q, want %q", results[0].Status, valmodels.StatusSkippedBudgetCap)
 	}
 }
