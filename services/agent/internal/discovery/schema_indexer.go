@@ -178,9 +178,19 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	// 3. Provision Qdrant with the embedder's dimension count. If the
 	// caller swapped embedding models, the DropCollection above cleared
-	// the old dimension so this creates a fresh collection.
-	applog.WithField("dimensions", si.Embedder.Dimensions()).Info("schema_indexer: phase=ensure_collection")
-	if err := si.Retriever.EnsureCollection(ctx, opts.ProjectID, si.Embedder.Dimensions()); err != nil {
+	// the old dimension so this creates a fresh collection. Resolve the
+	// dimension robustly: the provider's declared size when it knows it,
+	// otherwise a probe embedding — so a model the catalog doesn't know
+	// (e.g. the decisionbox-embed-model gateway alias, which would report 0)
+	// still sizes its collection correctly. Done before the long blurb phase
+	// so a Qdrant/embedding misconfig fails fast.
+	dims, err := resolveEmbeddingDimensions(ctx, si.Embedder)
+	if err != nil {
+		si.recordErr(ctx, opts.ProjectID, "resolve dimensions: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: resolve dimensions: %w", err)
+	}
+	applog.WithField("dimensions", dims).Info("schema_indexer: phase=ensure_collection")
+	if err := si.Retriever.EnsureCollection(ctx, opts.ProjectID, dims); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "ensure collection: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: ensure collection: %w", err)
 	}

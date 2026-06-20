@@ -60,7 +60,7 @@ func TestFactoryMissingAPIKey(t *testing.T) {
 func TestFactoryUnknownModel(t *testing.T) {
 	prov, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
 		"credentials_json": "test-key",
-		"model":   "text-embedding-future-ultra",
+		"model":            "text-embedding-future-ultra",
 	})
 	if err != nil {
 		t.Fatalf("factory should accept unknown model for list-only use, got: %v", err)
@@ -70,6 +70,65 @@ func TestFactoryUnknownModel(t *testing.T) {
 	}
 	if prov.ModelName() != "text-embedding-future-ultra" {
 		t.Errorf("ModelName should round-trip the unknown ID, got %q", prov.ModelName())
+	}
+}
+
+// TestFactoryDimensionsOverride covers the explicit `dimensions` escape
+// hatch: it wins over the catalog for known models and supplies a size for
+// models the catalog doesn't know (e.g. a DecisionBox AI gateway alias),
+// while a known model with no override keeps its catalog size (no regression).
+func TestFactoryDimensionsOverride(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     goembedding.ProviderConfig
+		want    int
+		wantErr bool
+	}{
+		{
+			name: "known model, no override → catalog",
+			cfg:  goembedding.ProviderConfig{"credentials_json": "k", "model": "text-embedding-3-large"},
+			want: 3072,
+		},
+		{
+			name: "gateway alias, override supplies size",
+			cfg:  goembedding.ProviderConfig{"credentials_json": "k", "model": "decisionbox-embed-model", "dimensions": "3072"},
+			want: 3072,
+		},
+		{
+			name: "override wins over catalog",
+			cfg:  goembedding.ProviderConfig{"credentials_json": "k", "model": "text-embedding-3-large", "dimensions": "1024"},
+			want: 1024,
+		},
+		{
+			name:    "non-numeric override is rejected",
+			cfg:     goembedding.ProviderConfig{"credentials_json": "k", "model": "text-embedding-3-large", "dimensions": "big"},
+			wantErr: true,
+		},
+		{
+			name:    "non-positive override is rejected",
+			cfg:     goembedding.ProviderConfig{"credentials_json": "k", "model": "text-embedding-3-large", "dimensions": "0"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := goembedding.NewProvider("openai", tc.cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got dims=%d", p.Dimensions())
+				}
+				if !strings.Contains(err.Error(), "invalid dimensions") {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Dimensions() != tc.want {
+				t.Errorf("Dimensions() = %d, want %d", p.Dimensions(), tc.want)
+			}
+		})
 	}
 }
 
@@ -83,8 +142,8 @@ func TestFactoryDefaultModel(t *testing.T) {
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"credentials_json":  "test-key",
-		"base_url": server.URL,
+		"credentials_json": "test-key",
+		"base_url":         server.URL,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -107,9 +166,9 @@ func TestFactoryLargeModel(t *testing.T) {
 	defer server.Close()
 
 	p, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
-		"credentials_json":  "test-key",
-		"model":    "text-embedding-3-large",
-		"base_url": server.URL,
+		"credentials_json": "test-key",
+		"model":            "text-embedding-3-large",
+		"base_url":         server.URL,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

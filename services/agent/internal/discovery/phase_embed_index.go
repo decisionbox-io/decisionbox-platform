@@ -140,7 +140,15 @@ func (o *Orchestrator) saveStandaloneDocuments(ctx context.Context, insights []*
 
 // embedAndIndex embeds documents and upserts vectors to Qdrant.
 func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmodels.StandaloneInsight, recs []*commonmodels.StandaloneRecommendation) error {
-	dims := o.embeddingProvider.Dimensions()
+	// Resolve the dimension robustly — the provider's declared size when it
+	// knows it, else a probe embedding — so a model the catalog doesn't know
+	// (e.g. the decisionbox-embed-model gateway alias, which reports 0) sizes
+	// its collection correctly instead of failing with "dimensions must be
+	// positive, got 0".
+	dims, err := resolveEmbeddingDimensions(ctx, o.embeddingProvider)
+	if err != nil {
+		return fmt.Errorf("resolve embedding dimensions: %w", err)
+	}
 	modelName := o.embeddingProvider.ModelName()
 
 	// Ensure Qdrant collection exists for this dimension
@@ -203,13 +211,13 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			Vector: vec,
 			Payload: map[string]interface{}{
 				"type":            "insight",
-				"project_id":     ins.ProjectID,
-				"discovery_id":   ins.DiscoveryID,
+				"project_id":      ins.ProjectID,
+				"discovery_id":    ins.DiscoveryID,
 				"embedding_model": modelName,
-				"severity":       ins.Severity,
-				"analysis_area":  ins.AnalysisArea,
-				"confidence":     ins.Confidence,
-				"created_at":     ins.CreatedAt.Format(time.RFC3339),
+				"severity":        ins.Severity,
+				"analysis_area":   ins.AnalysisArea,
+				"confidence":      ins.Confidence,
+				"created_at":      ins.CreatedAt.Format(time.RFC3339),
 			},
 		})
 	}
@@ -231,11 +239,11 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			Vector: vec,
 			Payload: map[string]interface{}{
 				"type":            "recommendation",
-				"project_id":     rec.ProjectID,
-				"discovery_id":   rec.DiscoveryID,
+				"project_id":      rec.ProjectID,
+				"discovery_id":    rec.DiscoveryID,
 				"embedding_model": modelName,
-				"confidence":     rec.Confidence,
-				"created_at":     rec.CreatedAt.Format(time.RFC3339),
+				"confidence":      rec.Confidence,
+				"created_at":      rec.CreatedAt.Format(time.RFC3339),
 			},
 		})
 	}
@@ -283,4 +291,3 @@ func (o *Orchestrator) checkAndMarkDuplicate(ctx context.Context, docID string, 
 		applog.WithError(err).WithField("id", docID).Warn("Failed to mark duplicate")
 	}
 }
-
