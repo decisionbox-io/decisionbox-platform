@@ -105,6 +105,17 @@ swapping embedding models (e.g. `text-embedding-3-small` →
 `text-embedding-3-large`, 1536 → 3072 dims) means the collection is
 incompatible. `POST /reindex` drops and recreates it automatically.
 
+### How the dimension is resolved
+
+The collection is sized from the embedding model's vector dimension,
+resolved in this order: an explicit `dimensions` value in the project's
+embedding `config` (an escape hatch for a model the provider catalog
+doesn't know — e.g. a managed gateway alias), then the provider's known
+dimension for catalogued models, and otherwise a **probe** — the agent
+embeds one short string and measures the returned vector. The probe means
+any provider/model indexes correctly, including an OpenAI-compatible
+gateway alias whose dimension the catalog can't know up front.
+
 ## Cost and wall-clock envelope
 
 With the defaults (Bedrock Qwen3-32B + OpenAI text-embedding-3-large)
