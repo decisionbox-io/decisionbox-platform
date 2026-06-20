@@ -31,6 +31,19 @@ import (
 func inferOpenAIWire(model string) gollm.Wire {
 	id := strings.ToLower(model)
 
+	// DecisionBox AI gateway aliases. The gateway is OpenAI-compatible, so its
+	// chat aliases (decisionbox-analysis-model, decisionbox-blurb-model)
+	// dispatch over the OpenAI Chat Completions wire and belong on the LLM
+	// picker. The embedding alias (decisionbox-embed-model) is not an LLM, so
+	// it stays WireUnknown and the LLM picker hides it — it has its own
+	// embedding-provider surface.
+	if strings.HasPrefix(id, "decisionbox-") {
+		if strings.Contains(id, "embed") {
+			return gollm.WireUnknown
+		}
+		return gollm.WireOpenAICompat
+	}
+
 	// Non-LLM families served by OpenAI under /v1/models — drop them
 	// from the LLM picker. Embeddings have their own provider; the
 	// rest aren't supported as agent LLMs at all.

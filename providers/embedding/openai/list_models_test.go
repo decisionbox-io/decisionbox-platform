@@ -91,6 +91,44 @@ func TestListModels_UnknownEmbeddingID_DimensionsZero(t *testing.T) {
 	}
 }
 
+func TestListModels_GatewayAliasKeptByOwner(t *testing.T) {
+	// The DecisionBox AI gateway honours ?type=embedding by returning only its
+	// embedding alias, owned_by "decisionbox". The alias doesn't match the
+	// text-embedding-* prefix, so it's kept purely on the ownership marker —
+	// while a non-gateway model is still dropped.
+	server := httptest.NewServer(buildOpenAIListHandler([]map[string]any{
+		{"id": "decisionbox-embed-model", "object": "model", "owned_by": "decisionbox"},
+		{"id": "gpt-4o", "object": "model", "owned_by": "someone-else"},
+	}, 0, ""))
+	defer server.Close()
+
+	p := newTestProvider(server)
+	models, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "decisionbox-embed-model" {
+		t.Fatalf("expected only the gateway embedding alias, got %+v", models)
+	}
+}
+
+func TestListModels_SendsTypeEmbeddingFilter(t *testing.T) {
+	var gotType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.URL.Query().Get("type")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	p := newTestProvider(server)
+	if _, err := p.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if gotType != "embedding" {
+		t.Errorf("request type filter = %q, want \"embedding\"", gotType)
+	}
+}
+
 func TestListModels_UpstreamErrorSurfacesMessage(t *testing.T) {
 	// Structured 401 body — the handler should extract the
 	// provider-shaped error so the UI shows a specific message instead
@@ -131,7 +169,7 @@ func TestListModels_NetworkErrorPropagates(t *testing.T) {
 func TestProviderSatisfiesModelListerCapability(t *testing.T) {
 	prov, err := goembedding.NewProvider("openai", goembedding.ProviderConfig{
 		"credentials_json": "test-key",
-		"model":   "text-embedding-3-small",
+		"model":            "text-embedding-3-small",
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
