@@ -280,3 +280,74 @@ func TestInteg_SchemaIndexer_DropCollectionOnRetry(t *testing.T) {
 		t.Errorf("retained stale entry: %v", hits[0].Blurb.Table)
 	}
 }
+
+// unknownDimEmbedder models a model the catalog doesn't know (e.g. the
+// decisionbox-embed-model gateway alias): Dimensions() reports 0, but Embed
+// returns full-length vectors. Before the probe-based fix this made
+// EnsureCollection fail with "dimensions must be positive, got 0".
+type unknownDimEmbedder struct {
+	vecLen int
+	model  string
+}
+
+func (e *unknownDimEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	out := make([][]float64, len(texts))
+	for i := range out {
+		v := make([]float64, e.vecLen)
+		v[0] = 1 // unit-length on axis 0, as the collection uses cosine distance
+		out[i] = v
+	}
+	return out, nil
+}
+func (e *unknownDimEmbedder) Dimensions() int   { return 0 }
+func (e *unknownDimEmbedder) ModelName() string { return e.model }
+
+// TestInteg_SchemaIndexer_UnknownDimensions_ProbesAndSizes is the regression
+// test for the gateway-alias bug: an embedder that can't declare its size
+// (Dimensions()==0) must still build an index, because the indexer probes a
+// live embedding to size the collection. The Search with an 8-dim query then
+// only succeeds if the collection was actually created with 8 dimensions.
+func TestInteg_SchemaIndexer_UnknownDimensions_ProbesAndSizes(t *testing.T) {
+	ctx := context.Background()
+	retriever := startQdrant(t)
+
+	const dims = 8
+	schemas := map[string]models.TableSchema{
+		"s.orders": {TableName: "s.orders", RowCount: 100, Columns: []models.ColumnInfo{{Name: "id", Type: "INT64"}}},
+		"s.users":  {TableName: "s.users", RowCount: 50, Columns: []models.ColumnInfo{{Name: "id", Type: "INT64"}}},
+	}
+	gen, err := blurb.New(blurb.Config{LLM: &stubLLM{text: "A concise description."}, Model: "gpt-4o", Workers: 2})
+	if err != nil {
+		t.Fatalf("blurb.New: %v", err)
+	}
+	si := SchemaIndexer{
+		Discovery: &stubIntegSchemaSource{schemas: schemas},
+		Blurber:   gen,
+		Embedder:  &unknownDimEmbedder{vecLen: dims, model: "decisionbox-embed-model"},
+		Retriever: retriever,
+		Progress:  &memProgress{},
+	}
+
+	stats, err := si.BuildIndex(ctx, IndexOptions{ProjectID: "p-gateway-alias", RunID: "run-ga"})
+	if err != nil {
+		t.Fatalf("BuildIndex with an unknown-dimension embedder should succeed via probing, got: %v", err)
+	}
+	if stats.Tables != 2 {
+		t.Errorf("indexed tables = %d, want 2", stats.Tables)
+	}
+
+	// An 8-dim query only matches if the collection was sized to 8 (the
+	// probed length), not 0 or some default.
+	hits, err := retriever.Search(ctx, "p-gateway-alias", unitVec(0, dims), schema_retrieve.SearchOpts{TopK: 5})
+	if err != nil {
+		t.Fatalf("search against the probed-size collection: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("no hits — collection was not sized from the probe")
+	}
+	for _, h := range hits {
+		if h.Blurb.EmbeddingModel != "decisionbox-embed-model" {
+			t.Errorf("embedding_model = %q, want decisionbox-embed-model", h.Blurb.EmbeddingModel)
+		}
+	}
+}

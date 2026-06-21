@@ -12,6 +12,13 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 )
 
+// gatewayOwner is the owned_by value the DecisionBox AI gateway stamps on
+// every alias it exposes. The gateway is OpenAI-compatible but its embedding
+// alias (decisionbox-embed-model) doesn't follow OpenAI's text-embedding-*
+// naming, so we trust this ownership marker — combined with the gateway's own
+// ?type=embedding filter — instead of the ID-prefix heuristic.
+const gatewayOwner = "decisionbox"
+
 // ListModels hits OpenAI's GET /v1/models and filters to the rows that
 // look like embedding models (by ID prefix). The endpoint is free and
 // doesn't consume embedding quota — safe to call from the dashboard's
@@ -23,11 +30,16 @@ import (
 // together. The ID-prefix filter (`text-embedding-*`) matches every
 // embedding model OpenAI ships today and any future one they'd name
 // consistently. Anything else gets dropped.
+//
+// The DecisionBox AI gateway is the exception: the request carries
+// ?type=embedding — which the gateway honours by returning only its embedding
+// alias, and plain OpenAI ignores — and a row owned by the gateway is kept
+// regardless of its ID, so the dashboard surfaces the alias.
 func (p *provider) ListModels(ctx context.Context) ([]goembedding.RemoteModel, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, "GET", p.baseURL+"/models", nil)
+	req, err := http.NewRequestWithContext(reqCtx, "GET", p.baseURL+"/models?type=embedding", nil)
 	if err != nil {
 		return nil, fmt.Errorf("openai embedding: build list req: %w", err)
 	}
@@ -67,10 +79,10 @@ func (p *provider) ListModels(ctx context.Context) ([]goembedding.RemoteModel, e
 
 	out := make([]goembedding.RemoteModel, 0, len(listResp.Data))
 	for _, m := range listResp.Data {
-		if !isEmbeddingModelID(m.ID) {
+		if !isEmbeddingModelID(m.ID) && m.OwnedBy != gatewayOwner {
 			continue
 		}
-		dims := modelDimensions[m.ID] // 0 when unknown; dashboard falls back to catalog
+		dims := modelDimensions[m.ID] // 0 when unknown; dashboard falls back to catalog / the dimensions override
 		out = append(out, goembedding.RemoteModel{
 			ID:          m.ID,
 			DisplayName: m.ID,

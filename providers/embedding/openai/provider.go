@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,24 @@ const defaultBaseURL = "https://api.openai.com/v1"
 var modelDimensions = map[string]int{
 	"text-embedding-3-small": 1536,
 	"text-embedding-3-large": 3072,
+}
+
+// resolveDimensions picks the declared vector size from the optional
+// `dimensions` override, falling back to the known-model catalog and finally
+// 0 ("unknown"). The override is the escape hatch for a model the catalog
+// doesn't know — it must match the size the model actually returns, since it
+// is reported verbatim as Dimensions() and used to size the vector
+// collection. A non-numeric / non-positive override is a hard error rather
+// than a silent fall-through to a wrong size.
+func resolveDimensions(override, model string) (int, error) {
+	if s := strings.TrimSpace(override); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("openai embedding: invalid dimensions %q: must be a positive integer", override)
+		}
+		return n, nil
+	}
+	return modelDimensions[model], nil
 }
 
 func init() {
@@ -42,11 +61,18 @@ func init() {
 			model = "text-embedding-3-small"
 		}
 
-		// Accept unknown models with dims=0 so the list-only path and
-		// user-typed custom model IDs both work. Actual Embed() calls
-		// against an unknown model will still fail upstream at the
-		// OpenAI API; we don't pretend to know the vector size.
-		dims := modelDimensions[model]
+		// Dimension resolution, highest precedence first:
+		//  1. an explicit `dimensions` config override — the escape hatch for
+		//     any model/gateway the catalog doesn't know (e.g. a DecisionBox AI
+		//     alias), flowed in from project.Embedding.Config;
+		//  2. the known-model catalog (a fast default so nothing regresses);
+		//  3. 0 — "unknown". A 0 here is not fatal: the list-only path and
+		//     user-typed custom IDs still work, and a caller that needs a real
+		//     size (sizing a Qdrant collection) probes with a live embedding.
+		dims, err := resolveDimensions(cfg["dimensions"], model)
+		if err != nil {
+			return nil, err
+		}
 
 		baseURL := cfg["base_url"]
 		if baseURL == "" {
@@ -60,6 +86,7 @@ func init() {
 		ConfigFields: []goembedding.ConfigField{
 			{Key: "model", Label: "Model", Required: true, Type: "string", Default: "text-embedding-3-small"},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: defaultBaseURL, Description: "For OpenAI-compatible APIs"},
+			{Key: "dimensions", Label: "Dimensions", Type: "string", Description: "Override the vector size for a model the catalog doesn't know (e.g. a gateway alias). Leave blank to auto-detect."},
 		},
 		AuthMethods: []goembedding.AuthMethod{
 			{

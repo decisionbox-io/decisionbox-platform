@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedding vector dimensions are detected by probing, not a hardcoded catalog** — `providers/embedding/openai/provider.go`, `services/agent/internal/discovery/{dimensions.go (new),schema_indexer.go,phase_embed_index.go}`, `docs/guides/schema-indexing.md`. The agent sized its Qdrant collection from `Embedder.Dimensions()`, which the OpenAI embedding provider derived from a hardcoded model→dims map — `0` for any model the map doesn't know, including a managed-gateway alias such as `decisionbox-embed-model`. That made `agent --mode index-schema` (and Phase 9 embed/index) fail with `dimensions must be positive, got 0`, even though the embeddings themselves were correct. The agent now resolves the dimension robustly: it trusts the provider's declared `Dimensions()` when known (a catalogued model — unchanged fast path) and otherwise **probes** — embeds one short string and uses `len(vector)` — mirroring `run_step_index.go`. Wired into `schema_indexer` (before `EnsureCollection`, so a Qdrant/embedding misconfig still fails fast) and `phase_embed_index`. The OpenAI embedding provider also accepts an explicit `dimensions` config override (flowed in from `project.Embedding.Config`) as an escape hatch for any model/gateway the catalog doesn't know; a non-positive override is rejected. Known models behave exactly as before. Unit + real-Qdrant integration tests cover known-model / unknown-model / gateway-alias / explicit-override.
+
+### Added
+
+- **DecisionBox AI gateway aliases surface in the dashboard model pickers** — `providers/embedding/openai/list_models.go`, `providers/llm/openai/wire_inference.go`. When an OpenAI-compatible provider points at the managed DecisionBox AI gateway, its `GET /v1/models` returns aliases (`decisionbox-analysis/blurb/embed-model`) that don't follow OpenAI's naming, so both pickers dropped them — the embedding picker filtered to `text-embedding-*`, and the LLM picker classified `decisionbox-*` as an unknown (non-dispatchable) wire. Keyed on the gateway's contract (`owned_by: decisionbox` plus its `?type=chat|embedding` filter), the embedding `ListModels` now requests `?type=embedding` and keeps a row that is either `text-embedding-*` or gateway-owned, and the LLM wire inference classifies the gateway chat aliases as the OpenAI wire (the embed alias stays off the LLM picker). No shared registry/handler or frontend changes.
+
+- **Real end-to-end tests through the DecisionBox AI gateway** — `services/agent/agentserver/{gateway_e2e_test.go,index_schema_e2e_test.go}` (new, `-tags e2e`). Env-gated, no mocks: the pickers list the gateway aliases and a chat dispatches through the analysis alias over the OpenAI wire; the production `runIndexSchema` pipeline indexes a BigQuery warehouse (the olist demo by default) — discover schemas → resolve dimensions → blurbs through the gateway alias → embed → Qdrant upsert. Set `DBX_GATEWAY_URL` / `DBX_GATEWAY_KEY` (+ `DBX_E2E_INDEX=1` and the warehouse/Qdrant/AWS env) to run against `ai.decisionbox.io`.
+
 ## [0.11.0] - 2026-06-09
 
 ### Added
