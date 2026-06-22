@@ -28,11 +28,6 @@ func TestProject_JSONRoundTrip(t *testing.T) {
 			Model:    "claude-sonnet-4",
 			Config:   map[string]string{"api_key": "sk-test"},
 		},
-		Schedule: ScheduleConfig{
-			Enabled:  true,
-			CronExpr: "0 6 * * *",
-			MaxSteps: 100,
-		},
 		Profile: map[string]interface{}{
 			"game_name": "TestGame",
 		},
@@ -84,15 +79,6 @@ func TestProject_JSONRoundTrip(t *testing.T) {
 	if decoded.LLM.Model != "claude-sonnet-4" {
 		t.Errorf("LLM.Model = %q", decoded.LLM.Model)
 	}
-	if decoded.Schedule.Enabled != true {
-		t.Error("Schedule.Enabled should be true")
-	}
-	if decoded.Schedule.CronExpr != "0 6 * * *" {
-		t.Errorf("Schedule.CronExpr = %q", decoded.Schedule.CronExpr)
-	}
-	if decoded.Schedule.MaxSteps != 100 {
-		t.Errorf("Schedule.MaxSteps = %d", decoded.Schedule.MaxSteps)
-	}
 }
 
 func TestProject_JSONFieldTags(t *testing.T) {
@@ -105,7 +91,7 @@ func TestProject_JSONFieldTags(t *testing.T) {
 	json.Unmarshal(data, &raw)
 
 	// Verify JSON field names match expected tags
-	expectedFields := []string{"id", "name", "domain", "category", "warehouse", "llm", "schedule", "status", "created_at", "updated_at"}
+	expectedFields := []string{"id", "name", "domain", "category", "warehouse", "llm", "status", "created_at", "updated_at"}
 	for _, f := range expectedFields {
 		if _, ok := raw[f]; !ok {
 			t.Errorf("missing JSON field %q in marshaled Project", f)

@@ -259,11 +259,6 @@ curl -X POST http://localhost:8080/api/v1/projects \
       "provider": "claude",
       "model": "claude-sonnet-4-6",
       "config": {}
-    },
-    "schedule": {
-      "enabled": false,
-      "cron_expr": "0 2 * * *",
-      "max_steps": 100
     }
   }'
 ```
@@ -277,8 +272,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "category": "match3",
     "status": "active",
     "warehouse": { "provider": "bigquery", "datasets": ["analytics_data"], "location": "US", "config": { /* ... */ } },
-    "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" },
-    "schedule":  { "enabled": false, "cron_expr": "0 2 * * *", "max_steps": 100 }
+    "llm":       { "provider": "claude",  "model": "claude-sonnet-4-6" }
   }
 }
 ```
@@ -329,7 +323,7 @@ Get a project with full configuration.
 curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011
 ```
 
-Returns the complete project object including warehouse, LLM, schedule, and profile configuration, plus the same `last_run_status` / `last_run_at` / `last_run_completed_at` run summary as the list endpoint.
+Returns the complete project object including warehouse, LLM, and profile configuration, plus the same `last_run_status` / `last_run_at` / `last_run_completed_at` run summary as the list endpoint.
 
 ### PUT /api/v1/projects/{id}
 
@@ -339,8 +333,7 @@ Update a project. Supports partial updates — only fields present in the reques
 curl -X PUT http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011 \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Puzzle Quest (Updated)",
-    "schedule": {"enabled": true, "cron_expr": "0 3 * * *", "max_steps": 150}
+    "name": "Puzzle Quest (Updated)"
   }'
 ```
 

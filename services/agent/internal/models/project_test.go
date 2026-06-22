@@ -56,11 +56,6 @@ func TestProject_JSONRoundTrip(t *testing.T) {
 			Provider: "claude",
 			Model:    "claude-sonnet-4-20250514",
 		},
-		Schedule: ScheduleConfig{
-			Enabled:  true,
-			CronExpr: "0 6 * * 1",
-			MaxSteps: 50,
-		},
 		Profile: map[string]interface{}{
 			"game_type": "match3",
 			"genre":     "puzzle",
@@ -99,9 +94,6 @@ func TestProject_JSONRoundTrip(t *testing.T) {
 	}
 	if parsed.LLM.Provider != "claude" {
 		t.Errorf("LLM.Provider = %q, want claude", parsed.LLM.Provider)
-	}
-	if !parsed.Schedule.Enabled {
-		t.Error("Schedule.Enabled should be true")
 	}
 	if parsed.LastRunAt == nil {
 		t.Error("LastRunAt should not be nil")
@@ -212,24 +204,6 @@ func TestProject_LLMConfig(t *testing.T) {
 				t.Error("Model should not be empty")
 			}
 		})
-	}
-}
-
-func TestScheduleConfig_Fields(t *testing.T) {
-	s := ScheduleConfig{
-		Enabled:  true,
-		CronExpr: "0 6 * * 1",
-		MaxSteps: 50,
-	}
-
-	if !s.Enabled {
-		t.Error("Enabled should be true")
-	}
-	if s.CronExpr != "0 6 * * 1" {
-		t.Errorf("CronExpr = %q, want '0 6 * * 1'", s.CronExpr)
-	}
-	if s.MaxSteps != 50 {
-		t.Errorf("MaxSteps = %d, want 50", s.MaxSteps)
 	}
 }
 
