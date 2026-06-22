@@ -217,7 +217,14 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 // generic wrapped error for infrastructure failures.
 func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger.Options) (discoverytrigger.Result, error) {
 	p, err := h.projectRepo.GetByID(ctx, opts.ProjectID)
-	if err != nil || p == nil {
+	if err != nil {
+		// A lookup failure (e.g. a transient Mongo error) is distinct from
+		// a genuinely missing project: return it as a generic error so
+		// callers don't treat an infrastructure blip as a confirmed
+		// deletion. ErrProjectNotFound is reserved for p == nil.
+		return discoverytrigger.Result{}, fmt.Errorf("look up project: %w", err)
+	}
+	if p == nil {
 		return discoverytrigger.Result{}, discoverytrigger.ErrProjectNotFound
 	}
 

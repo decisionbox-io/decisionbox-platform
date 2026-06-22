@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/services/api/internal/discoverytrigger"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -750,6 +752,32 @@ func TestDiscoveriesHandler_TriggerDiscovery_ProjectNotFound_MockRepo(t *testing
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestDiscoveriesHandler_StartRun_LookupErrorIsNotProjectNotFound(t *testing.T) {
+	// A transient project-lookup failure must NOT surface as
+	// ErrProjectNotFound — in-process callers (the enterprise scheduler)
+	// treat that sentinel as a confirmed deletion and would wrongly
+	// disable a valid schedule on a Mongo blip.
+	projRepo := newMockProjectRepo()
+	projRepo.getErr = errors.New("mongo down")
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, newMockRunRepo(), nil, nil, nil, newMockRunner())
+
+	_, err := h.StartRun(context.Background(), discoverytrigger.Options{ProjectID: "p1"})
+	if err == nil {
+		t.Fatal("expected an error from a failed project lookup")
+	}
+	if errors.Is(err, discoverytrigger.ErrProjectNotFound) {
+		t.Fatal("a lookup error must not be ErrProjectNotFound")
+	}
+}
+
+func TestDiscoveriesHandler_StartRun_MissingProjectIsNotFound(t *testing.T) {
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), newMockProjectRepo(), newMockRunRepo(), nil, nil, nil, newMockRunner())
+	_, err := h.StartRun(context.Background(), discoverytrigger.Options{ProjectID: "missing"})
+	if !errors.Is(err, discoverytrigger.ErrProjectNotFound) {
+		t.Fatalf("missing project err = %v, want ErrProjectNotFound", err)
 	}
 }
 
