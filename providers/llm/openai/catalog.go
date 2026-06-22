@@ -22,9 +22,9 @@ const (
 	gpt41InputWindow   = 1000000
 	gpt4oInputWindow   = 128000
 	oSeriesInputWindow = 200000
-	// claudeGatewayInputWindow is the Claude 4.x context window the managed
-	// DecisionBox AI gateway aliases resolve to on Bedrock (200K standard tier).
-	claudeGatewayInputWindow = 200000
+	// decisionboxGatewayInputWindow is the context window the managed
+	// DecisionBox AI gateway aliases resolve to on their backend (200K).
+	decisionboxGatewayInputWindow = 200000
 )
 
 // OpenAI direct API model catalog.
@@ -142,19 +142,19 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 		// DecisionBox AI gateway aliases. The managed gateway is
 		// OpenAI-compatible, so it is reached through this provider with
 		// base_url set to ai.decisionbox.io; its alias IDs resolve to managed
-		// Claude-on-Bedrock backends per org (analysis → Opus, blurb → a
-		// Haiku/Sonnet-class model). Catalogued here so MaxOutputTokens matches
-		// the underlying model — Opus's 128K and the blurb model's 64K — rather
-		// than the provider's generic 16K default; callers such as pack-gen size
-		// their request from GetMaxOutputTokens, and a 16K cap truncated rich
-		// syntheses. Pricing/encoding are standard-routing estimates for local
-		// budgeting; the gateway is the billing authority and returns real usage.
+		// Claude backends per org (analysis → Opus, blurb → a Haiku/Sonnet-class
+		// model). Catalogued here so MaxOutputTokens matches the underlying
+		// model — Opus's 128K and the blurb model's 64K — rather than the
+		// provider's generic 16K default; callers size their request from
+		// GetMaxOutputTokens, and a 16K cap truncated large generations.
+		// Pricing/encoding are standard-routing estimates for local budgeting;
+		// the gateway is the billing authority and returns real usage.
 		{
 			ID:              "decisionbox-analysis-model",
 			DisplayName:     "DecisionBox Analysis (Opus)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 128000,
-			MaxInputTokens:  claudeGatewayInputWindow,
+			MaxInputTokens:  decisionboxGatewayInputWindow,
 			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
 		},
@@ -163,7 +163,7 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 			DisplayName:     "DecisionBox Blurb (Haiku/Sonnet)",
 			Wire:            gollm.WireOpenAICompat,
 			MaxOutputTokens: 64000,
-			MaxInputTokens:  claudeGatewayInputWindow,
+			MaxInputTokens:  decisionboxGatewayInputWindow,
 			Encoding:        encO200KBase,
 			Pricing:         gollm.TokenPricing{InputPerMillion: 1.0, OutputPerMillion: 5.0},
 		},

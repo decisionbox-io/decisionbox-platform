@@ -8,9 +8,9 @@ import (
 
 // TestCatalog_GatewayAliasMaxOutputTokens pins the DecisionBox AI gateway
 // aliases to their underlying model's output cap (Opus 128K, the blurb model
-// 64K) rather than the provider's generic 16K default. Callers like pack-gen
-// size their request from GetMaxOutputTokens, so a wrong value truncates a
-// rich synthesis.
+// 64K) rather than the provider's generic 16K default. Callers size their
+// request from GetMaxOutputTokens, so a wrong value truncates a large
+// generation.
 func TestCatalog_GatewayAliasMaxOutputTokens(t *testing.T) {
 	cases := []struct {
 		model string
