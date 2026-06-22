@@ -34,6 +34,15 @@ type Options struct {
 	// ("manual", "schedule:<id>", …). Used for logging/observability
 	// only; it is not persisted on the run.
 	Source string
+	// SkipIfRunning makes the trigger enforce the per-project "one
+	// discovery at a time" overlap rule via a repo-level check, returning
+	// *AlreadyRunningError when a run is already in progress — regardless
+	// of which policy Checker is active. In-process callers (e.g. a
+	// scheduler whose overlap policy is "skip") set this so the guarantee
+	// holds even under a Checker that does not itself enforce per-project
+	// concurrency (the enterprise LicenseChecker is advisory). The HTTP
+	// endpoint leaves it false and relies on the existing Noop/cloud paths.
+	SkipIfRunning bool
 }
 
 // Result is the outcome of a successful trigger.

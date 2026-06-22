@@ -315,8 +315,17 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	// atomically reserves both counters in a single round-trip. On
 	// self-hosted we also keep the repo-level "already running" check
 	// below so the OSS UX does not regress.
+	//
+	// The repo-level overlap check also runs when the caller sets
+	// SkipIfRunning (the scheduler), because not every registered checker
+	// enforces per-project concurrency: the enterprise LicenseChecker is
+	// advisory and returns success, so without this an in-process trigger
+	// would have no overlap guarantee at all. Cloud's manual path leaves
+	// SkipIfRunning false and relies on its atomic reservation, so this
+	// adds no extra query (and no 1-per-project cap) there.
 	ck := policy.GetChecker()
-	if _, isNoop := ck.(policy.NoopChecker); isNoop {
+	_, isNoop := ck.(policy.NoopChecker)
+	if opts.SkipIfRunning || isNoop {
 		running, _ := h.runRepo.GetRunningByProject(ctx, opts.ProjectID)
 		if running != nil && running.ID != runID {
 			if err := h.runRepo.Cancel(ctx, runID); err != nil {

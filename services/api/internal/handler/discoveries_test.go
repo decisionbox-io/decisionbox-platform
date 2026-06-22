@@ -829,6 +829,33 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 	}
 }
 
+func TestDiscoveriesHandler_StartRun_SkipIfRunning_EnforcedUnderAdvisoryChecker(t *testing.T) {
+	// Model the enterprise runtime: a non-Noop, advisory checker whose
+	// CheckStartDiscoveryRun returns success without enforcing per-project
+	// concurrency. With SkipIfRunning, StartRun must still block a second
+	// run via the repo-level overlap check (the scheduler's "skip" policy).
+	swapChecker(t, &stubChecker{})
+
+	projRepo := newMockProjectRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, runRepo, nil, nil, nil, newMockRunner())
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	projRepo.Create(context.Background(), p)
+	runRepo.addRun(&models.DiscoveryRun{
+		ID: "existing-run", ProjectID: p.ID, Status: "running", Phase: "exploration", StartedAt: time.Now(),
+	})
+
+	_, err := h.StartRun(context.Background(), discoverytrigger.Options{ProjectID: p.ID, SkipIfRunning: true})
+	var already *discoverytrigger.AlreadyRunningError
+	if !errors.As(err, &already) {
+		t.Fatalf("err = %v, want *AlreadyRunningError under SkipIfRunning + advisory checker", err)
+	}
+	if already.RunID != "existing-run" {
+		t.Fatalf("RunID = %q, want existing-run", already.RunID)
+	}
+}
+
 func TestDiscoveriesHandler_TriggerDiscovery_RunnerFails_MockRepo(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	discRepo := newMockDiscoveryRepo()
