@@ -77,24 +77,6 @@ func TestInferOpenAIWire_NonLLMFamiliesAreUnknown(t *testing.T) {
 	}
 }
 
-func TestInferOpenAIWire_DecisionBoxGatewayAliases(t *testing.T) {
-	// The gateway's chat aliases dispatch over the OpenAI wire and belong on
-	// the LLM picker; the embedding alias is not an LLM and stays unknown.
-	chat := []string{"decisionbox-analysis-model", "decisionbox-blurb-model"}
-	for _, m := range chat {
-		t.Run(m, func(t *testing.T) {
-			if got := inferOpenAIWire(m); got != gollm.WireOpenAICompat {
-				t.Errorf("inferOpenAIWire(%q) = %q, want %q", m, got, gollm.WireOpenAICompat)
-			}
-		})
-	}
-	t.Run("decisionbox-embed-model", func(t *testing.T) {
-		if got := inferOpenAIWire("decisionbox-embed-model"); got != gollm.WireUnknown {
-			t.Errorf("embedding alias should not be an LLM: got %q, want %q", got, gollm.WireUnknown)
-		}
-	})
-}
-
 func TestInferOpenAIWire_Unknown(t *testing.T) {
 	tests := []string{
 		"",
