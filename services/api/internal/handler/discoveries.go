@@ -11,6 +11,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/discoverytrigger"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
@@ -143,55 +144,14 @@ func (h *DiscoveriesHandler) GetByDate(w http.ResponseWriter, r *http.Request) {
 
 // TriggerDiscovery triggers a discovery run for a project.
 // POST /api/v1/projects/{id}/discover
+//
+// This is a thin HTTP adapter over StartRun: it parses the optional
+// request body and maps StartRun's typed errors onto status codes. All
+// gating, run reservation, policy enforcement, and agent spawn live in
+// StartRun so the HTTP endpoint and in-process callers (the
+// discoverytrigger seam) share one implementation.
 func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
-
-	p, err := h.projectRepo.GetByID(r.Context(), projectID)
-	if err != nil || p == nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	// Gate on lifecycle state. Discovery is only valid for projects
-	// in the ready (or legacy-empty) state. Plugins may transition
-	// projects into their own opaque states (e.g. while a
-	// long-running setup flow is in progress) and own the
-	// transition back to ready — discovery must refuse to run while
-	// those states are active even though the schema index might
-	// already be ready. A direct API call from a stale dashboard
-	// or curl that bypassed the UI gate must not be able to start
-	// the agent.
-	if effectiveState := p.EffectiveState(); effectiveState != models.ProjectStateReady {
-		writeError(w, http.StatusConflict, "project is in state \""+effectiveState+"\" — discovery cannot run until the managing plugin transitions it to \""+models.ProjectStateReady+"\"")
-		return
-	}
-
-	// Gate on schema-index lifecycle: discovery requires a ready
-	// index. Empty status means the project was created before
-	// schema indexing shipped and never migrated — treat it the
-	// same as pending_indexing so the migration path kicks in on
-	// first run. The dashboard polls /schema-index/status to tell
-	// the user what to do next.
-	switch p.SchemaIndexStatus {
-	case models.SchemaIndexStatusReady:
-		// ok — proceed
-	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
-		writeError(w, http.StatusConflict, "schema index is not ready yet — poll /api/v1/projects/"+projectID+"/schema-index/status")
-		return
-	case models.SchemaIndexStatusFailed:
-		writeError(w, http.StatusConflict, "schema indexing failed: "+p.SchemaIndexError+" — click Retry indexing in project settings")
-		return
-	case models.SchemaIndexStatusNeedsReindex:
-		writeError(w, http.StatusConflict, "schema cache was cleared; re-indexing is required before discovery — trigger POST /api/v1/projects/"+projectID+"/reindex")
-		return
-	case models.SchemaIndexStatusCancelled:
-		writeError(w, http.StatusConflict, "previous schema-indexing run was cancelled — trigger POST /api/v1/projects/"+projectID+"/reindex to rebuild")
-		return
-	default:
-		// empty status — pre-existing project not yet migrated
-		writeError(w, http.StatusConflict, "project has not been indexed yet — trigger POST /api/v1/projects/"+projectID+"/reindex first")
-		return
-	}
 
 	// Parse optional request body.
 	//
@@ -206,11 +166,101 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	}
 	_ = decodeJSON(r, &body) // body is optional
 
+	res, err := h.StartRun(r.Context(), discoverytrigger.Options{
+		ProjectID: projectID,
+		Areas:     body.Areas,
+		MaxSteps:  body.MaxSteps,
+		MinSteps:  body.MinSteps,
+		Source:    "manual",
+	})
+	if err != nil {
+		var alreadyRunning *discoverytrigger.AlreadyRunningError
+		var conflict *discoverytrigger.ConflictError
+		var invalid *discoverytrigger.InvalidParamsError
+		switch {
+		case errors.As(err, &alreadyRunning):
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"status":  "already_running",
+				"run_id":  alreadyRunning.RunID,
+				"message": "A discovery is already running for this project",
+			})
+		case errors.As(err, &conflict):
+			writeError(w, http.StatusConflict, conflict.Message)
+		case errors.As(err, &invalid):
+			writeError(w, http.StatusBadRequest, invalid.Message)
+		case errors.Is(err, discoverytrigger.ErrProjectNotFound):
+			writeError(w, http.StatusNotFound, "project not found")
+		case writePolicyError(w, err):
+			// writePolicyError wrote the structured 402/403 body.
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  res.Status,
+		"run_id":  res.RunID,
+		"message": "Discovery agent started",
+	})
+}
+
+// StartRun performs a discovery-run trigger: lifecycle/schema-index
+// gating, run-record reservation, plan-policy enforcement, and agent
+// spawn. It is the single implementation shared by the HTTP endpoint
+// (TriggerDiscovery) and in-process callers reaching it through
+// apiserver.TriggerDiscovery (registered via discoverytrigger.Register).
+//
+// On rejection it returns one of the discoverytrigger typed errors
+// (ErrProjectNotFound, *ConflictError, *AlreadyRunningError,
+// *InvalidParamsError), a *policy.PolicyError for plan denials, or a
+// generic wrapped error for infrastructure failures.
+func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger.Options) (discoverytrigger.Result, error) {
+	p, err := h.projectRepo.GetByID(ctx, opts.ProjectID)
+	if err != nil || p == nil {
+		return discoverytrigger.Result{}, discoverytrigger.ErrProjectNotFound
+	}
+
+	// Gate on lifecycle state. Discovery is only valid for projects
+	// in the ready (or legacy-empty) state. Plugins may transition
+	// projects into their own opaque states (e.g. while a
+	// long-running setup flow is in progress) and own the
+	// transition back to ready — discovery must refuse to run while
+	// those states are active even though the schema index might
+	// already be ready. A direct API call from a stale dashboard
+	// or curl that bypassed the UI gate must not be able to start
+	// the agent.
+	if effectiveState := p.EffectiveState(); effectiveState != models.ProjectStateReady {
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project is in state \"" + effectiveState + "\" — discovery cannot run until the managing plugin transitions it to \"" + models.ProjectStateReady + "\""}
+	}
+
+	// Gate on schema-index lifecycle: discovery requires a ready
+	// index. Empty status means the project was created before
+	// schema indexing shipped and never migrated — treat it the
+	// same as pending_indexing so the migration path kicks in on
+	// first run. The dashboard polls /schema-index/status to tell
+	// the user what to do next.
+	switch p.SchemaIndexStatus {
+	case models.SchemaIndexStatusReady:
+		// ok — proceed
+	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema index is not ready yet — poll /api/v1/projects/" + opts.ProjectID + "/schema-index/status"}
+	case models.SchemaIndexStatusFailed:
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema indexing failed: " + p.SchemaIndexError + " — click Retry indexing in project settings"}
+	case models.SchemaIndexStatusNeedsReindex:
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema cache was cleared; re-indexing is required before discovery — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex"}
+	case models.SchemaIndexStatusCancelled:
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "previous schema-indexing run was cancelled — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex to rebuild"}
+	default:
+		// empty status — pre-existing project not yet migrated
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project has not been indexed yet — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex first"}
+	}
+
 	// Resolve MaxSteps for the min-steps default computation below. The
 	// agent CLI enforces its own default (100) when zero reaches it, so we
 	// mirror that here to keep the on-the-wire default and the computed
 	// min-steps default consistent.
-	effectiveMaxSteps := body.MaxSteps
+	effectiveMaxSteps := opts.MaxSteps
 	if effectiveMaxSteps <= 0 {
 		effectiveMaxSteps = 100
 	}
@@ -221,19 +271,17 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	// before the min-steps floor existed; 60% is a conservative baseline
 	// that still leaves headroom for genuinely short runs.
 	// Explicit zero → user disabled the floor; forward as 0.
-	// Negative or > max_steps → reject with 400.
+	// Negative or > max_steps → reject.
 	var minSteps int
-	if body.MinSteps == nil {
+	if opts.MinSteps == nil {
 		minSteps = (effectiveMaxSteps * 6) / 10
 	} else {
-		minSteps = *body.MinSteps
+		minSteps = *opts.MinSteps
 		if minSteps < 0 {
-			writeError(w, http.StatusBadRequest, "min_steps must be >= 0")
-			return
+			return discoverytrigger.Result{}, &discoverytrigger.InvalidParamsError{Message: "min_steps must be >= 0"}
 		}
 		if minSteps > effectiveMaxSteps {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("min_steps (%d) cannot exceed max_steps (%d)", minSteps, effectiveMaxSteps))
-			return
+			return discoverytrigger.Result{}, &discoverytrigger.InvalidParamsError{Message: fmt.Sprintf("min_steps (%d) cannot exceed max_steps (%d)", minSteps, effectiveMaxSteps)}
 		}
 	}
 
@@ -242,11 +290,18 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	// re-enforced here (Create only returns an ID; race is closed by
 	// the policy reservation on cloud and by the runRepo uniqueness on
 	// self-hosted).
-	runID, err := h.runRepo.Create(r.Context(), projectID)
+	runID, err := h.runRepo.Create(ctx, opts.ProjectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create run: "+err.Error())
-		return
+		return discoverytrigger.Result{}, fmt.Errorf("failed to create run: %w", err)
 	}
+
+	source := opts.Source
+	if source == "" {
+		source = "manual"
+	}
+	apilog.WithFields(apilog.Fields{
+		"project_id": opts.ProjectID, "run_id": runID, "trigger_source": source,
+	}).Info("Starting discovery run")
 
 	// Plan-gate: concurrent-runs-per-project AND runs-per-period. The
 	// self-hosted NoopChecker allows everything; the cloud plugin
@@ -255,30 +310,23 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	// below so the OSS UX does not regress.
 	ck := policy.GetChecker()
 	if _, isNoop := ck.(policy.NoopChecker); isNoop {
-		running, _ := h.runRepo.GetRunningByProject(r.Context(), projectID)
+		running, _ := h.runRepo.GetRunningByProject(ctx, opts.ProjectID)
 		if running != nil && running.ID != runID {
-			if err := h.runRepo.Cancel(r.Context(), runID); err != nil {
+			if err := h.runRepo.Cancel(ctx, runID); err != nil {
 				apilog.WithError(err).Warn("failed to clean up runID reserved before already-running check")
 			}
-			writeJSON(w, http.StatusConflict, map[string]string{
-				"status":  "already_running",
-				"run_id":  running.ID,
-				"message": "A discovery is already running for this project",
-			})
-			return
+			return discoverytrigger.Result{}, &discoverytrigger.AlreadyRunningError{RunID: running.ID}
 		}
 	}
 
-	res, err := ck.CheckStartDiscoveryRun(r.Context(), "", projectID, runID)
+	res, err := ck.CheckStartDiscoveryRun(ctx, "", opts.ProjectID, runID)
 	if err != nil {
-		if failErr := h.runRepo.Fail(r.Context(), runID, "plan denied: "+err.Error()); failErr != nil {
+		if failErr := h.runRepo.Fail(ctx, runID, "plan denied: "+err.Error()); failErr != nil {
 			apilog.WithError(failErr).Warn("failed to mark policy-denied run as failed")
 		}
-		if writePolicyError(w, err) {
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
-		return
+		// Return the (policy) error verbatim so the HTTP adapter can
+		// render the structured upgrade body via writePolicyError.
+		return discoverytrigger.Result{}, err
 	}
 
 	reservationID := ""
@@ -286,17 +334,17 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		reservationID = res.ID
 	}
 	if reservationID != "" {
-		if err := h.runRepo.SetPolicyReservationID(r.Context(), runID, reservationID); err != nil {
+		if err := h.runRepo.SetPolicyReservationID(ctx, runID, reservationID); err != nil {
 			apilog.WithError(err).Warn("failed to persist policy reservation id on run; cancel/crash recovery will fall through to sweeper")
 		}
 	}
 
-	// Spawn the agent via the configured runner (subprocess or K8s Job)
-	runErr := h.agentRunner.Run(r.Context(), runner.RunOptions{
-		ProjectID: projectID,
+	// Spawn the agent via the configured runner (subprocess, docker, or K8s Job)
+	runErr := h.agentRunner.Run(ctx, runner.RunOptions{
+		ProjectID: opts.ProjectID,
 		RunID:     runID,
-		Areas:     body.Areas,
-		MaxSteps:  body.MaxSteps,
+		Areas:     opts.Areas,
+		MaxSteps:  opts.MaxSteps,
 		MinSteps:  minSteps,
 		OnFailure: func(failedRunID string, errMsg string) {
 			apilog.WithFields(apilog.Fields{
@@ -317,25 +365,20 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 		},
 	})
 	if runErr != nil {
-		if err := h.runRepo.Fail(r.Context(), runID, "failed to start: "+runErr.Error()); err != nil {
+		if err := h.runRepo.Fail(ctx, runID, "failed to start: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed")
 		}
 		if reservationID != "" {
-			if relErr := ck.Release(r.Context(), reservationID); relErr != nil {
+			if relErr := ck.Release(ctx, reservationID); relErr != nil {
 				apilog.WithError(relErr).Warn("failed to release discovery-run reservation after agent spawn failed")
-			} else if err := h.runRepo.ClearPolicyReservationID(r.Context(), runID); err != nil {
+			} else if err := h.runRepo.ClearPolicyReservationID(ctx, runID); err != nil {
 				apilog.WithError(err).Warn("released discovery-run reservation after agent spawn failed, but failed to clear persisted reservation id on run (post-completion confirmer will retry Confirm on an already-Released reservation until the doc TTLs)")
 			}
 		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start agent: %s", runErr.Error()))
-		return
+		return discoverytrigger.Result{}, fmt.Errorf("failed to start agent: %w", runErr)
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"status": "started",
-		"run_id": runID,
-		"message": "Discovery agent started",
-	})
+	return discoverytrigger.Result{RunID: runID, Status: "started"}, nil
 }
 
 // GetStatus returns the live discovery status for a project.
