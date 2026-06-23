@@ -48,7 +48,7 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
 	b.WriteString("- For totals, counts, distributions, or \"how many\" questions, write aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows.\n")
 	fmt.Fprintf(&b, "- You may run at most %d queries and take at most %d steps this turn. Be economical; reuse results already in this conversation instead of re-querying.\n", cfg.MaxQueriesPerTurn, cfg.MaxRounds)
 
-	b.WriteString("\nGROUNDING (required): you MUST run at least one query_data action and observe its result before you give an `answer`. Never state a count, total, or specific value you have not seen in a query result in this conversation — do not answer from prior knowledge or guesses. If a question genuinely cannot be turned into a query, use clarify or decline instead.\n")
+	b.WriteString("\nGROUNDING (required): you MUST run at least one query_data action and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a query result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no query behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
 
 	b.WriteString("\nFinish with an \"answer\", \"clarify\", or \"decline\" action. The answer should be concise, analyst-style prose that directly addresses the question and references the figures you found.")
 

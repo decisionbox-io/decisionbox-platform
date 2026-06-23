@@ -3,6 +3,7 @@ package askserve
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -149,6 +150,30 @@ func TestLoop_RejectsUngroundedAnswer(t *testing.T) {
 	}
 	if store.final.Answer != "There are 100 rows." {
 		t.Fatalf("final answer should come after the query, got %q", store.final.Answer)
+	}
+}
+
+func TestLoop_FabricatedAnswerDeclined(t *testing.T) {
+	// The model keeps answering with no tool activity (fabrication). After the
+	// bounded nudges the turn must DECLINE, never emit the ungrounded answer.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	store := runOnce(t, Config{}, []string{
+		`{"answer":"There are 8 tables; call_activity has 99,990 rows."}`,
+		`{"answer":"There are 8 tables; call_activity has 99,990 rows."}`,
+		`{"answer":"There are 8 tables; call_activity has 99,990 rows."}`,
+		`{"answer":"There are 8 tables; call_activity has 99,990 rows."}`,
+	}, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDeclined {
+		t.Fatalf("status = %q, want declined (ungrounded answer must not be emitted)", store.final.Status)
+	}
+	if store.final.Disposition != commonmodels.AskTurnDispositionDecline {
+		t.Fatalf("disposition = %q, want decline", store.final.Disposition)
+	}
+	if len(store.events) != 0 || len(wh.Calls) != 0 {
+		t.Fatalf("no tool should have run; events=%d calls=%d", len(store.events), len(wh.Calls))
+	}
+	if strings.Contains(store.final.Answer, "call_activity") {
+		t.Fatalf("fabricated content leaked into the declined answer: %q", store.final.Answer)
 	}
 }
 
