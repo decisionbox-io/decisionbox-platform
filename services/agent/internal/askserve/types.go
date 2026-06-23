@@ -61,6 +61,10 @@ type ProjectRuntime struct {
 	// FilterField is the tenant-scope column the executor enforces; surfaced
 	// in the prompt so the model emits it. Empty for single-tenant datasets.
 	FilterField string
+	// FilterValue is the tenant-scope value; surfaced in the prompt so the
+	// model emits the exact `field = value` predicate. Empty when FilterField
+	// is empty.
+	FilterValue string
 	// Closers release per-project resources (warehouse + schema retriever).
 	Closers []func() error
 }

@@ -10,7 +10,7 @@ import (
 // warehouse — and describes the JSON action vocabulary the loop parses, the
 // hard safety rules, and the result-summarization behaviour so the model
 // reaches for aggregate SQL instead of expecting full result sets.
-func buildSystemPrompt(rt *ProjectRuntime, cfg Config, filterField string) string {
+func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
 	var b strings.Builder
 
 	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and running read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers.\n\n")
@@ -23,8 +23,15 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config, filterField string) strin
 		fmt.Fprintf(&b, "- Datasets available: %s\n", strings.Join(rt.Datasets, ", "))
 	}
 	b.WriteString("- The warehouse is READ-ONLY. Emit only SELECT/CTE queries. Never attempt INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
-	if strings.TrimSpace(filterField) != "" {
-		fmt.Fprintf(&b, "- SECURITY: every query MUST filter by %q (the tenant scope). A query missing this filter is rejected.\n", filterField)
+	if strings.TrimSpace(rt.FilterField) != "" {
+		if strings.TrimSpace(rt.FilterValue) != "" {
+			// Inject the exact tenant predicate so the model scopes every query
+			// correctly. (Presence of the column is enforced server-side; do not
+			// negate or broaden it.)
+			fmt.Fprintf(&b, "- SECURITY: this is a multi-tenant dataset. Every query MUST be scoped to this tenant with the predicate `%s = '%s'` (in the WHERE clause, or preserved through every join/CTE). Never negate, broaden, or omit it. A query missing the %q column is rejected.\n", rt.FilterField, rt.FilterValue, rt.FilterField)
+		} else {
+			fmt.Fprintf(&b, "- SECURITY: every query MUST filter by %q (the tenant scope). A query missing this filter is rejected.\n", rt.FilterField)
+		}
 	}
 
 	b.WriteString("\nHOW TO RESPOND\n")

@@ -63,7 +63,7 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 	st := &turnState{req: req, client: rt.AIClient}
 
 	conv := ai.NewConversation(ai.ConversationOptions{
-		SystemPrompt: buildSystemPrompt(rt, r.cfg, rt.FilterField),
+		SystemPrompt: buildSystemPrompt(rt, r.cfg),
 		// Two messages per step (assistant action + observation) across the
 		// round budget, plus history headroom — generous so the engine's own
 		// caps, not this ceiling, bound the turn.
@@ -200,7 +200,11 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		return fmt.Sprintf("Query budget exhausted (%d/%d). Answer with what you have, or decline.", st.queriesUsed, r.cfg.MaxQueriesPerTurn)
 	}
 	st.queriesUsed++
-	rt.Executor.SetStep(st.round)
+	// NB: we deliberately do NOT call rt.Executor.SetStep here. The executor is
+	// shared across concurrent turns for the same project (pooled per project),
+	// and SetStep mutates executor state that Execute reads — a data race. The
+	// per-step number only stamps the executor's FixHistory, which ask-serve
+	// doesn't persist (round/latency are captured on the tool event instead).
 
 	// Per-query deadline, capped by whatever remains of the turn wall-clock
 	// (ctx already carries the turn deadline, so WithTimeout takes the min).

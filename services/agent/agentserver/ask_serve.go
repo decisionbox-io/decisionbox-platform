@@ -139,6 +139,7 @@ func runAskServe(cfg *config.Config) error {
 			Datasets:       datasets,
 			Dialect:        warehouse.SQLDialect(),
 			FilterField:    project.Warehouse.FilterField,
+			FilterValue:    project.Warehouse.FilterValue,
 			Closers:        closers,
 		}, nil
 	}

@@ -51,6 +51,21 @@ func (s *turnStore) EnsureIndexes(ctx context.Context) error {
 		return fmt.Errorf("ensure ask_turn_events index: %w", err)
 	}
 	if s.turnTTL > 0 {
+		// Expire the event log too — without this the parent-turn TTL would
+		// leave orphaned tool-event documents behind indefinitely. Events are
+		// created during the turn, so a created_at TTL prunes them on roughly
+		// the same horizon as the completed turn (the durable transcript also
+		// lives on the AskSession).
+		if _, err := s.events.Indexes().CreateOne(ctx, mongo.IndexModel{
+			Keys: bson.D{{Key: "created_at", Value: 1}},
+			Options: options.Index().
+				SetName("ttl_ask_turn_event").
+				SetExpireAfterSeconds(int32(s.turnTTL.Seconds())),
+		}); err != nil {
+			return fmt.Errorf("ensure ask_turn_events TTL index: %w", err)
+		}
+	}
+	if s.turnTTL > 0 {
 		if _, err := s.turns.Indexes().CreateOne(ctx, mongo.IndexModel{
 			Keys: bson.D{{Key: "completed_at", Value: 1}},
 			Options: options.Index().
@@ -194,12 +209,25 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 		ToolEvents:   fin.ToolEvents,
 		CreatedAt:    now,
 	}
+	// Append via an aggregation pipeline with $ifNull so a legacy session whose
+	// `messages` / `message_count` are null (pre-dating those fields) is
+	// coerced into existence rather than failing the $push — the turn has
+	// already been marked terminal above, so a failed append here would never
+	// be retried and would silently drop the message.
 	_, err = s.sessions.UpdateOne(ctx,
 		bson.M{"_id": fin.SessionID},
-		bson.M{
-			"$push": bson.M{"messages": msg},
-			"$inc":  bson.M{"message_count": 1},
-			"$set":  bson.M{"updated_at": now},
+		mongo.Pipeline{
+			{{Key: "$set", Value: bson.M{
+				"messages": bson.M{"$concatArrays": bson.A{
+					bson.M{"$ifNull": bson.A{"$messages", bson.A{}}},
+					bson.A{msg},
+				}},
+				"message_count": bson.M{"$add": bson.A{
+					bson.M{"$ifNull": bson.A{"$message_count", 0}},
+					1,
+				}},
+				"updated_at": now,
+			}}},
 		},
 	)
 	if err != nil {
@@ -212,6 +240,12 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 // graceful shutdown so a turn stranded by a pod restart reaches a terminal
 // status with its partial transcript preserved — the same semantics a dead
 // discovery run gets. Returns the number of turns swept.
+//
+// NOTE: this sweeps ALL running turns, which is correct for the single-replica
+// deployment ask-serve runs in for Phase 1 (helm askServe.replicaCount: 1). A
+// multi-replica deployment would need per-turn ownership/lease so one pod's
+// boot doesn't fail another pod's live turns; that hardening is tracked as a
+// follow-up and is why the chart documents single-replica for now.
 func (s *turnStore) SweepOrphans(ctx context.Context) (int, error) {
 	res, err := s.turns.UpdateMany(ctx,
 		bson.M{"status": commonmodels.AskTurnStatusRunning},
