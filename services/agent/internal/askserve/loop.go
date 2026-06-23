@@ -41,12 +41,22 @@ type runner struct {
 type turnState struct {
 	req             TurnRequest
 	client          *ai.Client
+	model           string
 	events          []commonmodels.ToolEvent
 	round           int
 	queriesUsed     int
 	tokensIn        int
 	tokensOut       int
 	groundingNudged bool
+}
+
+// tenantHint returns a parenthetical reminder of the required tenant predicate
+// for rejection messages, or "" for single-tenant projects.
+func tenantHint(rt *ProjectRuntime) string {
+	if strings.TrimSpace(rt.FilterField) == "" || strings.TrimSpace(rt.FilterValue) == "" {
+		return ""
+	}
+	return fmt.Sprintf(" scoped with %s = '%s'", rt.FilterField, rt.FilterValue)
 }
 
 // groundingNudge is the one-time correction when the model tries to answer a
@@ -60,7 +70,7 @@ const groundingNudge = "You have not run any query yet, so you have no data to g
 // (done/declined/timeout/failed) so the reader's poll terminates, preserving
 // whatever transcript was gathered.
 func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
-	st := &turnState{req: req, client: rt.AIClient}
+	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
 
 	conv := ai.NewConversation(ai.ConversationOptions{
 		SystemPrompt: buildSystemPrompt(rt, r.cfg),
@@ -206,6 +216,20 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// per-step number only stamps the executor's FixHistory, which ask-serve
 	// doesn't persist (round/latency are captured on the tool event instead).
 
+	// Defense-in-depth guard (on top of read-only credentials + the tenant
+	// filter): the SQL is user-influenced, so require a single read-only
+	// SELECT/WITH scoped to the tenant before executing. A rejection is fed
+	// back so the model can correct itself rather than failing the turn.
+	if err := validateAskSQL(act.Query, rt.FilterField, rt.FilterValue); err != nil {
+		ev := commonmodels.ToolEvent{
+			Round: st.round, Name: string(actQuery),
+			Args:  map[string]any{"sql": act.Query, "purpose": act.Purpose},
+			Error: err.Error(),
+		}
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Query rejected: %s. Emit a single read-only SELECT/WITH query%s.", err.Error(), tenantHint(rt))
+	}
+
 	// Per-query deadline, capped by whatever remains of the turn wall-clock
 	// (ctx already carries the turn deadline, so WithTimeout takes the min).
 	qctx := ctx
@@ -335,6 +359,7 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.TurnID = st.req.TurnID
 	fin.SessionID = st.req.SessionID
 	fin.Question = st.req.Question
+	fin.Model = st.model
 	fin.ToolEvents = st.events
 	fin.InputTokens = st.tokensIn
 	fin.OutputTokens = st.tokensOut
