@@ -138,6 +138,34 @@ func TestIntegration_TurnStore_AppendCursorFinalize(t *testing.T) {
 	}
 }
 
+func TestIntegration_TurnStore_FinalizeDollarPrefixedAnswer(t *testing.T) {
+	store, db, cleanup := setupStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, _ = db.Collection("ask_sessions").InsertOne(ctx, commonmodels.AskSession{
+		ID: "s$", ProjectID: "p1", Messages: []commonmodels.AskSessionMessage{}, CreatedAt: time.Now(),
+	})
+	if err := store.CreateTurn(ctx, commonmodels.AskTurn{ID: "td", SessionID: "s$", ProjectID: "p1", Question: "revenue?"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A monetary answer begins with '$' — the aggregation-pipeline append must
+	// store it as a literal, not treat it as a field path.
+	if err := store.Finalize(ctx, TurnFinal{
+		TurnID: "td", SessionID: "s$", Question: "revenue?",
+		Status: commonmodels.AskTurnStatusDone, Answer: "$1.2M in Q3",
+	}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	var sess commonmodels.AskSession
+	if err := db.Collection("ask_sessions").FindOne(ctx, bson.M{"_id": "s$"}).Decode(&sess); err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if len(sess.Messages) != 1 || sess.Messages[0].Answer != "$1.2M in Q3" {
+		t.Fatalf("dollar-prefixed answer corrupted: %+v", sess.Messages)
+	}
+}
+
 func TestIntegration_TurnStore_SweepOrphans(t *testing.T) {
 	store, _, cleanup := setupStore(t)
 	defer cleanup()

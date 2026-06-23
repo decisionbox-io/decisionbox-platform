@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
@@ -163,6 +164,10 @@ func (s *Server) runTurn(req TurnRequest) {
 
 	ctx, cancel := context.WithTimeout(s.turnCtx, s.cfg.WallClock)
 	defer cancel()
+	// Stamp the project on the context so the warehouse governance middleware
+	// (which reads ProjectIDFromContext at query time) scopes per-project
+	// policies correctly — the same wrap discovery/test-connection apply.
+	ctx = gowarehouse.WithProjectID(ctx, req.ProjectID)
 
 	// Ensure the turn record exists (idempotent; the API normally created it).
 	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Second)

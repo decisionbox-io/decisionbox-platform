@@ -220,7 +220,10 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 			{{Key: "$set", Value: bson.M{
 				"messages": bson.M{"$concatArrays": bson.A{
 					bson.M{"$ifNull": bson.A{"$messages", bson.A{}}},
-					bson.A{msg},
+					// $literal so a field whose value begins with '$' (e.g. a
+					// monetary answer like "$1.2M") is stored verbatim rather
+					// than evaluated as a field path by the aggregation pipeline.
+					bson.A{bson.M{"$literal": msg}},
 				}},
 				"message_count": bson.M{"$add": bson.A{
 					bson.M{"$ifNull": bson.A{"$message_count", 0}},
