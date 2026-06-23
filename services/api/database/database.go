@@ -163,6 +163,8 @@ var projectChildCollections = []string{
 	"recommendations",
 	"discovery_debug_logs",
 	"ask_sessions",
+	"ask_turns",       // commonmodels.CollectionAskTurns — data-Q&A turn log
+	"ask_turn_events", // commonmodels.CollectionAskTurnEvents
 	"search_history",
 	"bookmark_lists",
 	"bookmarks",
@@ -456,7 +458,7 @@ func (r *DiscoveryRepository) GetByDate(ctx context.Context, projectID string, d
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
 	filter := bson.M{
-		"project_id":    projectID,
+		"project_id":     projectID,
 		"discovery_date": bson.M{"$gte": startOfDay, "$lt": endOfDay},
 	}
 
