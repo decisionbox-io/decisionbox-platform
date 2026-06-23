@@ -258,6 +258,15 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 				r.finishTimeout(ctx, st)
 				return
 			}
+			// The first tool-enabled call failed before any evidence was
+			// gathered. SupportsTools is provider-wide, so a specific model can
+			// still reject tools (e.g. an OpenAI reasoning model under the
+			// tool-capable openai provider, or a backend that 400s on tools).
+			// Fall back to the JSON-text loop rather than failing the turn.
+			if st.round == 1 && len(st.events) == 0 {
+				r.runText(ctx, rt, req)
+				return
+			}
 			r.finishFailed(ctx, st, fmt.Sprintf("model call failed: %v", err))
 			return
 		}
@@ -278,27 +287,41 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			continue
 		}
 
-		// A terminal tool (answer/clarify/decline) ends the turn. `answer` is in
-		// the tool set only once grounded, so an ungrounded answer can't reach
-		// here; the guard below is defensive.
-		if term := firstTerminalCall(resp.ToolCalls); term != nil {
-			act := toolCallToAction(*term)
+		// A LONE terminal tool call (answer/clarify/decline) ends the turn.
+		// `answer` is in the tool set only once grounded, so an ungrounded answer
+		// can't reach here; the guard below is defensive. A terminal call that
+		// arrives ALONGSIDE data calls is NOT finalized — the answer could
+		// reference a query we have not run — it is refused in the batch loop
+		// below so the model re-issues it after seeing the results.
+		if len(resp.ToolCalls) == 1 && actionKind(resp.ToolCalls[0].Name).terminal() {
+			tc := resp.ToolCalls[0]
+			act, aerr := toolCallToAction(tc)
+			if aerr != nil {
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: aerr.Error(), IsError: true}}})
+				continue
+			}
 			if act.Kind == actAnswer && len(st.events) == 0 {
-				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: term.ID, Content: groundingNudge, IsError: true}}})
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
 				continue
 			}
 			r.finishTerminal(ctx, st, act)
 			return
 		}
 
-		// Execute every data/schema tool call and feed all results back in one
-		// user message so the provider correlates each tool_result to its
-		// tool_use by id.
+		// Execute every call and feed all results back in one user message so the
+		// provider correlates each tool_result to its tool_use by id. A malformed
+		// call yields an error result without running (so it never emits a
+		// spuriously grounding event); a terminal call mixed into the batch is
+		// refused so the model reviews the data before finishing.
 		results := make([]gollm.ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
-			act := toolCallToAction(tc)
-			if act == nil {
-				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: fmt.Sprintf("Unknown tool %q.", tc.Name), IsError: true})
+			if actionKind(tc.Name).terminal() {
+				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Do not finish in the same step as a data tool. Review the query results first, then call answer/clarify/decline on its own.", IsError: true})
+				continue
+			}
+			act, aerr := toolCallToAction(tc)
+			if aerr != nil {
+				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: aerr.Error(), IsError: true})
 				continue
 			}
 			obs := r.execute(ctx, rt, st, act)
@@ -351,7 +374,9 @@ func (r *runner) synthesizeFinalTools(ctx context.Context, messages []gollm.Mess
 		return nil
 	}
 	if term := firstTerminalCall(resp.ToolCalls); term != nil {
-		return toolCallToAction(*term)
+		if act, err := toolCallToAction(*term); err == nil {
+			return act
+		}
 	}
 	if strings.TrimSpace(resp.Content) != "" {
 		return &turnAction{Kind: actAnswer, Text: strings.TrimSpace(resp.Content)}

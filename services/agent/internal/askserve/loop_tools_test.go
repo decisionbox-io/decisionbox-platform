@@ -2,6 +2,7 @@ package askserve
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -252,6 +253,119 @@ func TestLoopTools_RoundCapThenSynthesizes(t *testing.T) {
 	}
 	if store.final.Answer != "synthesized from gathered data" {
 		t.Fatalf("answer = %q", store.final.Answer)
+	}
+}
+
+func TestLoopTools_EmptyQueryNotGrounding(t *testing.T) {
+	// A query_data call missing its required "query" arg must be rejected without
+	// running — it must NOT emit a (spuriously grounding) event, so the `answer`
+	// tool stays withheld until a real query has run.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actQuery), map[string]any{}),                              // missing query → rejected
+		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.t"}), // real query → grounds
+		toolCall(string(actAnswer), map[string]any{"text": "grounded"}),
+	}}
+	store := runOnceTools(t, Config{}, p, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("status = %q, want done", store.final.Status)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("events = %d, want 1 (empty query must not emit a grounding event)", len(store.events))
+	}
+	if len(wh.Calls) != 1 {
+		t.Fatalf("warehouse calls = %d, want 1 (empty query must not reach the warehouse)", len(wh.Calls))
+	}
+	// After the rejected empty query the turn is still ungrounded, so answer must
+	// not yet be offered.
+	if hasTool(p.reqs[1].Tools, string(actAnswer)) {
+		t.Fatal("answer offered after a rejected empty query — turn wrongly considered grounded")
+	}
+}
+
+func TestLoopTools_MixedTerminalDefersToData(t *testing.T) {
+	// A response carrying a data call AND a terminal answer in parallel must NOT
+	// finalize on the answer (it could reference a query that never ran) — the
+	// data call runs and the answer is deferred to a later round.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.a"}),
+		{
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "q2", Name: string(actQuery), Input: map[string]any{"query": "SELECT 2 FROM ds.b"}},
+				{ID: "a1", Name: string(actAnswer), Input: map[string]any{"text": "premature answer"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "final grounded answer"}),
+	}}
+	store := runOnceTools(t, Config{}, p, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("status = %q", store.final.Status)
+	}
+	if store.final.Answer != "final grounded answer" {
+		t.Fatalf("mixed-batch answer must be deferred; got %q", store.final.Answer)
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("events = %d, want 2 (both data queries ran)", len(store.events))
+	}
+	// The deferred answer call must have received an error tool_result.
+	round2Results := p.reqs[2].Messages[len(p.reqs[2].Messages)-1].ToolResults
+	var sawAnswerRefusal bool
+	for _, tr := range round2Results {
+		if tr.CallID == "a1" && tr.IsError {
+			sawAnswerRefusal = true
+		}
+	}
+	if !sawAnswerRefusal {
+		t.Fatal("the deferred answer call should receive an error tool_result")
+	}
+}
+
+// errThenTextProvider errors on its first Chat (simulating a model that rejects
+// tools) then returns scripted JSON-text responses for the fallback loop.
+type errThenTextProvider struct {
+	calls int
+	text  []string
+}
+
+func (p *errThenTextProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	p.calls++
+	if p.calls == 1 {
+		return nil, errors.New("tools not supported by this model")
+	}
+	content := `{"decline":"out of script"}`
+	if i := p.calls - 2; i < len(p.text) {
+		content = p.text[i]
+	}
+	return &gollm.ChatResponse{Content: content, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}}, nil
+}
+func (p *errThenTextProvider) Validate(ctx context.Context) error { return nil }
+
+func TestLoopTools_FallbackOnToolErrorUsesTextLoop(t *testing.T) {
+	// SupportsTools is provider-wide; if the specific model rejects tools the
+	// first call errors before any evidence — the turn must fall back to the
+	// JSON-text loop and still answer rather than failing.
+	ensureToolProvider()
+	wh := testutil.NewMockWarehouseProvider("ds")
+	p := &errThenTextProvider{text: []string{
+		`{"query":"SELECT count(*) AS c FROM ds.t"}`,
+		`{"answer":"text-path answer"}`,
+	}}
+	store := &fakeStore{}
+	r := &runner{cfg: Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}, store: store}
+	rt := testRuntime(p, wh, nil, "")
+	rt.AIClient.SetProvenance("p1", "", "test-tools") // tool-capable provider → native path tried first
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "how many?"})
+	if store.final == nil {
+		t.Fatal("turn did not finalize")
+	}
+	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer != "text-path answer" {
+		t.Fatalf("expected fallback text path to answer; got status=%q answer=%q", store.final.Status, store.final.Answer)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("events = %d, want 1 from the fallback query", len(store.events))
 	}
 }
 

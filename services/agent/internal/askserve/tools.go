@@ -1,6 +1,7 @@
 package askserve
 
 import (
+	"fmt"
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -138,42 +139,59 @@ func toolChoiceForPhase(grounded bool) string {
 
 // toolCallToAction maps a native tool call to the loop's internal turnAction so
 // the existing execQuery / execLookup / execSearch handlers (and their ToolEvent
-// emission) are reused unchanged. Returns nil for an unrecognised tool name.
-func toolCallToAction(tc gollm.ToolCall) *turnAction {
+// emission) are reused unchanged. It validates required arguments and returns an
+// error for an unknown tool or a missing/empty required field — the caller feeds
+// that back as an error tool_result WITHOUT running the tool, so a malformed call
+// never emits a (spuriously grounding) event. Mirrors the text parser, which
+// likewise rejects an empty query.
+func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 	getStr := func(k string) string {
 		if v, ok := tc.Input[k].(string); ok {
 			return strings.TrimSpace(v)
 		}
 		return ""
 	}
-	act := &turnAction{}
 	switch actionKind(tc.Name) {
 	case actQuery:
-		act.Kind = actQuery
+		q := ""
 		if v, ok := tc.Input["query"].(string); ok {
-			act.Query = v // do not trim SQL
+			q = v // do not trim SQL
 		}
-		act.Purpose = getStr("purpose")
+		if strings.TrimSpace(q) == "" {
+			return nil, fmt.Errorf("query_data requires a non-empty %q argument", "query")
+		}
+		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose")}, nil
 	case actLookup:
-		act.Kind = actLookup
-		act.LookupSchema = toStringSlice(tc.Input["tables"])
+		tables := toStringSlice(tc.Input["tables"])
+		if len(tables) == 0 {
+			return nil, fmt.Errorf("lookup_schema requires a non-empty %q array", "tables")
+		}
+		return &turnAction{Kind: actLookup, LookupSchema: tables}, nil
 	case actSearch:
-		act.Kind = actSearch
-		act.SearchTables = getStr("query")
-		act.SearchTopK = toInt(tc.Input["top_k"])
+		q := getStr("query")
+		if q == "" {
+			return nil, fmt.Errorf("search_tables requires a non-empty %q argument", "query")
+		}
+		return &turnAction{Kind: actSearch, SearchTables: q, SearchTopK: toInt(tc.Input["top_k"])}, nil
 	case actAnswer:
-		act.Kind = actAnswer
-		act.Text = getStr("text")
+		txt := getStr("text")
+		if txt == "" {
+			return nil, fmt.Errorf("answer requires a non-empty %q argument", "text")
+		}
+		return &turnAction{Kind: actAnswer, Text: txt}, nil
 	case actClarify:
-		act.Kind = actClarify
-		act.Text = getStr("question")
+		txt := getStr("question")
+		if txt == "" {
+			return nil, fmt.Errorf("clarify requires a non-empty %q argument", "question")
+		}
+		return &turnAction{Kind: actClarify, Text: txt}, nil
 	case actDecline:
-		act.Kind = actDecline
-		act.Text = getStr("reason")
+		// A reason is helpful but not strictly required — decline is a valid
+		// terminal even with an empty body.
+		return &turnAction{Kind: actDecline, Text: getStr("reason")}, nil
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown tool %q", tc.Name)
 	}
-	return act
 }
 
 func toStringSlice(v interface{}) []string {
