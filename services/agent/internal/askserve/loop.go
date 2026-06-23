@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -64,10 +65,37 @@ const groundingNudge = "Do NOT answer yet — you have run no query, so you have
 	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
 	"Only use clarify or decline if the question genuinely cannot be turned into any query."
 
-// run drives the bounded ReAct loop for one turn. It always finalizes the turn
-// (done/declined/timeout/failed) so the reader's poll terminates, preserving
-// whatever transcript was gathered.
+// run drives one turn to a finalized outcome. It dispatches on whether the
+// project's LLM provider supports native tool-calling: tool-wired providers
+// (bedrock / claude / openai) take the native-tools loop, where the model is
+// forced to call an evidence tool before it can answer; everyone else takes the
+// JSON-in-text loop, which coaxes the same vocabulary through prose + nudges.
 func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
+	if toolsSupported(rt) {
+		r.runWithTools(ctx, rt, req)
+		return
+	}
+	r.runText(ctx, rt, req)
+}
+
+// toolsSupported reports whether the runtime's LLM provider honours native tool
+// definitions. The provider name is set on the AI client at build time
+// (SetProvenance with project.LLM.Provider). When it's unknown or tools are
+// unsupported, the caller falls back to the JSON-text loop.
+func toolsSupported(rt *ProjectRuntime) bool {
+	if rt == nil || rt.AIClient == nil {
+		return false
+	}
+	meta, ok := gollm.GetProviderMeta(rt.AIClient.ProviderName())
+	return ok && meta.SupportsTools
+}
+
+// runText drives the bounded ReAct loop on the JSON-in-text path. It always
+// finalizes the turn (done/declined/timeout/failed) so the reader's poll
+// terminates, preserving whatever transcript was gathered. This is the fallback
+// for providers without native tool-calling; its grounding guard (re-nudge then
+// decline rather than emit an ungrounded answer) is the safety net there.
+func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
 
 	conv := ai.NewConversation(ai.ConversationOptions{
@@ -196,6 +224,150 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 	st.tokensIn += resp.Usage.InputTokens
 	st.tokensOut += resp.Usage.OutputTokens
 	return resp.Content, nil
+}
+
+// runWithTools drives the bounded loop using native tool-calling. The model is
+// given the Q&A tools and forced (ToolChoice="any") to call one until the turn
+// is grounded — the `answer` tool is withheld until at least one query/lookup/
+// search has produced a result, so the model literally cannot finish with an
+// ungrounded answer. Once grounded it may keep querying or answer (ToolChoice=
+// "auto"). It always finalizes the turn. Conversation state is held as a raw
+// []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
+// blocks.
+func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
+	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
+	system := buildSystemPromptForTools(rt, r.cfg)
+	hasSchema := rt.SchemaProvider != nil
+
+	var messages []gollm.Message
+	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
+		messages = append(messages, gollm.Message{Role: m.Role, Content: m.Content})
+	}
+	messages = append(messages, gollm.Message{Role: "user", Content: req.Question})
+
+	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
+		if err := ctx.Err(); err != nil {
+			r.finishTimeout(ctx, st)
+			return
+		}
+
+		grounded := len(st.events) > 0
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema), toolChoiceForPhase(grounded))
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				r.finishTimeout(ctx, st)
+				return
+			}
+			r.finishFailed(ctx, st, fmt.Sprintf("model call failed: %v", err))
+			return
+		}
+
+		// Record the assistant turn (text + any tool_use blocks) so the next
+		// request carries the tool_use the provider correlates tool_result to.
+		messages = append(messages, gollm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
+
+		if len(resp.ToolCalls) == 0 {
+			// No tool call. A grounded free-text reply is the answer; otherwise
+			// the model answered without evidence — nudge and retry. With
+			// ToolChoice="any" while ungrounded this branch should be rare.
+			if grounded && strings.TrimSpace(resp.Content) != "" {
+				r.finishTerminal(ctx, st, &turnAction{Kind: actAnswer, Text: strings.TrimSpace(resp.Content)})
+				return
+			}
+			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
+			continue
+		}
+
+		// A terminal tool (answer/clarify/decline) ends the turn. `answer` is in
+		// the tool set only once grounded, so an ungrounded answer can't reach
+		// here; the guard below is defensive.
+		if term := firstTerminalCall(resp.ToolCalls); term != nil {
+			act := toolCallToAction(*term)
+			if act.Kind == actAnswer && len(st.events) == 0 {
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: term.ID, Content: groundingNudge, IsError: true}}})
+				continue
+			}
+			r.finishTerminal(ctx, st, act)
+			return
+		}
+
+		// Execute every data/schema tool call and feed all results back in one
+		// user message so the provider correlates each tool_result to its
+		// tool_use by id.
+		results := make([]gollm.ToolResult, 0, len(resp.ToolCalls))
+		for _, tc := range resp.ToolCalls {
+			act := toolCallToAction(tc)
+			if act == nil {
+				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: fmt.Sprintf("Unknown tool %q.", tc.Name), IsError: true})
+				continue
+			}
+			obs := r.execute(ctx, rt, st, act)
+			if ctx.Err() != nil {
+				r.finishTimeout(ctx, st)
+				return
+			}
+			results = append(results, gollm.ToolResult{CallID: tc.ID, Content: obs})
+		}
+		messages = append(messages, gollm.Message{Role: "user", ToolResults: results})
+	}
+
+	// Round budget exhausted. One final, forced synthesis from gathered evidence.
+	if act := r.synthesizeFinalTools(ctx, messages, system, st); act != nil {
+		if act.Kind == actAnswer && len(st.events) == 0 {
+			r.finishUngrounded(ctx, st)
+			return
+		}
+		r.finishTerminal(ctx, st, act)
+		return
+	}
+	if ctx.Err() != nil {
+		r.finishTimeout(ctx, st)
+		return
+	}
+	r.finishFailed(ctx, st, fmt.Sprintf("reached the step budget (%d) without producing an answer", r.cfg.MaxRounds))
+}
+
+// callModelTools issues one tool-enabled LLM call and accumulates token usage.
+func (st *turnState) callModelTools(ctx context.Context, messages []gollm.Message, system string, tools []gollm.ToolDefinition, choice string) (*gollm.ChatResponse, error) {
+	resp, err := st.client.CreateMessageWithTools(ctx, messages, system, llmMaxOutputTokens, tools, choice)
+	if err != nil {
+		return nil, err
+	}
+	st.tokensIn += resp.Usage.InputTokens
+	st.tokensOut += resp.Usage.OutputTokens
+	return resp, nil
+}
+
+// synthesizeFinalTools makes one last tool-enabled call after the round budget
+// is spent, offering only answer/decline and forcing a choice. Returns a
+// terminal action, or nil if the model produced neither.
+func (r *runner) synthesizeFinalTools(ctx context.Context, messages []gollm.Message, system string, st *turnState) *turnAction {
+	if ctx.Err() != nil {
+		return nil
+	}
+	messages = append(messages, gollm.Message{Role: "user", Content: "You have reached the step budget. Answer the original question now using only the results already gathered in this conversation, or decline if they are insufficient."})
+	resp, err := st.callModelTools(ctx, messages, system, []gollm.ToolDefinition{toolAnswer(), toolDecline()}, "any")
+	if err != nil {
+		return nil
+	}
+	if term := firstTerminalCall(resp.ToolCalls); term != nil {
+		return toolCallToAction(*term)
+	}
+	if strings.TrimSpace(resp.Content) != "" {
+		return &turnAction{Kind: actAnswer, Text: strings.TrimSpace(resp.Content)}
+	}
+	return nil
+}
+
+// firstTerminalCall returns the first answer/clarify/decline tool call in the
+// response, or nil if there is none.
+func firstTerminalCall(calls []gollm.ToolCall) *gollm.ToolCall {
+	for i := range calls {
+		if actionKind(calls[i].Name).terminal() {
+			return &calls[i]
+		}
+	}
+	return nil
 }
 
 // execute runs a tool action and returns the observation to feed back to the
