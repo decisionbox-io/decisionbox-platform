@@ -78,7 +78,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
-		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit. Default: run discovery.")
+		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit; 'ask-serve' to run the always-up ad-hoc data Q&A service (a long-lived multi-project HTTP server; does not take --project-id). Default: run discovery.")
 		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
 
@@ -123,6 +123,22 @@ func Run() {
 		return
 	}
 
+	// ask-serve is a long-lived, multi-project HTTP service (it pools project
+	// connections on demand), so — like validate-doc / validate-sql — it skips
+	// the single --project-id requirement and is dispatched ahead of that check.
+	if *mode == "ask-serve" {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		err := runAskServe(cfg)
+		if err != nil {
+			applog.WithError(err).Error("Ask-serve exited with error")
+		}
+		applog.Sync()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
 	if *projectID == "" {
 		fmt.Fprintf(os.Stderr, "Error: --project-id is required\n")
 		flag.Usage()
@@ -146,7 +162,7 @@ func Run() {
 		return
 	}
 	if *mode != "" {
-		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'validate-doc', 'validate-sql', or empty)\n", *mode)
+		fmt.Fprintf(os.Stderr, "Error: unknown --mode %q (expected: 'index-schema', 'validate-doc', 'validate-sql', 'ask-serve', or empty)\n", *mode)
 		os.Exit(1)
 	}
 
