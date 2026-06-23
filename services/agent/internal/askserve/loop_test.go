@@ -250,39 +250,6 @@ func TestLoop_QueryErrorRecorded(t *testing.T) {
 	}
 }
 
-func TestLoop_WriteQueryRejectedByGuard(t *testing.T) {
-	// A write statement is rejected before it reaches the warehouse.
-	wh := testutil.NewMockWarehouseProvider("ds")
-	store := runOnce(t, Config{}, []string{
-		`{"query":"DELETE FROM ds.t WHERE 1=1"}`,
-		`{"decline":"cannot modify data"}`,
-	}, wh, nil, "")
-	if len(store.events) != 1 || store.events[0].Error == "" {
-		t.Fatalf("write query should be rejected with an error event, got %+v", store.events)
-	}
-	if len(wh.Calls) != 0 {
-		t.Fatalf("warehouse must not be called for a rejected write; calls=%d", len(wh.Calls))
-	}
-}
-
-func TestLoop_ScopedQueryPassesGuard(t *testing.T) {
-	// With a tenant filter configured, a correctly-scoped query executes.
-	wh := testutil.NewMockWarehouseProvider("ds")
-	store := runOnce(t, Config{}, []string{
-		`{"query":"SELECT count(*) AS c FROM ds.t WHERE country = 'TR'"}`,
-		`{"answer":"100 rows for TR"}`,
-	}, wh, nil, "country")
-	if store.final.Status != commonmodels.AskTurnStatusDone {
-		t.Fatalf("status = %q", store.final.Status)
-	}
-	if len(store.events) != 1 || store.events[0].Error != "" {
-		t.Fatalf("scoped query should execute cleanly, got %+v", store.events)
-	}
-	if len(wh.Calls) != 1 {
-		t.Fatalf("expected the scoped query to reach the warehouse; calls=%d", len(wh.Calls))
-	}
-}
-
 func TestLoop_TenantFilterRejected(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	// Filter field enforced; the model's query omits it → security violation.

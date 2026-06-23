@@ -50,15 +50,6 @@ type turnState struct {
 	groundingNudged bool
 }
 
-// tenantHint returns a parenthetical reminder of the required tenant predicate
-// for rejection messages, or "" for single-tenant projects.
-func tenantHint(rt *ProjectRuntime) string {
-	if strings.TrimSpace(rt.FilterField) == "" || strings.TrimSpace(rt.FilterValue) == "" {
-		return ""
-	}
-	return fmt.Sprintf(" scoped with %s = '%s'", rt.FilterField, rt.FilterValue)
-}
-
 // groundingNudge is the one-time correction when the model tries to answer a
 // data question without having run any query — it bounds hallucination by
 // forcing the agent to ground a numeric/factual answer in a real result.
@@ -215,20 +206,13 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// and SetStep mutates executor state that Execute reads — a data race. The
 	// per-step number only stamps the executor's FixHistory, which ask-serve
 	// doesn't persist (round/latency are captured on the tool event instead).
-
-	// Defense-in-depth guard (on top of read-only credentials + the tenant
-	// filter): the SQL is user-influenced, so require a single read-only
-	// SELECT/WITH scoped to the tenant before executing. A rejection is fed
-	// back so the model can correct itself rather than failing the turn.
-	if err := validateAskSQL(act.Query, rt.FilterField, rt.FilterValue); err != nil {
-		ev := commonmodels.ToolEvent{
-			Round: st.round, Name: string(actQuery),
-			Args:  map[string]any{"sql": act.Query, "purpose": act.Purpose},
-			Error: err.Error(),
-		}
-		r.emit(ctx, st, ev)
-		return fmt.Sprintf("Query rejected: %s. Emit a single read-only SELECT/WITH query%s.", err.Error(), tenantHint(rt))
-	}
+	//
+	// Read-only is enforced by the warehouse's read-only credentials
+	// (ValidateReadOnly at connect) + the governance middleware, and the tenant
+	// scope by queryexec's filter check (re-run after any self-heal). We do NOT
+	// parse/regex the SQL here: the warehouse layer is multi-provider and the
+	// read-only-credential boundary is the documented contract (the prompt
+	// instructs the model to write read-only, tenant-scoped SQL).
 
 	// Per-query deadline, capped by whatever remains of the turn wall-clock
 	// (ctx already carries the turn deadline, so WithTimeout takes the min).
