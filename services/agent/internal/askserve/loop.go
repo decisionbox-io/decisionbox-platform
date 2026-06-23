@@ -39,14 +39,22 @@ type runner struct {
 
 // turnState is the mutable bookkeeping for one turn.
 type turnState struct {
-	req         TurnRequest
-	client      *ai.Client
-	events      []commonmodels.ToolEvent
-	round       int
-	queriesUsed int
-	tokensIn    int
-	tokensOut   int
+	req             TurnRequest
+	client          *ai.Client
+	events          []commonmodels.ToolEvent
+	round           int
+	queriesUsed     int
+	tokensIn        int
+	tokensOut       int
+	groundingNudged bool
 }
+
+// groundingNudge is the one-time correction when the model tries to answer a
+// data question without having run any query — it bounds hallucination by
+// forcing the agent to ground a numeric/factual answer in a real result.
+const groundingNudge = "You have not run any query yet, so you have no data to ground an answer in. " +
+	"Run a query_data action to gather the evidence first — never state a count, total, or specific value you have not seen in a query result this turn. " +
+	"If the question genuinely cannot be turned into a query, use clarify or decline instead of answering."
 
 // run drives the bounded ReAct loop for one turn. It always finalizes the turn
 // (done/declined/timeout/failed) so the reader's poll terminates, preserving
@@ -83,6 +91,17 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		}
 
 		if act.Kind.terminal() {
+			// Grounding guard: refuse a data answer produced with no tool
+			// activity at all (no query / lookup / search). The model sometimes
+			// shortcuts to a plausible-but-fabricated answer on the first round;
+			// nudge it once to gather evidence first. Any tool event (even a
+			// schema lookup) counts as grounding, so schema-only answers are
+			// allowed; clarify / decline need no data and are always accepted.
+			if act.Kind == actAnswer && len(st.events) == 0 && !st.groundingNudged {
+				st.groundingNudged = true
+				conv.AddUserMessage(groundingNudge)
+				continue
+			}
 			r.finishTerminal(ctx, st, act)
 			return
 		}

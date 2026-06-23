@@ -41,6 +41,8 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config, filterField string) strin
 	b.WriteString("- For totals, counts, distributions, or \"how many\" questions, write aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows.\n")
 	fmt.Fprintf(&b, "- You may run at most %d queries and take at most %d steps this turn. Be economical; reuse results already in this conversation instead of re-querying.\n", cfg.MaxQueriesPerTurn, cfg.MaxRounds)
 
+	b.WriteString("\nGROUNDING (required): you MUST run at least one query_data action and observe its result before you give an `answer`. Never state a count, total, or specific value you have not seen in a query result in this conversation — do not answer from prior knowledge or guesses. If a question genuinely cannot be turned into a query, use clarify or decline instead.\n")
+
 	b.WriteString("\nFinish with an \"answer\", \"clarify\", or \"decline\" action. The answer should be concise, analyst-style prose that directly addresses the question and references the figures you found.")
 
 	return b.String()

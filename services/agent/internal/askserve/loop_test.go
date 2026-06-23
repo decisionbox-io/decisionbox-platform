@@ -132,6 +132,39 @@ func TestLoop_MultiQuery(t *testing.T) {
 	}
 }
 
+func TestLoop_RejectsUngroundedAnswer(t *testing.T) {
+	// The model tries to answer immediately (no query). The loop must nudge it
+	// to query first, so the final answer is grounded in a real result.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	store := runOnce(t, Config{}, []string{
+		`{"answer":"There are exactly 1,816,336 rows."}`, // ungrounded — must be rejected
+		`{"query":"SELECT count(*) AS c FROM ds.t"}`,
+		`{"answer":"There are 100 rows."}`,
+	}, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("status = %q", store.final.Status)
+	}
+	if len(store.events) != 1 || store.events[0].Name != "query_data" {
+		t.Fatalf("expected exactly one grounding query before the answer, got %+v", store.events)
+	}
+	if store.final.Answer != "There are 100 rows." {
+		t.Fatalf("final answer should come after the query, got %q", store.final.Answer)
+	}
+}
+
+func TestLoop_DeclineNeedsNoQuery(t *testing.T) {
+	// decline (and clarify) legitimately need no data — they must NOT be nudged
+	// into running a query.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	store := runOnce(t, Config{}, []string{`{"decline":"not in the data"}`}, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDeclined {
+		t.Fatalf("status = %q, want declined", store.final.Status)
+	}
+	if len(store.events) != 0 || len(wh.Calls) != 0 {
+		t.Fatalf("decline must not run a query; events=%d calls=%d", len(store.events), len(wh.Calls))
+	}
+}
+
 func TestLoop_Clarify(t *testing.T) {
 	store := runOnce(t, Config{}, []string{`{"clarify":"which region?"}`}, testutil.NewMockWarehouseProvider("ds"), nil, "")
 	if store.final.Status != commonmodels.AskTurnStatusDone {
@@ -196,7 +229,8 @@ func TestLoop_RoundCapNoAnswerFails(t *testing.T) {
 func TestLoop_ParseRetryRecovers(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	store := runOnce(t, Config{}, []string{
-		"sorry, here are my thoughts with no json",
+		"sorry, here are my thoughts with no json", // unparseable → reformat nudge
+		`{"query":"SELECT 1 FROM ds.t"}`,           // recovers to a valid action
 		`{"answer":"recovered after a nudge"}`,
 	}, wh, nil, "")
 	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer != "recovered after a nudge" {
