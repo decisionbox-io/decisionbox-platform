@@ -443,9 +443,6 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.LLM.Provider != "" {
 		existing.LLM = incoming.LLM
 	}
-	if incoming.Schedule.CronExpr != "" || incoming.Schedule.Enabled {
-		existing.Schedule = incoming.Schedule
-	}
 	if incoming.Profile != nil {
 		existing.Profile = incoming.Profile
 	}

@@ -316,7 +316,7 @@ This reads the file contents instead of using the env var value directly.
 
 1. **Environment variables** — Highest priority. Override everything.
 2. **Defaults in code** — Used when env var is not set.
-3. **Project configuration** (MongoDB) — Per-project settings (warehouse, LLM, schedule) are stored in MongoDB and configured via the dashboard.
+3. **Project configuration** (MongoDB) — Per-project settings (warehouse, LLM) are stored in MongoDB and configured via the dashboard.
 
 ## Analysis Phase Compaction Tunables
 

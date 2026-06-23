@@ -275,7 +275,6 @@ Project configuration. Stored in `projects` collection.
 | `category` | string | Category (e.g., `match3`, `idle`, `casual`, `content_sharing`) |
 | `warehouse` | WarehouseConfig | Data warehouse configuration |
 | `llm` | LLMConfig | LLM provider configuration |
-| `schedule` | ScheduleConfig | Discovery schedule |
 | `profile` | map | Domain-specific profile (from JSON Schema form) |
 | `prompts` | ProjectPrompts | Per-project prompt overrides |
 | `status` | string | Project status |
@@ -303,14 +302,6 @@ Project configuration. Stored in `projects` collection.
 | `provider` | string | Provider ID: `claude`, `openai`, `ollama`, `vertex-ai`, `bedrock` |
 | `model` | string | Model identifier (free text) |
 | `config` | map | Provider-specific key-value config (e.g., `project_id`, `location` for Vertex AI) |
-
-### ScheduleConfig
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `enabled` | bool | Whether automatic discovery is enabled |
-| `cron_expr` | string | Cron expression (e.g., `0 2 * * *` = daily at 2 AM) |
-| `max_steps` | int | Max exploration steps for scheduled runs |
 
 ## Next Steps
 

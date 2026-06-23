@@ -53,10 +53,6 @@ Type the model name as free text — model lists change frequently, so we don't 
 
 For provider-specific configuration (Vertex AI project ID, Bedrock region), additional fields appear when you select the provider.
 
-### Schedule
-
-Scheduling is **enabled by default** for nightly runs. Turn it off if you'd rather trigger runs manually.
-
 Click **Create Project**.
 
 ## Step 2: Credentials
