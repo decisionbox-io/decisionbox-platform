@@ -3,7 +3,6 @@ package askserve
 import (
 	"context"
 
-	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
@@ -80,17 +79,3 @@ func (r *ProjectRuntime) Close() {
 // against write-capable credentials. Concurrent calls for the same project
 // are serialized by the pool, so the builder need not be reentrancy-safe.
 type ProjectBuilder func(ctx context.Context, projectID string) (*ProjectRuntime, error)
-
-// llmMessages converts the request history (+ the new question) into the
-// gollm message slice the loop seeds its conversation with.
-func (req TurnRequest) llmMessages() []gollm.Message {
-	out := make([]gollm.Message, 0, len(req.History)+1)
-	for _, m := range req.History {
-		role := m.Role
-		if role != "user" && role != "assistant" {
-			role = "user"
-		}
-		out = append(out, gollm.Message{Role: role, Content: m.Content})
-	}
-	return out
-}

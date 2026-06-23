@@ -74,12 +74,12 @@ func runAskServe(cfg *config.Config) error {
 
 		llm, err := initLLMProvider(buildCtx, cfg, project, secretProvider, projectID)
 		if err != nil {
-			warehouse.Close()
+			_ = warehouse.Close()
 			return nil, err
 		}
 		aiClient, err := ai.New(llm, project.LLM.Model)
 		if err != nil {
-			warehouse.Close()
+			_ = warehouse.Close()
 			return nil, fmt.Errorf("create AI client: %w", err)
 		}
 		aiClient.SetProvenance(projectID, "", project.LLM.Provider)

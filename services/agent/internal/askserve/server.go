@@ -44,7 +44,9 @@ type Server struct {
 // builder (injected by the agentserver, which owns provider wiring), and the
 // Mongo database the turn store persists to.
 func NewServer(cfg Config, build ProjectBuilder, db *mongo.Database) *Server {
-	turnCtx, turnCancel := context.WithCancel(context.Background())
+	// turnCancel is stored on the server and invoked in shutdown() to cancel
+	// every in-flight turn; its lifetime is the server's, not this function's.
+	turnCtx, turnCancel := context.WithCancel(context.Background()) //nolint:gosec // cancelled in shutdown()
 	return &Server{
 		cfg:        cfg,
 		pool:       newPool(build, cfg),
