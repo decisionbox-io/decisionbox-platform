@@ -245,6 +245,24 @@ func TestLoop_LookupSchema(t *testing.T) {
 	}
 }
 
+func TestLoop_SearchTablesSummaryIsLowercaseKeyed(t *testing.T) {
+	sp := &fakeSchema{hits: []ai.SearchHit{{Table: "ds.users", Blurb: "user table", RowCount: 10, Score: 0.9}}}
+	store := runOnce(t, Config{}, []string{
+		`{"search_tables":"users"}`,
+		`{"answer":"found ds.users"}`,
+	}, testutil.NewMockWarehouseProvider("ds"), sp, "")
+	if len(store.events) != 1 || store.events[0].Name != "search_tables" {
+		t.Fatalf("events = %+v", store.events)
+	}
+	rows, ok := store.events[0].Output.([]map[string]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("search output not a summary slice: %#v", store.events[0].Output)
+	}
+	if rows[0]["table"] != "ds.users" {
+		t.Fatalf("search summary should use lowercase 'table' key: %#v", rows[0])
+	}
+}
+
 func TestLoop_SchemaToolUnavailableDegrades(t *testing.T) {
 	// nil schema provider → lookup returns an "unavailable" observation, loop continues.
 	store := runOnce(t, Config{}, []string{

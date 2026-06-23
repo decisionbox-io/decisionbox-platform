@@ -256,7 +256,7 @@ func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnSta
 		r.emit(ctx, st, ev)
 		return fmt.Sprintf("Table search failed: %s", err.Error())
 	}
-	ev.Output = hits
+	ev.Output = searchSummary(hits)
 	r.emit(ctx, st, ev)
 	return formatSearch(act.SearchTables, hits)
 }
@@ -398,6 +398,22 @@ func lookupSummary(res ai.LookupResult) map[string]any {
 	out := map[string]any{"tables": tables}
 	if len(res.NotFound) > 0 {
 		out["not_found"] = res.NotFound
+	}
+	return out
+}
+
+// searchSummary is the compact, lowercase-keyed record persisted as the
+// search tool event's output (ai.SearchHit has no json tags, so it would
+// otherwise serialize with capitalized keys the dashboard can't read).
+func searchSummary(hits []ai.SearchHit) []map[string]any {
+	out := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, map[string]any{
+			"table":     h.Table,
+			"blurb":     h.Blurb,
+			"row_count": h.RowCount,
+			"score":     h.Score,
+		})
 	}
 	return out
 }
