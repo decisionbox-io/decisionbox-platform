@@ -49,6 +49,11 @@ type turnState struct {
 	tokensIn        int
 	tokensOut       int
 	groundingNudges int
+	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
+	// native-tools loop grounds on this, not on len(events): a failed query /
+	// rejected tenant filter / unavailable schema search records an event but
+	// observed no data, so it must not unlock the answer tool.
+	groundedEvents int
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -251,19 +256,19 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			return
 		}
 
-		grounded := len(st.events) > 0
+		grounded := st.groundedEvents > 0
 		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
 				return
 			}
-			// The first tool-enabled call failed before any evidence was
-			// gathered. SupportsTools is provider-wide, so a specific model can
-			// still reject tools (e.g. an OpenAI reasoning model under the
-			// tool-capable openai provider, or a backend that 400s on tools).
-			// Fall back to the JSON-text loop rather than failing the turn.
-			if st.round == 1 && len(st.events) == 0 {
+			// The first tool-enabled call failed before any work was done.
+			// SupportsTools is provider-wide, so a specific model can still
+			// reject tools (e.g. an OpenAI reasoning model under the tool-capable
+			// openai provider, or a backend that 400s on tools). Fall back to the
+			// JSON-text loop rather than failing the turn.
+			if st.round == 1 {
 				r.runText(ctx, rt, req)
 				return
 			}
@@ -276,11 +281,17 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 		messages = append(messages, gollm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 
 		if len(resp.ToolCalls) == 0 {
-			// No tool call. A grounded free-text reply is the answer; otherwise
-			// the model answered without evidence — nudge and retry. With
-			// ToolChoice="any" while ungrounded this branch should be rare.
+			// No tool call. A grounded free-text reply is the answer.
 			if grounded && strings.TrimSpace(resp.Content) != "" {
 				r.finishTerminal(ctx, st, &turnAction{Kind: actAnswer, Text: strings.TrimSpace(resp.Content)})
+				return
+			}
+			// Ungrounded with no tool call means ToolChoice="any" was not honoured
+			// (a backend that accepts `tools` but ignores `tool_choice`). On the
+			// first round (no work yet) fall back to the JSON-text loop, which
+			// carries the action contract; otherwise nudge.
+			if st.round == 1 {
+				r.runText(ctx, rt, req)
 				return
 			}
 			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
@@ -300,7 +311,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: aerr.Error(), IsError: true}}})
 				continue
 			}
-			if act.Kind == actAnswer && len(st.events) == 0 {
+			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
 				continue
 			}
@@ -336,7 +347,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 
 	// Round budget exhausted. One final, forced synthesis from gathered evidence.
 	if act := r.synthesizeFinalTools(ctx, messages, system, st); act != nil {
-		if act.Kind == actAnswer && len(st.events) == 0 {
+		if act.Kind == actAnswer && st.groundedEvents == 0 {
 			r.finishUngrounded(ctx, st)
 			return
 		}
@@ -509,6 +520,10 @@ func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnSta
 // emit appends a tool event to the in-memory transcript and persists it.
 func (r *runner) emit(ctx context.Context, st *turnState, ev commonmodels.ToolEvent) {
 	st.events = append(st.events, ev)
+	if ev.Error == "" {
+		// A successful evidence event — the model actually observed data.
+		st.groundedEvents++
+	}
 	// Persist under a short, detached deadline so a turn ctx already past its
 	// wall-clock can still durably record the event it just produced.
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

@@ -155,25 +155,49 @@ func TestLoopTools_AnswerWithheldUntilGrounded(t *testing.T) {
 	}
 }
 
-func TestLoopTools_UngroundedFreeTextNudged(t *testing.T) {
-	// If the model replies with free text (no tool call) while ungrounded, the
-	// loop must NOT accept it as an answer — it nudges and continues until a real
-	// query backs the answer.
+func TestLoopTools_NoToolCallRound1FallsBack(t *testing.T) {
+	// A backend that accepts `tools` but ignores `tool_choice=any` returns
+	// ordinary content with no tool calls on the forced first round. Treat that
+	// as "tools not honoured" and fall back to the JSON-text loop, which carries
+	// the action contract and still answers.
 	wh := testutil.NewMockWarehouseProvider("ds")
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
-		{Content: "There are 5 tables.", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},
-		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.t"}),
-		toolCall(string(actAnswer), map[string]any{"text": "grounded answer"}),
+		{Content: "Sure, let me look into that.", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}}, // no tool calls → forced tools ignored
+		{Content: `{"query":"SELECT 1 FROM ds.t"}`, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},                        // JSON-text path
+		{Content: `{"answer":"text-path answer"}`, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},
 	}}
 	store := runOnceTools(t, Config{}, p, wh, nil, "")
-	if store.final.Status != commonmodels.AskTurnStatusDone {
-		t.Fatalf("status = %q, want done", store.final.Status)
-	}
-	if store.final.Answer != "grounded answer" {
-		t.Fatalf("ungrounded free text must not win; answer = %q", store.final.Answer)
+	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer != "text-path answer" {
+		t.Fatalf("expected fallback to the text loop; status=%q answer=%q", store.final.Status, store.final.Answer)
 	}
 	if len(store.events) != 1 {
-		t.Fatalf("events = %d, want 1", len(store.events))
+		t.Fatalf("events = %d, want 1 from the fallback query", len(store.events))
+	}
+}
+
+func TestLoopTools_FailedEvidenceNotGrounding(t *testing.T) {
+	// A failed query records an event but observed no data — it must NOT mark the
+	// turn grounded, so the answer tool stays withheld and the model can only
+	// (legitimately) decline.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.QueryError = errors.New("table not found")
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.t"}), // fails → error event, not grounded
+		toolCall(string(actDecline), map[string]any{"reason": "could not get data"}),
+	}}
+	store := runOnceTools(t, Config{}, p, wh, nil, "")
+	if store.final.Status != commonmodels.AskTurnStatusDeclined {
+		t.Fatalf("status = %q, want declined", store.final.Status)
+	}
+	if len(store.events) != 1 || store.events[0].Error == "" {
+		t.Fatalf("expected one failed query event, got %+v", store.events)
+	}
+	// The failed query must not have unlocked the answer tool on the next round.
+	if hasTool(p.reqs[1].Tools, string(actAnswer)) {
+		t.Fatal("answer offered after a FAILED query — failed evidence wrongly grounded the turn")
+	}
+	if p.reqs[1].ToolChoice != "any" {
+		t.Fatalf("ToolChoice = %q after a failed query, want any (still ungrounded)", p.reqs[1].ToolChoice)
 	}
 }
 
