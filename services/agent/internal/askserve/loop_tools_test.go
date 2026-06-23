@@ -173,6 +173,11 @@ func TestLoopTools_NoToolCallRound1FallsBack(t *testing.T) {
 	if len(store.events) != 1 {
 		t.Fatalf("events = %d, want 1 from the fallback query", len(store.events))
 	}
+	// Tokens from the ignored native call (10/5) must carry into the text loop,
+	// which then spends 2 more calls (10/5 each): 30 in / 15 out total.
+	if store.final.InputTokens != 30 || store.final.OutputTokens != 15 {
+		t.Fatalf("token accounting lost the ignored native call: in=%d out=%d, want 30/15", store.final.InputTokens, store.final.OutputTokens)
+	}
 }
 
 func TestLoopTools_FailedEvidenceNotGrounding(t *testing.T) {

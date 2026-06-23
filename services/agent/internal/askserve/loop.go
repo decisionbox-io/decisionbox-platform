@@ -80,7 +80,7 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		r.runWithTools(ctx, rt, req)
 		return
 	}
-	r.runText(ctx, rt, req)
+	r.runText(ctx, rt, req, 0, 0)
 }
 
 // toolsSupported reports whether the runtime's LLM provider honours native tool
@@ -100,8 +100,8 @@ func toolsSupported(rt *ProjectRuntime) bool {
 // terminates, preserving whatever transcript was gathered. This is the fallback
 // for providers without native tool-calling; its grounding guard (re-nudge then
 // decline rather than emit an ungrounded answer) is the safety net there.
-func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
+func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest, tokensIn, tokensOut int) {
+	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, tokensIn: tokensIn, tokensOut: tokensOut}
 
 	conv := ai.NewConversation(ai.ConversationOptions{
 		SystemPrompt: buildSystemPrompt(rt, r.cfg),
@@ -269,7 +269,9 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			// openai provider, or a backend that 400s on tools). Fall back to the
 			// JSON-text loop rather than failing the turn.
 			if st.round == 1 {
-				r.runText(ctx, rt, req)
+				// Carry any tokens already spent on the (ignored) native call so
+				// the turn's usage accounting stays accurate.
+				r.runText(ctx, rt, req, st.tokensIn, st.tokensOut)
 				return
 			}
 			r.finishFailed(ctx, st, fmt.Sprintf("model call failed: %v", err))
@@ -291,7 +293,9 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			// first round (no work yet) fall back to the JSON-text loop, which
 			// carries the action contract; otherwise nudge.
 			if st.round == 1 {
-				r.runText(ctx, rt, req)
+				// Carry any tokens already spent on the (ignored) native call so
+				// the turn's usage accounting stays accurate.
+				r.runText(ctx, rt, req, st.tokensIn, st.tokensOut)
 				return
 			}
 			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
