@@ -60,22 +60,24 @@ func mongoEnricher(db *mongo.Database, projectID string) enrichFunc {
 				Severity      string `bson:"severity"`
 				AnalysisArea  string `bson:"analysis_area"`
 				AffectedCount int    `bson:"affected_count"`
+				DiscoveryID   string `bson:"discovery_id"`
 			}
 			if err := db.Collection("insights").FindOne(ctx, bson.M{"_id": id, "project_id": projectID}).Decode(&ins); err != nil {
 				return ai.InsightHit{}, false
 			}
-			return ai.InsightHit{Name: ins.Name, Description: ins.Description, Severity: ins.Severity, AnalysisArea: ins.AnalysisArea, AffectedCount: ins.AffectedCount}, true
+			return ai.InsightHit{Name: ins.Name, Description: ins.Description, Severity: ins.Severity, AnalysisArea: ins.AnalysisArea, AffectedCount: ins.AffectedCount, DiscoveryID: ins.DiscoveryID}, true
 		case "recommendation":
 			var rec struct {
 				Title        string `bson:"title"`
 				Description  string `bson:"description"`
 				Severity     string `bson:"severity"`
 				AnalysisArea string `bson:"analysis_area"`
+				DiscoveryID  string `bson:"discovery_id"`
 			}
 			if err := db.Collection("recommendations").FindOne(ctx, bson.M{"_id": id, "project_id": projectID}).Decode(&rec); err != nil {
 				return ai.InsightHit{}, false
 			}
-			return ai.InsightHit{Name: rec.Title, Description: rec.Description, Severity: rec.Severity, AnalysisArea: rec.AnalysisArea}, true
+			return ai.InsightHit{Name: rec.Title, Description: rec.Description, Severity: rec.Severity, AnalysisArea: rec.AnalysisArea, DiscoveryID: rec.DiscoveryID}, true
 		}
 		return ai.InsightHit{}, false
 	}
@@ -122,6 +124,7 @@ func (s *Searcher) SearchInsights(ctx context.Context, query string, k int) ([]a
 			hit.Severity = enriched.Severity
 			hit.AnalysisArea = enriched.AnalysisArea
 			hit.AffectedCount = enriched.AffectedCount
+			hit.DiscoveryID = enriched.DiscoveryID
 		}
 		out = append(out, hit)
 	}

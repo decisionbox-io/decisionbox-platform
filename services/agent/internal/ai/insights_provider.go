@@ -27,4 +27,7 @@ type InsightHit struct {
 	AnalysisArea  string
 	AffectedCount int
 	Score         float64
+	// DiscoveryID links the hit back to the discovery run that produced it, so a
+	// persisted citation can resolve the source run on history reload.
+	DiscoveryID string
 }

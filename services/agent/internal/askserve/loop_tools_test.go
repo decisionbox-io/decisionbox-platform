@@ -126,7 +126,7 @@ func TestLoopTools_SearchInsightsGroundsAndCites(t *testing.T) {
 	// answer with NO SQL, and its hits become the message's citation Sources.
 	wh := testutil.NewMockWarehouseProvider("ds")
 	ins := &fakeInsights{hits: []ai.InsightHit{
-		{ID: "i1", Type: "insight", Name: "Churn spike", Description: "Q3 churn up 12%", Severity: "high", AnalysisArea: "retention", Score: 0.9},
+		{ID: "i1", Type: "insight", Name: "Churn spike", Description: "Q3 churn up 12%", Severity: "high", AnalysisArea: "retention", Score: 0.9, DiscoveryID: "disc-7"},
 		{ID: "r1", Type: "recommendation", Name: "Launch winback", Severity: "medium", Score: 0.7},
 	}}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
@@ -152,7 +152,7 @@ func TestLoopTools_SearchInsightsGroundsAndCites(t *testing.T) {
 	if len(store.final.Sources) != 2 || store.final.Sources[0].ID != "i1" || store.final.Sources[1].ID != "r1" {
 		t.Fatalf("Sources not populated from insight hits: %+v", store.final.Sources)
 	}
-	if store.final.Sources[0].Type != "insight" || store.final.Sources[0].Severity != "high" {
+	if store.final.Sources[0].Type != "insight" || store.final.Sources[0].Severity != "high" || store.final.Sources[0].DiscoveryID != "disc-7" {
 		t.Fatalf("source[0] fields not mapped: %+v", store.final.Sources[0])
 	}
 }

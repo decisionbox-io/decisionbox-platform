@@ -77,7 +77,7 @@ func TestSearchInsights_MapsAndEnriches(t *testing.T) {
 	enrich := func(_ context.Context, id, docType string) (ai.InsightHit, bool) {
 		switch id {
 		case "i1":
-			return ai.InsightHit{Name: "Churn spike", Description: "d", Severity: "high", AnalysisArea: "retention", AffectedCount: 42}, true
+			return ai.InsightHit{Name: "Churn spike", Description: "d", Severity: "high", AnalysisArea: "retention", AffectedCount: 42, DiscoveryID: "disc-7"}, true
 		case "r1":
 			return ai.InsightHit{Name: "Offer winback", Description: "d2", Severity: "medium"}, true
 		}
@@ -93,7 +93,7 @@ func TestSearchInsights_MapsAndEnriches(t *testing.T) {
 		t.Fatalf("hits = %d, want 3", len(hits))
 	}
 	// Score + type carried from the vector result; name/severity from enrich.
-	if hits[0].ID != "i1" || hits[0].Type != "insight" || hits[0].Name != "Churn spike" || hits[0].Severity != "high" || hits[0].AffectedCount != 42 || hits[0].Score != 0.91 {
+	if hits[0].ID != "i1" || hits[0].Type != "insight" || hits[0].Name != "Churn spike" || hits[0].Severity != "high" || hits[0].AffectedCount != 42 || hits[0].Score != 0.91 || hits[0].DiscoveryID != "disc-7" {
 		t.Fatalf("hit[0] not mapped/enriched: %+v", hits[0])
 	}
 	if hits[1].Type != "recommendation" || hits[1].Name != "Offer winback" {

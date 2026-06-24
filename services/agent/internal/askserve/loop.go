@@ -657,6 +657,7 @@ func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 			Severity:     h.Severity,
 			AnalysisArea: h.AnalysisArea,
 			Description:  h.Description,
+			DiscoveryID:  h.DiscoveryID,
 		})
 	}
 	return out
@@ -792,6 +793,7 @@ func insightsSummary(hits []ai.InsightHit) []map[string]any {
 			"description":   h.Description,
 			"severity":      h.Severity,
 			"analysis_area": h.AnalysisArea,
+			"discovery_id":  h.DiscoveryID,
 			"score":         h.Score,
 		})
 	}
