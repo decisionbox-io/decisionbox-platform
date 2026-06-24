@@ -12,6 +12,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/insightsearch"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
@@ -50,6 +51,17 @@ func runAskServe(cfg *config.Config) error {
 		sharedRetriever = nil
 	} else {
 		defer func() { _ = sharedRetriever.Close() }()
+	}
+
+	// One shared vector store (Qdrant) for the insight/recommendation index,
+	// reused across projects for the search_insights tool. A missing store
+	// degrades that one tool, not the whole service.
+	vectorStore, vsCleanup, vsErr := initQdrant(ctx, cfg)
+	if vsErr != nil {
+		applog.WithError(vsErr).Warn("ask-serve: vector store unavailable — search_insights disabled")
+		vectorStore = nil
+	} else {
+		defer vsCleanup()
 	}
 
 	builder := func(buildCtx context.Context, projectID string) (*askserve.ProjectRuntime, error) {
@@ -100,6 +112,12 @@ func runAskServe(cfg *config.Config) error {
 			FilterValue: project.Warehouse.FilterValue,
 		})
 
+		// One embedder per project, shared by semantic schema search and the
+		// insight search tool. Nil when the project has no embedding provider
+		// configured — both semantic tools then degrade (schema lookup still
+		// works from the cache; search_insights is simply not offered).
+		embedder, _ := initEmbeddingProvider(buildCtx, project, secretProvider, projectID)
+
 		// Schema provider (optional). Lookup serves from the cached schemas
 		// map; semantic search additionally needs the retriever + embedder.
 		var schemaProvider ai.SchemaProvider
@@ -111,7 +129,6 @@ func runAskServe(cfg *config.Config) error {
 		case len(schemas) == 0:
 			applog.WithField("project_id", projectID).Warn("ask-serve: no cached schema for project — run --mode index-schema to enable schema tools")
 		default:
-			embedder, _ := initEmbeddingProvider(buildCtx, project, secretProvider, projectID)
 			opts := discovery.CacheSchemaProviderOptions{
 				ProjectID: projectID,
 				Datasets:  datasets,
@@ -131,16 +148,26 @@ func runAskServe(cfg *config.Config) error {
 			}
 		}
 
+		// Insights provider (optional). insightsearch.New returns nil unless the
+		// vector store AND an embedder are both present; keep the interface nil
+		// in that case (a typed-nil would defeat the loop's nil check) so the
+		// search_insights tool is simply not offered.
+		var insightsProvider ai.InsightsProvider
+		if is := insightsearch.New(projectID, mongoClient.Database(), vectorStore, embedder); is != nil {
+			insightsProvider = is
+		}
+
 		return &askserve.ProjectRuntime{
-			Executor:       executor,
-			SchemaProvider: schemaProvider,
-			AIClient:       aiClient,
-			Model:          project.LLM.Model,
-			Datasets:       datasets,
-			Dialect:        warehouse.SQLDialect(),
-			FilterField:    project.Warehouse.FilterField,
-			FilterValue:    project.Warehouse.FilterValue,
-			Closers:        closers,
+			Executor:         executor,
+			SchemaProvider:   schemaProvider,
+			InsightsProvider: insightsProvider,
+			AIClient:         aiClient,
+			Model:            project.LLM.Model,
+			Datasets:         datasets,
+			Dialect:          warehouse.SQLDialect(),
+			FilterField:      project.Warehouse.FilterField,
+			FilterValue:      project.Warehouse.FilterValue,
+			Closers:          closers,
 		}, nil
 	}
 

@@ -66,6 +66,23 @@ func toolSearchTables() gollm.ToolDefinition {
 	}
 }
 
+func toolSearchInsights() gollm.ToolDefinition {
+	return gollm.ToolDefinition{
+		Name: string(actSearchInsights),
+		Description: "Semantic search over the project's already-discovered insights and recommendations (what prior analysis found and advised). " +
+			"Prefer this for questions like \"what did we find\", \"what are the risks\", or \"what do you recommend\" — it returns grounded findings without running SQL. " +
+			"Use query_data instead for fresh ad-hoc numbers; combine both when a finding needs a current figure.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string", "description": "Keywords describing the finding or recommendation you're looking for."},
+				"limit": map[string]interface{}{"type": "integer", "description": "Max hits to return (optional; default 5, capped at 20)."},
+			},
+			"required": []string{"query"},
+		},
+	}
+}
+
 func toolAnswer() gollm.ToolDefinition {
 	return gollm.ToolDefinition{
 		Name:        string(actAnswer),
@@ -114,11 +131,15 @@ func toolDecline() gollm.ToolDefinition {
 // toolChoiceForPhase("any") this makes fabrication impossible by construction.
 // clarify / decline stay available so a genuinely ambiguous or unanswerable
 // question can still terminate without inventing data. Schema tools are offered
-// only when a schema provider is wired.
-func toolsForPhase(grounded, hasSchema bool) []gollm.ToolDefinition {
+// only when a schema provider is wired; search_insights only when an insights
+// provider is wired.
+func toolsForPhase(grounded, hasSchema, hasInsights bool) []gollm.ToolDefinition {
 	tools := []gollm.ToolDefinition{toolQueryData()}
 	if hasSchema {
 		tools = append(tools, toolLookupSchema(), toolSearchTables())
+	}
+	if hasInsights {
+		tools = append(tools, toolSearchInsights())
 	}
 	if grounded {
 		tools = append(tools, toolAnswer())
@@ -173,6 +194,12 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 			return nil, fmt.Errorf("search_tables requires a non-empty %q argument", "query")
 		}
 		return &turnAction{Kind: actSearch, SearchTables: q, SearchTopK: toInt(tc.Input["top_k"])}, nil
+	case actSearchInsights:
+		q := getStr("query")
+		if q == "" {
+			return nil, fmt.Errorf("search_insights requires a non-empty %q argument", "query")
+		}
+		return &turnAction{Kind: actSearchInsights, SearchInsights: q, InsightsLimit: toInt(tc.Input["limit"])}, nil
 	case actAnswer:
 		txt := getStr("text")
 		if txt == "" {

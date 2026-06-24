@@ -50,6 +50,10 @@ type ProjectRuntime struct {
 	// SchemaProvider serves lookup_schema / search_tables. May be nil when the
 	// project has no schema index — the loop degrades gracefully.
 	SchemaProvider ai.SchemaProvider
+	// InsightsProvider serves search_insights (semantic search over the
+	// project's discovered insights + recommendations). May be nil when the
+	// project has no embedder / vector store — the tool is then not offered.
+	InsightsProvider ai.InsightsProvider
 	// AIClient drives the reasoning LLM (multi-turn CreateMessage).
 	AIClient *ai.Client
 	// Model is the project's configured model id (for the transcript record).

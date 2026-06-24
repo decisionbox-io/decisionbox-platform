@@ -207,6 +207,7 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 		InputTokens:  fin.InputTokens,
 		OutputTokens: fin.OutputTokens,
 		ToolEvents:   fin.ToolEvents,
+		Sources:      fin.Sources,
 		CreatedAt:    now,
 	}
 	// Append via an aggregation pipeline with $ifNull so a legacy session whose
@@ -292,4 +293,8 @@ type TurnFinal struct {
 	InputTokens  int
 	OutputTokens int
 	ToolEvents   []commonmodels.ToolEvent
+	// Sources are the insights/recommendations the turn cited (from
+	// search_insights), persisted on the message so the dashboard renders them
+	// as citations on history reload.
+	Sources []commonmodels.AskSessionSource
 }

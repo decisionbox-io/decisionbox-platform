@@ -23,6 +23,9 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
 	b.WriteString(`  {"thinking":"...","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query\n")
 	b.WriteString(`  {"thinking":"...","lookup_schema":["dataset.table_a","dataset.table_b"]}` + "  — get columns + sample rows for tables\n")
 	b.WriteString(`  {"thinking":"...","search_tables":"keywords describing what you need"}` + "  — find relevant tables semantically\n")
+	if rt.InsightsProvider != nil {
+		b.WriteString(`  {"thinking":"...","search_insights":"keywords"}` + "  — search prior discovered insights & recommendations\n")
+	}
 	b.WriteString(`  {"thinking":"...","answer":"final grounded answer for the user"}` + "  — when you can answer\n")
 	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer\n")
 	b.WriteString(`  {"thinking":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
@@ -52,6 +55,9 @@ func buildSystemPromptForTools(rt *ProjectRuntime, cfg Config) string {
 	b.WriteString("\nTOOLS\n")
 	b.WriteString("- query_data: run one read-only SQL query and observe a summary of the result.\n")
 	b.WriteString("- search_tables / lookup_schema: discover which tables exist and what columns they have.\n")
+	if rt.InsightsProvider != nil {
+		b.WriteString("- search_insights: search the project's prior discovered insights & recommendations; prefer it for \"what did we find\" / \"what do you recommend\" questions, and combine with query_data when a finding needs a fresh number.\n")
+	}
 	b.WriteString("- answer / clarify / decline: finish the turn.\n")
 
 	writeResultHandling(&b, cfg)

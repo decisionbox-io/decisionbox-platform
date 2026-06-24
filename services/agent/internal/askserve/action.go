@@ -10,12 +10,13 @@ import (
 type actionKind string
 
 const (
-	actQuery   actionKind = "query_data"
-	actLookup  actionKind = "lookup_schema"
-	actSearch  actionKind = "search_tables"
-	actAnswer  actionKind = "answer"
-	actClarify actionKind = "clarify"
-	actDecline actionKind = "decline"
+	actQuery          actionKind = "query_data"
+	actLookup         actionKind = "lookup_schema"
+	actSearch         actionKind = "search_tables"
+	actSearchInsights actionKind = "search_insights"
+	actAnswer         actionKind = "answer"
+	actClarify        actionKind = "clarify"
+	actDecline        actionKind = "decline"
 )
 
 func (k actionKind) terminal() bool {
@@ -35,6 +36,9 @@ type turnAction struct {
 	SearchTables string   // search_tables
 	SearchTopK   int      // search_tables (optional)
 
+	SearchInsights string // search_insights (query)
+	InsightsLimit  int    // search_insights (optional)
+
 	Text string // answer / clarify / decline body
 }
 
@@ -51,6 +55,9 @@ type rawAction struct {
 	LookupSchema []string `json:"lookup_schema"`
 	SearchTables string   `json:"search_tables"`
 	SearchTopK   int      `json:"search_top_k"`
+
+	SearchInsights string `json:"search_insights"`
+	InsightsLimit  int    `json:"insights_limit"`
 
 	Answer  string `json:"answer"`
 	Clarify string `json:"clarify"`
@@ -99,8 +106,12 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.Kind = actSearch
 		act.SearchTables = strings.TrimSpace(raw.SearchTables)
 		act.SearchTopK = raw.SearchTopK
+	case strings.TrimSpace(raw.SearchInsights) != "":
+		act.Kind = actSearchInsights
+		act.SearchInsights = strings.TrimSpace(raw.SearchInsights)
+		act.InsightsLimit = raw.InsightsLimit
 	default:
-		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, or search_tables")
+		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, search_tables, or search_insights")
 	}
 	return act, nil
 }
@@ -154,6 +165,20 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			raw.SearchTables = in.Query
 			if raw.SearchTopK == 0 {
 				raw.SearchTopK = in.TopK
+			}
+		}
+	case actSearchInsights:
+		if raw.SearchInsights != "" {
+			return
+		}
+		var in struct {
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if json.Unmarshal(env.Input, &in) == nil {
+			raw.SearchInsights = in.Query
+			if raw.InsightsLimit == 0 {
+				raw.InsightsLimit = in.Limit
 			}
 		}
 	case actAnswer, actClarify, actDecline:
@@ -278,7 +303,7 @@ func jsonHasActionKey(s string) bool {
 	if json.Unmarshal([]byte(s), &probe) != nil {
 		return false
 	}
-	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "name"} {
+	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "search_insights", "name"} {
 		if _, ok := probe[k]; ok {
 			return true
 		}

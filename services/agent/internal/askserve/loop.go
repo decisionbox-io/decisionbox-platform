@@ -54,6 +54,10 @@ type turnState struct {
 	// rejected tenant filter / unavailable schema search records an event but
 	// observed no data, so it must not unlock the answer tool.
 	groundedEvents int
+	// insightHits accumulates the insights/recommendations surfaced by
+	// search_insights across the turn, mapped to the message's Sources at
+	// finalize so the dashboard renders them as citations.
+	insightHits []ai.InsightHit
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -243,6 +247,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
 	system := buildSystemPromptForTools(rt, r.cfg)
 	hasSchema := rt.SchemaProvider != nil
+	hasInsights := rt.InsightsProvider != nil
 
 	var messages []gollm.Message
 	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
@@ -257,7 +262,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -420,6 +425,8 @@ func (r *runner) execute(ctx context.Context, rt *ProjectRuntime, st *turnState,
 		return r.execLookup(ctx, rt, st, act)
 	case actSearch:
 		return r.execSearch(ctx, rt, st, act)
+	case actSearchInsights:
+		return r.execSearchInsights(ctx, rt, st, act)
 	default:
 		return "Unknown action."
 	}
@@ -521,6 +528,33 @@ func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnSta
 	return formatSearch(act.SearchTables, hits)
 }
 
+func (r *runner) execSearchInsights(ctx context.Context, rt *ProjectRuntime, st *turnState, act *turnAction) string {
+	ev := commonmodels.ToolEvent{
+		Round: st.round,
+		Name:  string(actSearchInsights),
+		Args:  map[string]any{"query": act.SearchInsights, "limit": act.InsightsLimit},
+	}
+	if rt.InsightsProvider == nil {
+		ev.Error = "insights provider not configured"
+		r.emit(ctx, st, ev)
+		return "Insight search unavailable. Answer from a query instead, or decline."
+	}
+	start := time.Now()
+	hits, err := rt.InsightsProvider.SearchInsights(ctx, act.SearchInsights, act.InsightsLimit)
+	ev.LatencyMS = time.Since(start).Milliseconds()
+	if err != nil {
+		ev.Error = err.Error()
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Insight search failed: %s", err.Error())
+	}
+	ev.Output = insightsSummary(hits)
+	r.emit(ctx, st, ev)
+	// Accumulate for the final message's Sources (deduped at finalize) so the
+	// dashboard renders these as citations.
+	st.insightHits = append(st.insightHits, hits...)
+	return formatInsights(act.SearchInsights, hits)
+}
+
 // emit appends a tool event to the in-memory transcript and persists it.
 func (r *runner) emit(ctx context.Context, st *turnState, ev commonmodels.ToolEvent) {
 	st.events = append(st.events, ev)
@@ -592,12 +626,40 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.ToolEvents = st.events
 	fin.InputTokens = st.tokensIn
 	fin.OutputTokens = st.tokensOut
+	fin.Sources = st.insightSources()
 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	if err := r.store.Finalize(pctx, fin); err != nil {
 		applog.WithError(err).WithField("turn_id", fin.TurnID).Error("ask-serve: failed to finalize turn")
 	}
+}
+
+// insightSources maps the insights/recommendations surfaced this turn to the
+// dashboard's citation shape, deduped by id and preserving first-seen (highest
+// score) order. Returns nil when no insight was searched.
+func (st *turnState) insightSources() []commonmodels.AskSessionSource {
+	if len(st.insightHits) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(st.insightHits))
+	out := make([]commonmodels.AskSessionSource, 0, len(st.insightHits))
+	for _, h := range st.insightHits {
+		if h.ID == "" || seen[h.ID] {
+			continue
+		}
+		seen[h.ID] = true
+		out = append(out, commonmodels.AskSessionSource{
+			ID:           h.ID,
+			Type:         h.Type,
+			Name:         h.Name,
+			Score:        h.Score,
+			Severity:     h.Severity,
+			AnalysisArea: h.AnalysisArea,
+			Description:  h.Description,
+		})
+	}
+	return out
 }
 
 // trimHistory drops the oldest messages until the running character total is
@@ -690,6 +752,47 @@ func searchSummary(hits []ai.SearchHit) []map[string]any {
 			"blurb":     h.Blurb,
 			"row_count": h.RowCount,
 			"score":     h.Score,
+		})
+	}
+	return out
+}
+
+func formatInsights(query string, hits []ai.InsightHit) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Insight search results for %q:\n", query)
+	if len(hits) == 0 {
+		b.WriteString("(no matching insights or recommendations)")
+	}
+	for i, h := range hits {
+		typ := h.Type
+		if typ == "" {
+			typ = "insight"
+		}
+		fmt.Fprintf(&b, "%d. [%s] %s", i+1, typ, h.Name)
+		if h.Severity != "" {
+			fmt.Fprintf(&b, " (severity: %s)", h.Severity)
+		}
+		if h.Description != "" {
+			fmt.Fprintf(&b, " — %s", h.Description)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// insightsSummary is the compact, lowercase-keyed record persisted as the
+// search_insights tool event's output (ai.InsightHit has no json tags).
+func insightsSummary(hits []ai.InsightHit) []map[string]any {
+	out := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, map[string]any{
+			"id":            h.ID,
+			"type":          h.Type,
+			"name":          h.Name,
+			"description":   h.Description,
+			"severity":      h.Severity,
+			"analysis_area": h.AnalysisArea,
+			"score":         h.Score,
 		})
 	}
 	return out
