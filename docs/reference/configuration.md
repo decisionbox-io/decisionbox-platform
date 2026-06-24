@@ -176,7 +176,7 @@ The API spawns the agent for each discovery run. Three modes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Container image spawned per run (shared with kubernetes mode). A public or locally-built image works: if it is not present, the runner attempts to pull it and surfaces a clear error if the pull fails. The pull is sent with **no registry credentials**, so a private-registry image must be pre-pulled (or otherwise made available to the daemon). |
+| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Container image spawned per run (shared with kubernetes mode). A public or locally-built image works: if it is not present, the runner attempts to pull it and surfaces a clear error if the pull fails. The pull is sent with **no registry credentials**, so a private-registry image must be pre-pulled (or otherwise made available to the daemon). For AWS/EKS deployments, use the ECR mirror: `<account-id>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>` — EKS nodes with the ECR pull-through or IRSA can pull it without extra credentials. |
 | `AGENT_DOCKER_NETWORK` | `""` | Docker network the agent container joins so it can resolve `mongodb`, `qdrant`, and warehouse hosts by service name on the compose network. Empty = the engine's default network. For docker-compose, set it to the project's default network — `<project>_default`, where `<project>` defaults to the Compose directory name (so `decisionbox-platform_default` for a clone of this repo; confirm with `docker network ls`). |
 | `DOCKER_HOST` | *(unset)* | Standard Docker variable selecting the engine endpoint. Unset = the default Unix socket `/var/run/docker.sock`, which must be mounted into the API container. |
 
@@ -190,7 +190,7 @@ The agent container receives the same Mongo / secret-provider / Qdrant / validat
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Docker image for the agent container. |
+| `AGENT_IMAGE` | `ghcr.io/decisionbox-io/decisionbox-agent:latest` | Docker image for the agent container. For AWS/EKS deployments, use the ECR mirror: `<account-id>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`. |
 | `AGENT_NAMESPACE` | `default` | Kubernetes namespace for agent Jobs. |
 | `AGENT_SERVICE_ACCOUNT` | `""` | Kubernetes service account for agent Jobs. Set to the agent SA with Workload Identity for GCP Secret Manager / BigQuery access. |
 | `AGENT_CPU_REQUEST` | `250m` | CPU request for agent containers (K8s resource quantity). |
