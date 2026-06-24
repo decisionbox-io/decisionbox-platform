@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI pushes the `decisionbox-agent` image to AWS ECR** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to ECR (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using OIDC-based AWS authentication. EKS-based deployments can pull the agent image from ECR without cross-registry authentication.
+
 ### Fixed
 
 - **Embedding vector dimensions are detected by probing, not a hardcoded catalog** — `providers/embedding/openai/provider.go`, `services/agent/internal/discovery/{dimensions.go (new),schema_indexer.go,phase_embed_index.go}`, `docs/guides/schema-indexing.md`. The agent sized its Qdrant collection from `Embedder.Dimensions()`, which the OpenAI embedding provider derived from a hardcoded model→dims map — `0` for any model the map doesn't know, including a managed-gateway alias such as `decisionbox-embed-model`. That made `agent --mode index-schema` (and Phase 9 embed/index) fail with `dimensions must be positive, got 0`, even though the embeddings themselves were correct. The agent now resolves the dimension robustly: it trusts the provider's declared `Dimensions()` when known (a catalogued model — unchanged fast path) and otherwise **probes** — embeds one short string and uses `len(vector)` — mirroring `run_step_index.go`. Wired into `schema_indexer` (before `EnsureCollection`, so a Qdrant/embedding misconfig still fails fast) and `phase_embed_index`. The OpenAI embedding provider also accepts an explicit `dimensions` config override (flowed in from `project.Embedding.Config`) as an escape hatch for any model/gateway the catalog doesn't know; a non-positive override is rejected. Known models behave exactly as before. Unit + real-Qdrant integration tests cover known-model / unknown-model / gateway-alias / explicit-override.
