@@ -95,6 +95,110 @@ func hasTool(tools []gollm.ToolDefinition, name string) bool {
 	return false
 }
 
+// fakeInsights is an ai.InsightsProvider returning canned hits.
+type fakeInsights struct {
+	hits  []ai.InsightHit
+	err   error
+	calls int
+}
+
+func (f *fakeInsights) SearchInsights(ctx context.Context, query string, k int) ([]ai.InsightHit, error) {
+	f.calls++
+	return f.hits, f.err
+}
+
+func runOnceToolsIns(t *testing.T, p *scriptedToolProvider, wh *testutil.MockWarehouseProvider, ins ai.InsightsProvider) *fakeStore {
+	t.Helper()
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.InsightsProvider = ins
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "what did we find?"})
+	if store.final == nil {
+		t.Fatal("turn did not finalize")
+	}
+	return store
+}
+
+func TestLoopTools_SearchInsightsGroundsAndCites(t *testing.T) {
+	// An insight search is real evidence: it grounds the turn so the model can
+	// answer with NO SQL, and its hits become the message's citation Sources.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	ins := &fakeInsights{hits: []ai.InsightHit{
+		{ID: "i1", Type: "insight", Name: "Churn spike", Description: "Q3 churn up 12%", Severity: "high", AnalysisArea: "retention", Score: 0.9, DiscoveryID: "disc-7"},
+		{ID: "r1", Type: "recommendation", Name: "Launch winback", Severity: "medium", Score: 0.7},
+	}}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actSearchInsights), map[string]any{"query": "key risks"}),
+		toolCall(string(actAnswer), map[string]any{"text": "The main risk is a Q3 churn spike."}),
+	}}
+	store := runOnceToolsIns(t, p, wh, ins)
+
+	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer == "" {
+		t.Fatalf("status=%q answer=%q", store.final.Status, store.final.Answer)
+	}
+	if len(store.events) != 1 || store.events[0].Name != "search_insights" {
+		t.Fatalf("events = %+v, want one search_insights event", store.events)
+	}
+	if len(wh.Calls) != 0 {
+		t.Fatalf("no SQL should run for an insights answer; warehouse calls = %d", len(wh.Calls))
+	}
+	// answer offered on the 2nd call → the insight search grounded the turn.
+	if !hasTool(p.reqs[1].Tools, string(actAnswer)) {
+		t.Fatal("answer should be offered after a successful search_insights (grounded)")
+	}
+	// Sources carry the cited insights, deduped, in order.
+	if len(store.final.Sources) != 2 || store.final.Sources[0].ID != "i1" || store.final.Sources[1].ID != "r1" {
+		t.Fatalf("Sources not populated from insight hits: %+v", store.final.Sources)
+	}
+	if store.final.Sources[0].Type != "insight" || store.final.Sources[0].Severity != "high" || store.final.Sources[0].DiscoveryID != "disc-7" {
+		t.Fatalf("source[0] fields not mapped: %+v", store.final.Sources[0])
+	}
+}
+
+func TestLoopTools_SearchInsightsOfferedOnlyWithProvider(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	// No insights provider → tool not offered.
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.t"}),
+		toolCall(string(actAnswer), map[string]any{"text": "ok"}),
+	}}
+	runOnceToolsIns(t, p, wh, nil)
+	if hasTool(p.reqs[0].Tools, string(actSearchInsights)) {
+		t.Fatal("search_insights must not be offered without an insights provider")
+	}
+	// With provider → offered.
+	ins := &fakeInsights{hits: []ai.InsightHit{{ID: "i1", Type: "insight", Name: "x", Score: 0.5}}}
+	p2 := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actSearchInsights), map[string]any{"query": "risks"}),
+		toolCall(string(actAnswer), map[string]any{"text": "ok"}),
+	}}
+	runOnceToolsIns(t, p2, testutil.NewMockWarehouseProvider("ds"), ins)
+	if !hasTool(p2.reqs[0].Tools, string(actSearchInsights)) {
+		t.Fatal("search_insights should be offered when an insights provider is set")
+	}
+}
+
+func TestParseTurnAction_SearchInsights(t *testing.T) {
+	// Plain key form (JSON-text fallback path).
+	act, err := parseTurnAction(`{"search_insights":"churn risk","insights_limit":3}`)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if act.Kind != actSearchInsights || act.SearchInsights != "churn risk" || act.InsightsLimit != 3 {
+		t.Fatalf("parsed = %+v", act)
+	}
+	// Tool-use envelope form.
+	act, err = parseTurnAction(`{"name":"search_insights","input":{"query":"churn","limit":2}}`)
+	if err != nil {
+		t.Fatalf("envelope err = %v", err)
+	}
+	if act.Kind != actSearchInsights || act.SearchInsights != "churn" || act.InsightsLimit != 2 {
+		t.Fatalf("envelope parsed = %+v", act)
+	}
+}
+
 func TestToolsSupported_DetectsProvider(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	// Default test runtime has no provenance → unknown provider → fallback.
