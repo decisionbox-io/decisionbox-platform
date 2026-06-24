@@ -47,15 +47,22 @@ type turnState struct {
 	queriesUsed     int
 	tokensIn        int
 	tokensOut       int
-	groundingNudged bool
+	groundingNudges int
 }
 
-// groundingNudge is the one-time correction when the model tries to answer a
-// data question without having run any query — it bounds hallucination by
-// forcing the agent to ground a numeric/factual answer in a real result.
-const groundingNudge = "You have not run any query yet, so you have no data to ground an answer in. " +
-	"Run a query_data action to gather the evidence first — never state a count, total, or specific value you have not seen in a query result this turn. " +
-	"If the question genuinely cannot be turned into a query, use clarify or decline instead of answering."
+// maxGroundingNudges bounds how many times the loop re-prompts a model that
+// tries to answer with no tool activity. After this many refusals the turn is
+// DECLINED rather than emitting an ungrounded (fabricated) answer — accepting
+// such an answer is the worst failure mode for a data tool.
+const maxGroundingNudges = 2
+
+// groundingNudge is the correction when the model tries to answer without
+// having run any query — it forbids ungrounded answers and tells it how to
+// start gathering evidence even with no schema catalog in hand.
+const groundingNudge = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
+	"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
+	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
+	"Only use clarify or decline if the question genuinely cannot be turned into any query."
 
 // run drives the bounded ReAct loop for one turn. It always finalizes the turn
 // (done/declined/timeout/failed) so the reader's poll terminates, preserving
@@ -92,16 +99,20 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		}
 
 		if act.Kind.terminal() {
-			// Grounding guard: refuse a data answer produced with no tool
-			// activity at all (no query / lookup / search). The model sometimes
-			// shortcuts to a plausible-but-fabricated answer on the first round;
-			// nudge it once to gather evidence first. Any tool event (even a
-			// schema lookup) counts as grounding, so schema-only answers are
-			// allowed; clarify / decline need no data and are always accepted.
-			if act.Kind == actAnswer && len(st.events) == 0 && !st.groundingNudged {
-				st.groundingNudged = true
-				conv.AddUserMessage(groundingNudge)
-				continue
+			// Grounding guard: an `answer` produced with no tool activity (no
+			// query / lookup / search) is ungrounded — the model fabricated it.
+			// Re-nudge it to gather evidence; if it still refuses after
+			// maxGroundingNudges, DECLINE rather than emit fabricated content.
+			// Any tool event (even a schema lookup) counts as grounding;
+			// clarify / decline need no data and are always accepted.
+			if act.Kind == actAnswer && len(st.events) == 0 {
+				if st.groundingNudges < maxGroundingNudges {
+					st.groundingNudges++
+					conv.AddUserMessage(groundingNudge)
+					continue
+				}
+				r.finishUngrounded(ctx, st)
+				return
 			}
 			r.finishTerminal(ctx, st, act)
 			return
@@ -118,6 +129,12 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 	// Round budget exhausted without a terminal action. Give the model one
 	// final, non-tool synthesis chance to answer with what it has gathered.
 	if act := r.synthesizeFinal(ctx, conv, st); act != nil {
+		// Still enforce grounding: a synthesized answer with no tool activity
+		// is fabricated — decline instead of emitting it.
+		if act.Kind == actAnswer && len(st.events) == 0 {
+			r.finishUngrounded(ctx, st)
+			return
+		}
 		r.finishTerminal(ctx, st, act)
 		return
 	}
@@ -318,6 +335,18 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 		Status:      status,
 		Disposition: disposition,
 		Answer:      act.Text,
+	})
+}
+
+// finishUngrounded declines a turn whose model insisted on answering without
+// running any query — emitting that answer would surface fabricated data, so
+// we decline instead.
+func (r *runner) finishUngrounded(ctx context.Context, st *turnState) {
+	r.finalize(ctx, st, TurnFinal{
+		Status:      commonmodels.AskTurnStatusDeclined,
+		Disposition: commonmodels.AskTurnDispositionDecline,
+		Error:       "model would not gather evidence; declined rather than answer ungrounded",
+		Answer:      "I couldn't answer this from the data — I wasn't able to gather any query results to ground a response. Please rephrase the question, or check that the project's warehouse and schema are available.",
 	})
 }
 
