@@ -13,7 +13,7 @@ DecisionBox has three services, one database, and a plugin system for extensibil
 │   - Discovery results (insights table, recommendations)  │
 │   - Live progress (real-time step feed)                  │
 │   - Prompt editor (markdown, per-project)                │
-│   - Settings (warehouse, LLM, secrets, schedule)         │
+│   - Settings (warehouse, LLM, secrets)                   │
 │   - Feedback (like/dislike insights + recommendations)   │
 │                                                          │
 │   All /api/* requests proxied to API via Next.js         │
@@ -113,7 +113,7 @@ The only infrastructure dependency. Stores:
 
 | Collection | Purpose |
 |-----------|---------|
-| `projects` | Project configuration (name, warehouse, LLM, schedule, profile, prompts) |
+| `projects` | Project configuration (name, warehouse, LLM, profile, prompts) |
 | `discoveries` | Discovery results (insights, recommendations, logs, validation) |
 | `discovery_runs` | Live run status (phase, progress, steps, errors) |
 | `feedback` | User feedback on insights and recommendations |

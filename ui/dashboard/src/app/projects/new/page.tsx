@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title, NumberInput, Switch,
+  Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
@@ -54,9 +54,6 @@ export default function NewProjectPage() {
   // the user finish creation and then immediately hit a "failed" banner
   // on the project-detail page.
   const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
-  const [scheduleEnabled, setScheduleEnabled] = useState(true);
-  const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
-  const [maxSteps, setMaxSteps] = useState(100);
 
   useEffect(() => {
     Promise.all([
@@ -157,7 +154,6 @@ export default function NewProjectPage() {
     // Blurb step: valid when the user either chose "use analysis LLM"
     // (blurb.enabled === false) or picked a model.
     () => !blurb.enabled || (blurb.provider && blurb.model),
-    () => true,
   ];
 
   // Monotonic request id so a stale response from an in-flight fetch
@@ -264,7 +260,6 @@ export default function NewProjectPage() {
               },
             }
           : {}),
-        schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
       });
       // Save secrets in parallel — sequential awaits left a ~1s race
       // window between project creation (which sets
@@ -395,21 +390,6 @@ export default function NewProjectPage() {
                 </Card>
               </Stepper.Step>
 
-              <Stepper.Step label="Schedule" description="Discovery schedule">
-                <Card withBorder p="lg" mt="md">
-                  <Stack>
-                    <Switch label="Enable automatic discovery" checked={scheduleEnabled}
-                      onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
-                    {scheduleEnabled && (
-                      <TextInput label="Cron Expression" value={scheduleCron}
-                        onChange={(e) => setScheduleCron(e.target.value)} description="Default: daily at 2 AM UTC" />
-                    )}
-                    <NumberInput label="Max Exploration Steps" value={maxSteps}
-                      onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
-                  </Stack>
-                </Card>
-              </Stepper.Step>
-
               <Stepper.Completed>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
@@ -436,7 +416,7 @@ export default function NewProjectPage() {
 
             <Group justify="flex-end">
               {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>}
-              {active < 6 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
+              {active < 5 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
             </Group>
           </>
         )}

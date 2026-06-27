@@ -84,6 +84,17 @@ func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt strin
 
 // CreateMessage sends a message to the LLM and returns the full response.
 func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int) (*gollm.ChatResponse, error) {
+	return c.CreateMessageWithTools(ctx, messages, systemPrompt, maxTokens, nil, "")
+}
+
+// CreateMessageWithTools is CreateMessage with native tool-calling: tools is the
+// set of tools the model may call and toolChoice forces the decision ("" / "auto"
+// = model decides, "any" / "required" = must call a tool, "none" = must not, or a
+// specific tool name). The returned ChatResponse carries ToolCalls when the model
+// invoked tools (StopReason "tool_use"). Providers whose ProviderMeta.SupportsTools
+// is false reject a non-empty tools slice with gollm.ErrToolsNotSupported, so
+// callers must gate on tool support before passing tools.
+func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string) (*gollm.ChatResponse, error) {
 	startTime := time.Now()
 
 	if c.testMode {
@@ -99,6 +110,8 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
 		MaxTokens:    maxTokens,
+		Tools:        tools,
+		ToolChoice:   toolChoice,
 	}
 
 	logger.WithFields(logger.Fields{

@@ -33,7 +33,6 @@ Click **New Project** and fill in:
 1. **Basics** — Project name, domain (e.g., Gaming or Social Network), category (e.g., Match-3, Idle, Casual, Content Sharing)
 2. **Data Warehouse** — Select your warehouse provider and enter connection details
 3. **AI Provider + Embedding** — Select your LLM provider, model, and API key (Claude, OpenAI); also pick an embedding provider (required — schema indexing and `/ask` both depend on it). Providers that use cloud auth (Vertex AI, Bedrock, Ollama) don't need a key.
-4. **Schedule** — Enabled by default for nightly runs; turn it off if you'd rather trigger runs manually.
 
 Click **Create Project**. Your API key is encrypted and stored per-project.
 

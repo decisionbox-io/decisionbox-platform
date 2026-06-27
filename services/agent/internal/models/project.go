@@ -19,7 +19,6 @@ type Project struct {
 	LLM       LLMConfig       `bson:"llm" json:"llm"`
 	BlurbLLM  *BlurbLLMConfig `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
-	Schedule  ScheduleConfig  `bson:"schedule" json:"schedule"`
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
@@ -112,12 +111,6 @@ type LLMConfig struct {
 	Provider string            `bson:"provider" json:"provider"`
 	Model    string            `bson:"model" json:"model"`
 	Config   map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: project_id, location, host, etc.
-}
-
-type ScheduleConfig struct {
-	Enabled  bool   `bson:"enabled" json:"enabled"`
-	CronExpr string `bson:"cron_expr" json:"cron_expr"`
-	MaxSteps int    `bson:"max_steps" json:"max_steps"`
 }
 
 // Project lifecycle state — the only value the agent knows about.

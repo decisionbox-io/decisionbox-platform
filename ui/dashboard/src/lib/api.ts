@@ -233,7 +233,6 @@ export interface Project {
   llm: LLMConfig;
   embedding: EmbeddingConfig;
   blurb_llm?: BlurbLLMConfig;
-  schedule: ScheduleConfig;
   profile: Record<string, unknown>;
   // Output language for narrative fields (insight names/descriptions,
   // recommendation titles, /ask answers). Empty = legacy project,
@@ -358,12 +357,6 @@ export interface LLMConfig {
   provider: string;
   model: string;
   config?: Record<string, string>; // provider-specific: project_id, location, host, etc.
-}
-
-export interface ScheduleConfig {
-  enabled: boolean;
-  cron_expr: string;
-  max_steps: number;
 }
 
 export interface DiscoveryResult {

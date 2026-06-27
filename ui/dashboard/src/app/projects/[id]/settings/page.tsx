@@ -59,12 +59,6 @@ export default function ProjectSettingsPage() {
   const [language, setLanguage] = useState<string>('English');
   const [savingGeneral, setSavingGeneral] = useState(false);
 
-  // Schedule tab state
-  const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [scheduleCron, setScheduleCron] = useState('');
-  const [maxSteps, setMaxSteps] = useState(100);
-  const [savingSchedule, setSavingSchedule] = useState(false);
-
   // Profile tab state
   const [profile, setProfile] = useState<Record<string, Record<string, unknown>>>({});
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
@@ -84,7 +78,7 @@ export default function ProjectSettingsPage() {
 
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab.
-  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'schedule', 'profile', 'advanced'];
+  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'profile', 'advanced'];
   const [activeTab, setActiveTab] = useState<string>('general');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -113,9 +107,6 @@ export default function ProjectSettingsPage() {
         setDescription(proj.description || '');
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
-        setScheduleEnabled(proj.schedule?.enabled || false);
-        setScheduleCron(proj.schedule?.cron_expr || '0 2 * * *');
-        setMaxSteps(proj.schedule?.max_steps || 100);
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           const blurbProviderID = proj.blurb_llm.provider;
@@ -207,21 +198,6 @@ export default function ProjectSettingsPage() {
     }
   };
 
-  const saveSchedule = async () => {
-    setSavingSchedule(true);
-    try {
-      const saved = await api.updateProject(id, {
-        schedule: { enabled: scheduleEnabled, cron_expr: scheduleCron, max_steps: maxSteps },
-      });
-      setProject(saved);
-      notifications.show({ title: 'Saved', message: 'Schedule updated', color: 'green' });
-    } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setSavingSchedule(false);
-    }
-  };
-
   const saveProfile = async () => {
     setSavingProfile(true);
     try {
@@ -277,7 +253,6 @@ export default function ProjectSettingsPage() {
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
           <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>
           <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>
-          <Tabs.Tab value="schedule">Schedule</Tabs.Tab>
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
           <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
         </Tabs.List>
@@ -331,22 +306,6 @@ export default function ProjectSettingsPage() {
             />
             <Group justify="flex-end">
               <Button onClick={saveBlurb} loading={savingBlurb}>Save blurb model</Button>
-            </Group>
-          </SettingsSection>
-        </Tabs.Panel>
-
-        <Tabs.Panel value="schedule">
-          <SettingsSection>
-            <Switch label="Enable automatic discovery" checked={scheduleEnabled}
-              onChange={(e) => setScheduleEnabled(e.currentTarget.checked)} />
-            {scheduleEnabled && (
-              <TextInput label="Cron Expression" value={scheduleCron}
-                onChange={(e) => setScheduleCron(e.target.value)} description="e.g., 0 2 * * * (daily at 2 AM)" />
-            )}
-            <NumberInput label="Max Exploration Steps" value={maxSteps}
-              onChange={(v) => setMaxSteps(Number(v) || 100)} min={10} max={500} />
-            <Group justify="flex-end">
-              <Button onClick={saveSchedule} loading={savingSchedule}>Save schedule</Button>
             </Group>
           </SettingsSection>
         </Tabs.Panel>

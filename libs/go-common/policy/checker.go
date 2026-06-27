@@ -113,6 +113,7 @@ const (
 	FeatureSlack          = "slack_enabled"
 	FeatureSources        = "sources_enabled"
 	FeaturePackGen        = "pack_gen_enabled"
+	FeatureDataQuery      = "data_query_enabled"
 )
 
 // AllFeatures is the canonical, ordered list of wire flag names.
@@ -131,6 +132,7 @@ var AllFeatures = []string{
 	FeatureSlack,
 	FeatureSources,
 	FeaturePackGen,
+	FeatureDataQuery,
 }
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}

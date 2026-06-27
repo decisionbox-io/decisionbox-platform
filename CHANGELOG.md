@@ -8,9 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Per-project discovery schedule config (`project.schedule`)** — `services/{agent,api}/internal/models/project.go` / `services/api/models/project.go`, `services/api/internal/handler/projects.go`, `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/{new,[id]/settings}/page.tsx`, `docs/{reference/data-models.md,reference/api.md,concepts/architecture.md,getting-started/quickstart.md,getting-started/first-discovery.md,reference/configuration.md}`. The `ScheduleConfig{ enabled, cron_expr, max_steps }` field stored on each project (with a settings tab and a create-wizard step) was never evaluated — no scheduler ever shipped to act on `cron_expr`, so it was inert configuration. It is removed from the model, the project update API, and the dashboard (the create wizard drops its "Schedule" step; settings drops its "Schedule" tab). No migration is required: an orphan `schedule` sub-document on an existing project doc is ignored. Trigger discovery runs manually via `POST /api/v1/projects/{id}/discover` (unchanged).
+
 ### Added
 
 - **CI pushes the `decisionbox-agent` image to AWS ECR** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to ECR (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using OIDC-based AWS authentication. EKS-based deployments can pull the agent image from ECR without cross-registry authentication.
+
+- **In-process discovery-run trigger seam (`apiserver.TriggerDiscovery`)** — `services/api/internal/discoverytrigger/` (new), `services/api/internal/handler/discoveries.go`, `services/api/internal/server/server.go`, `services/api/apiserver/discovery_trigger.go` (new). The discovery-run trigger logic (lifecycle/schema-index gating, run-record reservation, plan-policy enforcement, agent spawn) is extracted from the `POST /api/v1/projects/{id}/discover` handler into `DiscoveriesHandler.StartRun` and exposed process-globally via a new leaf registry, re-exported as `apiserver.TriggerDiscovery`. The HTTP endpoint is now a thin adapter over `StartRun`, so the endpoint and in-process callers that compose the community API server share one implementation with no duplication. No behaviour change to the endpoint.
 
 ### Fixed
 

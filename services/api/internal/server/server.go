@@ -13,6 +13,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/askoverride"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/discoverytrigger"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runhooks"
@@ -125,6 +126,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller).
 		WithRunSummaries(runRepo)
 	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner)
+	// Expose the discovery-run trigger in-process so composed binaries
+	// (e.g. the enterprise scheduler) can start a run through the exact
+	// same path as POST /api/v1/projects/{id}/discover, reusing all
+	// lifecycle/schema-index gating, run reservation, and policy checks.
+	discoverytrigger.Register(discoveries.StartRun)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
 	estimate := handler.NewEstimateHandler(projectRepo)
