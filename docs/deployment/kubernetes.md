@@ -180,6 +180,8 @@ The API spawns agent processes as K8s Jobs. Configure via Helm values:
 env:
   RUNNER_MODE: "kubernetes"
   AGENT_IMAGE: "ghcr.io/decisionbox-io/decisionbox-agent:latest"
+  # For AWS/EKS deployments, use the ECR image instead:
+  # AGENT_IMAGE: "<account-id>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:latest"
   AGENT_NAMESPACE: "decisionbox"
   # Wall-clock budget for one agent Job (ActiveDeadlineSeconds). The K8s
   # control plane hard-kills the pod at this cap regardless of what the

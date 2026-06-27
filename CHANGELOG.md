@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI pushes the `decisionbox-agent` image to AWS ECR** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to ECR (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using OIDC-based AWS authentication. EKS-based deployments can pull the agent image from ECR without cross-registry authentication.
+
 - **In-process discovery-run trigger seam (`apiserver.TriggerDiscovery`)** — `services/api/internal/discoverytrigger/` (new), `services/api/internal/handler/discoveries.go`, `services/api/internal/server/server.go`, `services/api/apiserver/discovery_trigger.go` (new). The discovery-run trigger logic (lifecycle/schema-index gating, run-record reservation, plan-policy enforcement, agent spawn) is extracted from the `POST /api/v1/projects/{id}/discover` handler into `DiscoveriesHandler.StartRun` and exposed process-globally via a new leaf registry, re-exported as `apiserver.TriggerDiscovery`. The HTTP endpoint is now a thin adapter over `StartRun`, so the endpoint and in-process callers that compose the community API server share one implementation with no duplication. No behaviour change to the endpoint.
 
 ### Fixed
