@@ -16,79 +16,91 @@ The reporter's clarifying comment is decisive on scope:
 
 So this is a **two-sided** change, not a CSS pass:
 
-1. **Generation (agent):** instruct the analysis LLM to author `description` as a small,
+1. **Generation (agent):** instruct the analysis LLM to author the description as a small,
    tasteful subset of Markdown with a consistent anatomy.
 2. **Rendering (dashboard):** render that Markdown as clean, well-structured content in
-   the full insight view, and reduce it to a clean plain-text snippet in every compact /
-   preview context — never leaking raw `**`, `##`, or table pipes.
+   the full insight view, while every compact / preview context keeps showing clean
+   plain text — never leaking raw `**`, `##`, or table pipes.
 
-The change must be backward compatible: existing plain-text descriptions are already
-valid Markdown and must render as a tidy paragraph with no stray symbols (AC4).
+## 2. Data model: add `description_md` alongside `description` (team direction)
 
-## 2. Scope and key decisions (answering the issue's open questions)
+Per the team's direction, we do **not** overload the existing field. We keep `description`
+exactly as it is today — **raw plain text** — and add a **new sibling field**
+`description_md` that holds the Markdown-formatted content.
 
-These are decisions I made to keep the run moving; each has an off-ramp the reviewer can
-veto on this plan PR.
+| Field | Content | Consumers |
+|-------|---------|-----------|
+| `description` (existing) | **Plain text** (raw) | API integrators / external tools, semantic-search snippets, list/preview UIs, embeddings — everything that wants clean text |
+| `description_md` (new) | **GitHub-Flavored Markdown** (small subset) | The full insight/recommendation detail views, which render it as structured content |
 
-- **Q1 — Recommendations too?** **Yes, in this same PR.** Recommendation `description`
-  shares the exact same code paths on both sides: the renderer is one shared component
-  (used by two detail pages instead of one) and the generation guidance lives in the
-  already-parallel `discipline.RecommendationsRules()`. The spec's *Consistency*
-  requirement and Open Question 1 both lean "together," and shipping insights formatted
-  while the recommendation right beside it stays a wall of text would look broken. Marginal
-  cost is near-zero. **Off-ramp:** if the reviewer prefers insights-only, drop the
-  recommendation renderer wiring + the recommendation discipline-rule block; nothing else
-  changes.
+Why two fields (the team's rationale, which holds up technically):
+
+- **Backward compatibility.** Existing API consumers and existing documents keep working
+  untouched — `description` still means "plain text." Legacy docs simply lack `description_md`.
+- **Integration-friendly.** Customers wiring DecisionBox into other tools read `description`
+  and get clean, formatting-free text with no Markdown to strip.
+- **Clean previews for free.** Because `description` stays plain, every compact/preview
+  surface (search cards, spotlight, similar-items, list snippets) already shows clean text —
+  **no client-side Markdown stripping is needed anywhere** (this removes a whole class of
+  "raw `**` leaked into a card" bugs that a single-field design would have created). AC5 is
+  satisfied structurally.
+- **Embeddings stay clean.** `StandaloneInsight.BuildEmbeddingText()` keeps using
+  `Description` (now guaranteed plain), so vectors are built over prose, not Markdown noise.
+
+`description_md` is `omitempty` on every struct, so it is **purely additive** on the wire and
+in BSON — no migration, and old documents deserialize unchanged.
+
+### How both fields get populated (generation mechanism)
+
+**Recommended: author once, derive the plain.** The analysis LLM keeps authoring into the
+`description` field it already writes (every pack prompt's JSON schema example uses
+`"description"`), but now authors it as Markdown — driven by the centralized discipline rule
+(§4A), so **no per-pack prompt edits and custom analysis areas are covered too**. The agent
+then splits it at parse time (`parseInsights` / recommendation parse):
+
+```go
+authored := ins.Description                 // Markdown, as instructed by the discipline rule
+plain := mdtext.ToPlainText(authored)       // faithful plain reduction
+ins.Description = plain                      // raw/plain — backward-compatible, integration-friendly
+if plain != authored {                       // only when formatting was actually present
+    ins.DescriptionMd = authored             // rich source for the detail view
+}                                            // else leave DescriptionMd empty → detail view falls back to `description`
+```
+
+This guarantees the two fields are **always consistent** (the plain is literally the rich
+content with formatting removed), needs **zero new output fields** from the LLM (most reliable
+path), and yields a `description` that is a faithful, clean reduction of what's displayed.
+
+**Alternative considered (reviewer's call):** instruct the LLM to emit **both** `description`
+(plain) and `description_md` (Markdown) directly. Pro: `description` keeps the model's natural
+plain phrasing; no Go stripper. Con: two independently-authored strings can drift, ~doubles
+description tokens, and reliably emitting a second field not shown in the pack schema examples
+is weaker for custom areas. I recommend the derive approach but will switch if the reviewer
+prefers the LLM to author the plain version itself.
+
+Both approaches **degrade gracefully**: if no Markdown is produced, `description_md` is empty
+and the detail view renders `description` as a tidy paragraph (AC4).
+
+## 3. Scope and key decisions (answering the issue's open questions)
+
+Decisions made to keep the run moving; each has an off-ramp the reviewer can veto on this PR.
+
+- **Q1 — Recommendations too?** **Yes, same PR.** `Recommendation.description` gets the same
+  `description_md` sibling and the same rendering, because both sides are shared code (one
+  renderer used on two detail pages; the already-parallel `discipline.RecommendationsRules()`).
+  Shipping insights formatted while the recommendation beside it stays a wall of text would
+  look broken. **Off-ramp:** drop the recommendation field + renderer wiring + rec rule block;
+  nothing else changes.
 - **Q2 — Anatomy: requirement or recommendation?** **Strong recommendation, not enforced.**
-  The discipline rule asks the model to structure the description as *takeaway → what's
-  happening → why it matters → who's affected → contributing factors* **where the content
-  supports it**, but does not reject insights that don't fit the mold. Hard-enforcing a
-  shape would fight "older and plainer insights still look good" and findings that are
-  genuinely one sentence. No validation/verifier change rejects on structure.
-- **Q3 — Formatting set.** **In:** bold/italic emphasis, bulleted + numbered lists, small
-  sub-headings (rendered at h3/h4 scale only — never page-size), GFM tables, emphasized
-  inline numbers (bold). **Out:** images, raw HTML, arbitrary embeds, oversized headings.
-  **Links:** rendered as **plain, non-navigable text** in v1 — descriptions are
-  product-generated from the user's own warehouse, external links shouldn't appear, and
-  this fully satisfies the *Trust* requirement ("no surprising or unsafe links") with zero
-  link surface. The model is also told not to author links.
-
-### Data model: no change
-
-`Insight.Description` / `Recommendation.Description` are already `string` in
-`services/agent/internal/models/discovery.go`, `services/api/models/discovery.go`, and
-`libs/go-common/models`. Markdown is just text in that same field, so:
-
-- **No schema migration, no new field.** Plain-text legacy descriptions are valid Markdown
-  and render as a paragraph (AC4 for free).
-- Embeddings / semantic search are unaffected (a few `**`/`#` characters don't move vectors
-  meaningfully); the spec's non-goal "not changing what an insight is / how they're
-  discovered" is respected.
-
-Reusing the field (vs. adding `description_md`) is the chosen approach precisely because it
-needs no migration and is automatically backward/forward compatible.
-
-## 3. Architecture overview
-
-```
-GENERATION                                   RENDERING
-services/agent/internal/discipline/rules.go  ui/dashboard/src/components/common/Markdown.tsx   (new, full render)
-  + analysisRulesText: Markdown-authoring     ui/dashboard/src/lib/markdown.ts                  (new, toPlainText)
-  + recommendationsRulesText: same             ├─ insight detail page      → <Markdown>
-  + envelope clarification ("no markdown"      ├─ recommendation detail    → <Markdown>
-    means no code fence, not no-formatting-    └─ preview/snippet contexts → toPlainText()
-    in-string-fields)
-        │ appended at runtime by orchestrator.go
-        │ (buildAnalysisAreaPrompt / buildRecommendationsPrompt)
-        ▼
-  reaches every domain pack + custom area, no per-pack edits
-```
-
-Both sides hang off a **single source of truth**: one Go rules file for authoring, one
-React component + one util for display. This mirrors the existing design intent documented
-at the top of `discipline/rules.go` (rules live in code "to eliminate cross-repo drift
-across every prompt template") and avoids editing 27 `analysis_*.md` + 4 `recommendations.md`
-pack files.
+  The discipline rule asks for *takeaway → what's happening → why it matters → who's affected →
+  contributing factors* **where the content supports it**; it does not reject insights that
+  don't fit. Hard-enforcing a shape fights "older/plainer insights still look good" and
+  one-sentence findings. No validation/verifier change rejects on structure.
+- **Q3 — Formatting set.** **In:** bold/italic, bulleted + numbered lists, small sub-headings
+  (rendered at h3/h4 scale only — never page-size), GFM tables, emphasized inline numbers
+  (bold). **Out:** images, raw HTML, arbitrary embeds, oversized headings. **Links:** rendered
+  as **plain, non-navigable text** in v1 and the model is told not to author them — fully
+  satisfies the *Trust* requirement ("no surprising or unsafe links") with zero link surface.
 
 ## 4. Detailed changes
 
@@ -97,268 +109,262 @@ pack files.
 The discipline package is appended to every writer prompt at runtime by the orchestrator
 (`buildAnalysisAreaPrompt` → `AppendAnalysisRules`, `buildRecommendationsPrompt` →
 `AppendRecommendationsRules`, confirmed at `orchestrator.go:1280-1301`). It already reaches
-**user-added custom analysis areas** that carry no pack content — so it is the correct,
-drift-proof injection point.
+**user-added custom analysis areas** that carry no pack content — the correct, drift-proof
+injection point. Add a new rule block to **`analysisRulesText`** and the parallel one to
+**`recommendationsRulesText`**:
 
-Add a new rule block to **`analysisRulesText`** (and the parallel one to
-`recommendationsRulesText`):
-
-- **`STRUCTURED MARKDOWN DESCRIPTION`** — the `description` field is **GitHub-Flavored
-  Markdown**. Reconcile the conflicting envelope instruction explicitly, because 58 pack
-  lines say *"Respond with ONLY valid JSON (no markdown, no explanations)"*:
-  > The "no markdown" instruction above refers to the **response envelope** — do not wrap
-  > the JSON in ``` code fences and emit nothing outside the JSON object. It does **not**
-  > restrict the *content of string fields*. The `description` value MUST be GitHub-Flavored
-  > Markdown.
-  Because the discipline block is appended **last**, it has recency advantage over the
-  pack's earlier phrasing — one clarification fixes all 58 sites without touching them.
+- **`STRUCTURED MARKDOWN DESCRIPTION`** — the `description` field is authored as
+  **GitHub-Flavored Markdown**. Reconcile the conflicting envelope phrasing explicitly,
+  because 58 pack lines say *"Respond with ONLY valid JSON (no markdown, no explanations)"*:
+  > The "no markdown" instruction above governs the **response envelope** — do not wrap the
+  > JSON in ``` code fences and emit nothing outside the JSON object. It does **not** restrict
+  > the *content of string fields*. The `description` value MUST be GitHub-Flavored Markdown.
+  Because the discipline block is appended **last**, it has recency advantage over the pack's
+  earlier phrasing — one clarification fixes all 58 sites without touching them.
 - **Supported elements** (the Q3 set): a short bold lead/takeaway line with the headline
-  number in **bold**; short paragraphs; `**bold**` / `*italic*`; `-`/`1.` lists for
-  contributing factors; small sub-headings using `###`/`####` only (never `#`/`##`); GFM
-  tables for small numeric comparisons. **Forbidden:** images, raw HTML, links, top-level
-  `#`/`##` headings.
+  number in **bold**; short paragraphs; `**bold**` / `*italic*`; `-`/`1.` lists; small
+  sub-headings using `###`/`####` only (never `#`/`##`); GFM tables for small numeric
+  comparisons. **Forbidden:** images, raw HTML, links, top-level `#`/`##` headings.
 - **Anatomy (strong recommendation)** — where the finding supports it: one-line takeaway →
   what's happening (exact numbers) → why it matters → who's affected (segment + size) →
   optional contributing-factors list.
-- **JSON-safety note** — newlines inside the `description` string MUST be JSON-escaped
-  (`\n`); the response must remain a single valid JSON object. (This protects the strict
-  `json.Unmarshal` in `parseInsights` — see Risks.)
-- **No conflict with existing rules** — the new rule explicitly defers to base-context
-  Rule 8 (non-dramatic language): Markdown controls *structure*, not *tone*; bold is for
-  numbers/keywords, never for shouting, and the no-emoji / no-`!` / no-all-caps / "critical
-  only in the severity field" constraints still hold. This keeps the verifier's V4
-  editorial-language check happy (it scans for dramatic words / `!` / emoji / all-caps —
-  none of which are Markdown structural symbols, so `**67%**` and `### Why it matters` are
-  not falsely rejected).
+- **JSON-safety note** — newlines inside the `description` string MUST be JSON-escaped (`\n`);
+  the response stays a single valid JSON object (protects the strict `json.Unmarshal`).
+- **Defers to tone rules** — Markdown controls *structure*, not *tone*: bold is for
+  numbers/keywords, never shouting; base-context Rule 8 (no emoji / `!` / all-caps; "critical"
+  only in the `severity` field) still governs. The verifier's V4 editorial-language scan keys
+  on dramatic *words* / `!` / emoji / all-caps — none are Markdown structural tokens, so
+  `**67%**` and `### Why it matters` are **not** falsely rejected (verified against
+  `verifierRulesText`).
 
-The recommendation block is the same, framed for `title`/`description`/`actions` and
-preserving the existing `R. RELATED_INSIGHT_IDS` and non-dramatic-language clauses.
+The recommendation block mirrors this for `title`/`description`/`actions`, preserving the
+existing `R. RELATED_INSIGHT_IDS` and non-dramatic-language clauses.
 
-**Optional, low-value, deliberately NOT doing (Rule 8):** rewriting the `"description":`
-example string inside all 27+4 pack prompt files to show Markdown. The runtime append is
-authoritative and reaches custom areas; editing every pack invites drift and is exactly the
-kind of duplication `discipline/rules.go` exists to avoid. Left out unless a reviewer asks.
+**Deliberately NOT doing (Rule 8):** editing the `"description"` example string in the 27
+`analysis_*.md` + 4 `recommendations.md` pack files. The runtime append is authoritative and
+reaches custom areas; per-pack edits invite drift — exactly what `discipline/rules.go` exists
+to prevent.
 
-### 4B. Rendering — new shared pieces
+### 4B. Generation — split into plain + Markdown (new Go helper)
 
-**New `ui/dashboard/src/lib/markdown.ts`** — `toPlainText(md: string): string` and a small
-`snippet(md, max)` helper. `toPlainText` strips the supported Markdown to readable plain
-text for preview contexts: removes emphasis markers, heading hashes, list bullets/numbers,
-collapses GFM tables to space/dash-separated cells, unwraps `[text](url)` to `text`, and
-normalizes whitespace. Pure, dependency-free, unit-tested against every supported element +
-plain text + empty/undefined. Satisfies AC5 (no raw formatting chars, no oversized headings,
-no layout breakage in compact contexts).
+- **New package `services/agent/internal/mdtext`** — `ToPlainText(md string) string`: a small,
+  dependency-free reducer for the supported subset. Removes emphasis markers, heading hashes,
+  list bullets/numbers, inline-code backticks and blockquote markers; flattens GFM tables to
+  readable cell text; unwraps `[text](url)` → `text`; normalizes whitespace. License-free
+  (no new dependency → no `.grant.yaml` churn). Thoroughly unit-tested.
+- **`orchestrator.go` `parseInsights` (≈1116-1130)** and the recommendation parse
+  (≈1204-1217): after the existing UUID/`DiscoveredAt` defaults, apply the split shown in §2
+  — set `Description = ToPlainText(authored)` and populate `DescriptionMd` only when formatting
+  was present. Done **at parse time**, so the stored & validated `description` is plain and
+  `description_md` is the rich source; validation (which attaches a verdict, never rewrites the
+  text) sees the plain `description` and behaves unchanged.
+
+### 4C. Model fields (`description_md`, `omitempty` everywhere)
+
+| File | Struct(s) | Add |
+|------|-----------|-----|
+| `services/agent/internal/models/discovery.go` | `Insight` (≈81), `Recommendation` (≈110) | `DescriptionMd string \`bson:"description_md,omitempty" json:"description_md,omitempty"\`` |
+| `services/api/models/discovery.go` | `Insight` (≈44), `Recommendation` (≈61) | same |
+| `libs/go-common/models/insight.go` | `StandaloneInsight` (≈29) | same |
+| `libs/go-common/models/recommendation.go` | `StandaloneRecommendation` (≈23) | same |
+| `services/agent/internal/discovery/phase_embed_index.go` | `denormalizeInsights` (≈72), `denormalizeRecommendations` | copy `DescriptionMd: ins.DescriptionMd` so the standalone collection carries it |
+| `ui/dashboard/src/lib/api.ts` | `Insight` (≈382), `Recommendation` (≈471) | `description_md?: string;` |
+
+`StandaloneInsight.BuildEmbeddingText()` is left using `Description` (now plain) — no change.
+A JSON marshal/unmarshal round-trip test is added per the repo's "new model field" rule.
+
+### 4D. Rendering — new shared component + wire the two detail views
 
 **New `ui/dashboard/src/components/common/Markdown.tsx`** — a thin, safe wrapper over
 `react-markdown` + `remark-gfm` (both already deps: `react-markdown@^10`, `remark-gfm@^4`),
 with a component map styled from `src/styles/tokens.css` custom properties (no inline magic
-colors — Rule 2 / TS standards). Follows the precedent already in the repo at
-`ask/page.tsx:341-384` (which maps `p/li/h1..h3/strong/ul/ol/table/th/td/code`), minus the
-citation processing. Key specifics:
+colors — Rule 2 / TS standards), following the existing precedent at `ask/page.tsx:341-384`
+minus the citation processing. Specifics:
 
 - **Safety/Trust:** react-markdown v10 renders **no raw HTML** by default (no `rehype-raw`
-  anywhere in the repo — confirmed) and sanitizes URLs, so it is XSS-safe. We go further and
-  map `a → <span>` (plain text, non-navigable) so even a stray link can't navigate (Q3 /
-  Trust).
-- **No oversized headings:** map `h1/h2/h3 → h4-scale`, `h4 → smaller` — sub-headings
-  *separate* ideas but never dominate, matching "small sub-headings" + AC2/AC8.
-- **Typography native to the product:** font sizes, line-height (~1.6–1.7), list indent,
-  table borders all from tokens, matching the Ask renderer and the surrounding Mantine
-  cards (AC8).
-- **Long content (AC6):** no `max-height`/clamp on the full renderer; tables wrapped in an
-  `overflow-x:auto` div so wide tables scroll instead of breaking the layout on small
-  screens.
+  anywhere in the repo — confirmed) and sanitizes URLs, so it is XSS-safe. We map `a → <span>`
+  (plain text, non-navigable) so even a stray link can't navigate (Q3 / Trust).
+- **No oversized headings:** `h1/h2/h3 → h4-scale`, `h4 → smaller` (AC2/AC8).
+- **Native typography:** sizes, ~1.6–1.7 line-height, list indent, table borders all from
+  tokens, matching the Ask renderer and the surrounding Mantine cards (AC8).
+- **Long content (AC6):** no `max-height`/clamp; tables wrapped in `overflow-x:auto` so wide
+  tables scroll instead of breaking on small screens.
 
-### 4C. Wire the full renderer into the two detail views
+**Wire it in** (render `description_md` when present, else fall back to `description`):
 
-| File | Line | From | To |
-|------|------|------|----|
-| `app/projects/[id]/discoveries/[runId]/insights/[insightId]/page.tsx` | 196-198 | `<Text size="sm">{insight.description}</Text>` | `<Markdown>{insight.description}</Markdown>` (with a quiet "No description" when empty — AC *No description* state) |
-| `app/projects/[id]/discoveries/[runId]/recommendations/[recommendationId]/page.tsx` | 156-159 | `<Text size="sm">{recommendation.description}</Text>` | `<Markdown>{recommendation.description}</Markdown>` |
+| File | Line | Change |
+|------|------|--------|
+| `app/projects/[id]/discoveries/[runId]/insights/[insightId]/page.tsx` | 196-198 | `<Markdown>{insight.description_md || insight.description}</Markdown>`; quiet "No description" when both empty |
+| `app/projects/[id]/discoveries/[runId]/recommendations/[recommendationId]/page.tsx` | 156-159 | `<Markdown>{recommendation.description_md || recommendation.description}</Markdown>` |
 
-The insight detail page already orders content title → at-a-glance badges (severity / area /
-affected) → description card → Assessment → Indicators → Metrics → supporting detail
-(AC7 already satisfied structurally); we only upgrade the description card's body.
+The insight detail page already orders content title → at-a-glance badges → description card →
+Assessment → Indicators → Metrics → supporting detail (AC7 satisfied structurally); we only
+upgrade the description card's body.
 
-### 4D. Reduce Markdown to plain text in every preview/snippet context (AC5)
+### 4E. Preview / compact contexts — no change needed
 
-Wrap the description with `toPlainText(...)` (then slice/clamp as today) at each compact
-site so raw Markdown never leaks:
+Because `description` stays plain, the snippet surfaces keep reading it and stay clean with
+**no edits and no client-side stripping**: `components/search/ResultCard.tsx:54-56`,
+`components/lists/SimilarItems.tsx:60-63`, `components/common/SpotlightSearch.tsx:250-257`,
+`app/projects/[id]/recommendations/page.tsx:166-169` & `277-280`, and the
+`app/projects/[id]/insights/page.tsx:123` text filter. This is the main simplification the
+two-field design buys us. (A regression test still pins that a Markdown-bearing insight shows
+plain text in a card — see §6.)
 
-| File | Line(s) | Context |
-|------|---------|---------|
-| `components/search/ResultCard.tsx` | 54-56 | global search result card snippet (`slice(0,200)`) |
-| `components/lists/SimilarItems.tsx` | 60-63 | "Similar Insights" card (`lineClamp={2}`) |
-| `components/common/SpotlightSearch.tsx` | 250-257 | spotlight quick-search row (`slice(0,80)`) |
-| `app/projects/[id]/recommendations/page.tsx` | 166-169 | recommendations semantic-search snippet (`slice(0,200)`) |
-| `app/projects/[id]/recommendations/page.tsx` | 277-280 | recommendations list card body (currently full text) → plain-text snippet |
+### 4F. Docs (Rule 4)
 
-`app/projects/[id]/insights/page.tsx:123` filters on `description` for client-side text
-search; it lowercases+`includes`, so matching against raw Markdown still works. Left as-is
-(filtering on the underlying text is correct; stripping there is unnecessary churn).
+- `docs/reference/data-models.md` — Insight (line 37) and Recommendation (line 74): keep
+  `description` as "plain text" and **add a `description_md` row** ("GitHub-Flavored Markdown
+  rendition rendered in the dashboard; absent on plain/legacy insights").
+- `docs/reference/api.md` — if it documents the insight/recommendation response shape, add
+  `description_md`.
+- `docs/concepts/discovery-lifecycle.md` (≈169 / 250) — note the description is authored as
+  Markdown with a takeaway-first anatomy and stored split into `description` (plain) +
+  `description_md` (Markdown).
+- `docs/guides/customizing-prompts.md` and/or `creating-domain-packs.md` — note the platform
+  appends Markdown-authoring guidance to every analysis/recommendation prompt (custom areas
+  included) and that the agent derives the plain `description`.
+- `CHANGELOG.md` — one `### Added` entry under `[Unreleased]`.
 
-### 4E. Docs (Rule 4)
-
-- `docs/reference/data-models.md` — Insight (line 37) and Recommendation (line 74)
-  `description` rows: note the field is **GitHub-Flavored Markdown** (small subset: emphasis,
-  lists, small sub-headings, simple tables; rendered in the dashboard, reduced to plain text
-  in previews).
-- `docs/concepts/discovery-lifecycle.md` — where the analysis output schema is shown
-  (~line 169 / 250), add a sentence that `description` is authored as Markdown with a
-  suggested takeaway-first anatomy.
-- `docs/guides/customizing-prompts.md` and/or `docs/guides/creating-domain-packs.md` — note
-  that the platform appends Markdown-authoring guidance to every analysis/recommendation
-  prompt (so custom areas get it automatically) and that the `description` example values
-  may use Markdown.
-- `docs/concepts/ask.md` — only if it asserts descriptions are plain text (verify; touch
-  only if stale).
-- `CHANGELOG.md` — one `### Added` entry under `[Unreleased]` listing the agent rules file,
-  the new dashboard component + util, and the wired pages.
-
-All docs stay `md` (not `mdx`), one sentence per line, links validated (per repo doc rules).
+All docs stay `md` (not `mdx`), one sentence per line, links validated.
 
 ## 5. Implementation phases
 
-1. **Agent rules + tests.** Add the Markdown-authoring block to `analysisRulesText` and
-   `recommendationsRulesText`; extend `discipline/rules_test.go`. Add a `parseInsights`
-   test proving an escaped-newline Markdown description round-trips and a plain description
-   still parses. `make test-go`.
-2. **Dashboard util + component + tests.** Add `lib/markdown.ts` (`toPlainText`) and
-   `components/common/Markdown.tsx`; Jest tests for both. `make test-ui`.
-3. **Wire renderer.** Swap the two detail-page description blocks to `<Markdown>`; handle
-   empty description.
-4. **Wire previews.** Apply `toPlainText` at the 5 snippet sites; extend `ResultCard` test
-   to assert no raw `**`/`#` leaks.
-5. **Docs + CHANGELOG.**
-6. **Local gates:** `make build`, `make test-go`, `make lint-go` (after
-   `export PATH=$PATH:$(go env GOPATH)/bin`), `make test-ui`, `make lint-ui`, and
-   `cd ui/dashboard && npm run build`.
+1. **Model fields + round-trip tests.** Add `description_md` to the four Go structs +
+   `lib/api.ts`; wire the two denormalize mappings. `make test-go`.
+2. **`mdtext.ToPlainText` + tests.** New package, thorough unit tests.
+3. **Agent rules + split + tests.** Markdown block in `analysisRulesText` /
+   `recommendationsRulesText`; the parse-time split in `parseInsights` + recommendation parse;
+   extend `discipline/rules_test.go`; add parse tests. `make test-go`.
+4. **Dashboard component + tests.** `components/common/Markdown.tsx` + Jest tests. `make test-ui`.
+5. **Wire renderer.** Swap the two detail-page description blocks; handle empty.
+6. **Docs + CHANGELOG.**
+7. **Local gates:** `make build`, `make test-go`, `make lint-go` (after
+   `export PATH=$PATH:$(go env GOPATH)/bin`), `make test-ui`, `make lint-ui`,
+   `cd ui/dashboard && npm run build`, and `make test-integration` (confirm the Mongo
+   round-trip still serves insights with the new field).
 
 ## 6. Test strategy (Rule 9 — failure & edge cases, not just happy path)
 
-**Go — `services/agent/internal/discipline/rules_test.go`:**
-- `AnalysisRules()` / `RecommendationsRules()` contain the new section header + the key
-  clauses (Markdown-in-`description`, the envelope clarification, the supported-set, the
-  anatomy, the JSON-escape note). Mirrors the existing `assertContainsAll` table style.
-- Guard test: the envelope-clarification phrasing is present so the "no markdown" pack lines
-  can't be read as "no formatting in fields."
-- Negative: the new block must not introduce emoji / `!` / dramatic words (keeps it
-  consistent with Rule 8 and the existing `assertNotContains` discipline).
+**Go — `internal/mdtext`:** bold/italic/headings/lists/tables/inline-code/blockquote/links all
+reduce to clean text with no residual `*`/`#`/`|`/`` ` ``; plain text passes through unchanged;
+empty string → empty; a "no formatting" input is detected as equal to its reduction (so the
+caller leaves `description_md` empty); a multi-paragraph input keeps readable spacing.
 
-**Go — `services/agent/internal/discovery/orchestrator_*_test.go` (parse):**
-- `parseInsights` with a description containing escaped-newline Markdown
-  (`"## Takeaway\n\n**67%** of ...\n\n| a | b |\n|---|---|\n| 1 | 2 |"`) → parses, field
-  preserved verbatim. **Failure/edge:** a plain one-line description still parses (AC4);
-  an empty description is accepted.
+**Go — `discipline/rules_test.go`:** `AnalysisRules()` / `RecommendationsRules()` contain the
+new section header + key clauses (Markdown-in-`description`, the envelope clarification, the
+supported-set, the anatomy, the JSON-escape note); a guard test that the envelope
+clarification is present; negative test that the new block introduces no emoji / `!` / dramatic
+words (keeps it consistent with Rule 8, via the existing `assertNotContains`).
+
+**Go — `internal/discovery` parse:** `parseInsights` with a Markdown description (escaped
+newlines, bold, a small table) → `DescriptionMd` holds the Markdown verbatim and `Description`
+holds the plain reduction (no `*`/`#`/`|`). **Edge:** a plain one-line description → `Description`
+unchanged and `DescriptionMd` empty (AC4); empty description accepted. Same for the
+recommendation parse. A model JSON round-trip test (marshal → unmarshal) asserts `description_md`
+survives and is omitted when empty.
 
 **Dashboard — Jest:**
-- `lib/markdown.toPlainText`: bold/italic/headings/lists/tables/links all reduce to clean
-  text; plain text passes through unchanged; `undefined`/empty → `''`; long input + slice
-  still has no stray symbols (AC5).
-- `components/common/Markdown`: renders `**x**`→`<strong>`, `*x*`→`<em>`, `- a`→list item,
-  `### H`→small heading (assert it is *not* an `<h1>`), a GFM table → `<table>` (AC1/AC2);
-  a plain paragraph renders as one `<p>` with no literal `*`/`#` (AC4); an HTML-injection
-  string (`<img onerror=...>` / `<script>`) is rendered inert as text, not as a live element
-  (Trust); a `[text](javascript:...)` link renders as plain text, non-navigable (Q3/Trust).
-- Extend `ResultCard.test.tsx`: a Markdown description (`**Bold** finding`) shows `Bold
-  finding` in the snippet, not `**Bold**` (AC5).
+- `components/common/Markdown`: `**x**`→`<strong>`, `*x*`→`<em>`, `- a`→list item, `### H`→
+  small heading (assert *not* `<h1>`), GFM table → `<table>` (AC1/AC2); a plain paragraph →
+  one `<p>` with no literal `*`/`#` (AC4); an HTML-injection string (`<img onerror>` /
+  `<script>`) renders inert as text (Trust); a `[t](javascript:...)` link renders as
+  non-navigable text (Q3/Trust).
+- Extend `ResultCard.test.tsx`: with `description` plain (as it now always is) the card shows
+  clean text — pins that previews never show Markdown even as the model starts emitting it
+  (AC5).
 
-**Integration (real, testcontainer — Rule 9):** the change is prompt-text + presentation;
-it adds no new DB/warehouse/API behavior, so no new integration target is warranted. The
-existing `make test-integration` (agent + API Mongo round-trip) already exercises persisting
-and serving an insight `description` string and continues to pass unchanged with Markdown
-content (it's still just a string). I will run it to confirm no regression rather than add a
-redundant container test (avoids Rule 8 gold-plating).
+**Integration (real testcontainer — Rule 9):** the change adds no new DB/warehouse/API
+behavior, only a new string field, so no new integration target is warranted (Rule 8). The
+existing `make test-integration` (agent + API Mongo round-trip) persists and serves the insight
+struct — now with `description_md` — and must stay green; I will run it rather than add a
+redundant container test.
 
 ## 7. Risks & mitigations
 
-- **JSON parse fragility on multi-line strings.** `parseInsights`/recommendation parsing use
-  strict `json.Unmarshal` (`orchestrator.go:1112,1198`); a description with *literal*
-  (unescaped) newlines would fail and drop that area's insights. *Mitigation:* the new rule
-  explicitly requires `\n`-escaped newlines and a single valid JSON object; modern models
-  reliably escape inside JSON; a parse test pins the escaped form. *Not* adding a custom
-  newline-repair pass in this PR — that's a separate hardening concern (Rule 8); if the team
-  wants it, it's a tracked follow-up, not silent tech debt.
-- **Verifier false-rejects on Markdown symbols.** V4 scans `description` for dramatic words /
-  `!` / emoji / all-caps — none are Markdown structural tokens, so `**`, `###`, `|` are safe.
-  Confirmed against `verifierRulesText`. No change needed; covered by reasoning above.
-- **Enterprise dashboard overlay.** Per `automation/CLAUDE.md`, if the enterprise repo
-  overlays a community UI file we edit, the overlay must be synced. The new `Markdown.tsx` /
-  `markdown.ts` are **additive** (never overlaid). The deep route detail pages and the
-  preview components are unlikely to be overlaid (the documented example is `AppShell.tsx`),
-  but I cannot inspect the enterprise repo from this container. **Flagging for reviewer:**
-  confirm whether `insights/[insightId]/page.tsx`, `recommendations/[recommendationId]/page.tsx`,
-  `ResultCard.tsx`, `SimilarItems.tsx`, or `SpotlightSearch.tsx` are overlaid; if so, port the
-  one-line edits.
-- **Preview leakage regressions.** Easy to miss a snippet site. *Mitigation:* the table in
-  4D enumerates all five; a `ResultCard` test pins the behavior; grep for `.description` over
-  `src/` was used to build the list.
-- **Tone drift.** Giving the model bold/headings could tempt dramatic emphasis. *Mitigation:*
-  the new rule subordinates itself to Rule 8 and the verifier still enforces it.
+- **Stripper fidelity.** `mdtext.ToPlainText` must produce clean plain text for the controlled
+  subset. *Mitigation:* the subset is small and we instruct exactly what the model emits; the
+  reducer is line-oriented and exhaustively unit-tested; worst case a slightly awkward plain
+  line, never broken UI. *Not* pulling in a full Markdown parser dependency (Rule 8 / license
+  surface) for a reduction this small.
+- **JSON parse fragility on multi-line strings.** Strict `json.Unmarshal` (`orchestrator.go:1112,1198`)
+  needs `\n`-escaped newlines. *Mitigation:* the new rule requires escaped newlines + a single
+  valid JSON object; modern models escape inside JSON; a parse test pins the escaped form. A
+  custom newline-repair pass is out of scope (tracked follow-up if real failures appear — not a
+  silent TODO).
+- **Verifier false-rejects on Markdown symbols.** None: V4 keys on dramatic words / `!` / emoji
+  / all-caps, and it scans the plain `description` (post-split) anyway. Covered above + by tests.
+- **Field drift between `description` and `description_md`.** Eliminated by the derive approach
+  (plain is computed from the Markdown). The LLM-authors-both alternative would reintroduce it —
+  noted in §2.
+- **Enterprise dashboard overlay.** The new `Markdown.tsx` is additive (never overlaid). The two
+  deep route detail pages are unlikely to be overlaid (the documented example is `AppShell.tsx`),
+  but I can't inspect the enterprise repo from this container. **Flagging for reviewer:** confirm
+  whether `insights/[insightId]/page.tsx` or `recommendations/[recommendationId]/page.tsx` are
+  overlaid; if so, port the one-line render edit.
 
 ## 8. Alternatives considered
 
-- **New `description_md` field + keep `description` plain.** Rejected: needs a migration and
-  dual-write, and the same field already round-trips Markdown losslessly. More moving parts,
-  no benefit.
-- **Edit every pack prompt's `description` example instead of the central rule.** Rejected:
-  27+4 files, cross-pack drift, and misses custom analysis areas — the exact failure mode
-  `discipline/rules.go` was created to prevent.
-- **Server-side render Markdown → HTML in the API.** Rejected: pushes an HTML-sanitization
-  burden into Go, and the dashboard already owns presentation; react-markdown is safe by
-  default on the client.
-- **Reuse the Ask page's inline renderer directly.** Rejected: it's coupled to citation
-  processing; extracting a clean shared component is cheaper than retrofitting, and we leave
-  the Ask page untouched (Rule 8).
-- **Hard-enforce the anatomy via the verifier.** Rejected per Q2 — fights plain/simple
-  findings and "older insights still look good."
+- **Reuse the single `description` field for Markdown (no new field).** This was the original
+  draft; **superseded by team direction** to keep `description` raw for backward compatibility +
+  integration and add `description_md`. The two-field design is also strictly simpler on the UI
+  (previews need no stripping).
+- **LLM authors both `description` and `description_md` directly** (vs. derive). Trade-offs in
+  §2 — recommended approach is derive; reviewer may flip it.
+- **Edit every pack prompt instead of the central rule.** Rejected: 27+4 files, drift, misses
+  custom areas.
+- **Server-side render Markdown → HTML in the API.** Rejected: pushes HTML sanitization into Go;
+  the dashboard owns presentation and react-markdown is safe by default on the client.
+- **Reuse the Ask page's inline renderer directly.** Rejected: coupled to citation processing;
+  a clean shared component is cheaper and leaves Ask untouched (Rule 8).
+- **Hard-enforce the anatomy via the verifier.** Rejected per Q2.
 
 ## 9. Files touched (summary)
 
 | Area | File | Change |
 |------|------|--------|
-| Agent | `services/agent/internal/discipline/rules.go` | + Markdown-authoring block in `analysisRulesText` & `recommendationsRulesText` + envelope clarification |
-| Agent | `services/agent/internal/discipline/rules_test.go` | + assertions for the new rule text |
-| Agent | `services/agent/internal/discovery/orchestrator_*_test.go` | + Markdown-in-`description` parse test (escaped newlines, plain, empty) |
-| UI | `ui/dashboard/src/lib/markdown.ts` | **new** — `toPlainText` / `snippet` |
-| UI | `ui/dashboard/src/components/common/Markdown.tsx` | **new** — safe GFM renderer (token-styled, small headings, links→text) |
-| UI | `.../insights/[insightId]/page.tsx` | description card → `<Markdown>` + empty state |
-| UI | `.../recommendations/[recommendationId]/page.tsx` | description card → `<Markdown>` |
-| UI | `components/search/ResultCard.tsx` | snippet → `toPlainText` |
-| UI | `components/lists/SimilarItems.tsx` | snippet → `toPlainText` |
-| UI | `components/common/SpotlightSearch.tsx` | snippet → `toPlainText` |
-| UI | `app/projects/[id]/recommendations/page.tsx` | two snippet sites → `toPlainText` |
-| UI tests | `src/__tests__/Markdown.test.tsx`, `src/__tests__/markdown.test.ts`, extend `ResultCard.test.tsx` | **new/extended** |
-| Docs | `docs/reference/data-models.md`, `docs/concepts/discovery-lifecycle.md`, `docs/guides/customizing-prompts.md` (+/or `creating-domain-packs.md`) | note Markdown descriptions |
+| Model | `services/agent/internal/models/discovery.go` | + `DescriptionMd` on Insight + Recommendation |
+| Model | `services/api/models/discovery.go` | + `DescriptionMd` on Insight + Recommendation |
+| Model | `libs/go-common/models/insight.go`, `.../recommendation.go` | + `DescriptionMd` on the two Standalone structs |
+| Model | `ui/dashboard/src/lib/api.ts` | + `description_md?: string` on Insight + Recommendation |
+| Agent | `services/agent/internal/mdtext/` (+ test) | **new** — `ToPlainText` reducer |
+| Agent | `services/agent/internal/discovery/orchestrator.go` | parse-time split (insights + recommendations) |
+| Agent | `services/agent/internal/discovery/phase_embed_index.go` | copy `DescriptionMd` in both denormalize mappings |
+| Agent | `services/agent/internal/discipline/rules.go` (+ test) | + Markdown-authoring block in analysis & recommendation rules |
+| Agent tests | `services/agent/internal/discovery/*_test.go` | parse split + model round-trip tests |
+| UI | `ui/dashboard/src/components/common/Markdown.tsx` (+ test) | **new** — safe GFM renderer |
+| UI | `.../insights/[insightId]/page.tsx`, `.../recommendations/[recommendationId]/page.tsx` | description card → `<Markdown>` with `description_md || description` |
+| UI tests | extend `src/__tests__/ResultCard.test.tsx` | preview stays plain |
+| Docs | `docs/reference/data-models.md`, `docs/reference/api.md`, `docs/concepts/discovery-lifecycle.md`, `docs/guides/customizing-prompts.md` (+/or `creating-domain-packs.md`) | document `description_md` + Markdown authoring |
 | Docs | `CHANGELOG.md` | `### Added` entry under `[Unreleased]` |
 
 ## 10. Acceptance-criteria traceability
 
 | AC | Covered by |
 |----|-----------|
-| 1 — full view renders emphasis/lists/sub-headings/table, no raw symbols | 4B/4C `Markdown.tsx`; component tests |
-| 2 — lists indented, emphasis bold/italic, sub-headings separate, tables legible | 4B component map + tests |
-| 3 — takeaway + headline numbers prominent in seconds | 4A anatomy (bold lead/number) + 4B typography |
-| 4 — plain description → clean paragraph, no leftover symbols | field reuse + react-markdown paragraph; component test |
-| 5 — previews are clean plain-text snippets | 4B `toPlainText` + 4D five sites + `ResultCard` test |
-| 6 — very long description fully readable, not clipped | 4B no clamp on full render; table overflow-scroll |
+| 1 — full view renders emphasis/lists/sub-headings/table, no raw symbols | 4D `Markdown.tsx` over `description_md`; component tests |
+| 2 — lists indented, emphasis bold/italic, sub-headings separate, tables legible | 4D component map + tests |
+| 3 — takeaway + headline numbers prominent in seconds | 4A anatomy (bold lead/number) + 4D typography |
+| 4 — plain description → clean paragraph, no leftover symbols | fallback to plain `description`; empty `description_md`; component + parse tests |
+| 5 — previews are clean plain-text snippets | 4E previews read plain `description` (no stripping); `ResultCard` test |
+| 6 — very long description fully readable, not clipped | 4D no clamp; table overflow-scroll |
 | 7 — detail view organized: title → key facts → description → detail | existing layout; description card upgraded |
-| 8 — formatting matches product typography/spacing | 4B token-based styling, mirrors Ask renderer |
+| 8 — formatting matches product typography/spacing | 4D token-based styling, mirrors Ask renderer |
 
 ## 11. Out of scope / follow-ups
 
-- Custom newline-repair in the JSON parser (only if real-world parse failures appear — would
-  be a tracked issue, not a TODO).
-- Back-filling/re-generating historical insight descriptions into Markdown (non-goal; they
-  already render fine as paragraphs).
+- Custom newline-repair in the JSON parser (only if real parse failures appear — tracked issue,
+  not a TODO).
+- Back-filling historical insights with a `description_md` (non-goal; they render fine as
+  paragraphs via the fallback).
 - Rich-text editing by end users (explicit non-goal).
 - Images / embeds / navigable links (explicit non-goal / deferred per Q3).
 
 ---
 
 This is a **PLAN for review** — no implementation is included in this PR. Once approved, the
-build step implements it per the phases above, deletes this plan file, marks the PR ready,
-and runs the Codex + Copilot review loop.
+build step implements it per the phases above, deletes this plan file, marks the PR ready, and
+runs the Codex + Copilot review loop.
 
 Closes #293
 
