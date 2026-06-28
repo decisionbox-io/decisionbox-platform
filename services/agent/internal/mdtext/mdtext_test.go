@@ -42,6 +42,24 @@ func TestToPlainText_Emphasis(t *testing.T) {
 	}
 }
 
+// TestToPlainText_CodeSpanContentsPreserved guards that emphasis/strikethrough
+// rules do not reach inside an inline-code span — identifiers and operators
+// that happen to use Markdown delimiters survive verbatim, so the plain
+// `description` stays a faithful reduction of `description_md`.
+func TestToPlainText_CodeSpanContentsPreserved(t *testing.T) {
+	cases := map[string]string{
+		"use `__typename__` here":  "use __typename__ here",
+		"compute `a * b * c` now":  "compute a * b * c now",
+		"the `user_id` column":     "the user_id column",
+		"two `*x*` and `~y~` spans": "two *x* and ~y~ spans",
+	}
+	for in, want := range cases {
+		if got := ToPlainText(in); got != want {
+			t.Errorf("ToPlainText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestToPlainText_Headings(t *testing.T) {
 	in := "# Takeaway\n## What's happening\n### Why it matters\n#### Who's affected"
 	got := ToPlainText(in)

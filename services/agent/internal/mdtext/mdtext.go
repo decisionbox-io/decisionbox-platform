@@ -20,6 +20,7 @@ package mdtext
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -110,19 +111,7 @@ func ToPlainText(md string) string {
 			line = flattenTableRow(line)
 		}
 
-		// Inline replacements.
-		line = reImage.ReplaceAllString(line, "$1")
-		line = reLink.ReplaceAllString(line, "$1")
-		line = reBoldItalicAsterisk.ReplaceAllString(line, "$1")
-		line = reBoldAsterisk.ReplaceAllString(line, "$1")
-		line = reBoldUnderscore.ReplaceAllString(line, "$1")
-		line = reItalicAsterisk.ReplaceAllString(line, "$1")
-		line = reItalicUnderscore.ReplaceAllString(line, "$1$2$3")
-		line = reStrikethrough.ReplaceAllString(line, "$1")
-		line = reInlineCode.ReplaceAllString(line, "$1")
-
-		line = reMultipleSpaces.ReplaceAllString(line, " ")
-		out = append(out, strings.TrimRight(line, " \t"))
+		out = append(out, strings.TrimRight(reduceInline(line), " \t"))
 	}
 
 	result := strings.Join(out, "\n")
@@ -130,6 +119,44 @@ func ToPlainText(md string) string {
 	// lines) to a single blank line, then trim surrounding whitespace.
 	result = reMultipleNewline.ReplaceAllString(result, "\n\n")
 	return strings.TrimSpace(result)
+}
+
+// reduceInline strips inline Markdown markers from a single line. Inline-code
+// span contents are protected first — replaced with NUL-delimited placeholders
+// — so emphasis, link, and strikethrough rules cannot mutate an identifier or
+// expression inside a code span (e.g. `__typename__` or `a * b * c`). The
+// original code contents are restored verbatim afterward, with the surrounding
+// backticks removed.
+func reduceInline(line string) string {
+	var codeSpans []string
+	line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
+		// reInlineCode matches a single-backtick span, so the inner content is
+		// m without its first and last byte (the delimiters).
+		codeSpans = append(codeSpans, m[1:len(m)-1])
+		return codePlaceholder(len(codeSpans) - 1)
+	})
+
+	line = reImage.ReplaceAllString(line, "$1")
+	line = reLink.ReplaceAllString(line, "$1")
+	line = reBoldItalicAsterisk.ReplaceAllString(line, "$1")
+	line = reBoldAsterisk.ReplaceAllString(line, "$1")
+	line = reBoldUnderscore.ReplaceAllString(line, "$1")
+	line = reItalicAsterisk.ReplaceAllString(line, "$1")
+	line = reItalicUnderscore.ReplaceAllString(line, "$1$2$3")
+	line = reStrikethrough.ReplaceAllString(line, "$1")
+	line = reMultipleSpaces.ReplaceAllString(line, " ")
+
+	for i, c := range codeSpans {
+		line = strings.Replace(line, codePlaceholder(i), c, 1)
+	}
+	return line
+}
+
+// codePlaceholder returns a sentinel for the i-th protected code span. NUL
+// delimiters cannot appear in a description, and the body has no Markdown
+// markers, so neither the emphasis rules nor the space collapse touch it.
+func codePlaceholder(i int) string {
+	return "\x00c" + strconv.Itoa(i) + "\x00"
 }
 
 // isTableRow reports whether a line looks like a GFM table content row: it
