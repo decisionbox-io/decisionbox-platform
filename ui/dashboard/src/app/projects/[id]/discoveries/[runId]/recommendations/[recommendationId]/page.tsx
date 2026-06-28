@@ -7,6 +7,7 @@ import {
 } from '@mantine/core';
 import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
@@ -153,9 +154,12 @@ export default function RecommendationDetailPage() {
       <Grid gutter="lg">
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        {/* Description */}
+        {/* Description — formatted Markdown (description_md) when present;
+            falls back to the plain description for unformatted/legacy recs. */}
         <Card withBorder p="lg">
-          <Text size="sm">{recommendation.description}</Text>
+          {recommendation.description_md || recommendation.description
+            ? <Markdown>{recommendation.description_md || recommendation.description}</Markdown>
+            : <Text size="sm" c="dimmed">No description</Text>}
         </Card>
 
         {/* Impact */}

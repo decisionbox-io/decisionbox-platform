@@ -373,6 +373,68 @@ func TestParseInsights_WithSourceSteps(t *testing.T) {
 	}
 }
 
+// TestParseInsights_MarkdownDescriptionSplit verifies the parse-time split:
+// a Markdown-authored description is kept verbatim in DescriptionMd while
+// Description holds the plain-text reduction (no Markdown markers). Newlines
+// are JSON-escaped in the wire form, as the discipline rule requires.
+func TestParseInsights_MarkdownDescriptionSplit(t *testing.T) {
+	o := &Orchestrator{}
+
+	response := `{
+		"insights": [{
+			"name": "Day-1 churn",
+			"description": "### Day-1 churn is **67%**\n\nMost new players leave after the *tutorial*.\n\n- onboarding length\n- difficulty spike",
+			"severity": "high"
+		}]
+	}`
+
+	insights, err := o.parseInsights(response, "churn")
+	if err != nil {
+		t.Fatalf("parseInsights error: %v", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("insights = %d, want 1", len(insights))
+	}
+
+	// DescriptionMd keeps the authored Markdown verbatim.
+	if !strings.Contains(insights[0].DescriptionMd, "**67%**") {
+		t.Errorf("DescriptionMd should keep the Markdown, got %q", insights[0].DescriptionMd)
+	}
+	// Description is the plain reduction — no Markdown markers.
+	if strings.ContainsAny(insights[0].Description, "*#") {
+		t.Errorf("Description should be plain text, got %q", insights[0].Description)
+	}
+	if !strings.Contains(insights[0].Description, "Day-1 churn is 67%") {
+		t.Errorf("Description should contain the reduced takeaway, got %q", insights[0].Description)
+	}
+}
+
+// TestParseInsights_PlainDescriptionLeavesMdEmpty verifies a description with
+// no formatting is left untouched and DescriptionMd stays empty, so plain and
+// legacy insights keep a single field (the dashboard falls back to it).
+func TestParseInsights_PlainDescriptionLeavesMdEmpty(t *testing.T) {
+	o := &Orchestrator{}
+
+	response := `{
+		"insights": [{
+			"name": "Plain finding",
+			"description": "Players churn at level 45 at a rate of 67 percent.",
+			"severity": "medium"
+		}]
+	}`
+
+	insights, err := o.parseInsights(response, "churn")
+	if err != nil {
+		t.Fatalf("parseInsights error: %v", err)
+	}
+	if insights[0].Description != "Players churn at level 45 at a rate of 67 percent." {
+		t.Errorf("plain Description should be unchanged, got %q", insights[0].Description)
+	}
+	if insights[0].DescriptionMd != "" {
+		t.Errorf("DescriptionMd should be empty for a plain description, got %q", insights[0].DescriptionMd)
+	}
+}
+
 // --- generateRecommendations parse ---
 
 func TestGenerateRecommendations_NoInsights(t *testing.T) {

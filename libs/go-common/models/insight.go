@@ -27,6 +27,12 @@ type StandaloneInsight struct {
 	AnalysisArea  string                 `bson:"analysis_area" json:"analysis_area"`
 	Name          string                 `bson:"name" json:"name"`
 	Description   string                 `bson:"description" json:"description"`
+	// DescriptionMd is the GitHub-Flavored Markdown rendition of Description,
+	// authored by the analysis LLM and rendered formatted in the dashboard.
+	// Description stays plain text (the raw reduction) for API consumers,
+	// previews, and embeddings; DescriptionMd is omitted when the description
+	// carries no formatting and on legacy documents.
+	DescriptionMd string                 `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Severity      string                 `bson:"severity" json:"severity"`
 	AffectedCount int                    `bson:"affected_count" json:"affected_count"`
 	RiskScore     float64                `bson:"risk_score" json:"risk_score"`

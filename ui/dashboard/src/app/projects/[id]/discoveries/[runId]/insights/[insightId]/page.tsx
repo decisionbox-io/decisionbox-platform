@@ -9,6 +9,7 @@ import {
   IconAlertTriangle, IconArrowLeft, IconCode, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
@@ -192,9 +193,13 @@ export default function InsightDetailPage() {
       <Grid gutter="lg">
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        {/* Description — the narrative "what". */}
+        {/* Description — the narrative "what". Rendered as formatted Markdown
+            (description_md) when present; falls back to the plain description
+            for unformatted/legacy insights. */}
         <Card withBorder p="lg">
-          <Text size="sm">{insight.description}</Text>
+          {insight.description_md || insight.description
+            ? <Markdown>{insight.description_md || insight.description}</Markdown>
+            : <Text size="sm" c="dimmed">No description</Text>}
         </Card>
 
         {/* Assessment — risk, confidence, target segment. Promoted above

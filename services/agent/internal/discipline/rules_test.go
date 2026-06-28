@@ -164,6 +164,13 @@ func TestAnalysisRules_ContainsExpectedRules(t *testing.T) {
 		{"rule 5 names name field", "`name`"},
 		{"rule 6 cite the step", "CITE THE STEP FOR EVERY NUMBER"},
 		{"rule 6 references source_steps", "`source_steps`"},
+		{"rule M markdown header", "STRUCTURED MARKDOWN DESCRIPTION"},
+		{"rule M names GitHub-Flavored Markdown", "GitHub-Flavored Markdown"},
+		{"rule M clarifies the no-markdown envelope", "ENVELOPE only"},
+		{"rule M constrains heading depth", "never # or ##"},
+		{"rule M keeps the anatomy", "one-line takeaway"},
+		{"rule M defers to tone rule", "controls STRUCTURE, not tone"},
+		{"rule M requires JSON-escaped newlines", "escape every newline"},
 	})
 }
 
@@ -186,7 +193,33 @@ func TestRecommendationsRules_ContainsExpectedRules(t *testing.T) {
 		{"non-dramatic reiteration", "NON-DRAMATIC LANGUAGE"},
 		{"critical banned in prose", "may NOT appear in"},
 		{"priority field reference", "`priority`"},
+		{"rule M markdown header", "STRUCTURED MARKDOWN DESCRIPTION"},
+		{"rule M names GitHub-Flavored Markdown", "GitHub-Flavored Markdown"},
+		{"rule M clarifies the envelope", "ENVELOPE only"},
 	})
+}
+
+// TestMarkdownDescriptionRule_StaysWithinToneConstraints guards that the new
+// Markdown-authoring block does not itself smuggle in the editorial cues the
+// base rules forbid the LLM from emitting — no literal exclamation marks and
+// no emoji in the rule prose, so the rule cannot be read as license to use
+// them.
+func TestMarkdownDescriptionRule_StaysWithinToneConstraints(t *testing.T) {
+	for name, text := range map[string]string{
+		"AnalysisRules":        AnalysisRules(),
+		"RecommendationsRules": RecommendationsRules(),
+	} {
+		// Only inspect the Markdown block so unrelated rule prose is not
+		// constrained. The block starts at the "STRUCTURED MARKDOWN" header.
+		idx := strings.Index(text, "STRUCTURED MARKDOWN DESCRIPTION")
+		if idx < 0 {
+			t.Fatalf("%s: Markdown block not found", name)
+		}
+		block := text[idx:]
+		if strings.Contains(block, "!") {
+			t.Errorf("%s: Markdown block contains a literal '!' — it must not model exclamation marks", name)
+		}
+	}
 }
 
 func TestVerifierRules_ContainsV1V4(t *testing.T) {

@@ -182,6 +182,8 @@ Agent parses insights, assigns IDs (e.g., "churn-1", "churn-2")
 
 **Insight IDs:** The agent generates deterministic IDs in the format `{area}-{index}` (e.g., `churn-1`, `monetization-3`). These IDs are used by recommendations to reference which insights they address.
 
+**Markdown descriptions:** The platform instructs the LLM to author each `description` as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, lists, small sub-headings, simple tables), following a takeaway-first anatomy where the finding supports it. At parse time the agent splits this into two fields: `description` keeps the plain-text reduction (the raw form read by API consumers, previews, and embeddings) and `description_md` keeps the Markdown rendition rendered on the detail view. Plain descriptions leave `description_md` empty.
+
 **If analysis fails** (e.g., LLM timeout), the error is recorded in `analysis_log` and the area is skipped. If ALL areas fail, the run is marked as `run_type: "failed"`. If some fail, it's `run_type: "partial"`. The errors are surfaced in the dashboard as a red banner.
 
 ## Phase 4.5: Insight validation (LLM-native)
