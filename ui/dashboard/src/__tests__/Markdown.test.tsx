@@ -72,6 +72,16 @@ describe('Markdown', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
+  it('does not render Markdown images as live <img> (renders alt text)', () => {
+    const { container } = render(
+      <Markdown>{'![a chart](https://evil.example.com/x.png) and text'}</Markdown>,
+    );
+    // No external image element is created; the alt text survives.
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('a chart');
+    expect(container.textContent).not.toContain('evil.example.com');
+  });
+
   it('renders links as plain, non-navigable text', () => {
     const { container } = render(
       <Markdown>{'see [the dashboard](javascript:alert(1)) now'}</Markdown>,

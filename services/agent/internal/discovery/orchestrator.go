@@ -1104,6 +1104,22 @@ func (o *Orchestrator) persistSplitLogs(
 }
 
 // parseInsights parses LLM response JSON into Insight structs.
+// insightsForRecommenderPrompt returns a copy of insights with the Markdown
+// rendition (DescriptionMd) cleared. The recommender reads the plain
+// `description`; carrying description_md into INSIGHTS_DATA would put a second
+// full copy of every insight's description in the prompt, roughly doubling the
+// per-insight description tokens and risking the context/budget cap. The
+// originals (which still need DescriptionMd for storage and rendering) are
+// left untouched.
+func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
+	out := make([]models.Insight, len(insights))
+	copy(out, insights)
+	for i := range out {
+		out[i].DescriptionMd = ""
+	}
+	return out
+}
+
 // splitMarkdownDescription reduces an authored Markdown description to plain
 // text and returns (plain, md). md is empty when the input carried no
 // formatting (plain == reduction), so unformatted descriptions and legacy
@@ -1168,7 +1184,7 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
-	insightsJSON, _ := json.MarshalIndent(insights, "", "  ")
+	insightsJSON, _ := json.MarshalIndent(insightsForRecommenderPrompt(insights), "", "  ")
 
 	// Build insights summary
 	areaCounts := make(map[string]int)

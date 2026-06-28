@@ -56,6 +56,10 @@ export default function Markdown({ children, className }: { children?: string | 
           // Links render as plain, non-navigable text (Trust): keep the label,
           // drop the href.
           a: ({ children }) => <span>{children}</span>,
+          // Images are out of the supported set. Render the alt text instead of
+          // loading external content, so a stray `![alt](url)` can't pull a
+          // remote image into the view.
+          img: ({ alt }) => (alt ? <span>{alt}</span> : null),
           table: ({ children }) => (
             <div style={{ overflowX: 'auto', margin: '8px 0' }}>
               <table style={{ borderCollapse: 'collapse', fontSize: 13, width: '100%' }}>{children}</table>

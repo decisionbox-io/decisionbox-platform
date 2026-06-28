@@ -467,6 +467,32 @@ func TestGenerateRecommendations_EmptyInsights(t *testing.T) {
 	}
 }
 
+// TestInsightsForRecommenderPrompt_ClearsMarkdownCopy verifies the recommender
+// prompt copy drops description_md (so INSIGHTS_DATA carries one description per
+// insight, not two) while leaving the originals — which still need the Markdown
+// for storage and rendering — untouched.
+func TestInsightsForRecommenderPrompt_ClearsMarkdownCopy(t *testing.T) {
+	insights := []models.Insight{
+		{Name: "a", Description: "plain a", DescriptionMd: "**plain a**"},
+		{Name: "b", Description: "plain b"},
+	}
+
+	got := insightsForRecommenderPrompt(insights)
+
+	for i := range got {
+		if got[i].DescriptionMd != "" {
+			t.Errorf("got[%d].DescriptionMd = %q, want empty", i, got[i].DescriptionMd)
+		}
+	}
+	if got[0].Description != "plain a" {
+		t.Errorf("plain Description should be preserved, got %q", got[0].Description)
+	}
+	// Originals must not be mutated — the stored insight keeps its Markdown.
+	if insights[0].DescriptionMd != "**plain a**" {
+		t.Errorf("original DescriptionMd was mutated: %q", insights[0].DescriptionMd)
+	}
+}
+
 // --- cleanJSONResponse additional cases ---
 
 func TestCleanJSONResponse_WhitespacePrefix(t *testing.T) {
