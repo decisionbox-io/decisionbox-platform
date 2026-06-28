@@ -154,12 +154,16 @@ export default function RecommendationDetailPage() {
       <Grid gutter="lg">
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        {/* Description — formatted Markdown (description_md) when present;
-            falls back to the plain description for unformatted/legacy recs. */}
+        {/* Description — formatted Markdown when description_md is present.
+            Plain/legacy descriptions are shown verbatim (not re-parsed as
+            Markdown) so stray metacharacters in older runs are not
+            reinterpreted. */}
         <Card withBorder p="lg">
-          {recommendation.description_md || recommendation.description
-            ? <Markdown>{recommendation.description_md || recommendation.description}</Markdown>
-            : <Text size="sm" c="dimmed">No description</Text>}
+          {recommendation.description_md
+            ? <Markdown>{recommendation.description_md}</Markdown>
+            : recommendation.description
+              ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{recommendation.description}</Text>
+              : <Text size="sm" c="dimmed">No description</Text>}
         </Card>
 
         {/* Impact */}

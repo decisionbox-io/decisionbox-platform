@@ -194,12 +194,15 @@ export default function InsightDetailPage() {
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
         {/* Description — the narrative "what". Rendered as formatted Markdown
-            (description_md) when present; falls back to the plain description
-            for unformatted/legacy insights. */}
+            when description_md is present. Plain/legacy descriptions (no
+            description_md) are shown verbatim — NOT re-parsed as Markdown — so
+            stray metacharacters in older runs can't be reinterpreted. */}
         <Card withBorder p="lg">
-          {insight.description_md || insight.description
-            ? <Markdown>{insight.description_md || insight.description}</Markdown>
-            : <Text size="sm" c="dimmed">No description</Text>}
+          {insight.description_md
+            ? <Markdown>{insight.description_md}</Markdown>
+            : insight.description
+              ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{insight.description}</Text>
+              : <Text size="sm" c="dimmed">No description</Text>}
         </Card>
 
         {/* Assessment — risk, confidence, target segment. Promoted above
