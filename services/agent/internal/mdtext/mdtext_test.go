@@ -60,6 +60,44 @@ func TestToPlainText_CodeSpanContentsPreserved(t *testing.T) {
 	}
 }
 
+// TestToPlainText_LiteralAsterisksPreserved guards that asterisks that are not
+// CommonMark emphasis survive the reduction, so the stored plain description
+// (read by APIs and embeddings) is not corrupted. Each expected value matches
+// what react-markdown renders for the same input.
+func TestToPlainText_LiteralAsterisksPreserved(t *testing.T) {
+	cases := map[string]string{
+		"a * b * c":             "a * b * c",
+		"SELECT * FROM t":       "SELECT * FROM t",
+		"3 * 4 = 12":            "3 * 4 = 12",
+		"COUNT(*) over rows":    "COUNT(*) over rows", // lone asterisk, no pair
+		"x * y and p * q here":  "x * y and p * q here",
+	}
+	for in, want := range cases {
+		if got := ToPlainText(in); got != want {
+			t.Errorf("ToPlainText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestToPlainText_EmphasisFlanking pins the flanking cases against what
+// react-markdown renders: genuine emphasis is reduced; both-flanking
+// punctuation-hugged runs are reduced the same way the renderer emphasizes
+// them, so the plain field never drifts from description_md.
+func TestToPlainText_EmphasisFlanking(t *testing.T) {
+	cases := map[string]string{
+		"an *emphasized phrase* here":     "an emphasized phrase here",
+		"*67%* drop":                      "67% drop",
+		"2*3*4":                           "234",                       // intraword emphasis, as the renderer does
+		"COUNT(*) and COUNT(*)":           "COUNT() and COUNT()",       // both-flanking pair, matches renderer
+		"plain **8,298** users affected":  "plain 8,298 users affected",
+	}
+	for in, want := range cases {
+		if got := ToPlainText(in); got != want {
+			t.Errorf("ToPlainText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestToPlainText_Headings(t *testing.T) {
 	in := "# Takeaway\n## What's happening\n### Why it matters\n#### Who's affected"
 	got := ToPlainText(in)

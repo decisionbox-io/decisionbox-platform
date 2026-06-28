@@ -138,10 +138,15 @@ func reduceInline(line string) string {
 
 	line = reImage.ReplaceAllString(line, "$1")
 	line = reLink.ReplaceAllString(line, "$1")
-	line = reBoldItalicAsterisk.ReplaceAllString(line, "$1")
-	line = reBoldAsterisk.ReplaceAllString(line, "$1")
+	// Asterisk emphasis is unwrapped only at CommonMark-valid flanking
+	// positions, so literal asterisks in prose (`a * b * c`, `SELECT *`,
+	// `3 * 4`) survive while genuine `*x*` / `**x**` / `***x***` are reduced —
+	// matching exactly what react-markdown renders from `description_md`, so
+	// the plain and Markdown fields cannot drift.
+	line = stripAsteriskEmphasis(line, reBoldItalicAsterisk)
+	line = stripAsteriskEmphasis(line, reBoldAsterisk)
+	line = stripAsteriskEmphasis(line, reItalicAsterisk)
 	line = reBoldUnderscore.ReplaceAllString(line, "$1")
-	line = reItalicAsterisk.ReplaceAllString(line, "$1")
 	line = reItalicUnderscore.ReplaceAllString(line, "$1$2$3")
 	line = reStrikethrough.ReplaceAllString(line, "$1")
 	line = reMultipleSpaces.ReplaceAllString(line, " ")
@@ -150,6 +155,58 @@ func reduceInline(line string) string {
 		line = strings.Replace(line, codePlaceholder(i), c, 1)
 	}
 	return line
+}
+
+// stripAsteriskEmphasis unwraps `*…*`-style emphasis (re must capture the inner
+// content in group 1) only when the delimiters are CommonMark left/right
+// flanking — i.e. genuine emphasis, not literal asterisks. A non-flanking match
+// is left verbatim so text like `a * b * c` or `COUNT(*)` (a lone asterisk) is
+// preserved. This mirrors react-markdown's own emphasis parsing, so the plain
+// reduction agrees with the rendered `description_md`.
+func stripAsteriskEmphasis(s string, re *regexp.Regexp) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range re.FindAllStringSubmatchIndex(s, -1) {
+		full0, full1, in0, in1 := m[0], m[1], m[2], m[3]
+		before := byte(' ')
+		if full0 > 0 {
+			before = s[full0-1]
+		}
+		after := byte(' ')
+		if full1 < len(s) {
+			after = s[full1]
+		}
+		// in0/in1 bracket the content, so s[in0] is the char just after the
+		// opening run and s[in1-1] the char just before the closing run.
+		if emphasisFlanks(before, s[in0], s[in1-1], after) {
+			b.WriteString(s[last:full0])
+			b.WriteString(s[in0:in1])
+			last = full1
+		}
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// emphasisFlanks reports whether a delimiter run is a valid CommonMark
+// emphasis opener+closer, given the bytes just outside and just inside each
+// delimiter. Start/end of string are passed as a space. Byte-level classifies
+// any non-ASCII byte as a word character, which is the correct flanking
+// outcome for non-ASCII letters.
+func emphasisFlanks(before, afterOpen, beforeClose, after byte) bool {
+	leftFlank := !isMdSpace(afterOpen) &&
+		(!isMdPunct(afterOpen) || isMdSpace(before) || isMdPunct(before))
+	rightFlank := !isMdSpace(beforeClose) &&
+		(!isMdPunct(beforeClose) || isMdSpace(after) || isMdPunct(after))
+	return leftFlank && rightFlank
+}
+
+func isMdSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == '\v'
+}
+
+func isMdPunct(b byte) bool {
+	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", b) >= 0
 }
 
 // codePlaceholder returns a sentinel for the i-th protected code span. NUL
