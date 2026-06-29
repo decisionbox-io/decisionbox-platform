@@ -7,6 +7,7 @@ import {
 } from '@mantine/core';
 import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
@@ -153,9 +154,16 @@ export default function RecommendationDetailPage() {
       <Grid gutter="lg">
         <Grid.Col span={{ base: 12, lg: 9 }}>
       <Stack gap="lg" maw={800}>
-        {/* Description */}
+        {/* Description — formatted Markdown when description_md is present.
+            Plain/legacy descriptions are shown verbatim (not re-parsed as
+            Markdown) so stray metacharacters in older runs are not
+            reinterpreted. */}
         <Card withBorder p="lg">
-          <Text size="sm">{recommendation.description}</Text>
+          {recommendation.description_md
+            ? <Markdown>{recommendation.description_md}</Markdown>
+            : recommendation.description
+              ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{recommendation.description}</Text>
+              : <Text size="sm" c="dimmed">No description</Text>}
         </Card>
 
         {/* Impact */}

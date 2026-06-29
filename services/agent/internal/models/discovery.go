@@ -79,6 +79,12 @@ type Insight struct {
 	AnalysisArea string `bson:"analysis_area" json:"analysis_area"` // "churn", "levels", etc.
 	Name         string `bson:"name" json:"name"`
 	Description  string `bson:"description" json:"description"`
+	// DescriptionMd is the GitHub-Flavored Markdown rendition of Description,
+	// authored by the analysis LLM. Description is the plain-text reduction
+	// derived from it at parse time (raw, for API consumers / previews /
+	// embeddings); DescriptionMd is empty when the description carries no
+	// formatting and on legacy documents.
+	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Severity     string `bson:"severity" json:"severity"` // "critical", "high", "medium", "low"
 
 	AffectedCount int     `bson:"affected_count" json:"affected_count"`
@@ -108,6 +114,10 @@ type Recommendation struct {
 	Category    string `bson:"category" json:"category"`
 	Title       string `bson:"title" json:"title"`
 	Description string `bson:"description" json:"description"`
+	// DescriptionMd is the GitHub-Flavored Markdown rendition of Description.
+	// Description stays plain text; DescriptionMd is empty when unformatted
+	// and on legacy documents.
+	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Priority    int    `bson:"priority" json:"priority"` // 1-5
 
 	TargetSegment string `bson:"target_segment" json:"target_segment"`

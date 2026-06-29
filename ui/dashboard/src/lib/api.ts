@@ -384,6 +384,9 @@ export interface Insight {
   analysis_area: string;
   name: string;
   description: string;
+  // Markdown rendition of `description`, rendered formatted on the detail
+  // view. `description` stays plain text. Absent on unformatted/legacy insights.
+  description_md?: string;
   severity: string;
   affected_count: number;
   risk_score: number;
@@ -473,6 +476,9 @@ export interface Recommendation {
   category: string;
   title: string;
   description: string;
+  // Markdown rendition of `description`. `description` stays plain text.
+  // Absent on unformatted/legacy recommendations.
+  description_md?: string;
   priority: number;
   target_segment: string;
   segment_size: number;

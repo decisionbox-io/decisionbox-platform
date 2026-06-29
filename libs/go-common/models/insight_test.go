@@ -42,6 +42,7 @@ func TestStandaloneInsightJSONRoundTrip(t *testing.T) {
 		AnalysisArea:    "churn",
 		Name:            "High churn at Level 45",
 		Description:     "Players leaving",
+		DescriptionMd:   "**Players leaving** at Level 45.",
 		Severity:        "high",
 		AffectedCount:   12450,
 		RiskScore:       8.2,
@@ -74,5 +75,22 @@ func TestStandaloneInsightJSONRoundTrip(t *testing.T) {
 	}
 	if decoded.EmbeddingModel != "text-embedding-3-small" {
 		t.Errorf("EmbeddingModel mismatch: %s", decoded.EmbeddingModel)
+	}
+	if decoded.DescriptionMd != insight.DescriptionMd {
+		t.Errorf("DescriptionMd mismatch: %q != %q", decoded.DescriptionMd, insight.DescriptionMd)
+	}
+}
+
+// TestStandaloneInsightDescriptionMdOmittedWhenEmpty guards the `omitempty`
+// tag: an insight with no Markdown rendition (plain/legacy) must not emit a
+// `description_md` key, so old documents and API consumers see exactly the
+// shape they did before.
+func TestStandaloneInsightDescriptionMdOmittedWhenEmpty(t *testing.T) {
+	data, err := json.Marshal(&StandaloneInsight{Name: "n", Description: "plain"})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(data), "description_md") {
+		t.Errorf("expected description_md to be omitted when empty, got: %s", data)
 	}
 }

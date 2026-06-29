@@ -22,6 +22,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discipline"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/mdtext"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -1103,6 +1104,34 @@ func (o *Orchestrator) persistSplitLogs(
 }
 
 // parseInsights parses LLM response JSON into Insight structs.
+// insightsForRecommenderPrompt returns a copy of insights with the Markdown
+// rendition (DescriptionMd) cleared. The recommender reads the plain
+// `description`; carrying description_md into INSIGHTS_DATA would put a second
+// full copy of every insight's description in the prompt, roughly doubling the
+// per-insight description tokens and risking the context/budget cap. The
+// originals (which still need DescriptionMd for storage and rendering) are
+// left untouched.
+func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
+	out := make([]models.Insight, len(insights))
+	copy(out, insights)
+	for i := range out {
+		out[i].DescriptionMd = ""
+	}
+	return out
+}
+
+// splitMarkdownDescription reduces an authored Markdown description to plain
+// text and returns (plain, md). md is empty when the input carried no
+// formatting (plain == reduction), so unformatted descriptions and legacy
+// data keep a single field and the dashboard falls back to `description`.
+func splitMarkdownDescription(authored string) (plain, md string) {
+	plain = mdtext.ToPlainText(authored)
+	if plain != authored {
+		md = authored
+	}
+	return plain, md
+}
+
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, error) {
 	var result struct {
 		Insights []models.Insight `json:"insights"`
@@ -1118,6 +1147,12 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		if result.Insights[i].DiscoveredAt.IsZero() {
 			result.Insights[i].DiscoveredAt = time.Now()
 		}
+		// Split the authored description: the LLM writes Markdown into
+		// `description`; keep that rendition in DescriptionMd for the
+		// dashboard, and reduce Description to the plain-text form that API
+		// consumers, previews, and embeddings read.
+		result.Insights[i].Description, result.Insights[i].DescriptionMd =
+			splitMarkdownDescription(result.Insights[i].Description)
 		// Assign a UUID if the LLM didn't give one. The same UUID is later
 		// reused as the standalone `insights._id` and the Qdrant point id, so
 		// every link built from a search hit (Ask sources, related cards) can
@@ -1149,7 +1184,7 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
-	insightsJSON, _ := json.MarshalIndent(insights, "", "  ")
+	insightsJSON, _ := json.MarshalIndent(insightsForRecommenderPrompt(insights), "", "  ")
 
 	// Build insights summary
 	areaCounts := make(map[string]int)
@@ -1205,6 +1240,10 @@ func (o *Orchestrator) generateRecommendations(
 		if result.Recommendations[i].CreatedAt.IsZero() {
 			result.Recommendations[i].CreatedAt = time.Now()
 		}
+		// Same description split as insights: Markdown rendition into
+		// DescriptionMd, plain reduction into Description.
+		result.Recommendations[i].Description, result.Recommendations[i].DescriptionMd =
+			splitMarkdownDescription(result.Recommendations[i].Description)
 		// Assign a UUID if the LLM didn't give one. Same rationale as for
 		// insights: the UUID is reused as the standalone `recommendations._id`
 		// and Qdrant point id, so URLs that hit the embedded array match
