@@ -337,23 +337,50 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (dev)
         if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Login to Amazon ECR
+      - name: Login to Amazon ECR (dev)
         if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
         uses: aws-actions/amazon-ecr-login@v2
         with:
           registries: ${{ secrets.AWS_ACCOUNT_ID }}
 
-      - name: Push to ECR
+      - name: Push to ECR (dev)
         if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
         env:
           ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+          ECR_REPO: decisionbox-agent
+          GHCR_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r ghcr_tag; do
+            tag="${ghcr_tag##*:}"
+            docker buildx imagetools create \
+              --tag "$ECR_REGISTRY/$ECR_REPO:$tag" \
+              "$ghcr_tag"
+          done <<< "$GHCR_TAGS"
+
+      - name: Configure AWS credentials (prod)
+        if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR (prod)
+        if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ secrets.AWS_ACCOUNT_ID_PROD }}
+
+      - name: Push to ECR (prod)
+        if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
+        env:
+          ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID_PROD }}.dkr.ecr.us-east-1.amazonaws.com
           ECR_REPO: decisionbox-agent
           GHCR_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
