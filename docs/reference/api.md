@@ -85,6 +85,9 @@ Only `GET` is served; other methods return `405`.
 | `oidc` | OIDC login config (issuer, mobile client id, scopes, audience). Present iff `auth.type` is `oidc`. |
 | `branding` | Optional deployment branding object. Omitted when not configured. |
 
+This document is served by the API, like every other endpoint a client uses, and is fetched from the API origin the client is configured with.
+Exposing the API to clients — via an API ingress, or by proxying `/.well-known/decisionbox` alongside `/api/*` on the public origin — is a deployment concern for the client rollout, not a property of this endpoint (the default Helm chart keeps the API ingress internal).
+
 ---
 
 ## System
