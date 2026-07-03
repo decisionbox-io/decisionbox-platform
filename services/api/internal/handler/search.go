@@ -532,6 +532,27 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the caller supplies a session_id, load and authorize it up front —
+	// before any answering work — so a supplied id cannot be used to probe
+	// which sessions exist: a missing id and a non-owned id return the same
+	// 404, and only an owned (or admin-accessed) session proceeds. The
+	// project-mismatch 400 is a legitimate client error that only the
+	// owner/admin reaches. Under NoAuth the caller is the anonymous admin,
+	// so this never blocks. A nil session here means "new conversation".
+	var session *commonmodels.AskSession
+	if req.SessionID != "" {
+		s, err := h.sessionRepo.GetByID(ctx, req.SessionID)
+		if err != nil || s == nil || !canAccessSession(r, s) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if s.ProjectID != projectID {
+			writeError(w, http.StatusBadRequest, "session does not belong to this project")
+			return
+		}
+		session = s
+	}
+
 	// Embed the question
 	embProvider, err := h.createEmbeddingProvider(ctx, project.Embedding.Provider, project.Embedding.Model, projectID, project.Embedding.Config)
 	if err != nil {
@@ -689,32 +710,14 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// don't double-count.
 	historyBudget := budget.Available() - promptTokens
 
-	// Build messages with conversation history from session for
-	// multi-turn context. The walk drops oldest pairs first; the
-	// current user prompt always rides at the end.
+	// Build messages with conversation history from the session (already
+	// loaded and authorized up front) for multi-turn context. The walk
+	// drops oldest pairs first; the current user prompt always rides at
+	// the end.
 	var messages []gollm.Message
-	if req.SessionID != "" {
-		session, err := h.sessionRepo.GetByID(ctx, req.SessionID)
-		if err == nil && session != nil {
-			// Owner-or-admin first: a caller may only continue their own
-			// conversation, so history from another user's session is never
-			// read or appended to. The ownership 404 precedes the
-			// project-mismatch 400 below so a non-owner cannot tell an
-			// existing cross-project session from a missing one — the 400 is
-			// a legitimate client error only the owner/admin should see.
-			// Under NoAuth the caller is the anonymous admin and this never
-			// blocks.
-			if !canAccessSession(r, session) {
-				writeError(w, http.StatusNotFound, "session not found")
-				return
-			}
-			if session.ProjectID != projectID {
-				writeError(w, http.StatusBadRequest, "session does not belong to this project")
-				return
-			}
-			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
-			messages = append(messages, trimmed...)
-		}
+	if session != nil {
+		trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
+		messages = append(messages, trimmed...)
 	}
 	messages = append(messages, gollm.Message{Role: "user", Content: prompt})
 
@@ -783,14 +786,14 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = uuid.New().String()
-		session := &commonmodels.AskSession{
+		newSession := &commonmodels.AskSession{
 			ID:        sessionID,
 			ProjectID: projectID,
 			UserID:    callerSub(r),
 			Title:     req.Question,
 			Messages:  []commonmodels.AskSessionMessage{msg},
 		}
-		if err := h.sessionRepo.Create(ctx, session); err != nil {
+		if err := h.sessionRepo.Create(ctx, newSession); err != nil {
 			apilog.WithError(err).Warn("Failed to create ask session")
 		}
 	} else {

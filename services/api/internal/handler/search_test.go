@@ -1098,6 +1098,23 @@ func TestAsk_SessionOwnerMismatch(t *testing.T) {
 	}
 }
 
+// TestAsk_MissingSessionIDIs404: a supplied session_id that does not exist
+// returns the same 404 as a non-owned one, so a supplied id cannot be used
+// to probe which sessions exist (it is not silently treated as a new turn).
+func TestAsk_MissingSessionIDIs404(t *testing.T) {
+	sessionRepo := &mockAskSessionRepo{} // no session — GetByID errors
+	h := askFixtureHandler(sessionRepo)
+	body, _ := json.Marshal(askRequest{Question: "test", SessionID: "ghost"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req = withAuth(req, "stranger", "member")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing session_id: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestAsk_NewSessionUsesCallerSubject: a new conversation is owned by the
 // authenticated caller, not a hardcoded "anonymous".
 func TestAsk_NewSessionUsesCallerSubject(t *testing.T) {
