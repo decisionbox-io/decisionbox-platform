@@ -41,32 +41,37 @@ Everything else the client needs already exists and is out of scope.
   route is **admin-only** (`server.go:274`).
 - **Auth:** `auth.UserPrincipal{Sub,Email,OrgID,Roles[]}`; `auth.FromContext`
   reads it from the request context; `NoAuthProvider` injects
-  `Sub:"anonymous", Roles:["admin"]` (`libs/go-common/auth/noauth.go`). Default
-  provider is NoAuth (`apiserver.go:165` → `auth.GetProvider()`).
+  `Sub:"anonymous", Roles:["admin"]` (`libs/go-common/auth/noauth.go`). The default
+  provider is NoAuth (`apiserver.go:165` → `auth.GetProvider()`); an OIDC auth
+  provider is contributed at runtime by an out-of-tree auth plugin via
+  `auth.RegisterProvider`.
 - **Pre-auth mount pattern:** `server.go:324-328` builds a `root` mux; `/health*`
   is mounted **directly** on `root` (no auth middleware), and only `/` is wrapped
   by `authProvider.Middleware()`. The whole thing is wrapped by CORS + logging.
   → The discovery route mounts on `root` the same way.
 - **Plugin-registry precedent:** `libs/go-common/systeminfo` is a go-common
-  registry that out-of-tree builds (enterprise) fill via `init()` and a plain
-  community handler (`handler/system.go`) reads at request time. `askoverride`,
-  `discoverytrigger`, `runhooks`, the `auth`/`policy`/`sources` registries follow
-  the same shape. → The discovery **auth config** uses this exact pattern so the
-  enterprise auth plugin can inject OIDC details.
-- **Enterprise `HandleAsk`** already sets `UserID: callerSub(r)` and checks project
-  on an existing `session_id`, but **not owner** — that owner check is the paired
-  enterprise change tracked by `decisionbox-io/decisionbox-enterprise#124` (out of
-  scope here; noted for coordination).
+  registry that out-of-tree builds fill via `init()` and a plain community handler
+  (`handler/system.go`) reads at request time. `askoverride` (behind
+  `apiserver.RegisterAskOverride`), `discoverytrigger`, `runhooks`, and the
+  `auth`/`policy`/`sources` registries follow the same shape. → The discovery
+  **auth config** uses this exact pattern so an auth plugin can inject OIDC details
+  without any community code change.
+- **`POST /ask` override:** the community route defers to a registered override
+  (`askoverride`) when one is installed; that override already sets `UserID` from
+  the caller subject and checks project on an existing `session_id`, but **not**
+  owner — the matching owner check on the override side is a paired change tracked
+  separately and is out of scope here (§10).
 - **Indexes:** `ask_sessions` already has `{project_id, updated_at:-1}` and
   `{user_id, updated_at:-1}` (`init.go:130-131`). The new per-user list wants a
   compound `{project_id, user_id, updated_at:-1}`.
-- The enterprise agentic Ask **replaces** `POST /ask` via `askoverride`, so on
-  enterprise deployments the community `Ask` owner logic is a no-op path; it still
-  must be correct for community/NoAuth deployments and defense in depth.
+- When an `/ask` override is installed it **replaces** the community `Ask` handler,
+  so on deployments that install one the community `Ask` owner logic is a no-op
+  path; it still must be correct for the built-in RAG path (community / NoAuth) and
+  as defense in depth.
 
 ## 3. Scope
 
-**In scope (the three deltas, community/platform side only):**
+**In scope (the three deltas, this repo only):**
 - New unauthenticated discovery endpoint + a go-common registry seam for auth config.
 - Per-user scoping of Ask sessions (create/read/list/delete + owner checks).
 - Rename endpoint + repo `UpdateTitle`.
@@ -74,21 +79,22 @@ Everything else the client needs already exists and is out of scope.
 
 **Explicitly NOT in scope** (per issue): no `/models`, no SSE, no upload, no
 offset pagination, no live-response `tool_events` change, no source normalization,
-no parallel thread/message API, no dashboard changes, no enterprise code changes
-(enterprise owner check + mobile-client-id live in enterprise #124).
+no parallel thread/message API, no dashboard changes. The paired change on the
+`/ask` override + auth-config registration side lives in a separate PR (§10).
 
 ## 4. Design decisions
 
 ### 4.1 Discovery endpoint & the auth-config seam
 
-The community platform is always NoAuth; OIDC config (issuer, mobile client id,
-scopes, audience) lives in the enterprise auth plugin. So the discovery endpoint
-reads its **auth block** from a new go-common registry that the enterprise plugin
-fills — mirroring `systeminfo`. The community handler owns the static
-`api_version` + `features`; the registry supplies `auth` (+ optional `branding`).
+The built-in platform is always NoAuth; OIDC config (issuer, mobile client id,
+scopes, audience) is only known to whatever auth plugin a deployment installs. So
+the discovery endpoint reads its **auth block** from a new go-common registry that
+an auth plugin fills — mirroring `systeminfo`. The community handler owns the
+static `api_version` + `features`; the registry supplies `auth` (+ optional
+`branding`).
 
-- **New package `libs/go-common/wellknown`** (importable by both the API service
-  and enterprise, exactly like `libs/go-common/auth`):
+- **New package `libs/go-common/wellknown`** (importable by any build that composes
+  the API, exactly like `libs/go-common/auth`):
 
   ```go
   package wellknown
@@ -105,15 +111,15 @@ fills — mirroring `systeminfo`. The community handler owns the static
   }
   type Config struct {
       Auth     Auth            // required
-      Branding json.RawMessage // optional passthrough; overlays may set, community leaves nil
+      Branding json.RawMessage // optional passthrough; overlays may set, built-in leaves nil
   }
-  func Register(c Config)          // called from init() by the enterprise auth plugin
+  func Register(c Config)          // called from init() by an auth plugin
   func Get() (Config, bool)        // read by the community handler; ok=false when unset
   func ResetForTest()              // test-only
   ```
   Thread-safe (`sync.RWMutex`). Doc comment states the **invariant**: any build
   that enables auth MUST `Register` a `Config{Auth:{Type:"oidc", OIDC:…}}` in the
-  same `init()` that registers the OIDC provider, so the advertised auth mode can
+  same `init()` that registers its auth provider, so the advertised auth mode can
   never diverge from the enforced one.
 
 - **New handler `services/api/internal/handler/wellknown.go`** — a plain
@@ -157,9 +163,9 @@ fills — mirroring `systeminfo`. The community handler owns the static
   func callerIsAdmin(r *http.Request) bool     // true iff principal has role "admin"
   func canAccessSession(r, s) bool             // s.UserID == callerSub(r) || callerIsAdmin(r)
   ```
-  Mirror the enterprise `callerSub`/`callerRole`. Under NoAuth the middleware
-  injects `Sub:"anonymous", Roles:["admin"]`, so `callerSub=="anonymous"` and
-  `callerIsAdmin==true` → every check passes → **NoAuth behaviour preserved**.
+  Under NoAuth the middleware injects `Sub:"anonymous", Roles:["admin"]`, so
+  `callerSub=="anonymous"` and `callerIsAdmin==true` → every check passes →
+  **NoAuth behaviour preserved**.
 
 - **`Ask` (`search.go`):**
   - `search.go:776` `UserID: "anonymous"` → `UserID: callerSub(r)`.
@@ -173,7 +179,7 @@ fills — mirroring `systeminfo`. The community handler owns the static
 - **List** (`ListAskSessions` + repo): repo `ListByProject(projectID, limit)` →
   `ListByProjectAndUser(projectID, userID, limit)` filtering
   `{project_id, user_id}` sorted `updated_at:-1`; handler passes `callerSub(r)`.
-  This is strict per-user scoping (an enterprise admin sees only their own list —
+  This is strict per-user scoping (with auth on, an admin sees only their own list —
   intended: this is the user's chat inbox). Under NoAuth all sessions are owned by
   `"anonymous"` → all returned, unchanged.
 
@@ -188,7 +194,7 @@ fills — mirroring `systeminfo`. The community handler owns the static
   *Get/Delete are owner-**or-admin*** (not owner-only): an admin retains access to
   a specific known session, symmetric with delete, while **list** stays strictly
   per-user. This matches the issue's "a user can delete their own conversation
-  (owner-or-admin)" and keeps admin from being locked out of a session it can
+  (owner-or-admin)" and keeps an admin from being locked out of a session it can
   delete. Rationale recorded in §9.
 
 ### 4.3 Rename
@@ -254,11 +260,11 @@ fills — mirroring `systeminfo`. The community handler owns the static
 ## 7. Data / schema / API / UI impact
 
 - **Data/schema:** no new collection; `ask_sessions.user_id` already exists and is
-  now populated with the real caller subject on community-RAG sessions (was
+  now populated with the real caller subject on built-in RAG sessions (was
   `"anonymous"`). One additive compound index. **No migration required** — legacy
-  community sessions all carry `user_id:"anonymous"` and remain visible under
-  NoAuth; a legacy `null` user_id simply won't match a per-user list (acceptable;
-  pre-auth artifact).
+  sessions all carry `user_id:"anonymous"` and remain visible under NoAuth; a
+  legacy `null` user_id simply won't match a per-user list (acceptable; pre-auth
+  artifact).
 - **API:**
   - **New:** `GET /.well-known/decisionbox` (unauth, raw JSON);
     `PATCH /api/v1/projects/{id}/ask/sessions/{sid}` (rename).
@@ -266,8 +272,7 @@ fills — mirroring `systeminfo`. The community handler owns the static
     (`DELETE` route relaxed admin→viewer). `GET .../ask/sessions` list is per-user.
     `POST /ask` sets `user_id` from the caller and 404s a non-owned `session_id`.
     All no-ops under NoAuth.
-- **UI:** none (no dashboard changes; the chat client is a separate repo). No
-  enterprise UI overlay files touched.
+- **UI:** none (no dashboard changes; the chat client is a separate repo).
 
 ## 8. Test strategy (cover failure + edge cases, Rule 9)
 
@@ -320,48 +325,52 @@ sessions returned for the anonymous caller.
 ## 9. Risks & mitigations; alternatives considered
 
 - **Advertised-vs-enforced auth drift** (discovery says `none` while auth is on):
-  mitigated by the registry invariant (enterprise #124 registers the auth block in
-  the same `init()` that enables OIDC) and a doc comment. Community alone is always
-  genuinely NoAuth → `none` is correct. *Alternative:* derive `type` from the live
-  `auth.Provider` in `server.New` and thread it into the handler — rejected as it
-  still can't supply OIDC details (those are enterprise-only) and splits the source
-  of truth; the registry is the single seam, consistent with `systeminfo`.
+  mitigated by the registry invariant (any build enabling auth registers the auth
+  block in the same `init()` that installs its provider) and a doc comment. The
+  built-in platform alone is always genuinely NoAuth → `none` is correct.
+  *Alternative:* derive `type` from the live `auth.Provider` in `server.New` and
+  thread it into the handler — rejected as it still can't supply OIDC details (only
+  the auth plugin knows those) and splits the source of truth; the registry is the
+  single seam, consistent with `systeminfo`.
 - **Behaviour change on session endpoints** could surprise the existing dashboard.
   Mitigated: every check is a no-op under NoAuth (admin), which is what the
-  community dashboard runs; only OIDC deployments (enterprise) see enforcement,
+  built-in dashboard runs; only deployments with auth enabled see enforcement,
   which is the intent.
 - **`ListByProject`→`ListByProjectAndUser` signature change** touches the interface
-  + mock. Contained: the only caller is `ListAskSessions`; mock lives in
+  + mock. Contained: the only caller is `ListAskSessions`; the mock lives in
   `search_test.go`. *Alternative:* keep `ListByProject` and add a second method —
   rejected as dead surface (Rule 6/8); the list must always be per-user now.
 - **Static `features[]`** may advertise `grounded_chat` on a deployment without
-  vector search (where community `/ask` 503s). *Alternative:* gate features on
+  vector search (where the built-in `/ask` 503s). *Alternative:* gate features on
   `vectorStore != nil` — rejected for this phase (Rule 8; issue enumerates the flat
-  set; the enterprise agentic override doesn't require Qdrant). Recorded as a
-  possible follow-up.
+  set; a registered `/ask` override need not require Qdrant). Recorded as a possible
+  follow-up.
 - **`branding`** included as an opaque `omitempty` passthrough sourced from the
-  registry (part of the issue's JSON contract) but never populated by community —
-  no community config knob is added, so it isn't gold-plating; reviewers may veto.
+  registry (part of the issue's JSON contract) but never populated by the built-in
+  build — no built-in config knob is added, so it isn't gold-plating; reviewers may
+  veto.
 - **Dashboard proxy:** the client hits the deployment **API** directly for
   `/.well-known/decisionbox` (like `/health`), so no dashboard change is needed and
   the issue forbids one. If a deployment only exposes the Next.js dashboard URL to
   the client, proxying `/.well-known/decisionbox` would be a separate chat-app /
   deployment follow-up — noted, not implemented here.
 
-## 10. Enterprise coordination (out of scope here — `decisionbox-enterprise#124`)
+## 10. Paired change (separate PR — out of scope here)
 
-- Enterprise `HandleAsk` (`ask/handler/ask.go`) gets the **same owner check** on an
-  existing `session_id` so the per-user guarantee holds on enterprise deployments.
-- The enterprise auth `init()` (`auth/register.go`) calls `wellknown.Register` with
-  `Type:"oidc"` + issuer/`AUTH_MOBILE_CLIENT_ID`/scopes/audience, so the discovery
-  endpoint advertises OIDC on enterprise builds.
-Both are tracked in enterprise #124 and are **not** part of this platform PR.
+The per-user guarantee also needs the matching owner check on the registered
+`POST /ask` override (which today sets the user subject and checks project but not
+owner), plus the `wellknown.Register` call that advertises the deployment's OIDC
+config + mobile client id. Both live in the auth-plugin side and are tracked in a
+separate PR on `chat-app`; **no change to that side is in this platform PR**, and
+the community seams added here work standalone (discovery reports `auth.type:
+"none"` and every owner check is a NoAuth no-op until an auth plugin fills the
+registry).
 
 ## 11. Acceptance-criteria mapping
 
 - Raw unauthenticated discovery with explicit `auth.type`, wired to the deployment
-  auth config + mobile client id → §4.1 (community seam + handler; enterprise fills
-  values via #124).
+  auth config + mobile client id → §4.1 (the registry seam here; an auth plugin
+  fills the values, §10).
 - Per-user sessions; owner can delete their own; NoAuth preserved → §4.2.
 - Rename (`PATCH`, owner-or-admin) → §4.3.
 - Client rides on reused Ask endpoints + these three deltas; no parallel API, no
