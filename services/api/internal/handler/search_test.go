@@ -1047,6 +1047,11 @@ func TestAsk_SessionProjectMismatch(t *testing.T) {
 	body, _ := json.Marshal(askRequest{Question: "test", SessionID: "wrong-session"})
 	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
 	req.SetPathValue("id", "proj-1")
+	// NoAuth admin principal (what the middleware injects at runtime): the
+	// admin passes the ownership check, so the project-mismatch 400 is what
+	// an owner/admin sees. A non-owner would get a 404 before this point
+	// (see TestAsk_SessionOwnerMismatch).
+	req = withAuth(req, "anonymous", "admin")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
 	if w.Code != http.StatusBadRequest {

@@ -696,17 +696,20 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID != "" {
 		session, err := h.sessionRepo.GetByID(ctx, req.SessionID)
 		if err == nil && session != nil {
-			if session.ProjectID != projectID {
-				writeError(w, http.StatusBadRequest, "session does not belong to this project")
-				return
-			}
-			// Owner-or-admin: a caller may only continue their own
+			// Owner-or-admin first: a caller may only continue their own
 			// conversation, so history from another user's session is never
-			// read or appended to. Under NoAuth the caller is the anonymous
-			// admin and this never blocks. 404 (not 403) so a session's
-			// existence is not revealed to a non-owner.
+			// read or appended to. The ownership 404 precedes the
+			// project-mismatch 400 below so a non-owner cannot tell an
+			// existing cross-project session from a missing one — the 400 is
+			// a legitimate client error only the owner/admin should see.
+			// Under NoAuth the caller is the anonymous admin and this never
+			// blocks.
 			if !canAccessSession(r, session) {
 				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			if session.ProjectID != projectID {
+				writeError(w, http.StatusBadRequest, "session does not belong to this project")
 				return
 			}
 			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
