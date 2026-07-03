@@ -398,17 +398,27 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 		t.Errorf("Messages len = %d, want 2", len(got.Messages))
 	}
 
-	// List by project
-	sessions, err := repo.ListByProject(ctx, "proj-integ-1", 10)
+	// List by project + user (scoped to the owner)
+	sessions, err := repo.ListByProjectAndUser(ctx, "proj-integ-1", "user-1", 10)
 	if err != nil {
-		t.Fatalf("ListByProject: %v", err)
+		t.Fatalf("ListByProjectAndUser: %v", err)
 	}
 	if len(sessions) < 1 {
 		t.Errorf("expected >= 1 session, got %d", len(sessions))
 	}
 	// List should exclude messages (projection)
 	if len(sessions[0].Messages) > 0 {
-		t.Error("ListByProject should exclude messages (projection)")
+		t.Error("ListByProjectAndUser should exclude messages (projection)")
+	}
+	// A different user does not see this session.
+	otherUser, err := repo.ListByProjectAndUser(ctx, "proj-integ-1", "user-2", 10)
+	if err != nil {
+		t.Fatalf("ListByProjectAndUser other user: %v", err)
+	}
+	for _, s := range otherUser {
+		if s.ID == "session-integ-1" {
+			t.Error("session-integ-1 leaked to user-2 — list is not scoped by user")
+		}
 	}
 
 	// Delete

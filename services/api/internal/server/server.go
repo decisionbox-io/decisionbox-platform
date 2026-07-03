@@ -271,7 +271,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("POST /api/v1/projects/{id}/ask", withRole(viewer, askWithOverride(search.Ask)))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions", withRole(viewer, search.ListAskSessions))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.GetAskSession))
-	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(admin, search.DeleteAskSession))
+	// Rename + delete: viewer at the route so a user (who may only be a
+	// viewer) can manage their own conversation; the handlers enforce
+	// owner-or-admin so a viewer cannot touch another user's session.
+	mux.HandleFunc("PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.RenameAskSession))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.DeleteAskSession))
 	mux.HandleFunc("GET /api/v1/projects/{id}/search/history", withRole(viewer, search.ListHistory))
 
 	// Insights & Recommendations — viewer
@@ -320,11 +324,21 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// first request.
 	mountRouteGroups(mux, routeGroups)
 
-	// Combine: health (no auth) + app (with auth + RBAC)
+	// Combine: health + discovery (no auth) + app (with auth + RBAC)
 	root := http.NewServeMux()
 	root.Handle("/health", healthMux)
 	root.Handle("/health/", healthMux)
 	root.Handle("/api/v1/health", healthMux)
+	// Client discovery: unauthenticated, mounted on root (before the
+	// auth-wrapped catch-all) so a client can read the deployment's API
+	// version, feature set, and auth mode before it has credentials.
+	// Mounted via an exact-path sub-mux (like healthMux) so it shadows
+	// "/" for every method on this path: GET is served, and any other
+	// method returns 405 from the sub-mux rather than falling through to
+	// the auth chain.
+	discoveryMux := http.NewServeMux()
+	discoveryMux.HandleFunc("GET /.well-known/decisionbox", handler.WellKnown)
+	root.Handle("/.well-known/decisionbox", discoveryMux)
 	root.Handle("/", authProvider.Middleware()(mux))
 
 	// Middleware chain: CORS → Logging → Auth → RBAC → Router
@@ -464,7 +478,7 @@ func askWithOverride(fallback http.HandlerFunc) http.HandlerFunc {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {

@@ -124,7 +124,14 @@ type AskSessionRepo interface {
 	Create(ctx context.Context, session *commonmodels.AskSession) error
 	AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error
 	GetByID(ctx context.Context, sessionID string) (*commonmodels.AskSession, error)
-	ListByProject(ctx context.Context, projectID string, limit int) ([]*commonmodels.AskSession, error)
+	// ListByProjectAndUser returns a caller's own sessions in a project,
+	// most-recently-updated first. Scoping the list by user is what gives
+	// each authenticated user their own conversation history; under NoAuth
+	// every session is owned by "anonymous" so the caller still sees them all.
+	ListByProjectAndUser(ctx context.Context, projectID, userID string, limit int) ([]*commonmodels.AskSession, error)
+	// UpdateTitle renames a session. Returns an error when no session
+	// matches the id so the caller can surface a 404.
+	UpdateTitle(ctx context.Context, sessionID, title string) error
 	Delete(ctx context.Context, sessionID string) error
 }
 

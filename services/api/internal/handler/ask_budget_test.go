@@ -252,6 +252,7 @@ func TestAsk_TrimsHistoryWhenSessionTooLarge(t *testing.T) {
 	body, _ := json.Marshal(askRequest{Question: "latest question", SessionID: "sess-1"})
 	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
 	req.SetPathValue("id", "proj-1")
+	req = withAuth(req, "anonymous", "admin") // NoAuth principal the middleware injects
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
 
