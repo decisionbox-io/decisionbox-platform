@@ -34,6 +34,59 @@ Returns `503` (with `"status": "degraded"` and per-service errors under `service
 
 ---
 
+## Service Discovery
+
+### GET /.well-known/decisionbox
+
+Unauthenticated deployment-discovery document.
+A client fetches this before it has any credentials to learn the API version, the feature set, and how to authenticate.
+Unlike every other endpoint, the response is **raw JSON** — it is not wrapped in the `{"data": …}` envelope.
+
+```bash
+curl http://localhost:8080/.well-known/decisionbox
+```
+
+On a deployment without authentication (the default), `auth.type` is `none` and no `oidc` block is present:
+
+```json
+{
+  "api_version": "v1",
+  "features": ["projects", "grounded_chat", "ask_sessions", "me", "ask_session_rename"],
+  "auth": {"type": "none"}
+}
+```
+
+On a deployment with OIDC enabled, `auth.type` is `oidc` and a sibling `oidc` block carries the client-facing login config:
+
+```json
+{
+  "api_version": "v1",
+  "features": ["projects", "grounded_chat", "ask_sessions", "me", "ask_session_rename"],
+  "auth": {"type": "oidc"},
+  "oidc": {
+    "issuer": "https://tenant.example.com",
+    "mobile_client_id": "abc123",
+    "scopes": ["openid", "profile", "email", "offline_access"],
+    "audience": "https://api.example.com"
+  }
+}
+```
+
+`auth.type` is always present and explicit — a client must treat a missing `auth` block as a malformed response, never as "no auth".
+`oidc` is present if and only if `auth.type` is `oidc`.
+An optional `branding` object may be present on deployments that configure it.
+Only `GET` is served; other methods return `405`.
+
+| Field | Meaning |
+|-------|---------|
+| `api_version` | API contract version (`v1`). |
+| `features` | Capability flags the client relies on: `projects`, `grounded_chat`, `ask_sessions`, `me`, `ask_session_rename`. |
+| `auth.type` | `none` or `oidc`. |
+| `oidc` | OIDC login config (issuer, mobile client id, scopes, audience). Present iff `auth.type` is `oidc`. |
+| `branding` | Optional deployment branding object. Omitted when not configured. |
+
+---
+
 ## System
 
 ### GET /api/v1/system
@@ -885,6 +938,54 @@ Returns the target_ids the caller has read, as a flat array of strings. List pag
 
 ```json
 ["ins-1", "ins-2", "ins-5"]
+```
+
+---
+
+## Ask Sessions
+
+Conversations from the "Ask" / grounded-chat feature are stored as **ask sessions**.
+`POST /api/v1/projects/{id}/ask` starts a session when called without a `session_id` (the answer response returns the new `session_id`) and appends a turn when called with one.
+
+Sessions are **scoped to the caller**: a new session records the authenticated caller as its owner, and list / get / rename / delete operate on the caller's own sessions.
+An admin may get, rename, or delete any session (owner-or-admin); the list is always scoped strictly to the caller.
+On a no-auth deployment every session is owned by `anonymous`, so the caller sees them all — behaviour is unchanged.
+A request for a session the caller does not own (and is not admin for) returns `404`, so another user's session is not discoverable.
+
+### GET /api/v1/projects/{id}/ask/sessions
+
+List the caller's recent sessions in a project, most-recently-updated first.
+Message bodies are omitted from the list; fetch a single session for full turns.
+
+| Query param | Default | Description |
+|-------------|---------|-------------|
+| `limit` | `20` | Maximum sessions to return. |
+
+### GET /api/v1/projects/{id}/ask/sessions/{sessionId}
+
+Get one session with all its Q&A turns. Owner-or-admin; `404` otherwise.
+
+### PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}
+
+Rename a session. Owner-or-admin.
+
+```json
+{"title": "Churn deep-dive"}
+```
+
+The title is trimmed; an empty or whitespace-only title is rejected with `400`.
+An over-long title is truncated. Returns the stored title:
+
+```json
+{"data": {"id": "3f2a…", "title": "Churn deep-dive"}}
+```
+
+### DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}
+
+Delete a session. Owner-or-admin — a user can delete their own conversation.
+
+```json
+{"data": {"status": "deleted"}}
 ```
 
 ---

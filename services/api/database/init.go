@@ -129,6 +129,9 @@ var schema = []struct {
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "updated_at", Value: -1}}},
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}},
+			// Backs the per-user session list (ListByProjectAndUser):
+			// filter on project_id + user_id, sort by updated_at desc.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}},
 		},
 	},
 	{

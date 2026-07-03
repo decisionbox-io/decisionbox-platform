@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -699,6 +700,15 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "session does not belong to this project")
 				return
 			}
+			// Owner-or-admin: a caller may only continue their own
+			// conversation, so history from another user's session is never
+			// read or appended to. Under NoAuth the caller is the anonymous
+			// admin and this never blocks. 404 (not 403) so a session's
+			// existence is not revealed to a non-owner.
+			if !canAccessSession(r, session) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
 			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
 			messages = append(messages, trimmed...)
 		}
@@ -773,7 +783,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		session := &commonmodels.AskSession{
 			ID:        sessionID,
 			ProjectID: projectID,
-			UserID:    "anonymous",
+			UserID:    callerSub(r),
 			Title:     req.Question,
 			Messages:  []commonmodels.AskSessionMessage{msg},
 		}
@@ -898,7 +908,10 @@ func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) 
 		limit = parsed
 	}
 
-	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, limit)
+	// Scope the list to the caller so each authenticated user sees only
+	// their own conversations. Under NoAuth every session is owned by the
+	// anonymous caller, so this returns them all (unchanged behaviour).
+	sessions, err := h.sessionRepo.ListByProjectAndUser(r.Context(), projectID, callerSub(r), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
@@ -926,6 +939,12 @@ func (h *SearchHandler) GetAskSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Owner-or-admin: only the owner (or an admin) may read a session.
+	// 404 rather than 403 keeps another user's session undiscoverable.
+	if !canAccessSession(r, session) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, session)
 }
@@ -950,6 +969,14 @@ func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Owner-or-admin: a user may delete their own conversation, and an
+	// admin may delete any. The route role is relaxed to viewer (see
+	// server.go) precisely so the owner — who need only be a viewer — can
+	// remove their own session; this handler check is the real guard.
+	if !canAccessSession(r, session) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
 
 	if err := h.sessionRepo.Delete(r.Context(), sessionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete session")
@@ -957,4 +984,66 @@ func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// maxSessionTitleRunes bounds a renamed session title. It is a storage /
+// list-UI sanity bound (titles render in a single-line list), not a
+// tunable — a rune cap avoids splitting multi-byte UTF-8.
+const maxSessionTitleRunes = 200
+
+// renameAskSessionRequest is the PATCH body for renaming a session.
+type renameAskSessionRequest struct {
+	Title string `json:"title"`
+}
+
+// RenameAskSession renames an ask session (conversation).
+// PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}
+//
+// Body: {"title": "..."} — trimmed; an empty/whitespace-only title is
+// rejected. Owner-or-admin, mirroring delete. Returns
+// 200 {"data":{"id":sid,"title":title}} with the stored (trimmed, capped)
+// title.
+func (h *SearchHandler) RenameAskSession(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	sessionID := r.PathValue("sessionId")
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session ID is required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB — titles are tiny
+	var req renameAskSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if runes := []rune(title); len(runes) > maxSessionTitleRunes {
+		title = string(runes[:maxSessionTitleRunes])
+	}
+
+	session, err := h.sessionRepo.GetByID(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if session.ProjectID != projectID {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !canAccessSession(r, session) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	if err := h.sessionRepo.UpdateTitle(r.Context(), sessionID, title); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rename session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"id": sessionID, "title": title})
 }

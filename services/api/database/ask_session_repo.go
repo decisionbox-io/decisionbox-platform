@@ -134,7 +134,12 @@ func (r *AskSessionRepository) GetByID(ctx context.Context, sessionID string) (*
 	return &session, nil
 }
 
-func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID string, limit int) ([]*commonmodels.AskSession, error) {
+// ListByProjectAndUser returns the caller's own sessions in a project,
+// newest-updated first, projecting only the list-view fields (no message
+// bodies). Filtering on user_id in addition to project_id is what scopes
+// the conversation list to the caller; the {project_id, user_id,
+// updated_at} index in init.go backs this query.
+func (r *AskSessionRepository) ListByProjectAndUser(ctx context.Context, projectID, userID string, limit int) ([]*commonmodels.AskSession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -151,9 +156,10 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID stri
 			"updated_at":    1,
 		})
 
-	cursor, err := r.db.Collection("ask_sessions").Find(ctx, bson.M{"project_id": projectID}, opts)
+	filter := bson.M{"project_id": projectID, "user_id": userID}
+	cursor, err := r.db.Collection("ask_sessions").Find(ctx, filter, opts)
 	if err != nil {
-		return nil, fmt.Errorf("list ask sessions for project %s: %w", projectID, err)
+		return nil, fmt.Errorf("list ask sessions for project %s user %s: %w", projectID, userID, err)
 	}
 	defer cursor.Close(ctx)
 
@@ -162,6 +168,23 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID stri
 		return nil, fmt.Errorf("decode ask sessions: %w", err)
 	}
 	return sessions, nil
+}
+
+// UpdateTitle renames a session, bumping updated_at so the rename moves
+// it to the top of the list view. A no-match (unknown id) is returned as
+// an error so the handler can respond 404 rather than a silent success.
+func (r *AskSessionRepository) UpdateTitle(ctx context.Context, sessionID, title string) error {
+	res, err := r.db.Collection("ask_sessions").UpdateOne(ctx,
+		bson.M{"_id": sessionID},
+		bson.M{"$set": bson.M{"title": title, "updated_at": time.Now()}},
+	)
+	if err != nil {
+		return fmt.Errorf("update title for session %s: %w", sessionID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("update title for session %s: %w", sessionID, mongo.ErrNoDocuments)
+	}
+	return nil
 }
 
 func (r *AskSessionRepository) Delete(ctx context.Context, sessionID string) error {

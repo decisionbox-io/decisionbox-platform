@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -96,9 +97,20 @@ func (m *mockSearchHistoryRepo) ListByProject(_ context.Context, _ string, _ int
 // mockAskSessionRepo implements AskSessionRepo for testing.
 type mockAskSessionRepo struct {
 	session *commonmodels.AskSession
+	created *commonmodels.AskSession
+	// captured on ListByProjectAndUser
+	listProjectID string
+	listUserID    string
+	// captured on UpdateTitle
+	updatedID    string
+	updatedTitle string
+	updateErr    error
+	// captured on Delete
+	deleted bool
 }
 
-func (m *mockAskSessionRepo) Create(_ context.Context, _ *commonmodels.AskSession) error {
+func (m *mockAskSessionRepo) Create(_ context.Context, s *commonmodels.AskSession) error {
+	m.created = s
 	return nil
 }
 func (m *mockAskSessionRepo) AppendMessage(_ context.Context, _ string, _ commonmodels.AskSessionMessage) error {
@@ -110,10 +122,24 @@ func (m *mockAskSessionRepo) GetByID(_ context.Context, id string) (*commonmodel
 	}
 	return nil, fmt.Errorf("session not found")
 }
-func (m *mockAskSessionRepo) ListByProject(_ context.Context, _ string, _ int) ([]*commonmodels.AskSession, error) {
+func (m *mockAskSessionRepo) ListByProjectAndUser(_ context.Context, projectID, userID string, _ int) ([]*commonmodels.AskSession, error) {
+	m.listProjectID = projectID
+	m.listUserID = userID
 	return nil, nil
 }
-func (m *mockAskSessionRepo) Delete(_ context.Context, _ string) error { return nil }
+func (m *mockAskSessionRepo) UpdateTitle(_ context.Context, id, title string) error {
+	m.updatedID = id
+	m.updatedTitle = title
+	return m.updateErr
+}
+func (m *mockAskSessionRepo) Delete(_ context.Context, _ string) error { m.deleted = true; return nil }
+
+// withAuth attaches an auth principal to a request, mirroring what the
+// auth middleware injects at runtime. Under NoAuth that principal is
+// {Sub:"anonymous", Roles:["admin"]}.
+func withAuth(req *http.Request, sub string, roles ...string) *http.Request {
+	return req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{Sub: sub, Roles: roles}))
+}
 
 // mockSecretProviderForSearch returns a pre-set API key.
 type mockSecretProviderForSearch struct{}
@@ -626,6 +652,7 @@ func TestGetAskSession_Success(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "anonymous", "admin") // NoAuth principal
 	w := httptest.NewRecorder()
 	h.GetAskSession(w, req)
 	if w.Code != http.StatusOK {
@@ -668,6 +695,7 @@ func TestDeleteAskSession_Success(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "anonymous", "admin") // NoAuth principal
 	w := httptest.NewRecorder()
 	h.DeleteAskSession(w, req)
 	if w.Code != http.StatusOK {
@@ -686,6 +714,200 @@ func TestDeleteAskSession_WrongProject(t *testing.T) {
 	h.DeleteAskSession(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestGetAskSession_OwnerAllowed(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"},
+	}, nil, nil)
+	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.GetAskSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetAskSession_StrangerDenied(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"},
+	}, nil, nil)
+	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "stranger", "member")
+	w := httptest.NewRecorder()
+	h.GetAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("stranger: expected 404, got %d", w.Code)
+	}
+}
+
+func TestDeleteAskSession_OwnerViewerAllowed(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req := httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer") // owner, only viewer role
+	w := httptest.NewRecorder()
+	h.DeleteAskSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner viewer: expected 200, got %d", w.Code)
+	}
+	if !repo.deleted {
+		t.Error("owner delete did not reach repo")
+	}
+}
+
+func TestDeleteAskSession_StrangerDenied(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req := httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "stranger", "member")
+	w := httptest.NewRecorder()
+	h.DeleteAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("stranger: expected 404, got %d", w.Code)
+	}
+	if repo.deleted {
+		t.Error("stranger triggered delete, want no-op")
+	}
+}
+
+func TestListAskSessions_ScopedToCaller(t *testing.T) {
+	repo := &mockAskSessionRepo{}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions", nil)
+	req.SetPathValue("id", "proj-1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.ListAskSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if repo.listProjectID != "proj-1" || repo.listUserID != "u1" {
+		t.Errorf("list filter = (%q,%q), want (proj-1,u1)", repo.listProjectID, repo.listUserID)
+	}
+}
+
+// --- RenameAskSession tests ---
+
+func TestRenameAskSession_Success(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "  New title  "})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if repo.updatedID != "s1" || repo.updatedTitle != "New title" {
+		t.Errorf("UpdateTitle(%q,%q), want (s1,'New title') trimmed", repo.updatedID, repo.updatedTitle)
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok || data["id"] != "s1" || data["title"] != "New title" {
+		t.Errorf("response data = %v, want id=s1 title='New title'", resp.Data)
+	}
+}
+
+func TestRenameAskSession_EmptyTitleRejected(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "   "})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for whitespace-only title, got %d", w.Code)
+	}
+	if repo.updatedTitle != "" {
+		t.Error("UpdateTitle called despite empty title")
+	}
+}
+
+func TestRenameAskSession_TruncatesLongTitle(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	long := strings.Repeat("a", maxSessionTitleRunes+50)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: long})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := len([]rune(repo.updatedTitle)); got != maxSessionTitleRunes {
+		t.Errorf("stored title rune len = %d, want %d", got, maxSessionTitleRunes)
+	}
+}
+
+func TestRenameAskSession_StrangerDenied(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "hacked"})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "stranger", "member")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("stranger: expected 404, got %d", w.Code)
+	}
+	if repo.updatedTitle != "" {
+		t.Error("stranger triggered UpdateTitle, want no-op")
+	}
+}
+
+func TestRenameAskSession_WrongProject(t *testing.T) {
+	repo := &mockAskSessionRepo{session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-2", UserID: "u1"}}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "x"})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "admin")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("wrong project: expected 404, got %d", w.Code)
+	}
+}
+
+func TestRenameAskSession_RepoErrorIs500(t *testing.T) {
+	repo := &mockAskSessionRepo{
+		session:   &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"},
+		updateErr: fmt.Errorf("boom"),
+	}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "New"})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("repo error: expected 500, got %d", w.Code)
 	}
 }
 
@@ -829,6 +1051,67 @@ func TestAsk_SessionProjectMismatch(t *testing.T) {
 	h.Ask(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for session project mismatch, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// askFixtureHandler builds a SearchHandler wired with the full stack a
+// successful /ask needs (project with ready schema index, vector store
+// with one hit, an insight, the test LLM), sharing the given session repo.
+func askFixtureHandler(sessionRepo *mockAskSessionRepo) *SearchHandler {
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID: "proj-1", Name: "Test",
+			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+		},
+	}
+	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+		{ID: "ins-1", Score: 0.9, Payload: map[string]interface{}{"type": "insight"}},
+	}}
+	insightRepo := &mockInsightRepo{insights: []*commonmodels.StandaloneInsight{
+		{ID: "ins-1", ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "Test", Description: "Desc"},
+	}}
+	return NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, sessionRepo, &mockSecretProviderForSearch{}, vs)
+}
+
+// TestAsk_SessionOwnerMismatch: a caller may not continue another user's
+// conversation. Project matches but the session is owned by someone else
+// and the caller is not an admin → 404 (existence not revealed).
+func TestAsk_SessionOwnerMismatch(t *testing.T) {
+	sessionRepo := &mockAskSessionRepo{
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "owner"},
+	}
+	h := askFixtureHandler(sessionRepo)
+	body, _ := json.Marshal(askRequest{Question: "test", SessionID: "s1"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req = withAuth(req, "stranger", "member")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("owner mismatch: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAsk_NewSessionUsesCallerSubject: a new conversation is owned by the
+// authenticated caller, not a hardcoded "anonymous".
+func TestAsk_NewSessionUsesCallerSubject(t *testing.T) {
+	sessionRepo := &mockAskSessionRepo{}
+	h := askFixtureHandler(sessionRepo)
+	body, _ := json.Marshal(askRequest{Question: "what happened?"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req = withAuth(req, "auth0|u1", "member")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if sessionRepo.created == nil {
+		t.Fatal("no session created")
+	}
+	if sessionRepo.created.UserID != "auth0|u1" {
+		t.Errorf("new session UserID = %q, want auth0|u1", sessionRepo.created.UserID)
 	}
 }
 
