@@ -13,6 +13,13 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// ErrAskSessionNotFound is returned by mutations (e.g. UpdateTitle) when
+// no session matches the given id — typically a stale request or a delete
+// that raced the update. Handlers translate it to a 404. Kept a package
+// sentinel (mirroring ErrBookmarkListNotFound) so callers need not import
+// the Mongo driver to detect the condition.
+var ErrAskSessionNotFound = errors.New("ask session not found")
+
 // AskSessionRepository handles CRUD for the "ask_sessions" collection.
 type AskSessionRepository struct {
 	db *DB
@@ -182,7 +189,7 @@ func (r *AskSessionRepository) UpdateTitle(ctx context.Context, sessionID, title
 		return fmt.Errorf("update title for session %s: %w", sessionID, err)
 	}
 	if res.MatchedCount == 0 {
-		return fmt.Errorf("update title for session %s: %w", sessionID, mongo.ErrNoDocuments)
+		return fmt.Errorf("update title for session %s: %w", sessionID, ErrAskSessionNotFound)
 	}
 	return nil
 }

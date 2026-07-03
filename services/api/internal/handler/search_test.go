@@ -18,6 +18,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -908,6 +909,27 @@ func TestRenameAskSession_RepoErrorIs500(t *testing.T) {
 	h.RenameAskSession(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("repo error: expected 500, got %d", w.Code)
+	}
+}
+
+// TestRenameAskSession_RaceDeleteIs404: if the session is deleted between
+// the ownership check and UpdateTitle (repo returns ErrAskSessionNotFound),
+// the handler responds 404, not 500.
+func TestRenameAskSession_RaceDeleteIs404(t *testing.T) {
+	repo := &mockAskSessionRepo{
+		session:   &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: "u1"},
+		updateErr: fmt.Errorf("update title for session s1: %w", database.ErrAskSessionNotFound),
+	}
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	body, _ := json.Marshal(renameAskSessionRequest{Title: "New"})
+	req := httptest.NewRequest("PATCH", "/api/v1/projects/proj-1/ask/sessions/s1", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	req.SetPathValue("sessionId", "s1")
+	req = withAuth(req, "u1", "viewer")
+	w := httptest.NewRecorder()
+	h.RenameAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("race delete: expected 404, got %d", w.Code)
 	}
 }
 

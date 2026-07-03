@@ -9,7 +9,6 @@ import (
 	"time"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // seedSession inserts a session and nudges updated_at so ordering is
@@ -101,13 +100,13 @@ func TestInteg_AskSessionRepo_UpdateTitle(t *testing.T) {
 		t.Errorf("updated_at not bumped: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
 	}
 
-	// Unknown id surfaces mongo.ErrNoDocuments so the handler can 404.
+	// Unknown id surfaces ErrAskSessionNotFound so the handler can 404.
 	err = repo.UpdateTitle(ctx, "upd-nonexistent", "x")
 	if err == nil {
 		t.Fatal("update title on unknown id returned nil, want error")
 	}
-	if !errors.Is(err, mongo.ErrNoDocuments) {
-		t.Errorf("update title unknown id error = %v, want wrapping mongo.ErrNoDocuments", err)
+	if !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("update title unknown id error = %v, want wrapping ErrAskSessionNotFound", err)
 	}
 }
 

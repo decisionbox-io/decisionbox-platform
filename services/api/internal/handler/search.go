@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -1047,6 +1048,13 @@ func (h *SearchHandler) RenameAskSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.sessionRepo.UpdateTitle(r.Context(), sessionID, title); err != nil {
+		// The session may have been deleted between the ownership check
+		// above and this update (a concurrent DELETE); surface that as a
+		// 404 rather than a 500.
+		if errors.Is(err, database.ErrAskSessionNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to rename session")
 		return
 	}
