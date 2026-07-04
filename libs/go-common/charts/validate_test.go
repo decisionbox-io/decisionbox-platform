@@ -259,6 +259,33 @@ func TestValidate_RejectsUnsafeFieldName(t *testing.T) {
 	}
 }
 
+func TestValidate_NumberFormatHints(t *testing.T) {
+	// A valid currency/percent hint on a measure is accepted (presentation only).
+	s := barSpec()
+	s.Y = []Series{{Field: "revenue", Unit: "USD", Format: FormatCurrency}}
+	if err := Validate(s, DefaultCaps); err != nil {
+		t.Errorf("a currency measure hint should be valid: %v", err)
+	}
+	// An unknown format is rejected.
+	bad := barSpec()
+	bad.Y = []Series{{Field: "revenue", Format: "monopoly-money"}}
+	if err := Validate(bad, DefaultCaps); err == nil {
+		t.Error("an unknown format must be rejected")
+	}
+	// KPI format hint.
+	k := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(5), ValueField: "c", Format: FormatPercent}}
+	if err := Validate(k, DefaultCaps); err != nil {
+		t.Errorf("a kpi percent hint should be valid: %v", err)
+	}
+	// Format is presentation-only: it does not affect grounding.
+	src := revenueSource()
+	g := barSpec()
+	g.Y = []Series{{Field: "revenue", Unit: "USD", Format: FormatCurrency}}
+	if err := ValidateGrounded(g, src, DefaultCaps); err != nil {
+		t.Errorf("a formatted measure should still ground on raw values: %v", err)
+	}
+}
+
 func TestValidate_Caps(t *testing.T) {
 	caps := Caps{MaxPoints: 2, MaxSeries: 1, MaxLabelLen: 10}
 	s := barSpec()

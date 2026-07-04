@@ -41,20 +41,35 @@ const (
 	AxisNumber   = "number"
 )
 
+// Number-format hints. These are PRESENTATION-ONLY: a renderer uses them to
+// format displayed values (axis ticks, tooltips, KPI) — currency prefixes a
+// symbol, percent appends "%" — but they never affect grounding, which always
+// validates the raw data values. Empty means a plain compact number.
+const (
+	FormatNumber   = "number"
+	FormatCurrency = "currency"
+	FormatPercent  = "percent"
+)
+
 // Axis describes one chart axis: which row field feeds it, its human label,
 // and how the values should be interpreted. Only the X axis is modeled
 // explicitly; Y is a list of Series so multi-measure charts share one struct.
 type Axis struct {
-	Field string `json:"field" bson:"field"`
-	Label string `json:"label,omitempty" bson:"label,omitempty"`
-	Type  string `json:"type,omitempty" bson:"type,omitempty"` // category | time | number
+	Field  string `json:"field" bson:"field"`
+	Label  string `json:"label,omitempty" bson:"label,omitempty"`
+	Type   string `json:"type,omitempty" bson:"type,omitempty"`     // category | time | number
+	Unit   string `json:"unit,omitempty" bson:"unit,omitempty"`     // presentation hint (see Series)
+	Format string `json:"format,omitempty" bson:"format,omitempty"` // number | currency | percent
 }
 
 // Series is one plotted measure: the row field carrying its values and an
-// optional display label.
+// optional display label. Unit + Format are presentation-only hints (see
+// Format) — they never affect grounding, which validates the raw data values.
 type Series struct {
-	Field string `json:"field" bson:"field"`
-	Label string `json:"label,omitempty" bson:"label,omitempty"`
+	Field  string `json:"field" bson:"field"`
+	Label  string `json:"label,omitempty" bson:"label,omitempty"`
+	Unit   string `json:"unit,omitempty" bson:"unit,omitempty"`
+	Format string `json:"format,omitempty" bson:"format,omitempty"` // number | currency | percent
 }
 
 // KPI is a single headline figure (the "kpi" chart type): a value, an optional
@@ -67,6 +82,7 @@ type KPI struct {
 	// grounded against a source cell that happens to be zero.
 	Value      *float64 `json:"value" bson:"value"`
 	Unit       string   `json:"unit,omitempty" bson:"unit,omitempty"`
+	Format     string   `json:"format,omitempty" bson:"format,omitempty"` // number | currency | percent
 	Delta      *float64 `json:"delta,omitempty" bson:"delta,omitempty"`
 	ValueField string   `json:"value_field" bson:"value_field"`
 	DeltaField string   `json:"delta_field,omitempty" bson:"delta_field,omitempty"`

@@ -36,6 +36,15 @@ func (e *Error) Error() string {
 
 func ruleErr(rule, field, msg string) *Error { return &Error{Rule: rule, Field: field, Msg: msg} }
 
+// validFormat reports whether a number-format hint is allowed (empty = default).
+func validFormat(f string) bool {
+	switch f {
+	case "", FormatNumber, FormatCurrency, FormatPercent:
+		return true
+	}
+	return false
+}
+
 // GroundingSource is the subset of a query result a chart may be grounded
 // against: the columns the result exposed, the preview rows the chart data must
 // be an exact projection of, and whether the preview omitted rows. A truncated
@@ -133,6 +142,9 @@ func validateKPIShape(spec ChartSpec) error {
 	if spec.KPI.Delta != nil && strings.TrimSpace(spec.KPI.DeltaField) == "" {
 		return ruleErr("field_ref", "kpi.delta_field", "kpi.delta_field must name the source column when a delta is provided")
 	}
+	if !validFormat(spec.KPI.Format) {
+		return ruleErr("shape", "kpi.format", fmt.Sprintf("unknown format %q; allowed: number, currency, percent", spec.KPI.Format))
+	}
 	// A KPI's figures come from kpi.value/delta (grounded against the source
 	// cell), not from a data array. Reject a stray data array so it can't smuggle
 	// ungrounded, uncapped cells past validation (the KPI grounding path never
@@ -157,8 +169,16 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	if spec.X.Type != "" && spec.X.Type != AxisCategory && spec.X.Type != AxisTime && spec.X.Type != AxisNumber {
 		return ruleErr("shape", "x.type", fmt.Sprintf("unknown x.type %q; allowed: category, time, number", spec.X.Type))
 	}
+	if !validFormat(spec.X.Format) {
+		return ruleErr("shape", "x.format", fmt.Sprintf("unknown format %q; allowed: number, currency, percent", spec.X.Format))
+	}
 	if len(spec.Y) == 0 {
 		return ruleErr("shape", "y", "this chart type requires at least one y series")
+	}
+	for i, s := range spec.Y {
+		if !validFormat(s.Format) {
+			return ruleErr("shape", fmt.Sprintf("y[%d].format", i), fmt.Sprintf("unknown format %q; allowed: number, currency, percent", s.Format))
+		}
 	}
 	if caps.MaxSeries > 0 && len(spec.Y) > caps.MaxSeries {
 		return ruleErr("caps", "y", fmt.Sprintf("%d series exceeds the limit of %d", len(spec.Y), caps.MaxSeries))
@@ -544,12 +564,18 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 		if err := check("x.field", spec.X.Field); err != nil {
 			return err
 		}
+		if err := check("x.unit", spec.X.Unit); err != nil {
+			return err
+		}
 	}
 	for i, s := range spec.Y {
 		if err := check(fmt.Sprintf("y[%d].label", i), s.Label); err != nil {
 			return err
 		}
 		if err := check(fmt.Sprintf("y[%d].field", i), s.Field); err != nil {
+			return err
+		}
+		if err := check(fmt.Sprintf("y[%d].unit", i), s.Unit); err != nil {
 			return err
 		}
 	}

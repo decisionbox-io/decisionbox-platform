@@ -125,6 +125,7 @@ func writeChartsSection(b *strings.Builder) {
 	b.WriteString("- A chart's data MUST be an exact projection of a query result you already observed: copy the cells verbatim. Never compute, round, scale, or invent a chart number — if you need an aggregate or a smaller set of points, run the aggregation in SQL first, then chart that result.\n")
 	b.WriteString("- Set source_step_id to the q<N> id shown in the result you are charting. You can only chart a query whose full result fit the preview (not a truncated one) — aggregate in SQL until it does.\n")
 	b.WriteString("- Keep it readable: few series, clear labels. Types: bar, line, area, pie, scatter, kpi (a single headline figure). Render the chart in its own step, then answer in the next. If the data cannot honestly support a chart, don't force one.\n")
+	b.WriteString("- Set a measure's unit + format when you know what it is: currency values → format \"currency\" with the currency code as unit (e.g. USD, DKK); rates/shares → format \"percent\"; otherwise leave it plain. This only controls display (the renderer keeps the exact value) — it makes large figures read as e.g. $17.4B instead of 17392162956.\n")
 }
 
 // writeResultHandling renders the shared RESULT HANDLING block. Shared verbatim
