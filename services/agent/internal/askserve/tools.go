@@ -116,8 +116,10 @@ func toolRenderChart() gollm.ToolDefinition {
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"field": map[string]interface{}{"type": "string", "description": "A numeric query column."},
-							"label": map[string]interface{}{"type": "string"},
+							"field":  map[string]interface{}{"type": "string", "description": "A numeric query column."},
+							"label":  map[string]interface{}{"type": "string"},
+							"unit":   map[string]interface{}{"type": "string", "description": "Unit for display, e.g. a currency code (USD, EUR, DKK) or \"%\"/\"kg\". Presentation only — does not change the value."},
+							"format": map[string]interface{}{"type": "string", "enum": []string{"number", "currency", "percent"}, "description": "How to format this measure's values: currency (prefixes the unit's symbol), percent (appends %), or number (default)."},
 						},
 						"required": []string{"field"},
 					},
@@ -134,7 +136,8 @@ func toolRenderChart() gollm.ToolDefinition {
 					"description": "For the kpi type only: a single headline figure read from the query result.",
 					"properties": map[string]interface{}{
 						"value":       map[string]interface{}{"type": "number", "description": "The figure, copied from a source cell."},
-						"unit":        map[string]interface{}{"type": "string"},
+						"unit":        map[string]interface{}{"type": "string", "description": "Unit for display, e.g. a currency code (USD, DKK) or \"%\"."},
+						"format":      map[string]interface{}{"type": "string", "enum": []string{"number", "currency", "percent"}, "description": "How to format the figure: currency, percent, or number (default)."},
 						"delta":       map[string]interface{}{"type": "number", "description": "Optional change figure, copied from a source cell."},
 						"value_field": map[string]interface{}{"type": "string", "description": "The source column the value was read from."},
 						"delta_field": map[string]interface{}{"type": "string", "description": "The source column the delta was read from."},
