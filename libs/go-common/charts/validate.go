@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 )
 
@@ -173,9 +174,42 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	if caps.MaxPoints > 0 && len(spec.Data) > caps.MaxPoints {
 		return ruleErr("caps", "data", fmt.Sprintf("%d data points exceeds the limit of %d; aggregate in SQL to fewer rows", len(spec.Data), caps.MaxPoints))
 	}
-	// series_by pivots one field into one rendered series per distinct value, so
-	// it multiplies the effective series count — cap the fan-out too, or a single
-	// y with a high-cardinality series_by would blow past MaxSeries.
+	// series_by pivots a SINGLE measure into one series per distinct value. Both
+	// renderers (Recharts + the SVG export) chart y[0] under series_by, so more
+	// than one y with series_by is ambiguous — reject it (chart one measure, or
+	// drop series_by and list measures as separate y series).
+	if spec.SeriesBy != "" && len(spec.Y) != 1 {
+		return ruleErr("shape", "series_by", "series_by pivots a single measure — use exactly one y with series_by (or list measures as separate y series without series_by)")
+	}
+	// Each (x, series_by) slot must be unique — a pivot has one value per slot, so
+	// two rows sharing an (x, series) pair are ambiguous and a renderer would
+	// silently drop one. Aggregate in SQL so each slot is single-valued.
+	if spec.SeriesBy != "" {
+		seen := make(map[string]struct{}, len(spec.Data))
+		for ri, row := range spec.Data {
+			slot := fmt.Sprintf("%v\x00%v", row[spec.X.Field], row[spec.SeriesBy])
+			if _, dup := seen[slot]; dup {
+				return ruleErr("shape", "series_by", fmt.Sprintf("data row %d repeats the (x=%v, %s=%v) slot; each x/series pair must be unique (aggregate in SQL)", ri, row[spec.X.Field], spec.SeriesBy, row[spec.SeriesBy]))
+			}
+			seen[slot] = struct{}{}
+		}
+	}
+	// A pie has one value dimension (its slices) and negative slices are
+	// meaningless — require exactly one y and non-negative values so a renderer
+	// never has to silently drop or recompute slices.
+	if spec.Type == ChartPie {
+		if len(spec.Y) != 1 {
+			return ruleErr("shape", "y", "a pie chart uses exactly one y measure (its slice values)")
+		}
+		for ri, row := range spec.Data {
+			if v, ok := asFloat(row[spec.Y[0].Field]); ok && v < 0 {
+				return ruleErr("shape", spec.Y[0].Field, fmt.Sprintf("a pie slice cannot be negative; data row %d has a negative %q", ri, spec.Y[0].Field))
+			}
+		}
+	}
+	// series_by turns one field into one rendered series per distinct value, so
+	// it multiplies the effective series count — cap the fan-out too, or a
+	// high-cardinality series_by would blow past MaxSeries.
 	if spec.SeriesBy != "" && caps.MaxSeries > 0 {
 		distinct := map[string]struct{}{}
 		for _, row := range spec.Data {
@@ -247,6 +281,12 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 		return groundKPI(spec, src, cols, preview)
 	}
 	dataRows := canonicalizeRows(spec.Data)
+	// canonicalizeRows drops a row it can't JSON round-trip (e.g. a NaN/Inf
+	// value); a dropped data row would silently skip grounding, so reject the
+	// spec instead of validating a subset.
+	if len(dataRows) != len(spec.Data) {
+		return ruleErr("shape", "data", "a data row holds a value that is not representable in JSON (e.g. NaN or Infinity); chart only finite numbers and plain values")
+	}
 
 	// Every charted field must be a real column of the source preview.
 	for _, f := range chartedFields(spec) {
@@ -461,8 +501,18 @@ func isNumericOrNull(v any) bool {
 	if v == nil {
 		return true
 	}
-	_, ok := asFloat(v)
-	return ok
+	if _, ok := asFloat(v); ok {
+		return true
+	}
+	// A numeric STRING counts as numeric: some warehouses (e.g. BigQuery
+	// NUMERIC/BIGNUMERIC) encode exact-decimal columns as JSON strings to keep
+	// precision, so a monetary measure arrives as "1234.56". The model copies the
+	// cell verbatim (grounds string==string) and every renderer parses it.
+	if s, ok := v.(string); ok {
+		_, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		return err == nil && strings.TrimSpace(s) != ""
+	}
+	return false
 }
 
 // sanitizeStrings rejects any human-facing string that could break out of a
@@ -484,8 +534,14 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 	if err := check("caption", spec.Caption); err != nil {
 		return err
 	}
+	// Field references and data keys are rendered too — a renderer falls back to
+	// the field name for a legend/axis/tooltip when no label is set — so a column
+	// aliased to markup/control text must be rejected just like a label.
 	if spec.X != nil {
 		if err := check("x.label", spec.X.Label); err != nil {
+			return err
+		}
+		if err := check("x.field", spec.X.Field); err != nil {
 			return err
 		}
 	}
@@ -493,18 +549,41 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 		if err := check(fmt.Sprintf("y[%d].label", i), s.Label); err != nil {
 			return err
 		}
+		if err := check(fmt.Sprintf("y[%d].field", i), s.Field); err != nil {
+			return err
+		}
+	}
+	if err := check("series_by", spec.SeriesBy); err != nil {
+		return err
 	}
 	if spec.KPI != nil {
 		if err := check("kpi.unit", spec.KPI.Unit); err != nil {
 			return err
 		}
+		if err := check("kpi.value_field", spec.KPI.ValueField); err != nil {
+			return err
+		}
+		if err := check("kpi.delta_field", spec.KPI.DeltaField); err != nil {
+			return err
+		}
 	}
 	for ri, row := range spec.Data {
 		for k, v := range row {
-			if s, ok := v.(string); ok {
-				if err := check(fmt.Sprintf("data[%d].%s", ri, k), s); err != nil {
+			if err := check(fmt.Sprintf("data[%d] key", ri), k); err != nil {
+				return err
+			}
+			switch cell := v.(type) {
+			case nil, bool, float64, float32, int, int32, int64, json.Number:
+				// scalar numeric/bool/null — fine.
+			case string:
+				if err := check(fmt.Sprintf("data[%d].%s", ri, k), cell); err != nil {
 					return err
 				}
+			default:
+				// A JSON/RECORD/ARRAY source column decodes to a map/slice; a chart
+				// plots scalars, and a nested value could smuggle markup past the
+				// top-level string check — reject non-scalar cells outright.
+				return ruleErr("shape", fmt.Sprintf("data[%d].%s", ri, k), "chart data cells must be scalar (string, number, bool, or null), not an object or array")
 			}
 		}
 	}

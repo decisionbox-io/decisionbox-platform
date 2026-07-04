@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,129 @@ func TestValidate_Rejects(t *testing.T) {
 				t.Errorf("rule = %q, want %q (%v)", ve.Rule, c.rule, err)
 			}
 		})
+	}
+}
+
+func TestValidate_SeriesByRequiresSingleY(t *testing.T) {
+	base := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1", SeriesBy: "region",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "revenue"}, {Field: "cost"}},
+		Data: []map[string]any{{"month": "a", "region": "NA", "revenue": 1.0, "cost": 2.0}},
+	}
+	if err := Validate(base, DefaultCaps); err == nil {
+		t.Error("series_by with more than one y must be rejected")
+	}
+	base.Y = []Series{{Field: "revenue"}}
+	if err := Validate(base, DefaultCaps); err != nil {
+		t.Errorf("series_by with a single y should pass: %v", err)
+	}
+}
+
+func TestValidate_PieSingleYNonNegative(t *testing.T) {
+	pie := ChartSpec{
+		Type: ChartPie, SourceStepID: "q1",
+		X: &Axis{Field: "region"}, Y: []Series{{Field: "share"}},
+		Data: []map[string]any{{"region": "NA", "share": 60.0}, {"region": "EU", "share": 40.0}},
+	}
+	if err := Validate(pie, DefaultCaps); err != nil {
+		t.Fatalf("valid pie = %v", err)
+	}
+	// Multiple y on a pie.
+	bad := pie
+	bad.Y = []Series{{Field: "share"}, {Field: "other"}}
+	if err := Validate(bad, DefaultCaps); err == nil {
+		t.Error("a pie with more than one y must be rejected")
+	}
+	// Negative slice.
+	neg := pie
+	neg.Data = []map[string]any{{"region": "NA", "share": -5.0}}
+	if err := Validate(neg, DefaultCaps); err == nil {
+		t.Error("a negative pie slice must be rejected")
+	}
+}
+
+func TestValidateGrounded_NumericStringMeasure(t *testing.T) {
+	// BigQuery NUMERIC/BIGNUMERIC arrives as a JSON string; a copied string
+	// measure must pass the numeric-y check and ground (string == string).
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"month", "amount"},
+		Preview: []map[string]any{
+			{"month": "2024-01", "amount": "1234.56"},
+			{"month": "2024-02", "amount": "2000.00"},
+		},
+	}
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "amount"}},
+		Data: []map[string]any{
+			{"month": "2024-01", "amount": "1234.56"},
+			{"month": "2024-02", "amount": "2000.00"},
+		},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err != nil {
+		t.Fatalf("a numeric-string measure should validate + ground: %v", err)
+	}
+	// A genuinely non-numeric string measure is still rejected.
+	bad := s
+	bad.Data = []map[string]any{{"month": "2024-01", "amount": "lots"}}
+	if err := Validate(bad, DefaultCaps); err == nil {
+		t.Error("a non-numeric string y must still be rejected")
+	}
+}
+
+func TestValidateGrounded_RejectsNonJSONNumber(t *testing.T) {
+	src := revenueSource()
+	s := barSpec()
+	s.Data = []map[string]any{{"month": "2024-01", "revenue": math.NaN()}}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("a NaN data value must be rejected, not silently dropped")
+	}
+}
+
+func TestValidate_RejectsNonScalarDataCell(t *testing.T) {
+	// A JSON/ARRAY source column decodes to a map/slice — a chart plots scalars,
+	// and a nested string could smuggle markup past the top-level check.
+	s := barSpec()
+	s.Data = []map[string]any{{"month": "a", "revenue": 1.0, "meta": map[string]any{"note": "<script>"}}}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("a non-scalar (object) data cell must be rejected")
+	}
+	s2 := barSpec()
+	s2.Data = []map[string]any{{"month": "a", "revenue": 1.0, "tags": []any{"<script>"}}}
+	if err := Validate(s2, DefaultCaps); err == nil {
+		t.Error("a non-scalar (array) data cell must be rejected")
+	}
+}
+
+func TestValidate_SeriesByRejectsDuplicateSlot(t *testing.T) {
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1", SeriesBy: "region",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "revenue"}},
+		Data: []map[string]any{
+			{"month": "a", "region": "NA", "revenue": 1.0},
+			{"month": "a", "region": "NA", "revenue": 2.0}, // same (x, series) slot
+		},
+	}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("a duplicate (x, series_by) slot must be rejected")
+	}
+}
+
+func TestValidate_RejectsUnsafeFieldName(t *testing.T) {
+	// A column aliased to markup (a renderer falls back to the field name for a
+	// legend/axis) must be rejected like any other rendered string.
+	s := barSpec()
+	s.Y = []Series{{Field: "<script>"}}
+	s.Data = []map[string]any{{"month": "a", "<script>": 1.0}}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("an unsafe y field name must be rejected")
+	}
+	// And an unsafe data key.
+	s2 := barSpec()
+	s2.Data = []map[string]any{{"month": "a", "revenue": 1.0, "on<load>": "x"}}
+	if err := Validate(s2, DefaultCaps); err == nil {
+		t.Error("an unsafe data key must be rejected")
 	}
 }
 
