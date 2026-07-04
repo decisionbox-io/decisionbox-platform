@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://decisionbox.io/schemas/chart-spec.json",
+  "title": "ChartSpec",
+  "description": "Renderer-agnostic chart artifact emitted by the data agent's render_chart tool. Data must be an exact projection of the query preview named by source_step_id — never derived or invented. This JSON Schema is the language-neutral contract mirrored by the Go type (libs/go-common/charts) and the Dart renderer (decisionbox-chat-app).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "source_step_id"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["bar", "line", "area", "pie", "scatter", "kpi"]
+    },
+    "title": { "type": "string" },
+    "caption": { "type": "string" },
+    "source_step_id": {
+      "type": "string",
+      "description": "The query step this chart's data came from, e.g. \"q2\"."
+    },
+    "x": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field"],
+      "properties": {
+        "field": { "type": "string" },
+        "label": { "type": "string" },
+        "type": { "type": "string", "enum": ["category", "time", "number"] }
+      }
+    },
+    "y": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field"],
+        "properties": {
+          "field": { "type": "string" },
+          "label": { "type": "string" }
+        }
+      }
+    },
+    "series_by": {
+      "type": "string",
+      "description": "Field to split into one series per distinct value (bar/line/area only)."
+    },
+    "stacked": {
+      "type": "boolean",
+      "description": "Stack series (bar/area only)."
+    },
+    "data": {
+      "type": "array",
+      "description": "Embedded, capped, grounded data rows — an exact projection of the source preview.",
+      "items": { "type": "object" }
+    },
+    "kpi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "value_field"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "delta": { "type": "number" },
+        "value_field": {
+          "type": "string",
+          "description": "Source column the value was read from."
+        },
+        "delta_field": {
+          "type": "string",
+          "description": "Source column the delta was read from."
+        }
+      }
+    }
+  }
+}
