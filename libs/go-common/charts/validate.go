@@ -121,6 +121,9 @@ func validateKPIShape(spec ChartSpec) error {
 	if spec.KPI == nil {
 		return ruleErr("shape", "kpi", "a kpi chart must set the kpi object")
 	}
+	if spec.KPI.Value == nil {
+		return ruleErr("shape", "kpi.value", "kpi.value is required (a missing value is not the same as 0)")
+	}
 	if strings.TrimSpace(spec.KPI.ValueField) == "" {
 		return ruleErr("field_ref", "kpi.value_field", "kpi.value_field must name the source column the value was read from")
 	}
@@ -196,6 +199,21 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 		for ri, row := range spec.Data {
 			if !isNumericOrNull(row[s.Field]) {
 				return ruleErr("shape", s.Field, fmt.Sprintf("y field %q must be numeric; data row %d is not", s.Field, ri))
+			}
+		}
+	}
+	// A scatter plots a continuous x, and a declared number x-axis promises
+	// numeric x values — reject non-numeric x cells so a renderer never gets a
+	// numeric axis over strings (mis-scaled or blank). category/time x may be
+	// non-numeric.
+	if spec.Type == ChartScatter || spec.X.Type == AxisNumber {
+		for ri, row := range spec.Data {
+			if !isNumericOrNull(row[spec.X.Field]) {
+				kind := "a scatter"
+				if spec.Type != ChartScatter {
+					kind = "a number x-axis"
+				}
+				return ruleErr("shape", spec.X.Field, fmt.Sprintf("%s requires numeric x values; data row %d has a non-numeric %q (use x.type category/time for labels)", kind, ri, spec.X.Field))
 			}
 		}
 	}
@@ -280,10 +298,11 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 // read from the named columns.
 func groundKPI(spec ChartSpec, src GroundingSource, cols map[string]struct{}, preview []map[string]any) error {
 	k := spec.KPI
-	// kpi.value/delta are float64 in the struct, so a magnitude beyond float64's
-	// exact-integer range can't be proven equal to a source cell (both sides
-	// round) — reject, mirroring the series-data precision guard.
-	if math.Abs(k.Value) >= maxExactInt || (k.Delta != nil && math.Abs(*k.Delta) >= maxExactInt) {
+	// kpi.value/delta are float64, so a magnitude beyond float64's exact-integer
+	// range can't be proven equal to a source cell (both sides round) — reject,
+	// mirroring the series-data precision guard. (Validate already ensured
+	// Value != nil.)
+	if math.Abs(*k.Value) >= maxExactInt || (k.Delta != nil && math.Abs(*k.Delta) >= maxExactInt) {
 		return ruleErr("grounding", "kpi", "the kpi figure is too large to ground with exact precision; aggregate, round, or scale it in SQL first")
 	}
 	if _, ok := cols[k.ValueField]; !ok {
@@ -295,7 +314,7 @@ func groundKPI(spec ChartSpec, src GroundingSource, cols map[string]struct{}, pr
 		}
 	}
 	for _, row := range preview {
-		if !cellsEqual(k.Value, row[k.ValueField]) {
+		if !cellsEqual(*k.Value, row[k.ValueField]) {
 			continue
 		}
 		if k.DeltaField == "" || k.Delta == nil {

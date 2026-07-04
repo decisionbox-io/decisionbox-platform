@@ -44,15 +44,44 @@ func barSpec() ChartSpec {
 	}
 }
 
+// scatterSpec is a valid scatter (numeric x, numeric y).
+func scatterSpec() ChartSpec {
+	return ChartSpec{
+		Type:         ChartScatter,
+		X:            &Axis{Field: "qty", Type: AxisNumber},
+		Y:            []Series{{Field: "price"}},
+		SourceStepID: "q1",
+		Data: []map[string]any{
+			{"qty": 2.0, "price": 10.0},
+			{"qty": 5.0, "price": 22.0},
+		},
+	}
+}
+
+func TestValidate_RejectsNonNumericScatterX(t *testing.T) {
+	// A scatter over string x (or a declared number x-axis over strings) must be
+	// rejected — a numeric axis over labels renders blank/mis-scaled.
+	s := barSpec()
+	s.Type = ChartScatter // month strings on x
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("scatter with non-numeric x must be rejected")
+	}
+	s2 := barSpec()
+	s2.X = &Axis{Field: "month", Type: AxisNumber}
+	if err := Validate(s2, DefaultCaps); err == nil {
+		t.Error("a number x-axis over string values must be rejected")
+	}
+}
+
 func TestValidate_Valid(t *testing.T) {
 	for _, spec := range []ChartSpec{
 		barSpec(),
 		func() ChartSpec { s := barSpec(); s.Type = ChartLine; return s }(),
 		func() ChartSpec { s := barSpec(); s.Type = ChartArea; s.Stacked = boolp(true); return s }(),
-		func() ChartSpec { s := barSpec(); s.Type = ChartScatter; return s }(),
+		scatterSpec(),
 		{
 			Type: ChartKPI, Title: "Total", SourceStepID: "q2",
-			KPI: &KPI{Value: 460, Unit: "USD", ValueField: "revenue"},
+			KPI: &KPI{Value: f64(460), Unit: "USD", ValueField: "revenue"},
 		},
 	} {
 		if err := Validate(spec, DefaultCaps); err != nil {
@@ -236,7 +265,7 @@ func TestValidateGrounded_RejectsAlteredNonPlottedColumn(t *testing.T) {
 }
 
 func TestValidate_KPIDeltaRequiresDeltaField(t *testing.T) {
-	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 460, ValueField: "total", Delta: f64(60)}}
+	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(460), ValueField: "total", Delta: f64(60)}}
 	err := Validate(s, DefaultCaps)
 	if err == nil {
 		t.Fatal("a KPI delta without delta_field must be rejected")
@@ -293,12 +322,30 @@ func TestValidateGrounded_ExactNumbersNoLargeTolerance(t *testing.T) {
 	}
 }
 
+func TestValidate_KPIValueRequired(t *testing.T) {
+	// A KPI with no value (omitted in JSON → nil pointer) must be rejected, not
+	// silently treated as 0.
+	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{ValueField: "total"}}
+	err := Validate(s, DefaultCaps)
+	if err == nil {
+		t.Fatal("a kpi with no value must be rejected")
+	}
+	var ve *Error
+	if errors.As(err, &ve) && ve.Field != "kpi.value" {
+		t.Errorf("field = %q, want kpi.value", ve.Field)
+	}
+	// The same missing value via Decode (JSON omits it) is rejected too.
+	if _, derr := Decode([]byte(`{"type":"kpi","source_step_id":"q1","kpi":{"value_field":"total"}}`), DefaultCaps); derr == nil {
+		t.Error("Decode of a kpi with no value must be rejected")
+	}
+}
+
 func TestValidate_KPIRejectsDataArray(t *testing.T) {
 	// A KPI must not carry a data array — the KPI grounding path never inspects
 	// it, so it would be an ungrounded, uncapped smuggling channel.
 	s := ChartSpec{
 		Type: ChartKPI, SourceStepID: "q1",
-		KPI:  &KPI{Value: 460, ValueField: "total"},
+		KPI:  &KPI{Value: f64(460), ValueField: "total"},
 		Data: []map[string]any{{"x": "a", "invented": 999.0}},
 	}
 	err := Validate(s, DefaultCaps)
@@ -378,7 +425,7 @@ func TestValidateGrounded_KPIRejectsBeyondFloat64Precision(t *testing.T) {
 		Columns: []string{"total"},
 		Preview: []map[string]any{{"total": int64(9007199254740993)}},
 	}
-	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 9007199254740993, ValueField: "total"}}
+	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(9007199254740993), ValueField: "total"}}
 	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
 		t.Error("a KPI figure beyond float64's exact-integer range must be rejected")
 	}
@@ -390,17 +437,17 @@ func TestValidateGrounded_KPIProvenance(t *testing.T) {
 		Columns: []string{"total", "prev"},
 		Preview: []map[string]any{{"total": int64(460), "prev": int64(400)}},
 	}
-	ok := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 460, ValueField: "total", Delta: f64(60 - 0), DeltaField: "prev"}}
+	ok := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(460), ValueField: "total", Delta: f64(60 - 0), DeltaField: "prev"}}
 	// delta must equal the source cell (400), not a computed 60.
 	ok.KPI.Delta = f64(400)
 	if err := ValidateGrounded(ok, src, DefaultCaps); err != nil {
 		t.Fatalf("kpi with source-backed value+delta = %v", err)
 	}
-	bad := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 999, ValueField: "total"}}
+	bad := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(999), ValueField: "total"}}
 	if err := ValidateGrounded(bad, src, DefaultCaps); err == nil {
 		t.Error("kpi value not present in the source should be rejected")
 	}
-	computed := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 460, ValueField: "total", Delta: f64(60), DeltaField: "prev"}}
+	computed := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: f64(460), ValueField: "total", Delta: f64(60), DeltaField: "prev"}}
 	if err := ValidateGrounded(computed, src, DefaultCaps); err == nil {
 		t.Error("kpi delta computed as (total-prev) rather than read from the source should be rejected")
 	}

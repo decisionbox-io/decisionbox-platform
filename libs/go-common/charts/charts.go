@@ -62,7 +62,10 @@ type Series struct {
 // *Field members bind the figure to a column of the source query preview so a
 // KPI's provenance is provable, not asserted.
 type KPI struct {
-	Value      float64  `json:"value" bson:"value"`
+	// Value is a pointer so an omitted/null value is distinguishable from a
+	// legitimate 0 — a missing value must be rejected for repair, not silently
+	// grounded against a source cell that happens to be zero.
+	Value      *float64 `json:"value" bson:"value"`
 	Unit       string   `json:"unit,omitempty" bson:"unit,omitempty"`
 	Delta      *float64 `json:"delta,omitempty" bson:"delta,omitempty"`
 	ValueField string   `json:"value_field" bson:"value_field"`
