@@ -180,6 +180,19 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	if spec.SeriesBy != "" && len(spec.Y) != 1 {
 		return ruleErr("shape", "series_by", "series_by pivots a single measure — use exactly one y with series_by (or list measures as separate y series without series_by)")
 	}
+	// A pie has one value dimension (its slices) and negative slices are
+	// meaningless — require exactly one y and non-negative values so a renderer
+	// never has to silently drop or recompute slices.
+	if spec.Type == ChartPie {
+		if len(spec.Y) != 1 {
+			return ruleErr("shape", "y", "a pie chart uses exactly one y measure (its slice values)")
+		}
+		for ri, row := range spec.Data {
+			if v, ok := asFloat(row[spec.Y[0].Field]); ok && v < 0 {
+				return ruleErr("shape", spec.Y[0].Field, fmt.Sprintf("a pie slice cannot be negative; data row %d has a negative %q", ri, spec.Y[0].Field))
+			}
+		}
+	}
 	// series_by turns one field into one rendered series per distinct value, so
 	// it multiplies the effective series count — cap the fan-out too, or a
 	// high-cardinality series_by would blow past MaxSeries.
@@ -254,6 +267,12 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 		return groundKPI(spec, src, cols, preview)
 	}
 	dataRows := canonicalizeRows(spec.Data)
+	// canonicalizeRows drops a row it can't JSON round-trip (e.g. a NaN/Inf
+	// value); a dropped data row would silently skip grounding, so reject the
+	// spec instead of validating a subset.
+	if len(dataRows) != len(spec.Data) {
+		return ruleErr("shape", "data", "a data row holds a value that is not representable in JSON (e.g. NaN or Infinity); chart only finite numbers and plain values")
+	}
 
 	// Every charted field must be a real column of the source preview.
 	for _, f := range chartedFields(spec) {

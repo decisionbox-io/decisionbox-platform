@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -147,6 +148,38 @@ func TestValidate_SeriesByRequiresSingleY(t *testing.T) {
 	base.Y = []Series{{Field: "revenue"}}
 	if err := Validate(base, DefaultCaps); err != nil {
 		t.Errorf("series_by with a single y should pass: %v", err)
+	}
+}
+
+func TestValidate_PieSingleYNonNegative(t *testing.T) {
+	pie := ChartSpec{
+		Type: ChartPie, SourceStepID: "q1",
+		X: &Axis{Field: "region"}, Y: []Series{{Field: "share"}},
+		Data: []map[string]any{{"region": "NA", "share": 60.0}, {"region": "EU", "share": 40.0}},
+	}
+	if err := Validate(pie, DefaultCaps); err != nil {
+		t.Fatalf("valid pie = %v", err)
+	}
+	// Multiple y on a pie.
+	bad := pie
+	bad.Y = []Series{{Field: "share"}, {Field: "other"}}
+	if err := Validate(bad, DefaultCaps); err == nil {
+		t.Error("a pie with more than one y must be rejected")
+	}
+	// Negative slice.
+	neg := pie
+	neg.Data = []map[string]any{{"region": "NA", "share": -5.0}}
+	if err := Validate(neg, DefaultCaps); err == nil {
+		t.Error("a negative pie slice must be rejected")
+	}
+}
+
+func TestValidateGrounded_RejectsNonJSONNumber(t *testing.T) {
+	src := revenueSource()
+	s := barSpec()
+	s.Data = []map[string]any{{"month": "2024-01", "revenue": math.NaN()}}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("a NaN data value must be rejected, not silently dropped")
 	}
 }
 
