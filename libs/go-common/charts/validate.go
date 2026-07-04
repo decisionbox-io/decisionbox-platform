@@ -180,6 +180,19 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	if spec.SeriesBy != "" && len(spec.Y) != 1 {
 		return ruleErr("shape", "series_by", "series_by pivots a single measure — use exactly one y with series_by (or list measures as separate y series without series_by)")
 	}
+	// Each (x, series_by) slot must be unique — a pivot has one value per slot, so
+	// two rows sharing an (x, series) pair are ambiguous and a renderer would
+	// silently drop one. Aggregate in SQL so each slot is single-valued.
+	if spec.SeriesBy != "" {
+		seen := make(map[string]struct{}, len(spec.Data))
+		for ri, row := range spec.Data {
+			slot := fmt.Sprintf("%v\x00%v", row[spec.X.Field], row[spec.SeriesBy])
+			if _, dup := seen[slot]; dup {
+				return ruleErr("shape", "series_by", fmt.Sprintf("data row %d repeats the (x=%v, %s=%v) slot; each x/series pair must be unique (aggregate in SQL)", ri, row[spec.X.Field], spec.SeriesBy, row[spec.SeriesBy]))
+			}
+			seen[slot] = struct{}{}
+		}
+	}
 	// A pie has one value dimension (its slices) and negative slices are
 	// meaningless — require exactly one y and non-negative values so a renderer
 	// never has to silently drop or recompute slices.
@@ -548,10 +561,18 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 			if err := check(fmt.Sprintf("data[%d] key", ri), k); err != nil {
 				return err
 			}
-			if s, ok := v.(string); ok {
-				if err := check(fmt.Sprintf("data[%d].%s", ri, k), s); err != nil {
+			switch cell := v.(type) {
+			case nil, bool, float64, float32, int, int32, int64, json.Number:
+				// scalar numeric/bool/null — fine.
+			case string:
+				if err := check(fmt.Sprintf("data[%d].%s", ri, k), cell); err != nil {
 					return err
 				}
+			default:
+				// A JSON/RECORD/ARRAY source column decodes to a map/slice; a chart
+				// plots scalars, and a nested value could smuggle markup past the
+				// top-level string check — reject non-scalar cells outright.
+				return ruleErr("shape", fmt.Sprintf("data[%d].%s", ri, k), "chart data cells must be scalar (string, number, bool, or null), not an object or array")
 			}
 		}
 	}

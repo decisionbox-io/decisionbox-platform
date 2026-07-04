@@ -183,6 +183,35 @@ func TestValidateGrounded_RejectsNonJSONNumber(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsNonScalarDataCell(t *testing.T) {
+	// A JSON/ARRAY source column decodes to a map/slice — a chart plots scalars,
+	// and a nested string could smuggle markup past the top-level check.
+	s := barSpec()
+	s.Data = []map[string]any{{"month": "a", "revenue": 1.0, "meta": map[string]any{"note": "<script>"}}}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("a non-scalar (object) data cell must be rejected")
+	}
+	s2 := barSpec()
+	s2.Data = []map[string]any{{"month": "a", "revenue": 1.0, "tags": []any{"<script>"}}}
+	if err := Validate(s2, DefaultCaps); err == nil {
+		t.Error("a non-scalar (array) data cell must be rejected")
+	}
+}
+
+func TestValidate_SeriesByRejectsDuplicateSlot(t *testing.T) {
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1", SeriesBy: "region",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "revenue"}},
+		Data: []map[string]any{
+			{"month": "a", "region": "NA", "revenue": 1.0},
+			{"month": "a", "region": "NA", "revenue": 2.0}, // same (x, series) slot
+		},
+	}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("a duplicate (x, series_by) slot must be rejected")
+	}
+}
+
 func TestValidate_RejectsUnsafeFieldName(t *testing.T) {
 	// A column aliased to markup (a renderer falls back to the field name for a
 	// legend/axis) must be rejected like any other rendered string.
