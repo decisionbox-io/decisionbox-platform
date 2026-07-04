@@ -293,6 +293,46 @@ func TestValidateGrounded_ExactNumbersNoLargeTolerance(t *testing.T) {
 	}
 }
 
+func TestValidate_KPIRejectsDataArray(t *testing.T) {
+	// A KPI must not carry a data array — the KPI grounding path never inspects
+	// it, so it would be an ungrounded, uncapped smuggling channel.
+	s := ChartSpec{
+		Type: ChartKPI, SourceStepID: "q1",
+		KPI:  &KPI{Value: 460, ValueField: "total"},
+		Data: []map[string]any{{"x": "a", "invented": 999.0}},
+	}
+	err := Validate(s, DefaultCaps)
+	if err == nil {
+		t.Fatal("a kpi carrying a data array must be rejected")
+	}
+	var ve *Error
+	if errors.As(err, &ve) && ve.Field != "data" {
+		t.Errorf("field = %q, want data", ve.Field)
+	}
+}
+
+func TestValidateGrounded_RejectsDuplicatedSourceRow(t *testing.T) {
+	// The source has 3 distinct rows; repeating one of them 4× must be rejected —
+	// the chart data is a sub-multiset of the preview, not an unbounded subset.
+	src := revenueSource()
+	s := barSpec()
+	s.Data = []map[string]any{
+		{"month": "2024-01", "revenue": 100.0},
+		{"month": "2024-01", "revenue": 100.0},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("repeating a single source row must be rejected (row multiplicity)")
+	}
+	// Each distinct source row once is fine.
+	s.Data = []map[string]any{
+		{"month": "2024-01", "revenue": 100.0},
+		{"month": "2024-02", "revenue": 150.0},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err != nil {
+		t.Errorf("distinct source rows should ground: %v", err)
+	}
+}
+
 func TestValidateGrounded_KPIProvenance(t *testing.T) {
 	src := GroundingSource{
 		StepID:  "q1",

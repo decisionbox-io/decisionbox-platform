@@ -121,6 +121,13 @@ func validateKPIShape(spec ChartSpec) error {
 	if spec.KPI.Delta != nil && strings.TrimSpace(spec.KPI.DeltaField) == "" {
 		return ruleErr("field_ref", "kpi.delta_field", "kpi.delta_field must name the source column when a delta is provided")
 	}
+	// A KPI's figures come from kpi.value/delta (grounded against the source
+	// cell), not from a data array. Reject a stray data array so it can't smuggle
+	// ungrounded, uncapped cells past validation (the KPI grounding path never
+	// inspects Data).
+	if len(spec.Data) > 0 {
+		return ruleErr("shape", "data", "a kpi chart must not carry a data array; its figure comes from kpi.value (read from the source)")
+	}
 	return nil
 }
 
@@ -222,7 +229,11 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 	// Exact projection over EVERY key in each data row (not only the plotted
 	// fields): an invented key, or a real column carrying an altered value, must
 	// be rejected. So each row's keys must all be source columns AND the whole
-	// row must equal some preview row on all of them.
+	// row must equal some preview row on all of them. Preview rows are matched
+	// WITHOUT replacement (each consumed at most once) so the model cannot repeat
+	// one observed row into many duplicate bars/points the query never returned —
+	// the chart data is a sub-multiset of the preview, not just a subset.
+	used := make([]bool, len(preview))
 	for ri, row := range spec.Data {
 		keys := make([]string, 0, len(row))
 		for k := range row {
@@ -231,10 +242,21 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 			}
 			keys = append(keys, k)
 		}
-		if !rowMatchesPreview(row, keys, preview) {
-			return ruleErr("grounding", "data",
-				fmt.Sprintf("data row %d does not match any row of source step %q; chart the exact query cells (do not compute, round, or add values — aggregate in SQL instead)", ri, src.StepID))
+		matched := -1
+		for pi, p := range preview {
+			if used[pi] {
+				continue
+			}
+			if rowEqualsOn(row, keys, p) {
+				matched = pi
+				break
+			}
 		}
+		if matched < 0 {
+			return ruleErr("grounding", "data",
+				fmt.Sprintf("data row %d does not match an unused row of source step %q; chart the exact query cells without inventing, altering, or duplicating rows (aggregate in SQL instead)", ri, src.StepID))
+		}
+		used[matched] = true
 	}
 	return nil
 }
@@ -291,24 +313,17 @@ func chartedFields(spec ChartSpec) []string {
 	return out
 }
 
-// rowMatchesPreview reports whether some preview row equals the data row on all
-// charted fields — the "exact projection" test. A data row must come, in whole,
-// from one observed preview row; the model may not stitch fields from different
-// rows.
-func rowMatchesPreview(row map[string]any, fields []string, preview []map[string]any) bool {
-	for _, p := range preview {
-		match := true
-		for _, f := range fields {
-			if !cellsEqual(row[f], p[f]) {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
+// rowEqualsOn reports whether the data row equals one preview row on all the
+// given fields — the per-row "exact projection" test. A data row must come, in
+// whole, from one observed preview row; the model may not stitch fields from
+// different rows.
+func rowEqualsOn(row map[string]any, fields []string, p map[string]any) bool {
+	for _, f := range fields {
+		if !cellsEqual(row[f], p[f]) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // canonicalizeRows JSON round-trips each row so its cells become the same
