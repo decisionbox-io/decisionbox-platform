@@ -209,6 +209,90 @@ func TestValidateGrounded_RejectsUnknownColumn(t *testing.T) {
 	}
 }
 
+func TestValidateGrounded_RejectsInventedExtraKey(t *testing.T) {
+	src := revenueSource()
+	s := barSpec()
+	// A real month/revenue projection with an extra invented column smuggled in.
+	s.Data = []map[string]any{{"month": "2024-01", "revenue": 100.0, "invented": 999.0}}
+	err := ValidateGrounded(s, src, DefaultCaps)
+	if err == nil {
+		t.Fatal("an invented extra data key must be rejected")
+	}
+	var ve *Error
+	if errors.As(err, &ve) && ve.Rule != "grounding" {
+		t.Errorf("rule = %q, want grounding", ve.Rule)
+	}
+}
+
+func TestValidateGrounded_RejectsAlteredNonPlottedColumn(t *testing.T) {
+	src := revenueSource()
+	s := barSpec()
+	// cost is a real source column but its value here is altered — full-row
+	// projection must catch it even though cost is not plotted.
+	s.Data = []map[string]any{{"month": "2024-01", "revenue": 100.0, "cost": 999.0}}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("an altered value in a non-plotted source column must be rejected")
+	}
+}
+
+func TestValidate_KPIDeltaRequiresDeltaField(t *testing.T) {
+	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 460, ValueField: "total", Delta: f64(60)}}
+	err := Validate(s, DefaultCaps)
+	if err == nil {
+		t.Fatal("a KPI delta without delta_field must be rejected")
+	}
+	var ve *Error
+	if errors.As(err, &ve) && ve.Field != "kpi.delta_field" {
+		t.Errorf("field = %q, want kpi.delta_field", ve.Field)
+	}
+}
+
+func TestValidate_SeriesByFanOutCapped(t *testing.T) {
+	caps := Caps{MaxPoints: 100, MaxSeries: 3, MaxLabelLen: 200}
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "revenue"}}, SeriesBy: "region",
+		Data: []map[string]any{
+			{"month": "2024-01", "region": "NA", "revenue": 1.0},
+			{"month": "2024-01", "region": "EU", "revenue": 2.0},
+			{"month": "2024-01", "region": "APAC", "revenue": 3.0},
+			{"month": "2024-01", "region": "LATAM", "revenue": 4.0},
+		},
+	}
+	// 4 distinct regions × 1 measure = 4 rendered series > MaxSeries 3.
+	if err := Validate(s, caps); err == nil {
+		t.Error("high-cardinality series_by should exceed MaxSeries")
+	}
+	// Under the cap it passes.
+	s.Data = s.Data[:2]
+	if err := Validate(s, caps); err != nil {
+		t.Errorf("2 series under the cap should pass: %v", err)
+	}
+}
+
+func TestValidateGrounded_ExactNumbersNoLargeTolerance(t *testing.T) {
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"label", "amount"},
+		Preview: []map[string]any{{"label": "total", "amount": int64(1_000_000_000_000)}},
+	}
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1",
+		X: &Axis{Field: "label"}, Y: []Series{{Field: "amount"}},
+		// A trillion charted as a trillion+1000 — a relative epsilon would have
+		// let this pass; exact equality rejects it.
+		Data: []map[string]any{{"label": "total", "amount": 1_000_000_001_000.0}},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("a large number altered by ~1000 must not ground")
+	}
+	// The exact value grounds.
+	s.Data = []map[string]any{{"label": "total", "amount": 1_000_000_000_000.0}}
+	if err := ValidateGrounded(s, src, DefaultCaps); err != nil {
+		t.Errorf("the exact source value should ground: %v", err)
+	}
+}
+
 func TestValidateGrounded_KPIProvenance(t *testing.T) {
 	src := GroundingSource{
 		StepID:  "q1",

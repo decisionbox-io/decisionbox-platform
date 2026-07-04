@@ -45,16 +45,16 @@ const (
 // and how the values should be interpreted. Only the X axis is modeled
 // explicitly; Y is a list of Series so multi-measure charts share one struct.
 type Axis struct {
-	Field string `json:"field"`
-	Label string `json:"label,omitempty"`
-	Type  string `json:"type,omitempty"` // category | time | number
+	Field string `json:"field" bson:"field"`
+	Label string `json:"label,omitempty" bson:"label,omitempty"`
+	Type  string `json:"type,omitempty" bson:"type,omitempty"` // category | time | number
 }
 
 // Series is one plotted measure: the row field carrying its values and an
 // optional display label.
 type Series struct {
-	Field string `json:"field"`
-	Label string `json:"label,omitempty"`
+	Field string `json:"field" bson:"field"`
+	Label string `json:"label,omitempty" bson:"label,omitempty"`
 }
 
 // KPI is a single headline figure (the "kpi" chart type): a value, an optional
@@ -62,11 +62,11 @@ type Series struct {
 // *Field members bind the figure to a column of the source query preview so a
 // KPI's provenance is provable, not asserted.
 type KPI struct {
-	Value      float64  `json:"value"`
-	Unit       string   `json:"unit,omitempty"`
-	Delta      *float64 `json:"delta,omitempty"`
-	ValueField string   `json:"value_field"`
-	DeltaField string   `json:"delta_field,omitempty"`
+	Value      float64  `json:"value" bson:"value"`
+	Unit       string   `json:"unit,omitempty" bson:"unit,omitempty"`
+	Delta      *float64 `json:"delta,omitempty" bson:"delta,omitempty"`
+	ValueField string   `json:"value_field" bson:"value_field"`
+	DeltaField string   `json:"delta_field,omitempty" bson:"delta_field,omitempty"`
 }
 
 // ChartSpec is the full, declarative chart artifact the agent emits via the
@@ -75,25 +75,25 @@ type KPI struct {
 // type, its axes/series, and embedded data cells that must exactly match the
 // referenced query preview (see ValidateGrounded).
 type ChartSpec struct {
-	Type    ChartType `json:"type"`
-	Title   string    `json:"title,omitempty"`
-	Caption string    `json:"caption,omitempty"`
+	Type    ChartType `json:"type" bson:"type"`
+	Title   string    `json:"title,omitempty" bson:"title,omitempty"`
+	Caption string    `json:"caption,omitempty" bson:"caption,omitempty"`
 
-	X        *Axis    `json:"x,omitempty"`
-	Y        []Series `json:"y,omitempty"`
-	SeriesBy string   `json:"series_by,omitempty"`
-	Stacked  *bool    `json:"stacked,omitempty"`
+	X        *Axis    `json:"x,omitempty" bson:"x,omitempty"`
+	Y        []Series `json:"y,omitempty" bson:"y,omitempty"`
+	SeriesBy string   `json:"series_by,omitempty" bson:"series_by,omitempty"`
+	Stacked  *bool    `json:"stacked,omitempty" bson:"stacked,omitempty"`
 
 	// Data is the embedded, capped, grounded data: an exact projection of the
 	// referenced query's preview rows. The model may drop columns/rows and
 	// reorder, but every cell must equal a cell of the source preview.
-	Data []map[string]any `json:"data,omitempty"`
+	Data []map[string]any `json:"data,omitempty" bson:"data,omitempty"`
 
 	// SourceStepID names the query step this data came from, e.g. "q2". It binds
 	// the chart to a specific observed result so grounding can be verified.
-	SourceStepID string `json:"source_step_id"`
+	SourceStepID string `json:"source_step_id" bson:"source_step_id"`
 
-	KPI *KPI `json:"kpi,omitempty"`
+	KPI *KPI `json:"kpi,omitempty" bson:"kpi,omitempty"`
 }
 
 // Caps bounds a chart so a single spec cannot exhaust tokens, memory, or the

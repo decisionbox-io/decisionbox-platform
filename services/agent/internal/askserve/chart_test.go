@@ -169,7 +169,8 @@ func TestLoopTools_RenderChartSameBatchAsQueryRefused(t *testing.T) {
 func groundedChartState() *turnState {
 	return &turnState{
 		round:          2,
-		groundedEvents: 1, // the query already grounded the turn
+		groundedEvents: 1,    // the query already grounded the turn
+		chartsEnabled:  true, // entitled for this turn (the gate is tested separately)
 		querySummariesByID: map[string]QuerySummary{
 			"q1": {
 				Step:    "q1",
@@ -252,6 +253,27 @@ func TestExecRenderChart_HonorsMaxPerAnswer(t *testing.T) {
 	}
 	if obs == "" || obs[:19] != "chart limit reached" {
 		t.Fatalf("second chart should hit the per-answer cap, got %q", obs)
+	}
+}
+
+func TestExecRenderChart_RefusedWhenNotEntitled(t *testing.T) {
+	// The tool is only offered when charts are enabled, but the JSON-text parser
+	// accepts render_chart regardless and a provider could return an unoffered
+	// call. execRenderChart must refuse for a non-entitled turn and persist
+	// nothing — a prompt-injected chart must not become an artifact.
+	r := &runner{cfg: chartCfg(), store: &fakeStore{}}
+	st := groundedChartState()
+	st.chartsEnabled = false // entitlement absent for this turn
+	raw, _ := json.Marshal(validChartInput("q1"))
+	obs := r.execRenderChart(context.Background(), st, &turnAction{Kind: actRenderChart, Chart: raw})
+	if len(st.events) != 0 {
+		t.Fatalf("a non-entitled chart must not persist an event: %+v", st.events)
+	}
+	if st.chartsRendered != 0 {
+		t.Fatal("a non-entitled chart must not count as rendered")
+	}
+	if obs == "" {
+		t.Fatal("expected a refusal observation")
 	}
 }
 

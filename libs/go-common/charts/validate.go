@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -117,6 +116,11 @@ func validateKPIShape(spec ChartSpec) error {
 	if strings.TrimSpace(spec.KPI.ValueField) == "" {
 		return ruleErr("field_ref", "kpi.value_field", "kpi.value_field must name the source column the value was read from")
 	}
+	// A delta must also name its source column, or it could be computed/invented
+	// (grounding then has nothing to check it against).
+	if spec.KPI.Delta != nil && strings.TrimSpace(spec.KPI.DeltaField) == "" {
+		return ruleErr("field_ref", "kpi.delta_field", "kpi.delta_field must name the source column when a delta is provided")
+	}
 	return nil
 }
 
@@ -150,6 +154,18 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	}
 	if caps.MaxPoints > 0 && len(spec.Data) > caps.MaxPoints {
 		return ruleErr("caps", "data", fmt.Sprintf("%d data points exceeds the limit of %d; aggregate in SQL to fewer rows", len(spec.Data), caps.MaxPoints))
+	}
+	// series_by pivots one field into one rendered series per distinct value, so
+	// it multiplies the effective series count — cap the fan-out too, or a single
+	// y with a high-cardinality series_by would blow past MaxSeries.
+	if spec.SeriesBy != "" && caps.MaxSeries > 0 {
+		distinct := map[string]struct{}{}
+		for _, row := range spec.Data {
+			distinct[fmt.Sprintf("%v", row[spec.SeriesBy])] = struct{}{}
+		}
+		if effective := len(spec.Y) * len(distinct); effective > caps.MaxSeries {
+			return ruleErr("caps", "series_by", fmt.Sprintf("series_by fans out to %d rendered series (%d values × %d measures), over the limit of %d; group the long tail in SQL", effective, len(distinct), len(spec.Y), caps.MaxSeries))
+		}
 	}
 
 	// Every charted field must be a key in every Data row, and every y cell
@@ -203,11 +219,21 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 			return ruleErr("grounding", f, fmt.Sprintf("field %q is not a column of source step %q; chart only columns the query returned", f, src.StepID))
 		}
 	}
-	fields := chartedFields(spec)
+	// Exact projection over EVERY key in each data row (not only the plotted
+	// fields): an invented key, or a real column carrying an altered value, must
+	// be rejected. So each row's keys must all be source columns AND the whole
+	// row must equal some preview row on all of them.
 	for ri, row := range spec.Data {
-		if !rowMatchesPreview(row, fields, preview) {
+		keys := make([]string, 0, len(row))
+		for k := range row {
+			if _, ok := cols[k]; !ok {
+				return ruleErr("grounding", k, fmt.Sprintf("data row %d has field %q that source step %q never returned; chart only the query's own columns (no invented fields)", ri, k, src.StepID))
+			}
+			keys = append(keys, k)
+		}
+		if !rowMatchesPreview(row, keys, preview) {
 			return ruleErr("grounding", "data",
-				fmt.Sprintf("data row %d does not match any row of source step %q on the charted fields; chart the exact query cells (do not compute or round values — aggregate in SQL instead)", ri, src.StepID))
+				fmt.Sprintf("data row %d does not match any row of source step %q; chart the exact query cells (do not compute, round, or add values — aggregate in SQL instead)", ri, src.StepID))
 		}
 	}
 	return nil
@@ -305,10 +331,13 @@ func canonicalizeRows(rows []map[string]any) []map[string]any {
 	return out
 }
 
-// cellsEqual compares two post-JSON cell values: numbers within a JSON
-// round-trip epsilon (this is re-encoding slack, NOT a licence to derive
-// values), everything else by exact type + value, with a string fallback for
-// unlike types.
+// cellsEqual compares two cell values for the exact-projection rule. Both the
+// chart data and the source preview are JSON-canonicalized to the same numeric
+// representation (float64) before comparison, so equal numbers are bit-identical
+// — exact equality is correct and, unlike a relative tolerance, cannot let a
+// rounded/scaled large number ("1,000,000,000,000" charted as "1,000,000,001,000")
+// pass as grounded. Non-numbers compare by exact type + value, with a string
+// fallback for unlike types.
 func cellsEqual(a, b any) bool {
 	if a == nil && b == nil {
 		return true
@@ -318,7 +347,7 @@ func cellsEqual(a, b any) bool {
 	}
 	if af, aok := asFloat(a); aok {
 		if bf, bok := asFloat(b); bok {
-			return math.Abs(af-bf) <= math.Max(1e-9, 1e-9*math.Abs(bf))
+			return af == bf
 		}
 		return false
 	}

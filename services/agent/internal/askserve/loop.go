@@ -75,6 +75,11 @@ type turnState struct {
 	// querySummariesByID maps a step id to the query summary the chart validator
 	// grounds against, for O(1) lookup of a chart's referenced source.
 	querySummariesByID map[string]QuerySummary
+	// chartsEnabled is the per-turn entitlement (caller EnableCharts AND the ops
+	// kill-switch). It gates EXECUTION, not just tool offering: the text-fallback
+	// parser accepts render_chart regardless, and a provider can return an
+	// unoffered tool call, so execRenderChart must recheck this.
+	chartsEnabled bool
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -124,6 +129,7 @@ func toolsSupported(rt *ProjectRuntime) bool {
 func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest, tokensIn, tokensOut int) {
 	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, tokensIn: tokensIn, tokensOut: tokensOut}
 	chartsEnabled := req.EnableCharts && r.cfg.ChartsEnabled
+	st.chartsEnabled = chartsEnabled
 
 	conv := ai.NewConversation(ai.ConversationOptions{
 		SystemPrompt: buildSystemPrompt(rt, r.cfg, chartsEnabled),
@@ -267,6 +273,7 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
 	chartsEnabled := req.EnableCharts && r.cfg.ChartsEnabled
+	st.chartsEnabled = chartsEnabled
 	system := buildSystemPromptForTools(rt, r.cfg, chartsEnabled)
 	hasSchema := rt.SchemaProvider != nil
 	hasInsights := rt.InsightsProvider != nil
@@ -541,6 +548,15 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 // path (no separate machinery). It grounds against the referenced query's
 // preview: the chart data must be an exact projection of cells already observed.
 func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAction) string {
+	// Entitlement gate — defense in depth. render_chart is only OFFERED when
+	// charts are enabled for the turn, but the JSON-text parser accepts it
+	// regardless and a provider could return an unoffered tool call. Never
+	// execute or persist a chart for a non-entitled turn (nothing is emitted, so
+	// no artifact is created).
+	if !st.chartsEnabled {
+		return "render_chart is not available for this turn; do not call it — answer with prose."
+	}
+
 	ev := commonmodels.ToolEvent{Round: st.round, Name: string(actRenderChart)}
 
 	if r.cfg.ChartMaxPerAnswer > 0 && st.chartsRendered >= r.cfg.ChartMaxPerAnswer {
