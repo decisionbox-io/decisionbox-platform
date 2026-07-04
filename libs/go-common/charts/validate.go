@@ -280,6 +280,12 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 // read from the named columns.
 func groundKPI(spec ChartSpec, src GroundingSource, cols map[string]struct{}, preview []map[string]any) error {
 	k := spec.KPI
+	// kpi.value/delta are float64 in the struct, so a magnitude beyond float64's
+	// exact-integer range can't be proven equal to a source cell (both sides
+	// round) — reject, mirroring the series-data precision guard.
+	if math.Abs(k.Value) >= maxExactInt || (k.Delta != nil && math.Abs(*k.Delta) >= maxExactInt) {
+		return ruleErr("grounding", "kpi", "the kpi figure is too large to ground with exact precision; aggregate, round, or scale it in SQL first")
+	}
 	if _, ok := cols[k.ValueField]; !ok {
 		return ruleErr("grounding", "kpi.value_field", fmt.Sprintf("value_field %q is not a column of source step %q", k.ValueField, src.StepID))
 	}

@@ -372,6 +372,18 @@ func TestValidateGrounded_ExactDecimalMatches(t *testing.T) {
 	}
 }
 
+func TestValidateGrounded_KPIRejectsBeyondFloat64Precision(t *testing.T) {
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"total"},
+		Preview: []map[string]any{{"total": int64(9007199254740993)}},
+	}
+	s := ChartSpec{Type: ChartKPI, SourceStepID: "q1", KPI: &KPI{Value: 9007199254740993, ValueField: "total"}}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("a KPI figure beyond float64's exact-integer range must be rejected")
+	}
+}
+
 func TestValidateGrounded_KPIProvenance(t *testing.T) {
 	src := GroundingSource{
 		StepID:  "q1",
