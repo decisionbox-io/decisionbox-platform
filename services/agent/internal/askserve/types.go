@@ -23,6 +23,14 @@ type TurnRequest struct {
 	// caller. The server applies a secondary newest-first character-budget
 	// trim so context stays bounded as a session grows.
 	History []HistoryMessage `json:"history,omitempty"`
+	// EnableCharts is the caller's per-turn capability grant for the render_chart
+	// tool. It is the entitlement gate: charts are offered only when the caller
+	// sets this AND the server's ASK_SERVE_CHARTS_ENABLED kill-switch is on. The
+	// community API never sets it (it never calls ask-serve); the enterprise
+	// delegate sets it only for entitled deployments. A policy check in-agent is
+	// not sufficient on its own (a checker-less agent's NoopChecker allows
+	// everything), so the capability rides the wire.
+	EnableCharts bool `json:"enable_charts,omitempty"`
 }
 
 // HistoryMessage is one prior conversation message. Role is "user" or
