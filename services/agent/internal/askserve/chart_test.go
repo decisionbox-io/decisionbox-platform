@@ -304,15 +304,24 @@ func TestParseTurnAction_RenderChart(t *testing.T) {
 	}
 }
 
-func TestParseTurnAction_RenderChartWithTerminalRejected(t *testing.T) {
-	// A chart mixed with a terminal in one payload is rejected (repair, not drop).
+func TestParseTurnAction_RenderChartWithAnyOtherActionRejected(t *testing.T) {
+	// A chart mixed with ANY other action (terminal OR a data action) is rejected
+	// rather than silently dropping the other action — matching the native batch
+	// refusal. The chart references a prior query, so it must be emitted alone.
 	for _, in := range []string{
 		`{"render_chart":{"type":"bar","source_step_id":"q1"},"answer":"done"}`,
 		`{"render_chart":{"type":"bar","source_step_id":"q1"},"decline":"x"}`,
+		`{"render_chart":{"type":"bar","source_step_id":"q1"},"query":"SELECT 1"}`,
+		`{"render_chart":{"type":"bar","source_step_id":"q1"},"search_tables":"users"}`,
+		`{"render_chart":{"type":"bar","source_step_id":"q1"},"lookup_schema":["ds.t"]}`,
 	} {
 		if _, err := parseTurnAction(in); err == nil {
-			t.Fatalf("expected rejection for chart+terminal payload: %s", in)
+			t.Fatalf("expected rejection for chart+other-action payload: %s", in)
 		}
+	}
+	// A chart on its own still parses.
+	if act, err := parseTurnAction(`{"render_chart":{"type":"bar","source_step_id":"q1"}}`); err != nil || act.Kind != actRenderChart {
+		t.Fatalf("a lone chart should parse: act=%+v err=%v", act, err)
 	}
 }
 

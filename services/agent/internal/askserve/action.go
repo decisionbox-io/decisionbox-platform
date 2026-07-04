@@ -93,12 +93,14 @@ func parseTurnAction(response string) (*turnAction, error) {
 
 	act := &turnAction{Thinking: strings.TrimSpace(raw.Thinking)}
 
-	// A chart mixed with a terminal in one payload is rejected rather than
-	// silently dropped: the model must emit the chart, see it accepted, then
-	// finish in a separate step (the answer might otherwise reference a chart
-	// we have not validated). This mirrors the native path's same-batch refusal.
-	if hasChartPayload(raw.RenderChart) && (strings.TrimSpace(raw.Answer) != "" || strings.TrimSpace(raw.Decline) != "" || strings.TrimSpace(raw.Clarify) != "") {
-		return nil, fmt.Errorf("do not emit render_chart together with answer/clarify/decline — render the chart in its own step, then finish in the next")
+	// A chart mixed with ANY other action in one payload is rejected rather than
+	// silently dropped: the model must emit the chart in its own step (it charts a
+	// PRIOR query result — mixing it with a fresh query would drop that query or
+	// let the chart reference a stale step, and mixing it with a terminal would
+	// finish before the chart is validated). This mirrors the native path's
+	// same-batch refusal.
+	if hasChartPayload(raw.RenderChart) && rawHasNonChartAction(&raw) {
+		return nil, fmt.Errorf("emit render_chart on its own — not together with a query, lookup, search, or answer/clarify/decline; render the chart in one step, then continue in the next")
 	}
 
 	switch {
@@ -141,6 +143,18 @@ func parseTurnAction(response string) (*turnAction, error) {
 func hasChartPayload(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))
 	return s != "" && s != "null"
+}
+
+// rawHasNonChartAction reports whether the payload carries any action key other
+// than render_chart — used to reject a chart mixed with another action.
+func rawHasNonChartAction(raw *rawAction) bool {
+	return strings.TrimSpace(raw.Answer) != "" ||
+		strings.TrimSpace(raw.Decline) != "" ||
+		strings.TrimSpace(raw.Clarify) != "" ||
+		strings.TrimSpace(raw.Query) != "" ||
+		len(raw.LookupSchema) > 0 ||
+		strings.TrimSpace(raw.SearchTables) != "" ||
+		strings.TrimSpace(raw.SearchInsights) != ""
 }
 
 // normaliseToolEnvelope detects an Anthropic/OpenAI tool-use envelope

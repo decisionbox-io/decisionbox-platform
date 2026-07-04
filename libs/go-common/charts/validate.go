@@ -4,8 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
 	"strings"
 )
+
+// maxExactInt is float64's largest exactly-representable integer (2^53). A chart
+// data cell above this can't have survived JSON decoding (float64) without
+// possible rounding, so it can't be proven an exact projection of the source —
+// grounding rejects it rather than risk a rounded value matching.
+const maxExactInt = 1 << 53
 
 // Error is a structured, model-readable validation failure. The data agent
 // feeds Error() back to the model as a tool error so it can repair the spec or
@@ -211,14 +219,16 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 	for _, c := range src.Columns {
 		cols[c] = struct{}{}
 	}
-	// Canonicalize the preview through JSON so numeric cells compare as the
-	// float64 the model actually saw in the observation text (the preview is
-	// shown to the model as JSON), not as a driver-specific int/int64/time type.
+	// Canonicalize both sides through JSON with UseNumber so numeric cells compare
+	// as the exact number the model saw in the observation text (the preview is
+	// shown as JSON) — as json.Number, not float64, so an integer beyond float64's
+	// exact range (|x| >= 2^53) can't be silently rounded into a false match.
 	preview := canonicalizeRows(src.Preview)
 
 	if spec.Type == ChartKPI {
 		return groundKPI(spec, src, cols, preview)
 	}
+	dataRows := canonicalizeRows(spec.Data)
 
 	// Every charted field must be a real column of the source preview.
 	for _, f := range chartedFields(spec) {
@@ -234,11 +244,16 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 	// one observed row into many duplicate bars/points the query never returned —
 	// the chart data is a sub-multiset of the preview, not just a subset.
 	used := make([]bool, len(preview))
-	for ri, row := range spec.Data {
+	for ri, row := range dataRows {
 		keys := make([]string, 0, len(row))
-		for k := range row {
+		for k, v := range row {
 			if _, ok := cols[k]; !ok {
 				return ruleErr("grounding", k, fmt.Sprintf("data row %d has field %q that source step %q never returned; chart only the query's own columns (no invented fields)", ri, k, src.StepID))
+			}
+			if n, ok := v.(json.Number); ok {
+				if f, err := n.Float64(); err == nil && math.Abs(f) >= maxExactInt {
+					return ruleErr("grounding", k, fmt.Sprintf("data row %d value for %q is too large to chart with exact precision; aggregate, round, or scale it in SQL first", ri, k))
+				}
 			}
 			keys = append(keys, k)
 		}
@@ -327,9 +342,10 @@ func rowEqualsOn(row map[string]any, fields []string, p map[string]any) bool {
 }
 
 // canonicalizeRows JSON round-trips each row so its cells become the same
-// post-JSON scalars (float64 numbers, string/bool/nil) the model was shown in
-// the observation preview. A row that fails to round-trip is dropped (it cannot
-// match anything), which only ever tightens grounding.
+// post-JSON scalars the model was shown in the observation preview, with numbers
+// decoded as json.Number (exact decimal text) rather than float64 — so a large
+// integer is compared by value, not by a lossy float. A row that fails to
+// round-trip is dropped (it cannot match anything), which only tightens grounding.
 func canonicalizeRows(rows []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
@@ -337,8 +353,10 @@ func canonicalizeRows(rows []map[string]any) []map[string]any {
 		if err != nil {
 			continue
 		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.UseNumber()
 		var m map[string]any
-		if json.Unmarshal(b, &m) != nil {
+		if dec.Decode(&m) != nil {
 			continue
 		}
 		out = append(out, m)
@@ -346,19 +364,24 @@ func canonicalizeRows(rows []map[string]any) []map[string]any {
 	return out
 }
 
-// cellsEqual compares two cell values for the exact-projection rule. Both the
-// chart data and the source preview are JSON-canonicalized to the same numeric
-// representation (float64) before comparison, so equal numbers are bit-identical
-// — exact equality is correct and, unlike a relative tolerance, cannot let a
-// rounded/scaled large number ("1,000,000,000,000" charted as "1,000,000,001,000")
-// pass as grounded. Non-numbers compare by exact type + value, with a string
-// fallback for unlike types.
+// cellsEqual compares two cell values for the exact-projection rule. When both
+// sides are json.Number (the data-grounding path, where both come from JSON
+// text), they are compared as exact decimals via big.Rat — so a rounded or
+// altered large number ("9007199254740993" charted as "9007199254740992")
+// cannot pass, and trivial re-representations ("100" vs "100.0") still match.
+// Otherwise (e.g. a KPI's float64 value against a source cell) it falls back to
+// float64 numeric equality, then exact string/bool comparison.
 func cellsEqual(a, b any) bool {
 	if a == nil && b == nil {
 		return true
 	}
 	if a == nil || b == nil {
 		return false
+	}
+	if an, aok := a.(json.Number); aok {
+		if bn, bok := b.(json.Number); bok {
+			return numberEqual(an, bn)
+		}
 	}
 	if af, aok := asFloat(a); aok {
 		if bf, bok := asFloat(b); bok {
@@ -375,6 +398,19 @@ func cellsEqual(a, b any) bool {
 		return ok && av == bv
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+// numberEqual compares two JSON numbers by exact decimal value (big.Rat), so
+// integers beyond float64's exact range compare precisely. Falls back to exact
+// string equality if either is not a parseable rational (should not happen for
+// JSON numbers).
+func numberEqual(a, b json.Number) bool {
+	ra, oka := new(big.Rat).SetString(a.String())
+	rb, okb := new(big.Rat).SetString(b.String())
+	if oka && okb {
+		return ra.Cmp(rb) == 0
+	}
+	return a.String() == b.String()
 }
 
 func asFloat(v any) (float64, bool) {

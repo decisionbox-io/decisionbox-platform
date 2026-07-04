@@ -333,6 +333,45 @@ func TestValidateGrounded_RejectsDuplicatedSourceRow(t *testing.T) {
 	}
 }
 
+func TestValidateGrounded_RejectsBeyondFloat64Precision(t *testing.T) {
+	// A value above 2^53 can't survive float64 JSON decoding without possible
+	// rounding, so it can't be proven an exact projection — reject it.
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"label", "amount"},
+		Preview: []map[string]any{{"label": "x", "amount": int64(9007199254740993)}},
+	}
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1",
+		X: &Axis{Field: "label"}, Y: []Series{{Field: "amount"}},
+		Data: []map[string]any{{"label": "x", "amount": 9007199254740993.0}},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("a value beyond float64's exact-integer range must be rejected")
+	}
+}
+
+func TestValidateGrounded_ExactDecimalMatches(t *testing.T) {
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"label", "rate"},
+		Preview: []map[string]any{{"label": "a", "rate": 33.5}, {"label": "b", "rate": 12.25}},
+	}
+	s := ChartSpec{
+		Type: ChartLine, SourceStepID: "q1",
+		X: &Axis{Field: "label"}, Y: []Series{{Field: "rate"}},
+		Data: []map[string]any{{"label": "a", "rate": 33.5}, {"label": "b", "rate": 12.25}},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err != nil {
+		t.Errorf("exact decimals should ground: %v", err)
+	}
+	// An altered decimal is rejected.
+	s.Data[0]["rate"] = 33.6
+	if err := ValidateGrounded(s, src, DefaultCaps); err == nil {
+		t.Error("an altered decimal must be rejected")
+	}
+}
+
 func TestValidateGrounded_KPIProvenance(t *testing.T) {
 	src := GroundingSource{
 		StepID:  "q1",
