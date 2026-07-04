@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 )
 
@@ -500,8 +501,18 @@ func isNumericOrNull(v any) bool {
 	if v == nil {
 		return true
 	}
-	_, ok := asFloat(v)
-	return ok
+	if _, ok := asFloat(v); ok {
+		return true
+	}
+	// A numeric STRING counts as numeric: some warehouses (e.g. BigQuery
+	// NUMERIC/BIGNUMERIC) encode exact-decimal columns as JSON strings to keep
+	// precision, so a monetary measure arrives as "1234.56". The model copies the
+	// cell verbatim (grounds string==string) and every renderer parses it.
+	if s, ok := v.(string); ok {
+		_, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		return err == nil && strings.TrimSpace(s) != ""
+	}
+	return false
 }
 
 // sanitizeStrings rejects any human-facing string that could break out of a

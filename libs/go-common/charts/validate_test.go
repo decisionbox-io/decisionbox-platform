@@ -174,6 +174,36 @@ func TestValidate_PieSingleYNonNegative(t *testing.T) {
 	}
 }
 
+func TestValidateGrounded_NumericStringMeasure(t *testing.T) {
+	// BigQuery NUMERIC/BIGNUMERIC arrives as a JSON string; a copied string
+	// measure must pass the numeric-y check and ground (string == string).
+	src := GroundingSource{
+		StepID:  "q1",
+		Columns: []string{"month", "amount"},
+		Preview: []map[string]any{
+			{"month": "2024-01", "amount": "1234.56"},
+			{"month": "2024-02", "amount": "2000.00"},
+		},
+	}
+	s := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "amount"}},
+		Data: []map[string]any{
+			{"month": "2024-01", "amount": "1234.56"},
+			{"month": "2024-02", "amount": "2000.00"},
+		},
+	}
+	if err := ValidateGrounded(s, src, DefaultCaps); err != nil {
+		t.Fatalf("a numeric-string measure should validate + ground: %v", err)
+	}
+	// A genuinely non-numeric string measure is still rejected.
+	bad := s
+	bad.Data = []map[string]any{{"month": "2024-01", "amount": "lots"}}
+	if err := Validate(bad, DefaultCaps); err == nil {
+		t.Error("a non-numeric string y must still be rejected")
+	}
+}
+
 func TestValidateGrounded_RejectsNonJSONNumber(t *testing.T) {
 	src := revenueSource()
 	s := barSpec()
