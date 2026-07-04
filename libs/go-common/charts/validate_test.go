@@ -135,6 +135,38 @@ func TestValidate_Rejects(t *testing.T) {
 	}
 }
 
+func TestValidate_SeriesByRequiresSingleY(t *testing.T) {
+	base := ChartSpec{
+		Type: ChartBar, SourceStepID: "q1", SeriesBy: "region",
+		X: &Axis{Field: "month"}, Y: []Series{{Field: "revenue"}, {Field: "cost"}},
+		Data: []map[string]any{{"month": "a", "region": "NA", "revenue": 1.0, "cost": 2.0}},
+	}
+	if err := Validate(base, DefaultCaps); err == nil {
+		t.Error("series_by with more than one y must be rejected")
+	}
+	base.Y = []Series{{Field: "revenue"}}
+	if err := Validate(base, DefaultCaps); err != nil {
+		t.Errorf("series_by with a single y should pass: %v", err)
+	}
+}
+
+func TestValidate_RejectsUnsafeFieldName(t *testing.T) {
+	// A column aliased to markup (a renderer falls back to the field name for a
+	// legend/axis) must be rejected like any other rendered string.
+	s := barSpec()
+	s.Y = []Series{{Field: "<script>"}}
+	s.Data = []map[string]any{{"month": "a", "<script>": 1.0}}
+	if err := Validate(s, DefaultCaps); err == nil {
+		t.Error("an unsafe y field name must be rejected")
+	}
+	// And an unsafe data key.
+	s2 := barSpec()
+	s2.Data = []map[string]any{{"month": "a", "revenue": 1.0, "on<load>": "x"}}
+	if err := Validate(s2, DefaultCaps); err == nil {
+		t.Error("an unsafe data key must be rejected")
+	}
+}
+
 func TestValidate_Caps(t *testing.T) {
 	caps := Caps{MaxPoints: 2, MaxSeries: 1, MaxLabelLen: 10}
 	s := barSpec()

@@ -173,9 +173,16 @@ func validateSeriesShape(spec ChartSpec, caps Caps) error {
 	if caps.MaxPoints > 0 && len(spec.Data) > caps.MaxPoints {
 		return ruleErr("caps", "data", fmt.Sprintf("%d data points exceeds the limit of %d; aggregate in SQL to fewer rows", len(spec.Data), caps.MaxPoints))
 	}
-	// series_by pivots one field into one rendered series per distinct value, so
-	// it multiplies the effective series count — cap the fan-out too, or a single
-	// y with a high-cardinality series_by would blow past MaxSeries.
+	// series_by pivots a SINGLE measure into one series per distinct value. Both
+	// renderers (Recharts + the SVG export) chart y[0] under series_by, so more
+	// than one y with series_by is ambiguous — reject it (chart one measure, or
+	// drop series_by and list measures as separate y series).
+	if spec.SeriesBy != "" && len(spec.Y) != 1 {
+		return ruleErr("shape", "series_by", "series_by pivots a single measure — use exactly one y with series_by (or list measures as separate y series without series_by)")
+	}
+	// series_by turns one field into one rendered series per distinct value, so
+	// it multiplies the effective series count — cap the fan-out too, or a
+	// high-cardinality series_by would blow past MaxSeries.
 	if spec.SeriesBy != "" && caps.MaxSeries > 0 {
 		distinct := map[string]struct{}{}
 		for _, row := range spec.Data {
@@ -484,8 +491,14 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 	if err := check("caption", spec.Caption); err != nil {
 		return err
 	}
+	// Field references and data keys are rendered too — a renderer falls back to
+	// the field name for a legend/axis/tooltip when no label is set — so a column
+	// aliased to markup/control text must be rejected just like a label.
 	if spec.X != nil {
 		if err := check("x.label", spec.X.Label); err != nil {
+			return err
+		}
+		if err := check("x.field", spec.X.Field); err != nil {
 			return err
 		}
 	}
@@ -493,14 +506,29 @@ func sanitizeStrings(spec ChartSpec, caps Caps) error {
 		if err := check(fmt.Sprintf("y[%d].label", i), s.Label); err != nil {
 			return err
 		}
+		if err := check(fmt.Sprintf("y[%d].field", i), s.Field); err != nil {
+			return err
+		}
+	}
+	if err := check("series_by", spec.SeriesBy); err != nil {
+		return err
 	}
 	if spec.KPI != nil {
 		if err := check("kpi.unit", spec.KPI.Unit); err != nil {
 			return err
 		}
+		if err := check("kpi.value_field", spec.KPI.ValueField); err != nil {
+			return err
+		}
+		if err := check("kpi.delta_field", spec.KPI.DeltaField); err != nil {
+			return err
+		}
 	}
 	for ri, row := range spec.Data {
 		for k, v := range row {
+			if err := check(fmt.Sprintf("data[%d] key", ri), k); err != nil {
+				return err
+			}
 			if s, ok := v.(string); ok {
 				if err := check(fmt.Sprintf("data[%d].%s", ri, k), s); err != nil {
 					return err
