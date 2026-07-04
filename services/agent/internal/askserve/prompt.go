@@ -11,7 +11,7 @@ import (
 // JSON action vocabulary the loop parses, the hard safety rules, and the
 // result-summarization behaviour so the model reaches for aggregate SQL instead
 // of expecting full result sets.
-func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
+func buildSystemPrompt(rt *ProjectRuntime, cfg Config, chartsEnabled bool) string {
 	var b strings.Builder
 
 	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and running read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers.\n\n")
@@ -26,11 +26,17 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
 	if rt.InsightsProvider != nil {
 		b.WriteString(`  {"thinking":"...","search_insights":"keywords"}` + "  — search prior discovered insights & recommendations\n")
 	}
+	if chartsEnabled {
+		b.WriteString(`  {"thinking":"...","render_chart":{"type":"bar","source_step_id":"q2","x":{"field":"month"},"y":[{"field":"revenue"}],"data":[...]}}` + "  — chart a prior query result\n")
+	}
 	b.WriteString(`  {"thinking":"...","answer":"final grounded answer for the user"}` + "  — when you can answer\n")
 	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer\n")
 	b.WriteString(`  {"thinking":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
 
 	writeResultHandling(&b, cfg)
+	if chartsEnabled {
+		writeChartsSection(&b)
+	}
 
 	b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
 	if rt.InsightsProvider != nil {
@@ -48,7 +54,7 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config) string {
 // the loop withholds the `answer` tool until at least one query/lookup/search
 // has run, so grounding is enforced structurally rather than by prose. The
 // prose here is guidance, not a hard gate.
-func buildSystemPromptForTools(rt *ProjectRuntime, cfg Config) string {
+func buildSystemPromptForTools(rt *ProjectRuntime, cfg Config, chartsEnabled bool) string {
 	var b strings.Builder
 
 	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and using the provided tools to run read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers, table names, or column names.\n\n")
@@ -61,9 +67,15 @@ func buildSystemPromptForTools(rt *ProjectRuntime, cfg Config) string {
 	if rt.InsightsProvider != nil {
 		b.WriteString("- search_insights: search the project's prior discovered insights & recommendations; prefer it for \"what did we find\" / \"what do you recommend\" questions, and combine with query_data when a finding needs a fresh number.\n")
 	}
+	if chartsEnabled {
+		b.WriteString("- render_chart: chart a prior query result (offered once a query has run). The chart data must be an exact projection of that query's preview.\n")
+	}
 	b.WriteString("- answer / clarify / decline: finish the turn.\n")
 
 	writeResultHandling(&b, cfg)
+	if chartsEnabled {
+		writeChartsSection(&b)
+	}
 
 	evidence := "query_data, search_tables, or lookup_schema"
 	if rt.InsightsProvider != nil {
@@ -101,6 +113,18 @@ func writeWarehouseSection(b *strings.Builder, rt *ProjectRuntime) {
 			fmt.Fprintf(b, "- SECURITY: every query MUST filter by %q (the tenant scope). A query missing this filter is rejected.\n", rt.FilterField)
 		}
 	}
+}
+
+// writeChartsSection renders the shared CHARTS guidance, included only when
+// charting is enabled for the turn. It tells the model when a chart helps, how
+// to keep it grounded (exact projection of a query preview — aggregate in SQL,
+// never compute chart numbers), and to decline to chart rather than invent.
+func writeChartsSection(b *strings.Builder) {
+	b.WriteString("\nCHARTS\n")
+	b.WriteString("- When a trend, comparison, breakdown, or single headline figure communicates the answer better than prose, render a chart with render_chart. Otherwise just answer.\n")
+	b.WriteString("- A chart's data MUST be an exact projection of a query result you already observed: copy the cells verbatim. Never compute, round, scale, or invent a chart number — if you need an aggregate or a smaller set of points, run the aggregation in SQL first, then chart that result.\n")
+	b.WriteString("- Set source_step_id to the q<N> id shown in the result you are charting. You can only chart a query whose full result fit the preview (not a truncated one) — aggregate in SQL until it does.\n")
+	b.WriteString("- Keep it readable: few series, clear labels. Types: bar, line, area, pie, scatter, kpi (a single headline figure). Render the chart in its own step, then answer in the next. If the data cannot honestly support a chart, don't force one.\n")
 }
 
 // writeResultHandling renders the shared RESULT HANDLING block. Shared verbatim

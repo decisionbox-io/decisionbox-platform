@@ -15,6 +15,11 @@ import (
 // warehouse returned; Preview shows at most PreviewRows of them; Truncated is
 // set when the preview omits rows. No raw result set is ever stored.
 type QuerySummary struct {
+	// Step is the per-turn query step id (e.g. "q2") the model can reference as a
+	// chart's source_step_id. It is stamped on successful queries only and is
+	// unique within a turn — unlike ToolEvent.Round, which is not (native mode can
+	// run several queries in one round).
+	Step      string                   `json:"step,omitempty" bson:"step,omitempty"`
 	SQL       string                   `json:"sql" bson:"sql"`
 	Purpose   string                   `json:"purpose,omitempty" bson:"purpose,omitempty"`
 	RowCount  int                      `json:"row_count" bson:"row_count"`
@@ -76,10 +81,16 @@ func summarizeResult(res *queryexec.ExecuteResult, purpose string, cfg Config) Q
 // nudges the model toward aggregate SQL for exact totals.
 func (s QuerySummary) observation() string {
 	var b strings.Builder
+	// Lead with the step id so the model can reference it as a chart's
+	// source_step_id (e.g. `Query q2 — executed successfully.`).
+	step := ""
+	if s.Step != "" {
+		step = " " + s.Step + " —"
+	}
 	if s.Fixed {
-		b.WriteString("Query executed successfully (auto-repaired).\n")
+		fmt.Fprintf(&b, "Query%s executed successfully (auto-repaired).\n", step)
 	} else {
-		b.WriteString("Query executed successfully.\n")
+		fmt.Fprintf(&b, "Query%s executed successfully.\n", step)
 	}
 	fmt.Fprintf(&b, "Rows returned: %d\n", s.RowCount)
 	if len(s.Columns) > 0 {

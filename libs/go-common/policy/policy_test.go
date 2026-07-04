@@ -238,6 +238,7 @@ func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
 		FeatureSources,
 		FeaturePackGen,
 		FeatureDataQuery,
+		FeatureAskCharts,
 	}
 	if len(AllFeatures) != len(want) {
 		t.Fatalf("AllFeatures length = %d, want %d", len(AllFeatures), len(want))
@@ -269,6 +270,7 @@ func TestNewFeatureConstants_WireStrings(t *testing.T) {
 		FeatureSources:   "sources_enabled",
 		FeaturePackGen:   "pack_gen_enabled",
 		FeatureDataQuery: "data_query_enabled",
+		FeatureAskCharts: "ask_charts_enabled",
 	}
 	for got, want := range cases {
 		if got != want {

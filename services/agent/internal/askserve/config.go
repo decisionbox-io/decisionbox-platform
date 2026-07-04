@@ -15,6 +15,7 @@ package askserve
 import (
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/charts"
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 )
 
@@ -35,6 +36,15 @@ const (
 	EnvHistoryCharBudget   = "ASK_SERVE_HISTORY_CHAR_BUDGET"
 	EnvTurnTTLSeconds      = "ASK_SERVE_TURN_TTL_SECONDS"
 	EnvConnectTimeoutSecs  = "ASK_SERVE_CONNECT_TIMEOUT_SECONDS"
+
+	// Chart rendering (render_chart tool). Off by default — an ops kill-switch
+	// on top of the per-turn EnableCharts capability the caller must also set.
+	EnvChartsEnabled       = "ASK_SERVE_CHARTS_ENABLED"
+	EnvChartsMaxPoints     = "ASK_SERVE_CHARTS_MAX_POINTS"
+	EnvChartsMaxSeries     = "ASK_SERVE_CHARTS_MAX_SERIES"
+	EnvChartsMaxPerAnswer  = "ASK_SERVE_CHARTS_MAX_PER_ANSWER"
+	EnvChartsMaxSpecBytes  = "ASK_SERVE_CHARTS_MAX_SPEC_BYTES"
+	EnvChartsMaxLabelLen   = "ASK_SERVE_CHARTS_MAX_LABEL_LEN"
 )
 
 // Defaults match the reviewed plan. A single enterprise query can run for
@@ -66,6 +76,13 @@ const (
 	// connect + ValidateReadOnly + schema load). Kept separate from the turn
 	// budget so a misconfigured project fails fast instead of hanging a turn.
 	defaultConnectTimeout = 60 * time.Second
+
+	// Chart caps. MaxPoints defaults to PreviewRows (a chart is grounded against
+	// the query preview, so it can never carry more points than the preview has).
+	defaultChartsMaxSeries    = 8
+	defaultChartsMaxPerAnswer = 3
+	defaultChartsMaxSpecBytes = 32768
+	defaultChartsMaxLabelLen  = 120
 )
 
 // Config holds the serve-mode budgets and limits, all sourced from the
@@ -90,15 +107,23 @@ type Config struct {
 	HistoryCharBudget int
 	TurnTTL           time.Duration
 	ConnectTimeout    time.Duration
+
+	// ChartsEnabled is the ops kill-switch for the render_chart tool. Even when
+	// true, a turn only sees the tool if the caller also set EnableCharts on the
+	// request (the enterprise entitlement gate) — see loop.go.
+	ChartsEnabled     bool
+	ChartMaxPerAnswer int
+	ChartCaps         charts.Caps
 }
 
 // LoadConfig reads the ASK_SERVE_* environment into a Config, applying
 // defaults for any unset or invalid value.
 func LoadConfig() Config {
+	previewRows := positive(goconfig.GetEnvAsInt(EnvPreviewRows, defaultPreviewRows), defaultPreviewRows)
 	return Config{
 		Port:                    goconfig.GetEnvAsInt(EnvPort, defaultPort),
 		MaxFetchRows:            positive(goconfig.GetEnvAsInt(EnvMaxFetchRows, defaultMaxFetchRows), defaultMaxFetchRows),
-		PreviewRows:             positive(goconfig.GetEnvAsInt(EnvPreviewRows, defaultPreviewRows), defaultPreviewRows),
+		PreviewRows:             previewRows,
 		MaxQueriesPerTurn:       positive(goconfig.GetEnvAsInt(EnvMaxQueriesPerTurn, defaultMaxQueriesPerTurn), defaultMaxQueriesPerTurn),
 		MaxRounds:               positive(goconfig.GetEnvAsInt(EnvMaxRounds, defaultMaxRounds), defaultMaxRounds),
 		WallClock:               durationFromSeconds(EnvWallClockSeconds, defaultWallClock),
@@ -110,6 +135,17 @@ func LoadConfig() Config {
 		HistoryCharBudget:       positive(goconfig.GetEnvAsInt(EnvHistoryCharBudget, defaultHistoryCharBudget), defaultHistoryCharBudget),
 		TurnTTL:                 durationFromSeconds(EnvTurnTTLSeconds, defaultTurnTTL),
 		ConnectTimeout:          durationFromSeconds(EnvConnectTimeoutSecs, defaultConnectTimeout),
+
+		ChartsEnabled:     goconfig.GetEnvAsBool(EnvChartsEnabled, false),
+		ChartMaxPerAnswer: positive(goconfig.GetEnvAsInt(EnvChartsMaxPerAnswer, defaultChartsMaxPerAnswer), defaultChartsMaxPerAnswer),
+		ChartCaps: charts.Caps{
+			// MaxPoints defaults to the preview row count: a grounded chart can
+			// never carry more points than the preview it projects from.
+			MaxPoints:    positive(goconfig.GetEnvAsInt(EnvChartsMaxPoints, previewRows), previewRows),
+			MaxSeries:    positive(goconfig.GetEnvAsInt(EnvChartsMaxSeries, defaultChartsMaxSeries), defaultChartsMaxSeries),
+			MaxSpecBytes: positive(goconfig.GetEnvAsInt(EnvChartsMaxSpecBytes, defaultChartsMaxSpecBytes), defaultChartsMaxSpecBytes),
+			MaxLabelLen:  positive(goconfig.GetEnvAsInt(EnvChartsMaxLabelLen, defaultChartsMaxLabelLen), defaultChartsMaxLabelLen),
+		},
 	}
 }
 

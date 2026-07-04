@@ -323,15 +323,25 @@ func TestLoop_SearchTablesSummaryIsLowercaseKeyed(t *testing.T) {
 }
 
 func TestLoop_SchemaToolUnavailableDegrades(t *testing.T) {
-	// nil schema provider → lookup returns an "unavailable" observation, loop continues.
+	// nil schema provider → search returns an "unavailable" observation and the
+	// loop continues. The unavailable search records an ERROR event (no data
+	// observed), so it does NOT ground: the model must still gather real evidence
+	// before it can answer. Here it recovers with a direct query, which grounds
+	// the answer. (An answer straight after the failed search — with no
+	// successful evidence — would be ungrounded and declined, same as the native
+	// path; see TestLoopTools_FailedEvidenceNotGrounding.)
 	store := runOnce(t, Config{}, []string{
 		`{"search_tables":"orders"}`,
-		`{"answer":"answered without schema search"}`,
+		`{"query":"SELECT count(*) AS c FROM ds.t"}`,
+		`{"answer":"answered after recovering with a direct query"}`,
 	}, testutil.NewMockWarehouseProvider("ds"), nil, "")
 	if store.final.Status != commonmodels.AskTurnStatusDone {
 		t.Fatalf("status = %q", store.final.Status)
 	}
-	if len(store.events) != 1 || store.events[0].Error == "" {
-		t.Fatalf("search event should record unavailability: %+v", store.events)
+	if len(store.events) != 2 || store.events[0].Error == "" {
+		t.Fatalf("search event should record unavailability + query should run: %+v", store.events)
+	}
+	if store.events[1].Name != string(actQuery) || store.events[1].Error != "" {
+		t.Fatalf("recovery query event = %+v", store.events[1])
 	}
 }

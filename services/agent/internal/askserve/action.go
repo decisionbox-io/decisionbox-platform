@@ -14,11 +14,15 @@ const (
 	actLookup         actionKind = "lookup_schema"
 	actSearch         actionKind = "search_tables"
 	actSearchInsights actionKind = "search_insights"
+	actRenderChart    actionKind = "render_chart"
 	actAnswer         actionKind = "answer"
 	actClarify        actionKind = "clarify"
 	actDecline        actionKind = "decline"
 )
 
+// terminal reports whether an action ends the turn. render_chart is NOT
+// terminal: it is an evidence-consuming side action (the model charts a prior
+// query result, then answers in a later step), so the turn continues after it.
 func (k actionKind) terminal() bool {
 	return k == actAnswer || k == actClarify || k == actDecline
 }
@@ -39,6 +43,8 @@ type turnAction struct {
 	SearchInsights string // search_insights (query)
 	InsightsLimit  int    // search_insights (optional)
 
+	Chart json.RawMessage // render_chart (the raw ChartSpec input, validated later)
+
 	Text string // answer / clarify / decline body
 }
 
@@ -58,6 +64,8 @@ type rawAction struct {
 
 	SearchInsights string `json:"search_insights"`
 	InsightsLimit  int    `json:"insights_limit"`
+
+	RenderChart json.RawMessage `json:"render_chart"`
 
 	Answer  string `json:"answer"`
 	Clarify string `json:"clarify"`
@@ -85,7 +93,20 @@ func parseTurnAction(response string) (*turnAction, error) {
 
 	act := &turnAction{Thinking: strings.TrimSpace(raw.Thinking)}
 
+	// A chart mixed with ANY other action in one payload is rejected rather than
+	// silently dropped: the model must emit the chart in its own step (it charts a
+	// PRIOR query result — mixing it with a fresh query would drop that query or
+	// let the chart reference a stale step, and mixing it with a terminal would
+	// finish before the chart is validated). This mirrors the native path's
+	// same-batch refusal.
+	if hasChartPayload(raw.RenderChart) && rawHasNonChartAction(&raw) {
+		return nil, fmt.Errorf("emit render_chart on its own — not together with a query, lookup, search, or answer/clarify/decline; render the chart in one step, then continue in the next")
+	}
+
 	switch {
+	case hasChartPayload(raw.RenderChart):
+		act.Kind = actRenderChart
+		act.Chart = raw.RenderChart
 	case strings.TrimSpace(raw.Answer) != "":
 		act.Kind = actAnswer
 		act.Text = strings.TrimSpace(raw.Answer)
@@ -111,9 +132,29 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.SearchInsights = strings.TrimSpace(raw.SearchInsights)
 		act.InsightsLimit = raw.InsightsLimit
 	default:
-		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, search_tables, or search_insights")
+		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, search_tables, search_insights, or render_chart")
 	}
 	return act, nil
+}
+
+// hasChartPayload reports whether a render_chart value carries an actual object
+// (not absent, not JSON null). Guards the parser against a `{"render_chart":null}`
+// stub being treated as a chart action.
+func hasChartPayload(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s != "" && s != "null"
+}
+
+// rawHasNonChartAction reports whether the payload carries any action key other
+// than render_chart — used to reject a chart mixed with another action.
+func rawHasNonChartAction(raw *rawAction) bool {
+	return strings.TrimSpace(raw.Answer) != "" ||
+		strings.TrimSpace(raw.Decline) != "" ||
+		strings.TrimSpace(raw.Clarify) != "" ||
+		strings.TrimSpace(raw.Query) != "" ||
+		len(raw.LookupSchema) > 0 ||
+		strings.TrimSpace(raw.SearchTables) != "" ||
+		strings.TrimSpace(raw.SearchInsights) != ""
 }
 
 // normaliseToolEnvelope detects an Anthropic/OpenAI tool-use envelope
@@ -180,6 +221,14 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			if raw.InsightsLimit == 0 {
 				raw.InsightsLimit = in.Limit
 			}
+		}
+	case actRenderChart:
+		if hasChartPayload(raw.RenderChart) {
+			return
+		}
+		// The tool-use `input` IS the ChartSpec — capture it raw for validation.
+		if len(env.Input) > 0 {
+			raw.RenderChart = env.Input
 		}
 	case actAnswer, actClarify, actDecline:
 		var in struct {
@@ -303,7 +352,7 @@ func jsonHasActionKey(s string) bool {
 	if json.Unmarshal([]byte(s), &probe) != nil {
 		return false
 	}
-	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "search_insights", "name"} {
+	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "search_insights", "render_chart", "name"} {
 		if _, ok := probe[k]; ok {
 			return true
 		}
