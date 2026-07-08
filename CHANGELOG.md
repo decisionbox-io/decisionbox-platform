@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-08
+
 ### Removed
 
 - **Per-project discovery schedule config (`project.schedule`)** — `services/{agent,api}/internal/models/project.go` / `services/api/models/project.go`, `services/api/internal/handler/projects.go`, `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/{new,[id]/settings}/page.tsx`, `docs/{reference/data-models.md,reference/api.md,concepts/architecture.md,getting-started/quickstart.md,getting-started/first-discovery.md,reference/configuration.md}`. The `ScheduleConfig{ enabled, cron_expr, max_steps }` field stored on each project (with a settings tab and a create-wizard step) was never evaluated — no scheduler ever shipped to act on `cron_expr`, so it was inert configuration. It is removed from the model, the project update API, and the dashboard (the create wizard drops its "Schedule" step; settings drops its "Schedule" tab). No migration is required: an orphan `schedule` sub-document on an existing project doc is ignored. Trigger discovery runs manually via `POST /api/v1/projects/{id}/discover` (unchanged).
