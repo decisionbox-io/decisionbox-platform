@@ -42,6 +42,16 @@ var agentForwardedEnvKeys = []string{
 	"SECRET_GCP_PROJECT_ID",
 	"QDRANT_URL",
 	"QDRANT_API_KEY",
+	// Inference-credential env fallback. resolveCredential (agentserver /
+	// index_schema) reads these INSIDE the agent when no per-project
+	// secret exists — the managed-inference gateway mode relies on exactly
+	// that fallback (nothing AI-related is stored per project), and a
+	// self-hosted operator may set them as a global default too. Forwarded
+	// only when set, so the per-project-secret model is unaffected when
+	// they're absent.
+	"LLM_API_KEY",
+	"EMBEDDING_API_KEY",
+	"BLURB_LLM_API_KEY",
 	// DISCOVERY_MAX_DURATION caps the outer agent ctx — it lives on the
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.

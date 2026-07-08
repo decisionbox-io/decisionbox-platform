@@ -1032,6 +1032,17 @@ export interface SystemInfo {
   components: SystemComponent[];
 }
 
+// AppConfig carries deployment-level capability flags the dashboard reads
+// once at load. ai_config_managed is true when this deployment routes all
+// inference through a managed gateway (server-side AI_GATEWAY_URL set): the
+// AI/Embedding + Blurb settings tabs and the AI/embedding/blurb new-project
+// wizard steps are hidden because the config is preset and immutable
+// server-side. The server, not the UI, is authoritative — this only drives
+// what we bother rendering.
+export interface AppConfig {
+  ai_config_managed: boolean;
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -1055,6 +1066,9 @@ export const api = {
 
   // System inventory — component + worker versions (System page)
   getSystemInfo: () => request<SystemInfo>('/api/v1/system'),
+
+  // Deployment capability flags (drives which config surfaces the UI renders)
+  getAppConfig: () => request<AppConfig>('/api/v1/config'),
 
   // Domain Packs (CRUD)
   listDomainPacks: () => request<DomainPack[]>('/api/v1/domain-packs'),
