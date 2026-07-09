@@ -346,22 +346,19 @@ func initQdrant(ctx context.Context, cfg *config.Config) (vectorstore.Provider, 
 // last. The returned source string is one of "dashboard", "env", or
 // "none" and is logged so operators can see where the credential came
 // from.
+//
+// The order itself lives in the shared gosecrets.ResolveCredential helper
+// so the agent, the API, and the enterprise plugins can't drift apart;
+// this wrapper only adds the agent's warn-on-unexpected-error logging.
 func resolveCredential(ctx context.Context, secretProvider gosecrets.Provider, projectID, secretKey, envVar string) (value, source string) {
-	if v, err := secretProvider.Get(ctx, projectID, secretKey); err == nil && v != "" {
-		return v, "dashboard"
-	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
-		// Use errors.Is — gcp/aws/azure secret providers wrap their
-		// backend errors with %w, so a wrapped ErrNotFound would not
-		// compare equal via `!=`. Mongo returns the sentinel directly,
-		// which is why both forms appear correct in unit tests; only
-		// the wrapped path matters in production for the cloud
-		// backends.
+	value, source, err := gosecrets.ResolveCredential(ctx, secretProvider, projectID, secretKey, envVar)
+	if err != nil {
+		// gcp/aws/azure backends wrap their errors with %w; ResolveCredential
+		// already treats a (wrapped) ErrNotFound as "not set" and only
+		// returns genuinely unexpected read failures here.
 		applog.WithError(err).WithField("secret_key", secretKey).Warn("Failed to read credential from secret provider")
 	}
-	if v := os.Getenv(envVar); v != "" {
-		return v, "env"
-	}
-	return "", "none"
+	return value, source
 }
 
 func initEmbeddingProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (goembedding.Provider, error) {

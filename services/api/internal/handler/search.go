@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -217,18 +216,6 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// credentialWithEnvFallback resolves an inference credential the way the
-// agent's resolveCredential does: the per-project secret wins, else the
-// named environment variable. Managed-inference gateway mode writes no
-// per-project AI secret, so the API-side inference paths (search/ask) rely
-// on this env fallback to reach the gateway.
-func credentialWithEnvFallback(secret, envVar string) string {
-	if secret != "" {
-		return secret
-	}
-	return os.Getenv(envVar)
-}
-
 // createEmbeddingProvider creates an embedding provider for a project.
 // The projectConfig map carries non-credential provider settings the
 // dashboard saved (auth_method, project_id, location, region, role_arn,
@@ -241,18 +228,14 @@ func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerNam
 	for k, v := range projectConfig {
 		cfg[k] = v
 	}
-	secret := ""
-	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(ctx, projectID, "embedding-credentials"); err == nil {
-			secret = key
-		}
-	}
-	// Env fallback, mirroring the agent's resolveCredential order (secret
-	// wins, env next). The managed-inference gateway mode stores no
-	// per-project AI secret, so this API-side search path (which embeds the
-	// query) must fall back to EMBEDDING_API_KEY or it would build a
-	// credential-less provider and fail.
-	if cred := credentialWithEnvFallback(secret, "EMBEDDING_API_KEY"); cred != "" {
+	// Per-project secret wins, else the EMBEDDING_API_KEY env fallback:
+	// managed-inference gateway mode stores no per-project AI secret, so
+	// this API-side search path (which embeds the query) must reach the
+	// gateway via env or it would build a credential-less provider and
+	// fail. The resolution order lives in gosecrets.ResolveCredential,
+	// shared with the agent and the enterprise plugins.
+	cred, _, _ := gosecrets.ResolveCredential(ctx, h.secretProvider, projectID, "embedding-credentials", "EMBEDDING_API_KEY")
+	if cred != "" {
 		cfg["credentials_json"] = cred
 	}
 	return goembedding.NewProvider(providerName, cfg)
@@ -853,16 +836,11 @@ func chunkCitationID(c gosources.Chunk) string {
 
 // createLLMProvider creates an LLM provider for a project's RAG answer synthesis.
 func (h *SearchHandler) createLLMProvider(ctx context.Context, project *models.Project, projectID string) (gollm.Provider, error) {
-	secret := ""
-	if h.secretProvider != nil {
-		if key, err := h.secretProvider.Get(ctx, projectID, "llm-credentials"); err == nil {
-			secret = key
-		}
-	}
-	// Env fallback, mirroring the agent's resolveCredential order. Managed
+	// Per-project secret wins, else the LLM_API_KEY env fallback: managed
 	// mode stores no per-project AI secret, so Ask's RAG synthesis (which
-	// runs in the API process) must fall back to LLM_API_KEY.
-	apiKey := credentialWithEnvFallback(secret, "LLM_API_KEY")
+	// runs in the API process) must reach the gateway via env. Resolution
+	// order shared with the agent via gosecrets.ResolveCredential.
+	apiKey, _, _ := gosecrets.ResolveCredential(ctx, h.secretProvider, projectID, "llm-credentials", "LLM_API_KEY")
 
 	cfg := gollm.ProviderConfig{
 		"credentials_json": apiKey,
