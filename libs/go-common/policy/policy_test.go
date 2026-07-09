@@ -238,6 +238,7 @@ func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
 		FeatureSources,
 		FeaturePackGen,
 		FeatureDataQuery,
+		FeatureConnectors,
 	}
 	if len(AllFeatures) != len(want) {
 		t.Fatalf("AllFeatures length = %d, want %d", len(AllFeatures), len(want))
