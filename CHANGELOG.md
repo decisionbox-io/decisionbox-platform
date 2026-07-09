@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-09
+
+### Changed
+
+- **Shared `secrets.ResolveCredential` helper (dashboard secret → env fallback)** — `libs/go-common/secrets/`. Extracts credential resolution (per-project dashboard secret first, else an env-var fallback such as `LLM_API_KEY`/`EMBEDDING_API_KEY`) into a shared, exported helper so every provider-construction site resolves credentials identically — enabling managed-inference (AI-gateway) mode, where the credential rides the env fallback rather than a per-project secret. [#312](https://github.com/decisionbox-io/decisionbox-platform/pull/312)
+
 ## [0.13.0] - 2026-07-08
 
 ### Removed
