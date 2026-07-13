@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-13
+
+### Changed
+
+- Release version bump — no functional changes since v0.15.0 (coordinated re-tag across community, enterprise, and cloud-enterprise-tenant).
+
 ## [0.15.0] - 2026-07-10
 
 ### Changed
