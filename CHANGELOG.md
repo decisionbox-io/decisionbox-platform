@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-20
+
+### Added
+
+- **Discovery effort levels + optional `OperationCharger` seam** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `libs/go-common/policy/operation.go`, `services/api/internal/discoverytrigger/registry.go`, `services/api/internal/handler/discoveries.go`. Adds the five discovery effort levels (Lower/Low/Medium/High/Higher → 20/40/60/80/100 steps) and an **optional** per-operation charging seam (`OperationCharger`, nil/no-op by default) that cloud layers on to debit credits per operation. Inert for community/self-hosted builds — no behavior change. Foundational for the cloud credit economy ([control-plane #103](https://github.com/decisionbox-io/decisionbox-cloud-control-plane/issues/103)).
+
+### Changed
+
+- **Dashboard hides the pre-discovery dollar cost estimate on cloud** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `ui/dashboard/src/app/projects/[id]/page.tsx`, for the credits UX.
+
 ## [0.16.0] - 2026-07-13
 
 ### Changed
