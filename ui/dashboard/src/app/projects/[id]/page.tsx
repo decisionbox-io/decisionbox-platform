@@ -20,6 +20,12 @@ import {
   PROJECT_STATE_READY,
 } from '@/lib/api';
 
+// On DecisionBox Cloud, usage is billed in credits (not dollars), so the USD
+// cost-estimate preview is hidden. The cloud tenant sets
+// NEXT_PUBLIC_HIDE_COST_ESTIMATE=1; self-hosted leaves it unset and keeps the
+// dollar estimate.
+const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
+
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -313,31 +319,42 @@ export default function ProjectPage() {
             </div>
           ) : estimate && (
             <>
-              <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Cost Estimate</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                    LLM ({estimate.llm.provider})
-                  </div>
-                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
-                  <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                    ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
-                  </div>
+              {/* On DecisionBox Cloud usage is billed in credits, not dollars,
+                  so the USD cost estimate is hidden (HIDE_COST_ESTIMATE) — the
+                  managed pricing is the plan's per-operation credit price. */}
+              {HIDE_COST_ESTIMATE ? (
+                <div style={{ fontSize: 13, color: 'var(--db-text-secondary)', marginBottom: 16 }}>
+                  Ready to run discovery for this project.
                 </div>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                    Warehouse ({estimate.warehouse.provider})
+              ) : (
+                <>
+                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Cost Estimate</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                        LLM ({estimate.llm.provider})
+                      </div>
+                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
+                      <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+                        ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                        Warehouse ({estimate.warehouse.provider})
+                      </div>
+                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.warehouse.cost_usd.toFixed(4)}</div>
+                      <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
+                        ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total</div>
+                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--db-blue-text)' }}>${estimate.total_cost_usd.toFixed(4)}</div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.warehouse.cost_usd.toFixed(4)}</div>
-                  <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                    ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total</div>
-                  <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--db-blue-text)' }}>${estimate.total_cost_usd.toFixed(4)}</div>
-                </div>
-              </div>
+                </>
+              )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <GhostButton onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>Cancel</GhostButton>
                 <PrimaryButton onClick={() => handleTrigger(pendingAreas)} disabled={triggering}>

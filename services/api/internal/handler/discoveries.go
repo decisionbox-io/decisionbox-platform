@@ -161,6 +161,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	//   *val  > 0  → user-provided floor
 	var body struct {
 		Areas    []string `json:"areas"`               // optional: run only these areas
+		Effort   string   `json:"effort,omitempty"`    // optional: discovery intensity (lower/low/medium/high/higher)
 		MaxSteps int      `json:"max_steps,omitempty"` // optional: override exploration steps (default 100)
 		MinSteps *int     `json:"min_steps,omitempty"` // optional: reject premature completion (default 60% of max_steps)
 	}
@@ -169,6 +170,7 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	res, err := h.StartRun(r.Context(), discoverytrigger.Options{
 		ProjectID: projectID,
 		Areas:     body.Areas,
+		Effort:    body.Effort,
 		MaxSteps:  body.MaxSteps,
 		MinSteps:  body.MinSteps,
 		Source:    "manual",
@@ -263,6 +265,17 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project has not been indexed yet — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex first"}
 	}
 
+	// An effort level (cloud's customer-facing intensity) resolves to a
+	// max_steps budget that takes precedence over a raw MaxSteps — cloud never
+	// exposes step counts. Self-hosted callers may still pass MaxSteps.
+	if opts.Effort != "" {
+		steps, ok := policy.StepsForEffort(opts.Effort)
+		if !ok {
+			return discoverytrigger.Result{}, &discoverytrigger.InvalidParamsError{Message: "invalid effort level: " + opts.Effort}
+		}
+		opts.MaxSteps = steps
+	}
+
 	// Resolve MaxSteps for the min-steps default computation below. The
 	// agent CLI enforces its own default (100) when zero reaches it, so we
 	// mirror that here to keep the on-the-wire default and the computed
@@ -355,6 +368,27 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 		}
 	}
 
+	// Meter the run at its effort price. Free on self-hosted (no metering
+	// checker); on cloud this debits the plan's credit balance and blocks
+	// (typed *PolicyError → HTTP 402) when it is exhausted. The runID is the
+	// idempotency + refund handle. On a block, roll back the cap reservation
+	// and fail the run so nothing is left half-reserved.
+	if _, err := policy.ChargeIfMetered(ctx, "", policy.Operation{
+		Name:      policy.OpDiscoveryRun,
+		Effort:    opts.Effort,
+		Reference: runID,
+	}); err != nil {
+		if reservationID != "" {
+			if relErr := ck.Release(ctx, reservationID); relErr != nil {
+				apilog.WithError(relErr).Warn("failed to release reservation after metering block")
+			}
+		}
+		if failErr := h.runRepo.Fail(ctx, runID, "metering denied: "+err.Error()); failErr != nil {
+			apilog.WithError(failErr).Warn("failed to mark metering-denied run as failed")
+		}
+		return discoverytrigger.Result{}, err
+	}
+
 	// Spawn the agent via the configured runner (subprocess, docker, or K8s Job)
 	runErr := h.agentRunner.Run(ctx, runner.RunOptions{
 		ProjectID: opts.ProjectID,
@@ -384,6 +418,10 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 		if err := h.runRepo.Fail(ctx, runID, "failed to start: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed")
 		}
+		// The agent never launched — a defined SYSTEM failure, so refund the
+		// run's metered charge (no-op on self-hosted / when nothing was
+		// charged; idempotent on cloud).
+		policy.RefundIfMetered(ctx, "", runID)
 		if reservationID != "" {
 			if relErr := ck.Release(ctx, reservationID); relErr != nil {
 				apilog.WithError(relErr).Warn("failed to release discovery-run reservation after agent spawn failed")
