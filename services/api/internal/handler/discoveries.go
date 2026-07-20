@@ -373,9 +373,16 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	// (typed *PolicyError → HTTP 402) when it is exhausted. The runID is the
 	// idempotency + refund handle. On a block, roll back the cap reservation
 	// and fail the run so nothing is left half-reserved.
+	// Metering prices discovery by effort; default to medium when the caller
+	// didn't pick one (a cloud client always sends an effort, but this keeps
+	// the debit well-formed regardless). No-op on self-hosted.
+	chargeEffort := opts.Effort
+	if chargeEffort == "" {
+		chargeEffort = policy.DefaultEffort
+	}
 	if _, err := policy.ChargeIfMetered(ctx, "", policy.Operation{
 		Name:      policy.OpDiscoveryRun,
-		Effort:    opts.Effort,
+		Effort:    chargeEffort,
 		Reference: runID,
 	}); err != nil {
 		if reservationID != "" {
