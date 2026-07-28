@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agent Job pods rejected on OpenShift** — the Kubernetes runner hardcoded `runAsUser`/`runAsGroup`/`fsGroup` `1000` in every agent Job (Test Connection, discovery, index-schema, validate-doc), which OpenShift's `restricted-v2` SCC rejects as outside the namespace's allocated UID range, so pods never scheduled (Test Connection returned a 504). Setting `OPENSHIFT_ENABLED=true` now omits those pins so the SCC assigns a UID/GID from the namespace range; all other hardening (`runAsNonRoot`, drop `ALL`, read-only root filesystem, `RuntimeDefault` seccomp) is preserved. Vanilla Kubernetes is unchanged — UID `1000` is still pinned by default (`services/api/internal/runner/`).
+
 ## [0.17.0] - 2026-07-20
 
 ### Added
