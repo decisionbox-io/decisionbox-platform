@@ -26,13 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Release version bump — no functional changes since v0.15.0 (coordinated re-tag across community, enterprise, and cloud-enterprise-tenant).
+- Release version bump — no functional changes since the 0.15.0 release (coordinated re-tag across the platform's published images).
 
 ## [0.15.0] - 2026-07-10
 
 ### Changed
 
-- Release version bump — no functional changes since v0.14.0 (coordinated re-tag/rebuild across platform, enterprise, and cloud-enterprise-tenant).
+- Release version bump — no functional changes since the 0.14.0 release (coordinated re-tag/rebuild across the platform's published images).
 
 ## [0.14.0] - 2026-07-09
 
