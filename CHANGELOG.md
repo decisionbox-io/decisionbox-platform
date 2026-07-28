@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-28
+
+### Changed
+
+- **Version realigned to 0.20.0** so the community platform, enterprise, the enterprise Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
+
 ## [0.18.0] - 2026-07-28
 
 ### Fixed
