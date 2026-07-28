@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-28
+
+### Changed
+
+- **Version bumped to 0.21.0** to keep the fleet on one number. 0.20.0's enterprise publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
+
 ## [0.20.0] - 2026-07-28
 
 ### Changed
