@@ -202,6 +202,13 @@ env:
 
 The chart includes RBAC rules that grant the API service account permission to create and manage Jobs in its namespace.
 
+**OpenShift / OKD.** Agent Job pods default to a fixed `runAsUser`/`fsGroup` of `1000`, which the `restricted-v2` SCC rejects because it is outside the namespace's allocated UID range — Test Connection and discovery then fail with a 504. Set `OPENSHIFT_ENABLED: "true"` (via `env` or `extraEnv`) so the API omits those pins and lets the SCC assign a UID/GID from the namespace range; all other pod hardening is preserved:
+
+```yaml
+env:
+  OPENSHIFT_ENABLED: "true"
+```
+
 ### Vector Search (Qdrant)
 
 DecisionBox uses Qdrant for semantic search and discovery. To enable it:

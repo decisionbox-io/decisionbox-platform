@@ -43,6 +43,66 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_OpenShift covers the OPENSHIFT_ENABLED signal that drives the
+// SCC-safe security context: unset defaults to false (vanilla, UID pinned), a
+// truthy value flips it on, and a garbage value falls back to false so a typo
+// can't silently strip the pod hardening.
+func TestLoadConfig_OpenShift(t *testing.T) {
+	cases := []struct {
+		val  string // "" means unset
+		want bool
+	}{
+		{"", false},
+		{"true", true},
+		{"1", true},
+		{"false", false},
+		{"0", false},
+		{"yes", false},      // unparseable → fail-safe default
+		{"nonsense", false}, // unparseable → fail-safe default
+	}
+	for _, tc := range cases {
+		if tc.val == "" {
+			os.Unsetenv("OPENSHIFT_ENABLED")
+		} else {
+			os.Setenv("OPENSHIFT_ENABLED", tc.val)
+		}
+		if got := LoadConfig().OpenShift; got != tc.want {
+			t.Errorf("OPENSHIFT_ENABLED=%q → OpenShift=%v, want %v", tc.val, got, tc.want)
+		}
+	}
+	os.Unsetenv("OPENSHIFT_ENABLED")
+}
+
+func TestGetEnvBool(t *testing.T) {
+	const key = "DBX_TEST_GETENVBOOL"
+	cases := []struct {
+		val      string // "" means unset
+		fallback bool
+		want     bool
+	}{
+		{"", false, false},
+		{"", true, true},
+		{"true", false, true},
+		{"TRUE", false, true},
+		{"1", false, true},
+		{"false", true, false},
+		{"0", true, false},
+		{"nonsense", true, true},   // unparseable → fallback
+		{"nonsense", false, false}, // unparseable → fallback
+	}
+	for _, tc := range cases {
+		if tc.val == "" {
+			os.Unsetenv(key)
+		} else {
+			os.Setenv(key, tc.val)
+		}
+		if got := getEnvBool(key, tc.fallback); got != tc.want {
+			t.Errorf("getEnvBool(%q, %v) = %v, want %v", tc.val, tc.fallback, got, tc.want)
+		}
+	}
+	os.Unsetenv(key)
+}
+
 func TestLoadConfig_EnvOverrides(t *testing.T) {
 	os.Setenv("RUNNER_MODE", "kubernetes")
 	os.Setenv("AGENT_IMAGE", "my-registry/agent:v1")
@@ -323,6 +383,86 @@ func TestKubernetesRunner_Run_SetsRestrictedSecurityContext(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
 	}
 	assertRestrictedSecurityContext(t, jobs.Items[0])
+}
+
+// assertOpenShiftSecurityContext verifies the OpenShift variant: the numeric
+// identity pins (RunAsUser / RunAsGroup / FSGroup) are OMITTED so the
+// restricted-v2 SCC assigns them from the namespace range, while every other
+// hardening field required by both PodSecurity restricted and the SCC stays
+// set. This is what makes agent Jobs schedulable on OpenShift/OKD.
+func assertOpenShiftSecurityContext(t *testing.T, job batchv1.Job) {
+	t.Helper()
+
+	pod := job.Spec.Template.Spec
+	if pod.SecurityContext == nil {
+		t.Fatal("pod.SecurityContext is nil")
+	}
+	if pod.SecurityContext.RunAsUser != nil {
+		t.Errorf("pod.SecurityContext.RunAsUser must be nil on OpenShift, got %d", *pod.SecurityContext.RunAsUser)
+	}
+	if pod.SecurityContext.RunAsGroup != nil {
+		t.Errorf("pod.SecurityContext.RunAsGroup must be nil on OpenShift, got %d", *pod.SecurityContext.RunAsGroup)
+	}
+	if pod.SecurityContext.FSGroup != nil {
+		t.Errorf("pod.SecurityContext.FSGroup must be nil on OpenShift, got %d", *pod.SecurityContext.FSGroup)
+	}
+	// Surviving hardening — must NOT be dropped just because we're on OpenShift.
+	if pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+		t.Error("pod.SecurityContext.RunAsNonRoot must remain true on OpenShift")
+	}
+	if pod.SecurityContext.SeccompProfile == nil ||
+		pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("pod.SecurityContext.SeccompProfile.Type must remain RuntimeDefault on OpenShift")
+	}
+
+	if len(pod.Containers) == 0 {
+		t.Fatal("no containers on pod")
+	}
+	c := pod.Containers[0]
+	if c.SecurityContext == nil {
+		t.Fatal("container.SecurityContext is nil")
+	}
+	if c.SecurityContext.RunAsUser != nil {
+		t.Errorf("container.RunAsUser must be nil on OpenShift, got %d", *c.SecurityContext.RunAsUser)
+	}
+	if c.SecurityContext.RunAsGroup != nil {
+		t.Errorf("container.RunAsGroup must be nil on OpenShift, got %d", *c.SecurityContext.RunAsGroup)
+	}
+	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Error("container.AllowPrivilegeEscalation must remain false on OpenShift")
+	}
+	if c.SecurityContext.RunAsNonRoot == nil || !*c.SecurityContext.RunAsNonRoot {
+		t.Error("container.RunAsNonRoot must remain true on OpenShift")
+	}
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("container.ReadOnlyRootFilesystem must remain true on OpenShift")
+	}
+	if c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Drop) == 0 ||
+		c.SecurityContext.Capabilities.Drop[0] != "ALL" {
+		t.Error("container.Capabilities must still drop [ALL] on OpenShift")
+	}
+	if c.SecurityContext.SeccompProfile == nil ||
+		c.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("container.SeccompProfile.Type must remain RuntimeDefault on OpenShift")
+	}
+}
+
+// TestKubernetesRunner_Run_OpenShiftOmitsUIDGID pins the OpenShift fix: with
+// config.OpenShift the agent Job drops the out-of-range UID/GID pins that the
+// restricted-v2 SCC rejects, while keeping the rest of the hardening.
+func TestKubernetesRunner_Run_OpenShiftOmitsUIDGID(t *testing.T) {
+	r := newFakeK8sRunner()
+	r.config.OpenShift = true
+	ctx := context.Background()
+
+	if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-ocp-1234567890"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	assertOpenShiftSecurityContext(t, jobs.Items[0])
 }
 
 func TestKubernetesRunner_Run_NoAreas(t *testing.T) {
