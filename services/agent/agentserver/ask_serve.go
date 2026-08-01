@@ -121,8 +121,9 @@ func runAskServe(cfg *config.Config) error {
 		// Schema provider (optional). Lookup serves from the cached schemas
 		// map; semantic search additionally needs the retriever + embedder.
 		var schemaProvider ai.SchemaProvider
-		warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
-		schemas, scErr := schemaCache.Find(buildCtx, projectID, warehouseHash)
+		primaryWH := project.PrimaryWarehouse()
+		warehouseHash := discovery.WarehouseConfigHash(primaryWH)
+		schemas, scErr := schemaCache.Find(buildCtx, projectID, primaryWH.ID, warehouseHash)
 		switch {
 		case scErr != nil:
 			applog.WithError(scErr).WithField("project_id", projectID).Warn("ask-serve: schema cache lookup failed — schema tools disabled")
@@ -130,9 +131,10 @@ func runAskServe(cfg *config.Config) error {
 			applog.WithField("project_id", projectID).Warn("ask-serve: no cached schema for project — run --mode index-schema to enable schema tools")
 		default:
 			opts := discovery.CacheSchemaProviderOptions{
-				ProjectID: projectID,
-				Datasets:  datasets,
-				Schemas:   schemas,
+				ProjectID:   projectID,
+				WarehouseID: primaryWH.ID,
+				Datasets:    datasets,
+				Schemas:     schemas,
 			}
 			// Wire semantic search only when both the retriever and an embedder
 			// are present (NewCacheSchemaProvider requires the pair).

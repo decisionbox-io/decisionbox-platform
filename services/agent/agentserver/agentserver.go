@@ -21,16 +21,16 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
-	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
+	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
-	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"   // registers "aws"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure" // registers "azure"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -39,12 +39,12 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
 	// LLM provider registrations
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"         // registers "claude"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"         // registers "openai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"         // registers "ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"      // registers "vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"        // registers "bedrock" (stub)
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry"  // registers "azure-foundry"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"       // registers "bedrock" (stub)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"        // registers "claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"        // registers "ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"        // registers "openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"     // registers "vertex-ai"
 
 	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"   // registers "bigquery"
@@ -736,7 +736,8 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// schema_index_status == "ready", so the cache + Qdrant collection
 	// are guaranteed to exist by the time we get here).
 	schemaCache := database.NewSchemaCacheRepository(db)
-	warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
+	primaryWH := project.PrimaryWarehouse()
+	warehouseHash := discovery.WarehouseConfigHash(primaryWH)
 
 	schemaRetriever, err := newSchemaRetriever(cfg)
 	if err != nil {
@@ -765,10 +766,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return fmt.Errorf("init run step index: %w", err)
 	}
 	applog.WithFields(applog.Fields{
-		"run_id":          runID,
-		"collection":      discovery.RunStepIndexCollectionName(runID),
-		"embedder_model":  embeddingProvider.ModelName(),
-		"embedder_dims":   embeddingProvider.Dimensions(),
+		"run_id":         runID,
+		"collection":     discovery.RunStepIndexCollectionName(runID),
+		"embedder_model": embeddingProvider.ModelName(),
+		"embedder_dims":  embeddingProvider.Dimensions(),
 	}).Info("Run-step index ready")
 
 	// Boot-time orphan sweep: drop per-run collections from previous
@@ -790,25 +791,25 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:        aiClient,
-		Warehouse:       warehouseProvider,
-		ContextRepo:      contextRepo,
-		DiscoveryRepo:    discoveryRepo,
-		DiscoveryLogRepo: discoveryLogRepo,
-		FeedbackRepo:     database.NewFeedbackRepository(db),
-		DebugLogRepo:     debugLogRepo,
-		RunRepo:          runRepo,
-		RunStepRepo:      runStepRepo,
-		RunID:            runID,
-		ProjectID:       projectID,
-		Domain:          project.Domain,
-		Category:        project.Category,
-		Language:        project.Language,
-		Profile:         project.Profile,
-		ProjectPrompts:  project.Prompts,
-		Datasets:        datasets,
-		FilterField:     project.Warehouse.FilterField,
-		FilterValue:     project.Warehouse.FilterValue,
+		AIClient:          aiClient,
+		Warehouse:         warehouseProvider,
+		ContextRepo:       contextRepo,
+		DiscoveryRepo:     discoveryRepo,
+		DiscoveryLogRepo:  discoveryLogRepo,
+		FeedbackRepo:      database.NewFeedbackRepository(db),
+		DebugLogRepo:      debugLogRepo,
+		RunRepo:           runRepo,
+		RunStepRepo:       runStepRepo,
+		RunID:             runID,
+		ProjectID:         projectID,
+		Domain:            project.Domain,
+		Category:          project.Category,
+		Language:          project.Language,
+		Profile:           project.Profile,
+		ProjectPrompts:    project.Prompts,
+		Datasets:          datasets,
+		FilterField:       project.Warehouse.FilterField,
+		FilterValue:       project.Warehouse.FilterValue,
 		LLMProvider:       project.LLM.Provider,
 		LLMModel:          project.LLM.Model,
 		WarehouseProvider: project.Warehouse.Provider,
@@ -819,6 +820,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		SchemaRetriever:   schemaRetriever,
 		SchemaCache:       schemaCache,
 		WarehouseHash:     warehouseHash,
+		WarehouseID:       primaryWH.ID,
 		RunStepIndex:      runStepIndex,
 	})
 
@@ -1066,8 +1068,8 @@ func discoveryRunContext(parent context.Context) (context.Context, context.Cance
 		switch {
 		case err != nil:
 			applog.WithFields(applog.Fields{
-				"env":     discoveryMaxDurationEnv,
-				"value":   raw,
+				"env":      discoveryMaxDurationEnv,
+				"value":    raw,
 				"fallback": defaultDiscoveryMaxDuration.String(),
 			}).Warn("invalid DISCOVERY_MAX_DURATION; falling back to default")
 		case parsed == 0:
@@ -1075,8 +1077,8 @@ func discoveryRunContext(parent context.Context) (context.Context, context.Cance
 			return parent, func() {}
 		case parsed < 0:
 			applog.WithFields(applog.Fields{
-				"env":     discoveryMaxDurationEnv,
-				"value":   raw,
+				"env":      discoveryMaxDurationEnv,
+				"value":    raw,
 				"fallback": defaultDiscoveryMaxDuration.String(),
 			}).Warn("negative DISCOVERY_MAX_DURATION; falling back to default")
 		default:

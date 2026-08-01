@@ -46,7 +46,10 @@ type vectorSearcher interface {
 // to get the canonical ref index built once instead of on every Lookup.
 type CacheSchemaProvider struct {
 	projectID string
-	datasets  []string
+	// warehouseID scopes vector Search to one warehouse's points. Empty
+	// means "search across all warehouses" (the cross-warehouse view).
+	warehouseID string
+	datasets    []string
 
 	// schemas is the per-table metadata loaded from the cache. The map
 	// key is the qualified "dataset.table" form the warehouse provider
@@ -87,7 +90,9 @@ type CacheSchemaProvider struct {
 // a small-context model can dial both down without touching engine
 // code. Both default to the package constants when 0.
 type CacheSchemaProviderOptions struct {
-	ProjectID   string
+	ProjectID string
+	// WarehouseID scopes Search to one warehouse (empty = all warehouses).
+	WarehouseID string
 	Datasets    []string
 	Schemas     map[string]models.TableSchema
 	Retriever   *schema_retrieve.Retriever
@@ -115,6 +120,7 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 
 	p := &CacheSchemaProvider{
 		projectID:   opts.ProjectID,
+		warehouseID: opts.WarehouseID,
 		datasets:    append([]string(nil), opts.Datasets...),
 		schemas:     opts.Schemas,
 		embedder:    opts.Embedder,
@@ -208,8 +214,9 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 	}
 
 	hits, err := p.searcher.Search(ctx, p.projectID, vec[0], schema_retrieve.SearchOpts{
-		TopK:          k,
-		RowCountPrior: 0.05,
+		TopK:            k,
+		WarehouseFilter: p.warehouseID,
+		RowCountPrior:   0.05,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("qdrant search: %w", err)

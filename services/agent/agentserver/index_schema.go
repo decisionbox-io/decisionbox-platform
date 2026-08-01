@@ -187,7 +187,8 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("blurb generator: %w", err)
 	}
 
-	warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
+	primaryWH := project.PrimaryWarehouse()
+	warehouseHash := discovery.WarehouseConfigHash(primaryWH)
 	schemaCache := database.NewSchemaCacheRepository(db)
 
 	indexer := &discovery.SchemaIndexer{
@@ -198,6 +199,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		Progress:      progressRepo,
 		Cache:         schemaCache,
 		WarehouseHash: warehouseHash,
+		WarehouseID:   primaryWH.ID,
 	}
 
 	start := time.Now()

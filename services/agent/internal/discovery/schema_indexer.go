@@ -52,6 +52,11 @@ type SchemaIndexer struct {
 	// project's WarehouseConfig via WarehouseConfigHash. Empty hash
 	// disables the cache for this run even if Cache is set.
 	WarehouseHash string
+	// WarehouseID names the warehouse being indexed (multi-warehouse).
+	// It scopes the schema cache and the Qdrant points so indexing one
+	// warehouse never touches another's catalog. Empty resolves to the
+	// project's default/primary warehouse.
+	WarehouseID string
 }
 
 // SchemaSource is the slim subset of discovery.SchemaDiscovery the
@@ -140,13 +145,12 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		}
 	}
 
-	// 1. Drop the old collection first so a failed half-written index
-	// can't poison a subsequent search. Idempotent — missing → no-op.
-	applog.Info("schema_indexer: phase=drop_collection")
-	if err := si.Retriever.DropCollection(ctx, opts.ProjectID); err != nil {
-		si.recordErr(ctx, opts.ProjectID, "drop prior collection: "+err.Error())
-		return nil, fmt.Errorf("schema_indexer: drop prior collection: %w", err)
-	}
+	// 1. (Point clearing is per-warehouse and deferred to just before the
+	// write phase — see below. We deliberately do NOT drop the whole
+	// collection here: it is shared by every warehouse in the project, so
+	// dropping it would wipe the other warehouses' vectors. The old points
+	// for THIS warehouse are deleted after EnsureCollection, so a failed
+	// discovery leaves the previous index searchable instead of empty.)
 
 	// 2. Discover tables + schemas. When the cache has a hit for the
 	// current warehouse hash we skip the catalog pass entirely — every
@@ -193,6 +197,14 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	if err := si.Retriever.EnsureCollection(ctx, opts.ProjectID, dims); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "ensure collection: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: ensure collection: %w", err)
+	}
+
+	// Clear only THIS warehouse's prior points before re-writing them, so a
+	// re-index of one warehouse leaves every other warehouse's vectors
+	// intact (must-fix #2). No-op on a freshly (re)created collection.
+	if err := si.Retriever.DeleteWarehousePoints(ctx, opts.ProjectID, si.WarehouseID); err != nil {
+		si.recordErr(ctx, opts.ProjectID, "clear warehouse points: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: clear warehouse points: %w", err)
 	}
 
 	if si.Progress != nil {
@@ -318,7 +330,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		}
 	}
 	applog.WithFields(applog.Fields{"points": len(items)}).Info("schema_indexer: phase=qdrant_upsert")
-	if err := si.Retriever.Upsert(ctx, opts.ProjectID, items); err != nil {
+	if err := si.Retriever.Upsert(ctx, opts.ProjectID, si.WarehouseID, items); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
@@ -349,7 +361,7 @@ func (si *SchemaIndexer) resolveSchemas(ctx context.Context, opts IndexOptions) 
 	cacheActive := si.Cache != nil && si.WarehouseHash != ""
 
 	if cacheActive {
-		hit, cacheErr := si.Cache.Find(ctx, opts.ProjectID, si.WarehouseHash)
+		hit, cacheErr := si.Cache.Find(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash)
 		if cacheErr != nil {
 			applog.WithError(cacheErr).Warn("schema_indexer: schema-cache lookup failed; falling through to fresh discovery")
 		} else if len(hit) > 0 {
@@ -363,7 +375,7 @@ func (si *SchemaIndexer) resolveSchemas(ctx context.Context, opts IndexOptions) 
 		return nil, false, err
 	}
 	if cacheActive && len(schemas) > 0 {
-		if err := si.Cache.Save(ctx, opts.ProjectID, si.WarehouseHash, schemas); err != nil {
+		if err := si.Cache.Save(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash, schemas); err != nil {
 			applog.WithError(err).Warn("schema_indexer: schema-cache save failed; next run will rediscover")
 		}
 	}

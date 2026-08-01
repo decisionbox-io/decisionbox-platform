@@ -126,11 +126,11 @@ type ResolvedPrompts struct {
 
 // Orchestrator coordinates the entire discovery process.
 type Orchestrator struct {
-	aiClient      *ai.Client
-	warehouse     gowarehouse.Provider
+	aiClient  *ai.Client
+	warehouse gowarehouse.Provider
 
-	contextRepo      *database.ContextRepository
-	discoveryRepo    *database.DiscoveryRepository
+	contextRepo   *database.ContextRepository
+	discoveryRepo *database.DiscoveryRepository
 	// discoveryLogRepo is held as an interface so unit tests can inject
 	// a mock without having to spin up MongoDB. The concrete writer is
 	// *database.DiscoveryLogRepository, wired in production by
@@ -139,7 +139,7 @@ type Orchestrator struct {
 	feedbackRepo     *database.FeedbackRepository
 	debugLogRepo     *database.DebugLogRepository
 
-	explorationEngine    *ai.ExplorationEngine
+	explorationEngine *ai.ExplorationEngine
 
 	// validationAgent runs the LLM-native verifier + refuter pair on
 	// every insight and recommendation. Constructed inside
@@ -190,17 +190,18 @@ type Orchestrator struct {
 	// The cache is populated by the schema indexer (see
 	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
 	// any warehouse-config change self-invalidates the cache.
-	schemaCache    SchemaCache
-	warehouseHash  string
+	schemaCache   SchemaCache
+	warehouseHash string
+	warehouseID   string
 }
 
 // OrchestratorOptions configures the orchestrator.
 type OrchestratorOptions struct {
-	AIClient      *ai.Client
-	Warehouse     gowarehouse.Provider
+	AIClient  *ai.Client
+	Warehouse gowarehouse.Provider
 
-	ContextRepo      *database.ContextRepository
-	DiscoveryRepo    *database.DiscoveryRepository
+	ContextRepo   *database.ContextRepository
+	DiscoveryRepo *database.DiscoveryRepository
 	// DiscoveryLogRepo persists the per-step / per-area / per-result rows
 	// (exploration_steps, analysis_steps, validation_results,
 	// recommendation_log) that used to be embedded arrays inside the
@@ -212,17 +213,17 @@ type OrchestratorOptions struct {
 	FeedbackRepo     *database.FeedbackRepository
 	DebugLogRepo     *database.DebugLogRepository
 
-	RunRepo      *database.RunRepository
+	RunRepo *database.RunRepository
 	// RunStepRepo persists the per-step rows that used to live as an
 	// embedded `steps` array on the discovery_runs document. Required —
 	// without it the status reporter has nowhere to write the live step
 	// stream and the dashboard's progress feed goes dark.
-	RunStepRepo  *database.RunStepRepository
-	RunID        string
+	RunStepRepo *database.RunStepRepository
+	RunID       string
 
-	ProjectID         string
-	Domain            string
-	Category          string
+	ProjectID string
+	Domain    string
+	Category  string
 	// Language is the human-readable output language for narrative
 	// fields (insight names/descriptions, recommendation titles, etc).
 	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
@@ -266,6 +267,11 @@ type OrchestratorOptions struct {
 	// cache and surfaces the "re-index required" error rather than
 	// returning stale schemas.
 	WarehouseHash string
+
+	// WarehouseID scopes the SchemaCache lookup to one warehouse so a
+	// discovery run reads only the catalog of the warehouse it targets.
+	// Empty resolves to the project's default/primary warehouse.
+	WarehouseID string
 
 	// RunStepIndex is the per-run vector index of exploration steps.
 	// Required — the analysis phase uses it to rank steps per area.
@@ -315,35 +321,36 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:           opts.AIClient,
-		warehouse:          opts.Warehouse,
-		contextRepo:        opts.ContextRepo,
-		discoveryRepo:      opts.DiscoveryRepo,
-		discoveryLogRepo:   discoveryLogRepo,
-		feedbackRepo:       opts.FeedbackRepo,
-		debugLogRepo:       opts.DebugLogRepo,
-		debugLogger:        debugLogger,
-		statusReporter:     statusReporter,
-		projectID:          opts.ProjectID,
-		domain:             opts.Domain,
-		category:           opts.Category,
-		language:           opts.Language,
-		profile:            opts.Profile,
-		projectPrompts:     opts.ProjectPrompts,
-		datasets:           opts.Datasets,
-		filterField:        opts.FilterField,
-		filterValue:        opts.FilterValue,
-		llmProvider:        opts.LLMProvider,
-		llmModel:           opts.LLMModel,
-		vectorStore:        opts.VectorStore,
-		embeddingProvider:  opts.EmbeddingProvider,
-		embedIndexStore:    opts.EmbedIndexStore,
-		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:    opts.SchemaRetriever,
-		schemaCache:        opts.SchemaCache,
-		warehouseHash:      opts.WarehouseHash,
-		runStepIndex:       opts.RunStepIndex,
-		runID:              opts.RunID,
+		aiClient:          opts.AIClient,
+		warehouse:         opts.Warehouse,
+		contextRepo:       opts.ContextRepo,
+		discoveryRepo:     opts.DiscoveryRepo,
+		discoveryLogRepo:  discoveryLogRepo,
+		feedbackRepo:      opts.FeedbackRepo,
+		debugLogRepo:      opts.DebugLogRepo,
+		debugLogger:       debugLogger,
+		statusReporter:    statusReporter,
+		projectID:         opts.ProjectID,
+		domain:            opts.Domain,
+		category:          opts.Category,
+		language:          opts.Language,
+		profile:           opts.Profile,
+		projectPrompts:    opts.ProjectPrompts,
+		datasets:          opts.Datasets,
+		filterField:       opts.FilterField,
+		filterValue:       opts.FilterValue,
+		llmProvider:       opts.LLMProvider,
+		llmModel:          opts.LLMModel,
+		vectorStore:       opts.VectorStore,
+		embeddingProvider: opts.EmbeddingProvider,
+		embedIndexStore:   opts.EmbedIndexStore,
+		embedder:          opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:   opts.SchemaRetriever,
+		schemaCache:       opts.SchemaCache,
+		warehouseHash:     opts.WarehouseHash,
+		warehouseID:       opts.WarehouseID,
+		runStepIndex:      opts.RunStepIndex,
+		runID:             opts.RunID,
 	}
 }
 
@@ -767,11 +774,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			})
 		}
 		applog.WithFields(applog.Fields{
-			"area":         area.ID,
-			"area_name":    area.Name,
-			"picked_count": len(relevantSteps),
+			"area":          area.ID,
+			"area_name":     area.Name,
+			"picked_count":  len(relevantSteps),
 			"dropped_count": len(pickResult.Dropped),
-			"picked":       pickedSummary,
+			"picked":        pickedSummary,
 		}).Debug("Analysis area: picked steps")
 
 		applog.WithFields(applog.Fields{
@@ -798,14 +805,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Create analysis step to capture full dialog
 		step := models.AnalysisStep{
-			AreaID:             area.ID,
-			AreaName:           area.Name,
-			RunAt:              time.Now(),
-			Prompt:             prompt,
-			RelevantQueries:    len(relevantSteps),
-			QueryResultsChars:  len(queryResultsJSON),
-			SelectedSteps:      pickedToTelemetry(pickResult.Picked),
-			DroppedSteps:       droppedToTelemetry(pickResult.Dropped),
+			AreaID:            area.ID,
+			AreaName:          area.Name,
+			RunAt:             time.Now(),
+			Prompt:            prompt,
+			RelevantQueries:   len(relevantSteps),
+			QueryResultsChars: len(queryResultsJSON),
+			SelectedSteps:     pickedToTelemetry(pickResult.Picked),
+			DroppedSteps:      droppedToTelemetry(pickResult.Dropped),
 		}
 
 		// Call LLM
@@ -895,8 +902,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommenderInput := filterEligibleInsights(allInsights)
 	applog.WithFields(applog.Fields{
-		"total_insights":     len(allInsights),
-		"eligible_insights":  len(recommenderInput),
+		"total_insights":    len(allInsights),
+		"eligible_insights": len(recommenderInput),
 	}).Info("Filtered insights for recommendation generation")
 
 	var recommendations []models.Recommendation
@@ -1556,7 +1563,7 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 	if o.warehouseHash == "" {
 		return nil, fmt.Errorf("warehouse hash not set on orchestrator (programmer error)")
 	}
-	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseHash)
+	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseID, o.warehouseHash)
 	if err != nil {
 		return nil, fmt.Errorf("read schema cache: %w", err)
 	}
@@ -1722,11 +1729,11 @@ func cleanJSONResponse(response string) string {
 //   - Analysis prompts add query results → moderate.
 //   - Recommendation prompts often need broader business context → larger.
 const (
-	knowledgeTopKExploration       = 3
-	knowledgeTopKAnalysis          = 5
-	knowledgeTopKRecommendations   = 8
-	knowledgeMinScore              = 0.4
-	knowledgeMaxRetrievalPerPhase  = 3 * time.Second
+	knowledgeTopKExploration      = 3
+	knowledgeTopKAnalysis         = 5
+	knowledgeTopKRecommendations  = 8
+	knowledgeMinScore             = 0.4
+	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
 
 // injectKnowledgeSources walks every registered agentplugin context provider
@@ -1752,9 +1759,9 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 		MinScore: knowledgeMinScore,
 	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
-			"project_id":        o.projectID,
-			"context_provider":  name,
-			"error":             err.Error(),
+			"project_id":       o.projectID,
+			"context_provider": name,
+			"error":            err.Error(),
 		}).Warn("Context provider failed; continuing without its section")
 	})
 
