@@ -34,6 +34,10 @@ import "time"
 type SQLValidationJob struct {
 	ID        string `bson:"_id" json:"id"`
 	ProjectID string `bson:"project_id" json:"project_id"`
+	// WarehouseID selects the datasource the agent compiles these statements
+	// against (multi-warehouse). Empty = the project's primary/only warehouse,
+	// so legacy jobs keep validating against the primary.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 
 	// Statements is the batch of SQL strings to compile-check. May be
 	// empty — an empty batch completes immediately with no results.

@@ -990,6 +990,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Contains all insights, recommendations, and execution metadata
 	result := &models.DiscoveryResult{
 		ProjectID:       o.projectID,
+		WarehouseID:     o.warehouseID,
 		Domain:          o.domain,
 		Category:        o.category,
 		RunType:         runType,

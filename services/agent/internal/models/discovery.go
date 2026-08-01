@@ -15,8 +15,13 @@ type InsightValidation = valmodels.InsightValidation
 // DiscoveryResult represents the complete output of a discovery run.
 // Every LLM interaction is stored for traceability and fine-tuning.
 type DiscoveryResult struct {
-	ID            string    `bson:"_id,omitempty" json:"id"`
-	ProjectID     string    `bson:"project_id" json:"project_id"`
+	ID        string `bson:"_id,omitempty" json:"id"`
+	ProjectID string `bson:"project_id" json:"project_id"`
+	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
+	// Empty for legacy / single-warehouse runs. The originating warehouse of
+	// every insight + SQL example flows from here (fine-tuning routes its SQL
+	// validation to the right datasource by it).
+	WarehouseID   string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 	Domain        string    `bson:"domain" json:"domain"`
 	Category      string    `bson:"category" json:"category"`
 	DiscoveryDate time.Time `bson:"discovery_date" json:"discovery_date"`
@@ -158,6 +163,10 @@ type Summary struct {
 type ExplorationStep struct {
 	Step      int       `bson:"step" json:"step"`
 	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
+	// WarehouseID is the datasource this step queried (multi-warehouse). Empty
+	// for legacy / single-warehouse runs; carried so each SQL example can be
+	// tagged with the datasource it must be validated against.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 
 	// LLM decision
 	Action       string `bson:"action" json:"action"` // query_data, lookup_schema, search_tables, complete, complete_rejected

@@ -18,11 +18,15 @@ type InsightValidation = valmodels.InsightValidation
 //
 // Shared between API (reads) and Agent (writes during Phase 9).
 type StandaloneInsight struct {
-	ID           string `bson:"_id" json:"id"`
-	ProjectID    string `bson:"project_id" json:"project_id"`
-	DiscoveryID  string `bson:"discovery_id" json:"discovery_id"`
-	Domain       string `bson:"domain" json:"domain"`
-	Category     string `bson:"category" json:"category"`
+	ID          string `bson:"_id" json:"id"`
+	ProjectID   string `bson:"project_id" json:"project_id"`
+	DiscoveryID string `bson:"discovery_id" json:"discovery_id"`
+	// Datasource is the warehouse id the insight was discovered from
+	// (multi-warehouse). Empty for single-warehouse / legacy insights. Lets the
+	// exec summary attribute a finding to the datasource it came from.
+	Datasource string `bson:"datasource,omitempty" json:"datasource,omitempty"`
+	Domain     string `bson:"domain" json:"domain"`
+	Category   string `bson:"category" json:"category"`
 
 	AnalysisArea  string                 `bson:"analysis_area" json:"analysis_area"`
 	Name          string                 `bson:"name" json:"name"`

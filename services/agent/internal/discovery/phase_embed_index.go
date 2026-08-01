@@ -65,6 +65,7 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			ID:            id,
 			ProjectID:     result.ProjectID,
 			DiscoveryID:   result.ID,
+			Datasource:    result.WarehouseID,
 			Domain:        result.Domain,
 			Category:      result.Category,
 			AnalysisArea:  ins.AnalysisArea,
