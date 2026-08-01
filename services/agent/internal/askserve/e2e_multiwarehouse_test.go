@@ -40,11 +40,13 @@ import (
 
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"        // registers the "bedrock" LLM
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/postgres" // registers the "postgres" driver
 )
 
@@ -158,14 +160,20 @@ func splitSQL(script string) []string {
 // (deterministic JSON-text actions), backed by the three real connections.
 func e2eRuntime(t *testing.T, responses []string, conns map[string]*WarehouseConn) *ProjectRuntime {
 	client, _ := ai.New(&scriptedProvider{responses: responses}, "e2e-model")
+	return runtimeWithClient(client, "e2e-model", conns)
+}
+
+// runtimeWithClient builds the same 3-datasource runtime around any AI client
+// (scripted or a real Bedrock model), backed by the three real connections.
+func runtimeWithClient(client *ai.Client, model string, conns map[string]*WarehouseConn) *ProjectRuntime {
 	return NewProjectRuntime(ProjectRuntimeOptions{
 		AIClient:  client,
-		Model:     "e2e-model",
+		Model:     model,
 		PrimaryID: "redshift",
 		Datasources: []DatasourceInfo{
-			{ID: "redshift", Label: "Ticket Sales (Redshift/TICKIT)", Dialect: "redshift", Datasets: []string{"public"}, Description: "event ticket sales — sales(buyerid,pricepaid), users(userid)"},
-			{ID: "rnacentral", Label: "Genomics (RNAcentral)", Dialect: "postgres", Datasets: []string{"rnacen"}, Description: "public RNA sequence database"},
-			{ID: "crm", Label: "CRM", Dialect: "postgres", Datasets: []string{"public"}, Description: "CRM accounts — users(userid, flagged)"},
+			{ID: "redshift", Label: "Ticket Sales (Redshift/TICKIT)", Dialect: "redshift", Datasets: []string{"public"}, Description: "event ticket sales — sales(buyerid,pricepaid,qtysold), users(userid)"},
+			{ID: "rnacentral", Label: "Genomics (RNAcentral)", Dialect: "postgres", Datasets: []string{"rnacen"}, Description: "public RNA sequence database — rnacen.rnc_database"},
+			{ID: "crm", Label: "CRM", Dialect: "postgres", Datasets: []string{"public"}, Description: "CRM accounts — public.users(userid, flagged, segment)"},
 		},
 		Build: func(_ context.Context, id string) (*WarehouseConn, error) {
 			if c, ok := conns[id]; ok {
@@ -264,6 +272,71 @@ func TestE2E_MultiWarehouse_RoutingAndMultiHop(t *testing.T) {
 			t.Fatalf("write rejection should cite a permission/read-only error, got %q", store.events[0].Error)
 		}
 	})
+}
+
+// TestE2E_MultiWarehouse_BedrockAgent drives the runtime with a REAL model
+// (Claude via Bedrock) rather than a script: given only the datasource
+// descriptions + the query_data(datasource_id) tool, the model must pick the
+// right datasource per statement and chain across two of them. This validates
+// the Phase 2 prompt + tool design against an actual LLM. Best-effort — skips
+// when Bedrock/the model is unavailable.
+func TestE2E_MultiWarehouse_BedrockAgent(t *testing.T) {
+	host := os.Getenv("E2E_REDSHIFT_HOST")
+	if host == "" {
+		t.Skip("E2E_REDSHIFT_* not set — source /home/dev/.e2e_multiwarehouse.env to run")
+	}
+	model := envOr("E2E_BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	prov, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{"region": envOr("AWS_REGION", "us-east-1"), "model": model})
+	if err != nil {
+		t.Skipf("bedrock provider unavailable: %v", err)
+	}
+	vctx, vcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer vcancel()
+	if err := prov.Validate(vctx); err != nil {
+		t.Skipf("bedrock model %q not invokable (enable access / set E2E_BEDROCK_MODEL): %v", model, err)
+	}
+
+	crmCfg, crmCleanup := startCRM(t)
+	defer crmCleanup()
+	conns := map[string]*WarehouseConn{
+		"redshift": buildConn(t, "redshift", pgConfig(host, envOr("E2E_REDSHIFT_PORT", "5439"),
+			os.Getenv("E2E_REDSHIFT_DB"), os.Getenv("E2E_REDSHIFT_USER"), os.Getenv("E2E_REDSHIFT_PASSWORD"), "public", "require")),
+		"rnacentral": buildConn(t, "rnacentral", pgConfig("hh-pgsql-public.ebi.ac.uk", "5432",
+			"pfmegrnargs", "reader", "NWDMCE5xdipIjRrp", "rnacen", "disable")),
+		"crm": buildConn(t, "crm", crmCfg),
+	}
+	for _, c := range conns {
+		defer closeConn(c)
+	}
+
+	client, _ := ai.New(prov, model)
+	rt := runtimeWithClient(client, model, conns)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	store := &fakeStore{}
+	cfg := Config{MaxRounds: 10, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50, QueryTimeout: 60 * time.Second}
+	(&runner{cfg: cfg, store: store}).run(ctx, rt, TurnRequest{
+		TurnID: "e2e-bedrock", SessionID: "s", ProjectID: "p",
+		Question: "Find the 10 users who spent the most on ticket purchases, then tell me how many of them are flagged in the CRM. Query the datasources directly.",
+	})
+	if store.final == nil {
+		t.Fatal("turn did not finalize")
+	}
+	t.Logf("bedrock turn: status=%s routed=%v answer=%q", store.final.Status, store.final.RoutedDatasourceIDs, store.final.Answer)
+	for i, ev := range store.events {
+		t.Logf("  event[%d] %s ds=%v err=%q", i, ev.Name, ev.Args["datasource_id"], ev.Error)
+	}
+
+	requireDone(t, store)
+	// The core assertion: the real model chained across BOTH datasources.
+	routed := map[string]bool{}
+	for _, ds := range store.final.RoutedDatasourceIDs {
+		routed[ds] = true
+	}
+	if !routed["redshift"] || !routed["crm"] {
+		t.Fatalf("real model did not multi-hop: routed=%v, want both redshift and crm", store.final.RoutedDatasourceIDs)
+	}
 }
 
 // --- helpers ---
