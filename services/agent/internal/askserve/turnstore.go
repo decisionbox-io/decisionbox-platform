@@ -187,6 +187,15 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 	if len(fin.RoutedDatasourceIDs) > 0 {
 		set["routed_datasource_ids"] = fin.RoutedDatasourceIDs
 	}
+	if fin.RoutingReason != "" {
+		set["routing_reason"] = fin.RoutingReason
+	}
+	if fin.RoutingConfidence > 0 {
+		set["routing_confidence"] = fin.RoutingConfidence
+	}
+	if fin.RoutingClarify {
+		set["routing_clarify"] = true
+	}
 	res, err := s.turns.UpdateOne(ctx,
 		bson.M{"_id": fin.TurnID, "status": commonmodels.AskTurnStatusRunning},
 		bson.M{"$set": set},
@@ -303,4 +312,9 @@ type TurnFinal struct {
 	// RoutedDatasourceIDs are the datasources this turn queried (multi-warehouse
 	// routing telemetry). Empty on a single-datasource / pinned turn.
 	RoutedDatasourceIDs []string
+	// RoutingReason / RoutingConfidence / RoutingClarify are the evidence-grounded
+	// router's decision. Empty/zero when the router did not run.
+	RoutingReason     string
+	RoutingConfidence float64
+	RoutingClarify    bool
 }

@@ -339,6 +339,95 @@ func TestE2E_MultiWarehouse_BedrockAgent(t *testing.T) {
 	}
 }
 
+// TestE2E_MultiWarehouse_BedrockRouter validates the evidence-grounded router
+// (Phase 2.5) end-to-end with a real model: given the datasource descriptions,
+// the router must send a genomics question to RNAcentral (and only there), and
+// keep the cross-datasource question spanning Redshift + CRM. Best-effort —
+// skips when Bedrock is unavailable.
+func TestE2E_MultiWarehouse_BedrockRouter(t *testing.T) {
+	host := os.Getenv("E2E_REDSHIFT_HOST")
+	if host == "" {
+		t.Skip("E2E_REDSHIFT_* not set")
+	}
+	model := envOr("E2E_BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	prov, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{"region": envOr("AWS_REGION", "us-east-1"), "model": model})
+	if err != nil {
+		t.Skipf("bedrock unavailable: %v", err)
+	}
+	vctx, vcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer vcancel()
+	if err := prov.Validate(vctx); err != nil {
+		t.Skipf("bedrock model %q not invokable: %v", model, err)
+	}
+
+	crmCfg, crmCleanup := startCRM(t)
+	defer crmCleanup()
+	conns := map[string]*WarehouseConn{
+		"redshift": buildConn(t, "redshift", pgConfig(host, envOr("E2E_REDSHIFT_PORT", "5439"),
+			os.Getenv("E2E_REDSHIFT_DB"), os.Getenv("E2E_REDSHIFT_USER"), os.Getenv("E2E_REDSHIFT_PASSWORD"), "public", "require")),
+		"rnacentral": buildConn(t, "rnacentral", pgConfig("hh-pgsql-public.ebi.ac.uk", "5432",
+			"pfmegrnargs", "reader", "NWDMCE5xdipIjRrp", "rnacen", "disable")),
+		"crm": buildConn(t, "crm", crmCfg),
+	}
+	for _, c := range conns {
+		defer closeConn(c)
+	}
+
+	// Router ON.
+	cfg := Config{MaxRounds: 10, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50, QueryTimeout: 60 * time.Second, RouterEnabled: true}
+
+	run := func(question string) *fakeStore {
+		client, _ := ai.New(prov, model)
+		rt := runtimeWithClient(client, model, conns)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		store := &fakeStore{}
+		(&runner{cfg: cfg, store: store}).run(ctx, rt, TurnRequest{
+			TurnID: "e2e-router", SessionID: "s", ProjectID: "p", Question: question,
+		})
+		if store.final == nil {
+			t.Fatal("turn did not finalize")
+		}
+		return store
+	}
+
+	t.Run("routes_genomics_to_rnacentral", func(t *testing.T) {
+		store := run("How many entries are in the RNA sequence database?")
+		t.Logf("router: reason=%q conf=%v status=%s", store.final.RoutingReason, store.final.RoutingConfidence, store.final.Status)
+		queried := map[string]bool{}
+		for _, ev := range store.events {
+			if ev.Name == "query_data" && ev.Error == "" {
+				queried[eventDatasource(ev)] = true
+			}
+		}
+		if !queried["rnacentral"] {
+			t.Fatalf("router should have routed the genomics question to rnacentral; events=%+v", store.events)
+		}
+		if queried["redshift"] || queried["crm"] {
+			t.Fatalf("genomics question must not touch redshift/crm; queried=%v", queried)
+		}
+		if store.final.RoutingReason == "" {
+			t.Fatal("router reason telemetry should be recorded")
+		}
+	})
+
+	t.Run("routes_cross_source_to_both", func(t *testing.T) {
+		store := run("Which of the top 10 ticket buyers by spend are flagged in the CRM?")
+		t.Logf("router: reason=%q routed=%v status=%s", store.final.RoutingReason, store.final.RoutedDatasourceIDs, store.final.Status)
+		queried := map[string]bool{}
+		for _, ev := range store.events {
+			if ev.Name == "query_data" && ev.Error == "" {
+				if ds, ok := ev.Args["datasource_id"].(string); ok {
+					queried[ds] = true
+				}
+			}
+		}
+		if !queried["redshift"] || !queried["crm"] {
+			t.Fatalf("cross-source question should span redshift + crm; queried=%v", queried)
+		}
+	})
+}
+
 // --- helpers ---
 
 func runE2E(t *testing.T, rt *ProjectRuntime, req TurnRequest) *fakeStore {

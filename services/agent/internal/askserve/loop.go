@@ -56,6 +56,12 @@ type turnState struct {
 	// touched records the datasource ids the turn queried, in first-seen order,
 	// for routing telemetry. Populated only in multi mode.
 	touched []string
+	// routeReason / routeConfidence / routeClarify are the evidence-grounded
+	// router's decision for this turn (multi mode). Empty/zero when the router
+	// did not run (single datasource, explicit pin, or router disabled).
+	routeReason     string
+	routeConfidence float64
+	routeClarify    bool
 	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
 	// native-tools loop grounds on this, not on len(events): a failed query /
 	// rejected tenant filter / unavailable schema search records an event but
@@ -164,11 +170,23 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		r.finishFailed(ctx, st, fmt.Sprintf("invalid datasource selection: %v", err))
 		return
 	}
+	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing}
+
+	// Evidence-grounded routing: on a multi-datasource turn without an explicit
+	// pin, decide which datasource(s) the question needs (and clarify when it's
+	// genuinely ambiguous) before the answering loop runs. A single-datasource
+	// project, an explicit pin, or a disabled router skips this entirely.
+	if routing.multi && r.cfg.RouterEnabled {
+		if r.route(ctx, rt, st) {
+			return // the router asked a clarifying question and finalized the turn
+		}
+	}
+
 	if toolsSupported(rt) {
-		r.runWithTools(ctx, rt, req, routing)
+		r.runWithTools(ctx, rt, st)
 		return
 	}
-	r.runText(ctx, rt, req, routing, 0, 0)
+	r.runText(ctx, rt, st)
 }
 
 // toolsSupported reports whether the runtime's LLM provider honours native tool
@@ -188,20 +206,18 @@ func toolsSupported(rt *ProjectRuntime) bool {
 // terminates, preserving whatever transcript was gathered. This is the fallback
 // for providers without native tool-calling; its grounding guard (re-nudge then
 // decline rather than emit an ungrounded answer) is the safety net there.
-func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest, routing turnRouting, tokensIn, tokensOut int) {
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing, tokensIn: tokensIn, tokensOut: tokensOut}
-
+func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState) {
 	conv := ai.NewConversation(ai.ConversationOptions{
-		SystemPrompt: buildSystemPrompt(rt, routing, r.cfg),
+		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg),
 		// Two messages per step (assistant action + observation) across the
 		// round budget, plus history headroom — generous so the engine's own
 		// caps, not this ceiling, bound the turn.
-		MaxMessages: (r.cfg.MaxRounds + len(req.History) + 4) * 2,
+		MaxMessages: (r.cfg.MaxRounds + len(st.req.History) + 4) * 2,
 	})
-	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
+	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		_ = conv.AddMessage(m.Role, m.Content)
 	}
-	conv.AddUserMessage(req.Question)
+	conv.AddUserMessage(st.req.Question)
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -327,17 +343,16 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 // "auto"). It always finalizes the turn. Conversation state is held as a raw
 // []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
 // blocks.
-func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnRequest, routing turnRouting) {
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing}
-	system := buildSystemPromptForTools(rt, routing, r.cfg)
+func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnState) {
+	system := buildSystemPromptForTools(rt, st.routing, r.cfg)
 	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
 
 	var messages []gollm.Message
-	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
+	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		messages = append(messages, gollm.Message{Role: m.Role, Content: m.Content})
 	}
-	messages = append(messages, gollm.Message{Role: "user", Content: req.Question})
+	messages = append(messages, gollm.Message{Role: "user", Content: st.req.Question})
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -346,7 +361,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, routing.multi), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -360,7 +375,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			if st.round == 1 {
 				// Carry any tokens already spent on the (ignored) native call so
 				// the turn's usage accounting stays accurate.
-				r.runText(ctx, rt, req, routing, st.tokensIn, st.tokensOut)
+				r.runText(ctx, rt, st)
 				return
 			}
 			r.finishFailed(ctx, st, fmt.Sprintf("model call failed: %v", err))
@@ -384,7 +399,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			if st.round == 1 {
 				// Carry any tokens already spent on the (ignored) native call so
 				// the turn's usage accounting stays accurate.
-				r.runText(ctx, rt, req, routing, st.tokensIn, st.tokensOut)
+				r.runText(ctx, rt, st)
 				return
 			}
 			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
@@ -783,10 +798,12 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.OutputTokens = st.tokensOut
 	fin.Sources = st.insightSources()
 	// Routing telemetry — the datasources this turn actually queried (nil on a
-	// single-datasource / pinned turn). The evidence-grounded router (Phase 2.5)
-	// fills the reason/confidence/clarify fields; Phase 2 records only where the
-	// answer's evidence came from.
+	// single-datasource / pinned turn) plus the evidence-grounded router's
+	// decision (reason / confidence / clarify) when it ran.
 	fin.RoutedDatasourceIDs = st.routedDatasources()
+	fin.RoutingReason = st.routeReason
+	fin.RoutingConfidence = st.routeConfidence
+	fin.RoutingClarify = st.routeClarify
 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
