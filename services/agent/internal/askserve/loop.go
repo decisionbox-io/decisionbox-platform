@@ -9,6 +9,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
@@ -562,6 +563,11 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		qctx, cancel = context.WithTimeout(ctx, r.cfg.QueryTimeout)
 		defer cancel()
 	}
+	// Stamp the datasource on the context so a warehouse middleware (the
+	// enterprise governance wrapper) can scope its per-warehouse policies to the
+	// datasource this hop runs against. The turn ctx already carries the project
+	// id (set in runTurn); this adds the warehouse dimension for multi-hop turns.
+	qctx = gowarehouse.WithWarehouseID(qctx, dsID)
 
 	// Acquire the datasource's warehouse connection (built lazily on first use).
 	// A build/connect failure fails just this query, not the whole turn — a turn

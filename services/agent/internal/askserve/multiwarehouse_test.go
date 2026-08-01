@@ -3,11 +3,13 @@ package askserve
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
@@ -221,6 +223,54 @@ func TestMW_LazyBuildSkipsUntouchedDatasource(t *testing.T) {
 	}
 	if atomic.LoadInt32(builds["wh_a"]) != 0 {
 		t.Fatalf("untouched datasource wh_a must NOT open a connection, got %d", atomic.LoadInt32(builds["wh_a"]))
+	}
+}
+
+// ctxRecordingWarehouse records the warehouse id present on the context of each
+// Query — the hook the enterprise governance middleware reads to scope its
+// per-warehouse policies.
+type ctxRecordingWarehouse struct {
+	*testutil.MockWarehouseProvider
+	mu   sync.Mutex
+	seen []string
+}
+
+func (w *ctxRecordingWarehouse) Query(ctx context.Context, q string, p map[string]interface{}) (*gowarehouse.QueryResult, error) {
+	w.mu.Lock()
+	w.seen = append(w.seen, gowarehouse.WarehouseIDFromContext(ctx))
+	w.mu.Unlock()
+	return w.MockWarehouseProvider.Query(ctx, q, p)
+}
+
+func TestMW_StampsWarehouseIDOnQueryContext(t *testing.T) {
+	// The per-hop query context must carry the datasource id so a warehouse
+	// middleware (governance) can scope masking to the datasource that hop runs
+	// against. Verified end-to-end through the executor.
+	rec := &ctxRecordingWarehouse{MockWarehouseProvider: testutil.NewMockWarehouseProvider("sales")}
+	client, _ := ai.New(&scriptedProvider{responses: []string{
+		`{"query":"SELECT 1 FROM sales.orders","datasource_id":"wh_x"}`,
+		`{"answer":"done"}`,
+	}}, "test-model")
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		AIClient:    client,
+		Model:       "test-model",
+		PrimaryID:   "wh_x",
+		Datasources: []DatasourceInfo{{ID: "wh_x", Label: "Sales", Datasets: []string{"sales"}}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
+				Warehouse: rec, MaxRetries: 1,
+			})}, nil
+		},
+	})
+
+	store := &fakeStore{}
+	(&runner{cfg: mwConfig(), store: store}).run(context.Background(),
+		rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "q"})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.seen) != 1 || rec.seen[0] != "wh_x" {
+		t.Fatalf("query context warehouse id = %v, want [wh_x] (governance scoping hook)", rec.seen)
 	}
 }
 
