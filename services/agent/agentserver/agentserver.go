@@ -266,6 +266,17 @@ func initSecretProvider(mongoClient *gomongo.Client) (gosecrets.Provider, error)
 // per-warehouse secret key (warehouse.CredentialsKey) — the primary /
 // "default" warehouse keeps the legacy "warehouse-credentials" key, so
 // existing projects need no secret migration.
+// warehouseDomainOr returns the warehouse's own domain-pack binding
+// (multi-warehouse: each datasource carries the slug of the pack generated for
+// it), falling back to the project-level domain for legacy / single-warehouse
+// projects that never had a per-warehouse binding.
+func warehouseDomainOr(wh models.WarehouseConfig, projectDomain string) string {
+	if wh.Domain != "" {
+		return wh.Domain
+	}
+	return projectDomain
+}
+
 func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
 	wh, ok := project.WarehouseByID(warehouseID)
 	if !ok || wh.Provider == "" {
@@ -802,7 +813,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		RunStepRepo:       runStepRepo,
 		RunID:             runID,
 		ProjectID:         projectID,
-		Domain:            project.Domain,
+		Domain:            warehouseDomainOr(primaryWH, project.Domain),
 		Category:          project.Category,
 		Language:          project.Language,
 		Profile:           project.Profile,
