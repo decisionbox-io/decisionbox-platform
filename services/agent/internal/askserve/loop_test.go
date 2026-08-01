@@ -72,15 +72,31 @@ func testRuntime(provider gollm.Provider, wh *testutil.MockWarehouseProvider, sp
 		FilterField: filterField,
 		FilterValue: "TR",
 	})
-	return &ProjectRuntime{
-		Executor:       exec,
-		SchemaProvider: sp,
-		AIClient:       client,
-		Model:          "test-model",
-		Datasets:       []string{"ds"},
-		Dialect:        "Mock SQL",
-		FilterField:    filterField,
+	var router *SchemaRouter
+	if sp != nil {
+		router = NewSchemaRouter(SchemaRouterOptions{
+			Lookups: map[string]ai.SchemaProvider{"default": sp},
+			Labels:  map[string]string{"default": "Default"},
+			Primary: "default",
+		})
 	}
+	return NewProjectRuntime(ProjectRuntimeOptions{
+		AIClient:  client,
+		Model:     "test-model",
+		Schema:    router,
+		PrimaryID: "default",
+		Datasources: []DatasourceInfo{{
+			ID:          "default",
+			Label:       "Default",
+			Dialect:     "Mock SQL",
+			Datasets:    []string{"ds"},
+			FilterField: filterField,
+			FilterValue: "TR",
+		}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
 }
 
 func runOnce(t *testing.T, cfg Config, responses []string, wh *testutil.MockWarehouseProvider, sp ai.SchemaProvider, filterField string) *fakeStore {

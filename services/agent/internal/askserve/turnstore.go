@@ -184,6 +184,9 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 	if fin.OutputTokens > 0 {
 		set["output_tokens"] = fin.OutputTokens
 	}
+	if len(fin.RoutedDatasourceIDs) > 0 {
+		set["routed_datasource_ids"] = fin.RoutedDatasourceIDs
+	}
 	res, err := s.turns.UpdateOne(ctx,
 		bson.M{"_id": fin.TurnID, "status": commonmodels.AskTurnStatusRunning},
 		bson.M{"$set": set},
@@ -297,4 +300,7 @@ type TurnFinal struct {
 	// search_insights), persisted on the message so the dashboard renders them
 	// as citations on history reload.
 	Sources []commonmodels.AskSessionSource
+	// RoutedDatasourceIDs are the datasources this turn queried (multi-warehouse
+	// routing telemetry). Empty on a single-datasource / pinned turn.
+	RoutedDatasourceIDs []string
 }
