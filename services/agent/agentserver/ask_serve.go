@@ -70,7 +70,7 @@ func runAskServe(cfg *config.Config) error {
 			return nil, fmt.Errorf("load project %s: %w", projectID, err)
 		}
 
-		warehouse, err := initWarehouseProvider(buildCtx, project, secretProvider, projectID)
+		warehouse, err := initWarehouseProvider(buildCtx, project, project.PrimaryWarehouseID, secretProvider, projectID)
 		if err != nil {
 			return nil, err
 		}

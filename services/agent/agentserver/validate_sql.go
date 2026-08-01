@@ -161,7 +161,7 @@ func runValidateSQLInner(ctx context.Context, db *database.DB, jobsCol *mongo.Co
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, project.ID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}

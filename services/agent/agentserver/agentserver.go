@@ -259,26 +259,34 @@ func initSecretProvider(mongoClient *gomongo.Client) (gosecrets.Provider, error)
 	return sp, nil
 }
 
-func initWarehouseProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
-	if project.Warehouse.Provider == "" {
+// initWarehouseProvider builds a live warehouse provider for one of the
+// project's warehouses. warehouseID selects which one; an empty id
+// resolves to the project's primary warehouse (the behaviour for legacy
+// single-warehouse projects). Credentials are read from the
+// per-warehouse secret key (warehouse.CredentialsKey) — the primary /
+// "default" warehouse keeps the legacy "warehouse-credentials" key, so
+// existing projects need no secret migration.
+func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
+	wh, ok := project.WarehouseByID(warehouseID)
+	if !ok || wh.Provider == "" {
 		return nil, fmt.Errorf("no warehouse provider configured")
 	}
 
-	datasets := project.Warehouse.GetDatasets()
+	datasets := wh.Datasets
 	if len(datasets) == 0 {
 		return nil, fmt.Errorf("no datasets configured in project")
 	}
 
 	whCfg := gowarehouse.ProviderConfig{
-		"project_id": project.Warehouse.ProjectID,
+		"project_id": wh.ProjectID,
 		"dataset":    datasets[0],
-		"location":   project.Warehouse.Location,
+		"location":   wh.Location,
 	}
-	for k, v := range project.Warehouse.Config {
+	for k, v := range wh.Config {
 		whCfg[k] = v
 	}
 
-	whCreds, err := secretProvider.Get(ctx, projectID, "warehouse-credentials")
+	whCreds, err := secretProvider.Get(ctx, projectID, gowarehouse.CredentialsKey(wh.ID))
 	if err == nil && whCreds != "" {
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
@@ -286,15 +294,16 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, secretP
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
 	}
 
-	provider, err := gowarehouse.NewProvider(project.Warehouse.Provider, whCfg)
+	provider, err := gowarehouse.NewProvider(wh.Provider, whCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", project.Warehouse.Provider, err)
+		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", wh.Provider, err)
 	}
 	provider = gowarehouse.ApplyMiddleware(provider)
 
 	applog.WithFields(applog.Fields{
-		"provider": project.Warehouse.Provider,
-		"datasets": datasets,
+		"provider":     wh.Provider,
+		"warehouse_id": wh.ID,
+		"datasets":     datasets,
 	}).Info("Warehouse provider initialized")
 
 	return provider, nil
@@ -477,7 +486,7 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 
 	switch target {
 	case "warehouse":
-		provider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+		provider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, projectID)
 		if err != nil {
 			return err
 		}
@@ -642,7 +651,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return err
 	}
 
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, projectID)
 	if err != nil {
 		return err
 	}

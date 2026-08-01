@@ -163,7 +163,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, project.ID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}

@@ -114,6 +114,14 @@ const (
 	FeatureSources        = "sources_enabled"
 	FeaturePackGen        = "pack_gen_enabled"
 	FeatureDataQuery      = "data_query_enabled"
+	// FeatureMultiWarehouse gates attaching more than one SQL warehouse
+	// to a single project. When off, a project is capped at one warehouse
+	// (today's behaviour). Enforced at the add-warehouse chokepoint via
+	// FeatureEnabled — deliberately NOT a Checker interface change, so the
+	// cloud/enterprise implementers are unaffected. Each warehouse still
+	// bills as one data source under data_sources_per_deployment (the
+	// enterprise DataSourceCount sums warehouses across projects).
+	FeatureMultiWarehouse = "multi_warehouse_enabled"
 )
 
 // AllFeatures is the canonical, ordered list of wire flag names.
@@ -133,6 +141,7 @@ var AllFeatures = []string{
 	FeatureSources,
 	FeaturePackGen,
 	FeatureDataQuery,
+	FeatureMultiWarehouse,
 }
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}

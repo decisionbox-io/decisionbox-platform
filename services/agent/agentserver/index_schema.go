@@ -59,7 +59,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// Warehouse + executor: reused from discovery so the sampling path is
 	// identical (SampleQueryBuilder, SQL fixer), keeping blurb inputs the
 	// same shape exploration would see.
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, projectID)
 	if err != nil {
 		return err
 	}
