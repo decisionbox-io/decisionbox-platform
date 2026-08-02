@@ -271,6 +271,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SeedProjectPrompts(&p, pack)
 	}
 
+	// Multi-warehouse projects cannot be configured through this create path:
+	// it neither enforces the multi_warehouse_enabled feature gate nor reserves
+	// data-source quota per warehouse (each warehouse bills as one data source,
+	// and the reconciliation counters would also have to sum warehouses). Adding
+	// more than one datasource must go through the dedicated, gated
+	// warehouse-management flow. A single warehouse — via the legacy `warehouse`
+	// field OR a one-entry `warehouses` — is allowed and treated identically
+	// below (one data source, one index).
+	if len(p.EffectiveWarehouses()) > 1 {
+		writeError(w, http.StatusBadRequest,
+			"multiple data sources cannot be configured at project creation; create the project with a single warehouse, then add more through warehouse management")
+		return
+	}
+
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
 	ck := policy.GetChecker()
 	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {
@@ -296,12 +310,12 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Plan-gate: data-sources-per-deployment. A project today carries
-	// exactly one warehouse (the data-source unit), so adding a project
-	// that configures a warehouse is also adding a data source.
-	// Self-hosted Noop is a no-op.
+	// Plan-gate: data-sources-per-deployment. The create path allows at most one
+	// warehouse (guarded above), so a project that configures a warehouse — via
+	// the legacy field or a one-entry `warehouses` — is adding exactly one data
+	// source. Self-hosted Noop is a no-op.
 	var dsRes *policy.Reservation
-	if p.Warehouse.Provider != "" {
+	if len(p.EffectiveWarehouses()) > 0 {
 		dsRes, err = ck.CheckAddDataSource(r.Context(), "")
 		if err != nil {
 			if res != nil {
@@ -333,16 +347,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The provider used for logging/telemetry comes from the primary warehouse
+	// so a one-entry `warehouses` create (empty legacy field) is attributed
+	// correctly, not blank.
+	primaryProvider := p.PrimaryWarehouse().Provider
 	apilog.WithFields(apilog.Fields{
 		"project_id": p.ID,
 		"name":       p.Name,
 		"domain":     p.Domain,
 		"category":   p.Category,
 		"llm":        p.LLM.Provider,
-		"warehouse":  p.Warehouse.Provider,
+		"warehouse":  primaryProvider,
 	}).Info("Project created")
 
-	telemetry.TrackProjectCreated(p.Warehouse.Provider, p.LLM.Provider, p.Domain)
+	telemetry.TrackProjectCreated(primaryProvider, p.LLM.Provider, p.Domain)
 
 	// Enqueue the new project for schema indexing. A project without a
 	// warehouse (blank-state) cannot be indexed; it will transition to
@@ -350,7 +368,7 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// explicitly rather than defaulting in the repo so reads without a
 	// warehouse still see SchemaIndexStatus == "" (→ "not yet
 	// configured" in the dashboard).
-	if p.Warehouse.Provider != "" {
+	if len(p.EffectiveWarehouses()) > 0 {
 		if err := h.repo.SetSchemaIndexStatus(r.Context(), p.ID, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
 			apilog.WithError(err).Warn("schema-index: failed to enqueue new project; user must click Re-index manually")
 		} else {

@@ -194,6 +194,62 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// The ungated create path must not configure a multi-warehouse project: it
+// enforces neither the multi_warehouse feature gate nor per-warehouse
+// data-source quota. More than one warehouse is rejected; additional
+// datasources go through the dedicated gated flow.
+func TestProjectsHandler_Create_RejectsMultipleWarehouses(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Multi","domain":"gaming","category":"match3","warehouses":[` +
+		`{"id":"wh_a","provider":"postgres","datasets":["public"]},` +
+		`{"id":"wh_b","provider":"redshift","datasets":["crm"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (multi-warehouse create must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 0 {
+		t.Errorf("no project should be persisted on a rejected multi-warehouse create, got %d", len(repo.projects))
+	}
+}
+
+// A single datasource supplied via the new `warehouses` slice (empty legacy
+// `warehouse` field) must still enqueue schema indexing — previously the
+// enqueue keyed off the legacy field and such a project would never index.
+func TestProjectsHandler_Create_SingleWarehousesEntryEnqueuesIndexing(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"WH only","domain":"gaming","category":"match3","warehouses":[` +
+		`{"id":"wh_a","provider":"postgres","datasets":["public"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 1 {
+		t.Fatalf("repo should have 1 project, got %d", len(repo.projects))
+	}
+	var saved *models.Project
+	for _, p := range repo.projects {
+		saved = p
+	}
+	if saved.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("schema_index_status = %q, want %q (a warehouses-only create must enqueue indexing)",
+			saved.SchemaIndexStatus, models.SchemaIndexStatusPendingIndexing)
+	}
+}
+
 // TestProjectsHandler_Create_ForcesReadyState pins the invariant
 // that the core /projects route can ONLY create a ready project.
 // A client (or a stale dashboard) that includes a non-ready state
