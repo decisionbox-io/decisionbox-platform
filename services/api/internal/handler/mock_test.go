@@ -209,9 +209,9 @@ func (m *mockProjectRepo) CountWithWarehouse(_ context.Context) (int, error) {
 	defer m.mu.Unlock()
 	n := 0
 	for _, p := range m.projects {
-		if p.Warehouse.Provider != "" {
-			n++
-		}
+		// Each configured warehouse is one data source (mirrors the real repo's
+		// aggregation over EffectiveWarehouses()).
+		n += len(p.EffectiveWarehouses())
 	}
 	return n, nil
 }
