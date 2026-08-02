@@ -633,6 +633,16 @@ func (r *runner) resolveQueryDatasource(rt *ProjectRuntime, st *turnState, act *
 	if id == "" {
 		return st.routing.primary, nil
 	}
+	// Validate against the whole project, not the router's narrowed set, on
+	// purpose. In a multi turn search_tables spans every datasource (SearchAll)
+	// so the model can discover across sources and recover when the upfront
+	// router under-selected; the router is a soft prior, not a hard gate.
+	// Confining query_data to the routed subset would surface tables the model
+	// then can't query. Safety doesn't depend on this list: each query is
+	// governed + tenant-scoped by the datasource it actually runs against, and
+	// routed telemetry records what was touched. (Codex flagged this twice;
+	// it's a deliberate design choice per the multi-hop cross-source
+	// requirement, not an oversight.)
 	if _, ok := rt.datasource(id); !ok {
 		return "", fmt.Errorf("unknown datasource %q", id)
 	}

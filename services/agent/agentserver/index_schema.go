@@ -127,15 +127,23 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("qdrant health check: %w", err)
 	}
 
+	// Index the primary warehouse (the provider above was built from it), so
+	// datasets + tenant filter come from that warehouse config, not the legacy
+	// singular Warehouse field (they diverge once a project has real
+	// per-warehouse entries). For a legacy project PrimaryWarehouse()
+	// synthesises from Warehouse, so this is identical to the old behaviour.
+	primaryWH := project.PrimaryWarehouse()
+
 	// Discovery + executor. Executor runs sample-data queries during
 	// schema discovery; we provide no SQLFixer so a broken sample-query
 	// surfaces as a skipped table rather than triggering an LLM round-
 	// trip (blurb indexing is already LLM-heavy; cascading fixer calls
-	// would multiply cost).
+	// would multiply cost). The executor's filter MUST match the discovery
+	// filter below (queryexec verifies it before every sample query).
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 		Warehouse:   warehouseProvider,
-		FilterField: project.Warehouse.FilterField,
-		FilterValue: project.Warehouse.FilterValue,
+		FilterField: primaryWH.FilterField,
+		FilterValue: primaryWH.FilterValue,
 	})
 	progressRepo := database.NewSchemaIndexProgressRepository(db)
 
@@ -155,12 +163,6 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		}
 	}
 
-	// Index the primary warehouse (the provider above was built from it).
-	// Datasets/filter come from that warehouse config, not the legacy singular
-	// Warehouse field, which diverges once a project has real per-warehouse
-	// entries. For a legacy project PrimaryWarehouse() synthesises from
-	// Warehouse, so this is identical to the old behaviour.
-	primaryWH := project.PrimaryWarehouse()
 	schemaDiscovery := discovery.NewSchemaDiscovery(discovery.SchemaDiscoveryOptions{
 		Warehouse:         warehouseProvider,
 		Executor:          executor,
