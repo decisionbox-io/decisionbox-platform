@@ -7,6 +7,7 @@ import (
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -169,8 +170,16 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// provider and its filter stay on the same warehouse.
 	docWHID := discDoc.WarehouseID
 	if docWHID == "" {
-		docWHID = project.PrimaryWarehouseID
+		// Resolve the primary through the accessor so a stale/removed
+		// primary_warehouse_id still falls back to the first configured warehouse.
+		docWHID = warehouseIDOrDefault(project.PrimaryWarehouse())
 	}
+	// Scope per-warehouse governance to the datasource this doc's discovery ran
+	// on, so the verifier's read/step queries are governed exactly as discovery
+	// was (mirrors validate-sql). Project id is stamped too so the governance
+	// engine can resolve the project's policies.
+	ctx = gowarehouse.WithProjectID(ctx, project.ID)
+	ctx = gowarehouse.WithWarehouseID(ctx, docWHID)
 	warehouseProvider, err := initWarehouseProvider(ctx, project, docWHID, secretProvider, project.ID)
 	if err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -28,7 +29,10 @@ import (
 // Exit contract: 0 on success, non-zero on any error. The worker reads
 // the exit code; stdout and stderr carry structured logs only.
 func runIndexSchema(cfg *config.Config, projectID, runID string) error {
-	ctx := context.Background()
+	// Scope warehouse middleware (per-warehouse governance) to this project; each
+	// indexWarehouse call stamps the warehouse id below, so a governed datasource
+	// masks its own sample data in the generated blurbs.
+	ctx := gowarehouse.WithProjectID(context.Background(), projectID)
 
 	mongoClient, err := initMongoDB(ctx, cfg)
 	if err != nil {
@@ -169,6 +173,9 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// reporter + nil callbacks.
 	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) error {
 		whID := warehouseIDOrDefault(wh)
+		// Scope per-warehouse governance to this datasource so its sample queries
+		// (and thus the blurbs) are masked under its own policies.
+		ctx = gowarehouse.WithWarehouseID(ctx, whID)
 		provider, err := initWarehouseProvider(ctx, project, whID, secretProvider, projectID)
 		if err != nil {
 			return err
