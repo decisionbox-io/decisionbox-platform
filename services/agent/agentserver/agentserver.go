@@ -507,11 +507,14 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 			return fmt.Errorf("warehouse health check failed: %w", err)
 		}
 
-		datasets := project.Warehouse.GetDatasets()
+		// Report the datasource we actually health-checked (the primary), not
+		// the legacy singular Warehouse field — the two diverge on a real
+		// multi-warehouse project where Warehouse is empty/stale.
+		primaryWH := project.PrimaryWarehouse()
 		out, err := json.Marshal(map[string]interface{}{
 			"success":  true,
-			"provider": project.Warehouse.Provider,
-			"datasets": datasets,
+			"provider": primaryWH.Provider,
+			"datasets": primaryWH.GetDatasets(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to marshal result: %w", err)

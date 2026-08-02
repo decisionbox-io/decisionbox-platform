@@ -575,13 +575,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// search_tables actions. The cache provider serves entirely from
 	// the schemas map already loaded above + the per-project Qdrant
 	// collection, so there is no live warehouse traffic in the
-	// exploration loop.
+	// exploration loop. Scope search_tables to this run's warehouse: the
+	// collection is shared across the project's warehouses now that
+	// secondaries are indexed, and discovery only queries its own
+	// warehouse — an unscoped search could surface tables it can't query.
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
-		ProjectID: o.projectID,
-		Datasets:  o.datasets,
-		Schemas:   schemas,
-		Retriever: o.schemaRetriever,
-		Embedder:  o.embedder,
+		ProjectID:   o.projectID,
+		WarehouseID: o.warehouseID,
+		Datasets:    o.datasets,
+		Schemas:     schemas,
+		Retriever:   o.schemaRetriever,
+		Embedder:    o.embedder,
 	})
 	if spErr != nil {
 		// This is a wiring bug — the schema cache lookup above already
