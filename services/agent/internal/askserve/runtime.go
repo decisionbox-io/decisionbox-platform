@@ -233,7 +233,17 @@ func (r *ProjectRuntime) Close() {
 		case <-e.ready:
 			closeConn(e.conn)
 		default:
-			// never finished building; nothing to close
+			// Build still in flight. buildConn runs under context.WithoutCancel,
+			// so it will finish and produce a live connection after we've cleared
+			// r.warm — which nothing else would then close. Wait for it on a
+			// detached goroutine and close it so the connection can't leak past
+			// shutdown. (Only reachable from closeAll's shutdown sweep; capacity/
+			// idle eviction never closes a runtime with an in-flight build, since
+			// its turn still holds a pool reference.)
+			go func(e *connEntry) {
+				<-e.ready
+				closeConn(e.conn)
+			}(e)
 		}
 	}
 	for _, c := range r.sharedClosers {

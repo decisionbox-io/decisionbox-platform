@@ -277,6 +277,17 @@ func warehouseDomainOr(wh models.WarehouseConfig, projectDomain string) string {
 	return projectDomain
 }
 
+// warehouseIDOrDefault returns the warehouse's id, mapping the empty id to the
+// reserved default (matching the model accessors + schema_retrieve). Callers use
+// it wherever an id feeds a warehouse-scoped lookup, so an id-less default entry
+// filters on a concrete "default" rather than being read as "all warehouses".
+func warehouseIDOrDefault(wh models.WarehouseConfig) string {
+	if wh.ID == "" {
+		return models.DefaultWarehouseID
+	}
+	return wh.ID
+}
+
 func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
 	wh, ok := project.WarehouseByID(warehouseID)
 	if !ok || wh.Provider == "" {
@@ -840,7 +851,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		SchemaRetriever:   schemaRetriever,
 		SchemaCache:       schemaCache,
 		WarehouseHash:     warehouseHash,
-		WarehouseID:       primaryWH.ID,
+		WarehouseID:       warehouseIDOrDefault(primaryWH),
 		RunStepIndex:      runStepIndex,
 	})
 

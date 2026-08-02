@@ -168,10 +168,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// the primary reports progress (see above), so secondaries pass a nil
 	// reporter + nil callbacks.
 	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) error {
-		whID := wh.ID
-		if whID == "" {
-			whID = models.DefaultWarehouseID
-		}
+		whID := warehouseIDOrDefault(wh)
 		provider, err := initWarehouseProvider(ctx, project, whID, secretProvider, projectID)
 		if err != nil {
 			return err

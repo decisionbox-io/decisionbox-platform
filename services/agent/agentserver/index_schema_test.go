@@ -74,3 +74,15 @@ func TestWarehousesToIndex(t *testing.T) {
 		}
 	})
 }
+
+// warehouseIDOrDefault maps an id-less (default) warehouse to the reserved
+// "default" id so warehouse-scoped lookups (discovery search_tables, the schema
+// cache) filter on a concrete id instead of reading empty as "all warehouses".
+func TestWarehouseIDOrDefault(t *testing.T) {
+	if got := warehouseIDOrDefault(models.WarehouseConfig{ID: ""}); got != models.DefaultWarehouseID {
+		t.Errorf("empty id = %q, want %q", got, models.DefaultWarehouseID)
+	}
+	if got := warehouseIDOrDefault(models.WarehouseConfig{ID: "wh_b"}); got != "wh_b" {
+		t.Errorf("explicit id = %q, want wh_b", got)
+	}
+}

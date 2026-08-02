@@ -207,6 +207,42 @@ func TestRuntime_CloseClosesWarmAndShared(t *testing.T) {
 	}
 }
 
+// A datasource whose build is still in flight when Close() runs (the shutdown
+// sweep) must still be closed once the build completes — buildConn runs under a
+// detached context, so without this it would leak a live connection nothing owns.
+func TestRuntime_CloseClosesInFlightBuild(t *testing.T) {
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	var closed int32
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		Datasources: []DatasourceInfo{{ID: "a"}},
+		PrimaryID:   "a",
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			close(buildStarted)
+			<-releaseBuild // hold the build open so Close() runs mid-build
+			return &WarehouseConn{Closers: []func() error{func() error { atomic.AddInt32(&closed, 1); return nil }}}, nil
+		},
+	})
+
+	go func() {
+		if _, release, err := rt.acquireConn(context.Background(), "a"); err == nil && release != nil {
+			release()
+		}
+	}()
+
+	<-buildStarted // build is in flight (entry present, ready not yet closed)
+	rt.Close()     // must schedule a close-on-completion for the in-flight build
+	close(releaseBuild)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&closed) == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&closed) == 0 {
+		t.Fatal("Close() must close a datasource whose build completes after shutdown")
+	}
+}
+
 func TestRuntime_BuildErrorDropsEntryAndRetries(t *testing.T) {
 	var attempts int32
 	rt := NewProjectRuntime(ProjectRuntimeOptions{
