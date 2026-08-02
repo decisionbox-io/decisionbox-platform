@@ -218,7 +218,15 @@ func (p *Project) PrimaryWarehouse() WarehouseConfig {
 	}
 	if p.PrimaryWarehouseID != "" {
 		for _, w := range whs {
-			if w.ID == p.PrimaryWarehouseID {
+			// Normalize an empty stored id to the reserved default before
+			// comparing, matching WarehouseByID — else a project whose primary
+			// is an id-less default entry (with PrimaryWarehouseID="default")
+			// would miss here and fall back to the first warehouse.
+			wid := w.ID
+			if wid == "" {
+				wid = DefaultWarehouseID
+			}
+			if wid == p.PrimaryWarehouseID {
 				return w
 			}
 		}

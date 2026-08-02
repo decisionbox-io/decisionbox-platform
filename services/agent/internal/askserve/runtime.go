@@ -132,21 +132,24 @@ func (r *ProjectRuntime) acquireConn(ctx context.Context, id string) (*Warehouse
 	r.mu.Lock()
 	e, ok := r.warm[id]
 	if !ok {
-		e = &connEntry{id: id, ready: make(chan struct{}), lastUsed: time.Now()}
+		// Reserve the entry (inUse=1) before releasing the lock so a concurrent
+		// acquire's capacity eviction can't drop and close this connection during
+		// the build window — evictForCapacityLocked skips in-use entries. Without
+		// this, a first touch of another datasource that trips the warm cap could
+		// evict this just-built entry between its ready-close and the refcount
+		// bump, handing this caller a closed connection.
+		e = &connEntry{id: id, ready: make(chan struct{}), lastUsed: time.Now(), inUse: 1}
 		r.warm[id] = e
 		r.evictForCapacityLocked(id)
 		r.mu.Unlock()
 		r.buildConn(ctx, e)
 	} else {
+		// Existing entry: reserve under the same lock we read it on so it can't be
+		// evicted between the read and the refcount bump.
+		e.inUse++
+		e.lastUsed = time.Now()
 		r.mu.Unlock()
 	}
-
-	// Reserve before waiting on the build so a concurrent eviction can't drop
-	// the entry between ready and our refcount bump.
-	r.mu.Lock()
-	e.inUse++
-	e.lastUsed = time.Now()
-	r.mu.Unlock()
 
 	select {
 	case <-e.ready:

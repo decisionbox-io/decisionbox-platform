@@ -132,6 +132,59 @@ func TestRuntime_DoesNotEvictInUse(t *testing.T) {
 	}
 }
 
+// Concurrent first touches of many distinct datasources over a small warm cap
+// must never hand a caller a connection that gets closed while it is held. The
+// bug this guards: a freshly-built entry sat at inUse=0 during the window
+// between its build and the caller's refcount bump, so another datasource's
+// first touch could evict + close it. Reserving inUse=1 at creation closes that
+// window; an in-use entry is never evicted, so a held conn is never closed.
+// Run under -race for maximum signal.
+func TestRuntime_ConcurrentFirstTouchNeverClosesHeldConn(t *testing.T) {
+	const n = 12
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = string(rune('a' + i))
+	}
+	// Each build stamps a fresh "closed" flag for that datasource and delays a
+	// touch to widen the build→reserve window the bug lived in.
+	var mu sync.Mutex
+	closedFlags := map[string]*int32{}
+	build := func(_ context.Context, id string) (*WarehouseConn, error) {
+		closed := new(int32)
+		mu.Lock()
+		closedFlags[id] = closed
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		return &WarehouseConn{Closers: []func() error{func() error { atomic.StoreInt32(closed, 1); return nil }}}, nil
+	}
+	rt := runtimeWith(build, 3, ids...) // cap 3 « 12 ⇒ frequent evictions
+
+	var wg sync.WaitGroup
+	var handedClosed int32
+	for _, id := range ids {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			conn, release, err := rt.acquireConn(context.Background(), id)
+			if err != nil || conn == nil {
+				return
+			}
+			// While we hold this connection it must not be closed under us.
+			mu.Lock()
+			flag := closedFlags[id]
+			mu.Unlock()
+			if flag != nil && atomic.LoadInt32(flag) == 1 {
+				atomic.AddInt32(&handedClosed, 1)
+			}
+			release()
+		}(id)
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&handedClosed); got != 0 {
+		t.Fatalf("a held connection was closed by eviction %d times — inUse reservation is not protecting new entries", got)
+	}
+}
+
 func TestRuntime_CloseClosesWarmAndShared(t *testing.T) {
 	var connClosed, sharedClosed int32
 	rt := NewProjectRuntime(ProjectRuntimeOptions{
