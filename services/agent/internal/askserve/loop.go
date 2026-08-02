@@ -245,13 +245,15 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 		}
 
 		if act.Kind.terminal() {
-			// Grounding guard: an `answer` produced with no tool activity (no
-			// query / lookup / search) is ungrounded — the model fabricated it.
-			// Re-nudge it to gather evidence; if it still refuses after
-			// maxGroundingNudges, DECLINE rather than emit fabricated content.
-			// Any tool event (even a schema lookup) counts as grounding;
-			// clarify / decline need no data and are always accepted.
-			if act.Kind == actAnswer && len(st.events) == 0 {
+			// Grounding guard: an `answer` produced with no SUCCESSFUL tool
+			// activity (no query / lookup / search that returned data) is
+			// ungrounded — the model fabricated it. Re-nudge it to gather
+			// evidence; if it still refuses after maxGroundingNudges, DECLINE
+			// rather than emit fabricated content. Gate on groundedEvents, not
+			// len(events): a failed query or a rejected datasource_id records an
+			// event but observed no data, so it must NOT unlock the answer (same
+			// rule the native-tools path uses). clarify / decline need no data.
+			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				if st.groundingNudges < maxGroundingNudges {
 					st.groundingNudges++
 					conv.AddUserMessage(groundingNudge)
@@ -275,9 +277,9 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 	// Round budget exhausted without a terminal action. Give the model one
 	// final, non-tool synthesis chance to answer with what it has gathered.
 	if act := r.synthesizeFinal(ctx, conv, st); act != nil {
-		// Still enforce grounding: a synthesized answer with no tool activity
-		// is fabricated — decline instead of emitting it.
-		if act.Kind == actAnswer && len(st.events) == 0 {
+		// Still enforce grounding: a synthesized answer with no SUCCESSFUL tool
+		// activity is fabricated — decline instead of emitting it.
+		if act.Kind == actAnswer && st.groundedEvents == 0 {
 			r.finishUngrounded(ctx, st)
 			return
 		}

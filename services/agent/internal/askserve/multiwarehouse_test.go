@@ -191,6 +191,32 @@ func TestMW_FailedQueryIsNotRecordedAsEvidenceSource(t *testing.T) {
 	}
 }
 
+func TestMW_RejectedDatasourceDoesNotGroundTextTurn(t *testing.T) {
+	// A rejected datasource_id records an error event but produces no evidence,
+	// so it must NOT let the JSON-text loop accept an ungrounded answer — after
+	// the grounding nudges are exhausted the turn is declined (matching the
+	// native-tools grounding rule).
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"query":"SELECT 1","datasource_id":"nope"}`, // rejected — unknown datasource
+		`{"answer":"ungrounded"}`,
+		`{"answer":"still ungrounded"}`,
+		`{"answer":"still ungrounded"}`,
+	}}, whA, whB, nil, nil)
+
+	store := runMW(t, rt, TurnRequest{}, nil)
+	if store.final.Status != commonmodels.AskTurnStatusDeclined {
+		t.Fatalf("status = %q, want declined (a rejected datasource must not ground an answer)", store.final.Status)
+	}
+	if len(store.final.RoutedDatasourceIDs) != 0 {
+		t.Fatalf("RoutedDatasourceIDs = %v, want empty (nothing was successfully queried)", store.final.RoutedDatasourceIDs)
+	}
+	if len(whA.Calls) != 0 || len(whB.Calls) != 0 {
+		t.Fatalf("no warehouse should be queried; a=%d b=%d", len(whA.Calls), len(whB.Calls))
+	}
+}
+
 func TestMW_PinnedTurnForcesDatasource(t *testing.T) {
 	// An explicit datasource_id on the request pins the turn: even if the model
 	// names another datasource, the query runs against the pinned one, and no
