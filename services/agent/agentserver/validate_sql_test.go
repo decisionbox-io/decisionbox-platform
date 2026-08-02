@@ -164,10 +164,17 @@ func TestSQLValidationMaxStatements(t *testing.T) {
 }
 
 // A validation job routes to its own warehouse_id (multi-warehouse); a legacy
-// job with none falls back to the project's primary, preserving the old
+// job with none falls back to the project's primary (resolved through the
+// accessor so a stale primary id doesn't fail), preserving the old
 // single-warehouse behaviour.
 func TestClaimWarehouseID(t *testing.T) {
-	proj := &models.Project{PrimaryWarehouseID: "wh_primary"}
+	proj := &models.Project{
+		PrimaryWarehouseID: "wh_primary",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_primary", Provider: "postgres", Datasets: []string{"public"}},
+			{ID: "wh_b", Provider: "redshift", Datasets: []string{"crm"}},
+		},
+	}
 	cases := []struct {
 		name string
 		job  string
@@ -185,9 +192,21 @@ func TestClaimWarehouseID(t *testing.T) {
 			}
 		})
 	}
-	// A legacy project with no primary id set resolves to "" here; WarehouseByID
-	// then maps that to the synthesised default warehouse downstream.
-	if got := claimWarehouseID(&sqlValidationJobClaim{}, &models.Project{}); got != "" {
-		t.Errorf("legacy project + legacy job = %q, want empty", got)
+
+	// A stale primary_warehouse_id (points at a removed warehouse) must fall back
+	// to the first configured warehouse via the accessor, not fail downstream.
+	stale := &models.Project{
+		PrimaryWarehouseID: "wh_gone",
+		Warehouses:         []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres", Datasets: []string{"public"}}},
+	}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, stale); got != "wh_a" {
+		t.Errorf("stale primary should resolve to the first warehouse, got %q", got)
+	}
+
+	// A legacy single-warehouse project (legacy `warehouse` field) resolves to
+	// the synthesised default id.
+	legacy := &models.Project{Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"ds"}}}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, legacy); got != models.DefaultWarehouseID {
+		t.Errorf("legacy project + legacy job = %q, want %q", got, models.DefaultWarehouseID)
 	}
 }

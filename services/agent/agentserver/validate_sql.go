@@ -166,6 +166,10 @@ func runValidateSQLInner(ctx context.Context, db *database.DB, jobsCol *mongo.Co
 	// (multi-warehouse). A legacy job carries no warehouse_id, which
 	// resolves to the project's primary — the pre-multi-warehouse behaviour.
 	whID := claimWarehouseID(claim, project)
+	// Scope the per-warehouse governance middleware (which reads
+	// WarehouseIDFromContext) to the datasource this job compiles against, so a
+	// secondary-warehouse validation isn't governed as the primary/default.
+	ctx = gowarehouse.WithWarehouseID(ctx, whID)
 	warehouseProvider, err := initWarehouseProvider(ctx, project, whID, secretProvider, project.ID)
 	if err != nil {
 		return err
@@ -220,14 +224,16 @@ type sqlValidationJobClaim struct {
 
 // claimWarehouseID resolves the datasource a validation job compiles against:
 // the job's explicit warehouse_id, falling back to the project's primary when
-// the job carries none (every job enqueued before multi-warehouse). Returning
-// the primary id (which may be "" for a legacy single-warehouse project, where
-// WarehouseByID("") also resolves to the primary) preserves the old behaviour.
+// the job carries none (every job enqueued before multi-warehouse). The legacy
+// fallback resolves the primary through PrimaryWarehouse() (not the raw
+// primary_warehouse_id) so a stale/removed primary id still falls back to the
+// first configured warehouse instead of failing with "no warehouse provider
+// configured"; the empty id normalizes to the reserved default.
 func claimWarehouseID(claim *sqlValidationJobClaim, project *models.Project) string {
 	if claim.WarehouseID != "" {
 		return claim.WarehouseID
 	}
-	return project.PrimaryWarehouseID
+	return warehouseIDOrDefault(project.PrimaryWarehouse())
 }
 
 // claimSQLValidationJob atomically transitions the job pending → running
