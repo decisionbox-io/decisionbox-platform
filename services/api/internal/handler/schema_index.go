@@ -39,7 +39,7 @@ type IndexCanceller interface {
 type SchemaCacheInvalidator interface {
 	Invalidate(ctx context.Context, projectID string) error
 	LastCachedAt(ctx context.Context, projectID string) (time.Time, error)
-	ListTables(ctx context.Context, projectID string) ([]string, error)
+	ListTables(ctx context.Context, projectID, warehouseID string) ([]string, error)
 }
 
 // SchemaIndexLogLister is the minimum repo surface the /logs endpoint
@@ -443,7 +443,10 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	tables, err := h.cacheRepo.ListTables(r.Context(), id)
+	// Scope to the primary — the datasource the discovery run queries — so the
+	// discovery-scope picker can't offer secondary-warehouse tables the run can't
+	// reach (all warehouses share the project_schema_cache).
+	tables, err := h.cacheRepo.ListTables(r.Context(), id, p.PrimaryWarehouse().ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
 		return
