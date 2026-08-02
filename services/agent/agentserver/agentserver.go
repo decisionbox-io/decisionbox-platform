@@ -682,7 +682,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// Resolve the primary through the accessor (not the raw id) so a stale /
 	// removed primary_warehouse_id falls back to the first configured warehouse
 	// instead of failing discovery outright.
-	warehouseProvider, err := initWarehouseProvider(ctx, project, warehouseIDOrDefault(project.PrimaryWarehouse()), secretProvider, projectID)
+	primaryWHID := warehouseIDOrDefault(project.PrimaryWarehouse())
+	// Scope per-warehouse governance to the datasource discovery runs against, so
+	// its exploration/sample queries are masked under that warehouse's policies
+	// (project id was stamped above; ask-serve / index-schema / validation stamp
+	// the same pair).
+	ctx = gowarehouse.WithWarehouseID(ctx, primaryWHID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, primaryWHID, secretProvider, projectID)
 	if err != nil {
 		return err
 	}
