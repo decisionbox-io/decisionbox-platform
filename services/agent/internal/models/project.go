@@ -201,9 +201,13 @@ func (p *Project) EffectiveWarehouses() []WarehouseConfig {
 	}
 	if p.Warehouse.Provider != "" {
 		wh := p.Warehouse
-		if wh.ID == "" {
-			wh.ID = DefaultWarehouseID
-		}
+		// The legacy singular warehouse IS the default/primary datasource; force
+		// its id to the reserved default (never honour a stray incoming
+		// warehouse.id). This keeps its credentials on the legacy
+		// "warehouse-credentials" key — CredentialsKey(default) == that key — so
+		// existing single-warehouse projects keep working; a non-default id would
+		// send the agent to a namespaced key the UI/API never wrote.
+		wh.ID = DefaultWarehouseID
 		return []WarehouseConfig{wh}
 	}
 	return nil

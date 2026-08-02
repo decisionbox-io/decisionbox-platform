@@ -83,3 +83,17 @@ func TestPrimaryWarehouseDatasetsAndFilterWinOverLegacy(t *testing.T) {
 		t.Errorf("legacy primary should mirror Warehouse, got datasets=%v filter=%s", lp.GetDatasets(), lp.FilterField)
 	}
 }
+
+// The legacy singular warehouse must synthesise to the reserved default id
+// regardless of any stray warehouse.id, so its credentials resolve to the legacy
+// "warehouse-credentials" key rather than a namespaced key the UI never wrote.
+func TestEffectiveWarehouses_LegacyIDForcedToDefault(t *testing.T) {
+	p := &Project{Warehouse: WarehouseConfig{ID: "wh_a", Provider: "postgres", Datasets: []string{"public"}}}
+	whs := p.EffectiveWarehouses()
+	if len(whs) != 1 || whs[0].ID != DefaultWarehouseID {
+		t.Fatalf("legacy warehouse id = %q, want %q (stray id must not be honoured)", whs[0].ID, DefaultWarehouseID)
+	}
+	if got := p.PrimaryWarehouse().ID; got != DefaultWarehouseID {
+		t.Errorf("primary id = %q, want %q", got, DefaultWarehouseID)
+	}
+}
