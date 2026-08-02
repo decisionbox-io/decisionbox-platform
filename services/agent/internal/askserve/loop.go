@@ -675,13 +675,18 @@ func (r *runner) execLookup(ctx context.Context, rt *ProjectRuntime, st *turnSta
 }
 
 // lookupDatasource picks the datasource a lookup_schema resolves against: a
-// pinned turn forces its datasource; otherwise the model's datasource_id (empty
-// → primary, applied inside the router).
+// pinned turn forces its datasource; otherwise the model's datasource_id, and an
+// omitted id defaults to the turn's routing primary — the same default query_data
+// uses. (Passing "" would make SchemaRouter fall back to the project primary,
+// which can differ from the routed primary when the router narrowed to a subset.)
 func (r *runner) lookupDatasource(st *turnState, act *turnAction) string {
 	if st.routing.pinned != "" {
 		return st.routing.pinned
 	}
-	return strings.TrimSpace(act.Datasource)
+	if id := strings.TrimSpace(act.Datasource); id != "" {
+		return id
+	}
+	return st.routing.primary
 }
 
 func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnState, act *turnAction) string {

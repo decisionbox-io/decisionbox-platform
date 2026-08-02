@@ -122,6 +122,23 @@ func runValidateDoc(cfg *config.Config, jobID string) error {
 	return nil
 }
 
+// docValidationWarehouseID resolves the datasource a doc's manual validation
+// runs against. An explicit discWarehouseID (the warehouse the discovery ran on)
+// is honoured. A legacy discovery carries no warehouse_id — it ran on the
+// original/default warehouse, so resolve to the reserved default when it still
+// exists (NOT the current primary, which may have moved to a newer warehouse the
+// old cited steps never touched); fall back to the effective primary only if the
+// default is gone.
+func docValidationWarehouseID(discWarehouseID string, project *models.Project) string {
+	if discWarehouseID != "" {
+		return discWarehouseID
+	}
+	if _, ok := project.WarehouseByID(models.DefaultWarehouseID); ok {
+		return models.DefaultWarehouseID
+	}
+	return warehouseIDOrDefault(project.PrimaryWarehouse())
+}
+
 func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.DB, job *validationJobDoc, attempt int) error {
 	// Mark which agent step we're in so the dashboard's progress card
 	// can render "Verifier running" / "Refuter running". The verifier
@@ -168,12 +185,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// (multi-warehouse); a legacy discovery carries no warehouse_id and
 	// resolves to the primary. docWH supplies the tenant filter so the
 	// provider and its filter stay on the same warehouse.
-	docWHID := discDoc.WarehouseID
-	if docWHID == "" {
-		// Resolve the primary through the accessor so a stale/removed
-		// primary_warehouse_id still falls back to the first configured warehouse.
-		docWHID = warehouseIDOrDefault(project.PrimaryWarehouse())
-	}
+	docWHID := docValidationWarehouseID(discDoc.WarehouseID, project)
 	// Scope per-warehouse governance to the datasource this doc's discovery ran
 	// on, so the verifier's read/step queries are governed exactly as discovery
 	// was (mirrors validate-sql). Project id is stamped too so the governance

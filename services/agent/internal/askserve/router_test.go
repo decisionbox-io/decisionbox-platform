@@ -8,6 +8,31 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
+// lookup_schema must default an omitted datasource_id to the turn's routing
+// primary — the same default query_data uses — not to "" (which SchemaRouter
+// would map to the project primary, possibly outside a router-narrowed subset).
+func TestLookupDatasource(t *testing.T) {
+	r := &runner{}
+	t.Run("pinned turn forces its datasource", func(t *testing.T) {
+		st := &turnState{routing: turnRouting{pinned: "wh_x", primary: "wh_p"}}
+		if got := r.lookupDatasource(st, &turnAction{Datasource: "wh_ignored"}); got != "wh_x" {
+			t.Errorf("got %q, want wh_x", got)
+		}
+	})
+	t.Run("explicit id honoured", func(t *testing.T) {
+		st := &turnState{routing: turnRouting{primary: "wh_p"}}
+		if got := r.lookupDatasource(st, &turnAction{Datasource: "wh_b"}); got != "wh_b" {
+			t.Errorf("got %q, want wh_b", got)
+		}
+	})
+	t.Run("omitted id defaults to the routing primary", func(t *testing.T) {
+		st := &turnState{routing: turnRouting{primary: "wh_routed"}}
+		if got := r.lookupDatasource(st, &turnAction{Datasource: ""}); got != "wh_routed" {
+			t.Errorf("got %q, want wh_routed (routing primary, not empty)", got)
+		}
+	})
+}
+
 // routerCfg is mwConfig with the evidence-grounded router turned on.
 func routerCfg() Config {
 	c := mwConfig()
