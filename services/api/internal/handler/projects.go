@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
@@ -500,28 +501,29 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	// Datasources are NOT managed through this settings route (it neither gates
 	// the multi_warehouse feature nor reserves per-warehouse quota nor enqueues
-	// indexing). Reject a `warehouses` payload only when the stored project has
-	// none yet — i.e. an attempt to turn a single/legacy project multi-warehouse
-	// through this ungated route (which the merge would silently ignore, returning
-	// a misleading 200). A project that is ALREADY multi-warehouse is left alone:
-	// a full-object round-trip (GET → tweak one setting → PUT) echoes its
-	// `warehouses` back, and the merge ignores the field regardless — datasource
-	// edits go through the dedicated, gated warehouse-management flow.
-	if len(incoming.Warehouses) > 0 && len(existing.Warehouses) == 0 {
+	// indexing). Reject a request that would CHANGE datasources while letting an
+	// unchanged echo through — a full-object round-trip (GET → tweak one setting
+	// → PUT) re-sends the current datasources verbatim, and the merge below
+	// ignores the datasource fields regardless. Two forbidden shapes:
+	//   - `warehouses` present and different from what's stored (add/edit/remove,
+	//     or turning a single/legacy project multi-warehouse via this route); and
+	//   - a legacy `warehouse` edit on a project that is ALREADY multi-warehouse,
+	//     where EffectiveWarehouses() ignores the legacy field so the edit would
+	//     silently no-op.
+	// Datasource edits go through the dedicated, gated warehouse-management flow.
+	warehousesEdited := len(incoming.Warehouses) > 0 && !reflect.DeepEqual(incoming.Warehouses, existing.Warehouses)
+	legacyEditedOnMulti := len(existing.Warehouses) > 0 && incoming.Warehouse.Provider != "" &&
+		!reflect.DeepEqual(incoming.Warehouse, existing.Warehouse)
+	if warehousesEdited || legacyEditedOnMulti {
 		writeError(w, http.StatusBadRequest,
-			"data sources cannot be added through this settings route; use warehouse management")
+			"data sources cannot be edited through this settings route; use warehouse management")
 		return
 	}
-	// Likewise reject a legacy `warehouse` edit on a project that already has
-	// multiple datasources: EffectiveWarehouses() ignores the legacy field once
-	// `warehouses` is populated, so accepting it would silently no-op (agent/
-	// indexing keep using the stored datasources).
-	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) > 0 {
-		writeError(w, http.StatusBadRequest,
-			"this project has multiple data sources; edit them through warehouse management, not the legacy `warehouse` field")
-		return
-	}
-	if incoming.Warehouse.Provider != "" {
+	// A legacy `warehouse` edit remains the way to change a single-warehouse
+	// project's datasource. Never apply it to a multi-warehouse project — there
+	// the value above was an unchanged echo, and EffectiveWarehouses() ignores
+	// the legacy field anyway.
+	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) == 0 {
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {

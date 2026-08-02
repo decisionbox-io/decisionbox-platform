@@ -783,6 +783,69 @@ func TestProjectsHandler_Update_AllowsRoundTripOnMultiWarehouse(t *testing.T) {
 	}
 }
 
+// Editing (adding/removing) datasources on an already-multi-warehouse project
+// through the settings route must be rejected, not silently ignored — only an
+// exact echo is allowed.
+func TestProjectsHandler_Update_RejectsChangedWarehousesOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	// Remove wh_b + add wh_c — a real datasource edit.
+	body := `{"warehouses":[{"id":"wh_a","provider":"postgres"},{"id":"wh_c","provider":"bigquery"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (changed warehouses must be rejected, not silently ignored); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 || updated.Warehouses[1].ID != "wh_b" {
+		t.Errorf("stored warehouses must be unchanged, got %+v", updated.Warehouses)
+	}
+}
+
+// A round-trip that echoes BOTH the legacy `warehouse` (a dual-written primary)
+// and `warehouses` unchanged, while editing an unrelated setting, must succeed —
+// the echoed legacy warehouse is not treated as an edit.
+func TestProjectsHandler_Update_AllowsEchoedLegacyWarehouseOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "default",
+		Warehouse:  models.WarehouseConfig{ID: "default", Provider: "postgres"},
+		Warehouses: []models.WarehouseConfig{{ID: "default", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"name":"Renamed","warehouse":{"id":"default","provider":"postgres"},` +
+		`"warehouses":[{"id":"default","provider":"postgres"},{"id":"wh_b","provider":"redshift"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (echoed legacy warehouse + warehouses must be allowed); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" || len(updated.Warehouses) != 2 {
+		t.Errorf("round-trip must apply the name and preserve warehouses, got name=%q warehouses=%d", updated.Name, len(updated.Warehouses))
+	}
+}
+
 // TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
 // invariant: the PUT /projects/{id} merge silently drops any
 // incoming `state` field. Lifecycle transitions belong to dedicated
