@@ -142,7 +142,13 @@ func (r *ProjectRuntime) acquireConn(ctx context.Context, id string) (*Warehouse
 		r.warm[id] = e
 		r.evictForCapacityLocked(id)
 		r.mu.Unlock()
-		r.buildConn(ctx, e)
+		// Build asynchronously so the select below can race the connect against
+		// ctx.Done(): buildConn runs the connect under context.WithoutCancel (so a
+		// shared conn survives one hop's cancellation), which means a cold connect
+		// would otherwise block this caller past its turn/query timeout on first
+		// touch. On cancel the caller returns promptly; the entry (inUse held at 1
+		// until then) stays warm for reuse or eventual eviction — no leak.
+		go r.buildConn(ctx, e)
 	} else {
 		// Existing entry: reserve under the same lock we read it on so it can't be
 		// evicted between the read and the refcount bump.

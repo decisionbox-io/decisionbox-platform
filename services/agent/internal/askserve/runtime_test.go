@@ -246,6 +246,48 @@ func TestRuntime_CloseClosesWarmAndShared(t *testing.T) {
 	}
 }
 
+// acquireConn must honor cancellation while a cold datasource is still
+// connecting: buildConn detaches cancellation (WithoutCancel) so a shared conn
+// survives one hop, so a synchronous build would block the caller past its
+// turn/query timeout on first touch. The build must run async and the select
+// race it against ctx.Done().
+func TestRuntime_AcquireHonorsCancelDuringColdConnect(t *testing.T) {
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		Datasources: []DatasourceInfo{{ID: "a"}},
+		PrimaryID:   "a",
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			close(buildStarted)
+			<-releaseBuild // simulate a slow cold connect
+			return &WarehouseConn{Closers: []func() error{func() error { return nil }}}, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, release, err := rt.acquireConn(ctx, "a")
+		if release != nil {
+			release()
+		}
+		done <- err
+	}()
+
+	<-buildStarted // the cold connect is in flight
+	cancel()       // cancel the turn while the connect is still running
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquireConn err = %v, want context.Canceled (must not block on the cold connect)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("acquireConn blocked on the cold connect instead of honoring cancellation")
+	}
+	close(releaseBuild) // let the detached build finish and clean up
+}
+
 // A datasource whose build is still in flight when Close() runs (the shutdown
 // sweep) must still be closed once the build completes — buildConn runs under a
 // detached context, so without this it would leak a live connection nothing owns.
