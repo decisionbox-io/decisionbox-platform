@@ -244,8 +244,13 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		Disc: verifier.DiscoveryContext{
 			ProjectID: project.ID,
 			RunID:     "", // manual run; no discovery RunID
-			Domain:    project.Domain,
-			Language:  project.EffectiveLanguage(),
+			// Frame the verifier with the domain the discovery actually ran
+			// under. Multi-warehouse discoveries are saved under the primary
+			// warehouse's per-warehouse domain binding (warehouseDomainOr), which
+			// can differ from the project-level domain; fall back to the project
+			// domain for legacy discoveries that carry none.
+			Domain:   firstNonEmpty(discDoc.Domain, project.Domain),
+			Language: project.EffectiveLanguage(),
 		},
 		Executor: exec,
 		DocKind:  valmodels.DocKind(job.DocKind),
