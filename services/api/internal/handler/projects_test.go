@@ -710,6 +710,38 @@ func TestProjectsHandler_Update_RejectsLegacyWarehouseEditOnMultiWarehouse(t *te
 	}
 }
 
+// The settings PUT does not manage datasources — a direct `warehouses` edit
+// would decode but be silently ignored by the field merge, returning 200 while
+// changing nothing and skipping the gated multi-warehouse checks. Reject it.
+func TestProjectsHandler_Update_RejectsDirectWarehousesEdit(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:      "Single",
+		Domain:    "gaming",
+		Category:  "match3",
+		Warehouse: models.WarehouseConfig{Provider: "bigquery"},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouses":[{"id":"wh_a","provider":"postgres","datasets":["public"]},{"id":"wh_b","provider":"redshift","datasets":["crm"]}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (direct warehouses edit must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 0 {
+		t.Errorf("project must be unchanged, got %d warehouses", len(updated.Warehouses))
+	}
+}
+
 // TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
 // invariant: the PUT /projects/{id} merge silently drops any
 // incoming `state` field. Lifecycle transitions belong to dedicated
