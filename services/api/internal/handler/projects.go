@@ -498,6 +498,16 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.Description != "" || incoming.Name != "" {
 		existing.Description = incoming.Description
 	}
+	// A multi-warehouse project's datasources are managed through the dedicated,
+	// gated warehouse-management flow — not the legacy `warehouse` field, which
+	// EffectiveWarehouses() ignores once `warehouses` is populated. Reject a
+	// legacy warehouse edit here so this settings route can't silently no-op
+	// (return success while the agent/indexing keep using the old datasources).
+	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) > 0 {
+		writeError(w, http.StatusBadRequest,
+			"this project has multiple data sources; edit them through warehouse management, not the legacy `warehouse` field")
+		return
+	}
 	if incoming.Warehouse.Provider != "" {
 		existing.Warehouse = incoming.Warehouse
 	}

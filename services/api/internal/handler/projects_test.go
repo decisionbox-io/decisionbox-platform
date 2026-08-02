@@ -673,6 +673,43 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// A multi-warehouse project cannot have its legacy `warehouse` field edited
+// through the settings PUT: EffectiveWarehouses() ignores that field once
+// `warehouses` is populated, so accepting the edit would silently no-op (return
+// success while the agent keeps using the stored datasources). Reject it.
+func TestProjectsHandler_Update_RejectsLegacyWarehouseEditOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:               "Multi",
+		Domain:             "gaming",
+		Category:           "match3",
+		PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_a", Provider: "postgres"},
+			{ID: "wh_b", Provider: "redshift"},
+		},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouse":{"provider":"bigquery","datasets":["x"]}}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (legacy warehouse edit on a multi-warehouse project must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 || updated.Warehouse.Provider != "" {
+		t.Errorf("multi-warehouse project must be unchanged, got warehouse=%q warehouses=%d", updated.Warehouse.Provider, len(updated.Warehouses))
+	}
+}
+
 // TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
 // invariant: the PUT /projects/{id} merge silently drops any
 // incoming `state` field. Lifecycle transitions belong to dedicated

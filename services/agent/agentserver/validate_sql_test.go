@@ -193,14 +193,28 @@ func TestClaimWarehouseID(t *testing.T) {
 		})
 	}
 
-	// A stale primary_warehouse_id (points at a removed warehouse) must fall back
-	// to the first configured warehouse via the accessor, not fail downstream.
+	// A stale primary_warehouse_id (points at a removed warehouse, no default
+	// entry) must fall back to the first configured warehouse via the accessor.
 	stale := &models.Project{
 		PrimaryWarehouseID: "wh_gone",
 		Warehouses:         []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres", Datasets: []string{"public"}}},
 	}
 	if got := claimWarehouseID(&sqlValidationJobClaim{}, stale); got != "wh_a" {
 		t.Errorf("stale primary should resolve to the first warehouse, got %q", got)
+	}
+
+	// A legacy job (no warehouse_id) whose project grew to multi-warehouse and
+	// moved its primary must still compile against the original default warehouse
+	// (where its statements came from), not the new primary.
+	moved := &models.Project{
+		PrimaryWarehouseID: "wh_b",
+		Warehouses: []models.WarehouseConfig{
+			{ID: models.DefaultWarehouseID, Provider: "postgres", Datasets: []string{"public"}},
+			{ID: "wh_b", Provider: "redshift", Datasets: []string{"crm"}},
+		},
+	}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, moved); got != models.DefaultWarehouseID {
+		t.Errorf("legacy job w/ moved primary = %q, want %q (must not follow the new primary)", got, models.DefaultWarehouseID)
 	}
 
 	// A legacy single-warehouse project (legacy `warehouse` field) resolves to
