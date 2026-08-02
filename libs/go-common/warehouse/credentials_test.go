@@ -2,22 +2,39 @@ package warehouse
 
 import (
 	"context"
+	"regexp"
 	"testing"
 )
 
 func TestCredentialsKey(t *testing.T) {
-	tests := []struct {
-		warehouseID string
-		want        string
-	}{
-		{"", LegacyCredentialsKey},                             // unset → primary/legacy
-		{DefaultWarehouseID, LegacyCredentialsKey},             // "default" → legacy (no migration)
-		{"wh_snowflake", "warehouse-credentials:wh_snowflake"}, // additional warehouse
-		{"wh_b", "warehouse-credentials:wh_b"},
+	// Unset / "default" resolve to the unmigrated primary key.
+	for _, id := range []string{"", DefaultWarehouseID} {
+		if got := CredentialsKey(id); got != LegacyCredentialsKey {
+			t.Errorf("CredentialsKey(%q) = %q, want %q", id, got, LegacyCredentialsKey)
+		}
 	}
-	for _, tc := range tests {
-		if got := CredentialsKey(tc.warehouseID); got != tc.want {
-			t.Errorf("CredentialsKey(%q) = %q, want %q", tc.warehouseID, got, tc.want)
+
+	// Additional warehouses must produce a key a cloud secret backend accepts as
+	// a secret name: GCP allows [A-Za-z0-9_-], Azure only [A-Za-z0-9-]. The key
+	// must therefore contain only alphanumerics and hyphens — no ':' or '_' — and
+	// stay distinct + deterministic across ids (incl. ids that differ only by a
+	// separator, which a naive sanitise would collide).
+	safe := regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	seen := map[string]string{}
+	for _, id := range []string{"wh_b", "wh-b", "wh_snowflake", "WH:weird/id"} {
+		got := CredentialsKey(id)
+		if !safe.MatchString(got) {
+			t.Errorf("CredentialsKey(%q) = %q is not secret-backend-safe ([A-Za-z0-9-])", id, got)
+		}
+		if got == LegacyCredentialsKey {
+			t.Errorf("CredentialsKey(%q) = %q collides with the legacy/primary key", id, got)
+		}
+		if prev, ok := seen[got]; ok {
+			t.Errorf("CredentialsKey(%q) collides with CredentialsKey(%q) = %q", id, prev, got)
+		}
+		seen[got] = id
+		if again := CredentialsKey(id); again != got {
+			t.Errorf("CredentialsKey(%q) not deterministic: %q vs %q", id, got, again)
 		}
 	}
 }
