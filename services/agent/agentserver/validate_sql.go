@@ -223,18 +223,18 @@ type sqlValidationJobClaim struct {
 }
 
 // claimWarehouseID resolves the datasource a validation job compiles against:
-// the job's explicit warehouse_id, else the datasource its (legacy) statements
-// came from. A legacy job (no warehouse_id) was enqueued when the project had a
-// single/default warehouse, so prefer the reserved default when it still exists
-// — NOT the current primary, which may have moved to a newer warehouse the old
-// statements never touched (matching the doc-validation fallback). Fall back to
-// the effective primary only when the default is gone.
+// the job's explicit warehouse_id, else the project's PRIMARY warehouse — the
+// contract documented on SQLValidationJob.WarehouseID ("empty = the project's
+// primary/only warehouse"). This DELIBERATELY differs from doc validation
+// (docValidationWarehouseID, which prefers the historical default): a
+// SQL-validation job compile-checks freshly submitted statements against the
+// project's current primary datasource, whereas a doc's statements came from the
+// specific discovery that produced them. PrimaryWarehouse() is resilient to a
+// stale primary_warehouse_id (it falls back to the first configured warehouse);
+// warehouseIDOrDefault normalizes the empty id to the reserved default.
 func claimWarehouseID(claim *sqlValidationJobClaim, project *models.Project) string {
 	if claim.WarehouseID != "" {
 		return claim.WarehouseID
-	}
-	if _, ok := project.WarehouseByID(models.DefaultWarehouseID); ok {
-		return models.DefaultWarehouseID
 	}
 	return warehouseIDOrDefault(project.PrimaryWarehouse())
 }

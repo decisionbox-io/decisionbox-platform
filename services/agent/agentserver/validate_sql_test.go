@@ -203,9 +203,10 @@ func TestClaimWarehouseID(t *testing.T) {
 		t.Errorf("stale primary should resolve to the first warehouse, got %q", got)
 	}
 
-	// A legacy job (no warehouse_id) whose project grew to multi-warehouse and
-	// moved its primary must still compile against the original default warehouse
-	// (where its statements came from), not the new primary.
+	// An unpinned SQL validation job compiles against the project's PRIMARY
+	// warehouse (the contract documented on SQLValidationJob.WarehouseID) — even
+	// after the primary has moved to a newer warehouse. This deliberately differs
+	// from doc validation, which prefers the historical default warehouse.
 	moved := &models.Project{
 		PrimaryWarehouseID: "wh_b",
 		Warehouses: []models.WarehouseConfig{
@@ -213,8 +214,8 @@ func TestClaimWarehouseID(t *testing.T) {
 			{ID: "wh_b", Provider: "redshift", Datasets: []string{"crm"}},
 		},
 	}
-	if got := claimWarehouseID(&sqlValidationJobClaim{}, moved); got != models.DefaultWarehouseID {
-		t.Errorf("legacy job w/ moved primary = %q, want %q (must not follow the new primary)", got, models.DefaultWarehouseID)
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, moved); got != "wh_b" {
+		t.Errorf("unpinned SQL job = %q, want wh_b (the project's primary, per the model contract)", got)
 	}
 
 	// A legacy single-warehouse project (legacy `warehouse` field) resolves to
