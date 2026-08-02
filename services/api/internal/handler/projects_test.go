@@ -219,6 +219,30 @@ func TestProjectsHandler_Create_RejectsMultipleWarehouses(t *testing.T) {
 	}
 }
 
+// A body that sets BOTH the legacy `warehouse` field and the new `warehouses`
+// slice is a split-brain config: EffectiveWarehouses() would pick the slice and
+// persist a divergent legacy field. It must be rejected, not silently stored.
+func TestProjectsHandler_Create_RejectsBothWarehouseFields(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Split","domain":"gaming","category":"match3",` +
+		`"warehouse":{"provider":"bigquery","datasets":["legacy"]},` +
+		`"warehouses":[{"id":"wh_a","provider":"postgres","datasets":["public"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (both warehouse fields set); body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 0 {
+		t.Errorf("no project should be persisted for a split-brain create, got %d", len(repo.projects))
+	}
+}
+
 // A single datasource supplied via the new `warehouses` slice (empty legacy
 // `warehouse` field) must still enqueue schema indexing — previously the
 // enqueue keyed off the legacy field and such a project would never index.

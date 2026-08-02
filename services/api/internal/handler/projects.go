@@ -271,6 +271,17 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SeedProjectPrompts(&p, pack)
 	}
 
+	// Reject a split-brain body that sets BOTH the legacy `warehouse` field and
+	// the new `warehouses` slice. EffectiveWarehouses() would silently pick the
+	// slice and persist a divergent legacy field, so any code still reading
+	// project.Warehouse directly would act on a different datasource than the
+	// agent's EffectiveWarehouses()-based paths. Require one canonical shape.
+	if p.Warehouse.Provider != "" && len(p.Warehouses) > 0 {
+		writeError(w, http.StatusBadRequest,
+			"set either the legacy `warehouse` field or `warehouses`, not both")
+		return
+	}
+
 	// Multi-warehouse projects cannot be configured through this create path:
 	// it neither enforces the multi_warehouse_enabled feature gate nor reserves
 	// data-source quota per warehouse (each warehouse bills as one data source,
