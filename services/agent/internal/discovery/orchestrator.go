@@ -1100,6 +1100,16 @@ func (o *Orchestrator) persistSplitLogs(
 	if o.discoveryLogRepo == nil {
 		return
 	}
+	// Tag each exploration step with the datasource this discovery ran against
+	// (multi-warehouse). A discovery runs against exactly one warehouse, so every
+	// step shares o.warehouseID; downstream SQL-example validation / fine-tuning
+	// uses the tag to route each statement to the right datasource. Only set it
+	// when unset so a future per-step source isn't clobbered.
+	for i := range explorationSteps {
+		if explorationSteps[i].WarehouseID == "" {
+			explorationSteps[i].WarehouseID = o.warehouseID
+		}
+	}
 	if err := o.discoveryLogRepo.SaveExplorationSteps(ctx, o.projectID, discoveryID, o.runID, explorationSteps); err != nil {
 		applog.WithError(err).Warn("Failed to persist exploration steps to split collection")
 	}
