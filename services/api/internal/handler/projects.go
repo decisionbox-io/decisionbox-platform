@@ -500,13 +500,16 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	// Datasources are NOT managed through this settings route (it neither gates
 	// the multi_warehouse feature nor reserves per-warehouse quota nor enqueues
-	// indexing). A direct `warehouses` edit would decode but be silently ignored
-	// by the merge below — returning 200 while changing nothing — so reject it;
-	// datasources are edited through the dedicated, gated warehouse-management
-	// flow.
-	if len(incoming.Warehouses) > 0 {
+	// indexing). Reject a `warehouses` payload only when the stored project has
+	// none yet — i.e. an attempt to turn a single/legacy project multi-warehouse
+	// through this ungated route (which the merge would silently ignore, returning
+	// a misleading 200). A project that is ALREADY multi-warehouse is left alone:
+	// a full-object round-trip (GET → tweak one setting → PUT) echoes its
+	// `warehouses` back, and the merge ignores the field regardless — datasource
+	// edits go through the dedicated, gated warehouse-management flow.
+	if len(incoming.Warehouses) > 0 && len(existing.Warehouses) == 0 {
 		writeError(w, http.StatusBadRequest,
-			"data sources cannot be edited through this settings route; use warehouse management")
+			"data sources cannot be added through this settings route; use warehouse management")
 		return
 	}
 	// Likewise reject a legacy `warehouse` edit on a project that already has

@@ -742,6 +742,47 @@ func TestProjectsHandler_Update_RejectsDirectWarehousesEdit(t *testing.T) {
 	}
 }
 
+// A full-object round-trip PUT on an already-multi-warehouse project (GET →
+// tweak one unrelated setting → PUT the whole object, `warehouses` echoed back)
+// must succeed — the guard only blocks ADDING datasources to a project that has
+// none, not re-sending the current ones.
+func TestProjectsHandler_Update_AllowsRoundTripOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:               "Multi",
+		Domain:             "gaming",
+		Category:           "match3",
+		PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_a", Provider: "postgres"},
+			{ID: "wh_b", Provider: "redshift"},
+		},
+	}
+	repo.Create(context.Background(), p)
+
+	// Client echoes back the same warehouses while renaming the project.
+	body := `{"name":"Renamed","warehouses":[{"id":"wh_a","provider":"postgres"},{"id":"wh_b","provider":"redshift"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (round-trip on a multi-warehouse project must be allowed); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" {
+		t.Errorf("name = %q, want Renamed", updated.Name)
+	}
+	if len(updated.Warehouses) != 2 {
+		t.Errorf("warehouses must be preserved, got %d", len(updated.Warehouses))
+	}
+}
+
 // TestProjectsHandler_Update_DropsArbitraryStateWrites locks in the
 // invariant: the PUT /projects/{id} merge silently drops any
 // incoming `state` field. Lifecycle transitions belong to dedicated
