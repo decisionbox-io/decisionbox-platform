@@ -185,6 +185,45 @@ func TestRuntime_ConcurrentFirstTouchNeverClosesHeldConn(t *testing.T) {
 	}
 }
 
+// Acquiring more datasources than the warm cap while all are in use grows the
+// map past the cap (eviction skips in-use entries). Once released, the runtime
+// must trim idle LRU entries back down to the cap — otherwise the connection
+// bound is defeated for concurrent multi-datasource turns.
+func TestRuntime_ReleaseTrimsWarmBackToCap(t *testing.T) {
+	const maxWarm = 2
+	ids := []string{"a", "b", "c", "d", "e"}
+	rt := runtimeWith(func(context.Context, string) (*WarehouseConn, error) {
+		return &WarehouseConn{Closers: []func() error{func() error { return nil }}}, nil
+	}, maxWarm, ids...)
+
+	// Acquire (and HOLD) all of them, forcing the warm map past the cap.
+	releases := make([]func(), 0, len(ids))
+	for _, id := range ids {
+		_, release, err := rt.acquireConn(context.Background(), id)
+		if err != nil {
+			t.Fatalf("acquireConn(%s): %v", id, err)
+		}
+		releases = append(releases, release)
+	}
+	rt.mu.Lock()
+	overCap := len(rt.warm)
+	rt.mu.Unlock()
+	if overCap != len(ids) {
+		t.Fatalf("warm size while all in use = %d, want %d (eviction must not drop in-use entries)", overCap, len(ids))
+	}
+
+	// Release everything; each release should reclaim idle LRU entries.
+	for _, release := range releases {
+		release()
+	}
+	rt.mu.Lock()
+	got := len(rt.warm)
+	rt.mu.Unlock()
+	if got > maxWarm {
+		t.Fatalf("warm size after release = %d, want <= %d (release must trim back to the cap)", got, maxWarm)
+	}
+}
+
 func TestRuntime_CloseClosesWarmAndShared(t *testing.T) {
 	var connClosed, sharedClosed int32
 	rt := NewProjectRuntime(ProjectRuntimeOptions{

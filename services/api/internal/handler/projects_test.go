@@ -272,6 +272,15 @@ func TestProjectsHandler_Create_SingleWarehousesEntryEnqueuesIndexing(t *testing
 		t.Errorf("schema_index_status = %q, want %q (a warehouses-only create must enqueue indexing)",
 			saved.SchemaIndexStatus, models.SchemaIndexStatusPendingIndexing)
 	}
+	// The single `warehouses` entry is normalized down to the canonical legacy
+	// `warehouse` shape so legacy readers (settings UI, data-source counter) see
+	// it; the slice is cleared to avoid a split-brain config.
+	if saved.Warehouse.Provider != "postgres" {
+		t.Errorf("legacy warehouse.provider = %q, want postgres (single warehouses entry must normalize into it)", saved.Warehouse.Provider)
+	}
+	if len(saved.Warehouses) != 0 {
+		t.Errorf("warehouses slice = %v, want empty after normalization", saved.Warehouses)
+	}
 }
 
 // TestProjectsHandler_Create_ForcesReadyState pins the invariant

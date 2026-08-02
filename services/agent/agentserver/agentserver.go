@@ -508,7 +508,10 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 
 	switch target {
 	case "warehouse":
-		provider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, projectID)
+		// Resolve the primary through the accessor (not the raw id) so a stale /
+		// removed primary_warehouse_id falls back to the first configured
+		// warehouse instead of failing the test outright.
+		provider, err := initWarehouseProvider(ctx, project, warehouseIDOrDefault(project.PrimaryWarehouse()), secretProvider, projectID)
 		if err != nil {
 			return err
 		}
@@ -676,7 +679,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return err
 	}
 
-	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, projectID)
+	// Resolve the primary through the accessor (not the raw id) so a stale /
+	// removed primary_warehouse_id falls back to the first configured warehouse
+	// instead of failing discovery outright.
+	warehouseProvider, err := initWarehouseProvider(ctx, project, warehouseIDOrDefault(project.PrimaryWarehouse()), secretProvider, projectID)
 	if err != nil {
 		return err
 	}

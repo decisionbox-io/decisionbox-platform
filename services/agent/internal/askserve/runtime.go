@@ -193,29 +193,39 @@ func (r *ProjectRuntime) releaseConn(id string) {
 		}
 		e.lastUsed = time.Now()
 	}
+	// The warm cap can be temporarily exceeded when more than maxWarm datasources
+	// are acquired concurrently — eviction skips in-use entries, so the map grows
+	// past the cap and nothing trims it once the queries finish. Now that this one
+	// is idle again, reclaim any idle LRU entries back down to the cap.
+	r.evictForCapacityLocked("")
 }
 
-// evictForCapacityLocked drops the least-recently-used idle connection when the
-// cache is over capacity. Caller holds r.mu. The just-created entry is exempt.
+// evictForCapacityLocked drops least-recently-used idle connections until the
+// cache is at or under capacity (or nothing idle remains to evict). Caller holds
+// r.mu. The named entry (keep) is exempt — used by acquireConn to protect the
+// entry it is about to build.
 func (r *ProjectRuntime) evictForCapacityLocked(keep string) {
-	if r.maxWarm <= 0 || len(r.warm) <= r.maxWarm {
+	if r.maxWarm <= 0 {
 		return
 	}
-	var lru *connEntry
-	for id, e := range r.warm {
-		if id == keep || e.inUse > 0 {
-			continue
+	for len(r.warm) > r.maxWarm {
+		var lru *connEntry
+		for id, e := range r.warm {
+			if id == keep || e.inUse > 0 {
+				continue
+			}
+			select {
+			case <-e.ready: // only evict fully-built entries
+			default:
+				continue
+			}
+			if lru == nil || e.lastUsed.Before(lru.lastUsed) {
+				lru = e
+			}
 		}
-		select {
-		case <-e.ready: // only evict fully-built entries
-		default:
-			continue
+		if lru == nil {
+			return // nothing idle left to evict; cap stays temporarily exceeded
 		}
-		if lru == nil || e.lastUsed.Before(lru.lastUsed) {
-			lru = e
-		}
-	}
-	if lru != nil {
 		delete(r.warm, lru.id)
 		go closeConn(lru.conn)
 	}

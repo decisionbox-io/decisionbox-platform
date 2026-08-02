@@ -296,6 +296,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize a single-datasource create supplied via the new `warehouses`
+	// slice down to the canonical legacy `warehouse` shape. Existing readers
+	// still consume project.warehouse (the settings UI, the data-source
+	// reconciliation counter), and the agent's EffectiveWarehouses() synthesizes
+	// the same single default warehouse from it — so both sides agree and no
+	// project is left looking warehouse-less. The id is cleared so it resolves to
+	// the default and keeps the legacy "warehouse-credentials" secret key.
+	if len(p.Warehouses) == 1 {
+		p.Warehouse = p.Warehouses[0]
+		p.Warehouse.ID = ""
+		p.Warehouses = nil
+		p.PrimaryWarehouseID = ""
+	}
+
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
 	ck := policy.GetChecker()
 	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {
