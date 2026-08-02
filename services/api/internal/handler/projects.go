@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -459,11 +461,23 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read request body")
+		return
+	}
 	var incoming models.Project
-	if err := decodeJSON(r, &incoming); err != nil {
+	if err := json.Unmarshal(bodyBytes, &incoming); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	// Which top-level fields the client actually sent — lets the datasource guard
+	// distinguish an explicit "warehouses":[] (a removal attempt) from an omitted
+	// field, since both decode to a zero-length slice.
+	var sentFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &sentFields)
+	_, warehousesSent := sentFields["warehouses"]
 
 	// Managed-inference override (no-op unless AI_GATEWAY_URL is set):
 	// canonicalize the incoming AI config to the gateway preset before
@@ -511,7 +525,13 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	//     where EffectiveWarehouses() ignores the legacy field so the edit would
 	//     silently no-op.
 	// Datasource edits go through the dedicated, gated warehouse-management flow.
-	warehousesEdited := len(incoming.Warehouses) > 0 && !reflect.DeepEqual(incoming.Warehouses, existing.Warehouses)
+	// A `warehouses` field is an edit when it was actually sent and differs from
+	// what's stored — including an explicit "warehouses":[] on a multi-warehouse
+	// project (a removal). Treat nil and empty as equal so a client that echoes
+	// an empty list on a single-warehouse project isn't spuriously rejected.
+	warehousesEdited := warehousesSent &&
+		(len(incoming.Warehouses) > 0 || len(existing.Warehouses) > 0) &&
+		!reflect.DeepEqual(incoming.Warehouses, existing.Warehouses)
 	legacyEditedOnMulti := len(existing.Warehouses) > 0 && incoming.Warehouse.Provider != "" &&
 		!reflect.DeepEqual(incoming.Warehouse, existing.Warehouse)
 	if warehousesEdited || legacyEditedOnMulti {

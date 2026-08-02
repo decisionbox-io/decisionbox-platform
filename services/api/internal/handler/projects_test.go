@@ -814,6 +814,65 @@ func TestProjectsHandler_Update_RejectsChangedWarehousesOnMultiWarehouse(t *test
 	}
 }
 
+// An explicit "warehouses":[] on a multi-warehouse project is a removal attempt
+// and must be rejected — not silently treated as "field omitted" (which would
+// preserve the datasources and return a misleading 200).
+func TestProjectsHandler_Update_RejectsExplicitEmptyWarehousesOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouses":[]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (explicit empty warehouses is a removal); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 {
+		t.Errorf("stored warehouses must be unchanged, got %d", len(updated.Warehouses))
+	}
+}
+
+// An omitted `warehouses` field (a settings PUT that only touches other fields)
+// must NOT be treated as a removal — it is left alone.
+func TestProjectsHandler_Update_OmittedWarehousesIsNotAnEdit(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"name":"Renamed"}` // no warehouse fields at all
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (omitted warehouses is not an edit); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" || len(updated.Warehouses) != 2 {
+		t.Errorf("got name=%q warehouses=%d, want Renamed / 2 preserved", updated.Name, len(updated.Warehouses))
+	}
+}
+
 // A round-trip that echoes BOTH the legacy `warehouse` (a dual-written primary)
 // and `warehouses` unchanged, while editing an unrelated setting, must succeed —
 // the echoed legacy warehouse is not treated as an edit.
