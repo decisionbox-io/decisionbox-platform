@@ -171,6 +171,26 @@ func TestMW_MultiHopChainsAndRecordsBoth(t *testing.T) {
 	}
 }
 
+func TestMW_FailedQueryIsNotRecordedAsEvidenceSource(t *testing.T) {
+	// A datasource whose query fails (connection ok, execution errors) must NOT
+	// appear in RoutedDatasourceIDs — that field is the evidence provenance of
+	// the answer, not every datasource the model probed.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whA.QueryError = fmt.Errorf("relation \"sales.nope\" does not exist")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"query":"SELECT 1 FROM sales.nope","datasource_id":"wh_a"}`,      // fails
+		`{"query":"SELECT flagged FROM crm.users","datasource_id":"wh_b"}`, // succeeds
+		`{"answer":"from crm only"}`,
+	}}, whA, whB, nil, nil)
+
+	store := runMW(t, rt, TurnRequest{}, nil)
+	got := store.final.RoutedDatasourceIDs
+	if len(got) != 1 || got[0] != "wh_b" {
+		t.Fatalf("RoutedDatasourceIDs = %v, want [wh_b] (the failed wh_a attempt must not be attributed)", got)
+	}
+}
+
 func TestMW_PinnedTurnForcesDatasource(t *testing.T) {
 	// An explicit datasource_id on the request pins the turn: even if the model
 	// names another datasource, the query runs against the pinned one, and no

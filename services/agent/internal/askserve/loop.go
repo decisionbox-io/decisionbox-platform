@@ -603,7 +603,6 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		return fmt.Sprintf("Query failed: could not connect to datasource %q: %s\nTry a different datasource, or answer/decline with what you have.", dsID, cerr.Error())
 	}
 	defer release()
-	st.trackDatasource(dsID)
 
 	start := time.Now()
 	res, err := conn.Executor.Execute(qctx, act.Query, act.Purpose)
@@ -614,6 +613,10 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		r.emit(ctx, st, ev)
 		return fmt.Sprintf("Query failed: %s\nTry a different query, or answer/decline with what you have.", err.Error())
 	}
+	// Record the datasource only after it returned results — RoutedDatasourceIDs
+	// is the evidence provenance of the answer, so a failed exploratory attempt
+	// against a datasource must not be attributed as one of its sources.
+	st.trackDatasource(dsID)
 	sum := summarizeResult(res, act.Purpose, r.cfg)
 	ev.Output = sum
 	r.emit(ctx, st, ev)

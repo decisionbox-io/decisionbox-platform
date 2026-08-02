@@ -14,8 +14,12 @@ type InsightValidation = valmodels.InsightValidation
 // DiscoveryResult — read-only view of agent's discovery output.
 // Same BSON schema as agent's model.
 type DiscoveryResult struct {
-	ID            string    `bson:"_id,omitempty" json:"id"`
-	ProjectID     string    `bson:"project_id" json:"project_id"`
+	ID        string `bson:"_id,omitempty" json:"id"`
+	ProjectID string `bson:"project_id" json:"project_id"`
+	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
+	// Empty for legacy / single-warehouse runs. Mirrors the agent model so the
+	// discovery endpoints don't drop the attribution on decode.
+	WarehouseID   string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 	Domain        string    `bson:"domain" json:"domain"`
 	Category      string    `bson:"category" json:"category"`
 	RunType        string   `bson:"run_type" json:"run_type"`
@@ -79,8 +83,11 @@ type Impact struct {
 }
 
 type ExplorationStep struct {
-	Step         int       `bson:"step" json:"step"`
-	Timestamp    time.Time `bson:"timestamp" json:"timestamp"`
+	Step      int       `bson:"step" json:"step"`
+	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
+	// WarehouseID is the datasource this step queried (multi-warehouse). Empty
+	// for legacy / single-warehouse runs. Mirrors the agent model.
+	WarehouseID  string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 	Action       string    `bson:"action" json:"action"`
 	Thinking     string    `bson:"thinking" json:"thinking"`
 	QueryPurpose string    `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
