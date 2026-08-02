@@ -155,12 +155,18 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		}
 	}
 
+	// Index the primary warehouse (the provider above was built from it).
+	// Datasets/filter come from that warehouse config, not the legacy singular
+	// Warehouse field, which diverges once a project has real per-warehouse
+	// entries. For a legacy project PrimaryWarehouse() synthesises from
+	// Warehouse, so this is identical to the old behaviour.
+	primaryWH := project.PrimaryWarehouse()
 	schemaDiscovery := discovery.NewSchemaDiscovery(discovery.SchemaDiscoveryOptions{
 		Warehouse:         warehouseProvider,
 		Executor:          executor,
 		ProjectID:         projectID,
-		Datasets:          project.Warehouse.GetDatasets(),
-		Filter:            buildFilterClause(project.Warehouse.FilterField, project.Warehouse.FilterValue),
+		Datasets:          primaryWH.GetDatasets(),
+		Filter:            buildFilterClause(primaryWH.FilterField, primaryWH.FilterValue),
 		OnTablesListed:    onTablesListed,
 		OnTableDiscovered: onTableDiscovered,
 	})
@@ -187,7 +193,6 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("blurb generator: %w", err)
 	}
 
-	primaryWH := project.PrimaryWarehouse()
 	warehouseHash := discovery.WarehouseConfigHash(primaryWH)
 	schemaCache := database.NewSchemaCacheRepository(db)
 

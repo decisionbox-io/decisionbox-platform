@@ -163,11 +163,20 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, project.ID)
+	// Verify the doc against the datasource its discovery ran on
+	// (multi-warehouse); a legacy discovery carries no warehouse_id and
+	// resolves to the primary. docWH supplies the tenant filter so the
+	// provider and its filter stay on the same warehouse.
+	docWHID := discDoc.WarehouseID
+	if docWHID == "" {
+		docWHID = project.PrimaryWarehouseID
+	}
+	warehouseProvider, err := initWarehouseProvider(ctx, project, docWHID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}
 	defer warehouseProvider.Close()
+	docWH, _ := project.WarehouseByID(docWHID)
 
 	llmProvider, err := initLLMProvider(ctx, cfg, project, secretProvider, project.ID)
 	if err != nil {
@@ -195,7 +204,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 
 	exec := &verifier.DefaultExecutor{
 		SchemaProvider:      schemaProvider,
-		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, FilterField: project.Warehouse.FilterField, FilterValue: project.Warehouse.FilterValue}),
+		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, FilterField: docWH.FilterField, FilterValue: docWH.FilterValue}),
 		StepByID:            stepByID,
 		Cfg:                 vCfg.Bundle,
 		MaxReadStepRowsCall: vCaps.MaxReadStepRowsCall,
@@ -208,8 +217,8 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		WH: verifier.WarehouseInfo{
 			Dialect:     warehouseProvider.SQLDialect(),
 			Dataset:     warehouseProvider.GetDataset(),
-			FilterField: project.Warehouse.FilterField,
-			FilterValue: project.Warehouse.FilterValue,
+			FilterField: docWH.FilterField,
+			FilterValue: docWH.FilterValue,
 		},
 		Disc: verifier.DiscoveryContext{
 			ProjectID: project.ID,

@@ -77,6 +77,11 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		return true
 	}
 
+	// The router made a real decision — mark the turn routed so the chosen
+	// datasource(s) are recorded in telemetry even on the single-datasource
+	// pin path (which flips multi off).
+	st.routing.routed = true
+
 	chosen := datasourceInfosFor(rt, valid)
 	if len(valid) == 1 {
 		// Single-source question: pin it. Dialect + tenant scope are then

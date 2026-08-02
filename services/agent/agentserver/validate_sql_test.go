@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // fakeValidator is a minimal sqlValidator for testing the batch loop
@@ -159,5 +160,34 @@ func TestSQLValidationMaxStatements(t *testing.T) {
 				t.Errorf("sqlValidationMaxStatements() = %d, want %d", got, c.want)
 			}
 		})
+	}
+}
+
+// A validation job routes to its own warehouse_id (multi-warehouse); a legacy
+// job with none falls back to the project's primary, preserving the old
+// single-warehouse behaviour.
+func TestClaimWarehouseID(t *testing.T) {
+	proj := &models.Project{PrimaryWarehouseID: "wh_primary"}
+	cases := []struct {
+		name string
+		job  string
+		want string
+	}{
+		{name: "explicit secondary wins", job: "wh_b", want: "wh_b"},
+		{name: "explicit primary honoured", job: "wh_primary", want: "wh_primary"},
+		{name: "empty falls back to primary", job: "", want: "wh_primary"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := claimWarehouseID(&sqlValidationJobClaim{WarehouseID: c.job}, proj)
+			if got != c.want {
+				t.Errorf("claimWarehouseID(job=%q) = %q, want %q", c.job, got, c.want)
+			}
+		})
+	}
+	// A legacy project with no primary id set resolves to "" here; WarehouseByID
+	// then maps that to the synthesised default warehouse downstream.
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, &models.Project{}); got != "" {
+		t.Errorf("legacy project + legacy job = %q, want empty", got)
 	}
 }

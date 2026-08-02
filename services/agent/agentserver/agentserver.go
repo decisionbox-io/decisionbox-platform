@@ -741,13 +741,19 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		applog.WithError(err).Warn("Failed to ensure run step indexes")
 	}
 
-	datasets := project.Warehouse.GetDatasets()
+	// Discovery runs against the primary warehouse — take its datasets and
+	// filter from that warehouse config, NOT the legacy singular Warehouse
+	// field (they diverge once a project has real per-warehouse entries and
+	// the primary isn't the legacy one). For a legacy/single-warehouse
+	// project PrimaryWarehouse() synthesises from Warehouse, so this is
+	// identical to the old behaviour.
+	primaryWH := project.PrimaryWarehouse()
+	datasets := primaryWH.GetDatasets()
 
 	// Schema-retrieval wiring (required — discovery is gated on
 	// schema_index_status == "ready", so the cache + Qdrant collection
 	// are guaranteed to exist by the time we get here).
 	schemaCache := database.NewSchemaCacheRepository(db)
-	primaryWH := project.PrimaryWarehouse()
 	warehouseHash := discovery.WarehouseConfigHash(primaryWH)
 
 	schemaRetriever, err := newSchemaRetriever(cfg)
@@ -819,11 +825,11 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Profile:           project.Profile,
 		ProjectPrompts:    project.Prompts,
 		Datasets:          datasets,
-		FilterField:       project.Warehouse.FilterField,
-		FilterValue:       project.Warehouse.FilterValue,
+		FilterField:       primaryWH.FilterField,
+		FilterValue:       primaryWH.FilterValue,
 		LLMProvider:       project.LLM.Provider,
 		LLMModel:          project.LLM.Model,
-		WarehouseProvider: project.Warehouse.Provider,
+		WarehouseProvider: primaryWH.Provider,
 		EnableDebugLogs:   enableDebugLogs,
 		VectorStore:       qdrantProvider,
 		EmbeddingProvider: embeddingProvider,

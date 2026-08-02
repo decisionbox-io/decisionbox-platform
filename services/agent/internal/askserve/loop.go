@@ -105,6 +105,12 @@ type turnRouting struct {
 	// one visible, not pinned). When false the turn behaves exactly like the
 	// single-warehouse path — same prompt, same tools, same telemetry.
 	multi bool
+	// routed reports that the evidence-grounded router made a real (non-clarify)
+	// decision for this turn. It stays true even when the router confidently
+	// pinned a single datasource (multi=false), so that datasource is still
+	// recorded in routing telemetry — a router-pinned turn is a real routing
+	// decision, not the single-warehouse path.
+	routed bool
 }
 
 // resolveTurnRouting computes the turn's datasource plan. An explicit,
@@ -134,10 +140,12 @@ func (rt *ProjectRuntime) resolveTurnRouting(explicit string) (turnRouting, erro
 	return turnRouting{datasources: rt.Datasources, primary: primary, multi: true}, nil
 }
 
-// trackDatasource records a queried datasource for routing telemetry (multi
-// mode only, deduped, first-seen order).
+// trackDatasource records a queried datasource for routing telemetry (deduped,
+// first-seen order). Active in multi mode and for router-decided turns (which
+// includes a confident single-datasource pin), so the routed datasource is
+// captured; a no-op on the plain single-warehouse path.
 func (st *turnState) trackDatasource(id string) {
-	if !st.routing.multi || id == "" {
+	if id == "" || (!st.routing.multi && !st.routing.routed) {
 		return
 	}
 	for _, x := range st.touched {
@@ -148,11 +156,12 @@ func (st *turnState) trackDatasource(id string) {
 	st.touched = append(st.touched, id)
 }
 
-// routedDatasources returns the datasource ids the turn queried (nil in
-// single-datasource / pinned mode, where no routing decision was made — keeps
-// those turns' persisted records byte-identical to the single-warehouse path).
+// routedDatasources returns the datasource ids the turn queried. It is nil on
+// the plain single-warehouse path (no router decision, not multi), keeping
+// those turns' persisted records byte-identical to before; for a multi turn or
+// a router-decided turn (including a confident pin) it reports what was queried.
 func (st *turnState) routedDatasources() []string {
-	if !st.routing.multi {
+	if !st.routing.multi && !st.routing.routed {
 		return nil
 	}
 	return st.touched

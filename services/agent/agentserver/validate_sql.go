@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -161,7 +162,11 @@ func runValidateSQLInner(ctx context.Context, db *database.DB, jobsCol *mongo.Co
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, project.PrimaryWarehouseID, secretProvider, project.ID)
+	// Compile the statements against the datasource the job targets
+	// (multi-warehouse). A legacy job carries no warehouse_id, which
+	// resolves to the project's primary — the pre-multi-warehouse behaviour.
+	whID := claimWarehouseID(claim, project)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, whID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}
@@ -206,10 +211,23 @@ func agentWorkerID() string {
 // the job. Decoding a minimal subset means the atomic claim can never be
 // broken by a malformed `statements` field (decoded separately, below).
 type sqlValidationJobClaim struct {
-	ID        string `bson:"_id"`
-	ProjectID string `bson:"project_id"`
-	Status    string `bson:"status"`
-	Attempt   int    `bson:"attempt"`
+	ID          string `bson:"_id"`
+	ProjectID   string `bson:"project_id"`
+	WarehouseID string `bson:"warehouse_id"`
+	Status      string `bson:"status"`
+	Attempt     int    `bson:"attempt"`
+}
+
+// claimWarehouseID resolves the datasource a validation job compiles against:
+// the job's explicit warehouse_id, falling back to the project's primary when
+// the job carries none (every job enqueued before multi-warehouse). Returning
+// the primary id (which may be "" for a legacy single-warehouse project, where
+// WarehouseByID("") also resolves to the primary) preserves the old behaviour.
+func claimWarehouseID(claim *sqlValidationJobClaim, project *models.Project) string {
+	if claim.WarehouseID != "" {
+		return claim.WarehouseID
+	}
+	return project.PrimaryWarehouseID
 }
 
 // claimSQLValidationJob atomically transitions the job pending → running

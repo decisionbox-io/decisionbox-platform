@@ -52,6 +52,12 @@ func TestRouter_PinsSingleDatasource(t *testing.T) {
 	if eventDatasource(store.events[0]) != "wh_b" {
 		t.Fatalf("query datasource = %q, want wh_b", eventDatasource(store.events[0]))
 	}
+	// A router-pinned turn still records the routed datasource in telemetry
+	// even though it flips multi off — it is a real routing decision, not the
+	// single-warehouse path.
+	if got := store.final.RoutedDatasourceIDs; len(got) != 1 || got[0] != "wh_b" {
+		t.Fatalf("routed datasource ids = %v, want [wh_b]", got)
+	}
 }
 
 func TestRouter_ClarifiesOnAmbiguity(t *testing.T) {
