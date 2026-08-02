@@ -511,13 +511,18 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 		// Resolve the primary through the accessor (not the raw id) so a stale /
 		// removed primary_warehouse_id falls back to the first configured
 		// warehouse instead of failing the test outright.
-		provider, err := initWarehouseProvider(ctx, project, warehouseIDOrDefault(project.PrimaryWarehouse()), secretProvider, projectID)
+		primaryWHID := warehouseIDOrDefault(project.PrimaryWarehouse())
+		// Scope per-warehouse governance to the datasource under test so its
+		// HealthCheck runs under that warehouse's policies (mirrors discovery /
+		// ask-serve / validation). Project id was stamped above.
+		whCtx := gowarehouse.WithWarehouseID(ctx, primaryWHID)
+		provider, err := initWarehouseProvider(whCtx, project, primaryWHID, secretProvider, projectID)
 		if err != nil {
 			return err
 		}
 		defer provider.Close()
 
-		if err := provider.HealthCheck(ctx); err != nil {
+		if err := provider.HealthCheck(whCtx); err != nil {
 			return fmt.Errorf("warehouse health check failed: %w", err)
 		}
 
