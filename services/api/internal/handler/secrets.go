@@ -6,7 +6,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/managedai"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 )
 
 // SecretsHandler handles per-project secret management.

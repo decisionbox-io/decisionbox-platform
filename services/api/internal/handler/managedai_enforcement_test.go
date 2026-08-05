@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
-	"github.com/decisionbox-io/decisionbox/services/api/internal/managedai"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
