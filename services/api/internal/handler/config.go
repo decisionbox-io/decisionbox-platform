@@ -3,7 +3,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/decisionbox-io/decisionbox/services/api/internal/managedai"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 )
 
 // appConfigResponse is the GET /api/v1/config payload: deployment-level
