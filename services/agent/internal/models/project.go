@@ -119,6 +119,18 @@ type WarehouseConfig struct {
 	Card *WarehouseCard `bson:"card,omitempty" json:"card,omitempty"`
 	// Domain is the per-warehouse domain-pack binding.
 	Domain string `bson:"domain,omitempty" json:"domain,omitempty"`
+	// Category is the per-warehouse domain-pack category id, seeded when
+	// this datasource's pack is accepted. Empty falls back to
+	// Project.Category. Keep in sync with the API model.
+	Category string `bson:"category,omitempty" json:"category,omitempty"`
+	// Prompts are the per-warehouse discovery prompts, seeded from this
+	// datasource's domain pack at accept. Empty falls back to
+	// Project.Prompts. Discovery scoped to this datasource reads these.
+	// Keep in sync with the API model.
+	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`
+	// Profile is the per-warehouse project profile, seeded at accept.
+	// Empty falls back to Project.Profile. Keep in sync with the API model.
+	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
 	Provider  string `bson:"provider" json:"provider"`
 	ProjectID string `bson:"project_id,omitempty" json:"project_id,omitempty"`

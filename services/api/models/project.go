@@ -144,6 +144,21 @@ type WarehouseConfig struct {
 	// Project.Domain for multi-warehouse; packgen generates one pack per
 	// warehouse). Empty falls back to Project.Domain for the primary.
 	Domain string `bson:"domain,omitempty" json:"domain,omitempty"`
+	// Category is the per-warehouse domain-pack category id — the pack's
+	// first category, picked when this datasource's pack is accepted.
+	// Empty falls back to Project.Category for the primary / legacy
+	// warehouse. Discovery scoped to this datasource reads it.
+	Category string `bson:"category,omitempty" json:"category,omitempty"`
+	// Prompts are the per-warehouse discovery prompts, seeded from this
+	// datasource's domain pack when its pack is accepted (mirrors how the
+	// primary seeds Project.Prompts). Empty falls back to Project.Prompts
+	// for the primary / legacy warehouse. Discovery scoped to this
+	// datasource reads these instead of the project-level prompts.
+	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`
+	// Profile is the per-warehouse project profile, seeded from this
+	// datasource's domain pack when its pack is accepted. Empty falls back
+	// to Project.Profile for the primary / legacy warehouse.
+	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
 	Provider    string            `bson:"provider" json:"provider"`
 	ProjectID   string            `bson:"project_id,omitempty" json:"project_id,omitempty"`
