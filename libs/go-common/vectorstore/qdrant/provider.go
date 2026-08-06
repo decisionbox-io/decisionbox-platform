@@ -354,6 +354,7 @@ func (p *Provider) Close() error {
 func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 	var must []*pb.Condition
 	var should []*pb.Condition
+	var mustNot []*pb.Condition
 
 	// Project ID filter (required for scoped search).
 	if len(opts.ProjectIDs) == 1 {
@@ -386,13 +387,23 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		must = append(must, pb.NewMatch("analysis_area", opts.AnalysisArea))
 	}
 
-	if len(must) == 0 && len(should) == 0 {
+	// Source-type exclusions. Applied server-side so excluded points
+	// never consume the top-K window.
+	for _, st := range opts.ExcludeSourceTypes {
+		if st == "" {
+			continue
+		}
+		mustNot = append(mustNot, pb.NewMatch("source_type", st))
+	}
+
+	if len(must) == 0 && len(should) == 0 && len(mustNot) == 0 {
 		return nil
 	}
 
 	return &pb.Filter{
-		Must:   must,
-		Should: should,
+		Must:    must,
+		Should:  should,
+		MustNot: mustNot,
 	}
 }
 

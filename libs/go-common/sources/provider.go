@@ -55,6 +55,24 @@ type RetrieveOpts struct {
 	Limit int
 	// MinScore is the minimum cosine similarity. Chunks below this are dropped.
 	MinScore float64
+	// DocumentsOnly restricts retrieval to document chunks, excluding
+	// inline notes.
+	//
+	// The default (false) suits prompt-context assembly, where an
+	// implementation may inject operator-authored notes ahead of — and
+	// in addition to — semantic matches, so that pinned guidance always
+	// reaches the model. Those note passes are deliberately not bound by
+	// Limit, and they consume the budget before documents are searched.
+	//
+	// That is wrong for a caller exposing retrieval as a document-search
+	// tool: it returns content the tool never advertised, and cannot
+	// honour the result cap it promised. Such callers set this to true,
+	// which makes Limit an exact upper bound and the result set purely
+	// semantic.
+	//
+	// Implementations that have no note concept may ignore this field:
+	// their results already contain only documents.
+	DocumentsOnly bool
 }
 
 // Dependencies bundles infrastructure handles needed by Provider implementations.

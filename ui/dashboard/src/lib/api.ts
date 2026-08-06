@@ -842,7 +842,13 @@ export interface CrossProjectSearchRequest {
 
 export interface SearchResultItem {
   id: string;
-  type: 'insight' | 'recommendation';
+  // 'source_chunk' is returned when an answer cites a knowledge-source
+  // document (an upload, URL, or a file synced from external storage)
+  // rather than a discovery finding. Such a citation has no
+  // discovery_id, and links to the project's knowledge sources instead
+  // of an insight or recommendation — callers switching on this field
+  // must handle it rather than defaulting it to a recommendation.
+  type: 'insight' | 'recommendation' | 'source_chunk';
   score: number;
   name: string;
   title?: string;

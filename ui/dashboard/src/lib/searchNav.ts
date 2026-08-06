@@ -2,7 +2,13 @@ import type { SearchResultItem } from '@/lib/api';
 
 // Maps a SearchResultItem's discriminator to the URL segment used by the
 // detail routes under /projects/[id]/discoveries/[runId]/.
-const DETAIL_SEGMENT: Record<SearchResultItem['type'], 'insights' | 'recommendations'> = {
+//
+// 'source_chunk' is absent deliberately: a knowledge-source citation has
+// no discovery run and therefore no detail route under it. Search never
+// returns that type — it queries discovery findings — but the shared
+// result type admits it, so searchResultHref handles it explicitly
+// rather than building a nonsense /discoveries/undefined/... URL.
+const DETAIL_SEGMENT: Partial<Record<SearchResultItem['type'], 'insights' | 'recommendations'>> = {
   insight: 'insights',
   recommendation: 'recommendations',
 };
@@ -28,5 +34,10 @@ export function searchResultHref(
 ): string {
   const projectId = item.project_id || fallbackProjectId;
   const segment = DETAIL_SEGMENT[item.type];
+  if (!segment) {
+    // Not a discovery finding — send the user to the project's knowledge
+    // sources rather than a detail route that cannot exist.
+    return `/projects/${projectId}/sources`;
+  }
   return `/projects/${projectId}/discoveries/${item.discovery_id}/${segment}/${item.id}`;
 }

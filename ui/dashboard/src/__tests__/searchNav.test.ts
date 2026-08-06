@@ -72,3 +72,24 @@ describe('searchResultHref', () => {
     );
   });
 });
+
+describe('searchResultHref with non-discovery results', () => {
+  test('routes a knowledge-source result to the project sources page', () => {
+    // source_chunk has no discovery run, so the detail route it would
+    // otherwise build (/discoveries/…/undefined/…) cannot exist.
+    expect(
+      searchResultHref(
+        {
+          id: 'src-1',
+          type: 'source_chunk',
+          score: 0.5,
+          name: 'runbook.docx',
+          description: '',
+          discovery_id: '',
+          discovered_at: '2026-05-01T00:00:00Z',
+        },
+        'p-fallback',
+      ),
+    ).toBe('/projects/p-fallback/sources');
+  });
+});
