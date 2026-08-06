@@ -78,6 +78,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
+		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection warehouse: the specific datasource id to test. Empty = the project's primary (back-compat).")
 		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit; 'ask-serve' to run the always-up ad-hoc data Q&A service (a long-lived multi-project HTTP server; does not take --project-id). Default: run discovery.")
 		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
@@ -169,7 +170,7 @@ func Run() {
 	// Test connection mode runs before logger init — its own logging is minimal
 	if *testConnection != "" {
 		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
-		if err := runTestConnection(cfg, *projectID, *testConnection); err != nil {
+		if err := runTestConnection(cfg, *projectID, *testConnection, *testWarehouseID); err != nil {
 			applog.WithError(err).Error("Test connection failed")
 			applog.Sync()
 			result, _ := json.Marshal(map[string]interface{}{
@@ -475,7 +476,7 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 
 // --- Test connection ---
 
-func runTestConnection(cfg *config.Config, projectID, target string) error {
+func runTestConnection(cfg *config.Config, projectID, target, warehouseID string) error {
 	switch target {
 	case "warehouse", "llm", "embedding", "blurb-llm":
 	default:
@@ -508,15 +509,24 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 
 	switch target {
 	case "warehouse":
-		// Resolve the primary through the accessor (not the raw id) so a stale /
-		// removed primary_warehouse_id falls back to the first configured
-		// warehouse instead of failing the test outright.
-		primaryWHID := warehouseIDOrDefault(project.PrimaryWarehouse())
+		// Test the requested datasource; an empty id resolves to the primary
+		// through the accessor (not the raw id) so a stale / removed
+		// primary_warehouse_id falls back to the first configured warehouse
+		// instead of failing the test outright. This is what lets the Data
+		// Sources UI test a specific secondary, not just the primary.
+		testWHID := warehouseID
+		if testWHID == "" {
+			testWHID = warehouseIDOrDefault(project.PrimaryWarehouse())
+		}
+		testWH, ok := project.WarehouseByID(testWHID)
+		if !ok || testWH.Provider == "" {
+			return fmt.Errorf("no warehouse %q configured", testWHID)
+		}
 		// Scope per-warehouse governance to the datasource under test so its
 		// HealthCheck runs under that warehouse's policies (mirrors discovery /
 		// ask-serve / validation). Project id was stamped above.
-		whCtx := gowarehouse.WithWarehouseID(ctx, primaryWHID)
-		provider, err := initWarehouseProvider(whCtx, project, primaryWHID, secretProvider, projectID)
+		whCtx := gowarehouse.WithWarehouseID(ctx, testWHID)
+		provider, err := initWarehouseProvider(whCtx, project, testWHID, secretProvider, projectID)
 		if err != nil {
 			return err
 		}
@@ -526,14 +536,13 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 			return fmt.Errorf("warehouse health check failed: %w", err)
 		}
 
-		// Report the datasource we actually health-checked (the primary), not
-		// the legacy singular Warehouse field — the two diverge on a real
-		// multi-warehouse project where Warehouse is empty/stale.
-		primaryWH := project.PrimaryWarehouse()
+		// Report the datasource we actually health-checked (the one under
+		// test), not the legacy singular Warehouse field — the two diverge on a
+		// real multi-warehouse project where Warehouse is empty/stale.
 		out, err := json.Marshal(map[string]interface{}{
 			"success":  true,
-			"provider": primaryWH.Provider,
-			"datasets": primaryWH.GetDatasets(),
+			"provider": testWH.Provider,
+			"datasets": testWH.GetDatasets(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to marshal result: %w", err)
