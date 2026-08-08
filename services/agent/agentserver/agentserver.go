@@ -708,6 +708,35 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	defer warehouseProvider.Close()
 
+	// Multi-warehouse (multi-hop) discovery: open a live provider per
+	// datasource so the exploration agent can target one datasource per
+	// statement and hop between them across steps. The primary built above
+	// is reused; each secondary is opened here (its own governance scope)
+	// and closed on return. A secondary that fails to open is skipped with
+	// a warning so the run degrades to the reachable datasources rather than
+	// failing. Single-warehouse projects leave warehouseProviders nil and
+	// take the unchanged primary-only path in the orchestrator.
+	effectiveWarehouses := project.EffectiveWarehouses()
+	var warehouseProviders map[string]gowarehouse.Provider
+	if len(effectiveWarehouses) > 1 {
+		warehouseProviders = map[string]gowarehouse.Provider{primaryWHID: warehouseProvider}
+		for _, wh := range effectiveWarehouses {
+			id := warehouseIDOrDefault(wh)
+			if id == primaryWHID {
+				continue
+			}
+			whCtx := gowarehouse.WithWarehouseID(ctx, id)
+			p, provErr := initWarehouseProvider(whCtx, project, id, secretProvider, projectID)
+			if provErr != nil {
+				applog.WithError(provErr).WithField("datasource_id", id).
+					Warn("multi-warehouse discovery: secondary datasource provider failed to open; it will be skipped")
+				continue
+			}
+			warehouseProviders[id] = p
+			defer p.Close()
+		}
+	}
+
 	llm, err := initLLMProvider(ctx, cfg, project, secretProvider, projectID)
 	if err != nil {
 		return err
@@ -848,37 +877,39 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:          aiClient,
-		Warehouse:         warehouseProvider,
-		ContextRepo:       contextRepo,
-		DiscoveryRepo:     discoveryRepo,
-		DiscoveryLogRepo:  discoveryLogRepo,
-		FeedbackRepo:      database.NewFeedbackRepository(db),
-		DebugLogRepo:      debugLogRepo,
-		RunRepo:           runRepo,
-		RunStepRepo:       runStepRepo,
-		RunID:             runID,
-		ProjectID:         projectID,
-		Domain:            warehouseDomainOr(primaryWH, project.Domain),
-		Category:          project.Category,
-		Language:          project.Language,
-		Profile:           project.Profile,
-		ProjectPrompts:    project.Prompts,
-		Datasets:          datasets,
-		FilterField:       primaryWH.FilterField,
-		FilterValue:       primaryWH.FilterValue,
-		LLMProvider:       project.LLM.Provider,
-		LLMModel:          project.LLM.Model,
-		WarehouseProvider: primaryWH.Provider,
-		EnableDebugLogs:   enableDebugLogs,
-		VectorStore:       qdrantProvider,
-		EmbeddingProvider: embeddingProvider,
-		EmbedIndexStore:   discovery.NewMongoEmbedIndexStore(db),
-		SchemaRetriever:   schemaRetriever,
-		SchemaCache:       schemaCache,
-		WarehouseHash:     warehouseHash,
-		WarehouseID:       warehouseIDOrDefault(primaryWH),
-		RunStepIndex:      runStepIndex,
+		AIClient:           aiClient,
+		Warehouse:          warehouseProvider,
+		ContextRepo:        contextRepo,
+		DiscoveryRepo:      discoveryRepo,
+		DiscoveryLogRepo:   discoveryLogRepo,
+		FeedbackRepo:       database.NewFeedbackRepository(db),
+		DebugLogRepo:       debugLogRepo,
+		RunRepo:            runRepo,
+		RunStepRepo:        runStepRepo,
+		RunID:              runID,
+		ProjectID:          projectID,
+		Domain:             warehouseDomainOr(primaryWH, project.Domain),
+		Category:           project.Category,
+		Language:           project.Language,
+		Profile:            project.Profile,
+		ProjectPrompts:     project.Prompts,
+		Datasets:           datasets,
+		FilterField:        primaryWH.FilterField,
+		FilterValue:        primaryWH.FilterValue,
+		LLMProvider:        project.LLM.Provider,
+		LLMModel:           project.LLM.Model,
+		WarehouseProvider:  primaryWH.Provider,
+		EnableDebugLogs:    enableDebugLogs,
+		VectorStore:        qdrantProvider,
+		EmbeddingProvider:  embeddingProvider,
+		EmbedIndexStore:    discovery.NewMongoEmbedIndexStore(db),
+		SchemaRetriever:    schemaRetriever,
+		SchemaCache:        schemaCache,
+		WarehouseHash:      warehouseHash,
+		WarehouseID:        warehouseIDOrDefault(primaryWH),
+		WarehouseProviders: warehouseProviders,
+		Warehouses:         effectiveWarehouses,
+		RunStepIndex:       runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery

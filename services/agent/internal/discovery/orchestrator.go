@@ -193,6 +193,15 @@ type Orchestrator struct {
 	schemaCache   SchemaCache
 	warehouseHash string
 	warehouseID   string
+
+	// warehouseProviders holds one live warehouse provider per datasource
+	// id for a multi-warehouse run (keyed by normalised id, primary
+	// included). warehouses carries their configs (datasets, filter, card,
+	// per-datasource pack). Both empty / single-entry on a single-warehouse
+	// run, where RunDiscovery takes the unchanged primary-only path. See
+	// orchestrator_multiwarehouse.go.
+	warehouseProviders map[string]gowarehouse.Provider
+	warehouses         []models.WarehouseConfig
 }
 
 // OrchestratorOptions configures the orchestrator.
@@ -270,8 +279,20 @@ type OrchestratorOptions struct {
 
 	// WarehouseID scopes the SchemaCache lookup to one warehouse so a
 	// discovery run reads only the catalog of the warehouse it targets.
-	// Empty resolves to the project's default/primary warehouse.
+	// Empty resolves to the project's default/primary warehouse. On a
+	// multi-warehouse run this is the PRIMARY id — the default target for a
+	// statement that names no datasource_id.
 	WarehouseID string
+
+	// WarehouseProviders holds one live warehouse provider per datasource
+	// (keyed by warehouse id, primary included) for a multi-warehouse run.
+	// Warehouses carries the matching configs. When both have >1 entry the
+	// orchestrator runs multi-hop discovery (exploration hops between
+	// datasources); otherwise it takes the unchanged single-warehouse path
+	// against Warehouse. Optional — nil keeps legacy single-warehouse
+	// behaviour.
+	WarehouseProviders map[string]gowarehouse.Provider
+	Warehouses         []models.WarehouseConfig
 
 	// RunStepIndex is the per-run vector index of exploration steps.
 	// Required — the analysis phase uses it to rank steps per area.
@@ -321,36 +342,38 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:          opts.AIClient,
-		warehouse:         opts.Warehouse,
-		contextRepo:       opts.ContextRepo,
-		discoveryRepo:     opts.DiscoveryRepo,
-		discoveryLogRepo:  discoveryLogRepo,
-		feedbackRepo:      opts.FeedbackRepo,
-		debugLogRepo:      opts.DebugLogRepo,
-		debugLogger:       debugLogger,
-		statusReporter:    statusReporter,
-		projectID:         opts.ProjectID,
-		domain:            opts.Domain,
-		category:          opts.Category,
-		language:          opts.Language,
-		profile:           opts.Profile,
-		projectPrompts:    opts.ProjectPrompts,
-		datasets:          opts.Datasets,
-		filterField:       opts.FilterField,
-		filterValue:       opts.FilterValue,
-		llmProvider:       opts.LLMProvider,
-		llmModel:          opts.LLMModel,
-		vectorStore:       opts.VectorStore,
-		embeddingProvider: opts.EmbeddingProvider,
-		embedIndexStore:   opts.EmbedIndexStore,
-		embedder:          opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:   opts.SchemaRetriever,
-		schemaCache:       opts.SchemaCache,
-		warehouseHash:     opts.WarehouseHash,
-		warehouseID:       opts.WarehouseID,
-		runStepIndex:      opts.RunStepIndex,
-		runID:             opts.RunID,
+		aiClient:           opts.AIClient,
+		warehouse:          opts.Warehouse,
+		contextRepo:        opts.ContextRepo,
+		discoveryRepo:      opts.DiscoveryRepo,
+		discoveryLogRepo:   discoveryLogRepo,
+		feedbackRepo:       opts.FeedbackRepo,
+		debugLogRepo:       opts.DebugLogRepo,
+		debugLogger:        debugLogger,
+		statusReporter:     statusReporter,
+		projectID:          opts.ProjectID,
+		domain:             opts.Domain,
+		category:           opts.Category,
+		language:           opts.Language,
+		profile:            opts.Profile,
+		projectPrompts:     opts.ProjectPrompts,
+		datasets:           opts.Datasets,
+		filterField:        opts.FilterField,
+		filterValue:        opts.FilterValue,
+		llmProvider:        opts.LLMProvider,
+		llmModel:           opts.LLMModel,
+		vectorStore:        opts.VectorStore,
+		embeddingProvider:  opts.EmbeddingProvider,
+		embedIndexStore:    opts.EmbedIndexStore,
+		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:    opts.SchemaRetriever,
+		schemaCache:        opts.SchemaCache,
+		warehouseHash:      opts.WarehouseHash,
+		warehouseID:        opts.WarehouseID,
+		warehouseProviders: opts.WarehouseProviders,
+		warehouses:         opts.Warehouses,
+		runStepIndex:       opts.RunStepIndex,
+		runID:              opts.RunID,
 	}
 }
 
@@ -494,9 +517,31 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// the SchemaProvider wired below. This is the architectural change
 	// that bounds prompt growth (full discussion in
 	// docs/architecture/agent-on-demand-schema.md).
-	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
 	keywords := o.collectAreaKeywords(analysisAreas)
-	rendered := schemaBuilder.BuildCatalog(keywords)
+
+	// Multi-warehouse (multi-hop) discovery: when the run wires more than
+	// one datasource, build a per-datasource execution context — one
+	// executor per datasource, the merged catalog + table→datasource index,
+	// and the descriptors the grouped catalog + prompt render from. The
+	// single-warehouse path is unchanged (dc stays nil). See
+	// orchestrator_multiwarehouse.go.
+	var dc *datasourceContext
+	if o.isMultiWarehouse() {
+		dc, err = o.buildDatasourceContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("build multi-warehouse context: %w", err)
+		}
+		// The schema provider + telemetry read the merged cross-warehouse
+		// catalog from here on.
+		schemas = dc.mergedSchemas
+	}
+
+	var rendered *Rendered
+	if dc != nil {
+		rendered = o.buildGroupedCatalog(dc, keywords)
+	} else {
+		rendered = (&SchemaContextBuilder{Schemas: schemas}).BuildCatalog(keywords)
+	}
 	applog.WithFields(applog.Fields{
 		"tables":          len(schemas),
 		"catalog_tokens":  rendered.CatalogTokens,
@@ -561,6 +606,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 	explorationPrompt = substituteDialectTokens(explorationPrompt, o.warehouse, refDataset)
 
+	// Multi-warehouse: append the datasource routing contract + each
+	// datasource's routing card and its own domain-pack focus areas, so the
+	// agent sets datasource_id per statement, hops between datasources, and
+	// applies the right playbook per datasource.
+	if dc != nil {
+		explorationPrompt += buildDatasourcesPromptSection(dc)
+	}
+
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
@@ -575,17 +628,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// search_tables actions. The cache provider serves entirely from
 	// the schemas map already loaded above + the per-project Qdrant
 	// collection, so there is no live warehouse traffic in the
-	// exploration loop. Scope search_tables to this run's warehouse: the
-	// collection is shared across the project's warehouses now that
-	// secondaries are indexed, and discovery only queries its own
-	// warehouse — an unscoped search could surface tables it can't query.
+	// exploration loop.
+	//
+	// Single-warehouse: scope search_tables to this run's warehouse so a
+	// shared Qdrant collection doesn't surface a sibling's tables.
+	// Multi-warehouse: search_tables spans ALL datasources (empty filter)
+	// so the agent can discover tables in any datasource and hop to them;
+	// each hit is attributed to its datasource via TableWarehouse and the
+	// index payload, and query_data routes per datasource_id.
+	schemaSearchWarehouseID := o.warehouseID
+	var tableWarehouse map[string]string
+	if dc != nil {
+		schemaSearchWarehouseID = ""
+		tableWarehouse = dc.tableWarehouse
+	}
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
-		ProjectID:   o.projectID,
-		WarehouseID: o.warehouseID,
-		Datasets:    o.datasets,
-		Schemas:     schemas,
-		Retriever:   o.schemaRetriever,
-		Embedder:    o.embedder,
+		ProjectID:      o.projectID,
+		WarehouseID:    schemaSearchWarehouseID,
+		Datasets:       o.datasets,
+		Schemas:        schemas,
+		TableWarehouse: tableWarehouse,
+		Retriever:      o.schemaRetriever,
+		Embedder:       o.embedder,
 	})
 	if spErr != nil {
 		// This is a wiring bug — the schema cache lookup above already
@@ -611,14 +675,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}
 	}
 
+	// Multi-warehouse: hand the engine one executor per datasource so each
+	// query_data step routes to the datasource_id it targets. Single-
+	// warehouse leaves dsExecutors nil and the engine falls back to the
+	// single Executor keyed by the primary.
+	var dsExecutors map[string]*queryexec.QueryExecutor
+	if dc != nil {
+		dsExecutors = dc.executors
+	}
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
-		Client:         o.aiClient,
-		Executor:       executor,
-		MaxSteps:       opts.MaxSteps,
-		MinSteps:       opts.MinSteps,
-		Dataset:        datasetsStr,
-		SchemaProvider: schemaProvider,
-		StepIndexer:    stepIndexer,
+		Client:            o.aiClient,
+		Executor:          executor,
+		Executors:         dsExecutors,
+		PrimaryDatasource: normDatasourceID(o.warehouseID),
+		TableDatasource:   tableWarehouse,
+		MaxSteps:          opts.MaxSteps,
+		MinSteps:          opts.MinSteps,
+		Dataset:           datasetsStr,
+		SchemaProvider:    schemaProvider,
+		StepIndexer:       stepIndexer,
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.

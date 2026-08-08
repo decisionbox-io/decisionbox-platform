@@ -54,8 +54,16 @@ type CacheSchemaProvider struct {
 	// schemas is the per-table metadata loaded from the cache. The map
 	// key is the qualified "dataset.table" form the warehouse provider
 	// emits via DiscoverSchemas. We DO NOT mutate it — this struct only
-	// reads.
+	// reads. On a multi-warehouse run this is the merged catalog across
+	// every datasource.
 	schemas map[string]models.TableSchema
+
+	// tableWarehouse maps a canonical "dataset.table" key to the
+	// datasource (warehouse) id that owns it. Set only on a multi-
+	// warehouse run so Lookup can tell the model which datasource_id to
+	// target for each table. Nil / empty on a single-warehouse run, where
+	// the datasource is implicitly the primary.
+	tableWarehouse map[string]string
 
 	// refIndex is a fast lookup of qualified-name → canonical key. Built
 	// at construction so each Lookup call is O(refs) instead of O(refs ×
@@ -91,14 +99,19 @@ type CacheSchemaProvider struct {
 // code. Both default to the package constants when 0.
 type CacheSchemaProviderOptions struct {
 	ProjectID string
-	// WarehouseID scopes Search to one warehouse (empty = all warehouses).
+	// WarehouseID scopes Search to one warehouse (empty = all warehouses,
+	// the cross-warehouse view used by multi-hop discovery).
 	WarehouseID string
 	Datasets    []string
 	Schemas     map[string]models.TableSchema
-	Retriever   *schema_retrieve.Retriever
-	Embedder    Embedder
-	SampleLimit int
-	ColumnLimit int
+	// TableWarehouse maps canonical "dataset.table" → owning datasource id.
+	// Set on a multi-warehouse run so Lookup can attribute each table to
+	// its datasource; nil on single-warehouse.
+	TableWarehouse map[string]string
+	Retriever      *schema_retrieve.Retriever
+	Embedder       Embedder
+	SampleLimit    int
+	ColumnLimit    int
 }
 
 const (
@@ -119,13 +132,14 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 	}
 
 	p := &CacheSchemaProvider{
-		projectID:   opts.ProjectID,
-		warehouseID: opts.WarehouseID,
-		datasets:    append([]string(nil), opts.Datasets...),
-		schemas:     opts.Schemas,
-		embedder:    opts.Embedder,
-		sampleLimit: opts.SampleLimit,
-		columnLimit: opts.ColumnLimit,
+		projectID:      opts.ProjectID,
+		warehouseID:    opts.WarehouseID,
+		datasets:       append([]string(nil), opts.Datasets...),
+		schemas:        opts.Schemas,
+		tableWarehouse: opts.TableWarehouse,
+		embedder:       opts.Embedder,
+		sampleLimit:    opts.SampleLimit,
+		columnLimit:    opts.ColumnLimit,
 	}
 	// Only wire the searcher when a retriever is configured. Leaving it as
 	// a typed-nil interface would break the `p.searcher == nil` check in
@@ -237,10 +251,14 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 			continue
 		}
 		out = append(out, ai.SearchHit{
-			Table:    h.Blurb.Table,
-			Blurb:    h.Blurb.Blurb,
-			RowCount: h.Blurb.RowCount,
-			Score:    h.Score,
+			Table: h.Blurb.Table,
+			// Datasource is the owning warehouse id from the index payload,
+			// so a cross-warehouse search (WarehouseID=="") tells the model
+			// which datasource_id to target on a follow-up query.
+			Datasource: h.Blurb.WarehouseID,
+			Blurb:      h.Blurb.Blurb,
+			RowCount:   h.Blurb.RowCount,
+			Score:      h.Score,
 		})
 	}
 	return out, nil
@@ -302,7 +320,11 @@ func (p *CacheSchemaProvider) toLookupTable(canonical string, ts models.TableSch
 	}
 
 	return ai.LookupTable{
-		Table:      canonical,
+		Table: canonical,
+		// Datasource is the owning warehouse id on a multi-warehouse run
+		// (nil map → "" on single-warehouse). Indexing a nil map is safe
+		// and returns the empty string.
+		Datasource: p.tableWarehouse[canonical],
 		RowCount:   ts.RowCount,
 		Columns:    cols,
 		SampleRows: samples,

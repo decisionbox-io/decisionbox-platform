@@ -407,7 +407,8 @@ func TestExploration_ExecuteAction_QueryData(t *testing.T) {
 	})
 
 	engine := &ExplorationEngine{
-		executor: executor,
+		executors:         map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor},
+		primaryDatasource: defaultDatasourceID,
 	}
 
 	action := &ExplorationAction{
@@ -446,7 +447,7 @@ func TestExploration_ExecuteAction_QueryData_BindsExecutorStep(t *testing.T) {
 		Warehouse:  wh,
 		MaxRetries: 1,
 	})
-	engine := &ExplorationEngine{executor: executor}
+	engine := &ExplorationEngine{executors: map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor}, primaryDatasource: defaultDatasourceID}
 
 	for _, want := range []int{1, 4, 9} {
 		step := &models.ExplorationStep{Step: want}
@@ -701,7 +702,8 @@ func TestExploration_ExecuteAction_QueryData_Error(t *testing.T) {
 	})
 
 	engine := &ExplorationEngine{
-		executor: executor,
+		executors:         map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor},
+		primaryDatasource: defaultDatasourceID,
 	}
 
 	action := &ExplorationAction{
@@ -737,7 +739,7 @@ func TestExploration_ExecuteQuery_Success_WithMoreThan10Rows(t *testing.T) {
 		MaxRetries: 1,
 	})
 
-	engine := &ExplorationEngine{executor: executor}
+	engine := &ExplorationEngine{executors: map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor}, primaryDatasource: defaultDatasourceID}
 
 	action := &ExplorationAction{
 		Action:       "query_data",

@@ -504,6 +504,9 @@ export interface ExplorationStep {
   execution_time_ms: number;
   error: string;
   fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against on a
+  // multi-warehouse project (empty/absent on a single-warehouse project).
+  warehouse_id?: string;
 }
 
 export interface AnalysisLogStep {
