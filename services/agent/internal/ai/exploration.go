@@ -273,11 +273,48 @@ func (e *ExplorationEngine) crossDatasourceRef(query, targetID string) (string, 
 		if owner == targetID {
 			continue
 		}
-		if strings.Contains(norm, strings.ToLower(table)) {
+		if containsIdentifier(norm, strings.ToLower(table)) {
 			return table, owner
 		}
 	}
 	return "", ""
+}
+
+// containsIdentifier reports whether needle appears in haystack as a whole
+// identifier reference — bounded on both sides by a non-identifier byte —
+// so a short table name is not matched inside a longer one (e.g.
+// "public.order" must not match "public.orders_archive"). Both inputs are
+// already lowercased + quote-stripped by the caller. '.' counts as a
+// boundary so "dataset.table" matches even when adjacent to punctuation.
+func containsIdentifier(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	for from := 0; ; {
+		i := strings.Index(haystack[from:], needle)
+		if i < 0 {
+			return false
+		}
+		i += from
+		var before, after byte = ' ', ' '
+		if i > 0 {
+			before = haystack[i-1]
+		}
+		if end := i + len(needle); end < len(haystack) {
+			after = haystack[end]
+		}
+		if !isIdentByte(before) && !isIdentByte(after) {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+// isIdentByte reports whether b is part of a SQL identifier (letters,
+// digits, underscore). '.' is deliberately excluded so a qualified
+// "dataset.table" is bounded correctly.
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // executorFor resolves the executor for a model-supplied datasource_id.

@@ -164,6 +164,34 @@ func TestExploration_CrossDatasourceRefRejected(t *testing.T) {
 	}
 }
 
+// TestExploration_CrossDatasourceGuard_NoSubstringFalsePositive pins that
+// the guard matches whole identifiers: a short foreign table name that is a
+// substring of a longer table in the TARGET datasource must not trip it.
+func TestExploration_CrossDatasourceGuard_NoSubstringFalsePositive(t *testing.T) {
+	primary := testutil.NewMockWarehouseProvider("public")
+	oracle := testutil.NewMockWarehouseProvider("CHINOOK")
+	engine := NewExplorationEngine(ExplorationEngineOptions{
+		Executors: map[string]*queryexec.QueryExecutor{
+			"default":   newRoutingExecutor(primary),
+			"wh_oracle": newRoutingExecutor(oracle),
+		},
+		PrimaryDatasource: "default",
+		TableDatasource: map[string]string{
+			"public.order":         "wh_oracle", // short foreign name
+			"public.orders_export": "default",   // longer LOCAL name containing it
+		},
+	})
+	step := &models.ExplorationStep{Step: 1}
+	engine.executeAction(context.Background(), &ExplorationAction{
+		Action: "query_data", Datasource: "default",
+		Query: `SELECT COUNT(*) FROM "public"."orders_export"`,
+	}, step)
+	if step.Error != "" || step.WarehouseID != "default" || len(primary.Calls) != 1 {
+		t.Fatalf("longer local table wrongly flagged by substring match: err=%q warehouse=%q calls=%d",
+			step.Error, step.WarehouseID, len(primary.Calls))
+	}
+}
+
 func TestParseAction_DatasourceID(t *testing.T) {
 	a, err := ParseAction(`{"query":"SELECT 1","datasource_id":"wh_oracle"}`, nil)
 	if err != nil {
