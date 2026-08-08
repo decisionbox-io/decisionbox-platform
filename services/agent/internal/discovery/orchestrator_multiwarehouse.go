@@ -18,6 +18,7 @@ import (
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 )
 
 // datasourceContext is the per-datasource execution context built for a
@@ -226,6 +227,44 @@ func datasourceFocusAreas(prompts *models.ProjectPrompts) string {
 		}
 	}
 	return strings.Join(names, ", ")
+}
+
+// buildValidationRouting builds one verifier WarehouseInfo + Executor per
+// datasource for a multi-warehouse run, so the validation phase verifies
+// each insight / recommendation against the datasource it is about (its own
+// dialect + connection) rather than always the primary. The schema provider
+// is the shared cross-warehouse one (the verifier can look up any
+// datasource's tables); only the QueryExec + dialect are per datasource.
+// Returns (nil, nil) on a single-warehouse run (dc nil) so the validation
+// phase keeps its primary-only fallback.
+func (o *Orchestrator) buildValidationRouting(dc *datasourceContext, schemaProvider ai.SchemaProvider, stepByID map[int]*models.ExplorationStep, cfg verifier.Config, caps verifier.RunCaps) (map[string]verifier.WarehouseInfo, map[string]verifier.Executor) {
+	if dc == nil {
+		return nil, nil
+	}
+	whByDS := make(map[string]verifier.WarehouseInfo, len(dc.executors))
+	exByDS := make(map[string]verifier.Executor, len(dc.executors))
+	for _, wh := range o.warehouses {
+		id := normDatasourceID(wh.ID)
+		prov := o.warehouseProviders[id]
+		ex := dc.executors[id]
+		if prov == nil || ex == nil {
+			continue
+		}
+		whByDS[id] = verifier.WarehouseInfo{
+			Dialect:     prov.SQLDialect(),
+			Dataset:     prov.GetDataset(),
+			FilterField: wh.FilterField,
+			FilterValue: wh.FilterValue,
+		}
+		exByDS[id] = &verifier.DefaultExecutor{
+			SchemaProvider:      schemaProvider,
+			QueryExec:           ex,
+			StepByID:            stepByID,
+			Cfg:                 cfg.Bundle,
+			MaxReadStepRowsCall: caps.MaxReadStepRowsCall,
+		}
+	}
+	return whByDS, exByDS
 }
 
 // normDatasourceID maps the empty warehouse id to the reserved default so

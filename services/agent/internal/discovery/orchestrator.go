@@ -795,7 +795,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			Cfg:                 o.validationCfg.Bundle,
 			MaxReadStepRowsCall: o.validationCaps.MaxReadStepRowsCall,
 		},
+		primaryDS: normDatasourceID(o.warehouseID),
 	}
+	// Multi-warehouse: verify each insight / recommendation against the
+	// datasource it is about, not always the primary (a secondary-derived
+	// insight validated on the primary fails / mis-verifies).
+	valPhase.whByDS, valPhase.executorByDS = o.buildValidationRouting(dc, validationSchemaProvider, stepByID, o.validationCfg, o.validationCaps)
 	insightsValidatedThisRun := 0
 
 	// Vector-ranked step picker for the analysis phase. The closure
