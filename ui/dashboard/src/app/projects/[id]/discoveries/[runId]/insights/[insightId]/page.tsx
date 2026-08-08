@@ -119,6 +119,18 @@ export default function InsightDetailPage() {
     .map((stepNum) => explorationLog.find((s) => s.step === stepNum))
     .filter(Boolean);
 
+  // Datasource(s) this insight was derived from (multi-warehouse), taken
+  // from the warehouse_ids of the exploration steps it cites. Empty on a
+  // single-warehouse project (primary steps carry no distinct id), so the
+  // header stays unchanged there.
+  const insightDatasources = Array.from(
+    new Set(
+      sourceSteps
+        .map((s) => s?.warehouse_id)
+        .filter((w): w is string => !!w && w !== 'default'),
+    ),
+  );
+
   // Get the analysis step for this insight's area
   const analysisStep = analysisLog.find((a) => a.area_id === insight.analysis_area);
 
@@ -174,6 +186,9 @@ export default function InsightDetailPage() {
           {insight.affected_count > 0 && (
             <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
           )}
+          {insightDatasources.map((ds) => (
+            <Badge key={ds} color="blue" variant="light" title="Datasource this insight was derived from">{ds}</Badge>
+          ))}
           <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
             feedback={feedback} onUpdate={setFeedback} />
           <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
