@@ -26,7 +26,7 @@ type DiscoveryResult struct {
 	Category      string    `bson:"category" json:"category"`
 	DiscoveryDate time.Time `bson:"discovery_date" json:"discovery_date"`
 
-	RunType        string   `bson:"run_type" json:"run_type"`                 // "full" or "partial"
+	RunType        string   `bson:"run_type" json:"run_type"`                                   // "full" or "partial"
 	AreasRequested []string `bson:"areas_requested,omitempty" json:"areas_requested,omitempty"` // for partial runs
 
 	TotalSteps int           `bson:"total_steps" json:"total_steps"`
@@ -310,10 +310,10 @@ type AnalysisStep struct {
 	DroppedSteps []DroppedAnalysisStep `bson:"dropped_steps,omitempty" json:"dropped_steps,omitempty"`
 
 	// LLM output
-	Response  string `bson:"response" json:"response"` // full LLM response
-	TokensIn  int    `bson:"tokens_in" json:"tokens_in"`
-	TokensOut int    `bson:"tokens_out" json:"tokens_out"`
-	DurationMs int64 `bson:"duration_ms" json:"duration_ms"`
+	Response   string `bson:"response" json:"response"` // full LLM response
+	TokensIn   int    `bson:"tokens_in" json:"tokens_in"`
+	TokensOut  int    `bson:"tokens_out" json:"tokens_out"`
+	DurationMs int64  `bson:"duration_ms" json:"duration_ms"`
 
 	// Parsed results
 	Insights []Insight `bson:"insights" json:"insights"`
@@ -386,9 +386,13 @@ type RecommendationStep struct {
 // the new fields (DocKind, Verifier, Refuter, Combined,
 // RefuterDisabled) are populated by the v5 LLM-native verifier.
 type ValidationResult struct {
-	InsightID    string    `bson:"insight_id" json:"insight_id"`
-	AnalysisArea string    `bson:"analysis_area" json:"analysis_area"`
-	ValidatedAt  time.Time `bson:"validated_at" json:"validated_at"`
+	InsightID    string `bson:"insight_id" json:"insight_id"`
+	AnalysisArea string `bson:"analysis_area" json:"analysis_area"`
+	// WarehouseID is the datasource this doc was verified against
+	// (multi-warehouse) — the datasource the insight/recommendation is
+	// about. Empty on a single-warehouse run.
+	WarehouseID string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	ValidatedAt time.Time `bson:"validated_at" json:"validated_at"`
 
 	// What was claimed (legacy)
 	ClaimedCount  int    `bson:"claimed_count" json:"claimed_count"`

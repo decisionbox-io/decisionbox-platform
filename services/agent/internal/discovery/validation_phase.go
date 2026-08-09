@@ -48,6 +48,16 @@ func (p *validationPhase) forDatasource(dsID string) (verifier.WarehouseInfo, ve
 	return p.wh, p.executor
 }
 
+// stampDatasource returns the datasource id to persist on a validation
+// result — but only on a multi-warehouse run, so single-warehouse results
+// stay unlabeled (warehouse_id omitted).
+func (p *validationPhase) stampDatasource(dsID string) string {
+	if len(p.executorByDS) == 0 {
+		return ""
+	}
+	return dsID
+}
+
 // datasourceForSteps resolves the datasource a doc is primarily about from
 // the warehouse_ids of the exploration steps it cites: the most-cited
 // datasource that has per-datasource wiring (ties broken lexicographically),
@@ -137,7 +147,9 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 
 		// Verify against the datasource this insight is about (multi-
 		// warehouse); single-warehouse resolves to the primary fallback.
-		wh, ex := p.forDatasource(p.datasourceForSteps(ins.SourceSteps, stepByID))
+		dsID := p.datasourceForSteps(ins.SourceSteps, stepByID)
+		wh, ex := p.forDatasource(dsID)
+		vr.WarehouseID = p.stampDatasource(dsID)
 		bundle := verifier.BuildInsightBundle(ins, stepByID, wh, p.disc, p.cfg.Bundle)
 		v, _ := p.agent.Verify(ctx, bundle, ex)
 		vr.Verifier = &v
@@ -161,6 +173,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		vr.Status = string(combined)
 
 		ins.Validation = &valmodels.InsightValidation{
+			WarehouseID: vr.WarehouseID,
 			// Backfill legacy Status so dashboards / consumers that
 			// still read the old field see the new verdict.
 			Status:          string(combined),
@@ -233,7 +246,9 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 				recSteps = append(recSteps, ins.SourceSteps...)
 			}
 		}
-		wh, ex := p.forDatasource(p.datasourceForSteps(recSteps, stepByID))
+		recDS := p.datasourceForSteps(recSteps, stepByID)
+		wh, ex := p.forDatasource(recDS)
+		vr.WarehouseID = p.stampDatasource(recDS)
 		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, wh, p.disc, p.cfg.Bundle)
 		v, _ := p.agent.Verify(ctx, bundle, ex)
 		vr.Verifier = &v
@@ -256,6 +271,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		vr.RefuterDisabled = rd
 		vr.Status = string(combined)
 		rec.Validation = &valmodels.InsightValidation{
+			WarehouseID:     vr.WarehouseID,
 			Verifier:        &v,
 			Refuter:         rPtr,
 			Combined:        combined,

@@ -60,6 +60,19 @@ func TestValidationPhase_ForDatasource(t *testing.T) {
 	}
 }
 
+func TestValidationPhase_StampDatasource(t *testing.T) {
+	// Multi-warehouse: stamp the resolved datasource id.
+	if got := testValPhaseMultiWH().stampDatasource("wh_oracle"); got != "wh_oracle" {
+		t.Errorf("multi-warehouse stamp = %q, want wh_oracle", got)
+	}
+	// Single-warehouse (no per-datasource wiring): stamp nothing so results
+	// stay unlabeled.
+	single := &validationPhase{primaryDS: "default"}
+	if got := single.stampDatasource("default"); got != "" {
+		t.Errorf("single-warehouse stamp = %q, want empty", got)
+	}
+}
+
 func TestValidationPhase_SingleWarehouseFallback(t *testing.T) {
 	// No per-datasource wiring (single-warehouse run): everything resolves
 	// to primaryDS and routes through the fallback wh/executor, unchanged.
