@@ -29,8 +29,13 @@ type Logger struct {
 	// actually hit. Empty on a single-warehouse run. Derive a per-datasource
 	// logger with ForWarehouse.
 	warehouseID string
-	mu          sync.RWMutex
-	enabled     bool
+	// parent, when set, is the run logger a ForWarehouse-derived logger was
+	// cloned from; IsEnabled delegates to it so a derived per-datasource
+	// logger always reflects the run's live enabled state rather than a
+	// snapshot taken at derivation time.
+	parent  *Logger
+	mu      sync.RWMutex
+	enabled bool
 
 	// Stats tracking
 	totalQueries       int
@@ -106,7 +111,7 @@ func (l *Logger) ForWarehouse(warehouseID, provider string) *Logger {
 		discoveryRunID:    l.discoveryRunID,
 		warehouseProvider: whProvider,
 		warehouseID:       warehouseID,
-		enabled:           l.IsEnabled(),
+		parent:            l,
 	}
 }
 
@@ -120,8 +125,15 @@ func (l *Logger) GetAppID() string {
 	return l.appID
 }
 
-// IsEnabled returns whether debug logging is enabled
+// IsEnabled returns whether debug logging is enabled. A ForWarehouse-derived
+// logger delegates to its parent so it reflects the run's live enabled state.
 func (l *Logger) IsEnabled() bool {
+	if l == nil {
+		return false
+	}
+	if l.parent != nil {
+		return l.parent.IsEnabled()
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.enabled
