@@ -698,8 +698,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
-			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens)
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
+			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens, warehouseID)
 		},
 	})
 

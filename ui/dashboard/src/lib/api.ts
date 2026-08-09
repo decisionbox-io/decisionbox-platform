@@ -730,6 +730,9 @@ export interface RunStep {
   row_count: number;
   query_time_ms: number;
   query_fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against
+  // (multi-warehouse); empty on non-query steps + single-warehouse runs.
+  warehouse_id?: string;
   insight_name: string;
   insight_severity: string;
   error: string;

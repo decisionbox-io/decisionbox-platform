@@ -109,7 +109,7 @@ const maxParseRetries = 3
 // this to distinguish real queries from non-query events so the live UI
 // doesn't render a rejected completion as an empty-SQL failed query and
 // the per-run query counter only counts real queries.
-type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int)
+type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string)
 
 // ExplorationEngineOptions configures the exploration engine.
 type ExplorationEngineOptions struct {
@@ -424,7 +424,7 @@ func (e *ExplorationEngine) Explore(
 			result.TotalSteps = step
 
 			if e.onStep != nil {
-				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens)
+				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens, "")
 			}
 			continue
 		}
@@ -481,7 +481,7 @@ func (e *ExplorationEngine) Explore(
 		// Report step for live status
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
-			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens)
+			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
 		}
 
 		// Check if exploration is complete
