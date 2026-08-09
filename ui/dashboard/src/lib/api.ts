@@ -462,6 +462,9 @@ export interface InsightValidation {
   input_tokens?: number;
   output_tokens?: number;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
   combined?: ValidationStatus;
@@ -579,6 +582,9 @@ export interface ValidationLogEntry {
   query: string;
   validated_at: string;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   doc_kind?: ValidationDocKind;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
