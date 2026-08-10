@@ -104,6 +104,9 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 	// restricted, which rejects pods missing any of these. The agent image
 	// (Alpine + static Go binary) already runs as UID 1000 and needs no
 	// capabilities, so these are spec-only changes — no runtime behavior change.
+	// On OpenShift (OPENSHIFT_ENABLED=true) the numeric UID/GID pins are omitted
+	// so the restricted-v2 SCC can assign them from the namespace's allocated
+	// range — see podSecurityContext / containerSecurityContext below.
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      spec.name,
@@ -119,15 +122,7 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					ServiceAccountName: r.config.ServiceAccountName,
 					RestartPolicy:      corev1.RestartPolicyNever,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
-						RunAsUser:    int64Ptr(1000),
-						RunAsGroup:   int64Ptr(1000),
-						FSGroup:      int64Ptr(1000),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
+					SecurityContext:    r.podSecurityContext(),
 					Volumes: []corev1.Volume{
 						{
 							Name:         "tmp",
@@ -136,23 +131,11 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 					},
 					Containers: []corev1.Container{
 						{
-							Name:  "agent",
-							Image: r.config.AgentImage,
-							Args:  spec.args,
-							Env:   envVars,
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-								RunAsNonRoot:             boolPtr(true),
-								RunAsUser:                int64Ptr(1000),
-								RunAsGroup:               int64Ptr(1000),
-								ReadOnlyRootFilesystem:   boolPtr(true),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-								SeccompProfile: &corev1.SeccompProfile{
-									Type: corev1.SeccompProfileTypeRuntimeDefault,
-								},
-							},
+							Name:            "agent",
+							Image:           r.config.AgentImage,
+							Args:            spec.args,
+							Env:             envVars,
+							SecurityContext: r.containerSecurityContext(),
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "tmp", MountPath: "/tmp"},
 							},
@@ -173,6 +156,54 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 		},
 	}
 	return job
+}
+
+// podSecurityContext builds the Job pod's security context. The
+// hardening required by PodSecurity "restricted" (RunAsNonRoot +
+// RuntimeDefault seccomp) is always set. The numeric identity pins
+// (RunAsUser / RunAsGroup / FSGroup = 1000) are set ONLY on vanilla
+// Kubernetes; on OpenShift (config.OpenShift) they are omitted so the
+// restricted-v2 SCC assigns a UID/GID from the namespace's allocated
+// range — pinning 1000 there is rejected as out-of-range. The agent
+// image runs as a non-root USER, so RunAsNonRoot still holds once the
+// SCC injects a range UID; the /tmp emptyDir needs no fsGroup.
+func (r *KubernetesRunner) podSecurityContext() *corev1.PodSecurityContext {
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot: boolPtr(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+	if !r.config.OpenShift {
+		sc.RunAsUser = int64Ptr(1000)
+		sc.RunAsGroup = int64Ptr(1000)
+		sc.FSGroup = int64Ptr(1000)
+	}
+	return sc
+}
+
+// containerSecurityContext builds the agent container's security
+// context. Same rule as podSecurityContext: the always-on hardening
+// (no privilege escalation, RunAsNonRoot, read-only rootfs, drop ALL
+// caps, RuntimeDefault seccomp) is unconditional; the RunAsUser /
+// RunAsGroup pins are dropped on OpenShift so the SCC can assign them.
+func (r *KubernetesRunner) containerSecurityContext() *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		RunAsNonRoot:             boolPtr(true),
+		ReadOnlyRootFilesystem:   boolPtr(true),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+	if !r.config.OpenShift {
+		sc.RunAsUser = int64Ptr(1000)
+		sc.RunAsGroup = int64Ptr(1000)
+	}
+	return sc
 }
 
 func boolPtr(b bool) *bool    { return &b }

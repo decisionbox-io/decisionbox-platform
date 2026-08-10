@@ -50,6 +50,13 @@ export default function ProjectSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // When the deployment routes inference through a managed gateway, the
+  // AI/Embedding + Blurb config is preset and immutable server-side, so we
+  // hide those tabs. Default false (self-hosted / full provider choice);
+  // the flag is fetched alongside the project and the whole Tabs block is
+  // gated on `loading`, so there is no flash either way.
+  const [aiConfigManaged, setAiConfigManaged] = useState(false);
+
   // General tab state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -77,8 +84,13 @@ export default function ProjectSettingsPage() {
   const [savingValidation, setSavingValidation] = useState(false);
 
   // Tab routing — honor `location.hash` so deep-links like
-  // `/projects/:id/settings#advanced` open the right tab.
-  const validTabs = ['general', 'warehouse', 'ai', 'blurb', 'profile', 'advanced'];
+  // `/projects/:id/settings#advanced` open the right tab. The AI/Blurb
+  // tabs drop out of the valid set in managed mode.
+  const validTabs = [
+    'general', 'warehouse',
+    ...(aiConfigManaged ? [] : ['ai', 'blurb']),
+    'profile', 'advanced',
+  ];
   const [activeTab, setActiveTab] = useState<string>('general');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -99,10 +111,18 @@ export default function ProjectSettingsPage() {
   }, [id]);
 
   useEffect(() => {
-    Promise.all([api.getProject(id), api.listLLMProviders()])
-      .then(([proj, llmProvs]) => {
+    Promise.all([
+      api.getProject(id),
+      api.listLLMProviders(),
+      // Never let the capability probe break the settings page: managed
+      // mode and this endpoint ship together, so a failure means an older
+      // API without it — treat that as unmanaged (show config).
+      api.getAppConfig().catch(() => ({ ai_config_managed: false })),
+    ])
+      .then(([proj, llmProvs, appConfig]) => {
         setProject(proj);
         setLlmProviders(llmProvs);
+        setAiConfigManaged(appConfig.ai_config_managed);
         setName(proj.name);
         setDescription(proj.description || '');
         setLanguage(proj.language || 'English');
@@ -244,15 +264,19 @@ export default function ProjectSettingsPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <Tabs value={activeTab} onChange={(v) => { if (v) setActiveTab(v); }} styles={{
-        tab: { fontSize: 13, fontWeight: 500, padding: '8px 16px' },
-        panel: { paddingTop: 20 },
-      }}>
+      <Tabs
+        value={validTabs.includes(activeTab) ? activeTab : 'general'}
+        onChange={(v) => { if (v) setActiveTab(v); }}
+        styles={{
+          tab: { fontSize: 13, fontWeight: 500, padding: '8px 16px' },
+          panel: { paddingTop: 20 },
+        }}
+      >
         <Tabs.List>
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
-          <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>
-          <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>
+          {!aiConfigManaged && <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>}
+          {!aiConfigManaged && <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>}
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
           <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
         </Tabs.List>
@@ -284,10 +308,13 @@ export default function ProjectSettingsPage() {
           <WarehouseConfigPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
         </Tabs.Panel>
 
+        {!aiConfigManaged && (
         <Tabs.Panel value="ai">
           <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
         </Tabs.Panel>
+        )}
 
+        {!aiConfigManaged && (
         <Tabs.Panel value="blurb">
           <SettingsSection>
             <Text size="sm" fw={500}>Blurb Model</Text>
@@ -309,6 +336,7 @@ export default function ProjectSettingsPage() {
             </Group>
           </SettingsSection>
         </Tabs.Panel>
+        )}
 
         {profileSchema && (
           <Tabs.Panel value="profile">
