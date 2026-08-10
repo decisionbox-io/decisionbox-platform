@@ -6,6 +6,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 )
 
 // SecretsHandler handles per-project secret management.
@@ -28,6 +29,17 @@ func (h *SecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	p, err := h.projectRepo.GetByID(r.Context(), projectID)
 	if err != nil || p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	// Managed-inference guard: in managed mode the analysis/blurb/embedding
+	// credentials are the gateway key supplied via env fallback, never a
+	// per-project secret. Refuse writes to those slots — otherwise a
+	// crafted secret write would shadow the env key in resolveCredential
+	// and re-route inference off the gateway. No-op when managed mode is
+	// off (self-hosted keeps full per-project credential control).
+	if managedai.IsManagedSecretKey(key) {
+		writeError(w, http.StatusForbidden, "AI credentials are managed by the inference gateway on this deployment and cannot be set per project")
 		return
 	}
 

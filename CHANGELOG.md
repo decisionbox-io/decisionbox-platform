@@ -8,6 +8,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-28
+
+### Changed
+
+- **Version bumped to 0.21.0** to keep the fleet on one number. 0.20.0's enterprise publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
+
+## [0.20.0] - 2026-07-28
+
+### Changed
+
+- **Version realigned to 0.20.0** so the community platform, enterprise, the enterprise Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
+
+## [0.18.0] - 2026-07-28
+
+### Fixed
+
+- **Agent Job pods rejected on OpenShift** — the Kubernetes runner hardcoded `runAsUser`/`runAsGroup`/`fsGroup` `1000` in every agent Job (Test Connection, discovery, index-schema, validate-doc), which OpenShift's `restricted-v2` SCC rejects as outside the namespace's allocated UID range, so pods never scheduled (Test Connection returned a 504). Setting `OPENSHIFT_ENABLED=true` now omits those pins so the SCC assigns a UID/GID from the namespace range; all other hardening (`runAsNonRoot`, drop `ALL`, read-only root filesystem, `RuntimeDefault` seccomp) is preserved. Vanilla Kubernetes is unchanged — UID `1000` is still pinned by default (`services/api/internal/runner/`).
+
+## [0.17.0] - 2026-07-20
+
+### Added
+
+- **Discovery effort levels + optional `OperationCharger` seam** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `libs/go-common/policy/operation.go`, `services/api/internal/discoverytrigger/registry.go`, `services/api/internal/handler/discoveries.go`. Adds the five discovery effort levels (Lower/Low/Medium/High/Higher → 20/40/60/80/100 steps) and an **optional** per-operation charging seam (`OperationCharger`, nil/no-op by default) that cloud layers on to debit credits per operation. Inert for community/self-hosted builds — no behavior change. Foundational for the cloud credit economy ([control-plane #103](https://github.com/decisionbox-io/decisionbox-cloud-control-plane/issues/103)).
+
+### Changed
+
+- **Dashboard hides the pre-discovery dollar cost estimate on cloud** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `ui/dashboard/src/app/projects/[id]/page.tsx`, for the credits UX.
+
+## [0.16.0] - 2026-07-13
+
+### Changed
+
+- Release version bump — no functional changes since the 0.15.0 release (coordinated re-tag across the platform's published images).
+
+## [0.15.0] - 2026-07-10
+
+### Changed
+
+- Release version bump — no functional changes since the 0.14.0 release (coordinated re-tag/rebuild across the platform's published images).
+
+## [0.14.0] - 2026-07-09
+
+### Changed
+
+- **Shared `secrets.ResolveCredential` helper (dashboard secret → env fallback)** — `libs/go-common/secrets/`. Extracts credential resolution (per-project dashboard secret first, else an env-var fallback such as `LLM_API_KEY`/`EMBEDDING_API_KEY`) into a shared, exported helper so every provider-construction site resolves credentials identically — enabling managed-inference (AI-gateway) mode, where the credential rides the env fallback rather than a per-project secret. [#312](https://github.com/decisionbox-io/decisionbox-platform/pull/312)
+
+## [0.13.0] - 2026-07-08
+
 ### Removed
 
 - **Per-project discovery schedule config (`project.schedule`)** — `services/{agent,api}/internal/models/project.go` / `services/api/models/project.go`, `services/api/internal/handler/projects.go`, `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/{new,[id]/settings}/page.tsx`, `docs/{reference/data-models.md,reference/api.md,concepts/architecture.md,getting-started/quickstart.md,getting-started/first-discovery.md,reference/configuration.md}`. The `ScheduleConfig{ enabled, cron_expr, max_steps }` field stored on each project (with a settings tab and a create-wizard step) was never evaluated — no scheduler ever shipped to act on `cron_expr`, so it was inert configuration. It is removed from the model, the project update API, and the dashboard (the create wizard drops its "Schedule" step; settings drops its "Schedule" tab). No migration is required: an orphan `schedule` sub-document on an existing project doc is ignored. Trigger discovery runs manually via `POST /api/v1/projects/{id}/discover` (unchanged).

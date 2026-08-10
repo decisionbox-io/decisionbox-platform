@@ -19,6 +19,13 @@ export default function NewProjectPage() {
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
 
+  // Managed-inference deployments preset AI config server-side, so the AI,
+  // Embedding, and Blurb wizard steps are skipped entirely. Default false
+  // (self-hosted); fetched with the rest of the config before the stepper
+  // renders, so the step set is fixed for the whole flow (no flash, no
+  // shifting indices mid-wizard).
+  const [aiConfigManaged, setAiConfigManaged] = useState(false);
+
   // Data from API (dynamic)
   const [domains, setDomains] = useState<Domain[]>([]);
   const [warehouseProviders, setWarehouseProviders] = useState<ProviderMeta[]>([]);
@@ -61,12 +68,16 @@ export default function NewProjectPage() {
       api.listWarehouseProviders(),
       api.listLLMProviders(),
       api.listEmbeddingProviders(),
+      // Capability probe — a failure means an older API without it, which
+      // is definitionally unmanaged, so default to showing the AI steps.
+      api.getAppConfig().catch(() => ({ ai_config_managed: false })),
     ])
-      .then(([domainsData, whProviders, llmProvs, embProvs]) => {
+      .then(([domainsData, whProviders, llmProvs, embProvs, appConfig]) => {
         setDomains(domainsData);
         setWarehouseProviders(whProviders);
         setLlmProviders(llmProvs);
         setEmbeddingProviders(embProvs || []);
+        setAiConfigManaged(appConfig.ai_config_managed);
         // Pre-select the first embedding provider (usually OpenAI per
         // the spike winners). The user can change it, but the field
         // starts populated so the common case is one click.
@@ -133,28 +144,39 @@ export default function NewProjectPage() {
   const llmSelectedAuthMethod = llmAuthMethods.find((m) => m.id === llm.authMethod);
   const llmNeedsCredential = (llmSelectedAuthMethod?.fields || []).some((f) => f.type === 'credential');
 
-  const canProceed = [
-    () => name && domain && category,
-    () => warehouse.provider && warehouse.config['dataset'] && (whAuthMethods.length === 0 || warehouse.authMethod) && (!authNeedsCredential || warehouse.credential),
+  // Wizard steps, in order. In managed-inference mode the AI, Embedding,
+  // and Blurb steps drop out — their config is preset server-side. The
+  // set is fixed at load (aiConfigManaged is resolved before the stepper
+  // renders), so `active` indexes a stable list for the whole flow.
+  const stepIds = aiConfigManaged
+    ? ['basics', 'warehouse']
+    : ['basics', 'warehouse', 'ai', 'embedding', 'blurb'];
+
+  // Per-step "can advance" predicate, keyed by step id rather than by
+  // position so dropping the AI steps can't shift the wrong guard onto a
+  // remaining step.
+  const canProceedById: Record<string, () => boolean> = {
+    basics: () => Boolean(name && domain && category),
+    warehouse: () => Boolean(warehouse.provider && warehouse.config['dataset'] && (whAuthMethods.length === 0 || warehouse.authMethod) && (!authNeedsCredential || warehouse.credential)),
     // AI step: must be in the "model" phase (models loaded) and have a
     // model selected. The credentials phase uses its own "Load models"
     // button instead of Next. A user-deployed endpoint is the exception:
     // it has no model picker, so the credentials phase alone is complete
     // once the endpoint ID is filled.
-    () => llm.provider && (
+    ai: () => Boolean(llm.provider && (
       llm.config['endpoint_id']?.trim()
         ? ((llmAuthMethods.length === 0 || llm.authMethod) && (!llmNeedsCredential || llm.apiKey))
         : (aiPhase === 'model' && llm.config['model'])
-    ),
+    )),
     // Embedding step: mandatory — schema indexing won't start without
     // a provider + model. API key required when the provider asks for
     // one (OpenAI, Voyage, etc); cloud-creds providers (Bedrock,
     // Vertex) skip that check.
-    () => Boolean(embedding.provider) && Boolean(embedding.model) && (!embNeedsKey || Boolean(embedding.apiKey)),
+    embedding: () => Boolean(embedding.provider) && Boolean(embedding.model) && (!embNeedsKey || Boolean(embedding.apiKey)),
     // Blurb step: valid when the user either chose "use analysis LLM"
     // (blurb.enabled === false) or picked a model.
-    () => !blurb.enabled || (blurb.provider && blurb.model),
-  ];
+    blurb: () => Boolean(!blurb.enabled || (blurb.provider && blurb.model)),
+  };
 
   // Monotonic request id so a stale response from an in-flight fetch
   // (e.g. user clicked Load models twice, or switched provider mid-
@@ -211,6 +233,10 @@ export default function NewProjectPage() {
             ...(warehouse.authMethod ? { auth_method: warehouse.authMethod } : {}),
           },
         },
+        // In managed mode the server presets llm/embedding/blurb_llm from
+        // the gateway config and ignores anything sent here, so omit them
+        // entirely — the wizard never collected them.
+        ...(aiConfigManaged ? {} : {
         llm: {
           provider: llm.provider,
           // A user-deployed endpoint identifies its own model, so persist
@@ -260,6 +286,7 @@ export default function NewProjectPage() {
               },
             }
           : {}),
+        }),
       });
       // Save secrets in parallel — sequential awaits left a ~1s race
       // window between project creation (which sets
@@ -271,17 +298,22 @@ export default function NewProjectPage() {
       // interval, so in practice the race no longer fires.
       if (project.id) {
         const writes: Promise<unknown>[] = [];
-        if (llm.apiKey) writes.push(api.setSecret(project.id, 'llm-credentials', llm.apiKey));
         if (warehouse.credential) writes.push(api.setSecret(project.id, 'warehouse-credentials', warehouse.credential));
-        // Blurb-LLM credentials are stored separately. Only written when
-        // the user supplied one — otherwise the agent falls back to
-        // `llm-credentials`.
-        if (blurb.enabled && blurb.apiKey) writes.push(api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey));
-        // Embedding credentials — required by the worker pre-flight if
-        // the provider exposes a credential field. Safe to save
-        // conditionally on user input (empty → skip, preserves an
-        // existing stored key on re-creates).
-        if (embedding.apiKey) writes.push(api.setSecret(project.id, 'embedding-credentials', embedding.apiKey));
+        // AI credentials are never written in managed mode — the gateway
+        // key rides the deployment env fallback, and the server refuses
+        // per-project AI credential writes anyway.
+        if (!aiConfigManaged) {
+          if (llm.apiKey) writes.push(api.setSecret(project.id, 'llm-credentials', llm.apiKey));
+          // Blurb-LLM credentials are stored separately. Only written when
+          // the user supplied one — otherwise the agent falls back to
+          // `llm-credentials`.
+          if (blurb.enabled && blurb.apiKey) writes.push(api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey));
+          // Embedding credentials — required by the worker pre-flight if
+          // the provider exposes a credential field. Safe to save
+          // conditionally on user input (empty → skip, preserves an
+          // existing stored key on re-creates).
+          if (embedding.apiKey) writes.push(api.setSecret(project.id, 'embedding-credentials', embedding.apiKey));
+        }
         await Promise.all(writes);
       }
 
@@ -337,6 +369,11 @@ export default function NewProjectPage() {
                 </Card>
               </Stepper.Step>
 
+              {/* AI / Embedding / Blurb steps are hidden in managed-inference
+                  mode — their config is preset server-side. Mantine's Stepper
+                  filters out these `false` children, so the remaining step
+                  indices collapse cleanly. */}
+              {!aiConfigManaged && (
               <Stepper.Step label="AI" description="Provider + model">
                 <Card withBorder p="lg" mt="md">
                   <LLMFormFields
@@ -358,7 +395,9 @@ export default function NewProjectPage() {
                   />
                 </Card>
               </Stepper.Step>
+              )}
 
+              {!aiConfigManaged && (
               <Stepper.Step label="Embedding" description="Vector model">
                 <Card withBorder p="lg" mt="md">
                   <Stack>
@@ -374,7 +413,9 @@ export default function NewProjectPage() {
                   </Stack>
                 </Card>
               </Stepper.Step>
+              )}
 
+              {!aiConfigManaged && (
               <Stepper.Step label="Blurb Model" description="Schema-index LLM">
                 <Card withBorder p="lg" mt="md">
                   <Stack>
@@ -389,6 +430,7 @@ export default function NewProjectPage() {
                   </Stack>
                 </Card>
               </Stepper.Step>
+              )}
 
               <Stepper.Completed>
                 <Card withBorder p="lg" mt="md">
@@ -397,17 +439,23 @@ export default function NewProjectPage() {
                     <Text><strong>Name:</strong> {name}</Text>
                     <Text><strong>Domain:</strong> {domain} / {category}</Text>
                     <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
-                    <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? `endpoint ${llm.config['endpoint_id']}` : llm.config['model']}</Text>
-                    <Text>
-                      <strong>Embedding:</strong>{' '}
-                      {embProviderMeta?.name || embedding.provider} / {embedding.model}
-                    </Text>
-                    <Text>
-                      <strong>Blurb model:</strong>{' '}
-                      {blurb.enabled && blurb.model
-                        ? `${llmProviders.find((p) => p.id === blurb.provider)?.name || blurb.provider} / ${blurb.model}`
-                        : 'same as analysis LLM'}
-                    </Text>
+                    {aiConfigManaged ? (
+                      <Text c="dimmed"><strong>AI:</strong> managed by DecisionBox (analysis, blurb, and embedding preset)</Text>
+                    ) : (
+                      <>
+                        <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? `endpoint ${llm.config['endpoint_id']}` : llm.config['model']}</Text>
+                        <Text>
+                          <strong>Embedding:</strong>{' '}
+                          {embProviderMeta?.name || embedding.provider} / {embedding.model}
+                        </Text>
+                        <Text>
+                          <strong>Blurb model:</strong>{' '}
+                          {blurb.enabled && blurb.model
+                            ? `${llmProviders.find((p) => p.id === blurb.provider)?.name || blurb.provider} / ${blurb.model}`
+                            : 'same as analysis LLM'}
+                        </Text>
+                      </>
+                    )}
                     <Button onClick={handleCreate} loading={loading} fullWidth mt="md">Create Project</Button>
                   </Stack>
                 </Card>
@@ -416,7 +464,7 @@ export default function NewProjectPage() {
 
             <Group justify="flex-end">
               {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>}
-              {active < 5 && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceed[active]?.()}>Next</Button>}
+              {active < stepIds.length && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceedById[stepIds[active]]?.()}>Next</Button>}
             </Group>
           </>
         )}

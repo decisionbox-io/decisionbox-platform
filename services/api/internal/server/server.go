@@ -183,6 +183,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// from the systeminfo registry; the handler holds no component list.
 	mux.HandleFunc("GET /api/v1/system", withRole(viewer, handler.SystemInfo))
 
+	// Deployment capability flags for the dashboard (viewer). Currently
+	// carries ai_config_managed so the UI hides AI-config surfaces when
+	// inference is routed through a managed gateway.
+	mux.HandleFunc("GET /api/v1/config", withRole(viewer, handler.AppConfig))
+
 	// Providers — viewer
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))

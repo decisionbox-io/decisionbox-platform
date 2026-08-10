@@ -26,6 +26,12 @@ type Options struct {
 	Areas []string
 	// MaxSteps overrides the exploration-step budget; 0 = agent default.
 	MaxSteps int
+	// Effort is the customer-facing discovery intensity
+	// (lower/low/medium/high/higher). When set it resolves to a max_steps
+	// value (policy.StepsForEffort) that takes precedence over MaxSteps, so
+	// callers can pick an effort without ever handling a raw step count.
+	// Empty means "use MaxSteps / the agent default".
+	Effort string
 	// MinSteps is the floor on exploration steps. nil applies the
 	// default (60% of the effective MaxSteps); a non-nil 0 disables the
 	// floor; >0 sets an explicit floor.

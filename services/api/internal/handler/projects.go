@@ -15,6 +15,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -232,6 +233,16 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// state string.
 	p.State = models.ProjectStateReady
 
+	// Managed-inference override (no-op unless AI_GATEWAY_URL is set):
+	// replace whatever LLM/blurb/embedding config the request carried
+	// with the operator-configured gateway preset before anything else
+	// looks at it. Whole-object replacement (not field-patching) so a
+	// crafted Config["credentials_json"]/["base_url"] cannot survive.
+	// Placed right after decode so validation, the provider allow-list,
+	// and persistence all see the canonical gateway config — a crafted
+	// POST is overridden (200), never rejected.
+	managedai.Apply(&p)
+
 	if msg := validateLLMConfig(p.LLM.Provider, p.LLM.Config); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -409,6 +420,13 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+
+	// Managed-inference override (no-op unless AI_GATEWAY_URL is set):
+	// canonicalize the incoming AI config to the gateway preset before
+	// the checks and the merge below, so a crafted PUT that sets a
+	// different provider/model/base_url is discarded — the merged
+	// `existing` persists the preset, not the request body.
+	managedai.Apply(&incoming)
 
 	// Plan-gate: if the request changes the LLM provider, validate the
 	// new provider against the plan's allow-list before persisting.
