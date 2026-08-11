@@ -7,6 +7,7 @@ import (
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -121,6 +122,23 @@ func runValidateDoc(cfg *config.Config, jobID string) error {
 	return nil
 }
 
+// docValidationWarehouseID resolves the datasource a doc's manual validation
+// runs against. An explicit discWarehouseID (the warehouse the discovery ran on)
+// is honoured. A legacy discovery carries no warehouse_id — it ran on the
+// original/default warehouse, so resolve to the reserved default when it still
+// exists (NOT the current primary, which may have moved to a newer warehouse the
+// old cited steps never touched); fall back to the effective primary only if the
+// default is gone.
+func docValidationWarehouseID(discWarehouseID string, project *models.Project) string {
+	if discWarehouseID != "" {
+		return discWarehouseID
+	}
+	if _, ok := project.WarehouseByID(models.DefaultWarehouseID); ok {
+		return models.DefaultWarehouseID
+	}
+	return warehouseIDOrDefault(project.PrimaryWarehouse())
+}
+
 func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.DB, job *validationJobDoc, attempt int) error {
 	// Mark which agent step we're in so the dashboard's progress card
 	// can render "Verifier running" / "Refuter running". The verifier
@@ -163,11 +181,23 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, project.ID)
+	// Verify the doc against the datasource its discovery ran on
+	// (multi-warehouse); a legacy discovery carries no warehouse_id and
+	// resolves to the primary. docWH supplies the tenant filter so the
+	// provider and its filter stay on the same warehouse.
+	docWHID := docValidationWarehouseID(discDoc.WarehouseID, project)
+	// Scope per-warehouse governance to the datasource this doc's discovery ran
+	// on, so the verifier's read/step queries are governed exactly as discovery
+	// was (mirrors validate-sql). Project id is stamped too so the governance
+	// engine can resolve the project's policies.
+	ctx = gowarehouse.WithProjectID(ctx, project.ID)
+	ctx = gowarehouse.WithWarehouseID(ctx, docWHID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, docWHID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}
 	defer warehouseProvider.Close()
+	docWH, _ := project.WarehouseByID(docWHID)
 
 	llmProvider, err := initLLMProvider(ctx, cfg, project, secretProvider, project.ID)
 	if err != nil {
@@ -195,7 +225,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 
 	exec := &verifier.DefaultExecutor{
 		SchemaProvider:      schemaProvider,
-		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, FilterField: project.Warehouse.FilterField, FilterValue: project.Warehouse.FilterValue}),
+		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, FilterField: docWH.FilterField, FilterValue: docWH.FilterValue}),
 		StepByID:            stepByID,
 		Cfg:                 vCfg.Bundle,
 		MaxReadStepRowsCall: vCaps.MaxReadStepRowsCall,
@@ -208,14 +238,19 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		WH: verifier.WarehouseInfo{
 			Dialect:     warehouseProvider.SQLDialect(),
 			Dataset:     warehouseProvider.GetDataset(),
-			FilterField: project.Warehouse.FilterField,
-			FilterValue: project.Warehouse.FilterValue,
+			FilterField: docWH.FilterField,
+			FilterValue: docWH.FilterValue,
 		},
 		Disc: verifier.DiscoveryContext{
 			ProjectID: project.ID,
 			RunID:     "", // manual run; no discovery RunID
-			Domain:    project.Domain,
-			Language:  project.EffectiveLanguage(),
+			// Frame the verifier with the domain the discovery actually ran
+			// under. Multi-warehouse discoveries are saved under the primary
+			// warehouse's per-warehouse domain binding (warehouseDomainOr), which
+			// can differ from the project-level domain; fall back to the project
+			// domain for legacy discoveries that carry none.
+			Domain:   firstNonEmpty(discDoc.Domain, project.Domain),
+			Language: project.EffectiveLanguage(),
 		},
 		Executor: exec,
 		DocKind:  valmodels.DocKind(job.DocKind),

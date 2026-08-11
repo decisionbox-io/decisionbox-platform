@@ -45,12 +45,12 @@ type stubCache struct {
 	finds    int32
 	saves    int32
 	savedKey struct {
-		projectID, hash string
-		schemas         map[string]models.TableSchema
+		projectID, warehouseID, hash string
+		schemas                      map[string]models.TableSchema
 	}
 }
 
-func (c *stubCache) Find(_ context.Context, projectID, hash string) (map[string]models.TableSchema, error) {
+func (c *stubCache) Find(_ context.Context, projectID, warehouseID, hash string) (map[string]models.TableSchema, error) {
 	atomic.AddInt32(&c.finds, 1)
 	if c.findErr != nil {
 		return nil, c.findErr
@@ -67,9 +67,10 @@ func (c *stubCache) Find(_ context.Context, projectID, hash string) (map[string]
 	return out, nil
 }
 
-func (c *stubCache) Save(_ context.Context, projectID, hash string, schemas map[string]models.TableSchema) error {
+func (c *stubCache) Save(_ context.Context, projectID, warehouseID, hash string, schemas map[string]models.TableSchema) error {
 	atomic.AddInt32(&c.saves, 1)
 	c.savedKey.projectID = projectID
+	c.savedKey.warehouseID = warehouseID
 	c.savedKey.hash = hash
 	c.savedKey.schemas = schemas
 	return c.saveErr

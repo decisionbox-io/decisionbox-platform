@@ -116,8 +116,13 @@ type LookupResult struct {
 // subset of models.TableSchema so the ai package doesn't import the
 // agent's discovery model directly.
 type LookupTable struct {
-	Table      string                   // qualified "dataset.table"
-	RowCount   int64                    // -1 when unknown
+	Table string // qualified "dataset.table"
+	// Datasource is the warehouse (datasource) id this table lives in.
+	// Empty on a single-warehouse project; set on multi-warehouse so the
+	// engine can tell the model which datasource_id to target when it
+	// queries the table. Populated by the provider from the schema index.
+	Datasource string
+	RowCount   int64 // -1 when unknown
 	Columns    []LookupColumn
 	SampleRows []map[string]interface{}
 }
@@ -139,8 +144,13 @@ type LookupColumn struct {
 // description the schema indexer wrote for this table — typically
 // 2–4 sentences.
 type SearchHit struct {
-	Table    string
-	Blurb    string
-	RowCount int64
-	Score    float64
+	Table string
+	// Datasource is the warehouse (datasource) id that owns this table.
+	// Empty on a single-warehouse project; set on multi-warehouse so a
+	// cross-datasource search tells the model which datasource_id to
+	// target on a follow-up query_data.
+	Datasource string
+	Blurb      string
+	RowCount   int64
+	Score      float64
 }

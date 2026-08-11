@@ -15,6 +15,11 @@ import "time"
 // NOT populate them; the dashboard prefers the new fields when present
 // and falls back to the legacy ones for old docs.
 type InsightValidation struct {
+	// WarehouseID is the datasource this doc was verified against
+	// (multi-warehouse) — the datasource the insight/recommendation is
+	// about. Empty on a single-warehouse run.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+
 	// --- legacy fields (kept for read compatibility) ---
 
 	Status        string    `bson:"status,omitempty"          json:"status,omitempty"`

@@ -61,6 +61,18 @@ type AskTurn struct {
 	InputTokens  int    `bson:"input_tokens,omitempty" json:"input_tokens,omitempty"`
 	OutputTokens int    `bson:"output_tokens,omitempty" json:"output_tokens,omitempty"`
 
+	// Routing telemetry (multi-warehouse). RoutedDatasourceIDs are the
+	// datasource (warehouse) ids the turn actually queried, in first-touched
+	// order — the ground truth of where the answer's evidence came from.
+	// RoutingReason / RoutingConfidence / RoutingClarify are filled by the
+	// evidence-grounded router when it picks the datasource(s); they stay
+	// empty/zero for a single-datasource project or a turn pinned to an
+	// explicit datasource, where no routing decision is made.
+	RoutedDatasourceIDs []string `bson:"routed_datasource_ids,omitempty" json:"routed_datasource_ids,omitempty"`
+	RoutingReason       string   `bson:"routing_reason,omitempty" json:"routing_reason,omitempty"`
+	RoutingConfidence   float64  `bson:"routing_confidence,omitempty" json:"routing_confidence,omitempty"`
+	RoutingClarify      bool     `bson:"routing_clarify,omitempty" json:"routing_clarify,omitempty"`
+
 	CreatedAt   time.Time  `bson:"created_at" json:"created_at"`
 	UpdatedAt   time.Time  `bson:"updated_at" json:"updated_at"`
 	CompletedAt *time.Time `bson:"completed_at,omitempty" json:"completed_at,omitempty"`

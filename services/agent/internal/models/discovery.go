@@ -15,13 +15,18 @@ type InsightValidation = valmodels.InsightValidation
 // DiscoveryResult represents the complete output of a discovery run.
 // Every LLM interaction is stored for traceability and fine-tuning.
 type DiscoveryResult struct {
-	ID            string    `bson:"_id,omitempty" json:"id"`
-	ProjectID     string    `bson:"project_id" json:"project_id"`
+	ID        string `bson:"_id,omitempty" json:"id"`
+	ProjectID string `bson:"project_id" json:"project_id"`
+	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
+	// Empty for legacy / single-warehouse runs. The originating warehouse of
+	// every insight + SQL example flows from here (fine-tuning routes its SQL
+	// validation to the right datasource by it).
+	WarehouseID   string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 	Domain        string    `bson:"domain" json:"domain"`
 	Category      string    `bson:"category" json:"category"`
 	DiscoveryDate time.Time `bson:"discovery_date" json:"discovery_date"`
 
-	RunType        string   `bson:"run_type" json:"run_type"`                 // "full" or "partial"
+	RunType        string   `bson:"run_type" json:"run_type"`                                   // "full" or "partial"
 	AreasRequested []string `bson:"areas_requested,omitempty" json:"areas_requested,omitempty"` // for partial runs
 
 	TotalSteps int           `bson:"total_steps" json:"total_steps"`
@@ -168,6 +173,10 @@ type Summary struct {
 type ExplorationStep struct {
 	Step      int       `bson:"step" json:"step"`
 	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
+	// WarehouseID is the datasource this step queried (multi-warehouse). Empty
+	// for legacy / single-warehouse runs; carried so each SQL example can be
+	// tagged with the datasource it must be validated against.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 
 	// LLM decision
 	Action       string `bson:"action" json:"action"` // query_data, lookup_schema, search_tables, complete, complete_rejected
@@ -311,10 +320,10 @@ type AnalysisStep struct {
 	DroppedSteps []DroppedAnalysisStep `bson:"dropped_steps,omitempty" json:"dropped_steps,omitempty"`
 
 	// LLM output
-	Response  string `bson:"response" json:"response"` // full LLM response
-	TokensIn  int    `bson:"tokens_in" json:"tokens_in"`
-	TokensOut int    `bson:"tokens_out" json:"tokens_out"`
-	DurationMs int64 `bson:"duration_ms" json:"duration_ms"`
+	Response   string `bson:"response" json:"response"` // full LLM response
+	TokensIn   int    `bson:"tokens_in" json:"tokens_in"`
+	TokensOut  int    `bson:"tokens_out" json:"tokens_out"`
+	DurationMs int64  `bson:"duration_ms" json:"duration_ms"`
 
 	// Parsed results
 	Insights []Insight `bson:"insights" json:"insights"`
@@ -387,9 +396,13 @@ type RecommendationStep struct {
 // the new fields (DocKind, Verifier, Refuter, Combined,
 // RefuterDisabled) are populated by the v5 LLM-native verifier.
 type ValidationResult struct {
-	InsightID    string    `bson:"insight_id" json:"insight_id"`
-	AnalysisArea string    `bson:"analysis_area" json:"analysis_area"`
-	ValidatedAt  time.Time `bson:"validated_at" json:"validated_at"`
+	InsightID    string `bson:"insight_id" json:"insight_id"`
+	AnalysisArea string `bson:"analysis_area" json:"analysis_area"`
+	// WarehouseID is the datasource this doc was verified against
+	// (multi-warehouse) — the datasource the insight/recommendation is
+	// about. Empty on a single-warehouse run.
+	WarehouseID string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	ValidatedAt time.Time `bson:"validated_at" json:"validated_at"`
 
 	// What was claimed (legacy)
 	ClaimedCount  int    `bson:"claimed_count" json:"claimed_count"`

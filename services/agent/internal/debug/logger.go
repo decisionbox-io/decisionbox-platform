@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -24,12 +24,22 @@ type Logger struct {
 	// falls back to "warehouse" so the dashboard's "where did this
 	// query come from" column never reads as a blank.
 	warehouseProvider string
-	mu             sync.RWMutex
-	enabled        bool
+	// warehouseID is the datasource id stamped on warehouse-query rows so a
+	// multi-warehouse run attributes each SQL query to the datasource it
+	// actually hit. Empty on a single-warehouse run. Derive a per-datasource
+	// logger with ForWarehouse.
+	warehouseID string
+	// parent, when set, is the run logger a ForWarehouse-derived logger was
+	// cloned from; IsEnabled delegates to it so a derived per-datasource
+	// logger always reflects the run's live enabled state rather than a
+	// snapshot taken at derivation time.
+	parent  *Logger
+	mu      sync.RWMutex
+	enabled bool
 
 	// Stats tracking
 	totalQueries       int
-	totalLLMCalls   int
+	totalLLMCalls      int
 	validationFailures int
 }
 
@@ -81,6 +91,30 @@ func NewLogger(opts LoggerOptions) *Logger {
 	return l
 }
 
+// ForWarehouse returns a logger that stamps a specific datasource's provider
+// (as log_type + component) and warehouse id on its warehouse-query rows, so
+// each per-datasource query executor on a multi-warehouse run attributes its
+// SQL to the datasource it actually hit instead of the run's primary. The
+// derived logger shares the repo, run id, and enabled flag; only the
+// warehouse labels differ. Empty provider keeps the base label.
+func (l *Logger) ForWarehouse(warehouseID, provider string) *Logger {
+	if l == nil {
+		return nil
+	}
+	whProvider := provider
+	if whProvider == "" {
+		whProvider = l.warehouseProvider
+	}
+	return &Logger{
+		repo:              l.repo,
+		appID:             l.appID,
+		discoveryRunID:    l.discoveryRunID,
+		warehouseProvider: whProvider,
+		warehouseID:       warehouseID,
+		parent:            l,
+	}
+}
+
 // GetDiscoveryRunID returns the unique ID for this discovery run
 func (l *Logger) GetDiscoveryRunID() string {
 	return l.discoveryRunID
@@ -91,8 +125,15 @@ func (l *Logger) GetAppID() string {
 	return l.appID
 }
 
-// IsEnabled returns whether debug logging is enabled
+// IsEnabled returns whether debug logging is enabled. A ForWarehouse-derived
+// logger delegates to its parent so it reflects the run's live enabled state.
 func (l *Logger) IsEnabled() bool {
+	if l == nil {
+		return false
+	}
+	if l.parent != nil {
+		return l.parent.IsEnabled()
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.enabled
@@ -136,6 +177,7 @@ func (l *Logger) LogWarehouseQuery(
 		l.appID,
 		l.discoveryRunID,
 		l.warehouseProvider,
+		l.warehouseID,
 		step,
 		phase,
 		query,
@@ -331,7 +373,7 @@ func (l *Logger) GetStats() map[string]interface{} {
 	return map[string]interface{}{
 		"discovery_run_id":    l.discoveryRunID,
 		"total_queries":       l.totalQueries,
-		"total_llm_calls":  l.totalLLMCalls,
+		"total_llm_calls":     l.totalLLMCalls,
 		"validation_failures": l.validationFailures,
 	}
 }

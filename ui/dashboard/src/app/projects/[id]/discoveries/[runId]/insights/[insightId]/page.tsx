@@ -17,6 +17,7 @@ import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
+import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
 import { api, DiscoveryResult, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
@@ -120,6 +121,18 @@ export default function InsightDetailPage() {
     .map((stepNum) => explorationLog.find((s) => s.step === stepNum))
     .filter(Boolean);
 
+  // Datasource(s) this insight was derived from (multi-warehouse), taken
+  // from the warehouse_ids of the exploration steps it cites. Empty on a
+  // single-warehouse project (primary steps carry no distinct id), so the
+  // header stays unchanged there.
+  const insightDatasources = Array.from(
+    new Set(
+      sourceSteps
+        .map((s) => s?.warehouse_id)
+        .filter((w): w is string => !!w && w !== 'default'),
+    ),
+  );
+
   // Get the analysis step for this insight's area
   const analysisStep = analysisLog.find((a) => a.area_id === insight.analysis_area);
 
@@ -175,6 +188,9 @@ export default function InsightDetailPage() {
           {insight.affected_count > 0 && (
             <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
           )}
+          {insightDatasources.map((ds) => (
+            <Badge key={ds} color="blue" variant="light" title="Datasource this insight was derived from">{ds}</Badge>
+          ))}
           <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
             feedback={feedback} onUpdate={setFeedback} />
           <BookmarkButton projectId={id} discoveryId={runId} targetType="insight" targetId={insightId} />
@@ -363,7 +379,10 @@ export default function InsightDetailPage() {
                   {sourceSteps.map((step, idx) => step && (
                     <Card key={idx} withBorder p="sm" radius="sm">
                       <Group justify="space-between" mb={4}>
-                        <Text size="xs" fw={600}>Step {step.step}</Text>
+                        <Group gap={6} align="center">
+                          <Text size="xs" fw={600}>Step {step.step}</Text>
+                          <DatasourceBadge warehouseId={step.warehouse_id} />
+                        </Group>
                         <Group gap="xs">
                           {step.row_count > 0 && <Badge size="xs" variant="outline">{step.row_count} rows</Badge>}
                           {step.execution_time_ms > 0 && <Badge size="xs" variant="outline">{step.execution_time_ms}ms</Badge>}

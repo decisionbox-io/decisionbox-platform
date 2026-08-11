@@ -110,7 +110,7 @@ func TestInteg_UpsertAndSearch_RoundTrip(t *testing.T) {
 			Vector: normalize([]float64{0, 0, 1}),
 		},
 	}
-	if err := testRetriever.Upsert(ctx, projectID, items); err != nil {
+	if err := testRetriever.Upsert(ctx, projectID, "", items); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
@@ -148,14 +148,14 @@ func TestInteg_Upsert_IdempotentByTableName(t *testing.T) {
 		Blurb:  TableBlurb{Table: "t1", Blurb: "first version"},
 		Vector: normalize([]float64{1, 0, 0}),
 	}}
-	_ = testRetriever.Upsert(ctx, projectID, first)
+	_ = testRetriever.Upsert(ctx, projectID, "", first)
 
 	// Re-upsert with a different blurb — same point ID must overwrite, not duplicate.
 	second := []UpsertItem{{
 		Blurb:  TableBlurb{Table: "t1", Blurb: "second version"},
 		Vector: normalize([]float64{1, 0, 0}),
 	}}
-	_ = testRetriever.Upsert(ctx, projectID, second)
+	_ = testRetriever.Upsert(ctx, projectID, "", second)
 
 	hits, _ := testRetriever.Search(ctx, projectID, normalize([]float64{1, 0, 0}), SearchOpts{TopK: 5})
 	if len(hits) != 1 {
@@ -171,7 +171,7 @@ func TestInteg_DropCollection_RemovesAllPoints(t *testing.T) {
 	projectID := "integ-drop"
 
 	_ = testRetriever.EnsureCollection(ctx, projectID, 3)
-	_ = testRetriever.Upsert(ctx, projectID, []UpsertItem{{
+	_ = testRetriever.Upsert(ctx, projectID, "", []UpsertItem{{
 		Blurb:  TableBlurb{Table: "t", Blurb: "x"},
 		Vector: normalize([]float64{1, 0, 0}),
 	}})
@@ -198,7 +198,7 @@ func TestInteg_DatasetFilter(t *testing.T) {
 	t.Cleanup(func() { _ = testRetriever.DropCollection(ctx, projectID) })
 
 	_ = testRetriever.EnsureCollection(ctx, projectID, 3)
-	_ = testRetriever.Upsert(ctx, projectID, []UpsertItem{
+	_ = testRetriever.Upsert(ctx, projectID, "", []UpsertItem{
 		{Blurb: TableBlurb{Table: "sales.a", Dataset: "sales", Blurb: "sales"}, Vector: normalize([]float64{1, 0.1, 0})},
 		{Blurb: TableBlurb{Table: "analytics.a", Dataset: "analytics", Blurb: "analytics"}, Vector: normalize([]float64{1, 0.1, 0})},
 	})
@@ -222,7 +222,7 @@ func TestInteg_MinRowCountFilter(t *testing.T) {
 	t.Cleanup(func() { _ = testRetriever.DropCollection(ctx, projectID) })
 
 	_ = testRetriever.EnsureCollection(ctx, projectID, 3)
-	_ = testRetriever.Upsert(ctx, projectID, []UpsertItem{
+	_ = testRetriever.Upsert(ctx, projectID, "", []UpsertItem{
 		{Blurb: TableBlurb{Table: "small", RowCount: 50}, Vector: normalize([]float64{1, 0, 0})},
 		{Blurb: TableBlurb{Table: "big", RowCount: 100_000}, Vector: normalize([]float64{1, 0, 0})},
 	})
@@ -251,4 +251,60 @@ func normalize(v []float64) []float64 {
 		out[i] = x / n
 	}
 	return out
+}
+
+// TestInteg_MultiWarehouse_NoCollisionAndPerWarehouseDelete is the
+// real-Qdrant regression for must-fix #2: two warehouses that expose the
+// SAME dataset.table must coexist as distinct points (no last-write-wins
+// collision), a warehouse-scoped search returns only its own tables, and
+// deleting one warehouse's points leaves the other's intact.
+func TestInteg_MultiWarehouse_NoCollisionAndPerWarehouseDelete(t *testing.T) {
+	ctx := context.Background()
+	projectID := "integ-multi-wh"
+	t.Cleanup(func() { _ = testRetriever.DropCollection(ctx, projectID) })
+
+	if err := testRetriever.EnsureCollection(ctx, projectID, 3); err != nil {
+		t.Fatalf("EnsureCollection: %v", err)
+	}
+	// Same qualified table name in two warehouses.
+	if err := testRetriever.Upsert(ctx, projectID, "wh_a", []UpsertItem{
+		{Blurb: TableBlurb{Table: "public.customers", Dataset: "public", Blurb: "A customers"}, Vector: normalize([]float64{1, 0, 0})},
+	}); err != nil {
+		t.Fatalf("upsert wh_a: %v", err)
+	}
+	if err := testRetriever.Upsert(ctx, projectID, "wh_b", []UpsertItem{
+		{Blurb: TableBlurb{Table: "public.customers", Dataset: "public", Blurb: "B customers"}, Vector: normalize([]float64{1, 0, 0})},
+	}); err != nil {
+		t.Fatalf("upsert wh_b: %v", err)
+	}
+
+	// Unfiltered (cross-warehouse) search sees BOTH points — no collision.
+	all, err := testRetriever.Search(ctx, projectID, normalize([]float64{1, 0, 0}), SearchOpts{TopK: 10})
+	if err != nil {
+		t.Fatalf("cross-warehouse search: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("cross-warehouse search should see 2 points (one per warehouse), got %d", len(all))
+	}
+
+	// Warehouse-scoped search returns only that warehouse's table.
+	aHits, err := testRetriever.Search(ctx, projectID, normalize([]float64{1, 0, 0}), SearchOpts{TopK: 10, WarehouseFilter: "wh_a"})
+	if err != nil {
+		t.Fatalf("wh_a search: %v", err)
+	}
+	if len(aHits) != 1 || aHits[0].Blurb.WarehouseID != "wh_a" || aHits[0].Blurb.Blurb != "A customers" {
+		t.Fatalf("wh_a-scoped search wrong: %+v", aHits)
+	}
+
+	// Deleting wh_a's points leaves wh_b intact (must-fix #2).
+	if err := testRetriever.DeleteWarehousePoints(ctx, projectID, "wh_a"); err != nil {
+		t.Fatalf("delete wh_a points: %v", err)
+	}
+	after, err := testRetriever.Search(ctx, projectID, normalize([]float64{1, 0, 0}), SearchOpts{TopK: 10})
+	if err != nil {
+		t.Fatalf("search after delete: %v", err)
+	}
+	if len(after) != 1 || after[0].Blurb.WarehouseID != "wh_b" {
+		t.Fatalf("per-warehouse delete should leave only wh_b, got %+v", after)
+	}
 }

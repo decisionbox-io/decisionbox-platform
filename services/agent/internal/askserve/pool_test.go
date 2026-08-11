@@ -14,10 +14,10 @@ import (
 func countingBuilder(builds, closes *int32) ProjectBuilder {
 	return func(ctx context.Context, projectID string) (*ProjectRuntime, error) {
 		atomic.AddInt32(builds, 1)
-		return &ProjectRuntime{
-			Model:   "m",
-			Closers: []func() error{func() error { atomic.AddInt32(closes, 1); return nil }},
-		}, nil
+		return NewProjectRuntime(ProjectRuntimeOptions{
+			Model:         "m",
+			SharedClosers: []func() error{func() error { atomic.AddInt32(closes, 1); return nil }},
+		}), nil
 	}
 }
 
@@ -135,7 +135,7 @@ func TestPool_BuildErrorRetries(t *testing.T) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			return nil, errors.New("transient connect failure")
 		}
-		return &ProjectRuntime{Model: "m"}, nil
+		return NewProjectRuntime(ProjectRuntimeOptions{Model: "m"}), nil
 	}
 	p := newPool(builder, Config{PoolMaxProjects: 10, ConnectTimeout: time.Second})
 	defer p.closeAll()

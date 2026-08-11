@@ -10,6 +10,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -28,7 +29,10 @@ import (
 // Exit contract: 0 on success, non-zero on any error. The worker reads
 // the exit code; stdout and stderr carry structured logs only.
 func runIndexSchema(cfg *config.Config, projectID, runID string) error {
-	ctx := context.Background()
+	// Scope warehouse middleware (per-warehouse governance) to this project; each
+	// indexWarehouse call stamps the warehouse id below, so a governed datasource
+	// masks its own sample data in the generated blurbs.
+	ctx := gowarehouse.WithProjectID(context.Background(), projectID)
 
 	mongoClient, err := initMongoDB(ctx, cfg)
 	if err != nil {
@@ -55,15 +59,6 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	if err != nil {
 		return err
 	}
-
-	// Warehouse + executor: reused from discovery so the sampling path is
-	// identical (SampleQueryBuilder, SQL fixer), keeping blurb inputs the
-	// same shape exploration would see.
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
-	if err != nil {
-		return err
-	}
-	defer warehouseProvider.Close()
 
 	// Embedding provider is mandatory for schema indexing (plan §3.7).
 	// If it's missing, fail fast with a message the API will relay to
@@ -127,43 +122,8 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("qdrant health check: %w", err)
 	}
 
-	// Discovery + executor. Executor runs sample-data queries during
-	// schema discovery; we provide no SQLFixer so a broken sample-query
-	// surfaces as a skipped table rather than triggering an LLM round-
-	// trip (blurb indexing is already LLM-heavy; cascading fixer calls
-	// would multiply cost).
-	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:   warehouseProvider,
-		FilterField: project.Warehouse.FilterField,
-		FilterValue: project.Warehouse.FilterValue,
-	})
 	progressRepo := database.NewSchemaIndexProgressRepository(db)
-
-	// Per-dataset totals accumulate into the progress doc so the
-	// dashboard's progress bar is populated during schema_discovery
-	// (the longest leg on ERP-scale warehouses, previously invisible
-	// on the UI). Callbacks are synchronous — the per-table queries
-	// take seconds each, Mongo UpdateOne takes ~1ms, so we're fine.
-	onTablesListed := func(_ string, total int) {
-		if err := progressRepo.SetCounters(ctx, projectID, total, 0); err != nil {
-			applog.WithError(err).Warn("SetCounters on listed tables failed")
-		}
-	}
-	onTableDiscovered := func(_, _ string, _ bool) {
-		if err := progressRepo.IncrementDone(ctx, projectID, 1); err != nil {
-			applog.WithError(err).Debug("IncrementDone during discovery failed")
-		}
-	}
-
-	schemaDiscovery := discovery.NewSchemaDiscovery(discovery.SchemaDiscoveryOptions{
-		Warehouse:         warehouseProvider,
-		Executor:          executor,
-		ProjectID:         projectID,
-		Datasets:          project.Warehouse.GetDatasets(),
-		Filter:            buildFilterClause(project.Warehouse.FilterField, project.Warehouse.FilterValue),
-		OnTablesListed:    onTablesListed,
-		OnTableDiscovered: onTableDiscovered,
-	})
+	schemaCache := database.NewSchemaCacheRepository(db)
 
 	workers := envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers)
 	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
@@ -187,39 +147,141 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return fmt.Errorf("blurb generator: %w", err)
 	}
 
-	warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
-	schemaCache := database.NewSchemaCacheRepository(db)
-
-	indexer := &discovery.SchemaIndexer{
-		Discovery:     schemaDiscovery,
-		Blurber:       gen,
-		Embedder:      embeddingProvider,
-		Retriever:     retriever,
-		Progress:      progressRepo,
-		Cache:         schemaCache,
-		WarehouseHash: warehouseHash,
+	// Per-dataset totals accumulate into the (project-level) progress doc so the
+	// dashboard's bar is populated during schema_discovery (the longest leg on
+	// ERP-scale warehouses). Callbacks are synchronous — per-table queries take
+	// seconds each, Mongo UpdateOne ~1ms, so we're fine. Only the primary
+	// warehouse reports progress: the doc is single-warehouse-shaped, so letting
+	// each secondary reset the counters would make the bar bounce.
+	onTablesListed := func(_ string, total int) {
+		if err := progressRepo.SetCounters(ctx, projectID, total, 0); err != nil {
+			applog.WithError(err).Warn("SetCounters on listed tables failed")
+		}
+	}
+	onTableDiscovered := func(_, _ string, _ bool) {
+		if err := progressRepo.IncrementDone(ctx, projectID, 1); err != nil {
+			applog.WithError(err).Debug("IncrementDone during discovery failed")
+		}
 	}
 
-	start := time.Now()
-	stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{
-		ProjectID:       projectID,
-		RunID:           runID,
-		BlurbModelLabel: blurbProvider + "/" + blurbModel,
-		DomainBlurb:     firstNonEmpty(project.Description, ""),
-	})
-	if err != nil {
-		return fmt.Errorf("build index: %w", err)
+	// indexWarehouse discovers + indexes one datasource into the project's shared
+	// schema cache + Qdrant collection (every row/point is tagged with the
+	// warehouse id; BuildIndex clears only this warehouse's prior points, never
+	// the shared collection). The sampling executor's filter MUST match the
+	// discovery filter (queryexec verifies it before every sample query). Only
+	// the primary reports progress (see above), so secondaries pass a nil
+	// reporter + nil callbacks.
+	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) error {
+		whID := warehouseIDOrDefault(wh)
+		// Scope per-warehouse governance to this datasource so its sample queries
+		// (and thus the blurbs) are masked under its own policies.
+		ctx = gowarehouse.WithWarehouseID(ctx, whID)
+		provider, err := initWarehouseProvider(ctx, project, whID, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+
+		executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
+			Warehouse:   provider,
+			FilterField: wh.FilterField,
+			FilterValue: wh.FilterValue,
+		})
+
+		var progress discovery.ProgressReporter
+		var onListed func(string, int)
+		var onDiscovered func(string, string, bool)
+		if reportProgress {
+			progress = progressRepo
+			onListed, onDiscovered = onTablesListed, onTableDiscovered
+		}
+
+		schemaDiscovery := discovery.NewSchemaDiscovery(discovery.SchemaDiscoveryOptions{
+			Warehouse:         provider,
+			Executor:          executor,
+			ProjectID:         projectID,
+			Datasets:          wh.GetDatasets(),
+			Filter:            buildFilterClause(wh.FilterField, wh.FilterValue),
+			OnTablesListed:    onListed,
+			OnTableDiscovered: onDiscovered,
+		})
+
+		indexer := &discovery.SchemaIndexer{
+			Discovery:     schemaDiscovery,
+			Blurber:       gen,
+			Embedder:      embeddingProvider,
+			Retriever:     retriever,
+			Progress:      progress,
+			Cache:         schemaCache,
+			WarehouseHash: discovery.WarehouseConfigHash(wh),
+			WarehouseID:   whID,
+		}
+
+		start := time.Now()
+		stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{
+			ProjectID:       projectID,
+			RunID:           runID,
+			BlurbModelLabel: blurbProvider + "/" + blurbModel,
+			DomainBlurb:     firstNonEmpty(project.Description, ""),
+		})
+		if err != nil {
+			return fmt.Errorf("build index: %w", err)
+		}
+		applog.WithFields(applog.Fields{
+			"warehouse_id":     whID,
+			"tables":           stats.Tables,
+			"dropped":          stats.Dropped,
+			"blurb_tokens_in":  stats.BlurbTokensIn,
+			"blurb_tokens_out": stats.BlurbTokensOut,
+			"wall_clock_ms":    time.Since(start).Milliseconds(),
+		}).Info("Warehouse schema index completed")
+		return nil
 	}
 
-	applog.WithFields(applog.Fields{
-		"tables":           stats.Tables,
-		"dropped":          stats.Dropped,
-		"blurb_tokens_in":  stats.BlurbTokensIn,
-		"blurb_tokens_out": stats.BlurbTokensOut,
-		"wall_clock_ms":    time.Since(start).Milliseconds(),
-	}).Info("Schema index completed")
+	// Index every configured datasource so ask-serve's search_tables /
+	// lookup_schema and the router's evidence work across all of them, not just
+	// the primary. A legacy / single-warehouse project yields exactly one
+	// warehouse here, so its behaviour is unchanged. The primary indexes first
+	// and its failure fails the run (the API worker's lifecycle depends on that);
+	// secondaries are best-effort so one broken datasource can't block the rest.
+	for i, wh := range warehousesToIndex(project) {
+		if i == 0 {
+			if err := indexWarehouse(ctx, wh, true); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := indexWarehouse(ctx, wh, false); err != nil {
+			applog.WithError(err).WithField("warehouse_id", wh.ID).
+				Warn("secondary warehouse schema index failed; ask-serve will lack its catalog until it re-indexes")
+		}
+	}
 
 	return nil
+}
+
+// warehousesToIndex returns the datasources to index for a project, primary
+// first and de-duplicated by (normalised) id. A legacy / single-warehouse
+// project yields exactly its one warehouse, so indexing behaviour is unchanged.
+func warehousesToIndex(project *models.Project) []models.WarehouseConfig {
+	norm := func(id string) string {
+		if id == "" {
+			return models.DefaultWarehouseID
+		}
+		return id
+	}
+	primary := project.PrimaryWarehouse()
+	out := []models.WarehouseConfig{primary}
+	seen := map[string]bool{norm(primary.ID): true}
+	for _, wh := range project.EffectiveWarehouses() {
+		id := norm(wh.ID)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, wh)
+	}
+	return out
 }
 
 // resolveBlurbLLM picks the provider + model + credential for blurb

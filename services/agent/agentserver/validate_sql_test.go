@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // fakeValidator is a minimal sqlValidator for testing the batch loop
@@ -159,5 +160,68 @@ func TestSQLValidationMaxStatements(t *testing.T) {
 				t.Errorf("sqlValidationMaxStatements() = %d, want %d", got, c.want)
 			}
 		})
+	}
+}
+
+// A validation job routes to its own warehouse_id (multi-warehouse); a legacy
+// job with none falls back to the project's primary (resolved through the
+// accessor so a stale primary id doesn't fail), preserving the old
+// single-warehouse behaviour.
+func TestClaimWarehouseID(t *testing.T) {
+	proj := &models.Project{
+		PrimaryWarehouseID: "wh_primary",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_primary", Provider: "postgres", Datasets: []string{"public"}},
+			{ID: "wh_b", Provider: "redshift", Datasets: []string{"crm"}},
+		},
+	}
+	cases := []struct {
+		name string
+		job  string
+		want string
+	}{
+		{name: "explicit secondary wins", job: "wh_b", want: "wh_b"},
+		{name: "explicit primary honoured", job: "wh_primary", want: "wh_primary"},
+		{name: "empty falls back to primary", job: "", want: "wh_primary"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := claimWarehouseID(&sqlValidationJobClaim{WarehouseID: c.job}, proj)
+			if got != c.want {
+				t.Errorf("claimWarehouseID(job=%q) = %q, want %q", c.job, got, c.want)
+			}
+		})
+	}
+
+	// A stale primary_warehouse_id (points at a removed warehouse, no default
+	// entry) must fall back to the first configured warehouse via the accessor.
+	stale := &models.Project{
+		PrimaryWarehouseID: "wh_gone",
+		Warehouses:         []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres", Datasets: []string{"public"}}},
+	}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, stale); got != "wh_a" {
+		t.Errorf("stale primary should resolve to the first warehouse, got %q", got)
+	}
+
+	// An unpinned SQL validation job compiles against the project's PRIMARY
+	// warehouse (the contract documented on SQLValidationJob.WarehouseID) — even
+	// after the primary has moved to a newer warehouse. This deliberately differs
+	// from doc validation, which prefers the historical default warehouse.
+	moved := &models.Project{
+		PrimaryWarehouseID: "wh_b",
+		Warehouses: []models.WarehouseConfig{
+			{ID: models.DefaultWarehouseID, Provider: "postgres", Datasets: []string{"public"}},
+			{ID: "wh_b", Provider: "redshift", Datasets: []string{"crm"}},
+		},
+	}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, moved); got != "wh_b" {
+		t.Errorf("unpinned SQL job = %q, want wh_b (the project's primary, per the model contract)", got)
+	}
+
+	// A legacy single-warehouse project (legacy `warehouse` field) resolves to
+	// the synthesised default id.
+	legacy := &models.Project{Warehouse: models.WarehouseConfig{Provider: "bigquery", Datasets: []string{"ds"}}}
+	if got := claimWarehouseID(&sqlValidationJobClaim{}, legacy); got != models.DefaultWarehouseID {
+		t.Errorf("legacy project + legacy job = %q, want %q", got, models.DefaultWarehouseID)
 	}
 }

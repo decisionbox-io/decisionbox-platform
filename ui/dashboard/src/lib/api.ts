@@ -465,6 +465,9 @@ export interface InsightValidation {
   input_tokens?: number;
   output_tokens?: number;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
   combined?: ValidationStatus;
@@ -510,6 +513,9 @@ export interface ExplorationStep {
   execution_time_ms: number;
   error: string;
   fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against on a
+  // multi-warehouse project (empty/absent on a single-warehouse project).
+  warehouse_id?: string;
 }
 
 export interface AnalysisLogStep {
@@ -582,6 +588,9 @@ export interface ValidationLogEntry {
   query: string;
   validated_at: string;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   doc_kind?: ValidationDocKind;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
@@ -727,6 +736,9 @@ export interface RunStep {
   row_count: number;
   query_time_ms: number;
   query_fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against
+  // (multi-warehouse); empty on non-query steps + single-warehouse runs.
+  warehouse_id?: string;
   insight_name: string;
   insight_severity: string;
   error: string;

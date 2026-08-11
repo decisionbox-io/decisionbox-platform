@@ -165,7 +165,7 @@ func TestNewExplorationEngine_Defaults(t *testing.T) {
 func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 	called := false
 	var gotIn, gotOut int
-	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 		called = true
 		gotIn = inputTokens
 		gotOut = outputTokens
@@ -185,7 +185,7 @@ func TestNewExplorationEngine_WithOnStep(t *testing.T) {
 
 	// Invoke the callback. Pass non-zero tokens to verify the parameters
 	// thread through to the receiver.
-	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "", 123, 45)
+	engine.onStep(1, "query_data", "thinking", "SELECT 1", 5, 100, false, "", 123, 45, "")
 	if !called {
 		t.Error("onStep callback was not invoked")
 	}
@@ -202,7 +202,7 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 	var gotFixed bool
 	var gotInputTokens, gotOutputTokens int
 
-	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+	cb := func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 		gotStep = stepNum
 		gotAction = action
 		gotThinking = thinking
@@ -220,7 +220,7 @@ func TestOnStepCallback_Parameters(t *testing.T) {
 		OnStep:   cb,
 	})
 
-	engine.onStep(3, "query_data", "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error", 800, 200)
+	engine.onStep(3, "query_data", "checking retention", "SELECT COUNT(*) FROM sessions", 42, 250, true, "some error", 800, 200, "wh_b")
 
 	if gotStep != 3 {
 		t.Errorf("stepNum = %d, want 3", gotStep)
@@ -407,7 +407,8 @@ func TestExploration_ExecuteAction_QueryData(t *testing.T) {
 	})
 
 	engine := &ExplorationEngine{
-		executor: executor,
+		executors:         map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor},
+		primaryDatasource: defaultDatasourceID,
 	}
 
 	action := &ExplorationAction{
@@ -446,7 +447,7 @@ func TestExploration_ExecuteAction_QueryData_BindsExecutorStep(t *testing.T) {
 		Warehouse:  wh,
 		MaxRetries: 1,
 	})
-	engine := &ExplorationEngine{executor: executor}
+	engine := &ExplorationEngine{executors: map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor}, primaryDatasource: defaultDatasourceID}
 
 	for _, want := range []int{1, 4, 9} {
 		step := &models.ExplorationStep{Step: want}
@@ -569,7 +570,7 @@ func TestExploration_Explore_WithOnStepCallback(t *testing.T) {
 		Executor: executor,
 		MaxSteps: 5,
 		Dataset:  "test_dataset",
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 			callbackCalled = true
 			cbInputTokens = inputTokens
 			cbOutputTokens = outputTokens
@@ -701,7 +702,8 @@ func TestExploration_ExecuteAction_QueryData_Error(t *testing.T) {
 	})
 
 	engine := &ExplorationEngine{
-		executor: executor,
+		executors:         map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor},
+		primaryDatasource: defaultDatasourceID,
 	}
 
 	action := &ExplorationAction{
@@ -737,7 +739,7 @@ func TestExploration_ExecuteQuery_Success_WithMoreThan10Rows(t *testing.T) {
 		MaxRetries: 1,
 	})
 
-	engine := &ExplorationEngine{executor: executor}
+	engine := &ExplorationEngine{executors: map[string]*queryexec.QueryExecutor{defaultDatasourceID: executor}, primaryDatasource: defaultDatasourceID}
 
 	action := &ExplorationAction{
 		Action:       "query_data",
@@ -1267,7 +1269,7 @@ func TestMinSteps_CallbackCarriesRejectedAction(t *testing.T) {
 	opts := ExplorationEngineOptions{
 		MaxSteps: 10,
 		MinSteps: 3,
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 			captured = append(captured, capturedStep{
 				step:         stepNum,
 				action:       action,
@@ -1343,7 +1345,7 @@ func TestStatusReporter_CallbackShapeCompiles(t *testing.T) {
 	// signature can be passed through OnStep. If the signature drifts this
 	// file stops compiling.
 	_ = ExplorationEngineOptions{
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 			_ = stepNum
 			_ = action
 			_ = thinking

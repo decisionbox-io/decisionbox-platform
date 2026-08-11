@@ -64,9 +64,19 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
+	args := []string{"--test-connection", target}
+	// For the warehouse target, an optional ?warehouse_id= selects a specific
+	// datasource (the Data Sources UI passes it to test a secondary); empty
+	// tests the primary, preserving the original single-warehouse behavior.
+	if target == "warehouse" {
+		if whid := r.URL.Query().Get("warehouse_id"); whid != "" {
+			args = append(args, "--warehouse-id", whid)
+		}
+	}
+
 	result, err := h.runner.RunSync(ctx, runner.RunSyncOptions{
 		ProjectID: projectID,
-		Args:      []string{"--test-connection", target},
+		Args:      args,
 	})
 
 	if err != nil {

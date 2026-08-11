@@ -150,6 +150,41 @@ func TestListValidationResults_HappyPath(t *testing.T) {
 	}
 }
 
+func TestListValidationResults_WarehouseIDFlowsThroughResponse(t *testing.T) {
+	// #161 regression: the agent persists warehouse_id on each validation
+	// doc (ValidationResult.WarehouseID) so multi-warehouse runs can attribute
+	// each verified insight to the datasource it was checked against. The API's
+	// ValidationLogEntry has to mirror that tag or the dashboard drops the
+	// datasource badge on every validation-log row.
+	repo := &mockDiscoveryLogRepo{
+		validation: []models.ValidationLogEntry{
+			{InsightID: "i1", Status: "confirmed", WarehouseID: "wh_oracle"},
+		},
+	}
+	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/validation-results", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.ListValidationResults(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	// writeJSON wraps the slice in {"data": [...]} — decode through that
+	// wrapper so the assertion reflects the wire shape the dashboard sees.
+	var wrapper struct {
+		Data []models.ValidationLogEntry `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(wrapper.Data) != 1 {
+		t.Fatalf("entries = %d, want 1 (body: %s)", len(wrapper.Data), w.Body.String())
+	}
+	if got := wrapper.Data[0].WarehouseID; got != "wh_oracle" {
+		t.Errorf("WarehouseID = %q, want %q (body: %s)", got, "wh_oracle", w.Body.String())
+	}
+}
+
 func TestGetRecommendationLog_HappyPath(t *testing.T) {
 	repo := &mockDiscoveryLogRepo{rec: &database.RecommendationLogEntry{InsightCount: 5}}
 	h := newDiscoveriesHandlerWithLogs(t, repo, nil)

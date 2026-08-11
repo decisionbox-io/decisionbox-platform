@@ -194,6 +194,95 @@ func TestProjectsHandler_Create_Success_MockRepo(t *testing.T) {
 	}
 }
 
+// The ungated create path must not configure a multi-warehouse project: it
+// enforces neither the multi_warehouse feature gate nor per-warehouse
+// data-source quota. More than one warehouse is rejected; additional
+// datasources go through the dedicated gated flow.
+func TestProjectsHandler_Create_RejectsMultipleWarehouses(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Multi","domain":"gaming","category":"match3","warehouses":[` +
+		`{"id":"wh_a","provider":"postgres","datasets":["public"]},` +
+		`{"id":"wh_b","provider":"redshift","datasets":["crm"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (multi-warehouse create must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 0 {
+		t.Errorf("no project should be persisted on a rejected multi-warehouse create, got %d", len(repo.projects))
+	}
+}
+
+// A body that sets BOTH the legacy `warehouse` field and the new `warehouses`
+// slice is a split-brain config: EffectiveWarehouses() would pick the slice and
+// persist a divergent legacy field. It must be rejected, not silently stored.
+func TestProjectsHandler_Create_RejectsBothWarehouseFields(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"Split","domain":"gaming","category":"match3",` +
+		`"warehouse":{"provider":"bigquery","datasets":["legacy"]},` +
+		`"warehouses":[{"id":"wh_a","provider":"postgres","datasets":["public"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (both warehouse fields set); body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 0 {
+		t.Errorf("no project should be persisted for a split-brain create, got %d", len(repo.projects))
+	}
+}
+
+// A single datasource supplied via the new `warehouses` slice (empty legacy
+// `warehouse` field) must still enqueue schema indexing — previously the
+// enqueue keyed off the legacy field and such a project would never index.
+func TestProjectsHandler_Create_SingleWarehousesEntryEnqueuesIndexing(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	body := `{"name":"WH only","domain":"gaming","category":"match3","warehouses":[` +
+		`{"id":"wh_a","provider":"postgres","datasets":["public"]}]}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 1 {
+		t.Fatalf("repo should have 1 project, got %d", len(repo.projects))
+	}
+	var saved *models.Project
+	for _, p := range repo.projects {
+		saved = p
+	}
+	if saved.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("schema_index_status = %q, want %q (a warehouses-only create must enqueue indexing)",
+			saved.SchemaIndexStatus, models.SchemaIndexStatusPendingIndexing)
+	}
+	// The single `warehouses` entry is normalized down to the canonical legacy
+	// `warehouse` shape so legacy readers (settings UI, data-source counter) see
+	// it; the slice is cleared to avoid a split-brain config.
+	if saved.Warehouse.Provider != "postgres" {
+		t.Errorf("legacy warehouse.provider = %q, want postgres (single warehouses entry must normalize into it)", saved.Warehouse.Provider)
+	}
+	if len(saved.Warehouses) != 0 {
+		t.Errorf("warehouses slice = %v, want empty after normalization", saved.Warehouses)
+	}
+}
+
 // TestProjectsHandler_Create_ForcesReadyState pins the invariant
 // that the core /projects route can ONLY create a ready project.
 // A client (or a stale dashboard) that includes a non-ready state
@@ -581,6 +670,238 @@ func TestProjectsHandler_Update_Success_MockRepo(t *testing.T) {
 	updated, _ := repo.GetByID(context.Background(), p.ID)
 	if updated.Name != "Updated Name" {
 		t.Errorf("repo name = %q, want 'Updated Name'", updated.Name)
+	}
+}
+
+// A multi-warehouse project cannot have its legacy `warehouse` field edited
+// through the settings PUT: EffectiveWarehouses() ignores that field once
+// `warehouses` is populated, so accepting the edit would silently no-op (return
+// success while the agent keeps using the stored datasources). Reject it.
+func TestProjectsHandler_Update_RejectsLegacyWarehouseEditOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:               "Multi",
+		Domain:             "gaming",
+		Category:           "match3",
+		PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_a", Provider: "postgres"},
+			{ID: "wh_b", Provider: "redshift"},
+		},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouse":{"provider":"bigquery","datasets":["x"]}}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (legacy warehouse edit on a multi-warehouse project must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 || updated.Warehouse.Provider != "" {
+		t.Errorf("multi-warehouse project must be unchanged, got warehouse=%q warehouses=%d", updated.Warehouse.Provider, len(updated.Warehouses))
+	}
+}
+
+// The settings PUT does not manage datasources — a direct `warehouses` edit
+// would decode but be silently ignored by the field merge, returning 200 while
+// changing nothing and skipping the gated multi-warehouse checks. Reject it.
+func TestProjectsHandler_Update_RejectsDirectWarehousesEdit(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:      "Single",
+		Domain:    "gaming",
+		Category:  "match3",
+		Warehouse: models.WarehouseConfig{Provider: "bigquery"},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouses":[{"id":"wh_a","provider":"postgres","datasets":["public"]},{"id":"wh_b","provider":"redshift","datasets":["crm"]}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (direct warehouses edit must be rejected); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 0 {
+		t.Errorf("project must be unchanged, got %d warehouses", len(updated.Warehouses))
+	}
+}
+
+// A full-object round-trip PUT on an already-multi-warehouse project (GET →
+// tweak one unrelated setting → PUT the whole object, `warehouses` echoed back)
+// must succeed — the guard only blocks ADDING datasources to a project that has
+// none, not re-sending the current ones.
+func TestProjectsHandler_Update_AllowsRoundTripOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name:               "Multi",
+		Domain:             "gaming",
+		Category:           "match3",
+		PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_a", Provider: "postgres"},
+			{ID: "wh_b", Provider: "redshift"},
+		},
+	}
+	repo.Create(context.Background(), p)
+
+	// Client echoes back the same warehouses while renaming the project.
+	body := `{"name":"Renamed","warehouses":[{"id":"wh_a","provider":"postgres"},{"id":"wh_b","provider":"redshift"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (round-trip on a multi-warehouse project must be allowed); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" {
+		t.Errorf("name = %q, want Renamed", updated.Name)
+	}
+	if len(updated.Warehouses) != 2 {
+		t.Errorf("warehouses must be preserved, got %d", len(updated.Warehouses))
+	}
+}
+
+// Editing (adding/removing) datasources on an already-multi-warehouse project
+// through the settings route must be rejected, not silently ignored — only an
+// exact echo is allowed.
+func TestProjectsHandler_Update_RejectsChangedWarehousesOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	// Remove wh_b + add wh_c — a real datasource edit.
+	body := `{"warehouses":[{"id":"wh_a","provider":"postgres"},{"id":"wh_c","provider":"bigquery"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (changed warehouses must be rejected, not silently ignored); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 || updated.Warehouses[1].ID != "wh_b" {
+		t.Errorf("stored warehouses must be unchanged, got %+v", updated.Warehouses)
+	}
+}
+
+// An explicit "warehouses":[] on a multi-warehouse project is a removal attempt
+// and must be rejected — not silently treated as "field omitted" (which would
+// preserve the datasources and return a misleading 200).
+func TestProjectsHandler_Update_RejectsExplicitEmptyWarehousesOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"warehouses":[]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (explicit empty warehouses is a removal); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if len(updated.Warehouses) != 2 {
+		t.Errorf("stored warehouses must be unchanged, got %d", len(updated.Warehouses))
+	}
+}
+
+// An omitted `warehouses` field (a settings PUT that only touches other fields)
+// must NOT be treated as a removal — it is left alone.
+func TestProjectsHandler_Update_OmittedWarehousesIsNotAnEdit(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "wh_a",
+		Warehouses: []models.WarehouseConfig{{ID: "wh_a", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"name":"Renamed"}` // no warehouse fields at all
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (omitted warehouses is not an edit); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" || len(updated.Warehouses) != 2 {
+		t.Errorf("got name=%q warehouses=%d, want Renamed / 2 preserved", updated.Name, len(updated.Warehouses))
+	}
+}
+
+// A round-trip that echoes BOTH the legacy `warehouse` (a dual-written primary)
+// and `warehouses` unchanged, while editing an unrelated setting, must succeed —
+// the echoed legacy warehouse is not treated as an edit.
+func TestProjectsHandler_Update_AllowsEchoedLegacyWarehouseOnMultiWarehouse(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Multi", Domain: "gaming", Category: "match3", PrimaryWarehouseID: "default",
+		Warehouse:  models.WarehouseConfig{ID: "default", Provider: "postgres"},
+		Warehouses: []models.WarehouseConfig{{ID: "default", Provider: "postgres"}, {ID: "wh_b", Provider: "redshift"}},
+	}
+	repo.Create(context.Background(), p)
+
+	body := `{"name":"Renamed","warehouse":{"id":"default","provider":"postgres"},` +
+		`"warehouses":[{"id":"default","provider":"postgres"},{"id":"wh_b","provider":"redshift"}]}`
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (echoed legacy warehouse + warehouses must be allowed); body = %s", w.Code, w.Body.String())
+	}
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.Name != "Renamed" || len(updated.Warehouses) != 2 {
+		t.Errorf("round-trip must apply the name and preserve warehouses, got name=%q warehouses=%d", updated.Name, len(updated.Warehouses))
 	}
 }
 

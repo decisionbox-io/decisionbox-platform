@@ -465,12 +465,13 @@ func TestSchemaIndex_Cancel_EmptyProjectID_400(t *testing.T) {
 // lastErr drive the GetCacheInfo path; called/err drive the
 // InvalidateCache path.
 type mockCacheInvalidator struct {
-	called       []string
-	err          error
-	lastCachedAt time.Time
-	lastErr      error
-	tables       []string
-	tablesErr    error
+	called                []string
+	err                   error
+	lastCachedAt          time.Time
+	lastErr               error
+	tables                []string
+	tablesErr             error
+	listTablesWarehouseID string // captures the warehouse id ListTables was scoped to
 }
 
 func (m *mockCacheInvalidator) Invalidate(_ context.Context, projectID string) error {
@@ -482,7 +483,8 @@ func (m *mockCacheInvalidator) LastCachedAt(_ context.Context, _ string) (time.T
 	return m.lastCachedAt, m.lastErr
 }
 
-func (m *mockCacheInvalidator) ListTables(_ context.Context, _ string) ([]string, error) {
+func (m *mockCacheInvalidator) ListTables(_ context.Context, _, warehouseID string) ([]string, error) {
+	m.listTablesWarehouseID = warehouseID
 	return m.tables, m.tablesErr
 }
 

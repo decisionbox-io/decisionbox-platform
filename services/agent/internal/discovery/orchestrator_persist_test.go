@@ -119,6 +119,28 @@ func TestPersistSplitLogs_ForwardsAllPayloads(t *testing.T) {
 	}
 }
 
+// Each persisted exploration step is tagged with the discovery's warehouse id
+// (multi-warehouse), so downstream SQL-example validation / fine-tuning routes
+// statements to the datasource the step queried. An already-tagged step is left
+// untouched.
+func TestPersistSplitLogs_StampsWarehouseIDOnExplorationSteps(t *testing.T) {
+	fake := &fakeDiscoveryLogPersister{}
+	o := &Orchestrator{projectID: "p", runID: "r", warehouseID: "wh_b", discoveryLogRepo: fake}
+
+	o.persistSplitLogs(context.Background(), "d",
+		[]models.ExplorationStep{{Step: 1}, {Step: 2, WarehouseID: "wh_other"}}, nil, nil, nil)
+
+	if len(fake.gotExploration) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(fake.gotExploration))
+	}
+	if fake.gotExploration[0].WarehouseID != "wh_b" {
+		t.Errorf("untagged step got warehouse_id %q, want wh_b", fake.gotExploration[0].WarehouseID)
+	}
+	if fake.gotExploration[1].WarehouseID != "wh_other" {
+		t.Errorf("pre-tagged step must be preserved, got %q", fake.gotExploration[1].WarehouseID)
+	}
+}
+
 func TestPersistSplitLogs_NilRepoIsNoOp(t *testing.T) {
 	// No persister wired and no payloads — must not panic and must do
 	// nothing observable. Mirrors the production path where unit-test

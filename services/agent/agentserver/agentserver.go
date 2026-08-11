@@ -21,16 +21,16 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
-	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
+	goversion "github.com/decisionbox-io/decisionbox/libs/go-common/version"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
-	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"   // registers "aws"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure" // registers "azure"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -39,12 +39,12 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
 	// LLM provider registrations
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"         // registers "claude"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"         // registers "openai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"         // registers "ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"      // registers "vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"        // registers "bedrock" (stub)
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry"  // registers "azure-foundry"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"       // registers "bedrock" (stub)
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"        // registers "claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"        // registers "ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"        // registers "openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"     // registers "vertex-ai"
 
 	// Warehouse provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"   // registers "bigquery"
@@ -78,6 +78,7 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
+		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection warehouse: the specific datasource id to test. Empty = the project's primary (back-compat).")
 		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit; 'ask-serve' to run the always-up ad-hoc data Q&A service (a long-lived multi-project HTTP server; does not take --project-id). Default: run discovery.")
 		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
@@ -169,7 +170,7 @@ func Run() {
 	// Test connection mode runs before logger init — its own logging is minimal
 	if *testConnection != "" {
 		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
-		if err := runTestConnection(cfg, *projectID, *testConnection); err != nil {
+		if err := runTestConnection(cfg, *projectID, *testConnection, *testWarehouseID); err != nil {
 			applog.WithError(err).Error("Test connection failed")
 			applog.Sync()
 			result, _ := json.Marshal(map[string]interface{}{
@@ -259,26 +260,56 @@ func initSecretProvider(mongoClient *gomongo.Client) (gosecrets.Provider, error)
 	return sp, nil
 }
 
-func initWarehouseProvider(ctx context.Context, project *models.Project, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
-	if project.Warehouse.Provider == "" {
+// initWarehouseProvider builds a live warehouse provider for one of the
+// project's warehouses. warehouseID selects which one; an empty id
+// resolves to the project's primary warehouse (the behaviour for legacy
+// single-warehouse projects). Credentials are read from the
+// per-warehouse secret key (warehouse.CredentialsKey) — the primary /
+// "default" warehouse keeps the legacy "warehouse-credentials" key, so
+// existing projects need no secret migration.
+// warehouseDomainOr returns the warehouse's own domain-pack binding
+// (multi-warehouse: each datasource carries the slug of the pack generated for
+// it), falling back to the project-level domain for legacy / single-warehouse
+// projects that never had a per-warehouse binding.
+func warehouseDomainOr(wh models.WarehouseConfig, projectDomain string) string {
+	if wh.Domain != "" {
+		return wh.Domain
+	}
+	return projectDomain
+}
+
+// warehouseIDOrDefault returns the warehouse's id, mapping the empty id to the
+// reserved default (matching the model accessors + schema_retrieve). Callers use
+// it wherever an id feeds a warehouse-scoped lookup, so an id-less default entry
+// filters on a concrete "default" rather than being read as "all warehouses".
+func warehouseIDOrDefault(wh models.WarehouseConfig) string {
+	if wh.ID == "" {
+		return models.DefaultWarehouseID
+	}
+	return wh.ID
+}
+
+func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
+	wh, ok := project.WarehouseByID(warehouseID)
+	if !ok || wh.Provider == "" {
 		return nil, fmt.Errorf("no warehouse provider configured")
 	}
 
-	datasets := project.Warehouse.GetDatasets()
+	datasets := wh.Datasets
 	if len(datasets) == 0 {
 		return nil, fmt.Errorf("no datasets configured in project")
 	}
 
 	whCfg := gowarehouse.ProviderConfig{
-		"project_id": project.Warehouse.ProjectID,
+		"project_id": wh.ProjectID,
 		"dataset":    datasets[0],
-		"location":   project.Warehouse.Location,
+		"location":   wh.Location,
 	}
-	for k, v := range project.Warehouse.Config {
+	for k, v := range wh.Config {
 		whCfg[k] = v
 	}
 
-	whCreds, err := secretProvider.Get(ctx, projectID, "warehouse-credentials")
+	whCreds, err := secretProvider.Get(ctx, projectID, gowarehouse.CredentialsKey(wh.ID))
 	if err == nil && whCreds != "" {
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
@@ -286,15 +317,16 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, secretP
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
 	}
 
-	provider, err := gowarehouse.NewProvider(project.Warehouse.Provider, whCfg)
+	provider, err := gowarehouse.NewProvider(wh.Provider, whCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", project.Warehouse.Provider, err)
+		return nil, fmt.Errorf("failed to create warehouse provider (%s): %w", wh.Provider, err)
 	}
 	provider = gowarehouse.ApplyMiddleware(provider)
 
 	applog.WithFields(applog.Fields{
-		"provider": project.Warehouse.Provider,
-		"datasets": datasets,
+		"provider":     wh.Provider,
+		"warehouse_id": wh.ID,
+		"datasets":     datasets,
 	}).Info("Warehouse provider initialized")
 
 	return provider, nil
@@ -444,7 +476,7 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 
 // --- Test connection ---
 
-func runTestConnection(cfg *config.Config, projectID, target string) error {
+func runTestConnection(cfg *config.Config, projectID, target, warehouseID string) error {
 	switch target {
 	case "warehouse", "llm", "embedding", "blurb-llm":
 	default:
@@ -477,21 +509,40 @@ func runTestConnection(cfg *config.Config, projectID, target string) error {
 
 	switch target {
 	case "warehouse":
-		provider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+		// Test the requested datasource; an empty id resolves to the primary
+		// through the accessor (not the raw id) so a stale / removed
+		// primary_warehouse_id falls back to the first configured warehouse
+		// instead of failing the test outright. This is what lets the Data
+		// Sources UI test a specific secondary, not just the primary.
+		testWHID := warehouseID
+		if testWHID == "" {
+			testWHID = warehouseIDOrDefault(project.PrimaryWarehouse())
+		}
+		testWH, ok := project.WarehouseByID(testWHID)
+		if !ok || testWH.Provider == "" {
+			return fmt.Errorf("no warehouse %q configured", testWHID)
+		}
+		// Scope per-warehouse governance to the datasource under test so its
+		// HealthCheck runs under that warehouse's policies (mirrors discovery /
+		// ask-serve / validation). Project id was stamped above.
+		whCtx := gowarehouse.WithWarehouseID(ctx, testWHID)
+		provider, err := initWarehouseProvider(whCtx, project, testWHID, secretProvider, projectID)
 		if err != nil {
 			return err
 		}
 		defer provider.Close()
 
-		if err := provider.HealthCheck(ctx); err != nil {
+		if err := provider.HealthCheck(whCtx); err != nil {
 			return fmt.Errorf("warehouse health check failed: %w", err)
 		}
 
-		datasets := project.Warehouse.GetDatasets()
+		// Report the datasource we actually health-checked (the one under
+		// test), not the legacy singular Warehouse field — the two diverge on a
+		// real multi-warehouse project where Warehouse is empty/stale.
 		out, err := json.Marshal(map[string]interface{}{
 			"success":  true,
-			"provider": project.Warehouse.Provider,
-			"datasets": datasets,
+			"provider": testWH.Provider,
+			"datasets": testWH.GetDatasets(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to marshal result: %w", err)
@@ -642,11 +693,49 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return err
 	}
 
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, projectID)
+	// Resolve the primary through the accessor (not the raw id) so a stale /
+	// removed primary_warehouse_id falls back to the first configured warehouse
+	// instead of failing discovery outright.
+	primaryWHID := warehouseIDOrDefault(project.PrimaryWarehouse())
+	// Scope per-warehouse governance to the datasource discovery runs against, so
+	// its exploration/sample queries are masked under that warehouse's policies
+	// (project id was stamped above; ask-serve / index-schema / validation stamp
+	// the same pair).
+	ctx = gowarehouse.WithWarehouseID(ctx, primaryWHID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, primaryWHID, secretProvider, projectID)
 	if err != nil {
 		return err
 	}
 	defer warehouseProvider.Close()
+
+	// Multi-warehouse (multi-hop) discovery: open a live provider per
+	// datasource so the exploration agent can target one datasource per
+	// statement and hop between them across steps. The primary built above
+	// is reused; each secondary is opened here (its own governance scope)
+	// and closed on return. A secondary that fails to open is skipped with
+	// a warning so the run degrades to the reachable datasources rather than
+	// failing. Single-warehouse projects leave warehouseProviders nil and
+	// take the unchanged primary-only path in the orchestrator.
+	effectiveWarehouses := project.EffectiveWarehouses()
+	var warehouseProviders map[string]gowarehouse.Provider
+	if len(effectiveWarehouses) > 1 {
+		warehouseProviders = map[string]gowarehouse.Provider{primaryWHID: warehouseProvider}
+		for _, wh := range effectiveWarehouses {
+			id := warehouseIDOrDefault(wh)
+			if id == primaryWHID {
+				continue
+			}
+			whCtx := gowarehouse.WithWarehouseID(ctx, id)
+			p, provErr := initWarehouseProvider(whCtx, project, id, secretProvider, projectID)
+			if provErr != nil {
+				applog.WithError(provErr).WithField("datasource_id", id).
+					Warn("multi-warehouse discovery: secondary datasource provider failed to open; it will be skipped")
+				continue
+			}
+			warehouseProviders[id] = p
+			defer p.Close()
+		}
+	}
 
 	llm, err := initLLMProvider(ctx, cfg, project, secretProvider, projectID)
 	if err != nil {
@@ -721,13 +810,20 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		applog.WithError(err).Warn("Failed to ensure run step indexes")
 	}
 
-	datasets := project.Warehouse.GetDatasets()
+	// Discovery runs against the primary warehouse — take its datasets and
+	// filter from that warehouse config, NOT the legacy singular Warehouse
+	// field (they diverge once a project has real per-warehouse entries and
+	// the primary isn't the legacy one). For a legacy/single-warehouse
+	// project PrimaryWarehouse() synthesises from Warehouse, so this is
+	// identical to the old behaviour.
+	primaryWH := project.PrimaryWarehouse()
+	datasets := primaryWH.GetDatasets()
 
 	// Schema-retrieval wiring (required — discovery is gated on
 	// schema_index_status == "ready", so the cache + Qdrant collection
 	// are guaranteed to exist by the time we get here).
 	schemaCache := database.NewSchemaCacheRepository(db)
-	warehouseHash := discovery.WarehouseConfigHash(project.Warehouse)
+	warehouseHash := discovery.WarehouseConfigHash(primaryWH)
 
 	schemaRetriever, err := newSchemaRetriever(cfg)
 	if err != nil {
@@ -756,10 +852,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		return fmt.Errorf("init run step index: %w", err)
 	}
 	applog.WithFields(applog.Fields{
-		"run_id":          runID,
-		"collection":      discovery.RunStepIndexCollectionName(runID),
-		"embedder_model":  embeddingProvider.ModelName(),
-		"embedder_dims":   embeddingProvider.Dimensions(),
+		"run_id":         runID,
+		"collection":     discovery.RunStepIndexCollectionName(runID),
+		"embedder_model": embeddingProvider.ModelName(),
+		"embedder_dims":  embeddingProvider.Dimensions(),
 	}).Info("Run-step index ready")
 
 	// Boot-time orphan sweep: drop per-run collections from previous
@@ -781,36 +877,39 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:        aiClient,
-		Warehouse:       warehouseProvider,
-		ContextRepo:      contextRepo,
-		DiscoveryRepo:    discoveryRepo,
-		DiscoveryLogRepo: discoveryLogRepo,
-		FeedbackRepo:     database.NewFeedbackRepository(db),
-		DebugLogRepo:     debugLogRepo,
-		RunRepo:          runRepo,
-		RunStepRepo:      runStepRepo,
-		RunID:            runID,
-		ProjectID:       projectID,
-		Domain:          project.Domain,
-		Category:        project.Category,
-		Language:        project.Language,
-		Profile:         project.Profile,
-		ProjectPrompts:  project.Prompts,
-		Datasets:        datasets,
-		FilterField:     project.Warehouse.FilterField,
-		FilterValue:     project.Warehouse.FilterValue,
-		LLMProvider:       project.LLM.Provider,
-		LLMModel:          project.LLM.Model,
-		WarehouseProvider: project.Warehouse.Provider,
-		EnableDebugLogs:   enableDebugLogs,
-		VectorStore:       qdrantProvider,
-		EmbeddingProvider: embeddingProvider,
-		EmbedIndexStore:   discovery.NewMongoEmbedIndexStore(db),
-		SchemaRetriever:   schemaRetriever,
-		SchemaCache:       schemaCache,
-		WarehouseHash:     warehouseHash,
-		RunStepIndex:      runStepIndex,
+		AIClient:           aiClient,
+		Warehouse:          warehouseProvider,
+		ContextRepo:        contextRepo,
+		DiscoveryRepo:      discoveryRepo,
+		DiscoveryLogRepo:   discoveryLogRepo,
+		FeedbackRepo:       database.NewFeedbackRepository(db),
+		DebugLogRepo:       debugLogRepo,
+		RunRepo:            runRepo,
+		RunStepRepo:        runStepRepo,
+		RunID:              runID,
+		ProjectID:          projectID,
+		Domain:             warehouseDomainOr(primaryWH, project.Domain),
+		Category:           project.Category,
+		Language:           project.Language,
+		Profile:            project.Profile,
+		ProjectPrompts:     project.Prompts,
+		Datasets:           datasets,
+		FilterField:        primaryWH.FilterField,
+		FilterValue:        primaryWH.FilterValue,
+		LLMProvider:        project.LLM.Provider,
+		LLMModel:           project.LLM.Model,
+		WarehouseProvider:  primaryWH.Provider,
+		EnableDebugLogs:    enableDebugLogs,
+		VectorStore:        qdrantProvider,
+		EmbeddingProvider:  embeddingProvider,
+		EmbedIndexStore:    discovery.NewMongoEmbedIndexStore(db),
+		SchemaRetriever:    schemaRetriever,
+		SchemaCache:        schemaCache,
+		WarehouseHash:      warehouseHash,
+		WarehouseID:        warehouseIDOrDefault(primaryWH),
+		WarehouseProviders: warehouseProviders,
+		Warehouses:         effectiveWarehouses,
+		RunStepIndex:       runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -1057,8 +1156,8 @@ func discoveryRunContext(parent context.Context) (context.Context, context.Cance
 		switch {
 		case err != nil:
 			applog.WithFields(applog.Fields{
-				"env":     discoveryMaxDurationEnv,
-				"value":   raw,
+				"env":      discoveryMaxDurationEnv,
+				"value":    raw,
 				"fallback": defaultDiscoveryMaxDuration.String(),
 			}).Warn("invalid DISCOVERY_MAX_DURATION; falling back to default")
 		case parsed == 0:
@@ -1066,8 +1165,8 @@ func discoveryRunContext(parent context.Context) (context.Context, context.Cance
 			return parent, func() {}
 		case parsed < 0:
 			applog.WithFields(applog.Fields{
-				"env":     discoveryMaxDurationEnv,
-				"value":   raw,
+				"env":      discoveryMaxDurationEnv,
+				"value":    raw,
 				"fallback": defaultDiscoveryMaxDuration.String(),
 			}).Warn("negative DISCOVERY_MAX_DURATION; falling back to default")
 		default:
