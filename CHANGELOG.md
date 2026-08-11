@@ -12,13 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Version bumped to 0.21.0** to keep the fleet on one number. 0.20.0's enterprise publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
+- **Version bumped to 0.21.0** to keep the fleet on one number. The 0.20.0 image publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
 
 ## [0.20.0] - 2026-07-28
 
 ### Changed
 
-- **Version realigned to 0.20.0** so the community platform, enterprise, the enterprise Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
+- **Version realigned to 0.20.0** so the community platform, its Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
 
 ## [0.18.0] - 2026-07-28
 
