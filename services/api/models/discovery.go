@@ -46,6 +46,10 @@ type Insight struct {
 	AnalysisArea string                 `bson:"analysis_area" json:"analysis_area"`
 	Name         string                 `bson:"name" json:"name"`
 	Description  string                 `bson:"description" json:"description"`
+	// DescriptionMd is the Markdown rendition of Description, rendered
+	// formatted in the dashboard. Description stays plain text. Omitted on
+	// unformatted/legacy insights.
+	DescriptionMd string                `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Severity     string                 `bson:"severity" json:"severity"`
 	AffectedCount int                   `bson:"affected_count" json:"affected_count"`
 	RiskScore     float64               `bson:"risk_score" json:"risk_score"`
@@ -63,6 +67,10 @@ type Recommendation struct {
 	Category    string `bson:"category" json:"category"`
 	Title       string `bson:"title" json:"title"`
 	Description string `bson:"description" json:"description"`
+	// DescriptionMd is the Markdown rendition of Description, rendered
+	// formatted in the dashboard. Description stays plain text. Omitted on
+	// unformatted/legacy recommendations.
+	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Priority    int    `bson:"priority" json:"priority"`
 	TargetSegment string `bson:"target_segment" json:"target_segment"`
 	SegmentSize   int    `bson:"segment_size" json:"segment_size"`

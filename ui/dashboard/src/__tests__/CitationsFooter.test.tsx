@@ -53,6 +53,21 @@ describe('sourceHref', () => {
     const src = makeSource({ id: 'r-4', type: 'recommendation', discovery_id: '' });
     expect(sourceHref('p-1', src)).toBe('/projects/p-1/recommendations');
   });
+
+  test('routes knowledge-source citations to the project sources page', () => {
+    // A source_chunk citation is a document, not a discovery finding. Without
+    // an explicit branch it falls through to the recommendations page, which
+    // is not where the cited document lives.
+    const src = makeSource({ id: 'src-9', type: 'source_chunk', discovery_id: '' });
+    expect(sourceHref('p-1', src)).toBe('/projects/p-1/sources');
+  });
+
+  test('ignores discovery_id on knowledge-source citations', () => {
+    // Nothing populates discovery_id for a document citation, but a stale or
+    // echoed value must not send the user to a discovery detail route.
+    const src = makeSource({ id: 'src-9', type: 'source_chunk', discovery_id: 'd-7' });
+    expect(sourceHref('p-1', src)).toBe('/projects/p-1/sources');
+  });
 });
 
 describe('numberSources', () => {

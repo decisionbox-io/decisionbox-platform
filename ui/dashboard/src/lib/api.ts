@@ -384,6 +384,9 @@ export interface Insight {
   analysis_area: string;
   name: string;
   description: string;
+  // Markdown rendition of `description`, rendered formatted on the detail
+  // view. `description` stays plain text. Absent on unformatted/legacy insights.
+  description_md?: string;
   severity: string;
   affected_count: number;
   risk_score: number;
@@ -476,6 +479,9 @@ export interface Recommendation {
   category: string;
   title: string;
   description: string;
+  // Markdown rendition of `description`. `description` stays plain text.
+  // Absent on unformatted/legacy recommendations.
+  description_md?: string;
   priority: number;
   target_segment: string;
   segment_size: number;
@@ -848,7 +854,13 @@ export interface CrossProjectSearchRequest {
 
 export interface SearchResultItem {
   id: string;
-  type: 'insight' | 'recommendation';
+  // 'source_chunk' is returned when an answer cites a knowledge-source
+  // document (an upload, URL, or a file synced from external storage)
+  // rather than a discovery finding. Such a citation has no
+  // discovery_id, and links to the project's knowledge sources instead
+  // of an insight or recommendation — callers switching on this field
+  // must handle it rather than defaulting it to a recommendation.
+  type: 'insight' | 'recommendation' | 'source_chunk';
   score: number;
   name: string;
   title?: string;

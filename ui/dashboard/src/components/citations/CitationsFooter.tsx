@@ -16,6 +16,14 @@ import type { SearchResultItem } from '@/lib/api';
  * clicks through.
  */
 export function sourceHref(projectId: string, src: SearchResultItem): string {
+  // A knowledge-source citation is not a discovery finding: it has no
+  // discovery run and no detail page, so it links to the project's
+  // knowledge sources. That route ships in the enterprise overlay, which
+  // is also the only build that can produce this citation type —
+  // knowledge sources are an enterprise feature.
+  if (src.type === 'source_chunk') {
+    return `/projects/${projectId}/sources`;
+  }
   const type = src.type === 'insight' ? 'insights' : 'recommendations';
   if (src.discovery_id) {
     return `/projects/${projectId}/discoveries/${src.discovery_id}/${type}/${src.id}`;

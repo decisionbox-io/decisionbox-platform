@@ -59,6 +59,17 @@ type SearchOpts struct {
 	AnalysisArea   string   // optional: filter by area
 	Limit          int      // max results to return
 	MinScore       float64  // optional: minimum similarity threshold
+
+	// ExcludeSourceTypes drops points whose `source_type` payload is in
+	// this list.
+	//
+	// Knowledge-source chunks all share one `type` ("source_chunk") and
+	// distinguish note from document only by `source_type`, so Types
+	// cannot separate them. Filtering here rather than after the search
+	// matters: excluded points would otherwise occupy the top-K window
+	// and be discarded by the caller, silently returning fewer results
+	// than Limit while matching points sat just below the cut.
+	ExcludeSourceTypes []string
 }
 
 // SearchResult represents a single vector search match.
