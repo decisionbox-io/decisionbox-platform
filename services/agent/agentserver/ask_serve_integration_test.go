@@ -40,6 +40,9 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -124,6 +127,7 @@ func TestInteg_AskServe_EndToEnd(t *testing.T) {
 	// -> a grounded answer. Any extra call still terminates, so the turn can
 	// never hang waiting on the model.
 	const whID = "wh_pg"
+	const whID2 = "wh_pg2"
 	const answerText = "There are exactly 3 events in the warehouse."
 	var calls int32
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,13 +162,38 @@ func TestInteg_AskServe_EndToEnd(t *testing.T) {
 		"name":     "ask-serve-it",
 		"domain":   "test",
 		"category": "test",
-		"warehouses": bson.A{bson.M{
-			"id":       whID,
-			"label":    "PG",
-			"provider": "postgres",
-			"datasets": bson.A{"public"},
-			"config":   bson.M{"auth_method": "connection_string"},
-		}},
+		// Two datasources so the builder exercises the multi-warehouse path
+		// (per-datasource schema knowledge, cards, primary-first ordering). The
+		// primary carries a cached schema + card; the secondary carries a card
+		// but no cache (the "not indexed yet" branch). The turn is pinned to the
+		// primary below, so only it is ever connected/queried.
+		"warehouses": bson.A{
+			bson.M{
+				"id":          whID,
+				"label":       "PG primary",
+				"description": "primary events warehouse",
+				"provider":    "postgres",
+				"datasets":    bson.A{"public"},
+				"config":      bson.M{"auth_method": "connection_string"},
+				"card": bson.M{
+					"subject_areas": bson.A{"events"},
+					"key_entities":  bson.A{"event"},
+					"key_metrics":   bson.A{"event count"},
+				},
+			},
+			bson.M{
+				"id":          whID2,
+				"label":       "PG secondary",
+				"description": "secondary datasource (not queried in this test)",
+				"provider":    "postgres",
+				"datasets":    bson.A{"public"},
+				"config":      bson.M{"auth_method": "connection_string"},
+				"card": bson.M{
+					"subject_areas": bson.A{"reference"},
+					"key_entities":  bson.A{"lookup"},
+				},
+			},
+		},
 		"primary_warehouse_id": whID,
 		// Ollama has no native tool-calling, so the server takes the JSON-text
 		// loop; the host points at our scripted stub.
@@ -187,6 +216,37 @@ func TestInteg_AskServe_EndToEnd(t *testing.T) {
 	}
 	if err := secretProvider.Set(ctx, projectID, gowarehouse.CredentialsKey(whID), connStr); err != nil {
 		t.Fatalf("seed warehouse-credentials: %v", err)
+	}
+
+	// Seed a cached table schema for the datasource so the per-project builder's
+	// schema-knowledge path runs (schemaCache.Find -> NewCacheSchemaProvider ->
+	// per-datasource lookup + table set), not just the query path. The hash is
+	// computed from the *loaded* warehouse so it matches what the builder keys
+	// its lookup on. No Qdrant is needed: cached lookup works connection-free;
+	// only semantic search would need a retriever.
+	db := database.New(mongoClient)
+	loadedProject, err := database.NewProjectRepository(db).GetByID(ctx, projectID)
+	if err != nil {
+		t.Fatalf("reload project for schema-cache hash: %v", err)
+	}
+	primaryWH, ok := loadedProject.WarehouseByID(whID)
+	if !ok {
+		t.Fatalf("loaded project has no warehouse %q", whID)
+	}
+	schemas := map[string]models.TableSchema{
+		"public.events": {
+			TableName: "public.events",
+			RowCount:  3,
+			Columns: []models.ColumnInfo{
+				{Name: "id", Type: "integer", Nullable: false, Category: "primary_key"},
+			},
+			DiscoveredAt: time.Now().UTC(),
+		},
+	}
+	if err := database.NewSchemaCacheRepository(db).Save(
+		ctx, projectID, whID, discovery.WarehouseConfigHash(primaryWH), schemas,
+	); err != nil {
+		t.Fatalf("seed schema cache: %v", err)
 	}
 
 	// --- serve config: an ephemeral port and short budgets so nothing inherits
@@ -218,6 +278,10 @@ func TestInteg_AskServe_EndToEnd(t *testing.T) {
 		"turn_id":    turnID,
 		"session_id": uuid.New().String(),
 		"question":   "How many events are there?",
+		// Pin the turn to the primary datasource: with two datasources this keeps
+		// the evidence-router out of the loop (deterministic query -> answer)
+		// while the builder still processed both datasources above.
+		"datasource_id": whID,
 	})
 	postResp, err := http.Post(base+"/turns", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
