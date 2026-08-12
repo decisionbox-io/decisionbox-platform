@@ -15,38 +15,56 @@ import (
 // free text — the provider then *guarantees* the model either calls a tool or
 // finishes, which is what makes grounding structural rather than coaxed.
 
-func toolQueryData() gollm.ToolDefinition {
+// toolQueryData defines query_data. On a multi-datasource project (multi=true)
+// it exposes a datasource_id argument so each statement names the datasource it
+// runs against — one warehouse per statement, chained across a turn. On a
+// single-datasource / pinned turn the argument is omitted so behaviour is
+// identical to the single-warehouse path.
+func toolQueryData(multi bool) gollm.ToolDefinition {
+	desc := "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
+		"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
+		"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
+		"query against INFORMATION_SCHEMA."
+	props := map[string]interface{}{
+		"query":   map[string]interface{}{"type": "string", "description": "The read-only SQL to execute."},
+		"purpose": map[string]interface{}{"type": "string", "description": "Short note on what this query answers (optional)."},
+	}
+	if multi {
+		desc += " This project has multiple datasources — set datasource_id to the one this query runs against (a single query cannot span datasources; " +
+			"to combine datasources, query one, then use its result values as literal filters in a follow-up query on another)."
+		props["datasource_id"] = map[string]interface{}{"type": "string", "description": "The datasource this query runs against (see the DATASOURCES list). Defaults to the primary if omitted."}
+	}
 	return gollm.ToolDefinition{
-		Name: string(actQuery),
-		Description: "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
-			"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
-			"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
-			"query against INFORMATION_SCHEMA.",
+		Name:        string(actQuery),
+		Description: desc,
 		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"query":   map[string]interface{}{"type": "string", "description": "The read-only SQL to execute."},
-				"purpose": map[string]interface{}{"type": "string", "description": "Short note on what this query answers (optional)."},
-			},
-			"required": []string{"query"},
+			"type":       "object",
+			"properties": props,
+			"required":   []string{"query"},
 		},
 	}
 }
 
-func toolLookupSchema() gollm.ToolDefinition {
+func toolLookupSchema(multi bool) gollm.ToolDefinition {
+	desc := "Fetch the columns (and types) for one or more known tables. Use this when you know which tables you need but not their exact columns."
+	props := map[string]interface{}{
+		"tables": map[string]interface{}{
+			"type":        "array",
+			"items":       map[string]interface{}{"type": "string"},
+			"description": "Fully-qualified table names (e.g. dataset.table).",
+		},
+	}
+	if multi {
+		desc += " Set datasource_id to the datasource that owns these tables (from a search_tables result)."
+		props["datasource_id"] = map[string]interface{}{"type": "string", "description": "The datasource that owns the tables. Defaults to the primary if omitted."}
+	}
 	return gollm.ToolDefinition{
 		Name:        string(actLookup),
-		Description: "Fetch the columns (and types) for one or more known tables. Use this when you know which tables you need but not their exact columns.",
+		Description: desc,
 		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"tables": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "Fully-qualified table names (e.g. dataset.table).",
-				},
-			},
-			"required": []string{"tables"},
+			"type":       "object",
+			"properties": props,
+			"required":   []string{"tables"},
 		},
 	}
 }
@@ -133,10 +151,10 @@ func toolDecline() gollm.ToolDefinition {
 // question can still terminate without inventing data. Schema tools are offered
 // only when a schema provider is wired; search_insights only when an insights
 // provider is wired.
-func toolsForPhase(grounded, hasSchema, hasInsights bool) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData()}
+func toolsForPhase(grounded, hasSchema, hasInsights, multi bool) []gollm.ToolDefinition {
+	tools := []gollm.ToolDefinition{toolQueryData(multi)}
 	if hasSchema {
-		tools = append(tools, toolLookupSchema(), toolSearchTables())
+		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
@@ -181,13 +199,13 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 		if strings.TrimSpace(q) == "" {
 			return nil, fmt.Errorf("query_data requires a non-empty %q argument", "query")
 		}
-		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose")}, nil
+		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose"), Datasource: getStr("datasource_id")}, nil
 	case actLookup:
 		tables := toStringSlice(tc.Input["tables"])
 		if len(tables) == 0 {
 			return nil, fmt.Errorf("lookup_schema requires a non-empty %q array", "tables")
 		}
-		return &turnAction{Kind: actLookup, LookupSchema: tables}, nil
+		return &turnAction{Kind: actLookup, LookupSchema: tables, Datasource: getStr("datasource_id")}, nil
 	case actSearch:
 		q := getStr("query")
 		if q == "" {

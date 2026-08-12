@@ -283,7 +283,7 @@ func TestInteg_SchemaCacheRepo_ListTables_DistinctAndSorted(t *testing.T) {
 	seedCacheRowsWithKeys(t, projectID, "h1", []string{"dbo.orders", "dbo.customers"})
 	seedCacheRowsWithKeys(t, projectID, "h2", []string{"dbo.orders", "dbo.products", "demo.events"})
 
-	got, err := r.ListTables(ctx, projectID)
+	got, err := r.ListTables(ctx, projectID, "")
 	if err != nil {
 		t.Fatalf("ListTables: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestInteg_SchemaCacheRepo_ListTables_EmptyCacheReturnsEmptySlice(t *testing
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(testDB)
 
-	got, err := r.ListTables(ctx, "proj-list-tables-empty")
+	got, err := r.ListTables(ctx, "proj-list-tables-empty", "")
 	if err != nil {
 		t.Fatalf("ListTables: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestInteg_SchemaCacheRepo_ListTables_IsolatedAcrossProjects(t *testing.T) {
 	seedCacheRowsWithKeys(t, target, "h", []string{"a.x", "a.y"})
 	seedCacheRowsWithKeys(t, bystander, "h", []string{"b.shouldnt_appear"})
 
-	got, err := r.ListTables(ctx, target)
+	got, err := r.ListTables(ctx, target, "")
 	if err != nil {
 		t.Fatalf("ListTables: %v", err)
 	}
@@ -342,7 +342,41 @@ func TestInteg_SchemaCacheRepo_ListTables_IsolatedAcrossProjects(t *testing.T) {
 
 func TestInteg_SchemaCacheRepo_ListTables_RejectsEmptyProjectID(t *testing.T) {
 	r := NewSchemaCacheRepository(testDB)
-	if _, err := r.ListTables(context.Background(), ""); err == nil {
+	if _, err := r.ListTables(context.Background(), "", ""); err == nil {
 		t.Error("expected error for empty projectID, got nil")
+	}
+}
+
+// ListTables must scope to one warehouse: now that every warehouse indexes into
+// the shared project_schema_cache, the discovery-scope picker (which lists the
+// primary's tables) must not surface a secondary warehouse's tables. The
+// default/primary listing still includes legacy (warehouse_id-less) rows.
+func TestInteg_SchemaCacheRepo_ListTables_ScopedByWarehouse(t *testing.T) {
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(testDB)
+	col := testDB.Collection("project_schema_cache")
+	const proj = "proj-list-tables-multiwh"
+	t.Cleanup(func() { _ = r.Invalidate(ctx, proj) })
+
+	now := time.Now().UTC()
+	rows := []interface{}{
+		bson.M{"project_id": proj, "warehouse_id": "wh_a", "warehouse_hash": "h", "schema_key": "sales.orders", "schema": bson.M{"name": "t"}, "cached_at": now},
+		bson.M{"project_id": proj, "warehouse_id": "wh_b", "warehouse_hash": "h", "schema_key": "crm.users", "schema": bson.M{"name": "t"}, "cached_at": now},
+		// A legacy row (no warehouse_id) — belongs to the default warehouse.
+		bson.M{"project_id": proj, "warehouse_hash": "h", "schema_key": "public.legacy", "schema": bson.M{"name": "t"}, "cached_at": now},
+	}
+	if _, err := col.InsertMany(ctx, rows); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if got, err := r.ListTables(ctx, proj, "wh_a"); err != nil || len(got) != 1 || got[0] != "sales.orders" {
+		t.Fatalf("ListTables(wh_a) = %v (err %v), want [sales.orders] — must not include the secondary", got, err)
+	}
+	if got, err := r.ListTables(ctx, proj, "wh_b"); err != nil || len(got) != 1 || got[0] != "crm.users" {
+		t.Fatalf("ListTables(wh_b) = %v (err %v), want [crm.users]", got, err)
+	}
+	// The default/primary listing includes legacy (warehouse_id-less) rows only.
+	if got, err := r.ListTables(ctx, proj, "default"); err != nil || len(got) != 1 || got[0] != "public.legacy" {
+		t.Fatalf("ListTables(default) = %v (err %v), want [public.legacy]", got, err)
 	}
 }

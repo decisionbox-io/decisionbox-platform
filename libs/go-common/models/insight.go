@@ -18,15 +18,25 @@ type InsightValidation = valmodels.InsightValidation
 //
 // Shared between API (reads) and Agent (writes during Phase 9).
 type StandaloneInsight struct {
-	ID           string `bson:"_id" json:"id"`
-	ProjectID    string `bson:"project_id" json:"project_id"`
-	DiscoveryID  string `bson:"discovery_id" json:"discovery_id"`
-	Domain       string `bson:"domain" json:"domain"`
-	Category     string `bson:"category" json:"category"`
+	ID          string `bson:"_id" json:"id"`
+	ProjectID   string `bson:"project_id" json:"project_id"`
+	DiscoveryID string `bson:"discovery_id" json:"discovery_id"`
+	// Datasource is the warehouse id the insight was discovered from
+	// (multi-warehouse). Empty for single-warehouse / legacy insights. Lets the
+	// exec summary attribute a finding to the datasource it came from.
+	Datasource string `bson:"datasource,omitempty" json:"datasource,omitempty"`
+	Domain     string `bson:"domain" json:"domain"`
+	Category   string `bson:"category" json:"category"`
 
 	AnalysisArea  string                 `bson:"analysis_area" json:"analysis_area"`
 	Name          string                 `bson:"name" json:"name"`
 	Description   string                 `bson:"description" json:"description"`
+	// DescriptionMd is the GitHub-Flavored Markdown rendition of Description,
+	// authored by the analysis LLM and rendered formatted in the dashboard.
+	// Description stays plain text (the raw reduction) for API consumers,
+	// previews, and embeddings; DescriptionMd is omitted when the description
+	// carries no formatting and on legacy documents.
+	DescriptionMd string                 `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Severity      string                 `bson:"severity" json:"severity"`
 	AffectedCount int                    `bson:"affected_count" json:"affected_count"`
 	RiskScore     float64                `bson:"risk_score" json:"risk_score"`

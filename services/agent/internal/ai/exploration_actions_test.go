@@ -316,7 +316,7 @@ func TestFormatLookupResult_RendersColumnsAndSamples(t *testing.T) {
 			},
 		},
 	}
-	got := formatLookupResult(res, nil, false, 1, 30)
+	got := formatLookupResult(res, nil, false, 1, 30, false)
 
 	for _, must := range []string{
 		"Schema for `ds.users` (1.5K rows):",
@@ -337,7 +337,7 @@ func TestFormatLookupResult_NotFoundAndAlready(t *testing.T) {
 		Tables:   []LookupTable{{Table: "ds.users", Columns: []LookupColumn{{Name: "id", Type: "INT64"}}}},
 		NotFound: []string{"ds.gone", "ds.typo"},
 	}
-	got := formatLookupResult(res, []string{"ds.cached"}, false, 5, 30)
+	got := formatLookupResult(res, []string{"ds.cached"}, false, 5, 30, false)
 
 	if !strings.Contains(got, "Not found (typo, dropped, or wrong dataset): ds.gone, ds.typo") {
 		t.Errorf("missing not-found section: %s", got)
@@ -355,7 +355,7 @@ func TestFormatLookupResult_TruncatedNote(t *testing.T) {
 		Tables:    []LookupTable{{Table: "ds.users", Columns: []LookupColumn{{Name: "id", Type: "INT64"}}}},
 		Truncated: true,
 	}
-	got := formatLookupResult(res, nil, true, 1, 30)
+	got := formatLookupResult(res, nil, true, 1, 30, false)
 	if !strings.Contains(got, "per-call cap is 10 tables") {
 		t.Errorf("missing per-call cap message: %s", got)
 	}
@@ -363,7 +363,7 @@ func TestFormatLookupResult_TruncatedNote(t *testing.T) {
 
 func TestFormatLookupResult_NoBudgetSection_WhenMaxIsZero(t *testing.T) {
 	res := LookupResult{Tables: []LookupTable{{Table: "ds.t", Columns: []LookupColumn{{Name: "id"}}}}}
-	got := formatLookupResult(res, nil, false, 1, 0)
+	got := formatLookupResult(res, nil, false, 1, 0, false)
 	if strings.Contains(got, "Lookup budget") {
 		t.Errorf("budget line should be omitted when max is 0: %s", got)
 	}
@@ -371,7 +371,7 @@ func TestFormatLookupResult_NoBudgetSection_WhenMaxIsZero(t *testing.T) {
 
 func TestFormatLookupResult_NoTablesResolved(t *testing.T) {
 	res := LookupResult{NotFound: []string{"ds.x"}}
-	got := formatLookupResult(res, nil, false, 1, 5)
+	got := formatLookupResult(res, nil, false, 1, 5, false)
 	if !strings.Contains(got, "No schemas resolved") {
 		t.Errorf("missing 'No schemas resolved' message: %s", got)
 	}
@@ -389,7 +389,7 @@ func TestFormatSearchResult_RendersHits(t *testing.T) {
 		{Table: "ds.users", Blurb: "core users", RowCount: 1000, Score: 0.91},
 		{Table: "ds.orders", Blurb: "order events", RowCount: 5000, Score: 0.82},
 	}
-	got := formatSearchResult("users", hits, 1, 30)
+	got := formatSearchResult("users", hits, 1, 30, false)
 
 	for _, must := range []string{
 		`Search results for "users":`,
@@ -406,14 +406,14 @@ func TestFormatSearchResult_RendersHits(t *testing.T) {
 }
 
 func TestFormatSearchResult_EmptyHits(t *testing.T) {
-	got := formatSearchResult("nope", nil, 1, 5)
+	got := formatSearchResult("nope", nil, 1, 5, false)
 	if !strings.Contains(got, "no matching tables") {
 		t.Errorf("expected empty-hits message: %s", got)
 	}
 }
 
 func TestFormatSearchResult_NoBudgetSection_WhenMaxIsZero(t *testing.T) {
-	got := formatSearchResult("x", []SearchHit{{Table: "t"}}, 1, 0)
+	got := formatSearchResult("x", []SearchHit{{Table: "t"}}, 1, 0, false)
 	if strings.Contains(got, "Search budget") {
 		t.Errorf("budget line should be omitted when max is 0: %s", got)
 	}

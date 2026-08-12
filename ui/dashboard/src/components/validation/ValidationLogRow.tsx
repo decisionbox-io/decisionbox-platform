@@ -6,6 +6,7 @@ import { VerdictBadge } from './VerdictBadge';
 import { ValidationBreakdownDrawer } from './ValidationBreakdownDrawer';
 import { isNewValidation } from './validationShape';
 import { LegacyValidationCard } from './LegacyValidationCard';
+import { DatasourceBadge } from '@/components/common/UIComponents';
 import type { InsightValidation, ValidationLogEntry } from '@/lib/api';
 
 // Discovery-overview list row. One entry per validated insight (or
@@ -28,6 +29,7 @@ function logEntryToValidation(entry: ValidationLogEntry): InsightValidation {
     query: entry.query,
     reasoning: entry.reasoning,
     validated_at: entry.validated_at,
+    warehouse_id: entry.warehouse_id,
     // New shape — present only when the backend wrote them.
     verifier: entry.verifier,
     refuter: entry.refuter,
@@ -59,7 +61,10 @@ export function ValidationLogRow({ entry }: { entry: ValidationLogEntry }) {
         }}
       >
         <Group justify="space-between" mb={4} align="center">
-          <Text size="xs" fw={500}>{entry.analysis_area}</Text>
+          <Group gap={6} align="center">
+            <Text size="xs" fw={500}>{entry.analysis_area}</Text>
+            <DatasourceBadge warehouseId={entry.warehouse_id} />
+          </Group>
           <VerdictBadge status={validation.combined} size="xs" />
         </Group>
         {oneLineReason && (

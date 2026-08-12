@@ -272,16 +272,44 @@ func (r *ProjectRepository) Count(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-// CountWithWarehouse returns the number of projects that have a
-// configured warehouse — the data-source unit used by reconciliation.
+// CountWithWarehouse returns the total number of configured data sources across
+// all projects — the unit reconciled against data_sources_per_deployment. Each
+// warehouse counts as one data source, mirroring Project.EffectiveWarehouses():
+// a multi-warehouse project (populated `warehouses`) contributes len(warehouses);
+// a legacy single-warehouse project (`warehouse.provider` set, empty
+// `warehouses`) contributes 1; an unconfigured project contributes 0.
 func (r *ProjectRepository) CountWithWarehouse(ctx context.Context) (int, error) {
-	n, err := r.col.CountDocuments(ctx, bson.M{
-		"warehouse.provider": bson.M{"$nin": []any{"", nil}},
+	warehousesSize := bson.D{{Key: "$size", Value: bson.D{{Key: "$ifNull", Value: bson.A{"$warehouses", bson.A{}}}}}}
+	legacyProviderEmpty := bson.D{{Key: "$eq", Value: bson.A{
+		bson.D{{Key: "$ifNull", Value: bson.A{"$warehouse.provider", ""}}}, "",
+	}}}
+	// Per-doc: len(warehouses) when non-empty, else 1 if the legacy field is
+	// configured, else 0.
+	perDoc := bson.D{{Key: "$cond", Value: bson.A{
+		bson.D{{Key: "$gt", Value: bson.A{warehousesSize, 0}}},
+		warehousesSize,
+		bson.D{{Key: "$cond", Value: bson.A{legacyProviderEmpty, 0, 1}}},
+	}}}
+	cursor, err := r.col.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: nil},
+			{Key: "total", Value: bson.D{{Key: "$sum", Value: perDoc}}},
+		}}},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("count projects with warehouse: %w", err)
+		return 0, fmt.Errorf("count data sources: %w", err)
 	}
-	return int(n), nil
+	defer func() { _ = cursor.Close(ctx) }()
+	var rows []struct {
+		Total int `bson:"total"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return 0, fmt.Errorf("decode data-source count: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil // no projects at all
+	}
+	return rows[0].Total, nil
 }
 
 func (r *ProjectRepository) EnsureIndexes(ctx context.Context) error {

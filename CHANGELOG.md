@@ -12,13 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Version bumped to 0.21.0** to keep the fleet on one number. 0.20.0's enterprise publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
+- **Version bumped to 0.21.0** to keep the fleet on one number. The 0.20.0 image publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
 
 ## [0.20.0] - 2026-07-28
 
 ### Changed
 
-- **Version realigned to 0.20.0** so the community platform, enterprise, the enterprise Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
+- **Version realigned to 0.20.0** so the community platform, its Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
 
 ## [0.18.0] - 2026-07-28
 
@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Insight and recommendation descriptions are authored and rendered as Markdown** — `services/agent/internal/discipline/rules.go`, `services/agent/internal/mdtext/` (new), `services/agent/internal/discovery/{orchestrator.go,phase_embed_index.go}`, `services/{agent,api}/internal/models/discovery.go` / `services/api/models/discovery.go`, `libs/go-common/models/{insight.go,recommendation.go}`, `ui/dashboard/src/components/common/Markdown.tsx` (new), `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/[id]/discoveries/[runId]/{insights/[insightId],recommendations/[recommendationId]}/page.tsx`, `docs/{reference/data-models.md,concepts/discovery-lifecycle.md,guides/customizing-prompts.md}`. The analysis LLM now authors each `description` as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, emphasis, lists, small sub-headings, simple tables) following a takeaway-first anatomy where the finding supports it — driven by a new platform-enforced discipline rule so custom analysis areas inherit it. A new sibling field `description_md` carries the Markdown; the existing `description` keeps a plain-text reduction (derived at parse time) so API consumers, list/preview UIs, and embeddings read clean text and old documents stay backward-compatible. The insight and recommendation detail views render `description_md` (falling back to `description`) through a safe shared renderer: no raw HTML, links shown as plain non-navigable text, and sub-headings capped to a small scale. Plain and legacy descriptions render as a tidy paragraph with no leftover symbols.
+
+- **CI pushes the `decisionbox-agent` image to AWS ECR** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to ECR (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using OIDC-based AWS authentication. EKS-based deployments can pull the agent image from ECR without cross-registry authentication.
 - **CI pushes the `decisionbox-agent` image to both dev and prod AWS ECR accounts** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to both the dev and prod ECR registries (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using per-account OIDC role assumption. Each EKS cluster pulls from its own same-account ECR without cross-account trust policies.
 
 - **In-process discovery-run trigger seam (`apiserver.TriggerDiscovery`)** — `services/api/internal/discoverytrigger/` (new), `services/api/internal/handler/discoveries.go`, `services/api/internal/server/server.go`, `services/api/apiserver/discovery_trigger.go` (new). The discovery-run trigger logic (lifecycle/schema-index gating, run-record reservation, plan-policy enforcement, agent spawn) is extracted from the `POST /api/v1/projects/{id}/discover` handler into `DiscoveriesHandler.StartRun` and exposed process-globally via a new leaf registry, re-exported as `apiserver.TriggerDiscovery`. The HTTP endpoint is now a thin adapter over `StartRun`, so the endpoint and in-process callers that compose the community API server share one implementation with no duplication. No behaviour change to the endpoint.

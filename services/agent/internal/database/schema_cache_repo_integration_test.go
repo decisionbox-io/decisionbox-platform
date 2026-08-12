@@ -23,7 +23,7 @@ func TestAgentInteg_SchemaCache_ColdLookup_Nil(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	got, err := r.Find(ctx, cacheTestProject, "hash-a")
+	got, err := r.Find(ctx, cacheTestProject, "default", "hash-a")
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -62,11 +62,11 @@ func TestAgentInteg_SchemaCache_SaveFindRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := r.Save(ctx, cacheTestProject, "hash-b", input); err != nil {
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-b", input); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := r.Find(ctx, cacheTestProject, "hash-b")
+	got, err := r.Find(ctx, cacheTestProject, "default", "hash-b")
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -97,13 +97,13 @@ func TestAgentInteg_SchemaCache_HashMismatch_MissesCache(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.Save(ctx, cacheTestProject, "hash-original",
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-original",
 		map[string]models.TableSchema{"a.t": {TableName: "a.t"}},
 	); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	// Find with a different hash — must miss.
-	got, err := r.Find(ctx, cacheTestProject, "hash-different")
+	got, err := r.Find(ctx, cacheTestProject, "default", "hash-different")
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -121,26 +121,26 @@ func TestAgentInteg_SchemaCache_Resave_OverwritesPrior(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.Save(ctx, cacheTestProject, "hash-v1",
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-v1",
 		map[string]models.TableSchema{
 			"dbo.old_a": {TableName: "dbo.old_a"},
 			"dbo.old_b": {TableName: "dbo.old_b"},
 		}); err != nil {
 		t.Fatalf("Save v1: %v", err)
 	}
-	if err := r.Save(ctx, cacheTestProject, "hash-v2",
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-v2",
 		map[string]models.TableSchema{"dbo.new": {TableName: "dbo.new"}},
 	); err != nil {
 		t.Fatalf("Save v2: %v", err)
 	}
 
 	// Old hash must now miss.
-	if got, _ := r.Find(ctx, cacheTestProject, "hash-v1"); got != nil {
+	if got, _ := r.Find(ctx, cacheTestProject, "default", "hash-v1"); got != nil {
 		t.Errorf("old-hash rows should be deleted, got %+v", got)
 	}
 
 	// New hash should return only the v2 rows.
-	got, err := r.Find(ctx, cacheTestProject, "hash-v2")
+	got, err := r.Find(ctx, cacheTestProject, "default", "hash-v2")
 	if err != nil {
 		t.Fatalf("Find v2: %v", err)
 	}
@@ -158,13 +158,13 @@ func TestAgentInteg_SchemaCache_Invalidate_DropsAllForProject(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.Save(ctx, cacheTestProject, "hash-1",
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-1",
 		map[string]models.TableSchema{"a.t": {TableName: "a.t"}},
 	); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	// Independent project — must not be touched by Invalidate.
-	if err := r.Save(ctx, "proj-other", "hash-other",
+	if err := r.Save(ctx, "proj-other", "default", "hash-other",
 		map[string]models.TableSchema{"b.t": {TableName: "b.t"}},
 	); err != nil {
 		t.Fatalf("Save other: %v", err)
@@ -174,10 +174,10 @@ func TestAgentInteg_SchemaCache_Invalidate_DropsAllForProject(t *testing.T) {
 		t.Fatalf("Invalidate: %v", err)
 	}
 
-	if got, _ := r.Find(ctx, cacheTestProject, "hash-1"); got != nil {
+	if got, _ := r.Find(ctx, cacheTestProject, "default", "hash-1"); got != nil {
 		t.Errorf("Invalidate left rows behind: %+v", got)
 	}
-	if got, _ := r.Find(ctx, "proj-other", "hash-other"); len(got) != 1 {
+	if got, _ := r.Find(ctx, "proj-other", "default", "hash-other"); len(got) != 1 {
 		t.Errorf("Invalidate bled into other project: got %+v", got)
 	}
 }
@@ -190,17 +190,17 @@ func TestAgentInteg_SchemaCache_SaveEmpty_NoOp(t *testing.T) {
 
 	// Prime with a real row to make sure Save with empty schemas
 	// doesn't accidentally delete it.
-	if err := r.Save(ctx, cacheTestProject, "hash-real",
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-real",
 		map[string]models.TableSchema{"a.t": {TableName: "a.t"}},
 	); err != nil {
 		t.Fatalf("Save real: %v", err)
 	}
 
-	if err := r.Save(ctx, cacheTestProject, "hash-real", map[string]models.TableSchema{}); err != nil {
+	if err := r.Save(ctx, cacheTestProject, "default", "hash-real", map[string]models.TableSchema{}); err != nil {
 		t.Fatalf("Save empty: %v", err)
 	}
 
-	got, err := r.Find(ctx, cacheTestProject, "hash-real")
+	got, err := r.Find(ctx, cacheTestProject, "default", "hash-real")
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -216,16 +216,16 @@ func TestAgentInteg_SchemaCache_ValidationPaths(t *testing.T) {
 	r := NewSchemaCacheRepository(db)
 
 	// Empty projectID / hash — every entry point should reject up-front.
-	if _, err := r.Find(ctx, "", "h"); err == nil {
+	if _, err := r.Find(ctx, "", "default", "h"); err == nil {
 		t.Error("Find with empty projectID should error")
 	}
-	if _, err := r.Find(ctx, "p", ""); err == nil {
+	if _, err := r.Find(ctx, "p", "default", ""); err == nil {
 		t.Error("Find with empty hash should error")
 	}
-	if err := r.Save(ctx, "", "h", map[string]models.TableSchema{"x.y": {}}); err == nil {
+	if err := r.Save(ctx, "", "default", "h", map[string]models.TableSchema{"x.y": {}}); err == nil {
 		t.Error("Save with empty projectID should error")
 	}
-	if err := r.Save(ctx, "p", "", map[string]models.TableSchema{"x.y": {}}); err == nil {
+	if err := r.Save(ctx, "p", "default", "", map[string]models.TableSchema{"x.y": {}}); err == nil {
 		t.Error("Save with empty hash should error")
 	}
 	if err := r.Invalidate(ctx, ""); err == nil {
@@ -245,29 +245,119 @@ func TestAgentInteg_SchemaCache_ProjectIsolation(t *testing.T) {
 
 	shared := "hash-shared"
 
-	if err := r.Save(ctx, "proj-A", shared,
+	if err := r.Save(ctx, "proj-A", "default", shared,
 		map[string]models.TableSchema{"a.one": {TableName: "a.one"}},
 	); err != nil {
 		t.Fatalf("Save A: %v", err)
 	}
-	if err := r.Save(ctx, "proj-B", shared,
+	if err := r.Save(ctx, "proj-B", "default", shared,
 		map[string]models.TableSchema{"b.one": {TableName: "b.one"}, "b.two": {TableName: "b.two"}},
 	); err != nil {
 		t.Fatalf("Save B: %v", err)
 	}
 
-	gotA, err := r.Find(ctx, "proj-A", shared)
+	gotA, err := r.Find(ctx, "proj-A", "default", shared)
 	if err != nil {
 		t.Fatalf("Find A: %v", err)
 	}
 	if len(gotA) != 1 {
 		t.Errorf("Find A len = %d, want 1", len(gotA))
 	}
-	gotB, err := r.Find(ctx, "proj-B", shared)
+	gotB, err := r.Find(ctx, "proj-B", "default", shared)
 	if err != nil {
 		t.Fatalf("Find B: %v", err)
 	}
 	if len(gotB) != 2 {
 		t.Errorf("Find B len = %d, want 2", len(gotB))
+	}
+}
+
+// TestAgentInteg_SchemaCache_PerWarehouseIsolation is the load-bearing
+// regression for must-fix #1: saving one warehouse's catalog must NOT
+// wipe a sibling warehouse's catalog in the same project. Before the
+// (project_id, warehouse_id) scoping, Save did DeleteMany({project_id}),
+// so indexing a second warehouse destroyed the first's cache.
+func TestAgentInteg_SchemaCache_PerWarehouseIsolation(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(db)
+	const proj = "proj-multi-wh"
+
+	whA := map[string]models.TableSchema{
+		"public.customers": {TableName: "public.customers", RowCount: 10},
+	}
+	// Same qualified table name in warehouse B — must not collide with A.
+	whB := map[string]models.TableSchema{
+		"public.customers": {TableName: "public.customers", RowCount: 99},
+		"public.orders":    {TableName: "public.orders", RowCount: 500},
+	}
+
+	if err := r.Save(ctx, proj, "wh_a", "hash-a", whA); err != nil {
+		t.Fatalf("save wh_a: %v", err)
+	}
+	// Saving warehouse B must leave warehouse A's catalog intact.
+	if err := r.Save(ctx, proj, "wh_b", "hash-b", whB); err != nil {
+		t.Fatalf("save wh_b: %v", err)
+	}
+
+	gotA, err := r.Find(ctx, proj, "wh_a", "hash-a")
+	if err != nil {
+		t.Fatalf("find wh_a: %v", err)
+	}
+	if len(gotA) != 1 || gotA["public.customers"].RowCount != 10 {
+		t.Fatalf("warehouse A catalog was wiped by warehouse B's save: %+v", gotA)
+	}
+	gotB, err := r.Find(ctx, proj, "wh_b", "hash-b")
+	if err != nil {
+		t.Fatalf("find wh_b: %v", err)
+	}
+	if len(gotB) != 2 || gotB["public.customers"].RowCount != 99 {
+		t.Fatalf("warehouse B catalog wrong: %+v", gotB)
+	}
+
+	// Re-saving warehouse A (config change → new hash) drops only A's old
+	// rows, never B's.
+	if err := r.Save(ctx, proj, "wh_a", "hash-a2", map[string]models.TableSchema{
+		"public.customers": {TableName: "public.customers", RowCount: 11},
+	}); err != nil {
+		t.Fatalf("re-save wh_a: %v", err)
+	}
+	if got, _ := r.Find(ctx, proj, "wh_a", "hash-a"); got != nil {
+		t.Errorf("stale wh_a hash should miss after re-save, got %+v", got)
+	}
+	if got, _ := r.Find(ctx, proj, "wh_b", "hash-b"); len(got) != 2 {
+		t.Errorf("warehouse B must survive warehouse A's re-save, got %+v", got)
+	}
+}
+
+// TestAgentInteg_SchemaCache_DefaultMatchesLegacyRows verifies that the
+// default/primary warehouse also reads rows written before warehouse_id
+// existed (missing field), so single-warehouse caches stay valid without
+// a backfill.
+func TestAgentInteg_SchemaCache_DefaultMatchesLegacyRows(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(db)
+	const proj = "proj-legacy-rows"
+
+	// Simulate a legacy row: no warehouse_id field.
+	_, err := r.col().InsertOne(ctx, map[string]any{
+		"project_id":     proj,
+		"warehouse_hash": "legacy-hash",
+		"schema_key":     "public.t",
+		"schema":         models.TableSchema{TableName: "public.t", RowCount: 7},
+		"cached_at":      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	got, err := r.Find(ctx, proj, "default", "legacy-hash")
+	if err != nil {
+		t.Fatalf("find default: %v", err)
+	}
+	if len(got) != 1 || got["public.t"].RowCount != 7 {
+		t.Fatalf("default warehouse should read legacy (warehouse_id-less) rows: %+v", got)
 	}
 }

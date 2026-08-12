@@ -106,6 +106,22 @@ export function AreaBadge({ area }: { area: string }) {
   );
 }
 
+/* ========== Datasource Badge (multi-warehouse) ========== */
+
+// DatasourceBadge shows which datasource (warehouse) a query / insight /
+// validation ran against on a multi-warehouse project. It renders nothing
+// for the primary/`default` datasource or an empty id, so single-warehouse
+// projects are visually unchanged.
+export function DatasourceBadge({ warehouseId }: { warehouseId?: string }) {
+  if (!warehouseId || warehouseId === 'default') return null;
+  return (
+    <span title="Datasource this ran against" style={{
+      fontSize: 11, fontWeight: 500, padding: '1px 6px', borderRadius: 'var(--db-radius)',
+      background: 'var(--db-blue-bg)', color: 'var(--db-blue-text)', whiteSpace: 'nowrap',
+    }}>{warehouseId}</span>
+  );
+}
+
 /* ========== Confidence Bar ========== */
 
 export function ConfidenceBar({ confidence }: { confidence: number }) {

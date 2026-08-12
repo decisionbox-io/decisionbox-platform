@@ -22,6 +22,7 @@ The rules cover:
 - **Citing the step for every number** — every quantitative figure must trace to a row in `source_steps`.
 - **Partial-period hygiene** — partial periods may not enter a ranking unless normalized.
 - **Non-dramatic prose** — describe findings via numbers; encode importance in the structured `severity` field, not in prose adjectives.
+- **Structured Markdown descriptions** — the `description` is authored as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, emphasis, lists, small sub-headings, simple tables) so it reads as organized content. The agent stores the Markdown in `description_md` and a plain-text reduction in `description`; custom analysis areas inherit this rule automatically.
 
 The verifier prompt additionally carries V1–V4 rules that test the headline claim against the warehouse (not just the affected count).
 

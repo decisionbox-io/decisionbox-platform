@@ -45,17 +45,29 @@ func (r *SchemaCacheRepository) col() *mongo.Collection {
 // that DiscoverSchemas returns (e.g. "dbo.orders").
 type SchemaCacheEntry struct {
 	ProjectID     string             `bson:"project_id"`
+	WarehouseID   string             `bson:"warehouse_id"`
 	WarehouseHash string             `bson:"warehouse_hash"`
 	SchemaKey     string             `bson:"schema_key"`
 	Schema        models.TableSchema `bson:"schema"`
 	CachedAt      time.Time          `bson:"cached_at"`
 }
 
-// Find returns the cached schema map for (projectID, warehouseHash) or
-// (nil, nil) if the cache is cold or was invalidated by a hash change.
-// An empty result is indistinguishable from "no cache" — callers treat
-// both the same and fall through to fresh discovery.
-func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseHash string) (map[string]models.TableSchema, error) {
+// warehouseIDCond builds the BSON condition that matches a warehouse id.
+// The default/primary warehouse ("" or "default") also matches legacy
+// rows written before warehouse_id existed (missing field / "" / null),
+// so existing single-warehouse caches stay valid without a backfill.
+func warehouseIDCond(warehouseID string) bson.M {
+	if warehouseID == "" || warehouseID == models.DefaultWarehouseID {
+		return bson.M{"$in": bson.A{models.DefaultWarehouseID, "", nil}}
+	}
+	return bson.M{"$eq": warehouseID}
+}
+
+// Find returns the cached schema map for (projectID, warehouseID,
+// warehouseHash) or (nil, nil) if the cache is cold or was invalidated by
+// a hash change. An empty result is indistinguishable from "no cache" —
+// callers treat both the same and fall through to fresh discovery.
+func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseID, warehouseHash string) (map[string]models.TableSchema, error) {
 	if projectID == "" {
 		return nil, errors.New("projectID is required")
 	}
@@ -64,6 +76,7 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseHa
 	}
 	cur, err := r.col().Find(ctx, bson.M{
 		"project_id":     projectID,
+		"warehouse_id":   warehouseIDCond(warehouseID),
 		"warehouse_hash": warehouseHash,
 	})
 	if err != nil {
@@ -88,10 +101,14 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseHa
 	return out, nil
 }
 
-// Save replaces the cached schemas for (projectID, warehouseHash). Every
-// prior row for this project — including those tagged with a different
-// hash — is dropped so stale warehouses don't accumulate. TTL handles
-// absolute-age cleanup if the project is abandoned.
+// Save replaces the cached schemas for (projectID, warehouseID). Every
+// prior row for THIS warehouse — including those tagged with a different
+// hash — is dropped so stale schemas don't accumulate, but rows belonging
+// to OTHER warehouses of the same project are left intact. (Scoping the
+// wipe to the warehouse is load-bearing: the old whole-project
+// DeleteMany({project_id}) would wipe a sibling warehouse's catalog the
+// instant a second warehouse existed.) TTL handles absolute-age cleanup
+// if the project is abandoned.
 //
 // SampleData is the only unbounded field on a TableSchema — every
 // other field has natural per-table caps (column count, dataset name,
@@ -103,7 +120,7 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseHa
 // table's schema row stays well inside the limit while still
 // preserving shape information for blurb generation and on-demand
 // schema lookup.
-func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHash string, schemas map[string]models.TableSchema) error {
+func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseID, warehouseHash string, schemas map[string]models.TableSchema) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
 	}
@@ -114,7 +131,13 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHa
 		return nil
 	}
 
-	if _, err := r.col().DeleteMany(ctx, bson.M{"project_id": projectID}); err != nil {
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+	if _, err := r.col().DeleteMany(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": warehouseIDCond(warehouseID),
+	}); err != nil {
 		return fmt.Errorf("schema cache clear prior: %w", err)
 	}
 
@@ -124,6 +147,7 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseHa
 		sch.SampleData = capSampleData(sch.SampleData)
 		docs = append(docs, SchemaCacheEntry{
 			ProjectID:     projectID,
+			WarehouseID:   warehouseID,
 			WarehouseHash: warehouseHash,
 			SchemaKey:     key,
 			Schema:        sch,

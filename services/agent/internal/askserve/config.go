@@ -35,6 +35,7 @@ const (
 	EnvHistoryCharBudget   = "ASK_SERVE_HISTORY_CHAR_BUDGET"
 	EnvTurnTTLSeconds      = "ASK_SERVE_TURN_TTL_SECONDS"
 	EnvConnectTimeoutSecs  = "ASK_SERVE_CONNECT_TIMEOUT_SECONDS"
+	EnvRouterEnabled       = "ASK_SERVE_ROUTER_ENABLED"
 )
 
 // Defaults match the reviewed plan. A single enterprise query can run for
@@ -90,6 +91,11 @@ type Config struct {
 	HistoryCharBudget int
 	TurnTTL           time.Duration
 	ConnectTimeout    time.Duration
+
+	// RouterEnabled turns on the evidence-grounded datasource router for
+	// multi-datasource turns without an explicit datasource pin. Default on;
+	// only ever runs when a project actually has more than one datasource.
+	RouterEnabled bool
 }
 
 // LoadConfig reads the ASK_SERVE_* environment into a Config, applying
@@ -110,6 +116,7 @@ func LoadConfig() Config {
 		HistoryCharBudget:       positive(goconfig.GetEnvAsInt(EnvHistoryCharBudget, defaultHistoryCharBudget), defaultHistoryCharBudget),
 		TurnTTL:                 durationFromSeconds(EnvTurnTTLSeconds, defaultTurnTTL),
 		ConnectTimeout:          durationFromSeconds(EnvConnectTimeoutSecs, defaultConnectTimeout),
+		RouterEnabled:           goconfig.GetEnvAsBool(EnvRouterEnabled, true),
 	}
 }
 

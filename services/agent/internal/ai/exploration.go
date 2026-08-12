@@ -4,15 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
+
+// defaultDatasourceID is the reserved warehouse (datasource) id for the
+// primary of a legacy / single-warehouse project. Mirrors
+// models.DefaultWarehouseID / schema_retrieve.DefaultWarehouseID; declared
+// locally so the exploration engine keeps a flat dependency set. An empty
+// datasource_id from the model resolves to the run's primary, and a bare
+// "default" always maps to the legacy primary.
+const defaultDatasourceID = "default"
 
 // StepIndexer captures one step's worth of "ship this to the run-
 // scoped vector index" work. Defined as an interface so the
@@ -28,12 +38,31 @@ type StepIndexer interface {
 
 // ExplorationEngine manages autonomous data exploration with LLM.
 type ExplorationEngine struct {
-	client   *Client
-	executor *queryexec.QueryExecutor
-	maxSteps int
-	minSteps int
-	dataset  string
-	onStep   StepCallback
+	client *Client
+	// executors holds one query executor per datasource (warehouse) id,
+	// so each query_data step routes to the datasource the model targets.
+	// A single-warehouse project has exactly one entry keyed by
+	// primaryDatasource. Keys are normalised warehouse ids (the empty id
+	// stored as "default").
+	executors map[string]*queryexec.QueryExecutor
+	// primaryDatasource is the datasource a query_data targets when the
+	// action names none — the run's primary warehouse.
+	primaryDatasource string
+	// datasourceIDs lists the routable datasource ids (sorted) for the
+	// "unknown datasource" error the engine returns to the model.
+	datasourceIDs []string
+	// tableDatasource maps a canonical qualified "dataset.table" → the
+	// datasource id that owns it, on a multi-warehouse run. Used to reject
+	// a query_data statement that references a table from a DIFFERENT
+	// datasource than its datasource_id (an attempted cross-engine join)
+	// before it reaches the wrong engine — where the per-datasource SQL
+	// fixer would otherwise rewrite it into a valid-but-wrong query. Nil on
+	// single-warehouse.
+	tableDatasource map[string]string
+	maxSteps        int
+	minSteps        int
+	dataset         string
+	onStep          StepCallback
 
 	// schemaProvider serves the on-demand schema actions (lookup_schema,
 	// search_tables). Optional — when nil the engine still parses those
@@ -80,13 +109,28 @@ const maxParseRetries = 3
 // this to distinguish real queries from non-query events so the live UI
 // doesn't render a rejected completion as an empty-SQL failed query and
 // the per-run query counter only counts real queries.
-type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int)
+type StepCallback func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string)
 
 // ExplorationEngineOptions configures the exploration engine.
 type ExplorationEngineOptions struct {
-	Client   *Client
+	Client *Client
+	// Executor is the single-warehouse executor. Kept for back-compat with
+	// single-warehouse wiring and tests; when Executors is empty it becomes
+	// the sole executor keyed by PrimaryDatasource (default "default").
 	Executor *queryexec.QueryExecutor
-	MaxSteps int
+	// Executors is the per-datasource executor map for multi-warehouse
+	// discovery — one executor per warehouse id. When set it takes
+	// precedence over Executor. Keys are warehouse ids (empty stored as
+	// "default").
+	Executors map[string]*queryexec.QueryExecutor
+	// PrimaryDatasource is the datasource a query_data targets when the
+	// model names none. Empty resolves to "default".
+	PrimaryDatasource string
+	// TableDatasource maps canonical "dataset.table" → owning datasource id
+	// for the cross-datasource reference guard (multi-warehouse only). Nil
+	// disables the guard (single-warehouse).
+	TableDatasource map[string]string
+	MaxSteps        int
 	// MinSteps is a floor on the number of exploration steps before the engine
 	// accepts a "done" signal from the LLM. Early done signals below this
 	// threshold are rejected with a nudge and exploration continues. Zero
@@ -149,9 +193,32 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		maxSearches = 0
 	}
 
+	// Normalise the executor wiring into the per-datasource map. Multi-
+	// warehouse callers pass Executors + PrimaryDatasource; single-warehouse
+	// callers (and tests) pass a single Executor, which becomes the sole
+	// entry keyed by the primary. The empty warehouse id is stored as
+	// "default" so an omitted datasource_id and a literal "default" resolve
+	// to the same executor.
+	primaryDS := normDatasourceID(opts.PrimaryDatasource)
+	executors := make(map[string]*queryexec.QueryExecutor, len(opts.Executors)+1)
+	for id, ex := range opts.Executors {
+		executors[normDatasourceID(id)] = ex
+	}
+	if len(executors) == 0 && opts.Executor != nil {
+		executors[primaryDS] = opts.Executor
+	}
+	datasourceIDs := make([]string, 0, len(executors))
+	for id := range executors {
+		datasourceIDs = append(datasourceIDs, id)
+	}
+	sort.Strings(datasourceIDs)
+
 	return &ExplorationEngine{
 		client:            opts.Client,
-		executor:          opts.Executor,
+		executors:         executors,
+		primaryDatasource: primaryDS,
+		datasourceIDs:     datasourceIDs,
+		tableDatasource:   opts.TableDatasource,
 		maxSteps:          opts.MaxSteps,
 		minSteps:          opts.MinSteps,
 		dataset:           opts.Dataset,
@@ -162,6 +229,106 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		maxSearchesPerRun: maxSearches,
 		fetchedTables:     make(map[string]struct{}),
 	}
+}
+
+// normDatasourceID maps the empty warehouse id to the reserved "default"
+// so an omitted datasource_id, a legacy single-warehouse project, and a
+// literal "default" all resolve to the same executor / catalog section.
+func normDatasourceID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return defaultDatasourceID
+	}
+	return id
+}
+
+// crossDatasourceRef returns the first qualified "dataset.table" referenced
+// in the query that belongs to a datasource OTHER than targetID, plus that
+// owner. Returns ("","") when the query references no foreign-datasource
+// table, and always on a single-warehouse run (tableDatasource nil). The
+// match strips identifier quoting ("dataset"."table" / `dataset`.`table`)
+// and is case-insensitive; only dotted (qualified) names are matched so a
+// bare column can't collide with a table name.
+func (e *ExplorationEngine) crossDatasourceRef(query, targetID string) (string, string) {
+	if len(e.tableDatasource) == 0 {
+		return "", ""
+	}
+	// Drop the double-quote / backtick identifier quoting the prompts use
+	// so `"public"."invoice_line"` collapses to `public.invoice_line`.
+	norm := strings.ToLower(query)
+	norm = strings.ReplaceAll(norm, `"`, "")
+	norm = strings.ReplaceAll(norm, "`", "")
+
+	// Deterministic order so the same query always reports the same table.
+	tables := make([]string, 0, len(e.tableDatasource))
+	for t := range e.tableDatasource {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	for _, table := range tables {
+		if !strings.Contains(table, ".") {
+			continue // only qualified names are safe to match
+		}
+		owner := normDatasourceID(e.tableDatasource[table])
+		if owner == targetID {
+			continue
+		}
+		if containsIdentifier(norm, strings.ToLower(table)) {
+			return table, owner
+		}
+	}
+	return "", ""
+}
+
+// containsIdentifier reports whether needle appears in haystack as a whole
+// identifier reference — bounded on both sides by a non-identifier byte —
+// so a short table name is not matched inside a longer one (e.g.
+// "public.order" must not match "public.orders_archive"). Both inputs are
+// already lowercased + quote-stripped by the caller. '.' counts as a
+// boundary so "dataset.table" matches even when adjacent to punctuation.
+func containsIdentifier(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	for from := 0; ; {
+		i := strings.Index(haystack[from:], needle)
+		if i < 0 {
+			return false
+		}
+		i += from
+		var before, after byte = ' ', ' '
+		if i > 0 {
+			before = haystack[i-1]
+		}
+		if end := i + len(needle); end < len(haystack) {
+			after = haystack[end]
+		}
+		if !isIdentByte(before) && !isIdentByte(after) {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+// isIdentByte reports whether b is part of a SQL identifier (letters,
+// digits, underscore). '.' is deliberately excluded so a qualified
+// "dataset.table" is bounded correctly.
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// executorFor resolves the executor for a model-supplied datasource_id.
+// An empty id targets the run's primary datasource. Returns the executor,
+// the resolved (normalised) datasource id, and whether it is a known
+// datasource — the caller surfaces a routable error to the model on false.
+func (e *ExplorationEngine) executorFor(datasourceID string) (*queryexec.QueryExecutor, string, bool) {
+	id := strings.TrimSpace(datasourceID)
+	if id == "" {
+		id = e.primaryDatasource
+	}
+	id = normDatasourceID(id)
+	ex, ok := e.executors[id]
+	return ex, id, ok
 }
 
 // ExplorationResult represents the result of an exploration run
@@ -257,7 +424,7 @@ func (e *ExplorationEngine) Explore(
 			result.TotalSteps = step
 
 			if e.onStep != nil {
-				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens)
+				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens, "")
 			}
 			continue
 		}
@@ -314,7 +481,7 @@ func (e *ExplorationEngine) Explore(
 		// Report step for live status
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
-			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens)
+			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
 		}
 
 		// Check if exploration is complete
@@ -370,6 +537,14 @@ type ExplorationAction struct {
 
 	// query_data
 	Query string `json:"query"`
+
+	// Datasource is the target warehouse (datasource) id for a
+	// query_data / lookup_schema action on a multi-warehouse project.
+	// Empty resolves to the run's primary datasource, so single-warehouse
+	// projects and legacy prompts (which never set it) keep working. Each
+	// SQL statement still runs against exactly one datasource — the agent
+	// hops between datasources across steps, never within one statement.
+	Datasource string `json:"datasource_id"`
 
 	// complete (modern shape)
 	Done    bool   `json:"done"`
@@ -580,10 +755,10 @@ func (e *ExplorationEngine) parseAction(response string) (*ExplorationAction, er
 // Supported tool names: lookup_schema, search_tables, query_data,
 // complete. Inputs we know about:
 //
-//   lookup_schema: {"tables": ["dataset.t1", ...]} — array of refs.
-//   search_tables: {"query": "...", "top_k": <int>} — query + optional k.
-//   query_data:    {"query": "SELECT ...", "purpose": "..."} — SQL.
-//   complete:      {"summary": "..."} — exploration done.
+//	lookup_schema: {"tables": ["dataset.t1", ...]} — array of refs.
+//	search_tables: {"query": "...", "top_k": <int>} — query + optional k.
+//	query_data:    {"query": "SELECT ...", "purpose": "..."} — SQL.
+//	complete:      {"summary": "..."} — exploration done.
 //
 // We do NOT touch fields the action already populated (key-driven
 // shape wins on conflict) so a malformed envelope can't silently
@@ -826,16 +1001,52 @@ func (e *ExplorationEngine) executeQuery(
 	step.QueryPurpose = action.QueryPurpose
 	step.Query = action.Query
 
+	// Route the statement to the datasource the model targets (empty →
+	// the run's primary). Each SQL statement runs against exactly one
+	// datasource; the agent hops between datasources across steps. An
+	// unknown id is reported back so the model can retry against a valid
+	// datasource rather than the run failing.
+	executor, datasourceID, ok := e.executorFor(action.Datasource)
+	if !ok {
+		step.WarehouseID = ""
+		step.Error = fmt.Sprintf("unknown datasource_id %q", action.Datasource)
+		return fmt.Sprintf(
+			"Query rejected: unknown datasource_id %q. Target one of these datasource ids: %s.",
+			action.Datasource, strings.Join(e.datasourceIDs, ", "),
+		)
+	}
+	// Cross-datasource reference guard: reject a statement that names a
+	// table owned by a DIFFERENT datasource than its datasource_id before
+	// it reaches the wrong engine — otherwise that engine's SQL fixer may
+	// rewrite the attempted cross-engine join into a valid-but-wrong query.
+	// Point the model at the owning datasource + the value-passing pattern.
+	if foreignTable, owner := e.crossDatasourceRef(action.Query, datasourceID); foreignTable != "" {
+		step.WarehouseID = datasourceID
+		step.Error = fmt.Sprintf("cross-datasource reference: %q belongs to datasource %q, not %q", foreignTable, owner, datasourceID)
+		return fmt.Sprintf(
+			"Query rejected: table `%s` belongs to datasource %q, but this statement targets datasource %q. "+
+				"A single query_data statement may reference only tables in its datasource_id — there is no cross-datasource join. "+
+				"Query %q for a bounded set of key values first, then filter a %q query with those values inlined (value-passing).",
+			foreignTable, owner, datasourceID, owner, datasourceID,
+		)
+	}
+
+	// Attribute the step to the datasource it ran against, and stamp the
+	// warehouse id on the context so the per-datasource governance /
+	// read-only middleware scopes this statement to that datasource.
+	step.WarehouseID = datasourceID
+	ctx = gowarehouse.WithWarehouseID(ctx, datasourceID)
+
 	// Bind the executor to this step number before invoking so the
 	// per-attempt FixHistory entries (and the executor's debug-log
 	// emissions) record the parent step the fix loop ran for. Without
 	// this every FixAttempt.Step would default to 0, indistinguishable
 	// across steps in a flattened export.
-	e.executor.SetStep(step.Step)
+	executor.SetStep(step.Step)
 
 	queryStart := time.Now()
 
-	result, err := e.executor.Execute(ctx, action.Query, action.QueryPurpose)
+	result, err := executor.Execute(ctx, action.Query, action.QueryPurpose)
 
 	step.ExecutionTimeMs = time.Since(queryStart).Milliseconds()
 
@@ -869,10 +1080,10 @@ func (e *ExplorationEngine) executeQuery(
 	compact := gomodels.BuildCompactResult(result.Data)
 	step.CompactResult = &compact
 	logger.WithFields(logger.Fields{
-		"step":     step.Step,
-		"row_count": compact.RowCount,
-		"columns":  len(compact.Columns),
-		"has_all_rows": compact.AllRows != nil,
+		"step":          step.Step,
+		"row_count":     compact.RowCount,
+		"columns":       len(compact.Columns),
+		"has_all_rows":  compact.AllRows != nil,
 		"has_tail_rows": compact.TailRows != nil,
 	}).Debug("exploration: built compact digest for step")
 
@@ -1015,7 +1226,7 @@ func (e *ExplorationEngine) executeLookupSchema(
 		e.fetchedTables[t.Table] = struct{}{}
 	}
 
-	return formatLookupResult(res, already, truncatedAtCallCap, e.lookupsUsed, e.maxLookupsPerRun)
+	return formatLookupResult(res, already, truncatedAtCallCap, e.lookupsUsed, e.maxLookupsPerRun, len(e.datasourceIDs) > 1)
 }
 
 // executeSearchTables serves a search_tables action by ranking
@@ -1072,7 +1283,7 @@ func (e *ExplorationEngine) executeSearchTables(
 		)
 	}
 
-	return formatSearchResult(query, hits, e.searchesUsed, e.maxSearchesPerRun)
+	return formatSearchResult(query, hits, e.searchesUsed, e.maxSearchesPerRun, len(e.datasourceIDs) > 1)
 }
 
 // formatResults formats query results as JSON
@@ -1148,7 +1359,7 @@ func stripWrappingQuote(s string, q byte) string {
 // lookup_schema action. Returned string is what gets appended to the
 // conversation, so prompts can rely on "Schema for `dataset.table`:"
 // being the marker the model can scan for in its own history.
-func formatLookupResult(res LookupResult, already []string, truncatedAtCallCap bool, lookupsUsed, maxLookups int) string {
+func formatLookupResult(res LookupResult, already []string, truncatedAtCallCap bool, lookupsUsed, maxLookups int, showDatasource bool) string {
 	var b strings.Builder
 
 	if len(res.Tables) == 0 {
@@ -1158,7 +1369,13 @@ func formatLookupResult(res LookupResult, already []string, truncatedAtCallCap b
 			if i > 0 {
 				b.WriteString("\n\n")
 			}
-			fmt.Fprintf(&b, "Schema for `%s` (%s rows):\n", t.Table, formatRowCountShort(t.RowCount))
+			// On a multi-warehouse run, name the datasource so the model
+			// targets the right datasource_id when it queries this table.
+			if showDatasource && t.Datasource != "" {
+				fmt.Fprintf(&b, "Schema for `%s` (datasource: %s) (%s rows):\n", t.Table, t.Datasource, formatRowCountShort(t.RowCount))
+			} else {
+				fmt.Fprintf(&b, "Schema for `%s` (%s rows):\n", t.Table, formatRowCountShort(t.RowCount))
+			}
 			if len(t.Columns) == 0 {
 				b.WriteString("  columns: (no column metadata available)\n")
 			} else {
@@ -1209,7 +1426,7 @@ func formatLookupResult(res LookupResult, already []string, truncatedAtCallCap b
 // formatSearchResult renders the user message for a search_tables
 // action. Includes the query so the model can refer back to it when
 // chaining a follow-up lookup_schema.
-func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearches int) string {
+func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearches int, showDatasource bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 
@@ -1218,6 +1435,11 @@ func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearche
 	} else {
 		for i, h := range hits {
 			fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			// On a multi-warehouse run, tag each hit with its datasource so
+			// the model knows which datasource_id to target on a follow-up.
+			if showDatasource && h.Datasource != "" {
+				fmt.Fprintf(&b, " — datasource: %s", h.Datasource)
+			}
 			if h.Blurb != "" {
 				b.WriteString("\n   ")
 				b.WriteString(h.Blurb)
@@ -1309,4 +1531,3 @@ func formatLookupValue(v interface{}) string {
 	}
 	return s
 }
-

@@ -98,7 +98,7 @@ func TestNoopChecker_FeatureEnabled_True(t *testing.T) {
 func TestNoopChecker_SyncCounters_IsNoOp(t *testing.T) {
 	resetRegistry()
 	c := GetChecker()
-	// Must not panic; must return immediately; must not block.
+	// Must not panic; must return immediately; must not block. 
 	c.SyncCounters(context.Background(), "dep1", CounterSnapshot{ProjectsCurrent: 5, DataSourcesCurrent: 3})
 }
 
@@ -238,6 +238,8 @@ func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
 		FeatureSources,
 		FeaturePackGen,
 		FeatureDataQuery,
+		FeatureMultiWarehouse,
+		FeatureConnectors,
 	}
 	if len(AllFeatures) != len(want) {
 		t.Fatalf("AllFeatures length = %d, want %d", len(AllFeatures), len(want))

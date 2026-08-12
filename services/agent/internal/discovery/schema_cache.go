@@ -15,8 +15,8 @@ import (
 // cache disables the feature entirely (always-discover behaviour, which
 // is what the existing tests exercise).
 type SchemaCache interface {
-	Find(ctx context.Context, projectID, warehouseHash string) (map[string]models.TableSchema, error)
-	Save(ctx context.Context, projectID, warehouseHash string, schemas map[string]models.TableSchema) error
+	Find(ctx context.Context, projectID, warehouseID, warehouseHash string) (map[string]models.TableSchema, error)
+	Save(ctx context.Context, projectID, warehouseID, warehouseHash string, schemas map[string]models.TableSchema) error
 }
 
 // WarehouseConfigHash produces a stable SHA-256 over everything the

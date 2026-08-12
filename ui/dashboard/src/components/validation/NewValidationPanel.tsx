@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { VerdictBadge } from './VerdictBadge';
 import { ValidationBreakdownDrawer, REFUTER_DISABLED_NOTE } from './ValidationBreakdownDrawer';
 import { statusMeta } from './statusMeta';
+import { DatasourceBadge } from '@/components/common/UIComponents';
 import type { InsightValidation } from '@/lib/api';
 
 // Compact sidebar-sized card for the plan-v5 validation shape. Renders:
@@ -44,7 +45,10 @@ export function NewValidationPanel({
               {title}
             </Text>
           </Group>
-          <VerdictBadge status={validation.combined} size="sm" />
+          <Group gap={6} align="center">
+            <DatasourceBadge warehouseId={validation.warehouse_id} />
+            <VerdictBadge status={validation.combined} size="sm" />
+          </Group>
         </Group>
         <Text size="xs" c="dimmed" mb={validation.refuter_disabled || hasBreakdown ? 8 : 0}>
           {meta.tagline}

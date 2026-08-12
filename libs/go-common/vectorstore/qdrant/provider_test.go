@@ -607,6 +607,55 @@ func TestBuildFilter(t *testing.T) {
 	}
 }
 
+func TestBuildFilterExcludeSourceTypes(t *testing.T) {
+	// Exclusions become must_not so the excluded points never occupy the
+	// top-K window — filtering them out after the search would silently
+	// return fewer results than the caller's Limit.
+	filter := buildFilter(vectorstore.SearchOpts{
+		ProjectIDs:         []string{"proj-1"},
+		Types:              []string{"source_chunk"},
+		ExcludeSourceTypes: []string{"note"},
+	})
+	if filter == nil {
+		t.Fatal("expected non-nil filter")
+	}
+	if len(filter.Must) != 2 { // project_id + type
+		t.Fatalf("expected 2 must conditions, got %d", len(filter.Must))
+	}
+	if len(filter.MustNot) != 1 {
+		t.Fatalf("expected 1 must_not condition, got %d", len(filter.MustNot))
+	}
+
+	// Several exclusions all apply.
+	filter = buildFilter(vectorstore.SearchOpts{
+		ProjectIDs:         []string{"proj-1"},
+		ExcludeSourceTypes: []string{"note", "scratch"},
+	})
+	if len(filter.MustNot) != 2 {
+		t.Fatalf("expected 2 must_not conditions, got %d", len(filter.MustNot))
+	}
+
+	// Empty strings are ignored rather than matching an empty payload value.
+	filter = buildFilter(vectorstore.SearchOpts{
+		ProjectIDs:         []string{"proj-1"},
+		ExcludeSourceTypes: []string{"", "note", ""},
+	})
+	if len(filter.MustNot) != 1 {
+		t.Fatalf("expected 1 must_not condition, got %d", len(filter.MustNot))
+	}
+
+	// An exclusion on its own is still a filter — it must not collapse to nil.
+	filter = buildFilter(vectorstore.SearchOpts{ExcludeSourceTypes: []string{"note"}})
+	if filter == nil || len(filter.MustNot) != 1 {
+		t.Fatal("exclusion-only opts must still produce a filter")
+	}
+
+	// All-empty exclusions contribute nothing, so the filter stays nil.
+	if got := buildFilter(vectorstore.SearchOpts{ExcludeSourceTypes: []string{"", ""}}); got != nil {
+		t.Fatal("expected nil filter when every exclusion is empty")
+	}
+}
+
 func TestUpsertError(t *testing.T) {
 	ctx := context.Background()
 	mock := newMockClient()

@@ -23,6 +23,72 @@ type validationPhase struct {
 	wh       verifier.WarehouseInfo
 	disc     verifier.DiscoveryContext
 	executor verifier.Executor
+
+	// Multi-warehouse validation routing. On a multi-warehouse run these
+	// hold one WarehouseInfo + Executor per datasource id, so each insight
+	// / recommendation is verified against the datasource it is ABOUT
+	// (resolved from the warehouse_ids of the exploration steps it cites)
+	// — not always the primary. Empty on a single-warehouse run, where
+	// every doc falls back to wh / executor above. primaryDS is the
+	// fallback datasource id.
+	whByDS       map[string]verifier.WarehouseInfo
+	executorByDS map[string]verifier.Executor
+	primaryDS    string
+}
+
+// forDatasource returns the WarehouseInfo + Executor for a datasource id,
+// falling back to the primary wh / executor when the run is single-warehouse
+// or the id has no per-datasource wiring.
+func (p *validationPhase) forDatasource(dsID string) (verifier.WarehouseInfo, verifier.Executor) {
+	if ex, ok := p.executorByDS[dsID]; ok {
+		if wh, ok2 := p.whByDS[dsID]; ok2 {
+			return wh, ex
+		}
+	}
+	return p.wh, p.executor
+}
+
+// stampDatasource returns the datasource id to persist on a validation
+// result — but only on a multi-warehouse run, so single-warehouse results
+// stay unlabeled (warehouse_id omitted).
+func (p *validationPhase) stampDatasource(dsID string) string {
+	if len(p.executorByDS) == 0 {
+		return ""
+	}
+	return dsID
+}
+
+// datasourceForSteps resolves the datasource a doc is primarily about from
+// the warehouse_ids of the exploration steps it cites: the most-cited
+// datasource that has per-datasource wiring (ties broken lexicographically),
+// or primaryDS when the steps carry none. Single-warehouse runs (no
+// executorByDS) always resolve to primaryDS and route through the fallback.
+func (p *validationPhase) datasourceForSteps(steps []int, stepByID map[int]*models.ExplorationStep) string {
+	if len(p.executorByDS) == 0 {
+		return p.primaryDS
+	}
+	counts := make(map[string]int, len(p.executorByDS))
+	for _, s := range steps {
+		st := stepByID[s]
+		if st == nil || st.WarehouseID == "" {
+			continue
+		}
+		if _, ok := p.executorByDS[st.WarehouseID]; ok {
+			counts[st.WarehouseID]++
+		}
+	}
+	ids := make([]string, 0, len(counts))
+	for id := range counts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	best, bestN := p.primaryDS, 0
+	for _, id := range ids {
+		if counts[id] > bestN {
+			best, bestN = id, counts[id]
+		}
+	}
+	return best
 }
 
 // validateInsights walks the area's insights in `affected_count`-desc
@@ -79,8 +145,13 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			continue
 		}
 
-		bundle := verifier.BuildInsightBundle(ins, stepByID, p.wh, p.disc, p.cfg.Bundle)
-		v, _ := p.agent.Verify(ctx, bundle, p.executor)
+		// Verify against the datasource this insight is about (multi-
+		// warehouse); single-warehouse resolves to the primary fallback.
+		dsID := p.datasourceForSteps(ins.SourceSteps, stepByID)
+		wh, ex := p.forDatasource(dsID)
+		vr.WarehouseID = p.stampDatasource(dsID)
+		bundle := verifier.BuildInsightBundle(ins, stepByID, wh, p.disc, p.cfg.Bundle)
+		v, _ := p.agent.Verify(ctx, bundle, ex)
 		vr.Verifier = &v
 		vr.InputTokens += v.LLMTokensIn
 		vr.OutputTokens += v.LLMTokensOut
@@ -90,7 +161,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			if len(v.ClaimsConsidered) > 0 {
 				refuterBundle.PriorClaims = append([]string(nil), v.ClaimsConsidered...)
 			}
-			r, _ := p.agent.Refute(ctx, refuterBundle, p.executor)
+			r, _ := p.agent.Refute(ctx, refuterBundle, ex)
 			rPtr = &r
 			vr.Refuter = &r
 			vr.InputTokens += r.LLMTokensIn
@@ -102,6 +173,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		vr.Status = string(combined)
 
 		ins.Validation = &valmodels.InsightValidation{
+			WarehouseID: vr.WarehouseID,
 			// Backfill legacy Status so dashboards / consumers that
 			// still read the old field see the new verdict.
 			Status:          string(combined),
@@ -166,8 +238,19 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 			results = append(results, vr)
 			continue
 		}
-		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, p.wh, p.disc, p.cfg.Bundle)
-		v, _ := p.agent.Verify(ctx, bundle, p.executor)
+		// Verify against the datasource the recommendation is about — the
+		// dominant datasource across its related insights' cited steps.
+		recSteps := make([]int, 0)
+		for _, iid := range rec.RelatedInsightIDs {
+			if ins, ok := insightByID[iid]; ok {
+				recSteps = append(recSteps, ins.SourceSteps...)
+			}
+		}
+		recDS := p.datasourceForSteps(recSteps, stepByID)
+		wh, ex := p.forDatasource(recDS)
+		vr.WarehouseID = p.stampDatasource(recDS)
+		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, wh, p.disc, p.cfg.Bundle)
+		v, _ := p.agent.Verify(ctx, bundle, ex)
 		vr.Verifier = &v
 		vr.InputTokens += v.LLMTokensIn
 		vr.OutputTokens += v.LLMTokensOut
@@ -177,7 +260,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 			if len(v.ClaimsConsidered) > 0 {
 				rb.PriorClaims = append([]string(nil), v.ClaimsConsidered...)
 			}
-			r, _ := p.agent.Refute(ctx, rb, p.executor)
+			r, _ := p.agent.Refute(ctx, rb, ex)
 			rPtr = &r
 			vr.Refuter = &r
 			vr.InputTokens += r.LLMTokensIn
@@ -188,6 +271,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		vr.RefuterDisabled = rd
 		vr.Status = string(combined)
 		rec.Validation = &valmodels.InsightValidation{
+			WarehouseID:     vr.WarehouseID,
 			Verifier:        &v,
 			Refuter:         rPtr,
 			Combined:        combined,

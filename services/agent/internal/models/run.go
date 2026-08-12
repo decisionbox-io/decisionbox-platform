@@ -6,12 +6,12 @@ import "time"
 // Written by the agent as it progresses. Read by the API for dashboard status.
 // Stored in the "discovery_runs" collection.
 type DiscoveryRun struct {
-	ID          string    `bson:"_id,omitempty" json:"id"`
-	ProjectID   string    `bson:"project_id" json:"project_id"`
-	Status      string    `bson:"status" json:"status"` // pending, running, completed, failed
-	Phase       string    `bson:"phase" json:"phase"`   // current phase
-	PhaseDetail string    `bson:"phase_detail" json:"phase_detail"`
-	Progress    int       `bson:"progress" json:"progress"` // 0-100
+	ID          string `bson:"_id,omitempty" json:"id"`
+	ProjectID   string `bson:"project_id" json:"project_id"`
+	Status      string `bson:"status" json:"status"` // pending, running, completed, failed
+	Phase       string `bson:"phase" json:"phase"`   // current phase
+	PhaseDetail string `bson:"phase_detail" json:"phase_detail"`
+	Progress    int    `bson:"progress" json:"progress"` // 0-100
 
 	StartedAt   time.Time  `bson:"started_at" json:"started_at"`
 	UpdatedAt   time.Time  `bson:"updated_at" json:"updated_at"`
@@ -36,10 +36,10 @@ type DiscoveryRun struct {
 	// GET /api/v1/runs/{id}/steps with a `since` cursor for streaming.
 
 	// Summary stats (updated as run progresses)
-	TotalQueries     int `bson:"total_queries" json:"total_queries"`
+	TotalQueries      int `bson:"total_queries" json:"total_queries"`
 	SuccessfulQueries int `bson:"successful_queries" json:"successful_queries"`
-	FailedQueries    int `bson:"failed_queries" json:"failed_queries"`
-	InsightsFound    int `bson:"insights_found" json:"insights_found"`
+	FailedQueries     int `bson:"failed_queries" json:"failed_queries"`
+	InsightsFound     int `bson:"insights_found" json:"insights_found"`
 
 	// Schema-retrieval telemetry. Mirrors the API-side model.
 	//
@@ -83,11 +83,14 @@ type RunStep struct {
 	LLMQuery    string `bson:"llm_query,omitempty" json:"llm_query,omitempty"`
 
 	// Query details
-	Query         string `bson:"query,omitempty" json:"query,omitempty"`
-	QueryResult   string `bson:"query_result,omitempty" json:"query_result,omitempty"` // summary, not full data
-	RowCount      int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
-	QueryTimeMs   int64  `bson:"query_time_ms,omitempty" json:"query_time_ms,omitempty"`
-	QueryFixed    bool   `bson:"query_fixed,omitempty" json:"query_fixed,omitempty"`
+	Query       string `bson:"query,omitempty" json:"query,omitempty"`
+	QueryResult string `bson:"query_result,omitempty" json:"query_result,omitempty"` // summary, not full data
+	RowCount    int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
+	QueryTimeMs int64  `bson:"query_time_ms,omitempty" json:"query_time_ms,omitempty"`
+	QueryFixed  bool   `bson:"query_fixed,omitempty" json:"query_fixed,omitempty"`
+	// WarehouseID is the datasource this step's query ran against
+	// (multi-warehouse). Empty on non-query steps + single-warehouse runs.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 
 	// Insight details
 	InsightName     string `bson:"insight_name,omitempty" json:"insight_name,omitempty"`

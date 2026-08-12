@@ -13,7 +13,26 @@ type Project struct {
 	Domain      string `bson:"domain" json:"domain"`
 	Category    string `bson:"category" json:"category"`
 
-	Warehouse WarehouseConfig           `bson:"warehouse" json:"warehouse"`
+	// Warehouse is the LEGACY single-warehouse field. It is retained for
+	// backward compatibility: every community reader still uses it, and it
+	// is dual-written to the primary warehouse. New multi-warehouse code
+	// reads through EffectiveWarehouses()/PrimaryWarehouse(), which fall
+	// back to this field when Warehouses is empty (no data migration
+	// needed — legacy projects are synthesised as a single "default"
+	// warehouse at read time).
+	Warehouse WarehouseConfig `bson:"warehouse" json:"warehouse"`
+
+	// Warehouses is the full set of SQL data sources attached to the
+	// project (enterprise multi-warehouse). Empty for legacy /
+	// single-warehouse projects, which are handled by the accessors
+	// falling back to the Warehouse field.
+	Warehouses []WarehouseConfig `bson:"warehouses,omitempty" json:"warehouses,omitempty"`
+
+	// PrimaryWarehouseID names the default warehouse for a turn / the
+	// default discovery view / the Ask fallback. Empty resolves to the
+	// first entry (or the synthesised "default" for legacy projects).
+	PrimaryWarehouseID string `bson:"primary_warehouse_id,omitempty" json:"primary_warehouse_id,omitempty"`
+
 	LLM       LLMConfig                 `bson:"llm" json:"llm"`
 	BlurbLLM  *BlurbLLMConfig           `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
@@ -106,6 +125,41 @@ type AnalysisAreaConfig struct {
 }
 
 type WarehouseConfig struct {
+	// ID is the stable identifier of this warehouse within the project
+	// ("default" for the primary of a migrated/legacy project, or a
+	// generated id like "wh_snowflake" for additional warehouses). It
+	// keys the per-warehouse secret, schema cache, Qdrant points, and
+	// discovery scope, so it must be unique per project and immutable
+	// after creation. Empty is treated as "default" by the accessors.
+	ID string `bson:"id,omitempty" json:"id,omitempty"`
+	// Label is the human-readable name shown in the UI ("Snowflake — Sales").
+	Label string `bson:"label,omitempty" json:"label,omitempty"`
+	// Description is the warehouse-card headline — the primary routing
+	// signal used to pick the right datasource for a question.
+	Description string `bson:"description,omitempty" json:"description,omitempty"`
+	// Card is the structured routing card (subject areas / key entities /
+	// key metrics), authored in the UI and auto-filled by packgen.
+	Card *WarehouseCard `bson:"card,omitempty" json:"card,omitempty"`
+	// Domain is the per-warehouse domain-pack binding (moved from
+	// Project.Domain for multi-warehouse; packgen generates one pack per
+	// warehouse). Empty falls back to Project.Domain for the primary.
+	Domain string `bson:"domain,omitempty" json:"domain,omitempty"`
+	// Category is the per-warehouse domain-pack category id — the pack's
+	// first category, picked when this datasource's pack is accepted.
+	// Empty falls back to Project.Category for the primary / legacy
+	// warehouse. Discovery scoped to this datasource reads it.
+	Category string `bson:"category,omitempty" json:"category,omitempty"`
+	// Prompts are the per-warehouse discovery prompts, seeded from this
+	// datasource's domain pack when its pack is accepted (mirrors how the
+	// primary seeds Project.Prompts). Empty falls back to Project.Prompts
+	// for the primary / legacy warehouse. Discovery scoped to this
+	// datasource reads these instead of the project-level prompts.
+	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`
+	// Profile is the per-warehouse project profile, seeded from this
+	// datasource's domain pack when its pack is accepted. Empty falls back
+	// to Project.Profile for the primary / legacy warehouse.
+	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
+
 	Provider    string            `bson:"provider" json:"provider"`
 	ProjectID   string            `bson:"project_id,omitempty" json:"project_id,omitempty"`
 	Datasets    []string          `bson:"datasets" json:"datasets"`
@@ -114,6 +168,21 @@ type WarehouseConfig struct {
 	FilterValue string            `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
 	Config      map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
 }
+
+// WarehouseCard is the structured "what this warehouse holds" summary
+// used as the primary routing signal (design §5.5.2). Authored in the
+// Data Sources UI and auto-filled by a packgen summarisation pass.
+type WarehouseCard struct {
+	SubjectAreas []string `bson:"subject_areas,omitempty" json:"subject_areas,omitempty"`
+	KeyEntities  []string `bson:"key_entities,omitempty" json:"key_entities,omitempty"`
+	KeyMetrics   []string `bson:"key_metrics,omitempty" json:"key_metrics,omitempty"`
+}
+
+// DefaultWarehouseID is the reserved id of the primary warehouse for
+// legacy / migrated single-warehouse projects. The per-warehouse secret
+// key for this id is the legacy "warehouse-credentials" (no migration),
+// see warehouse.CredentialsKey.
+const DefaultWarehouseID = "default"
 
 type LLMConfig struct {
 	Provider string            `bson:"provider" json:"provider"`
@@ -162,4 +231,74 @@ func (p *Project) EffectiveValidationEnabled() bool {
 		return true
 	}
 	return *p.ValidationEnabled
+}
+
+// EffectiveWarehouses returns the project's warehouses, synthesising a
+// single "default" warehouse from the legacy Warehouse field when the
+// Warehouses slice is empty. This lets multi-warehouse code treat legacy
+// / single-warehouse projects uniformly with no data migration. Returns
+// nil when the project has no warehouse configured at all.
+func (p *Project) EffectiveWarehouses() []WarehouseConfig {
+	if len(p.Warehouses) > 0 {
+		return p.Warehouses
+	}
+	if p.Warehouse.Provider != "" {
+		wh := p.Warehouse
+		// The legacy singular warehouse IS the default/primary datasource; force
+		// its id to the reserved default (never honour a stray incoming
+		// warehouse.id). This keeps its credentials on the legacy
+		// "warehouse-credentials" key — CredentialsKey(default) == that key — so
+		// existing single-warehouse projects keep working; a non-default id would
+		// send the agent to a namespaced key the UI/API never wrote.
+		wh.ID = DefaultWarehouseID
+		return []WarehouseConfig{wh}
+	}
+	return nil
+}
+
+// PrimaryWarehouse returns the project's primary warehouse — the entry
+// whose ID matches PrimaryWarehouseID, or the first warehouse when the
+// primary id is unset/unknown. Returns a zero WarehouseConfig (Provider
+// == "") when the project has no warehouse configured.
+func (p *Project) PrimaryWarehouse() WarehouseConfig {
+	whs := p.EffectiveWarehouses()
+	if len(whs) == 0 {
+		return WarehouseConfig{}
+	}
+	if p.PrimaryWarehouseID != "" {
+		for _, w := range whs {
+			// Normalize an empty stored id to the reserved default before
+			// comparing, matching WarehouseByID — else a project whose primary
+			// is an id-less default entry (with PrimaryWarehouseID="default")
+			// would miss here and fall back to the first warehouse.
+			wid := w.ID
+			if wid == "" {
+				wid = DefaultWarehouseID
+			}
+			if wid == p.PrimaryWarehouseID {
+				return w
+			}
+		}
+	}
+	return whs[0]
+}
+
+// WarehouseByID returns the warehouse with the given id. An empty id
+// resolves to the primary warehouse. The bool is false when no matching
+// warehouse exists (or the project has none configured).
+func (p *Project) WarehouseByID(id string) (WarehouseConfig, bool) {
+	if id == "" {
+		wh := p.PrimaryWarehouse()
+		return wh, wh.Provider != ""
+	}
+	for _, w := range p.EffectiveWarehouses() {
+		wid := w.ID
+		if wid == "" {
+			wid = DefaultWarehouseID
+		}
+		if wid == id {
+			return w, true
+		}
+	}
+	return WarehouseConfig{}, false
 }
