@@ -35,7 +35,7 @@ func buildSystemPrompt(rt *ProjectRuntime, cfg Config, chartsEnabled bool) strin
 
 	writeResultHandling(&b, cfg)
 	if chartsEnabled {
-		writeChartsSection(&b)
+		writeChartsSection(&b, cfg)
 	}
 
 	b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
@@ -74,7 +74,7 @@ func buildSystemPromptForTools(rt *ProjectRuntime, cfg Config, chartsEnabled boo
 
 	writeResultHandling(&b, cfg)
 	if chartsEnabled {
-		writeChartsSection(&b)
+		writeChartsSection(&b, cfg)
 	}
 
 	evidence := "query_data, search_tables, or lookup_schema"
@@ -117,14 +117,17 @@ func writeWarehouseSection(b *strings.Builder, rt *ProjectRuntime) {
 
 // writeChartsSection renders the shared CHARTS guidance, included only when
 // charting is enabled for the turn. It tells the model when a chart helps, how
-// to keep it grounded (exact projection of a query preview — aggregate in SQL,
-// never compute chart numbers), and to decline to chart rather than invent.
-func writeChartsSection(b *strings.Builder) {
+// to keep it grounded (exact projection of a query preview — narrow the result
+// in SQL, never compute chart numbers), and to decline to chart rather than
+// invent. cfg supplies the preview cap the model must fit a charted result into.
+func writeChartsSection(b *strings.Builder, cfg Config) {
 	b.WriteString("\nCHARTS\n")
 	b.WriteString("- When a trend, comparison, breakdown, or single headline figure communicates the answer better than prose, render a chart with render_chart. Otherwise just answer.\n")
 	b.WriteString("- A chart's data MUST be an exact projection of a query result you already observed: copy the cells verbatim. Never compute, round, scale, or invent a chart number — if you need an aggregate or a smaller set of points, run the aggregation in SQL first, then chart that result.\n")
-	b.WriteString("- Set source_step_id to the q<N> id shown in the result you are charting. You can only chart a query whose full result fit the preview (not a truncated one) — aggregate in SQL until it does.\n")
+	b.WriteString("- Set source_step_id to the q<N> id shown in the result you are charting. You can only chart a query whose full result fit the preview (not a truncated one).\n")
+	fmt.Fprintf(b, "- If the result you want to chart is truncated, re-run it so the whole result fits in %d rows, and pick the fix that preserves the question: when the question is about totals or a breakdown, aggregate (GROUP BY); when it is about individual entities — one point per customer, product, or region, e.g. a scatter — do NOT aggregate, because that destroys the question. Add ORDER BY <the measure that matters> DESC LIMIT %d instead, and say so in the title or caption (e.g. \"Top %d customers by spend\") so the chart is not read as the whole population.\n", cfg.ChartableRowCap(), cfg.ChartableRowCap(), cfg.ChartableRowCap())
 	b.WriteString("- Keep it readable: few series, clear labels. Types: bar, line, area, pie, scatter, kpi (a single headline figure). Render the chart in its own step, then answer in the next. If the data cannot honestly support a chart, don't force one.\n")
+	fmt.Fprintf(b, "- Every title, caption, axis label and series label must be at most %d characters — a longer one is rejected, so write the caption as one short sentence rather than a paragraph. Save the fuller reading for your answer.\n", cfg.ChartCaps.MaxLabelLen)
 	b.WriteString("- Set a measure's unit + format when you know what it is: currency values → format \"currency\" with the currency code as unit (e.g. USD, DKK); rates/shares → format \"percent\"; otherwise leave it plain. This only controls display (the renderer keeps the exact value) — it makes large figures read as e.g. $17.4B instead of 17392162956.\n")
 }
 
