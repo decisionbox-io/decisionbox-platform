@@ -22,6 +22,10 @@ type StandaloneRecommendation struct {
 	RecommendationCategory string          `bson:"recommendation_category" json:"recommendation_category"`
 	Title                  string          `bson:"title" json:"title"`
 	Description            string          `bson:"description" json:"description"`
+	// DescriptionMd is the GitHub-Flavored Markdown rendition of Description.
+	// Description stays plain text; DescriptionMd is omitted when the
+	// description carries no formatting and on legacy documents.
+	DescriptionMd          string          `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	Priority               int             `bson:"priority" json:"priority"`
 	TargetSegment          string          `bson:"target_segment" json:"target_segment"`
 	SegmentSize            int             `bson:"segment_size" json:"segment_size"`

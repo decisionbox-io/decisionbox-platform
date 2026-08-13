@@ -72,15 +72,31 @@ func testRuntime(provider gollm.Provider, wh *testutil.MockWarehouseProvider, sp
 		FilterField: filterField,
 		FilterValue: "TR",
 	})
-	return &ProjectRuntime{
-		Executor:       exec,
-		SchemaProvider: sp,
-		AIClient:       client,
-		Model:          "test-model",
-		Datasets:       []string{"ds"},
-		Dialect:        "Mock SQL",
-		FilterField:    filterField,
+	var router *SchemaRouter
+	if sp != nil {
+		router = NewSchemaRouter(SchemaRouterOptions{
+			Lookups: map[string]ai.SchemaProvider{"default": sp},
+			Labels:  map[string]string{"default": "Default"},
+			Primary: "default",
+		})
 	}
+	return NewProjectRuntime(ProjectRuntimeOptions{
+		AIClient:  client,
+		Model:     "test-model",
+		Schema:    router,
+		PrimaryID: "default",
+		Datasources: []DatasourceInfo{{
+			ID:          "default",
+			Label:       "Default",
+			Dialect:     "Mock SQL",
+			Datasets:    []string{"ds"},
+			FilterField: filterField,
+			FilterValue: "TR",
+		}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
 }
 
 func runOnce(t *testing.T, cfg Config, responses []string, wh *testutil.MockWarehouseProvider, sp ai.SchemaProvider, filterField string) *fakeStore {
@@ -323,23 +339,24 @@ func TestLoop_SearchTablesSummaryIsLowercaseKeyed(t *testing.T) {
 }
 
 func TestLoop_SchemaToolUnavailableDegrades(t *testing.T) {
-	// nil schema provider → search returns an "unavailable" observation and the
-	// loop continues. The unavailable search records an ERROR event (no data
-	// observed), so it does NOT ground: the model must still gather real evidence
-	// before it can answer. Here it recovers with a direct query, which grounds
-	// the answer. (An answer straight after the failed search — with no
-	// successful evidence — would be ungrounded and declined, same as the native
-	// path; see TestLoopTools_FailedEvidenceNotGrounding.)
+	// nil schema provider → search_tables returns an "unavailable" observation;
+	// the loop continues and the model degrades gracefully by falling back to a
+	// direct query, which grounds the answer. The unavailable search records an
+	// ERROR event (no data observed), so it does NOT ground — an answer straight
+	// after it would be declined as ungrounded, same as the native path (see
+	// TestLoopTools_FailedEvidenceNotGrounding).
 	store := runOnce(t, Config{}, []string{
 		`{"search_tables":"orders"}`,
-		`{"query":"SELECT count(*) AS c FROM ds.t"}`,
-		`{"answer":"answered after recovering with a direct query"}`,
+		`{"query":"SELECT 1 FROM ds.orders"}`,
+		`{"answer":"answered after falling back to a direct query"}`,
 	}, testutil.NewMockWarehouseProvider("ds"), nil, "")
 	if store.final.Status != commonmodels.AskTurnStatusDone {
 		t.Fatalf("status = %q", store.final.Status)
 	}
-	if len(store.events) != 2 || store.events[0].Error == "" {
-		t.Fatalf("search event should record unavailability + query should run: %+v", store.events)
+	// The unavailable search is recorded as an error event; the fallback query is
+	// the grounding evidence.
+	if len(store.events) != 2 || store.events[0].Name != "search_tables" || store.events[0].Error == "" {
+		t.Fatalf("first event should be the unavailable search: %+v", store.events)
 	}
 	if store.events[1].Name != string(actQuery) || store.events[1].Error != "" {
 		t.Fatalf("recovery query event = %+v", store.events[1])

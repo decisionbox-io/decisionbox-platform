@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
@@ -15,6 +18,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -232,6 +236,16 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// state string.
 	p.State = models.ProjectStateReady
 
+	// Managed-inference override (no-op unless AI_GATEWAY_URL is set):
+	// replace whatever LLM/blurb/embedding config the request carried
+	// with the operator-configured gateway preset before anything else
+	// looks at it. Whole-object replacement (not field-patching) so a
+	// crafted Config["credentials_json"]/["base_url"] cannot survive.
+	// Placed right after decode so validation, the provider allow-list,
+	// and persistence all see the canonical gateway config — a crafted
+	// POST is overridden (200), never rejected.
+	managedai.Apply(&p)
+
 	if msg := validateLLMConfig(p.LLM.Provider, p.LLM.Config); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -260,6 +274,45 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SeedProjectPrompts(&p, pack)
 	}
 
+	// Reject a split-brain body that sets BOTH the legacy `warehouse` field and
+	// the new `warehouses` slice. EffectiveWarehouses() would silently pick the
+	// slice and persist a divergent legacy field, so any code still reading
+	// project.Warehouse directly would act on a different datasource than the
+	// agent's EffectiveWarehouses()-based paths. Require one canonical shape.
+	if p.Warehouse.Provider != "" && len(p.Warehouses) > 0 {
+		writeError(w, http.StatusBadRequest,
+			"set either the legacy `warehouse` field or `warehouses`, not both")
+		return
+	}
+
+	// Multi-warehouse projects cannot be configured through this create path:
+	// it neither enforces the multi_warehouse_enabled feature gate nor reserves
+	// data-source quota per warehouse (each warehouse bills as one data source,
+	// and the reconciliation counters would also have to sum warehouses). Adding
+	// more than one datasource must go through the dedicated, gated
+	// warehouse-management flow. A single warehouse — via the legacy `warehouse`
+	// field OR a one-entry `warehouses` — is allowed and treated identically
+	// below (one data source, one index).
+	if len(p.EffectiveWarehouses()) > 1 {
+		writeError(w, http.StatusBadRequest,
+			"multiple data sources cannot be configured at project creation; create the project with a single warehouse, then add more through warehouse management")
+		return
+	}
+
+	// Normalize a single-datasource create supplied via the new `warehouses`
+	// slice down to the canonical legacy `warehouse` shape. Existing readers
+	// still consume project.warehouse (the settings UI, the data-source
+	// reconciliation counter), and the agent's EffectiveWarehouses() synthesizes
+	// the same single default warehouse from it — so both sides agree and no
+	// project is left looking warehouse-less. The id is cleared so it resolves to
+	// the default and keeps the legacy "warehouse-credentials" secret key.
+	if len(p.Warehouses) == 1 {
+		p.Warehouse = p.Warehouses[0]
+		p.Warehouse.ID = ""
+		p.Warehouses = nil
+		p.PrimaryWarehouseID = ""
+	}
+
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
 	ck := policy.GetChecker()
 	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {
@@ -285,12 +338,12 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Plan-gate: data-sources-per-deployment. A project today carries
-	// exactly one warehouse (the data-source unit), so adding a project
-	// that configures a warehouse is also adding a data source.
-	// Self-hosted Noop is a no-op.
+	// Plan-gate: data-sources-per-deployment. The create path allows at most one
+	// warehouse (guarded above), so a project that configures a warehouse — via
+	// the legacy field or a one-entry `warehouses` — is adding exactly one data
+	// source. Self-hosted Noop is a no-op.
 	var dsRes *policy.Reservation
-	if p.Warehouse.Provider != "" {
+	if len(p.EffectiveWarehouses()) > 0 {
 		dsRes, err = ck.CheckAddDataSource(r.Context(), "")
 		if err != nil {
 			if res != nil {
@@ -322,16 +375,20 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The provider used for logging/telemetry comes from the primary warehouse
+	// so a one-entry `warehouses` create (empty legacy field) is attributed
+	// correctly, not blank.
+	primaryProvider := p.PrimaryWarehouse().Provider
 	apilog.WithFields(apilog.Fields{
 		"project_id": p.ID,
 		"name":       p.Name,
 		"domain":     p.Domain,
 		"category":   p.Category,
 		"llm":        p.LLM.Provider,
-		"warehouse":  p.Warehouse.Provider,
+		"warehouse":  primaryProvider,
 	}).Info("Project created")
 
-	telemetry.TrackProjectCreated(p.Warehouse.Provider, p.LLM.Provider, p.Domain)
+	telemetry.TrackProjectCreated(primaryProvider, p.LLM.Provider, p.Domain)
 
 	// Enqueue the new project for schema indexing. A project without a
 	// warehouse (blank-state) cannot be indexed; it will transition to
@@ -339,7 +396,7 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// explicitly rather than defaulting in the repo so reads without a
 	// warehouse still see SchemaIndexStatus == "" (→ "not yet
 	// configured" in the dashboard).
-	if p.Warehouse.Provider != "" {
+	if len(p.EffectiveWarehouses()) > 0 {
 		if err := h.repo.SetSchemaIndexStatus(r.Context(), p.ID, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
 			apilog.WithError(err).Warn("schema-index: failed to enqueue new project; user must click Re-index manually")
 		} else {
@@ -404,11 +461,30 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read request body")
+		return
+	}
 	var incoming models.Project
-	if err := decodeJSON(r, &incoming); err != nil {
+	if err := json.Unmarshal(bodyBytes, &incoming); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	// Which top-level fields the client actually sent — lets the datasource guard
+	// distinguish an explicit "warehouses":[] (a removal attempt) from an omitted
+	// field, since both decode to a zero-length slice.
+	var sentFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &sentFields)
+	_, warehousesSent := sentFields["warehouses"]
+
+	// Managed-inference override (no-op unless AI_GATEWAY_URL is set):
+	// canonicalize the incoming AI config to the gateway preset before
+	// the checks and the merge below, so a crafted PUT that sets a
+	// different provider/model/base_url is discarded — the merged
+	// `existing` persists the preset, not the request body.
+	managedai.Apply(&incoming)
 
 	// Plan-gate: if the request changes the LLM provider, validate the
 	// new provider against the plan's allow-list before persisting.
@@ -437,7 +513,37 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if incoming.Description != "" || incoming.Name != "" {
 		existing.Description = incoming.Description
 	}
-	if incoming.Warehouse.Provider != "" {
+	// Datasources are NOT managed through this settings route (it neither gates
+	// the multi_warehouse feature nor reserves per-warehouse quota nor enqueues
+	// indexing). Reject a request that would CHANGE datasources while letting an
+	// unchanged echo through — a full-object round-trip (GET → tweak one setting
+	// → PUT) re-sends the current datasources verbatim, and the merge below
+	// ignores the datasource fields regardless. Two forbidden shapes:
+	//   - `warehouses` present and different from what's stored (add/edit/remove,
+	//     or turning a single/legacy project multi-warehouse via this route); and
+	//   - a legacy `warehouse` edit on a project that is ALREADY multi-warehouse,
+	//     where EffectiveWarehouses() ignores the legacy field so the edit would
+	//     silently no-op.
+	// Datasource edits go through the dedicated, gated warehouse-management flow.
+	// A `warehouses` field is an edit when it was actually sent and differs from
+	// what's stored — including an explicit "warehouses":[] on a multi-warehouse
+	// project (a removal). Treat nil and empty as equal so a client that echoes
+	// an empty list on a single-warehouse project isn't spuriously rejected.
+	warehousesEdited := warehousesSent &&
+		(len(incoming.Warehouses) > 0 || len(existing.Warehouses) > 0) &&
+		!reflect.DeepEqual(incoming.Warehouses, existing.Warehouses)
+	legacyEditedOnMulti := len(existing.Warehouses) > 0 && incoming.Warehouse.Provider != "" &&
+		!reflect.DeepEqual(incoming.Warehouse, existing.Warehouse)
+	if warehousesEdited || legacyEditedOnMulti {
+		writeError(w, http.StatusBadRequest,
+			"data sources cannot be edited through this settings route; use warehouse management")
+		return
+	}
+	// A legacy `warehouse` edit remains the way to change a single-warehouse
+	// project's datasource. Never apply it to a multi-warehouse project — there
+	// the value above was an unchanged echo, and EffectiveWarehouses() ignores
+	// the legacy field anyway.
+	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) == 0 {
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {

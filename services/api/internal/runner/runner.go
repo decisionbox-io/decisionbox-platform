@@ -122,6 +122,15 @@ type Config struct {
 	MemoryRequest      string
 	MemoryLimit        string
 
+	// OpenShift, when true, omits the numeric RunAsUser / RunAsGroup /
+	// FSGroup pins from the agent Job's security contexts so OpenShift's
+	// restricted-v2 SCC assigns a UID/GID from the namespace's allocated
+	// range (pinning 1000 is rejected as out-of-range there). All other
+	// hardening (RunAsNonRoot, drop ALL, read-only rootfs, RuntimeDefault
+	// seccomp) is preserved. Default false = vanilla Kubernetes behaviour
+	// (UID 1000 pinned), unchanged.
+	OpenShift bool
+
 	// Job timeout in hours — how long to watch a Job before giving up.
 	// Applies to both K8s Job watching and subprocess waiting.
 	// Default: 25 hours, paired with the agent's 24h
@@ -160,6 +169,7 @@ func LoadConfig() Config {
 		MemoryRequest:      getEnv("AGENT_MEMORY_REQUEST", "256Mi"),
 		MemoryLimit:        getEnv("AGENT_MEMORY_LIMIT", "1Gi"),
 		JobTimeoutHours:    timeoutHours,
+		OpenShift:          getEnvBool("OPENSHIFT_ENABLED", false),
 	}
 }
 
@@ -262,4 +272,21 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvBool parses a boolean env var via strconv.ParseBool (accepts
+// 1/t/T/TRUE/true/0/f/F/FALSE/false). An unset or unparseable value
+// returns fallback — deliberately fail-safe so a typo in a security
+// flag (e.g. OPENSHIFT_ENABLED=yes) never silently strips the pod
+// hardening; the operator gets the safe default instead.
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }

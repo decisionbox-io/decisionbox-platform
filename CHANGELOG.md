@@ -8,12 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-28
+
+### Changed
+
+- **Version bumped to 0.21.0** to keep the fleet on one number. The 0.20.0 image publish could not complete — our release ECR repositories are IMMUTABLE, so the partial push from a failed run blocked every retry at that version. Nothing functional changed from 0.20.0.
+
+## [0.20.0] - 2026-07-28
+
+### Changed
+
+- **Version realigned to 0.20.0** so the community platform, its Helm chart and the cloud tenant images all carry one number. 0.18.0 and 0.19.0 are superseded; nothing functional changed between them and this.
+
+## [0.18.0] - 2026-07-28
+
+### Fixed
+
+- **Agent Job pods rejected on OpenShift** — the Kubernetes runner hardcoded `runAsUser`/`runAsGroup`/`fsGroup` `1000` in every agent Job (Test Connection, discovery, index-schema, validate-doc), which OpenShift's `restricted-v2` SCC rejects as outside the namespace's allocated UID range, so pods never scheduled (Test Connection returned a 504). Setting `OPENSHIFT_ENABLED=true` now omits those pins so the SCC assigns a UID/GID from the namespace range; all other hardening (`runAsNonRoot`, drop `ALL`, read-only root filesystem, `RuntimeDefault` seccomp) is preserved. Vanilla Kubernetes is unchanged — UID `1000` is still pinned by default (`services/api/internal/runner/`).
+
+## [0.17.0] - 2026-07-20
+
+### Added
+
+- **Discovery effort levels + optional `OperationCharger` seam** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `libs/go-common/policy/operation.go`, `services/api/internal/discoverytrigger/registry.go`, `services/api/internal/handler/discoveries.go`. Adds the five discovery effort levels (Lower/Low/Medium/High/Higher → 20/40/60/80/100 steps) and an **optional** per-operation charging seam (`OperationCharger`, nil/no-op by default) that cloud layers on to debit credits per operation. Inert for community/self-hosted builds — no behavior change. Foundational for the cloud credit economy ([control-plane #103](https://github.com/decisionbox-io/decisionbox-cloud-control-plane/issues/103)).
+
+### Changed
+
+- **Dashboard hides the pre-discovery dollar cost estimate on cloud** ([#318](https://github.com/decisionbox-io/decisionbox-platform/pull/318)) — `ui/dashboard/src/app/projects/[id]/page.tsx`, for the credits UX.
+
+## [0.16.0] - 2026-07-13
+
+### Changed
+
+- Release version bump — no functional changes since the 0.15.0 release (coordinated re-tag across the platform's published images).
+
+## [0.15.0] - 2026-07-10
+
+### Changed
+
+- Release version bump — no functional changes since the 0.14.0 release (coordinated re-tag/rebuild across the platform's published images).
+
+## [0.14.0] - 2026-07-09
+
+### Changed
+
+- **Shared `secrets.ResolveCredential` helper (dashboard secret → env fallback)** — `libs/go-common/secrets/`. Extracts credential resolution (per-project dashboard secret first, else an env-var fallback such as `LLM_API_KEY`/`EMBEDDING_API_KEY`) into a shared, exported helper so every provider-construction site resolves credentials identically — enabling managed-inference (AI-gateway) mode, where the credential rides the env fallback rather than a per-project secret. [#312](https://github.com/decisionbox-io/decisionbox-platform/pull/312)
+
+## [0.13.0] - 2026-07-08
+
 ### Removed
 
 - **Per-project discovery schedule config (`project.schedule`)** — `services/{agent,api}/internal/models/project.go` / `services/api/models/project.go`, `services/api/internal/handler/projects.go`, `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/{new,[id]/settings}/page.tsx`, `docs/{reference/data-models.md,reference/api.md,concepts/architecture.md,getting-started/quickstart.md,getting-started/first-discovery.md,reference/configuration.md}`. The `ScheduleConfig{ enabled, cron_expr, max_steps }` field stored on each project (with a settings tab and a create-wizard step) was never evaluated — no scheduler ever shipped to act on `cron_expr`, so it was inert configuration. It is removed from the model, the project update API, and the dashboard (the create wizard drops its "Schedule" step; settings drops its "Schedule" tab). No migration is required: an orphan `schedule` sub-document on an existing project doc is ignored. Trigger discovery runs manually via `POST /api/v1/projects/{id}/discover` (unchanged).
 
 ### Added
 
+- **Insight and recommendation descriptions are authored and rendered as Markdown** — `services/agent/internal/discipline/rules.go`, `services/agent/internal/mdtext/` (new), `services/agent/internal/discovery/{orchestrator.go,phase_embed_index.go}`, `services/{agent,api}/internal/models/discovery.go` / `services/api/models/discovery.go`, `libs/go-common/models/{insight.go,recommendation.go}`, `ui/dashboard/src/components/common/Markdown.tsx` (new), `ui/dashboard/src/lib/api.ts`, `ui/dashboard/src/app/projects/[id]/discoveries/[runId]/{insights/[insightId],recommendations/[recommendationId]}/page.tsx`, `docs/{reference/data-models.md,concepts/discovery-lifecycle.md,guides/customizing-prompts.md}`. The analysis LLM now authors each `description` as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, emphasis, lists, small sub-headings, simple tables) following a takeaway-first anatomy where the finding supports it — driven by a new platform-enforced discipline rule so custom analysis areas inherit it. A new sibling field `description_md` carries the Markdown; the existing `description` keeps a plain-text reduction (derived at parse time) so API consumers, list/preview UIs, and embeddings read clean text and old documents stay backward-compatible. The insight and recommendation detail views render `description_md` (falling back to `description`) through a safe shared renderer: no raw HTML, links shown as plain non-navigable text, and sub-headings capped to a small scale. Plain and legacy descriptions render as a tidy paragraph with no leftover symbols.
+
+- **CI pushes the `decisionbox-agent` image to AWS ECR** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to ECR (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using OIDC-based AWS authentication. EKS-based deployments can pull the agent image from ECR without cross-registry authentication.
 - **CI pushes the `decisionbox-agent` image to both dev and prod AWS ECR accounts** — `.github/workflows/docker-publish.yml`. The Docker publish workflow now pushes the agent image to both the dev and prod ECR registries (`<account>.dkr.ecr.us-east-1.amazonaws.com/decisionbox-agent:<tag>`) after the GHCR push, using per-account OIDC role assumption. Each EKS cluster pulls from its own same-account ECR without cross-account trust policies.
 
 - **In-process discovery-run trigger seam (`apiserver.TriggerDiscovery`)** — `services/api/internal/discoverytrigger/` (new), `services/api/internal/handler/discoveries.go`, `services/api/internal/server/server.go`, `services/api/apiserver/discovery_trigger.go` (new). The discovery-run trigger logic (lifecycle/schema-index gating, run-record reservation, plan-policy enforcement, agent spawn) is extracted from the `POST /api/v1/projects/{id}/discover` handler into `DiscoveriesHandler.StartRun` and exposed process-globally via a new leaf registry, re-exported as `apiserver.TriggerDiscovery`. The HTTP endpoint is now a thin adapter over `StartRun`, so the endpoint and in-process callers that compose the community API server share one implementation with no duplication. No behaviour change to the endpoint.

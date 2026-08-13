@@ -14,21 +14,24 @@ type fakeClient struct {
 	// inputs recorded per call
 	createRequests []*pb.CreateCollection
 	upsertRequests []*pb.UpsertPoints
+	deleteRequests []*pb.DeletePoints
 	queryRequests  []*pb.QueryPoints
 	deletedNames   []string
 
 	// state
-	existing map[string]bool // collection name -> exists
+	existing       map[string]bool   // collection name -> exists
+	collectionDims map[string]uint64 // collection name -> vector size (for GetCollectionInfo)
 
 	// stubbed behaviour
-	existsErr error
-	createErr error
-	deleteErr error
-	upsertErr error
-	queryErr  error
-	queryHits []*pb.ScoredPoint
-	healthErr error
-	closeErr  error
+	existsErr    error
+	createErr    error
+	deleteErr    error
+	deletePtsErr error
+	upsertErr    error
+	queryErr     error
+	queryHits    []*pb.ScoredPoint
+	healthErr    error
+	closeErr     error
 }
 
 func newFakeClient() *fakeClient {
@@ -47,7 +50,21 @@ func (f *fakeClient) CreateCollection(ctx context.Context, req *pb.CreateCollect
 	}
 	f.createRequests = append(f.createRequests, req)
 	f.existing[req.CollectionName] = true
+	if f.collectionDims == nil {
+		f.collectionDims = map[string]uint64{}
+	}
+	f.collectionDims[req.CollectionName] = req.GetVectorsConfig().GetParams().GetSize()
 	return nil
+}
+func (f *fakeClient) GetCollectionInfo(ctx context.Context, name string) (*pb.CollectionInfo, error) {
+	dim := f.collectionDims[name]
+	return &pb.CollectionInfo{
+		Config: &pb.CollectionConfig{
+			Params: &pb.CollectionParams{
+				VectorsConfig: pb.NewVectorsConfig(&pb.VectorParams{Size: dim, Distance: pb.Distance_Cosine}),
+			},
+		},
+	}, nil
 }
 func (f *fakeClient) DeleteCollection(ctx context.Context, name string) error {
 	if f.deleteErr != nil {
@@ -62,6 +79,13 @@ func (f *fakeClient) Upsert(ctx context.Context, req *pb.UpsertPoints) (*pb.Upda
 		return nil, f.upsertErr
 	}
 	f.upsertRequests = append(f.upsertRequests, req)
+	return &pb.UpdateResult{}, nil
+}
+func (f *fakeClient) Delete(ctx context.Context, req *pb.DeletePoints) (*pb.UpdateResult, error) {
+	if f.deletePtsErr != nil {
+		return nil, f.deletePtsErr
+	}
+	f.deleteRequests = append(f.deleteRequests, req)
 	return &pb.UpdateResult{}, nil
 }
 func (f *fakeClient) Query(ctx context.Context, req *pb.QueryPoints) ([]*pb.ScoredPoint, error) {
@@ -123,13 +147,35 @@ func TestEnsureCollection_CreatesWhenMissing(t *testing.T) {
 func TestEnsureCollection_Idempotent(t *testing.T) {
 	c := newFakeClient()
 	c.existing["decisionbox_schema_p1"] = true
+	c.collectionDims = map[string]uint64{"decisionbox_schema_p1": 768}
 	r := NewWithClient(c)
 
 	if err := r.EnsureCollection(context.Background(), "p1", 768); err != nil {
 		t.Fatalf("EnsureCollection: %v", err)
 	}
 	if len(c.createRequests) != 0 {
-		t.Error("should skip create when collection exists")
+		t.Error("should skip create when collection exists with matching dimensions")
+	}
+	if len(c.deletedNames) != 0 {
+		t.Error("must NOT drop a shared collection when dimensions already match")
+	}
+}
+
+func TestEnsureCollection_RecreatesOnDimensionChange(t *testing.T) {
+	c := newFakeClient()
+	c.existing["decisionbox_schema_p1"] = true
+	c.collectionDims = map[string]uint64{"decisionbox_schema_p1": 1536}
+	r := NewWithClient(c)
+	// Embedding model changed 1536 → 768: the collection must be dropped
+	// and recreated (every warehouse's points are stale).
+	if err := r.EnsureCollection(context.Background(), "p1", 768); err != nil {
+		t.Fatalf("EnsureCollection: %v", err)
+	}
+	if len(c.deletedNames) != 1 {
+		t.Errorf("expected 1 drop on dimension change, got %d", len(c.deletedNames))
+	}
+	if len(c.createRequests) != 1 || c.createRequests[0].GetVectorsConfig().GetParams().GetSize() != 768 {
+		t.Errorf("expected recreate at 768 dims, got %+v", c.createRequests)
 	}
 }
 
@@ -193,7 +239,7 @@ func TestDropCollection_EmptyProjectID(t *testing.T) {
 
 func TestUpsert_EmptyBatchIsNoop(t *testing.T) {
 	c := newFakeClient()
-	if err := NewWithClient(c).Upsert(context.Background(), "p", nil); err != nil {
+	if err := NewWithClient(c).Upsert(context.Background(), "p", "", nil); err != nil {
 		t.Fatalf("empty batch: %v", err)
 	}
 	if len(c.upsertRequests) != 0 {
@@ -203,7 +249,7 @@ func TestUpsert_EmptyBatchIsNoop(t *testing.T) {
 
 func TestUpsert_RequiresVector(t *testing.T) {
 	c := newFakeClient()
-	err := NewWithClient(c).Upsert(context.Background(), "p", []UpsertItem{
+	err := NewWithClient(c).Upsert(context.Background(), "p", "", []UpsertItem{
 		{Blurb: TableBlurb{Table: "t"}, Vector: nil},
 	})
 	if err == nil {
@@ -213,7 +259,7 @@ func TestUpsert_RequiresVector(t *testing.T) {
 
 func TestUpsert_RequiresTableName(t *testing.T) {
 	c := newFakeClient()
-	err := NewWithClient(c).Upsert(context.Background(), "p", []UpsertItem{
+	err := NewWithClient(c).Upsert(context.Background(), "p", "", []UpsertItem{
 		{Blurb: TableBlurb{}, Vector: []float64{0.1, 0.2}},
 	})
 	if err == nil {
@@ -223,7 +269,7 @@ func TestUpsert_RequiresTableName(t *testing.T) {
 
 func TestUpsert_RejectsMixedDimensions(t *testing.T) {
 	c := newFakeClient()
-	err := NewWithClient(c).Upsert(context.Background(), "p", []UpsertItem{
+	err := NewWithClient(c).Upsert(context.Background(), "p", "", []UpsertItem{
 		{Blurb: TableBlurb{Table: "a"}, Vector: []float64{0.1, 0.2}},
 		{Blurb: TableBlurb{Table: "b"}, Vector: []float64{0.3, 0.4, 0.5}},
 	})
@@ -234,7 +280,7 @@ func TestUpsert_RejectsMixedDimensions(t *testing.T) {
 
 func TestUpsert_SendsCorrectCollectionAndPoints(t *testing.T) {
 	c := newFakeClient()
-	err := NewWithClient(c).Upsert(context.Background(), "myproj", []UpsertItem{
+	err := NewWithClient(c).Upsert(context.Background(), "myproj", "", []UpsertItem{
 		{
 			Blurb: TableBlurb{
 				Table: "sales.orders", Dataset: "sales", Blurb: "orders",
@@ -282,7 +328,7 @@ func TestUpsert_SendsCorrectCollectionAndPoints(t *testing.T) {
 func TestUpsert_PropagatesError(t *testing.T) {
 	c := newFakeClient()
 	c.upsertErr = errors.New("qdrant timeout")
-	err := NewWithClient(c).Upsert(context.Background(), "p", []UpsertItem{
+	err := NewWithClient(c).Upsert(context.Background(), "p", "", []UpsertItem{
 		{Blurb: TableBlurb{Table: "t"}, Vector: []float64{0.1}},
 	})
 	if err == nil {
@@ -427,7 +473,7 @@ func TestSearch_PropagatesQueryError(t *testing.T) {
 func TestSearch_SkipsPointsWithEmptyTablePayload(t *testing.T) {
 	c := newFakeClient()
 	c.queryHits = []*pb.ScoredPoint{
-		fakeScored("", 0.95),       // corrupt point, no table
+		fakeScored("", 0.95), // corrupt point, no table
 		fakeScored("good", 0.80),
 	}
 	hits, err := NewWithClient(c).Search(context.Background(), "p", []float64{1}, SearchOpts{})
@@ -452,7 +498,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 		BlurbModel:     "bedrock/qwen.qwen3-32b-v1:0",
 		EmbeddingModel: "openai/text-embedding-3-large",
 	}
-	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p", "default"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -476,7 +522,7 @@ func TestPayloadStoresBareTableNotQualified(t *testing.T) {
 		Table:   "dbo.FINP_PERSONEL",
 		Dataset: "dbo",
 	}
-	raw := payloadFromBlurb(in, "p")
+	raw := payloadFromBlurb(in, "p", "default")
 	if got := raw["table"]; got != "FINP_PERSONEL" {
 		t.Errorf("payload.table = %q, want bare %q", got, "FINP_PERSONEL")
 	}
@@ -497,7 +543,7 @@ func TestPayloadRoundTrip_CrossProjectThreePart(t *testing.T) {
 		Table:   "bigquery-public-data.census.Variable",
 		Dataset: "census",
 	}
-	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p", "default"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -515,7 +561,7 @@ func TestPayloadRoundTrip_EmptyDataset(t *testing.T) {
 	// single-project mode) write Dataset="" and Table=bare. The payload
 	// should faithfully round-trip that shape without inventing a dot.
 	in := TableBlurb{Table: "events", Dataset: ""}
-	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p", "default"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -534,7 +580,7 @@ func TestPayloadRoundTrip_UnqualifiedTableWithDataset(t *testing.T) {
 	// payload still rehydrates sensibly — Table comes back as
 	// "dbo.orders" so downstream Schemas[table] lookups hit.
 	in := TableBlurb{Table: "orders", Dataset: "dbo"}
-	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p"))
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p", "default"))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -566,7 +612,7 @@ func TestBlurbFromPayload_LegacyQualifiedStillWorks(t *testing.T) {
 
 func TestLog10Plus1(t *testing.T) {
 	cases := []struct {
-		n    int64
+		n                 int64
 		wantLow, wantHigh float64
 	}{
 		{0, 0, 0},
@@ -638,4 +684,86 @@ func fakeScoredWithRows(table string, score float64, rows int64) *pb.ScoredPoint
 	}
 	pv, _ := pb.TryValueMap(payload)
 	return &pb.ScoredPoint{Score: float32(score), Payload: pv}
+}
+
+// --- multi-warehouse behaviour ---
+
+func TestPointID_DiffersByWarehouse(t *testing.T) {
+	a := pointID("p", "wh_a", "sales.orders")
+	b := pointID("p", "wh_b", "sales.orders")
+	def := pointID("p", "default", "sales.orders")
+	if a == b || a == def || b == def {
+		t.Fatalf("point ids must differ per warehouse: a=%s b=%s default=%s", a, b, def)
+	}
+	// Stable/idempotent for the same inputs.
+	if a != pointID("p", "wh_a", "sales.orders") {
+		t.Error("point id not stable")
+	}
+}
+
+func TestPayload_CarriesWarehouseID_AndLegacyFallback(t *testing.T) {
+	in := TableBlurb{Table: "sales.orders", Dataset: "sales", Blurb: "b"}
+	pv, err := pb.TryValueMap(payloadFromBlurb(in, "p", "wh_a"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if got := blurbFromPayload(pv); got.WarehouseID != "wh_a" {
+		t.Errorf("warehouse_id round-trip = %q, want wh_a", got.WarehouseID)
+	}
+	// Legacy point without a warehouse_id resolves to the default warehouse.
+	legacy, _ := pb.TryValueMap(map[string]interface{}{"table": "orders", "dataset": "sales"})
+	if got := blurbFromPayload(legacy); got.WarehouseID != DefaultWarehouseID {
+		t.Errorf("legacy payload warehouse_id = %q, want %q", got.WarehouseID, DefaultWarehouseID)
+	}
+}
+
+func TestSearch_WarehouseFilter_BuildsCondition(t *testing.T) {
+	c := newFakeClient()
+	c.existing["decisionbox_schema_p"] = true
+	r := NewWithClient(c)
+	// Non-default warehouse → a strict must condition on warehouse_id.
+	if _, err := r.Search(context.Background(), "p", []float64{1, 0}, SearchOpts{WarehouseFilter: "wh_a"}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(c.queryRequests) == 0 || c.queryRequests[0].Filter == nil {
+		t.Fatal("expected a query filter for a warehouse-scoped search")
+	}
+	if len(c.queryRequests[0].Filter.Must) == 0 {
+		t.Error("non-default warehouse filter should use a Must condition")
+	}
+	// Default warehouse → a Should (match "default" OR legacy is-empty).
+	if _, err := r.Search(context.Background(), "p", []float64{1, 0}, SearchOpts{WarehouseFilter: DefaultWarehouseID}); err != nil {
+		t.Fatalf("search default: %v", err)
+	}
+	last := c.queryRequests[len(c.queryRequests)-1]
+	if last.Filter == nil || len(last.Filter.Should) != 2 {
+		t.Errorf("default warehouse filter should have 2 Should conditions, got %+v", last.Filter)
+	}
+}
+
+func TestDeleteWarehousePoints_FiltersByWarehouse(t *testing.T) {
+	c := newFakeClient()
+	c.existing["decisionbox_schema_p"] = true
+	r := NewWithClient(c)
+	if err := r.DeleteWarehousePoints(context.Background(), "p", "wh_a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(c.deleteRequests) != 1 {
+		t.Fatalf("expected 1 delete request, got %d", len(c.deleteRequests))
+	}
+	sel := c.deleteRequests[0].Points
+	if sel == nil || sel.GetFilter() == nil {
+		t.Fatal("delete must use a filter selector, not drop everything")
+	}
+	if len(sel.GetFilter().Must) == 0 {
+		t.Error("non-default warehouse delete should use a Must condition")
+	}
+	// Missing collection → no-op, no delete issued.
+	c2 := newFakeClient()
+	if err := NewWithClient(c2).DeleteWarehousePoints(context.Background(), "p", "wh_a"); err != nil {
+		t.Fatalf("delete on missing collection: %v", err)
+	}
+	if len(c2.deleteRequests) != 0 {
+		t.Error("no delete should be issued when the collection is absent")
+	}
 }

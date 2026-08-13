@@ -282,7 +282,7 @@ func TestStatusReporter_AddExplorationStep_StampsTokens(t *testing.T) {
 	// — that is the failure mode we want.
 	sr := newEnabledReporter(t, w)
 
-	sr.AddExplorationStep(context.Background(), 1, "query_data", "looking at retention", "SELECT 1", 5, 100, false, "", 350, 120)
+	sr.AddExplorationStep(context.Background(), 1, "query_data", "looking at retention", "SELECT 1", 5, 100, false, "", 350, 120, "wh_oracle")
 
 	if len(w.steps) != 1 {
 		t.Fatalf("got %d steps, want 1", len(w.steps))
@@ -300,6 +300,9 @@ func TestStatusReporter_AddExplorationStep_StampsTokens(t *testing.T) {
 	if got.LLMThinking != "looking at retention" || got.Query != "SELECT 1" {
 		t.Errorf("step metadata lost: %+v", got)
 	}
+	if got.WarehouseID != "wh_oracle" {
+		t.Errorf("WarehouseID = %q, want wh_oracle (datasource must reach the live step stream)", got.WarehouseID)
+	}
 }
 
 func TestStatusReporter_AddExplorationStep_RejectedActionPath(t *testing.T) {
@@ -311,7 +314,7 @@ func TestStatusReporter_AddExplorationStep_RejectedActionPath(t *testing.T) {
 	w := &fakeRunStepWriter{}
 	sr := newEnabledReporter(t, w)
 
-	sr.AddExplorationStep(context.Background(), 2, "complete_rejected", "thinking", "", 0, 0, false, "rejected premature completion (2 < 5)", 90, 12)
+	sr.AddExplorationStep(context.Background(), 2, "complete_rejected", "thinking", "", 0, 0, false, "rejected premature completion (2 < 5)", 90, 12, "")
 
 	if len(w.steps) != 1 {
 		t.Fatalf("got %d steps, want 1", len(w.steps))
@@ -332,7 +335,7 @@ func TestStatusReporter_AddExplorationStep_LookupSchemaAction(t *testing.T) {
 	w := &fakeRunStepWriter{}
 	sr := newEnabledReporter(t, w)
 
-	sr.AddExplorationStep(context.Background(), 3, "lookup_schema", "needing schema for orders", "", 0, 0, false, "", 50, 18)
+	sr.AddExplorationStep(context.Background(), 3, "lookup_schema", "needing schema for orders", "", 0, 0, false, "", 50, 18, "")
 
 	if len(w.steps) != 1 {
 		t.Fatalf("got %d steps, want 1", len(w.steps))

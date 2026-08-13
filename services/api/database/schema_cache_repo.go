@@ -7,10 +7,23 @@ import (
 	"sort"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// schemaCacheWarehouseCond scopes a schema-cache query to one warehouse. The
+// default/primary warehouse (empty id or "default") also matches rows written
+// before warehouse_id existed (missing field / "" / null) so single-warehouse
+// caches keep resolving; a named secondary warehouse matches its id exactly.
+// Mirrors the agent-side write path's per-warehouse scoping.
+func schemaCacheWarehouseCond(warehouseID string) interface{} {
+	if warehouseID == "" || warehouseID == models.DefaultWarehouseID {
+		return bson.M{"$in": bson.A{models.DefaultWarehouseID, "", nil}}
+	}
+	return warehouseID
+}
 
 // SchemaCacheRepository provides the API-side surface for the
 // project_schema_cache collection. The agent owns Find/Save (those run
@@ -43,8 +56,8 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 	return nil
 }
 
-// ListTables returns the distinct cached schema_key values for a
-// project, sorted ascending. Each schema_key is the qualified table
+// ListTables returns the distinct cached schema_key values for one of a
+// project's warehouses, sorted ascending. Each schema_key is the qualified table
 // name the agent stored — typically "<dataset>.<table>" for BigQuery,
 // "<schema>.<table>" for Postgres / Redshift / Snowflake / Databricks,
 // or "<schema>.<table>" (e.g. "dbo.orders") for MSSQL — i.e. whatever
@@ -54,11 +67,20 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 // (the discovery scope picker, table-filter UIs, and similar) can
 // show what the agent actually sees without reaching into the
 // warehouse driver.
-func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID string) ([]string, error) {
+//
+// warehouseID scopes the listing to one datasource (multi-warehouse): the
+// dashboard's discovery-scope picker must show only the tables the discovery run
+// can reach (the primary warehouse), not every warehouse indexed into the shared
+// cache. The default/primary matches legacy rows written before warehouse_id
+// existed; a named secondary matches its id exactly.
+func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID, warehouseID string) ([]string, error) {
 	if projectID == "" {
 		return nil, errors.New("projectID is required")
 	}
-	values, err := r.col.Distinct(ctx, "schema_key", bson.M{"project_id": projectID})
+	values, err := r.col.Distinct(ctx, "schema_key", bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("schema cache list tables: %w", err)
 	}

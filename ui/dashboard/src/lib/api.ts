@@ -384,6 +384,9 @@ export interface Insight {
   analysis_area: string;
   name: string;
   description: string;
+  // Markdown rendition of `description`, rendered formatted on the detail
+  // view. `description` stays plain text. Absent on unformatted/legacy insights.
+  description_md?: string;
   severity: string;
   affected_count: number;
   risk_score: number;
@@ -462,6 +465,9 @@ export interface InsightValidation {
   input_tokens?: number;
   output_tokens?: number;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
   combined?: ValidationStatus;
@@ -473,6 +479,9 @@ export interface Recommendation {
   category: string;
   title: string;
   description: string;
+  // Markdown rendition of `description`. `description` stays plain text.
+  // Absent on unformatted/legacy recommendations.
+  description_md?: string;
   priority: number;
   target_segment: string;
   segment_size: number;
@@ -504,6 +513,9 @@ export interface ExplorationStep {
   execution_time_ms: number;
   error: string;
   fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against on a
+  // multi-warehouse project (empty/absent on a single-warehouse project).
+  warehouse_id?: string;
 }
 
 export interface AnalysisLogStep {
@@ -576,6 +588,9 @@ export interface ValidationLogEntry {
   query: string;
   validated_at: string;
   // --- new fields ---
+  // warehouse_id is the datasource this doc was verified against
+  // (multi-warehouse); empty on single-warehouse projects.
+  warehouse_id?: string;
   doc_kind?: ValidationDocKind;
   verifier?: StructuredVerdict;
   refuter?: StructuredVerdict;
@@ -721,6 +736,9 @@ export interface RunStep {
   row_count: number;
   query_time_ms: number;
   query_fixed: boolean;
+  // warehouse_id is the datasource this step's query ran against
+  // (multi-warehouse); empty on non-query steps + single-warehouse runs.
+  warehouse_id?: string;
   insight_name: string;
   insight_severity: string;
   error: string;
@@ -836,7 +854,13 @@ export interface CrossProjectSearchRequest {
 
 export interface SearchResultItem {
   id: string;
-  type: 'insight' | 'recommendation';
+  // 'source_chunk' is returned when an answer cites a knowledge-source
+  // document (an upload, URL, or a file synced from external storage)
+  // rather than a discovery finding. Such a citation has no
+  // discovery_id, and links to the project's knowledge sources instead
+  // of an insight or recommendation — callers switching on this field
+  // must handle it rather than defaulting it to a recommendation.
+  type: 'insight' | 'recommendation' | 'source_chunk';
   score: number;
   name: string;
   title?: string;
@@ -1032,6 +1056,17 @@ export interface SystemInfo {
   components: SystemComponent[];
 }
 
+// AppConfig carries deployment-level capability flags the dashboard reads
+// once at load. ai_config_managed is true when this deployment routes all
+// inference through a managed gateway (server-side AI_GATEWAY_URL set): the
+// AI/Embedding + Blurb settings tabs and the AI/embedding/blurb new-project
+// wizard steps are hidden because the config is preset and immutable
+// server-side. The server, not the UI, is authoritative — this only drives
+// what we bother rendering.
+export interface AppConfig {
+  ai_config_managed: boolean;
+}
+
 // --- API Functions ---
 
 export const api = {
@@ -1055,6 +1090,9 @@ export const api = {
 
   // System inventory — component + worker versions (System page)
   getSystemInfo: () => request<SystemInfo>('/api/v1/system'),
+
+  // Deployment capability flags (drives which config surfaces the UI renders)
+  getAppConfig: () => request<AppConfig>('/api/v1/config'),
 
   // Domain Packs (CRUD)
   listDomainPacks: () => request<DomainPack[]>('/api/v1/domain-packs'),

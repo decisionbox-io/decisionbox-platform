@@ -233,6 +233,39 @@ emitting in.
    in ` + "`source_steps`" + `. If a number is not in any step's result, remove
    it or run a query that produces it. Do not fabricate, round-trip
    from memory, or interpolate.
+
+M. STRUCTURED MARKDOWN DESCRIPTION
+   Author the ` + "`description`" + ` field as GitHub-Flavored Markdown so a
+   reader grasps the finding at a glance. The earlier instruction to
+   respond with "no markdown" governs the JSON ENVELOPE only — do not
+   wrap the response in code fences and write nothing outside the JSON
+   object. It does NOT restrict the content of string fields: the
+   ` + "`description`" + ` value MUST be Markdown.
+
+   Use only this small, tasteful set:
+     - a short opening takeaway line, headline number in **bold**
+     - short paragraphs
+     - **bold** / *italic* for key terms and numbers
+     - bulleted (-) or numbered (1.) lists for contributing factors or steps
+     - small sub-headings using ### or #### only (never # or ##)
+     - simple GitHub-Flavored tables to compare a few numbers or segments
+   Do NOT use images, raw HTML, links, or top-level # / ## headings.
+
+   Where the finding supports it, follow this shape so insights read
+   consistently — omit a part that does not apply, do not pad:
+     - one-line takeaway (the finding in a sentence, headline number bold)
+     - what is happening (the exact numbers)
+     - why it matters (plain-language impact)
+     - who is affected (the segment and its size)
+     - contributing factors (a short list when there is more than one driver)
+
+   This rule controls STRUCTURE, not tone — the non-dramatic-language
+   rule still governs. Bold marks numbers and key terms, not emphasis;
+   no emoji, no all-caps. A plain description with no formatting is
+   acceptable and renders as a tidy paragraph.
+
+   JSON safety: escape every newline inside the ` + "`description`" + ` string
+   as \n; the whole response must stay a single valid JSON object.
 `
 
 const recommendationsRulesText = `## Recommendation discipline
@@ -301,6 +334,19 @@ NON-DRAMATIC LANGUAGE (recommendation prose)
    "critical" (and any translation thereof) may NOT appear in
    recommendation prose — encode urgency in the structured
    ` + "`priority`" + ` field instead.
+
+M. STRUCTURED MARKDOWN DESCRIPTION
+   Author the ` + "`description`" + ` field as GitHub-Flavored Markdown, the
+   same way insight descriptions are authored. The "ONLY valid JSON"
+   instruction governs the response ENVELOPE only — it does not restrict
+   the content of string fields. Use a short opening takeaway (headline
+   number in **bold**), short paragraphs, **bold** / *italic* for key
+   terms and numbers, bulleted (-) or numbered (1.) lists for the steps
+   or actions, small sub-headings using ### or #### only, and simple
+   GitHub-Flavored tables. Do NOT use images, raw HTML, links, or
+   top-level # / ## headings. This controls structure, not tone — the
+   non-dramatic-language rule still applies. Escape every newline inside
+   the string as \n and keep the response a single valid JSON object.
 `
 
 const verifierRulesText = `## Headline-claim verification (in addition to count checks)

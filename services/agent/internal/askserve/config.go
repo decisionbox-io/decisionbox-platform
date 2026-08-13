@@ -36,15 +36,16 @@ const (
 	EnvHistoryCharBudget   = "ASK_SERVE_HISTORY_CHAR_BUDGET"
 	EnvTurnTTLSeconds      = "ASK_SERVE_TURN_TTL_SECONDS"
 	EnvConnectTimeoutSecs  = "ASK_SERVE_CONNECT_TIMEOUT_SECONDS"
+	EnvRouterEnabled       = "ASK_SERVE_ROUTER_ENABLED"
 
 	// Chart rendering (render_chart tool). Off by default — an ops kill-switch
 	// on top of the per-turn EnableCharts capability the caller must also set.
-	EnvChartsEnabled       = "ASK_SERVE_CHARTS_ENABLED"
-	EnvChartsMaxPoints     = "ASK_SERVE_CHARTS_MAX_POINTS"
-	EnvChartsMaxSeries     = "ASK_SERVE_CHARTS_MAX_SERIES"
-	EnvChartsMaxPerAnswer  = "ASK_SERVE_CHARTS_MAX_PER_ANSWER"
-	EnvChartsMaxSpecBytes  = "ASK_SERVE_CHARTS_MAX_SPEC_BYTES"
-	EnvChartsMaxLabelLen   = "ASK_SERVE_CHARTS_MAX_LABEL_LEN"
+	EnvChartsEnabled      = "ASK_SERVE_CHARTS_ENABLED"
+	EnvChartsMaxPoints    = "ASK_SERVE_CHARTS_MAX_POINTS"
+	EnvChartsMaxSeries    = "ASK_SERVE_CHARTS_MAX_SERIES"
+	EnvChartsMaxPerAnswer = "ASK_SERVE_CHARTS_MAX_PER_ANSWER"
+	EnvChartsMaxSpecBytes = "ASK_SERVE_CHARTS_MAX_SPEC_BYTES"
+	EnvChartsMaxLabelLen  = "ASK_SERVE_CHARTS_MAX_LABEL_LEN"
 )
 
 // Defaults match the reviewed plan. A single enterprise query can run for
@@ -108,6 +109,11 @@ type Config struct {
 	TurnTTL           time.Duration
 	ConnectTimeout    time.Duration
 
+	// RouterEnabled turns on the evidence-grounded datasource router for
+	// multi-datasource turns without an explicit datasource pin. Default on;
+	// only ever runs when a project actually has more than one datasource.
+	RouterEnabled bool
+
 	// ChartsEnabled is the ops kill-switch for the render_chart tool. Even when
 	// true, a turn only sees the tool if the caller also set EnableCharts on the
 	// request (the enterprise entitlement gate) — see loop.go.
@@ -135,6 +141,7 @@ func LoadConfig() Config {
 		HistoryCharBudget:       positive(goconfig.GetEnvAsInt(EnvHistoryCharBudget, defaultHistoryCharBudget), defaultHistoryCharBudget),
 		TurnTTL:                 durationFromSeconds(EnvTurnTTLSeconds, defaultTurnTTL),
 		ConnectTimeout:          durationFromSeconds(EnvConnectTimeoutSecs, defaultConnectTimeout),
+		RouterEnabled:           goconfig.GetEnvAsBool(EnvRouterEnabled, true),
 
 		ChartsEnabled:     goconfig.GetEnvAsBool(EnvChartsEnabled, false),
 		ChartMaxPerAnswer: positive(goconfig.GetEnvAsInt(EnvChartsMaxPerAnswer, defaultChartsMaxPerAnswer), defaultChartsMaxPerAnswer),

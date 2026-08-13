@@ -22,6 +22,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discipline"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/mdtext"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -126,11 +127,11 @@ type ResolvedPrompts struct {
 
 // Orchestrator coordinates the entire discovery process.
 type Orchestrator struct {
-	aiClient      *ai.Client
-	warehouse     gowarehouse.Provider
+	aiClient  *ai.Client
+	warehouse gowarehouse.Provider
 
-	contextRepo      *database.ContextRepository
-	discoveryRepo    *database.DiscoveryRepository
+	contextRepo   *database.ContextRepository
+	discoveryRepo *database.DiscoveryRepository
 	// discoveryLogRepo is held as an interface so unit tests can inject
 	// a mock without having to spin up MongoDB. The concrete writer is
 	// *database.DiscoveryLogRepository, wired in production by
@@ -139,7 +140,7 @@ type Orchestrator struct {
 	feedbackRepo     *database.FeedbackRepository
 	debugLogRepo     *database.DebugLogRepository
 
-	explorationEngine    *ai.ExplorationEngine
+	explorationEngine *ai.ExplorationEngine
 
 	// validationAgent runs the LLM-native verifier + refuter pair on
 	// every insight and recommendation. Constructed inside
@@ -190,17 +191,27 @@ type Orchestrator struct {
 	// The cache is populated by the schema indexer (see
 	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
 	// any warehouse-config change self-invalidates the cache.
-	schemaCache    SchemaCache
-	warehouseHash  string
+	schemaCache   SchemaCache
+	warehouseHash string
+	warehouseID   string
+
+	// warehouseProviders holds one live warehouse provider per datasource
+	// id for a multi-warehouse run (keyed by normalised id, primary
+	// included). warehouses carries their configs (datasets, filter, card,
+	// per-datasource pack). Both empty / single-entry on a single-warehouse
+	// run, where RunDiscovery takes the unchanged primary-only path. See
+	// orchestrator_multiwarehouse.go.
+	warehouseProviders map[string]gowarehouse.Provider
+	warehouses         []models.WarehouseConfig
 }
 
 // OrchestratorOptions configures the orchestrator.
 type OrchestratorOptions struct {
-	AIClient      *ai.Client
-	Warehouse     gowarehouse.Provider
+	AIClient  *ai.Client
+	Warehouse gowarehouse.Provider
 
-	ContextRepo      *database.ContextRepository
-	DiscoveryRepo    *database.DiscoveryRepository
+	ContextRepo   *database.ContextRepository
+	DiscoveryRepo *database.DiscoveryRepository
 	// DiscoveryLogRepo persists the per-step / per-area / per-result rows
 	// (exploration_steps, analysis_steps, validation_results,
 	// recommendation_log) that used to be embedded arrays inside the
@@ -212,17 +223,17 @@ type OrchestratorOptions struct {
 	FeedbackRepo     *database.FeedbackRepository
 	DebugLogRepo     *database.DebugLogRepository
 
-	RunRepo      *database.RunRepository
+	RunRepo *database.RunRepository
 	// RunStepRepo persists the per-step rows that used to live as an
 	// embedded `steps` array on the discovery_runs document. Required —
 	// without it the status reporter has nowhere to write the live step
 	// stream and the dashboard's progress feed goes dark.
-	RunStepRepo  *database.RunStepRepository
-	RunID        string
+	RunStepRepo *database.RunStepRepository
+	RunID       string
 
-	ProjectID         string
-	Domain            string
-	Category          string
+	ProjectID string
+	Domain    string
+	Category  string
 	// Language is the human-readable output language for narrative
 	// fields (insight names/descriptions, recommendation titles, etc).
 	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
@@ -266,6 +277,23 @@ type OrchestratorOptions struct {
 	// cache and surfaces the "re-index required" error rather than
 	// returning stale schemas.
 	WarehouseHash string
+
+	// WarehouseID scopes the SchemaCache lookup to one warehouse so a
+	// discovery run reads only the catalog of the warehouse it targets.
+	// Empty resolves to the project's default/primary warehouse. On a
+	// multi-warehouse run this is the PRIMARY id — the default target for a
+	// statement that names no datasource_id.
+	WarehouseID string
+
+	// WarehouseProviders holds one live warehouse provider per datasource
+	// (keyed by warehouse id, primary included) for a multi-warehouse run.
+	// Warehouses carries the matching configs. When both have >1 entry the
+	// orchestrator runs multi-hop discovery (exploration hops between
+	// datasources); otherwise it takes the unchanged single-warehouse path
+	// against Warehouse. Optional — nil keeps legacy single-warehouse
+	// behaviour.
+	WarehouseProviders map[string]gowarehouse.Provider
+	Warehouses         []models.WarehouseConfig
 
 	// RunStepIndex is the per-run vector index of exploration steps.
 	// Required — the analysis phase uses it to rank steps per area.
@@ -342,6 +370,9 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		schemaRetriever:    opts.SchemaRetriever,
 		schemaCache:        opts.SchemaCache,
 		warehouseHash:      opts.WarehouseHash,
+		warehouseID:        opts.WarehouseID,
+		warehouseProviders: opts.WarehouseProviders,
+		warehouses:         opts.Warehouses,
 		runStepIndex:       opts.RunStepIndex,
 		runID:              opts.RunID,
 	}
@@ -487,9 +518,31 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// the SchemaProvider wired below. This is the architectural change
 	// that bounds prompt growth (full discussion in
 	// docs/architecture/agent-on-demand-schema.md).
-	schemaBuilder := &SchemaContextBuilder{Schemas: schemas}
 	keywords := o.collectAreaKeywords(analysisAreas)
-	rendered := schemaBuilder.BuildCatalog(keywords)
+
+	// Multi-warehouse (multi-hop) discovery: when the run wires more than
+	// one datasource, build a per-datasource execution context — one
+	// executor per datasource, the merged catalog + table→datasource index,
+	// and the descriptors the grouped catalog + prompt render from. The
+	// single-warehouse path is unchanged (dc stays nil). See
+	// orchestrator_multiwarehouse.go.
+	var dc *datasourceContext
+	if o.isMultiWarehouse() {
+		dc, err = o.buildDatasourceContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("build multi-warehouse context: %w", err)
+		}
+		// The schema provider + telemetry read the merged cross-warehouse
+		// catalog from here on.
+		schemas = dc.mergedSchemas
+	}
+
+	var rendered *Rendered
+	if dc != nil {
+		rendered = o.buildGroupedCatalog(dc, keywords)
+	} else {
+		rendered = (&SchemaContextBuilder{Schemas: schemas}).BuildCatalog(keywords)
+	}
 	applog.WithFields(applog.Fields{
 		"tables":          len(schemas),
 		"catalog_tokens":  rendered.CatalogTokens,
@@ -554,6 +607,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 	explorationPrompt = substituteDialectTokens(explorationPrompt, o.warehouse, refDataset)
 
+	// Multi-warehouse: append the datasource routing contract + each
+	// datasource's routing card and its own domain-pack focus areas, so the
+	// agent sets datasource_id per statement, hops between datasources, and
+	// applies the right playbook per datasource.
+	if dc != nil {
+		explorationPrompt += buildDatasourcesPromptSection(dc)
+	}
+
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
@@ -569,12 +630,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// the schemas map already loaded above + the per-project Qdrant
 	// collection, so there is no live warehouse traffic in the
 	// exploration loop.
+	//
+	// Single-warehouse: scope search_tables to this run's warehouse so a
+	// shared Qdrant collection doesn't surface a sibling's tables.
+	// Multi-warehouse: search_tables spans ALL datasources (empty filter)
+	// so the agent can discover tables in any datasource and hop to them;
+	// each hit is attributed to its datasource via TableWarehouse and the
+	// index payload, and query_data routes per datasource_id.
+	schemaSearchWarehouseID := o.warehouseID
+	var tableWarehouse map[string]string
+	if dc != nil {
+		schemaSearchWarehouseID = ""
+		tableWarehouse = dc.tableWarehouse
+	}
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
-		ProjectID: o.projectID,
-		Datasets:  o.datasets,
-		Schemas:   schemas,
-		Retriever: o.schemaRetriever,
-		Embedder:  o.embedder,
+		ProjectID:      o.projectID,
+		WarehouseID:    schemaSearchWarehouseID,
+		Datasets:       o.datasets,
+		Schemas:        schemas,
+		TableWarehouse: tableWarehouse,
+		Retriever:      o.schemaRetriever,
+		Embedder:       o.embedder,
 	})
 	if spErr != nil {
 		// This is a wiring bug — the schema cache lookup above already
@@ -600,19 +676,31 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}
 	}
 
+	// Multi-warehouse: hand the engine one executor per datasource so each
+	// query_data step routes to the datasource_id it targets. Single-
+	// warehouse leaves dsExecutors nil and the engine falls back to the
+	// single Executor keyed by the primary.
+	var dsExecutors map[string]*queryexec.QueryExecutor
+	if dc != nil {
+		dsExecutors = dc.executors
+	}
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
-		Client:         o.aiClient,
-		Executor:       executor,
-		MaxSteps:       opts.MaxSteps,
-		MinSteps:       opts.MinSteps,
-		Dataset:        datasetsStr,
-		SchemaProvider: schemaProvider,
-		StepIndexer:    stepIndexer,
+		Client:            o.aiClient,
+		Executor:          executor,
+		Executors:         dsExecutors,
+		PrimaryDatasource: normDatasourceID(o.warehouseID),
+		TableDatasource:   tableWarehouse,
+		MaxSteps:          opts.MaxSteps,
+		MinSteps:          opts.MinSteps,
+		Dataset:           datasetsStr,
+		SchemaProvider:    schemaProvider,
+		StepIndexer:       stepIndexer,
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.
-		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int) {
-			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens)
+		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
+			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens, warehouseID)
 		},
 	})
 
@@ -708,7 +796,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			Cfg:                 o.validationCfg.Bundle,
 			MaxReadStepRowsCall: o.validationCaps.MaxReadStepRowsCall,
 		},
+		primaryDS: normDatasourceID(o.warehouseID),
 	}
+	// Multi-warehouse: verify each insight / recommendation against the
+	// datasource it is about, not always the primary (a secondary-derived
+	// insight validated on the primary fails / mis-verifies).
+	valPhase.whByDS, valPhase.executorByDS = o.buildValidationRouting(dc, validationSchemaProvider, stepByID, o.validationCfg, o.validationCaps)
 	insightsValidatedThisRun := 0
 
 	// Vector-ranked step picker for the analysis phase. The closure
@@ -767,11 +860,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			})
 		}
 		applog.WithFields(applog.Fields{
-			"area":         area.ID,
-			"area_name":    area.Name,
-			"picked_count": len(relevantSteps),
+			"area":          area.ID,
+			"area_name":     area.Name,
+			"picked_count":  len(relevantSteps),
 			"dropped_count": len(pickResult.Dropped),
-			"picked":       pickedSummary,
+			"picked":        pickedSummary,
 		}).Debug("Analysis area: picked steps")
 
 		applog.WithFields(applog.Fields{
@@ -798,14 +891,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Create analysis step to capture full dialog
 		step := models.AnalysisStep{
-			AreaID:             area.ID,
-			AreaName:           area.Name,
-			RunAt:              time.Now(),
-			Prompt:             prompt,
-			RelevantQueries:    len(relevantSteps),
-			QueryResultsChars:  len(queryResultsJSON),
-			SelectedSteps:      pickedToTelemetry(pickResult.Picked),
-			DroppedSteps:       droppedToTelemetry(pickResult.Dropped),
+			AreaID:            area.ID,
+			AreaName:          area.Name,
+			RunAt:             time.Now(),
+			Prompt:            prompt,
+			RelevantQueries:   len(relevantSteps),
+			QueryResultsChars: len(queryResultsJSON),
+			SelectedSteps:     pickedToTelemetry(pickResult.Picked),
+			DroppedSteps:      droppedToTelemetry(pickResult.Dropped),
 		}
 
 		// Call LLM
@@ -895,8 +988,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommenderInput := filterEligibleInsights(allInsights)
 	applog.WithFields(applog.Fields{
-		"total_insights":     len(allInsights),
-		"eligible_insights":  len(recommenderInput),
+		"total_insights":    len(allInsights),
+		"eligible_insights": len(recommenderInput),
 	}).Info("Filtered insights for recommendation generation")
 
 	var recommendations []models.Recommendation
@@ -983,6 +1076,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Contains all insights, recommendations, and execution metadata
 	result := &models.DiscoveryResult{
 		ProjectID:       o.projectID,
+		WarehouseID:     o.warehouseID,
 		Domain:          o.domain,
 		Category:        o.category,
 		RunType:         runType,
@@ -1088,6 +1182,16 @@ func (o *Orchestrator) persistSplitLogs(
 	if o.discoveryLogRepo == nil {
 		return
 	}
+	// Tag each exploration step with the datasource this discovery ran against
+	// (multi-warehouse). A discovery runs against exactly one warehouse, so every
+	// step shares o.warehouseID; downstream SQL-example validation / fine-tuning
+	// uses the tag to route each statement to the right datasource. Only set it
+	// when unset so a future per-step source isn't clobbered.
+	for i := range explorationSteps {
+		if explorationSteps[i].WarehouseID == "" {
+			explorationSteps[i].WarehouseID = o.warehouseID
+		}
+	}
 	if err := o.discoveryLogRepo.SaveExplorationSteps(ctx, o.projectID, discoveryID, o.runID, explorationSteps); err != nil {
 		applog.WithError(err).Warn("Failed to persist exploration steps to split collection")
 	}
@@ -1103,6 +1207,34 @@ func (o *Orchestrator) persistSplitLogs(
 }
 
 // parseInsights parses LLM response JSON into Insight structs.
+// insightsForRecommenderPrompt returns a copy of insights with the Markdown
+// rendition (DescriptionMd) cleared. The recommender reads the plain
+// `description`; carrying description_md into INSIGHTS_DATA would put a second
+// full copy of every insight's description in the prompt, roughly doubling the
+// per-insight description tokens and risking the context/budget cap. The
+// originals (which still need DescriptionMd for storage and rendering) are
+// left untouched.
+func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
+	out := make([]models.Insight, len(insights))
+	copy(out, insights)
+	for i := range out {
+		out[i].DescriptionMd = ""
+	}
+	return out
+}
+
+// splitMarkdownDescription reduces an authored Markdown description to plain
+// text and returns (plain, md). md is empty when the input carried no
+// formatting (plain == reduction), so unformatted descriptions and legacy
+// data keep a single field and the dashboard falls back to `description`.
+func splitMarkdownDescription(authored string) (plain, md string) {
+	plain = mdtext.ToPlainText(authored)
+	if plain != authored {
+		md = authored
+	}
+	return plain, md
+}
+
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, error) {
 	var result struct {
 		Insights []models.Insight `json:"insights"`
@@ -1118,6 +1250,12 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		if result.Insights[i].DiscoveredAt.IsZero() {
 			result.Insights[i].DiscoveredAt = time.Now()
 		}
+		// Split the authored description: the LLM writes Markdown into
+		// `description`; keep that rendition in DescriptionMd for the
+		// dashboard, and reduce Description to the plain-text form that API
+		// consumers, previews, and embeddings read.
+		result.Insights[i].Description, result.Insights[i].DescriptionMd =
+			splitMarkdownDescription(result.Insights[i].Description)
 		// Assign a UUID if the LLM didn't give one. The same UUID is later
 		// reused as the standalone `insights._id` and the Qdrant point id, so
 		// every link built from a search hit (Ask sources, related cards) can
@@ -1149,7 +1287,7 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
-	insightsJSON, _ := json.MarshalIndent(insights, "", "  ")
+	insightsJSON, _ := json.MarshalIndent(insightsForRecommenderPrompt(insights), "", "  ")
 
 	// Build insights summary
 	areaCounts := make(map[string]int)
@@ -1205,6 +1343,10 @@ func (o *Orchestrator) generateRecommendations(
 		if result.Recommendations[i].CreatedAt.IsZero() {
 			result.Recommendations[i].CreatedAt = time.Now()
 		}
+		// Same description split as insights: Markdown rendition into
+		// DescriptionMd, plain reduction into Description.
+		result.Recommendations[i].Description, result.Recommendations[i].DescriptionMd =
+			splitMarkdownDescription(result.Recommendations[i].Description)
 		// Assign a UUID if the LLM didn't give one. Same rationale as for
 		// insights: the UUID is reused as the standalone `recommendations._id`
 		// and Qdrant point id, so URLs that hit the embedded array match
@@ -1556,7 +1698,7 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 	if o.warehouseHash == "" {
 		return nil, fmt.Errorf("warehouse hash not set on orchestrator (programmer error)")
 	}
-	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseHash)
+	schemas, err := o.schemaCache.Find(ctx, o.projectID, o.warehouseID, o.warehouseHash)
 	if err != nil {
 		return nil, fmt.Errorf("read schema cache: %w", err)
 	}
@@ -1722,11 +1864,11 @@ func cleanJSONResponse(response string) string {
 //   - Analysis prompts add query results → moderate.
 //   - Recommendation prompts often need broader business context → larger.
 const (
-	knowledgeTopKExploration       = 3
-	knowledgeTopKAnalysis          = 5
-	knowledgeTopKRecommendations   = 8
-	knowledgeMinScore              = 0.4
-	knowledgeMaxRetrievalPerPhase  = 3 * time.Second
+	knowledgeTopKExploration      = 3
+	knowledgeTopKAnalysis         = 5
+	knowledgeTopKRecommendations  = 8
+	knowledgeMinScore             = 0.4
+	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
 
 // injectKnowledgeSources walks every registered agentplugin context provider
@@ -1752,9 +1894,9 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 		MinScore: knowledgeMinScore,
 	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
-			"project_id":        o.projectID,
-			"context_provider":  name,
-			"error":             err.Error(),
+			"project_id":       o.projectID,
+			"context_provider": name,
+			"error":            err.Error(),
 		}).Warn("Context provider failed; continuing without its section")
 	})
 

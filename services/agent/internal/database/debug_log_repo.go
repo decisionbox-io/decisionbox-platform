@@ -81,7 +81,7 @@ func (r *DebugLogRepository) LogAsync(log *models.DebugLog) {
 // Postgres / Snowflake queries display under the wrong label.
 func (r *DebugLogRepository) LogWarehouseQueryExecution(
 	ctx context.Context,
-	appID, discoveryRunID, provider string,
+	appID, discoveryRunID, provider, warehouseID string,
 	step int,
 	phase string,
 	query, purpose string,
@@ -102,6 +102,7 @@ func (r *DebugLogRepository) LogWarehouseQueryExecution(
 	log := models.NewDebugLog(appID, discoveryRunID, models.DebugLogType(provider), provider, "execute_query")
 	log.Step = step
 	log.Phase = phase
+	log.WarehouseID = warehouseID
 	log.SetBigQueryDetails(query, purpose, results, rowCount, durationMs)
 	log.FixAttempts = fixAttempts
 

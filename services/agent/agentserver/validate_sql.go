@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -161,7 +162,15 @@ func runValidateSQLInner(ctx context.Context, db *database.DB, jobsCol *mongo.Co
 	if err != nil {
 		return err
 	}
-	warehouseProvider, err := initWarehouseProvider(ctx, project, secretProvider, project.ID)
+	// Compile the statements against the datasource the job targets
+	// (multi-warehouse). A legacy job carries no warehouse_id, which
+	// resolves to the project's primary — the pre-multi-warehouse behaviour.
+	whID := claimWarehouseID(claim, project)
+	// Scope the per-warehouse governance middleware (which reads
+	// WarehouseIDFromContext) to the datasource this job compiles against, so a
+	// secondary-warehouse validation isn't governed as the primary/default.
+	ctx = gowarehouse.WithWarehouseID(ctx, whID)
+	warehouseProvider, err := initWarehouseProvider(ctx, project, whID, secretProvider, project.ID)
 	if err != nil {
 		return err
 	}
@@ -206,10 +215,28 @@ func agentWorkerID() string {
 // the job. Decoding a minimal subset means the atomic claim can never be
 // broken by a malformed `statements` field (decoded separately, below).
 type sqlValidationJobClaim struct {
-	ID        string `bson:"_id"`
-	ProjectID string `bson:"project_id"`
-	Status    string `bson:"status"`
-	Attempt   int    `bson:"attempt"`
+	ID          string `bson:"_id"`
+	ProjectID   string `bson:"project_id"`
+	WarehouseID string `bson:"warehouse_id"`
+	Status      string `bson:"status"`
+	Attempt     int    `bson:"attempt"`
+}
+
+// claimWarehouseID resolves the datasource a validation job compiles against:
+// the job's explicit warehouse_id, else the project's PRIMARY warehouse — the
+// contract documented on SQLValidationJob.WarehouseID ("empty = the project's
+// primary/only warehouse"). This DELIBERATELY differs from doc validation
+// (docValidationWarehouseID, which prefers the historical default): a
+// SQL-validation job compile-checks freshly submitted statements against the
+// project's current primary datasource, whereas a doc's statements came from the
+// specific discovery that produced them. PrimaryWarehouse() is resilient to a
+// stale primary_warehouse_id (it falls back to the first configured warehouse);
+// warehouseIDOrDefault normalizes the empty id to the reserved default.
+func claimWarehouseID(claim *sqlValidationJobClaim, project *models.Project) string {
+	if claim.WarehouseID != "" {
+		return claim.WarehouseID
+	}
+	return warehouseIDOrDefault(project.PrimaryWarehouse())
 }
 
 // claimSQLValidationJob atomically transitions the job pending → running

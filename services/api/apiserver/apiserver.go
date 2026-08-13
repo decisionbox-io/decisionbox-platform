@@ -28,6 +28,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/handler"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/schemaindex"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
@@ -88,6 +89,19 @@ func Run() {
 	if err != nil {
 		apilog.WithError(err).Error("Failed to load config")
 		os.Exit(1)
+	}
+
+	// Managed-inference gateway mode (opt-in via AI_GATEWAY_URL). Install
+	// the process-wide config and fail fast on a half-configured gateway
+	// — a missing alias or credential would otherwise mis-route or fail
+	// every inference call at run time. No-op when AI_GATEWAY_URL is unset.
+	managedai.Load()
+	if err := managedai.Validate(); err != nil {
+		apilog.WithError(err).Error("Invalid managed-inference gateway configuration")
+		os.Exit(1)
+	}
+	if managedai.Enabled() {
+		apilog.Info("Managed-inference gateway mode enabled: project AI config is preset and immutable")
 	}
 
 	apilog.WithFields(apilog.Fields{

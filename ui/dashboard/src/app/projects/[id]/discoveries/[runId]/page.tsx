@@ -293,7 +293,14 @@ export default function DiscoveryDetailPage() {
                         padding: '10px 12px',
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <span style={{ fontSize: 12, fontWeight: 600 }}>Step {step.step}</span>
+                          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <span style={{ fontSize: 12, fontWeight: 600 }}>Step {step.step}</span>
+                            {/* Datasource this step queried — shown only for a non-primary
+                                datasource, so single-warehouse runs stay unlabeled. */}
+                            {step.warehouse_id && step.warehouse_id !== 'default' && (
+                              <MicroBadge color="blue">{step.warehouse_id}</MicroBadge>
+                            )}
+                          </span>
                           <span style={{ display: 'flex', gap: 4 }}>
                             {step.row_count > 0 && <MicroBadge>{step.row_count} rows</MicroBadge>}
                             {step.execution_time_ms > 0 && <MicroBadge>{step.execution_time_ms}ms</MicroBadge>}
@@ -555,9 +562,9 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
 
 /* ========== Page-Specific Components ========== */
 
-function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'red' | 'amber' }) {
-  const bg = color === 'red' ? 'var(--db-red-bg)' : color === 'amber' ? 'var(--db-amber-bg)' : 'var(--db-bg-muted)';
-  const textColor = color === 'red' ? 'var(--db-red-text)' : color === 'amber' ? 'var(--db-amber-text)' : 'var(--db-text-tertiary)';
+function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'red' | 'amber' | 'blue' }) {
+  const bg = color === 'red' ? 'var(--db-red-bg)' : color === 'amber' ? 'var(--db-amber-bg)' : color === 'blue' ? 'var(--db-blue-bg)' : 'var(--db-bg-muted)';
+  const textColor = color === 'red' ? 'var(--db-red-text)' : color === 'amber' ? 'var(--db-amber-text)' : color === 'blue' ? 'var(--db-blue-text)' : 'var(--db-text-tertiary)';
   return (
     <span style={{
       fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 4,

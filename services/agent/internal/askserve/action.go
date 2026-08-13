@@ -35,6 +35,10 @@ type turnAction struct {
 
 	Query   string // query_data
 	Purpose string // query_data (optional)
+	// Datasource is the target datasource (warehouse) id for query_data /
+	// lookup_schema on a multi-datasource project. Empty = the primary. Ignored
+	// on a single-datasource project or a turn pinned to one datasource.
+	Datasource string
 
 	LookupSchema []string // lookup_schema
 	SearchTables string   // search_tables
@@ -55,8 +59,9 @@ type turnAction struct {
 type rawAction struct {
 	Thinking string `json:"thinking"`
 
-	Query   string `json:"query"`
-	Purpose string `json:"purpose"`
+	Query      string `json:"query"`
+	Purpose    string `json:"purpose"`
+	Datasource string `json:"datasource_id"`
 
 	LookupSchema []string `json:"lookup_schema"`
 	SearchTables string   `json:"search_tables"`
@@ -120,9 +125,11 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.Kind = actQuery
 		act.Query = raw.Query
 		act.Purpose = strings.TrimSpace(raw.Purpose)
+		act.Datasource = strings.TrimSpace(raw.Datasource)
 	case len(raw.LookupSchema) > 0:
 		act.Kind = actLookup
 		act.LookupSchema = raw.LookupSchema
+		act.Datasource = strings.TrimSpace(raw.Datasource)
 	case strings.TrimSpace(raw.SearchTables) != "":
 		act.Kind = actSearch
 		act.SearchTables = strings.TrimSpace(raw.SearchTables)
@@ -175,13 +182,17 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			return
 		}
 		var in struct {
-			Query   string `json:"query"`
-			Purpose string `json:"purpose"`
+			Query        string `json:"query"`
+			Purpose      string `json:"purpose"`
+			DatasourceID string `json:"datasource_id"`
 		}
 		if json.Unmarshal(env.Input, &in) == nil {
 			raw.Query = in.Query
 			if raw.Purpose == "" {
 				raw.Purpose = in.Purpose
+			}
+			if raw.Datasource == "" {
+				raw.Datasource = in.DatasourceID
 			}
 		}
 	case actLookup:
@@ -189,10 +200,14 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			return
 		}
 		var in struct {
-			Tables []string `json:"tables"`
+			Tables       []string `json:"tables"`
+			DatasourceID string   `json:"datasource_id"`
 		}
 		if json.Unmarshal(env.Input, &in) == nil {
 			raw.LookupSchema = in.Tables
+			if raw.Datasource == "" {
+				raw.Datasource = in.DatasourceID
+			}
 		}
 	case actSearch:
 		if raw.SearchTables != "" {

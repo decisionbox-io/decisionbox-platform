@@ -10,6 +10,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/charts"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
@@ -50,6 +51,18 @@ type turnState struct {
 	tokensIn        int
 	tokensOut       int
 	groundingNudges int
+	// routing is the per-turn datasource plan (which datasources the model may
+	// target, whether the turn is pinned to one). Computed once at turn start.
+	routing turnRouting
+	// touched records the datasource ids the turn queried, in first-seen order,
+	// for routing telemetry. Populated only in multi mode.
+	touched []string
+	// routeReason / routeConfidence / routeClarify are the evidence-grounded
+	// router's decision for this turn (multi mode). Empty/zero when the router
+	// did not run (single datasource, explicit pin, or router disabled).
+	routeReason     string
+	routeConfidence float64
+	routeClarify    bool
 	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
 	// native-tools loop grounds on this, not on len(events): a failed query /
 	// rejected tenant filter / unavailable schema search records an event but
@@ -96,17 +109,118 @@ const groundingNudge = "Do NOT answer yet — you have run no query, so you have
 	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
 	"Only use clarify or decline if the question genuinely cannot be turned into any query."
 
+// turnRouting is the per-turn datasource plan: which datasources the model may
+// target and whether the turn is pinned to exactly one. Computed once at turn
+// start from the request's explicit datasource_id and the project's
+// datasources, so every query in the turn routes against a stable set.
+type turnRouting struct {
+	// datasources are the datasources visible to this turn (all of the
+	// project's, or just the pinned one), primary first.
+	datasources []DatasourceInfo
+	// pinned, when non-empty, forces every query onto that datasource and hides
+	// the datasource_id choice from the model. Set for an explicit user
+	// override AND for a single-datasource project (where there is no choice).
+	pinned string
+	// primary is the datasource a query targets when it names none.
+	primary string
+	// multi reports whether the model chooses datasources per query (more than
+	// one visible, not pinned). When false the turn behaves exactly like the
+	// single-warehouse path — same prompt, same tools, same telemetry.
+	multi bool
+	// routed reports that the evidence-grounded router made a real (non-clarify)
+	// decision for this turn. It stays true even when the router confidently
+	// pinned a single datasource (multi=false), so that datasource is still
+	// recorded in routing telemetry — a router-pinned turn is a real routing
+	// decision, not the single-warehouse path.
+	routed bool
+}
+
+// resolveTurnRouting computes the turn's datasource plan. An explicit,
+// non-empty datasource id must name a real datasource (else the turn fails
+// fast — the caller sent a bad override); empty defers to the model on a
+// multi-datasource project, or pins the sole datasource on a single-datasource
+// one.
+func (rt *ProjectRuntime) resolveTurnRouting(explicit string) (turnRouting, error) {
+	if len(rt.Datasources) == 0 {
+		return turnRouting{}, fmt.Errorf("project has no configured datasource")
+	}
+	primary := rt.PrimaryID
+	if primary == "" {
+		primary = rt.Datasources[0].ID
+	}
+	if explicit != "" {
+		d, ok := rt.datasource(explicit)
+		if !ok {
+			return turnRouting{}, fmt.Errorf("unknown datasource %q", explicit)
+		}
+		return turnRouting{datasources: []DatasourceInfo{d}, pinned: explicit, primary: explicit}, nil
+	}
+	if len(rt.Datasources) == 1 {
+		only := rt.Datasources[0].ID
+		return turnRouting{datasources: rt.Datasources, pinned: only, primary: only}, nil
+	}
+	return turnRouting{datasources: rt.Datasources, primary: primary, multi: true}, nil
+}
+
+// trackDatasource records a queried datasource for routing telemetry (deduped,
+// first-seen order). Active in multi mode and for router-decided turns (which
+// includes a confident single-datasource pin), so the routed datasource is
+// captured; a no-op on the plain single-warehouse path.
+func (st *turnState) trackDatasource(id string) {
+	if id == "" || (!st.routing.multi && !st.routing.routed) {
+		return
+	}
+	for _, x := range st.touched {
+		if x == id {
+			return
+		}
+	}
+	st.touched = append(st.touched, id)
+}
+
+// routedDatasources returns the datasource ids the turn queried. It is nil on
+// the plain single-warehouse path (no router decision, not multi), keeping
+// those turns' persisted records byte-identical to before; for a multi turn or
+// a router-decided turn (including a confident pin) it reports what was queried.
+func (st *turnState) routedDatasources() []string {
+	if !st.routing.multi && !st.routing.routed {
+		return nil
+	}
+	return st.touched
+}
+
 // run drives one turn to a finalized outcome. It dispatches on whether the
 // project's LLM provider supports native tool-calling: tool-wired providers
 // (bedrock / claude / openai) take the native-tools loop, where the model is
 // forced to call an evidence tool before it can answer; everyone else takes the
 // JSON-in-text loop, which coaxes the same vocabulary through prose + nudges.
 func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
-	if toolsSupported(rt) {
-		r.runWithTools(ctx, rt, req)
+	routing, err := rt.resolveTurnRouting(req.DatasourceID)
+	if err != nil {
+		st := &turnState{req: req, model: rt.Model}
+		r.finishFailed(ctx, st, fmt.Sprintf("invalid datasource selection: %v", err))
 		return
 	}
-	r.runText(ctx, rt, req, 0, 0)
+	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing}
+	// Per-turn charting entitlement: the caller's EnableCharts AND the ops
+	// kill-switch. Set here, once, so both loops and the router path agree.
+	st.chartsEnabled = req.EnableCharts && r.cfg.ChartsEnabled
+
+	// Evidence-grounded routing: on a multi-datasource turn without an explicit
+	// pin, decide which datasource(s) the question needs (and clarify when it's
+	// genuinely ambiguous) before the answering loop runs. A single-datasource
+	// project, an explicit pin, or a disabled router skips this entirely.
+	if routing.multi && r.cfg.RouterEnabled {
+		if r.route(ctx, rt, st) {
+			return // the router asked a clarifying question and finalized the turn
+		}
+	}
+
+	if toolsSupported(rt) {
+		r.runWithTools(ctx, rt, st)
+		return
+	}
+	r.runText(ctx, rt, st)
 }
 
 // toolsSupported reports whether the runtime's LLM provider honours native tool
@@ -126,22 +240,18 @@ func toolsSupported(rt *ProjectRuntime) bool {
 // terminates, preserving whatever transcript was gathered. This is the fallback
 // for providers without native tool-calling; its grounding guard (re-nudge then
 // decline rather than emit an ungrounded answer) is the safety net there.
-func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnRequest, tokensIn, tokensOut int) {
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, tokensIn: tokensIn, tokensOut: tokensOut}
-	chartsEnabled := req.EnableCharts && r.cfg.ChartsEnabled
-	st.chartsEnabled = chartsEnabled
-
+func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState) {
 	conv := ai.NewConversation(ai.ConversationOptions{
-		SystemPrompt: buildSystemPrompt(rt, r.cfg, chartsEnabled),
+		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg, st.chartsEnabled),
 		// Two messages per step (assistant action + observation) across the
 		// round budget, plus history headroom — generous so the engine's own
 		// caps, not this ceiling, bound the turn.
-		MaxMessages: (r.cfg.MaxRounds + len(req.History) + 4) * 2,
+		MaxMessages: (r.cfg.MaxRounds + len(st.req.History) + 4) * 2,
 	})
-	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
+	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		_ = conv.AddMessage(m.Role, m.Content)
 	}
-	conv.AddUserMessage(req.Question)
+	conv.AddUserMessage(st.req.Question)
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -160,15 +270,15 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnReques
 		}
 
 		if act.Kind.terminal() {
-			// Grounding guard: an `answer` produced with no tool activity (no
-			// query / lookup / search) is ungrounded — the model fabricated it.
-			// Re-nudge it to gather evidence; if it still refuses after
-			// maxGroundingNudges, DECLINE rather than emit fabricated content.
-			// Any successful evidence event (even a schema lookup) counts as
-			// grounding; clarify / decline need no data and are always accepted.
-			// We test groundedEvents, not len(events): a failed query or a
+			// Grounding guard: an `answer` produced with no SUCCESSFUL tool
+			// activity (no query / lookup / search that returned data) is
+			// ungrounded — the model fabricated it. Re-nudge it to gather
+			// evidence; if it still refuses after maxGroundingNudges, DECLINE
+			// rather than emit fabricated content. Gate on groundedEvents, not
+			// len(events): a failed query, a rejected datasource_id or a
 			// rejected render_chart records an event but observed no data, so it
-			// must not unlock an ungrounded answer.
+			// must NOT unlock the answer (same rule the native-tools path uses).
+			// clarify / decline need no data.
 			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				if st.groundingNudges < maxGroundingNudges {
 					st.groundingNudges++
@@ -193,8 +303,8 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, req TurnReques
 	// Round budget exhausted without a terminal action. Give the model one
 	// final, non-tool synthesis chance to answer with what it has gathered.
 	if act := r.synthesizeFinal(ctx, conv, st); act != nil {
-		// Still enforce grounding: a synthesized answer with no successful
-		// evidence is fabricated — decline instead of emitting it.
+		// Still enforce grounding: a synthesized answer with no SUCCESSFUL tool
+		// activity is fabricated — decline instead of emitting it.
 		if act.Kind == actAnswer && st.groundedEvents == 0 {
 			r.finishUngrounded(ctx, st)
 			return
@@ -270,19 +380,16 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 // "auto"). It always finalizes the turn. Conversation state is held as a raw
 // []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
 // blocks.
-func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model}
-	chartsEnabled := req.EnableCharts && r.cfg.ChartsEnabled
-	st.chartsEnabled = chartsEnabled
-	system := buildSystemPromptForTools(rt, r.cfg, chartsEnabled)
-	hasSchema := rt.SchemaProvider != nil
+func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnState) {
+	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled)
+	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
 
 	var messages []gollm.Message
-	for _, m := range trimHistory(req.History, r.cfg.HistoryCharBudget) {
+	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		messages = append(messages, gollm.Message{Role: m.Role, Content: m.Content})
 	}
-	messages = append(messages, gollm.Message{Role: "user", Content: req.Question})
+	messages = append(messages, gollm.Message{Role: "user", Content: st.req.Question})
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -291,7 +398,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -305,7 +412,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			if st.round == 1 {
 				// Carry any tokens already spent on the (ignored) native call so
 				// the turn's usage accounting stays accurate.
-				r.runText(ctx, rt, req, st.tokensIn, st.tokensOut)
+				r.runText(ctx, rt, st)
 				return
 			}
 			r.finishFailed(ctx, st, fmt.Sprintf("model call failed: %v", err))
@@ -329,7 +436,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, req TurnR
 			if st.round == 1 {
 				// Carry any tokens already spent on the (ignored) native call so
 				// the turn's usage accounting stays accurate.
-				r.runText(ctx, rt, req, st.tokensIn, st.tokensOut)
+				r.runText(ctx, rt, st)
 				return
 			}
 			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
@@ -484,11 +591,32 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		return fmt.Sprintf("Query budget exhausted (%d/%d). Answer with what you have, or decline.", st.queriesUsed, r.cfg.MaxQueriesPerTurn)
 	}
 	st.queriesUsed++
-	// NB: we deliberately do NOT call rt.Executor.SetStep here. The executor is
-	// shared across concurrent turns for the same project (pooled per project),
-	// and SetStep mutates executor state that Execute reads — a data race. The
-	// per-step number only stamps the executor's FixHistory, which ask-serve
-	// doesn't persist (round/latency are captured on the tool event instead).
+
+	// Resolve which datasource this statement runs against — one warehouse per
+	// statement. A pinned turn forces its datasource; otherwise the model's
+	// datasource_id (or the primary when it names none) is honoured, and an
+	// unknown/unconfigured id is REJECTED rather than silently falling back to
+	// another datasource (running the query against the wrong data is the worst
+	// failure mode here).
+	dsID, derr := r.resolveQueryDatasource(rt, st, act)
+	ev := commonmodels.ToolEvent{
+		Round: st.round,
+		Name:  string(actQuery),
+		Args:  map[string]any{"sql": act.Query, "purpose": act.Purpose, "datasource_id": dsID},
+	}
+	if derr != nil {
+		// Record what the model asked for so the transcript shows the bad id.
+		ev.Args["datasource_id"] = strings.TrimSpace(act.Datasource)
+		ev.Error = derr.Error()
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Query rejected: %s. Target a valid datasource_id from the DATASOURCES list.", derr.Error())
+	}
+
+	// NB: we deliberately do NOT call the executor's SetStep here. The runtime
+	// is shared across concurrent turns for the same project, and SetStep
+	// mutates executor state that Execute reads — a data race. The per-step
+	// number only stamps the executor's FixHistory, which ask-serve doesn't
+	// persist (round/latency are captured on the tool event instead).
 	//
 	// Read-only is enforced by the warehouse's read-only credentials
 	// (ValidateReadOnly at connect) + the governance middleware, and the tenant
@@ -505,22 +633,36 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		qctx, cancel = context.WithTimeout(ctx, r.cfg.QueryTimeout)
 		defer cancel()
 	}
+	// Stamp the datasource on the context so a warehouse middleware (the
+	// enterprise governance wrapper) can scope its per-warehouse policies to the
+	// datasource this hop runs against. The turn ctx already carries the project
+	// id (set in runTurn); this adds the warehouse dimension for multi-hop turns.
+	qctx = gowarehouse.WithWarehouseID(qctx, dsID)
+
+	// Acquire the datasource's warehouse connection (built lazily on first use).
+	// A build/connect failure fails just this query, not the whole turn — a turn
+	// that avoids a broken datasource still works.
+	conn, release, cerr := rt.acquireConn(qctx, dsID)
+	if cerr != nil {
+		ev.Error = cerr.Error()
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Query failed: could not connect to datasource %q: %s\nTry a different datasource, or answer/decline with what you have.", dsID, cerr.Error())
+	}
+	defer release()
 
 	start := time.Now()
-	res, err := rt.Executor.Execute(qctx, act.Query, act.Purpose)
-	latency := time.Since(start).Milliseconds()
+	res, err := conn.Executor.Execute(qctx, act.Query, act.Purpose)
+	ev.LatencyMS = time.Since(start).Milliseconds()
 
-	ev := commonmodels.ToolEvent{
-		Round:     st.round,
-		Name:      string(actQuery),
-		Args:      map[string]any{"sql": act.Query, "purpose": act.Purpose},
-		LatencyMS: latency,
-	}
 	if err != nil {
 		ev.Error = err.Error()
 		r.emit(ctx, st, ev)
 		return fmt.Sprintf("Query failed: %s\nTry a different query, or answer/decline with what you have.", err.Error())
 	}
+	// Record the datasource only after it returned results — RoutedDatasourceIDs
+	// is the evidence provenance of the answer, so a failed exploratory attempt
+	// against a datasource must not be attributed as one of its sources.
+	st.trackDatasource(dsID)
 	sum := summarizeResult(res, act.Purpose, r.cfg)
 	// Assign the query a unique, model-visible step id so a later render_chart
 	// can bind to it via source_step_id. Only successful queries get one; a
@@ -603,19 +745,49 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 	return fmt.Sprintf("Chart accepted (%s from %s). Render another chart if useful, then answer.", spec.Type, spec.SourceStepID)
 }
 
+// resolveQueryDatasource picks the datasource a query_data statement runs
+// against. A pinned turn always uses its datasource (ignoring any model-chosen
+// id — the pin is the user's override). Otherwise the model's datasource_id is
+// honoured (validated against the project's datasources); an empty id falls
+// back to the primary and an unknown id is an error the model must correct.
+func (r *runner) resolveQueryDatasource(rt *ProjectRuntime, st *turnState, act *turnAction) (string, error) {
+	if st.routing.pinned != "" {
+		return st.routing.pinned, nil
+	}
+	id := strings.TrimSpace(act.Datasource)
+	if id == "" {
+		return st.routing.primary, nil
+	}
+	// Validate against the whole project, not the router's narrowed set, on
+	// purpose. In a multi turn search_tables spans every datasource (SearchAll)
+	// so the model can discover across sources and recover when the upfront
+	// router under-selected; the router is a soft prior, not a hard gate.
+	// Confining query_data to the routed subset would surface tables the model
+	// then can't query. Safety doesn't depend on this list: each query is
+	// governed + tenant-scoped by the datasource it actually runs against, and
+	// routed telemetry records what was touched. (Codex flagged this twice;
+	// it's a deliberate design choice per the multi-hop cross-source
+	// requirement, not an oversight.)
+	if _, ok := rt.datasource(id); !ok {
+		return "", fmt.Errorf("unknown datasource %q", id)
+	}
+	return id, nil
+}
+
 func (r *runner) execLookup(ctx context.Context, rt *ProjectRuntime, st *turnState, act *turnAction) string {
+	lookupDS := r.lookupDatasource(st, act)
 	ev := commonmodels.ToolEvent{
 		Round: st.round,
 		Name:  string(actLookup),
-		Args:  map[string]any{"tables": act.LookupSchema},
+		Args:  map[string]any{"tables": act.LookupSchema, "datasource_id": lookupDS},
 	}
-	if rt.SchemaProvider == nil {
+	if rt.Schema == nil {
 		ev.Error = "schema provider not configured"
 		r.emit(ctx, st, ev)
 		return "Schema lookup unavailable. Pick a table and query it directly; the SQL repair step can recover minor column mismatches."
 	}
 	start := time.Now()
-	res, err := rt.SchemaProvider.Lookup(ctx, act.LookupSchema)
+	res, err := rt.Schema.Lookup(ctx, lookupDS, act.LookupSchema)
 	ev.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		ev.Error = err.Error()
@@ -627,19 +799,43 @@ func (r *runner) execLookup(ctx context.Context, rt *ProjectRuntime, st *turnSta
 	return formatLookup(res)
 }
 
+// lookupDatasource picks the datasource a lookup_schema resolves against: a
+// pinned turn forces its datasource; otherwise the model's datasource_id, and an
+// omitted id defaults to the turn's routing primary — the same default query_data
+// uses. (Passing "" would make SchemaRouter fall back to the project primary,
+// which can differ from the routed primary when the router narrowed to a subset.)
+func (r *runner) lookupDatasource(st *turnState, act *turnAction) string {
+	if st.routing.pinned != "" {
+		return st.routing.pinned
+	}
+	if id := strings.TrimSpace(act.Datasource); id != "" {
+		return id
+	}
+	return st.routing.primary
+}
+
 func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnState, act *turnAction) string {
 	ev := commonmodels.ToolEvent{
 		Round: st.round,
 		Name:  string(actSearch),
 		Args:  map[string]any{"query": act.SearchTables, "top_k": act.SearchTopK},
 	}
-	if rt.SchemaProvider == nil {
+	if rt.Schema == nil {
 		ev.Error = "schema provider not configured"
 		r.emit(ctx, st, ev)
 		return "Table search unavailable. Use lookup_schema with a table name you already know, or query directly."
 	}
 	start := time.Now()
-	hits, err := rt.SchemaProvider.Search(ctx, act.SearchTables, act.SearchTopK)
+	// Multi-datasource turns search ACROSS every datasource so the model can see
+	// which one holds what; a pinned / single-datasource turn searches only its
+	// datasource (spanning would surface tables it can't query).
+	var hits []TaggedHit
+	var err error
+	if st.routing.multi {
+		hits, err = rt.Schema.SearchAll(ctx, act.SearchTables, act.SearchTopK)
+	} else {
+		hits, err = rt.Schema.SearchOne(ctx, st.routing.pinned, act.SearchTables, act.SearchTopK)
+	}
 	ev.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		ev.Error = err.Error()
@@ -648,7 +844,7 @@ func (r *runner) execSearch(ctx context.Context, rt *ProjectRuntime, st *turnSta
 	}
 	ev.Output = searchSummary(hits)
 	r.emit(ctx, st, ev)
-	return formatSearch(act.SearchTables, hits)
+	return formatSearch(act.SearchTables, hits, st.routing.multi)
 }
 
 func (r *runner) execSearchInsights(ctx context.Context, rt *ProjectRuntime, st *turnState, act *turnAction) string {
@@ -752,6 +948,13 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.InputTokens = st.tokensIn
 	fin.OutputTokens = st.tokensOut
 	fin.Sources = st.insightSources()
+	// Routing telemetry — the datasources this turn actually queried (nil on a
+	// single-datasource / pinned turn) plus the evidence-grounded router's
+	// decision (reason / confidence / clarify) when it ran.
+	fin.RoutedDatasourceIDs = st.routedDatasources()
+	fin.RoutingReason = st.routeReason
+	fin.RoutingConfidence = st.routeConfidence
+	fin.RoutingClarify = st.routeClarify
 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -837,14 +1040,24 @@ func formatLookup(res ai.LookupResult) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func formatSearch(query string, hits []ai.SearchHit) string {
+func formatSearch(query string, hits []TaggedHit, multi bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 	if len(hits) == 0 {
 		b.WriteString("(no matching tables)")
 	}
 	for i, h := range hits {
-		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, h.Table, h.Blurb)
+		if multi {
+			// Lead with the datasource id so the model knows which datasource_id
+			// to pass to query_data / lookup_schema for this table.
+			tag := h.DatasourceID
+			if h.DatasourceLabel != "" {
+				tag = fmt.Sprintf("%s (%s)", h.DatasourceID, h.DatasourceLabel)
+			}
+			fmt.Fprintf(&b, "%d. [datasource: %s] %s — %s\n", i+1, tag, h.Table, h.Blurb)
+		} else {
+			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, h.Table, h.Blurb)
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -868,16 +1081,17 @@ func lookupSummary(res ai.LookupResult) map[string]any {
 }
 
 // searchSummary is the compact, lowercase-keyed record persisted as the
-// search tool event's output (ai.SearchHit has no json tags, so it would
-// otherwise serialize with capitalized keys the dashboard can't read).
-func searchSummary(hits []ai.SearchHit) []map[string]any {
+// search tool event's output. Carries the owning datasource id so the stored
+// transcript shows which datasource each hit belongs to.
+func searchSummary(hits []TaggedHit) []map[string]any {
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
 		out = append(out, map[string]any{
-			"table":     h.Table,
-			"blurb":     h.Blurb,
-			"row_count": h.RowCount,
-			"score":     h.Score,
+			"table":         h.Table,
+			"blurb":         h.Blurb,
+			"row_count":     h.RowCount,
+			"score":         h.Score,
+			"datasource_id": h.DatasourceID,
 		})
 	}
 	return out

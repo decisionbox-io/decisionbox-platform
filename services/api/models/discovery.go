@@ -14,13 +14,17 @@ type InsightValidation = valmodels.InsightValidation
 // DiscoveryResult — read-only view of agent's discovery output.
 // Same BSON schema as agent's model.
 type DiscoveryResult struct {
-	ID            string    `bson:"_id,omitempty" json:"id"`
-	ProjectID     string    `bson:"project_id" json:"project_id"`
-	Domain        string    `bson:"domain" json:"domain"`
-	Category      string    `bson:"category" json:"category"`
-	RunType        string   `bson:"run_type" json:"run_type"`
-	AreasRequested []string `bson:"areas_requested,omitempty" json:"areas_requested"`
-	DiscoveryDate time.Time `bson:"discovery_date" json:"discovery_date"`
+	ID        string `bson:"_id,omitempty" json:"id"`
+	ProjectID string `bson:"project_id" json:"project_id"`
+	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
+	// Empty for legacy / single-warehouse runs. Mirrors the agent model so the
+	// discovery endpoints don't drop the attribution on decode.
+	WarehouseID    string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	Domain         string    `bson:"domain" json:"domain"`
+	Category       string    `bson:"category" json:"category"`
+	RunType        string    `bson:"run_type" json:"run_type"`
+	AreasRequested []string  `bson:"areas_requested,omitempty" json:"areas_requested"`
+	DiscoveryDate  time.Time `bson:"discovery_date" json:"discovery_date"`
 
 	TotalSteps int   `bson:"total_steps" json:"total_steps"`
 	Duration   int64 `bson:"duration" json:"duration"`
@@ -38,14 +42,18 @@ type DiscoveryResult struct {
 }
 
 type Insight struct {
-	ID           string                 `bson:"id" json:"id"`
-	AnalysisArea string                 `bson:"analysis_area" json:"analysis_area"`
-	Name         string                 `bson:"name" json:"name"`
-	Description  string                 `bson:"description" json:"description"`
-	Severity     string                 `bson:"severity" json:"severity"`
-	AffectedCount int                   `bson:"affected_count" json:"affected_count"`
-	RiskScore     float64               `bson:"risk_score" json:"risk_score"`
-	Confidence    float64               `bson:"confidence" json:"confidence"`
+	ID           string `bson:"id" json:"id"`
+	AnalysisArea string `bson:"analysis_area" json:"analysis_area"`
+	Name         string `bson:"name" json:"name"`
+	Description  string `bson:"description" json:"description"`
+	// DescriptionMd is the Markdown rendition of Description, rendered
+	// formatted in the dashboard. Description stays plain text. Omitted on
+	// unformatted/legacy insights.
+	DescriptionMd string                 `bson:"description_md,omitempty" json:"description_md,omitempty"`
+	Severity      string                 `bson:"severity" json:"severity"`
+	AffectedCount int                    `bson:"affected_count" json:"affected_count"`
+	RiskScore     float64                `bson:"risk_score" json:"risk_score"`
+	Confidence    float64                `bson:"confidence" json:"confidence"`
 	Metrics       map[string]interface{} `bson:"metrics,omitempty" json:"metrics,omitempty"`
 	Indicators    []string               `bson:"indicators,omitempty" json:"indicators,omitempty"`
 	TargetSegment string                 `bson:"target_segment,omitempty" json:"target_segment,omitempty"`
@@ -59,9 +67,13 @@ type Recommendation struct {
 	Category    string `bson:"category" json:"category"`
 	Title       string `bson:"title" json:"title"`
 	Description string `bson:"description" json:"description"`
-	Priority    int    `bson:"priority" json:"priority"`
-	TargetSegment string `bson:"target_segment" json:"target_segment"`
-	SegmentSize   int    `bson:"segment_size" json:"segment_size"`
+	// DescriptionMd is the Markdown rendition of Description, rendered
+	// formatted in the dashboard. Description stays plain text. Omitted on
+	// unformatted/legacy recommendations.
+	DescriptionMd     string   `bson:"description_md,omitempty" json:"description_md,omitempty"`
+	Priority          int      `bson:"priority" json:"priority"`
+	TargetSegment     string   `bson:"target_segment" json:"target_segment"`
+	SegmentSize       int      `bson:"segment_size" json:"segment_size"`
 	ExpectedImpact    Impact   `bson:"expected_impact" json:"expected_impact"`
 	Actions           []string `bson:"actions" json:"actions"`
 	RelatedInsightIDs []string `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
@@ -73,22 +85,25 @@ type Recommendation struct {
 }
 
 type Impact struct {
-	Metric               string  `bson:"metric" json:"metric"`
-	EstimatedImprovement string  `bson:"estimated_improvement" json:"estimated_improvement"`
-	Reasoning            string  `bson:"reasoning" json:"reasoning"`
+	Metric               string `bson:"metric" json:"metric"`
+	EstimatedImprovement string `bson:"estimated_improvement" json:"estimated_improvement"`
+	Reasoning            string `bson:"reasoning" json:"reasoning"`
 }
 
 type ExplorationStep struct {
-	Step         int       `bson:"step" json:"step"`
-	Timestamp    time.Time `bson:"timestamp" json:"timestamp"`
-	Action       string    `bson:"action" json:"action"`
-	Thinking     string    `bson:"thinking" json:"thinking"`
-	QueryPurpose string    `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
-	Query        string    `bson:"query,omitempty" json:"query,omitempty"`
-	RowCount     int       `bson:"row_count,omitempty" json:"row_count,omitempty"`
-	ExecutionMs  int64     `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
-	Error        string    `bson:"error,omitempty" json:"error,omitempty"`
-	Fixed        bool      `bson:"fixed,omitempty" json:"fixed,omitempty"`
+	Step      int       `bson:"step" json:"step"`
+	Timestamp time.Time `bson:"timestamp" json:"timestamp"`
+	// WarehouseID is the datasource this step queried (multi-warehouse). Empty
+	// for legacy / single-warehouse runs. Mirrors the agent model.
+	WarehouseID  string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	Action       string `bson:"action" json:"action"`
+	Thinking     string `bson:"thinking" json:"thinking"`
+	QueryPurpose string `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
+	Query        string `bson:"query,omitempty" json:"query,omitempty"`
+	RowCount     int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
+	ExecutionMs  int64  `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
+	Error        string `bson:"error,omitempty" json:"error,omitempty"`
+	Fixed        bool   `bson:"fixed,omitempty" json:"fixed,omitempty"`
 }
 
 type AnalysisStep struct {
@@ -139,6 +154,11 @@ type ValidationLogEntry struct {
 	Reasoning     string    `bson:"reasoning" json:"reasoning"`
 	Query         string    `bson:"query,omitempty" json:"query,omitempty"`
 	ValidatedAt   time.Time `bson:"validated_at" json:"validated_at"`
+
+	// WarehouseID is the datasource this doc was verified against
+	// (multi-warehouse); empty on single-warehouse runs. Mirrors the agent
+	// ValidationResult so the dashboard can attribute each validation-log row.
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
 
 	// --- new-shape fields ---
 

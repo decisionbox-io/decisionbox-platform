@@ -95,14 +95,14 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 //
 //   - "query_data"        — a real SQL query; increments the query counter.
 //   - "lookup_schema"     — on-demand schema fetch; increments the
-//                            schema_lookup_calls counter, not the query
-//                            counter.
+//     schema_lookup_calls counter, not the query
+//     counter.
 //   - "search_tables"     — on-demand semantic table search; increments
-//                            schema_search_calls.
+//     schema_search_calls.
 //   - "complete_rejected" — early-done signal rejected by MinSteps;
-//                            written with Type="complete_rejected", no
-//                            counter bumps, kept in the log so the UI
-//                            shows that the model tried to stop.
+//     written with Type="complete_rejected", no
+//     counter bumps, kept in the log so the UI
+//     shows that the model tried to stop.
 //
 // Any unrecognised action falls through to the "query" rendering for
 // safety, but no counter is bumped.
@@ -114,7 +114,7 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 // the norm. Zero values are stored absent (omitempty), preserving the
 // "unknown vs. zero spent" distinction for any future path that
 // produces a step without an LLM call.
-func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int) {
+func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int, warehouseID string) {
 	if !s.enabled() {
 		return
 	}
@@ -137,6 +137,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		RowCount:     rowCount,
 		QueryTimeMs:  queryTimeMs,
 		QueryFixed:   queryFixed,
+		WarehouseID:  warehouseID,
 		Error:        errStr,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,

@@ -54,9 +54,11 @@ type Config struct {
 // a real Qdrant container.
 type Client interface {
 	CollectionExists(ctx context.Context, name string) (bool, error)
+	GetCollectionInfo(ctx context.Context, name string) (*pb.CollectionInfo, error)
 	CreateCollection(ctx context.Context, req *pb.CreateCollection) error
 	DeleteCollection(ctx context.Context, name string) error
 	Upsert(ctx context.Context, req *pb.UpsertPoints) (*pb.UpdateResult, error)
+	Delete(ctx context.Context, req *pb.DeletePoints) (*pb.UpdateResult, error)
 	Query(ctx context.Context, req *pb.QueryPoints) ([]*pb.ScoredPoint, error)
 	HealthCheck(ctx context.Context) (*pb.HealthCheckReply, error)
 	Close() error
@@ -122,7 +124,22 @@ func (r *Retriever) EnsureCollection(ctx context.Context, projectID string, dime
 		return fmt.Errorf("schema_retrieve: check collection %q: %w", name, err)
 	}
 	if exists {
-		return nil
+		// The collection is shared by all of the project's warehouses, so
+		// we must NOT drop it just because one warehouse is (re)indexing —
+		// that would wipe the others' vectors. Only recreate when the
+		// vector dimension no longer matches (an embedding-model change,
+		// which invalidates EVERY warehouse's points anyway).
+		info, err := r.client.GetCollectionInfo(ctx, name)
+		if err != nil {
+			return fmt.Errorf("schema_retrieve: get collection info %q: %w", name, err)
+		}
+		if curDim := info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize(); curDim == uint64(dimensions) {
+			return nil
+		}
+		// Dimension mismatch → drop and recreate below.
+		if err := r.client.DeleteCollection(ctx, name); err != nil {
+			return fmt.Errorf("schema_retrieve: recreate collection %q (drop): %w", name, err)
+		}
 	}
 	err = r.client.CreateCollection(ctx, &pb.CreateCollection{
 		CollectionName: name,
@@ -158,11 +175,44 @@ func (r *Retriever) DropCollection(ctx context.Context, projectID string) error 
 	return nil
 }
 
+// DeleteWarehousePoints removes only the points belonging to one warehouse
+// from the project's shared collection. This is the per-warehouse reindex
+// primitive: re-indexing one warehouse must NOT drop the whole collection
+// (that would wipe every OTHER warehouse's vectors). The collection itself
+// is left intact. For the default warehouse it also sweeps legacy points
+// that predate the warehouse_id payload. Idempotent — a missing collection
+// is not an error.
+func (r *Retriever) DeleteWarehousePoints(ctx context.Context, projectID, warehouseID string) error {
+	if projectID == "" {
+		return fmt.Errorf("schema_retrieve: projectID is required")
+	}
+	name := CollectionName(projectID)
+	exists, err := r.client.CollectionExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("schema_retrieve: check collection %q: %w", name, err)
+	}
+	if !exists {
+		return nil
+	}
+	var must, should []*pb.Condition
+	must, should = appendWarehouseFilter(must, should, normWarehouseID(warehouseID))
+	wait := true
+	if _, err := r.client.Delete(ctx, &pb.DeletePoints{
+		CollectionName: name,
+		Wait:           &wait,
+		Points:         pb.NewPointsSelectorFilter(&pb.Filter{Must: must, Should: should}),
+	}); err != nil {
+		return fmt.Errorf("schema_retrieve: delete warehouse %q points: %w", normWarehouseID(warehouseID), err)
+	}
+	return nil
+}
+
 // TableBlurb is one row of the schema index — a per-table natural-language
 // description plus the metadata the renderer needs at retrieval time.
 type TableBlurb struct {
 	Table          string   // fully-qualified: dataset.table
 	Dataset        string   // just the dataset for filtering
+	WarehouseID    string   // owning warehouse (multi-warehouse); "" == the project's default/primary
 	Blurb          string   // 2-4 sentence description, from the blurb LLM
 	Keywords       []string // 1-3 domain-pack keywords, used by sparse re-rank
 	RowCount       int64
@@ -185,13 +235,14 @@ type UpsertItem struct {
 // The caller is responsible for ensuring:
 //   - EnsureCollection has been called with the matching dimensions
 //   - every Vector in items has the same length (Qdrant rejects mixed dims)
-func (r *Retriever) Upsert(ctx context.Context, projectID string, items []UpsertItem) error {
+func (r *Retriever) Upsert(ctx context.Context, projectID, warehouseID string, items []UpsertItem) error {
 	if projectID == "" {
 		return fmt.Errorf("schema_retrieve: projectID is required")
 	}
 	if len(items) == 0 {
 		return nil
 	}
+	warehouseID = normWarehouseID(warehouseID)
 
 	var dims int
 	points := make([]*pb.PointStruct, 0, len(items))
@@ -207,15 +258,16 @@ func (r *Retriever) Upsert(ctx context.Context, projectID string, items []Upsert
 		} else if len(it.Vector) != dims {
 			return fmt.Errorf("schema_retrieve: mixed vector dimensions (%d vs %d) in batch", dims, len(it.Vector))
 		}
-		payload, err := pb.TryValueMap(payloadFromBlurb(it.Blurb, projectID))
+		payload, err := pb.TryValueMap(payloadFromBlurb(it.Blurb, projectID, warehouseID))
 		if err != nil {
 			return fmt.Errorf("schema_retrieve: payload encode for %q: %w", it.Blurb.Table, err)
 		}
 		points = append(points, &pb.PointStruct{
-			// Stable ID so upserts are idempotent across index runs: using
-			// the fully-qualified table name means a re-index overwrites,
-			// not duplicates.
-			Id:      pb.NewID(pointID(projectID, it.Blurb.Table)),
+			// Stable ID so upserts are idempotent across index runs. The id
+			// includes the warehouse id so two warehouses that expose the
+			// SAME dataset.table (e.g. both public.customers) get distinct
+			// points instead of colliding (last-write-wins).
+			Id:      pb.NewID(pointID(projectID, warehouseID, it.Blurb.Table)),
 			Vectors: pb.NewVectorsDense(float64sToFloat32s(it.Vector)),
 			Payload: payload,
 		})
@@ -238,10 +290,16 @@ func (r *Retriever) Upsert(ctx context.Context, projectID string, items []Upsert
 // results to a single dataset — useful when a project indexed multiple
 // datasets but a specific analysis area only pertains to one.
 type SearchOpts struct {
-	TopK           int
-	DatasetFilter  string
-	KeywordBoost   []string // sparse-keyword re-rank anchors; empty = no boost
-	MinRowCount    int64    // hard filter — skip tiny lookup tables
+	TopK          int
+	DatasetFilter string
+	// WarehouseFilter narrows results to a single warehouse (multi-warehouse
+	// execution binding). Empty = search across ALL warehouses in the
+	// project — this is what the cross-warehouse router uses to see the
+	// whole workspace. The reserved "default" id also matches legacy points
+	// written before warehouse_id existed.
+	WarehouseFilter string
+	KeywordBoost    []string // sparse-keyword re-rank anchors; empty = no boost
+	MinRowCount     int64    // hard filter — skip tiny lookup tables
 	// RowCountPrior nudges ranking toward larger tables (log10(row_count) × prior).
 	// 0.0 disables. 0.05–0.1 is a reasonable range. Stays client-side so we
 	// don't mutate the vector similarity score on the server.
@@ -254,9 +312,9 @@ const DefaultTopK = 40
 
 // Hit is one retrieval result. Score is post-rerank (higher = better).
 type Hit struct {
-	Blurb      TableBlurb
-	BaseScore  float64 // raw cosine similarity from Qdrant
-	Score      float64 // after client-side re-rank (keyword + row-count)
+	Blurb     TableBlurb
+	BaseScore float64 // raw cosine similarity from Qdrant
+	Score     float64 // after client-side re-rank (keyword + row-count)
 }
 
 // Search retrieves the top-K tables for the given query vector. Returns
@@ -307,10 +365,14 @@ func (r *Retriever) Search(ctx context.Context, projectID string, vector []float
 			// Corrupt or legacy point; skip.
 			continue
 		}
-		if _, dup := seen[blurb.Table]; dup {
+		// Dedup key includes the warehouse id so an unfiltered
+		// cross-warehouse search does not collapse two warehouses' identical
+		// dataset.table into one hit.
+		dedupKey := blurb.WarehouseID + "\x00" + blurb.Table
+		if _, dup := seen[dedupKey]; dup {
 			continue
 		}
-		seen[blurb.Table] = struct{}{}
+		seen[dedupKey] = struct{}{}
 		base := float64(sp.Score)
 		hits = append(hits, Hit{
 			Blurb:     blurb,
@@ -340,8 +402,8 @@ func (r *Retriever) Close() error { return r.client.Close() }
 // The first 16 bytes of the SHA-256 digest are formatted as
 // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. Version/variant bits are left
 // alone — Qdrant accepts any 16-byte value in UUID notation.
-func pointID(projectID, table string) string {
-	sum := sha256.Sum256([]byte(projectID + "::" + table))
+func pointID(projectID, warehouseID, table string) string {
+	sum := sha256.Sum256([]byte(projectID + "::" + warehouseID + "::" + table))
 	b := sum[:16]
 	return fmt.Sprintf("%s-%s-%s-%s-%s",
 		hex.EncodeToString(b[0:4]),
@@ -352,7 +414,21 @@ func pointID(projectID, table string) string {
 	)
 }
 
-func payloadFromBlurb(b TableBlurb, projectID string) map[string]interface{} {
+// normWarehouseID maps the empty id to the reserved default so point ids,
+// payloads, and filters are stable for legacy / single-warehouse projects.
+func normWarehouseID(warehouseID string) string {
+	if warehouseID == "" {
+		return DefaultWarehouseID
+	}
+	return warehouseID
+}
+
+// DefaultWarehouseID is the reserved warehouse id for the primary of a
+// legacy / single-warehouse project. Mirrors models.DefaultWarehouseID
+// (kept local so this leaf package stays dependency-free).
+const DefaultWarehouseID = "default"
+
+func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]interface{} {
 	// qdrant's TryValueMap does not accept []string directly — convert
 	// to []interface{} so the string-value conversion kicks in per item.
 	kws := make([]interface{}, len(b.Keywords))
@@ -371,6 +447,7 @@ func payloadFromBlurb(b TableBlurb, projectID string) map[string]interface{} {
 	}
 	return map[string]interface{}{
 		"project_id":      projectID,
+		"warehouse_id":    warehouseID,
 		"table":           bareTable,
 		"dataset":         b.Dataset,
 		"blurb":           b.Blurb,
@@ -401,9 +478,17 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 	if dataset != "" && !strings.Contains(table, ".") {
 		qualified = dataset + "." + table
 	}
+	// Legacy points (indexed before warehouse_id existed) carry no
+	// warehouse_id; treat them as the default warehouse so they keep
+	// resolving for single-warehouse projects.
+	whID := strVal(payload, "warehouse_id")
+	if whID == "" {
+		whID = DefaultWarehouseID
+	}
 	return TableBlurb{
 		Table:          qualified,
 		Dataset:        dataset,
+		WarehouseID:    whID,
 		Blurb:          strVal(payload, "blurb"),
 		Keywords:       strListVal(payload, "keywords"),
 		RowCount:       intVal(payload, "row_count"),
@@ -465,6 +550,7 @@ func float64sToFloat32s(in []float64) []float32 {
 // Returns nil when no filter applies (Qdrant treats nil as "match all").
 func buildSearchFilter(opts SearchOpts) *pb.Filter {
 	var must []*pb.Condition
+	var should []*pb.Condition
 	if opts.DatasetFilter != "" {
 		must = append(must, &pb.Condition{
 			ConditionOneOf: &pb.Condition_Field{
@@ -486,10 +572,35 @@ func buildSearchFilter(opts SearchOpts) *pb.Filter {
 			},
 		})
 	}
-	if len(must) == 0 {
+	// Warehouse binding: empty WarehouseFilter = search across all
+	// warehouses (the router's cross-warehouse view). A concrete filter
+	// narrows to one warehouse; the default id also matches legacy points
+	// written before warehouse_id existed (Qdrant: point matches all Must
+	// AND at least one Should).
+	must, should = appendWarehouseFilter(must, should, opts.WarehouseFilter)
+	if len(must) == 0 && len(should) == 0 {
 		return nil
 	}
-	return &pb.Filter{Must: must}
+	return &pb.Filter{Must: must, Should: should}
+}
+
+// appendWarehouseFilter adds the warehouse-id predicate for warehouseID to
+// the given must/should condition slices. Empty warehouseID adds nothing
+// (match all warehouses).
+func appendWarehouseFilter(must, should []*pb.Condition, warehouseID string) ([]*pb.Condition, []*pb.Condition) {
+	if warehouseID == "" {
+		return must, should
+	}
+	wid := normWarehouseID(warehouseID)
+	if wid == DefaultWarehouseID {
+		should = append(should,
+			pb.NewMatchKeyword("warehouse_id", DefaultWarehouseID),
+			pb.NewIsEmpty("warehouse_id"),
+		)
+	} else {
+		must = append(must, pb.NewMatchKeyword("warehouse_id", wid))
+	}
+	return must, should
 }
 
 // rerankScore applies the client-side rerank policy described in
