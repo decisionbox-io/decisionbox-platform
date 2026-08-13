@@ -52,3 +52,28 @@ func TestLoadConfig_InvalidFallsBackToDefault(t *testing.T) {
 		t.Errorf("WallClock = %s, want default", cfg.WallClock)
 	}
 }
+
+// The guidance quotes a row limit the model should re-run within. Three caps
+// bound a chartable result and the smallest wins, so quoting PreviewRows alone
+// would walk a tuned deployment into another rejected chart.
+func TestChartableRowCap(t *testing.T) {
+	tests := []struct {
+		name                              string
+		preview, fetch, maxPoints, expect int
+	}{
+		{"preview is the only bound", 50, 1000, 50, 50},
+		{"chart point cap is lower", 50, 1000, 20, 20},
+		{"fetch cap is lower", 50, 30, 50, 30},
+		{"smallest of the three wins", 50, 30, 10, 10},
+		{"unset caps do not clamp to zero", 50, 0, 0, 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Config{PreviewRows: tt.preview, MaxFetchRows: tt.fetch}
+			c.ChartCaps.MaxPoints = tt.maxPoints
+			if got := c.ChartableRowCap(); got != tt.expect {
+				t.Errorf("ChartableRowCap() = %d, want %d", got, tt.expect)
+			}
+		})
+	}
+}

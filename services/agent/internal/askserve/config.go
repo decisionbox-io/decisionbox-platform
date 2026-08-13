@@ -160,6 +160,23 @@ func durationFromSeconds(env string, def time.Duration) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
+// ChartableRowCap is the largest result that can actually ground a chart. Three
+// caps apply and the smallest wins: the preview must hold the WHOLE result
+// (PreviewRows), the preview cannot exceed the rows retained (MaxFetchRows),
+// and the chart's own point cap must admit every row (ChartCaps.MaxPoints).
+// Quoting PreviewRows alone would send a deployment that lowered either of the
+// other two into another rejected chart.
+func (c Config) ChartableRowCap() int {
+	n := c.PreviewRows
+	if c.MaxFetchRows > 0 && c.MaxFetchRows < n {
+		n = c.MaxFetchRows
+	}
+	if c.ChartCaps.MaxPoints > 0 && c.ChartCaps.MaxPoints < n {
+		n = c.ChartCaps.MaxPoints
+	}
+	return n
+}
+
 func positive(v, def int) int {
 	if v <= 0 {
 		return def
