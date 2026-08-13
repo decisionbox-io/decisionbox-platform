@@ -285,7 +285,7 @@ func ValidateGrounded(spec ChartSpec, src GroundingSource, caps Caps) error {
 	}
 	if src.Truncated {
 		return ruleErr("grounding", "source_step_id",
-			fmt.Sprintf("step %q was truncated (its preview omits rows), so it cannot ground a chart; aggregate in SQL (GROUP BY/LIMIT) so the full result fits the preview, then chart that", src.StepID))
+			fmt.Sprintf("step %q was truncated (its preview omits rows), so it cannot ground a chart; re-run it so the whole result fits the preview and pick the fix that preserves the question — aggregate (GROUP BY) for totals and breakdowns, or, for one-point-per-entity charts like a scatter, ORDER BY the measure that matters and LIMIT (then say \"top N\" in the title or caption) — and chart that", src.StepID))
 	}
 	cols := map[string]struct{}{}
 	for _, c := range src.Columns {

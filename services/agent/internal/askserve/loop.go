@@ -585,6 +585,13 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
 		ev.Error = err.Error()
 		r.emit(ctx, st, ev)
+		// The validator is generic and cannot name the preview cap, but the model
+		// needs the concrete number: told only that a step "was truncated", it
+		// retries with a LIMIT set to the full row count and is truncated again.
+		if src.Truncated {
+			return fmt.Sprintf("Chart rejected: %s. The preview holds at most %d rows, so the re-run must return %d rows or fewer — a LIMIT above that is truncated again, exactly as this one was (step %q returned %d rows).",
+				err.Error(), r.cfg.PreviewRows, r.cfg.PreviewRows, src.Step, src.RowCount)
+		}
 		return "Chart rejected: " + err.Error() + ". Fix the spec (chart only the exact cells you observed) or re-query, then try again."
 	}
 
