@@ -1,6 +1,7 @@
 package askserve
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -101,6 +102,72 @@ func toolSearchInsights() gollm.ToolDefinition {
 	}
 }
 
+// toolRenderChart is offered only when charting is enabled for the turn AND at
+// least one non-truncated query has run this turn. Its schema mirrors the shared
+// charts.ChartSpec (minus server-derived fields); the loop re-validates and
+// hard-grounds the emitted spec against the referenced query preview, so a
+// wrong or invented spec is rejected and fed back for repair rather than trusted.
+func toolRenderChart() gollm.ToolDefinition {
+	return gollm.ToolDefinition{
+		Name: string(actRenderChart),
+		Description: "Render a chart from a query result you ALREADY observed this turn. The chart data must be an EXACT projection of that query's preview rows — copy the cells, do not compute, round, or invent any number (aggregate in SQL first, then chart the result). " +
+			"Set source_step_id to the q<N> id of the query you are charting (shown in its result). Prefer a chart when a trend, comparison, breakdown, or single headline figure communicates the answer better than prose. Keep series small and readable. Do not call this in the same step as answer.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"type":           map[string]interface{}{"type": "string", "enum": []string{"bar", "line", "area", "pie", "scatter", "kpi"}, "description": "The chart type."},
+				"title":          map[string]interface{}{"type": "string", "description": "Short chart title (optional, plain text)."},
+				"caption":        map[string]interface{}{"type": "string", "description": "One-line caption/insight (optional, plain text)."},
+				"source_step_id": map[string]interface{}{"type": "string", "description": "The q<N> id of the query whose result this chart shows, e.g. \"q2\"."},
+				"x": map[string]interface{}{
+					"type":        "object",
+					"description": "The category/time/number axis (required for all types except kpi).",
+					"properties": map[string]interface{}{
+						"field": map[string]interface{}{"type": "string", "description": "The query column for the x axis."},
+						"label": map[string]interface{}{"type": "string"},
+						"type":  map[string]interface{}{"type": "string", "enum": []string{"category", "time", "number"}},
+					},
+				},
+				"y": map[string]interface{}{
+					"type":        "array",
+					"description": "One or more numeric measures to plot (required for all types except kpi).",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"field":  map[string]interface{}{"type": "string", "description": "A numeric query column."},
+							"label":  map[string]interface{}{"type": "string"},
+							"unit":   map[string]interface{}{"type": "string", "description": "Unit for display, e.g. a currency code (USD, EUR, DKK) or \"%\"/\"kg\". Presentation only — does not change the value."},
+							"format": map[string]interface{}{"type": "string", "enum": []string{"number", "currency", "percent"}, "description": "How to format this measure's values: currency (prefixes the unit's symbol), percent (appends %), or number (default)."},
+						},
+						"required": []string{"field"},
+					},
+				},
+				"series_by": map[string]interface{}{"type": "string", "description": "Optional column to split into one series per distinct value (bar/line/area only)."},
+				"stacked":   map[string]interface{}{"type": "boolean", "description": "Stack the series (bar/area only)."},
+				"data": map[string]interface{}{
+					"type":        "array",
+					"description": "The chart rows: an exact subset/projection of the query preview cells. Each object maps column name to the observed cell value.",
+					"items":       map[string]interface{}{"type": "object"},
+				},
+				"kpi": map[string]interface{}{
+					"type":        "object",
+					"description": "For the kpi type only: a single headline figure read from the query result.",
+					"properties": map[string]interface{}{
+						"value":       map[string]interface{}{"type": "number", "description": "The figure, copied from a source cell."},
+						"unit":        map[string]interface{}{"type": "string", "description": "Unit for display, e.g. a currency code (USD, DKK) or \"%\"."},
+						"format":      map[string]interface{}{"type": "string", "enum": []string{"number", "currency", "percent"}, "description": "How to format the figure: currency, percent, or number (default)."},
+						"delta":       map[string]interface{}{"type": "number", "description": "Optional change figure, copied from a source cell."},
+						"value_field": map[string]interface{}{"type": "string", "description": "The source column the value was read from."},
+						"delta_field": map[string]interface{}{"type": "string", "description": "The source column the delta was read from."},
+					},
+					"required": []string{"value", "value_field"},
+				},
+			},
+			"required": []string{"type", "source_step_id"},
+		},
+	}
+}
+
 func toolAnswer() gollm.ToolDefinition {
 	return gollm.ToolDefinition{
 		Name:        string(actAnswer),
@@ -150,14 +217,19 @@ func toolDecline() gollm.ToolDefinition {
 // clarify / decline stay available so a genuinely ambiguous or unanswerable
 // question can still terminate without inventing data. Schema tools are offered
 // only when a schema provider is wired; search_insights only when an insights
-// provider is wired.
-func toolsForPhase(grounded, hasSchema, hasInsights, multi bool) []gollm.ToolDefinition {
+// provider is wired. render_chart is offered only when charting is enabled for
+// the turn AND a non-truncated query result exists to ground a chart against.
+// multi widens the query/schema tools for a project with several warehouses.
+func toolsForPhase(grounded, hasSchema, hasInsights, multi, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
 	tools := []gollm.ToolDefinition{toolQueryData(multi)}
 	if hasSchema {
 		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
+	}
+	if chartsEnabled && hasChartableQuery {
+		tools = append(tools, toolRenderChart())
 	}
 	if grounded {
 		tools = append(tools, toolAnswer())
@@ -218,6 +290,15 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 			return nil, fmt.Errorf("search_insights requires a non-empty %q argument", "query")
 		}
 		return &turnAction{Kind: actSearchInsights, SearchInsights: q, InsightsLimit: toInt(tc.Input["limit"])}, nil
+	case actRenderChart:
+		// The whole tool input IS the ChartSpec. Re-encode it to raw JSON so the
+		// executor can strict-decode + ground it via the shared charts validator
+		// (which also rejects unknown fields the map would otherwise swallow).
+		raw, err := json.Marshal(tc.Input)
+		if err != nil {
+			return nil, fmt.Errorf("render_chart input could not be encoded: %w", err)
+		}
+		return &turnAction{Kind: actRenderChart, Chart: raw}, nil
 	case actAnswer:
 		txt := getStr("text")
 		if txt == "" {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/charts"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -65,12 +66,33 @@ type turnState struct {
 	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
 	// native-tools loop grounds on this, not on len(events): a failed query /
 	// rejected tenant filter / unavailable schema search records an event but
-	// observed no data, so it must not unlock the answer tool.
+	// observed no data, so it must not unlock the answer tool. render_chart is
+	// deliberately NOT evidence — a chart consumes a query result, it does not
+	// produce one — so a successful render_chart never increments this (see emit).
 	groundedEvents int
 	// insightHits accumulates the insights/recommendations surfaced by
 	// search_insights across the turn, mapped to the message's Sources at
 	// finalize so the dashboard renders them as citations.
 	insightHits []ai.InsightHit
+
+	// queryStepSeq is a monotonic counter assigning each successful query a
+	// unique step id ("q1", "q2", …) the model references as a chart's
+	// source_step_id. Round is not unique (native mode batches queries), so a
+	// separate sequence is needed.
+	queryStepSeq int
+	// queriesChartable counts successful, non-truncated queries — a chart needs
+	// at least one to ground against, and only these can be its source.
+	queriesChartable int
+	// chartsRendered counts accepted render_chart events (for the per-answer cap).
+	chartsRendered int
+	// querySummariesByID maps a step id to the query summary the chart validator
+	// grounds against, for O(1) lookup of a chart's referenced source.
+	querySummariesByID map[string]QuerySummary
+	// chartsEnabled is the per-turn entitlement (caller EnableCharts AND the ops
+	// kill-switch). It gates EXECUTION, not just tool offering: the text-fallback
+	// parser accepts render_chart regardless, and a provider can return an
+	// unoffered tool call, so execRenderChart must recheck this.
+	chartsEnabled bool
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -180,6 +202,9 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		return
 	}
 	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing}
+	// Per-turn charting entitlement: the caller's EnableCharts AND the ops
+	// kill-switch. Set here, once, so both loops and the router path agree.
+	st.chartsEnabled = req.EnableCharts && r.cfg.ChartsEnabled
 
 	// Evidence-grounded routing: on a multi-datasource turn without an explicit
 	// pin, decide which datasource(s) the question needs (and clarify when it's
@@ -217,7 +242,7 @@ func toolsSupported(rt *ProjectRuntime) bool {
 // decline rather than emit an ungrounded answer) is the safety net there.
 func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState) {
 	conv := ai.NewConversation(ai.ConversationOptions{
-		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg),
+		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg, st.chartsEnabled),
 		// Two messages per step (assistant action + observation) across the
 		// round budget, plus history headroom — generous so the engine's own
 		// caps, not this ceiling, bound the turn.
@@ -250,9 +275,10 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 			// ungrounded — the model fabricated it. Re-nudge it to gather
 			// evidence; if it still refuses after maxGroundingNudges, DECLINE
 			// rather than emit fabricated content. Gate on groundedEvents, not
-			// len(events): a failed query or a rejected datasource_id records an
-			// event but observed no data, so it must NOT unlock the answer (same
-			// rule the native-tools path uses). clarify / decline need no data.
+			// len(events): a failed query, a rejected datasource_id or a
+			// rejected render_chart records an event but observed no data, so it
+			// must NOT unlock the answer (same rule the native-tools path uses).
+			// clarify / decline need no data.
 			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				if st.groundingNudges < maxGroundingNudges {
 					st.groundingNudges++
@@ -355,7 +381,7 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 // []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
 // blocks.
 func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnState) {
-	system := buildSystemPromptForTools(rt, st.routing, r.cfg)
+	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled)
 	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
 
@@ -372,7 +398,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -442,11 +468,27 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		// provider correlates each tool_result to its tool_use by id. A malformed
 		// call yields an error result without running (so it never emits a
 		// spuriously grounding event); a terminal call mixed into the batch is
-		// refused so the model reviews the data before finishing.
+		// refused so the model reviews the data before finishing; a render_chart
+		// mixed with the query it would chart (or with a terminal) is refused so
+		// charts only ever reference a prior-round, already-observed result.
+		batchHasQuery, batchHasTerminal := false, false
+		for _, tc := range resp.ToolCalls {
+			k := actionKind(tc.Name)
+			if k == actQuery {
+				batchHasQuery = true
+			}
+			if k.terminal() {
+				batchHasTerminal = true
+			}
+		}
 		results := make([]gollm.ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			if actionKind(tc.Name).terminal() {
 				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Do not finish in the same step as a data tool. Review the query results first, then call answer/clarify/decline on its own.", IsError: true})
+				continue
+			}
+			if actionKind(tc.Name) == actRenderChart && (batchHasQuery || batchHasTerminal) {
+				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call render_chart in its own step, after the query result is in — not together with a query or with answer/clarify/decline.", IsError: true})
 				continue
 			}
 			act, aerr := toolCallToAction(tc)
@@ -537,6 +579,8 @@ func (r *runner) execute(ctx context.Context, rt *ProjectRuntime, st *turnState,
 		return r.execSearch(ctx, rt, st, act)
 	case actSearchInsights:
 		return r.execSearchInsights(ctx, rt, st, act)
+	case actRenderChart:
+		return r.execRenderChart(ctx, st, act)
 	default:
 		return "Unknown action."
 	}
@@ -620,9 +664,85 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// against a datasource must not be attributed as one of its sources.
 	st.trackDatasource(dsID)
 	sum := summarizeResult(res, act.Purpose, r.cfg)
+	// Assign the query a unique, model-visible step id so a later render_chart
+	// can bind to it via source_step_id. Only successful queries get one; a
+	// non-truncated one is chartable (a chart is an exact projection of the
+	// preview, so a truncated result — whose preview omits rows — cannot ground).
+	st.queryStepSeq++
+	sum.Step = fmt.Sprintf("q%d", st.queryStepSeq)
+	ev.Args["step"] = sum.Step
 	ev.Output = sum
+	if st.querySummariesByID == nil {
+		st.querySummariesByID = make(map[string]QuerySummary)
+	}
+	st.querySummariesByID[sum.Step] = sum
+	if !sum.Truncated {
+		st.queriesChartable++
+	}
 	r.emit(ctx, st, ev)
 	return sum.observation()
+}
+
+// execRenderChart validates and grounds a render_chart action, then persists it
+// as a (non-grounding) tool event carrying the accepted ChartSpec. A rejected
+// spec is persisted with its Error set and returned as an error observation so
+// the model can repair it or re-query — reusing the loop's existing self-heal
+// path (no separate machinery). It grounds against the referenced query's
+// preview: the chart data must be an exact projection of cells already observed.
+func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAction) string {
+	// Entitlement gate — defense in depth. render_chart is only OFFERED when
+	// charts are enabled for the turn, but the JSON-text parser accepts it
+	// regardless and a provider could return an unoffered tool call. Never
+	// execute or persist a chart for a non-entitled turn (nothing is emitted, so
+	// no artifact is created).
+	if !st.chartsEnabled {
+		return "render_chart is not available for this turn; do not call it — answer with prose."
+	}
+
+	ev := commonmodels.ToolEvent{Round: st.round, Name: string(actRenderChart)}
+
+	if r.cfg.ChartMaxPerAnswer > 0 && st.chartsRendered >= r.cfg.ChartMaxPerAnswer {
+		ev.Error = fmt.Sprintf("chart limit reached (%d per answer)", r.cfg.ChartMaxPerAnswer)
+		r.emit(ctx, st, ev)
+		return ev.Error + "; do not render more — answer with the charts you have."
+	}
+
+	spec, err := charts.Decode(act.Chart, r.cfg.ChartCaps)
+	if err != nil {
+		ev.Error = err.Error()
+		r.emit(ctx, st, ev)
+		return "Chart rejected: " + err.Error() + ". Fix the spec or re-query, then try again."
+	}
+
+	src, ok := st.querySummariesByID[spec.SourceStepID]
+	if !ok {
+		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
+		ev.Error = fmt.Sprintf("unknown source_step_id %q", spec.SourceStepID)
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Chart rejected: no query step %q in this turn. Set source_step_id to the q<N> id of a query you ran (shown in its result), then try again.", spec.SourceStepID)
+	}
+
+	gsrc := charts.GroundingSource{StepID: src.Step, Columns: src.Columns, Preview: src.Preview, Truncated: src.Truncated}
+	if err := charts.ValidateGrounded(spec, gsrc, r.cfg.ChartCaps); err != nil {
+		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
+		ev.Error = err.Error()
+		r.emit(ctx, st, ev)
+		// The validator is generic and cannot name the preview cap, but the model
+		// needs the concrete number: told only that a step "was truncated", it
+		// retries with a LIMIT set to the full row count and is truncated again.
+		if src.Truncated {
+			n := r.cfg.ChartableRowCap()
+			return fmt.Sprintf("Chart rejected: %s. A chartable result is at most %d rows, so the re-run must return %d rows or fewer — a LIMIT above that is truncated again, exactly as this one was (step %q returned %d rows).",
+				err.Error(), n, n, src.Step, src.RowCount)
+		}
+		return "Chart rejected: " + err.Error() + ". Fix the spec (chart only the exact cells you observed) or re-query, then try again."
+	}
+
+	ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
+	ev.Output = spec
+	st.chartsRendered++
+	r.emit(ctx, st, ev)
+	return fmt.Sprintf("Chart accepted (%s from %s). Render another chart if useful, then answer.", spec.Type, spec.SourceStepID)
 }
 
 // resolveQueryDatasource picks the datasource a query_data statement runs
@@ -757,8 +877,10 @@ func (r *runner) execSearchInsights(ctx context.Context, rt *ProjectRuntime, st 
 // emit appends a tool event to the in-memory transcript and persists it.
 func (r *runner) emit(ctx context.Context, st *turnState, ev commonmodels.ToolEvent) {
 	st.events = append(st.events, ev)
-	if ev.Error == "" {
-		// A successful evidence event — the model actually observed data.
+	if ev.Error == "" && ev.Name != string(actRenderChart) {
+		// A successful EVIDENCE event — the model actually observed data. A
+		// render_chart consumes a result rather than producing one, so it never
+		// grounds: charting must not be a way to reach the answer tool.
 		st.groundedEvents++
 	}
 	// Persist under a short, detached deadline so a turn ctx already past its

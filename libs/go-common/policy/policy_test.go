@@ -238,6 +238,7 @@ func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
 		FeatureSources,
 		FeaturePackGen,
 		FeatureDataQuery,
+		FeatureAskCharts,
 		FeatureMultiWarehouse,
 		FeatureConnectors,
 	}
@@ -271,6 +272,7 @@ func TestNewFeatureConstants_WireStrings(t *testing.T) {
 		FeatureSources:   "sources_enabled",
 		FeaturePackGen:   "pack_gen_enabled",
 		FeatureDataQuery: "data_query_enabled",
+		FeatureAskCharts: "ask_charts_enabled",
 	}
 	for got, want := range cases {
 		if got != want {

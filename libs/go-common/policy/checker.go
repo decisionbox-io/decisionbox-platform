@@ -114,6 +114,7 @@ const (
 	FeatureSources        = "sources_enabled"
 	FeaturePackGen        = "pack_gen_enabled"
 	FeatureDataQuery      = "data_query_enabled"
+	FeatureAskCharts      = "ask_charts_enabled"
 	// FeatureMultiWarehouse gates attaching more than one SQL warehouse
 	// to a single project. When off, a project is capped at one warehouse
 	// (today's behaviour). Enforced at the add-warehouse chokepoint via
@@ -142,6 +143,7 @@ var AllFeatures = []string{
 	FeatureSources,
 	FeaturePackGen,
 	FeatureDataQuery,
+	FeatureAskCharts,
 	FeatureMultiWarehouse,
 	FeatureConnectors,
 }

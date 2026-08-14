@@ -341,8 +341,10 @@ func TestLoop_SearchTablesSummaryIsLowercaseKeyed(t *testing.T) {
 func TestLoop_SchemaToolUnavailableDegrades(t *testing.T) {
 	// nil schema provider → search_tables returns an "unavailable" observation;
 	// the loop continues and the model degrades gracefully by falling back to a
-	// direct query, which grounds the answer. (An answer with only the failed
-	// search — no successful evidence — would be declined as ungrounded.)
+	// direct query, which grounds the answer. The unavailable search records an
+	// ERROR event (no data observed), so it does NOT ground — an answer straight
+	// after it would be declined as ungrounded, same as the native path (see
+	// TestLoopTools_FailedEvidenceNotGrounding).
 	store := runOnce(t, Config{}, []string{
 		`{"search_tables":"orders"}`,
 		`{"query":"SELECT 1 FROM ds.orders"}`,
@@ -355,5 +357,8 @@ func TestLoop_SchemaToolUnavailableDegrades(t *testing.T) {
 	// the grounding evidence.
 	if len(store.events) != 2 || store.events[0].Name != "search_tables" || store.events[0].Error == "" {
 		t.Fatalf("first event should be the unavailable search: %+v", store.events)
+	}
+	if store.events[1].Name != string(actQuery) || store.events[1].Error != "" {
+		t.Fatalf("recovery query event = %+v", store.events[1])
 	}
 }
