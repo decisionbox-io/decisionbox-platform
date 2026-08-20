@@ -124,6 +124,7 @@ const (
 	// enterprise DataSourceCount sums warehouses across projects).
 	FeatureMultiWarehouse = "multi_warehouse_enabled"
 	FeatureConnectors     = "connectors_enabled"
+	FeatureFileIngestion  = "file_ingestion_enabled"
 )
 
 // AllFeatures is the canonical, ordered list of wire flag names.
@@ -146,6 +147,7 @@ var AllFeatures = []string{
 	FeatureAskCharts,
 	FeatureMultiWarehouse,
 	FeatureConnectors,
+	FeatureFileIngestion,
 }
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}
