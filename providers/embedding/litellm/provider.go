@@ -66,10 +66,10 @@ func factory(cfg goembedding.ProviderConfig) (goembedding.Provider, error) {
 		return nil, fmt.Errorf("litellm embedding: base_url is required (the LiteLLM proxy URL)")
 	}
 
+	// model is optional at construction: the dashboard's "Load models"
+	// flow strips it and constructs the provider only to call ListModels.
+	// Embed() checks for an empty model at call time.
 	model := cfg["model"]
-	if model == "" {
-		return nil, fmt.Errorf("litellm embedding: model is required")
-	}
 
 	// Optional key. Dropped when the "none" auth method is chosen so an
 	// open proxy never receives a stale/global key (mirrors the LLM side).
@@ -119,6 +119,9 @@ const embedBatchSize = 96
 func (p *provider) Embed(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	if p.model == "" {
+		return nil, fmt.Errorf("litellm embedding: model is required (constructed list-only)")
 	}
 	result := make([][]float64, 0, len(texts))
 	for start := 0; start < len(texts); start += embedBatchSize {

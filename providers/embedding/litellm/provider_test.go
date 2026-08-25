@@ -36,12 +36,17 @@ func TestRegistered(t *testing.T) {
 	}
 }
 
-func TestFactory_RequiresBaseURLAndModel(t *testing.T) {
+func TestFactory_RequiresBaseURL(t *testing.T) {
 	if _, err := goembedding.NewProvider("litellm", goembedding.ProviderConfig{"model": "m"}); err == nil {
 		t.Error("expected base_url required error")
 	}
-	if _, err := goembedding.NewProvider("litellm", goembedding.ProviderConfig{"base_url": "https://x:4000"}); err == nil {
-		t.Error("expected model required error")
+	// model is optional at construction (list-only path); Embed enforces it.
+	prov, err := goembedding.NewProvider("litellm", goembedding.ProviderConfig{"base_url": "https://x:4000"})
+	if err != nil {
+		t.Fatalf("construction without model should succeed (list-only): %v", err)
+	}
+	if _, err := prov.Embed(context.Background(), []string{"x"}); err == nil {
+		t.Error("Embed without a model should error")
 	}
 }
 
