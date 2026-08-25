@@ -1,6 +1,6 @@
 'use client';
 
-import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea } from '@mantine/core';
+import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { useState } from 'react';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
@@ -118,7 +118,7 @@ export function LLMFormFields({
       {(phase === 'credentials' || usingEndpoint) && (
         <>
           {selected?.config_fields
-            .filter((f) => f.key !== 'model' && f.key !== 'wire_override')
+            .filter((f) => f.key !== 'model' && f.key !== 'wire_override' && f.key !== 'max_input_tokens')
             .map((field) => (
               <CatalogAwareField
                 key={field.key}
@@ -214,6 +214,27 @@ export function LLMFormFields({
             value={value.config['model'] || ''}
             onChange={(val) => setConfigField('model', val)}
           />
+
+          {(() => {
+            const ctxField = selected?.config_fields.find((f) => f.key === 'max_input_tokens');
+            if (!ctxField) return null;
+            // Show the effective context window as a placeholder when the
+            // operator leaves the override blank: the picked model's known
+            // window, else the 128K unknown-model default.
+            const DEFAULT_INPUT = 131072;
+            const model = value.config['model'] || '';
+            const known = (liveModels ?? []).find((m) => m.id === model)?.max_input_tokens ?? 0;
+            const effective = known > 0 ? known : DEFAULT_INPUT;
+            return (
+              <TextInput
+                label={ctxField.label}
+                description={ctxField.description}
+                placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
+                value={value.config['max_input_tokens'] || ''}
+                onChange={(e) => setConfigField('max_input_tokens', e.currentTarget.value)}
+              />
+            );
+          })()}
 
           {(() => {
             const wireField = selected?.config_fields.find((f) => f.key === 'wire_override');
