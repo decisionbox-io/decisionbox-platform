@@ -12,7 +12,7 @@
  */
 
 import { useState } from 'react';
-import { Stack, Switch } from '@mantine/core';
+import { Stack, Switch, TextInput } from '@mantine/core';
 import { api, LiveModel, ProviderMeta } from '@/lib/api';
 import { LiveModelCombobox } from '@/components/common/LLMModelField';
 import { ProviderCredentialsPhase, CredentialsPhaseValue, emptyCredentials } from './ProviderCredentialsPhase';
@@ -150,6 +150,22 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
             value={value.model}
             onChange={(val) => onChange({ ...value, model: val })}
           />
+          {(() => {
+            const ctxField = selected?.config_fields.find((f) => f.key === 'max_input_tokens');
+            if (!ctxField) return null;
+            const DEFAULT_INPUT = 131072;
+            const known = (liveModels ?? []).find((m) => m.id === value.model)?.max_input_tokens ?? 0;
+            const effective = known > 0 ? known : DEFAULT_INPUT;
+            return (
+              <TextInput
+                label={ctxField.label}
+                description={ctxField.description}
+                placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
+                value={value.config['max_input_tokens'] || ''}
+                onChange={(e) => onChange({ ...value, config: { ...value.config, max_input_tokens: e.currentTarget.value } })}
+              />
+            );
+          })()}
           {footer}
         </ProviderCredentialsPhase>
       )}

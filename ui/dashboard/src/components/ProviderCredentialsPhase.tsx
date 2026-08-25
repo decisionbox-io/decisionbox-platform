@@ -215,13 +215,16 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
           <Stack gap="sm">
             {phase === 'credentials' && (
               <>
-                {/* Non-credential, non-model, non-wire top-level provider config fields. */}
+                {/* Non-credential, non-model, non-wire top-level provider config fields.
+                    max_input_tokens is excluded here: the LLM pickers render it on the
+                    model step (next to the model, with the effective-window hint). */}
                 {selected.config_fields
                   .filter(
                     (f) =>
                       f.type !== 'credential' &&
                       f.key !== 'model' &&
-                      f.key !== 'wire_override'
+                      f.key !== 'wire_override' &&
+                      f.key !== 'max_input_tokens'
                   )
                   .map((field) => (
                     <CatalogAwareField
