@@ -160,9 +160,9 @@ func TestAzureFoundryProvider_Registered(t *testing.T) {
 	if got := gollm.GetMaxOutputTokens(providerName, "gpt-4o"); got != gpt4oMax {
 		t.Errorf("GetMaxOutputTokens(gpt-4o) = %d, want %d", got, gpt4oMax)
 	}
-	// Default fallback for unknown model.
-	if got := gollm.GetMaxOutputTokens(providerName, "unknown-model"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(unknown-model) = %d, want 16384", got)
+	// Default fallback for unknown model (64K, #338).
+	if got := gollm.GetMaxOutputTokens(providerName, "unknown-model"); got != 65536 {
+		t.Errorf("GetMaxOutputTokens(unknown-model) = %d, want 65536", got)
 	}
 }
 

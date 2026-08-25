@@ -99,6 +99,7 @@ jobs:
           mkdir -p "$COV"
           (cd libs/go-common && go test -coverprofile="$COV/go-common.txt" ./...)
           (cd providers/llm/claude && go test -coverprofile="$COV/llm-claude.txt" ./...)
+          (cd providers/llm/litellm && go test -coverprofile="$COV/llm-litellm.txt" ./...)
           (cd providers/llm/openai && go test -coverprofile="$COV/llm-openai.txt" ./...)
           (cd providers/llm/ollama && go test -coverprofile="$COV/llm-ollama.txt" ./...)
           (cd providers/llm/vertex-ai && go test -coverprofile="$COV/llm-vertex.txt" ./...)

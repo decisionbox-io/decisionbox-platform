@@ -105,9 +105,9 @@ func TestProviderRegistered(t *testing.T) {
 			t.Errorf("GetMaxOutputTokens(claude, %q) = %d, want %d", model, got, want)
 		}
 	}
-	// Default fallback for unknown models.
-	if got := gollm.GetMaxOutputTokens("claude", "claude-unknown-model"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens(claude, claude-unknown-model) = %d, want 16384", got)
+	// Default fallback for unknown models (64K, #338).
+	if got := gollm.GetMaxOutputTokens("claude", "claude-unknown-model"); got != 65536 {
+		t.Errorf("GetMaxOutputTokens(claude, claude-unknown-model) = %d, want 65536", got)
 	}
 }
 

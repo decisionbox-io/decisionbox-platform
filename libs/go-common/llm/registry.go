@@ -261,7 +261,7 @@ type ProviderMeta struct {
 	// provider — high enough that long-form generations do not
 	// truncate, low enough that no shipped model rejects it as
 	// exceeding the upstream cap. 0 means "fall back to the global
-	// 8192 default".
+	// DefaultMaxOutputTokens".
 	DefaultMaxOutputTokens int `json:"default_max_output_tokens,omitempty"`
 
 	// DefaultMaxInputTokens is the context-window cap returned for IDs
@@ -370,7 +370,7 @@ func (m ProviderMeta) ResolveWire(model string, wireOverride Wire) (Wire, error)
 
 // MaxOutputTokensFor returns the cap for the given model ID.
 // Resolution: catalog (ID + aliases) → DefaultMaxOutputTokens →
-// global 8192.
+// global DefaultMaxOutputTokens.
 func (m ProviderMeta) MaxOutputTokensFor(model string) int {
 	if e, ok := m.FindModel(model); ok && e.MaxOutputTokens > 0 {
 		return e.MaxOutputTokens
@@ -378,15 +378,25 @@ func (m ProviderMeta) MaxOutputTokensFor(model string) int {
 	if m.DefaultMaxOutputTokens > 0 {
 		return m.DefaultMaxOutputTokens
 	}
-	return 8192
+	return DefaultMaxOutputTokens
 }
 
 // DefaultMaxInputTokens is the global fallback context-window size
 // returned when neither the catalog nor the provider's
-// DefaultMaxInputTokens supplies one. Chosen conservatively (~32K) so
-// callers under-fill rather than overshoot an unknown model's
-// upstream window.
-const DefaultMaxInputTokens = 32000
+// DefaultMaxInputTokens supplies one. Set to 128K — the de-facto
+// context window for current-generation models — so an uncatalogued
+// model on any provider budgets its prompt history against a modern
+// window instead of a stale, over-conservative one.
+const DefaultMaxInputTokens = 131072
+
+// DefaultMaxOutputTokens is the global fallback output-token cap
+// returned when neither the catalog nor the provider's
+// DefaultMaxOutputTokens supplies one. Set to 64K, matching the
+// Qwen 3.6 catalog output cap, so long-form generations on an
+// uncatalogued model do not truncate at the old 8K floor. Providers
+// whose upstream rejects an oversized max_tokens should keep a lower
+// per-provider DefaultMaxOutputTokens.
+const DefaultMaxOutputTokens = 65536
 
 // MaxInputTokensFor returns the context-window size for the given
 // model ID. Resolution: catalog (ID + aliases) → ProviderMeta
@@ -670,14 +680,14 @@ func GetProviderMeta(name string) (ProviderMeta, bool) {
 // model) combination. Resolution:
 //  1. ProviderMeta.MaxOutputTokensFor — catalog (ID + aliases) →
 //     DefaultMaxOutputTokens.
-//  2. Global 8192 fallback (provider not registered, or no
-//     DefaultMaxOutputTokens).
+//  2. Global DefaultMaxOutputTokens fallback (provider not registered,
+//     or no DefaultMaxOutputTokens).
 func GetMaxOutputTokens(providerName, model string) int {
 	providersMu.RLock()
 	meta, ok := providerMeta[providerName]
 	providersMu.RUnlock()
 	if !ok {
-		return 8192
+		return DefaultMaxOutputTokens
 	}
 	return meta.MaxOutputTokensFor(model)
 }

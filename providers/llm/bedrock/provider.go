@@ -94,8 +94,10 @@ func init() {
 				},
 			},
 		},
-		Models:                 buildBedrockCatalog(),
-		DefaultMaxOutputTokens: 16384,
+		Models: buildBedrockCatalog(),
+		// Unknown Bedrock models default to 64K output (#338); catalogued
+		// models resolve to their exact caps first.
+		DefaultMaxOutputTokens: 65536,
 		FamilyInferrer:         inferBedrockWire,
 		// Bedrock supports tool_use natively on the Anthropic wire.
 		// OpenAI-compat Bedrock models inherit tool support from the
@@ -139,6 +141,10 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	}
 
 	timeout := gollm.ResolveHTTPTimeout(cfg, bedrockDefaultTimeout)
+	httpClient, err := gollm.HTTPClientFor(cfg, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("bedrock: %w", err)
+	}
 
 	awsCfg, err := awscreds.Load(context.Background(), awscreds.Config{
 		Method:      cfg["auth_method"],
@@ -152,6 +158,14 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		return nil, fmt.Errorf("bedrock: %w", err)
 	}
 
+	// Bedrock reaches AWS over publicly-trusted certificates, so a custom
+	// CA / skip-verify only matters when the project points Bedrock at a
+	// private-CA-fronted proxy. Override the SDK transport only then,
+	// leaving its tuned default (retries, timeouts) in place otherwise.
+	if gollm.HasCustomTLS(cfg) {
+		awsCfg.HTTPClient = httpClient
+	}
+
 	client := bedrockruntime.NewFromConfig(awsCfg)
 
 	return &BedrockProvider{
@@ -160,7 +174,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		region:       region,
 		model:        model,
 		wireOverride: wireOverride,
-		httpClient:   &http.Client{Timeout: timeout},
+		httpClient:   httpClient,
 	}, nil
 }
 

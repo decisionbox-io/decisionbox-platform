@@ -49,7 +49,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Azure AI Foundry",
 		Description: "Microsoft Azure-managed AI platform — Claude & OpenAI models with API key auth",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append([]gollm.ConfigField{
 			{Key: "endpoint", Label: "Endpoint URL", Required: true, Type: "string", Placeholder: "https://my-resource.services.ai.azure.com"},
 			{
 				Key:         "model",
@@ -73,7 +73,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		},
+		}, gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",
@@ -83,8 +83,10 @@ func init() {
 				},
 			},
 		},
-		Models:                 buildAzureFoundryCatalog(),
-		DefaultMaxOutputTokens: 16384,
+		Models: buildAzureFoundryCatalog(),
+		// Unknown deployments default to 64K output (#338); catalogued
+		// models resolve to their exact caps first.
+		DefaultMaxOutputTokens: 65536,
 		FamilyInferrer:         inferAzureWire,
 	})
 }
@@ -124,13 +126,17 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	}
 
 	timeout := gollm.ResolveHTTPTimeout(cfg, azureFoundryDefaultTimeout)
+	httpClient, err := gollm.HTTPClientFor(cfg, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("azure-foundry: %w", err)
+	}
 
 	return &AzureFoundryProvider{
 		endpoint:     endpoint,
 		apiKey:       apiKey,
 		model:        model,
 		wireOverride: wireOverride,
-		httpClient:   &http.Client{Timeout: timeout},
+		httpClient:   httpClient,
 	}, nil
 }
 

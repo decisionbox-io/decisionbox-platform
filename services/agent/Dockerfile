@@ -16,6 +16,7 @@ COPY providers/embedding/openai/go.mod providers/embedding/openai/
 COPY providers/embedding/vertex-ai/go.mod providers/embedding/vertex-ai/go.sum providers/embedding/vertex-ai/
 COPY providers/embedding/voyage/go.mod providers/embedding/voyage/
 COPY providers/llm/claude/go.mod providers/llm/claude/
+COPY providers/llm/litellm/go.mod providers/llm/litellm/go.sum providers/llm/litellm/
 COPY providers/llm/openai/go.mod providers/llm/openai/
 COPY providers/llm/ollama/go.mod providers/llm/ollama/go.sum providers/llm/ollama/
 COPY providers/llm/vertex-ai/go.mod providers/llm/vertex-ai/go.sum providers/llm/vertex-ai/

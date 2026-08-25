@@ -66,11 +66,16 @@ func init() {
 			numCtx = 0
 		}
 
-		return NewOllamaProvider(host, model, gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout), numCtx)
+		timeout := gollm.ResolveHTTPTimeout(cfg, ollamaDefaultTimeout)
+		httpClient, err := gollm.HTTPClientFor(cfg, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("ollama: %w", err)
+		}
+		return NewOllamaProviderWithClient(host, model, httpClient, numCtx)
 	}, gollm.ProviderMeta{
 		Name:        "Ollama (Local)",
 		Description: "Run open-source models locally via Ollama",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append([]gollm.ConfigField{
 			{Key: "host", Label: "Ollama Host", Type: "string", Default: "http://localhost:11434", Placeholder: "http://localhost:11434"},
 			{
 				Key:         "model",
@@ -89,7 +94,7 @@ func init() {
 				Placeholder: "32768",
 				Description: "Optional per-request context window override (token count). Leave blank to use the Ollama server's OLLAMA_CONTEXT_LENGTH default. Setting a higher value than the server default forces a larger KV cache allocation and can OOM on tight VRAM.",
 			},
-		},
+		}, gollm.TLSConfigFields()...),
 		Models: buildOllamaCatalog(),
 		// Fallbacks for models the catalog does not list. Output uses the
 		// generous local-model cap (see ollamaDefaultMaxOutputTokens);
@@ -160,16 +165,30 @@ type OllamaProvider struct {
 // negative timeout falls back to ollamaDefaultTimeout so callers that
 // don't care (mainly tests) don't have to think about it. numCtx of
 // zero or negative means "don't send num_ctx; use server default".
+// Uses Go's default transport; for a TLS-fronted Ollama with a custom
+// CA, build the client with gollm.HTTPClientFor and use
+// NewOllamaProviderWithClient.
 func NewOllamaProvider(host, model string, timeout time.Duration, numCtx int) (*OllamaProvider, error) {
+	if timeout <= 0 {
+		timeout = ollamaDefaultTimeout
+	}
+	return NewOllamaProviderWithClient(host, model, &http.Client{Timeout: timeout}, numCtx)
+}
+
+// NewOllamaProviderWithClient creates a provider using a caller-supplied
+// *http.Client. The factory uses this to inject a client whose transport
+// trusts a per-project custom CA or skips verification. A nil client
+// falls back to a default client with ollamaDefaultTimeout.
+func NewOllamaProviderWithClient(host, model string, httpClient *http.Client, numCtx int) (*OllamaProvider, error) {
 	parsedURL, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: invalid host URL: %w", err)
 	}
 
-	if timeout <= 0 {
-		timeout = ollamaDefaultTimeout
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: ollamaDefaultTimeout}
 	}
-	client := ollamaapi.NewClient(parsedURL, &http.Client{Timeout: timeout})
+	client := ollamaapi.NewClient(parsedURL, httpClient)
 
 	if numCtx < 0 {
 		numCtx = 0
@@ -177,7 +196,7 @@ func NewOllamaProvider(host, model string, timeout time.Duration, numCtx int) (*
 	return &OllamaProvider{
 		client:      client,
 		model:       model,
-		httpTimeout: timeout,
+		httpTimeout: httpClient.Timeout,
 		numCtx:      numCtx,
 	}, nil
 }

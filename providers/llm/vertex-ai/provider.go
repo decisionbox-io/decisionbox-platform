@@ -60,7 +60,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Google Vertex AI",
 		Description: "GCP-managed AI platform — Gemini, Claude, Llama, Qwen, DeepSeek, Mistral with GCP auth",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append([]gollm.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-east5", Description: "GCP region (us-east5 for Claude, us-central1 for Gemini)"},
 			{
@@ -95,7 +95,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		},
+		}, gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: gcpcreds.MethodADC, Name: "Application Default Credentials",
@@ -109,8 +109,10 @@ func init() {
 				},
 			},
 		},
-		Models:                 buildVertexCatalog(),
-		DefaultMaxOutputTokens: 16384,
+		Models: buildVertexCatalog(),
+		// Unknown Vertex models default to 64K output (#338); catalogued
+		// models resolve to their exact caps first.
+		DefaultMaxOutputTokens: 65536,
 		FamilyInferrer:         inferVertexWire,
 		EffectiveInputWindow:   vertexEffectiveInputWindow,
 	})
@@ -185,6 +187,10 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	}
 
 	timeout := gollm.ResolveHTTPTimeout(cfg, vertexDefaultTimeout)
+	httpClient, err := gollm.HTTPClientFor(cfg, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("vertex-ai: %w", err)
+	}
 	ctx := context.Background()
 
 	auth, err := newAuth(ctx, gcpcreds.Config{
@@ -202,7 +208,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		endpointID:   endpointID,
 		wireOverride: wireOverride,
 		auth:         auth,
-		httpClient:   &http.Client{Timeout: timeout},
+		httpClient:   httpClient,
 		// A user-account ADC token needs a quota project on
 		// aiplatform.googleapis.com; a real service-account key already
 		// bills to its own project and adding the header would force a

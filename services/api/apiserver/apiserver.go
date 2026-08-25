@@ -42,6 +42,7 @@ import (
 
 	// LLM provider registrations (for /api/v1/providers/llm listing)
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
