@@ -52,6 +52,7 @@ import (
 
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"

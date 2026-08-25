@@ -22,15 +22,15 @@ func mockFactory(_ ProviderConfig) (Provider, error) { return &mockProvider{}, n
 // Each test that registers a provider uses a sync.Once so the test file
 // is safe to run with -count=N and -parallel.
 var (
-	onceMeta         sync.Once
-	onceCatalog      sync.Once
-	onceValidate     sync.Once
-	onceResolveWire  sync.Once
-	onceMaxTokens    sync.Once
-	oncePricing      sync.Once
-	onceJSONMarshal  sync.Once
-	onceFamilyInfer  sync.Once
-	onceSingleWire   sync.Once
+	onceMeta        sync.Once
+	onceCatalog     sync.Once
+	onceValidate    sync.Once
+	onceResolveWire sync.Once
+	onceMaxTokens   sync.Once
+	oncePricing     sync.Once
+	onceJSONMarshal sync.Once
+	onceFamilyInfer sync.Once
+	onceSingleWire  sync.Once
 )
 
 // --- Wire ---
@@ -169,7 +169,8 @@ func TestProviderMeta_MaxOutputTokensFor_HitsDefault(t *testing.T) {
 
 func TestProviderMeta_MaxOutputTokensFor_GlobalFallback(t *testing.T) {
 	// Provider with no DefaultMaxOutputTokens set must fall back to
-	// the package-level 8192 floor when a model misses the catalog.
+	// the package-level DefaultMaxOutputTokens floor when a model
+	// misses the catalog.
 	name := "test-no-default"
 	RegisterWithMeta(name, mockFactory, ProviderMeta{
 		Name: "no default",
@@ -178,8 +179,8 @@ func TestProviderMeta_MaxOutputTokensFor_GlobalFallback(t *testing.T) {
 		},
 	})
 	got := GetMaxOutputTokens(name, "missing")
-	if got != 8192 {
-		t.Errorf("global fallback = %d, want 8192", got)
+	if got != DefaultMaxOutputTokens {
+		t.Errorf("global fallback = %d, want %d", got, DefaultMaxOutputTokens)
 	}
 	got = GetMaxOutputTokens(name, "fixed")
 	if got != 1234 {
@@ -188,8 +189,20 @@ func TestProviderMeta_MaxOutputTokensFor_GlobalFallback(t *testing.T) {
 }
 
 func TestGetMaxOutputTokens_UnknownProvider(t *testing.T) {
-	if got := GetMaxOutputTokens("really-not-a-provider", "anything"); got != 8192 {
-		t.Errorf("unknown provider = %d, want 8192", got)
+	if got := GetMaxOutputTokens("really-not-a-provider", "anything"); got != DefaultMaxOutputTokens {
+		t.Errorf("unknown provider = %d, want %d", got, DefaultMaxOutputTokens)
+	}
+}
+
+// TestGlobalDefaults pins the package-level unknown-model fallbacks so a
+// future edit that lowers them fails loudly. 128K input / 64K output are
+// the values #338 standardised on (64K matches the Qwen 3.6 output cap).
+func TestGlobalDefaults(t *testing.T) {
+	if DefaultMaxInputTokens != 131072 {
+		t.Errorf("DefaultMaxInputTokens = %d, want 131072 (128K)", DefaultMaxInputTokens)
+	}
+	if DefaultMaxOutputTokens != 64000 {
+		t.Errorf("DefaultMaxOutputTokens = %d, want 64000 (64K)", DefaultMaxOutputTokens)
 	}
 }
 
@@ -581,4 +594,32 @@ func TestNewProvider_ReturnsFactoryOutput(t *testing.T) {
 var _ = []*sync.Once{
 	&onceMeta, &onceCatalog, &onceValidate, &onceResolveWire,
 	&onceMaxTokens, &oncePricing, &onceJSONMarshal, &onceFamilyInfer, &onceSingleWire,
+}
+
+func TestClampMaxTokensAndOverride(t *testing.T) {
+	// MaxOutputOverride parsing.
+	if MaxOutputOverride(ProviderConfig{MaxOutputTokensKey: "32768"}) != 32768 {
+		t.Error("override parse failed")
+	}
+	for _, bad := range []string{"", "0", "-1", "x"} {
+		if MaxOutputOverride(ProviderConfig{MaxOutputTokensKey: bad}) != 0 {
+			t.Errorf("override %q should be 0", bad)
+		}
+	}
+	if MaxOutputOverride(nil) != 0 {
+		t.Error("nil cfg override should be 0")
+	}
+	// ClampMaxTokens behaviour.
+	cases := []struct{ requested, override, want int }{
+		{64000, 32768, 32768}, // over the cap -> capped
+		{16000, 32768, 16000}, // under the cap -> unchanged
+		{0, 32768, 32768},     // unspecified -> cap
+		{64000, 0, 64000},     // no cap -> unchanged
+		{0, 0, 0},             // neither
+	}
+	for _, c := range cases {
+		if got := ClampMaxTokens(c.requested, c.override); got != c.want {
+			t.Errorf("ClampMaxTokens(%d,%d)=%d want %d", c.requested, c.override, got, c.want)
+		}
+	}
 }

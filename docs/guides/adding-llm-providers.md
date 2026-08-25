@@ -249,7 +249,9 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 
 ### Key Implementation Notes
 
-- **Read `timeout_seconds` from config** — The agent passes this from the `LLM_TIMEOUT` env var.
+- **Read `timeout_seconds` from config** — The agent passes this from the `LLM_TIMEOUT` env var. Prefer `gollm.ResolveHTTPTimeout(cfg, fallback)` over parsing it by hand.
+- **Build the HTTP client with `gollm.HTTPClientFor(cfg, timeout)`** — for any provider that talks to an HTTP endpoint, this one helper honours the per-project custom-TLS keys (`tls_ca_cert` to append a private CA, `tls_skip_verify` to disable verification) and returns the plain default client when neither is set. Surface the two fields in the dashboard by appending `gollm.TLSConfigFields()` to your `ConfigFields` when the endpoint can sit behind a private CA. Providers whose transport is SDK-managed (e.g. Bedrock's AWS SDK) override the SDK's HTTP client only when `gollm.HasCustomTLS(cfg)` is true.
+- **Unknown-model defaults** — a model that matches no catalog entry falls back to `gollm.DefaultMaxInputTokens` (128K) and `gollm.DefaultMaxOutputTokens` (64K). Set a per-provider `DefaultMaxInputTokens` / `DefaultMaxOutputTokens` only when the upstream would reject those (document the exception).
 - **Support model override** — `req.Model` may differ from the provider default (per-request override).
 - **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object.
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.

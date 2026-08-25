@@ -42,6 +42,7 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"       // registers "bedrock" (stub)
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"        // registers "claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/litellm"       // registers "litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"        // registers "ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"        // registers "openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"     // registers "vertex-ai"
@@ -57,6 +58,7 @@ import (
 	// Embedding provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai" // registers "azure-openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/bedrock"      // registers "bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/litellm"      // registers "litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"       // registers "ollama"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"       // registers "openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai"    // registers "vertex-ai"

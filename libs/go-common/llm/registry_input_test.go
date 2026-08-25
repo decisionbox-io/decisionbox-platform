@@ -170,3 +170,33 @@ func TestProviderMeta_CatalogModels_IncludesMaxInputTokens(t *testing.T) {
 		t.Fatal("gpt-5 missing from catalog output")
 	}
 }
+
+// TestGetEffectiveInputWindow_ManualOverride verifies that a valid
+// max_input_tokens in cfg wins over the catalog / provider hook /
+// default, and that invalid values fall through (#338 operator override).
+func TestGetEffectiveInputWindow_ManualOverride(t *testing.T) {
+	name := "test-input-override"
+	RegisterWithMeta(name, mockFactory, ProviderMeta{
+		Name:                  "override test",
+		Models:                []ModelEntry{{ID: "known", Wire: WireAnthropic, MaxOutputTokens: 4096, MaxInputTokens: 8000}},
+		DefaultMaxInputTokens: 32000,
+	})
+	// Override wins even over a catalogued model's own window.
+	if got := GetEffectiveInputWindow(name, "known", ProviderConfig{MaxInputTokensKey: "200000"}); got != 200000 {
+		t.Errorf("override = %d, want 200000", got)
+	}
+	// Override applies to an unknown model too.
+	if got := GetEffectiveInputWindow(name, "unknown", ProviderConfig{MaxInputTokensKey: "123456"}); got != 123456 {
+		t.Errorf("override(unknown) = %d, want 123456", got)
+	}
+	// Invalid / non-positive / absent → normal resolution.
+	for _, bad := range []string{"", "0", "-5", "abc"} {
+		if got := GetEffectiveInputWindow(name, "known", ProviderConfig{MaxInputTokensKey: bad}); got != 8000 {
+			t.Errorf("bad override %q = %d, want catalog 8000", bad, got)
+		}
+	}
+	// Nil cfg → catalog.
+	if got := GetEffectiveInputWindow(name, "known", nil); got != 8000 {
+		t.Errorf("nil cfg = %d, want 8000", got)
+	}
+}

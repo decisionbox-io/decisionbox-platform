@@ -289,12 +289,12 @@ func TestBedrockProvider_Registered(t *testing.T) {
 	if len(meta.Models) == 0 {
 		t.Fatal("catalog empty")
 	}
-	if meta.DefaultMaxOutputTokens != 16384 {
-		t.Errorf("DefaultMaxOutputTokens = %d, want 16384", meta.DefaultMaxOutputTokens)
+	if meta.DefaultMaxOutputTokens != 64000 {
+		t.Errorf("DefaultMaxOutputTokens = %d, want 64000", meta.DefaultMaxOutputTokens)
 	}
 	// Spot-check the regression: every cross-region alias of Opus
-	// 4.7 should resolve to the 128k cap, and the legacy provider
-	// _default of 16384 should never apply to a catalogued Claude.
+	// 4.7 should resolve to the 128k cap, and the provider default
+	// (64K for unknown models) should never apply to a catalogued Claude.
 	for _, model := range []string{
 		"anthropic.claude-opus-4-7-v1:0",
 		"us.anthropic.claude-opus-4-7-v1:0",
@@ -307,9 +307,9 @@ func TestBedrockProvider_Registered(t *testing.T) {
 			t.Errorf("GetMaxOutputTokens(%q) = %d, want %d", model, got, opus47Max)
 		}
 	}
-	// Unknown model falls back to the provider default.
-	if got := gollm.GetMaxOutputTokens(providerName, "vendor.unknown-2099"); got != 16384 {
-		t.Errorf("GetMaxOutputTokens default = %d, want 16384", got)
+	// Unknown model falls back to the provider default (64K, #338).
+	if got := gollm.GetMaxOutputTokens(providerName, "vendor.unknown-2099"); got != 64000 {
+		t.Errorf("GetMaxOutputTokens default = %d, want 64000", got)
 	}
 }
 

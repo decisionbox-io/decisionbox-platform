@@ -105,10 +105,10 @@ function buildRows(
   if (!liveModels) return [];
 
   const catalogNames = new Map<string, { name: string; dimensions: number }>();
-  if (providerMeta) {
-    for (const m of providerMeta.models) {
-      catalogNames.set(m.id, { name: m.name || '', dimensions: m.dimensions });
-    }
+  // providerMeta.models is null for providers with no shipped catalog
+  // (e.g. LiteLLM — the proxy defines the models), so guard the iteration.
+  for (const m of providerMeta?.models ?? []) {
+    catalogNames.set(m.id, { name: m.name || '', dimensions: m.dimensions });
   }
 
   const rows: Row[] = liveModels.map((lm) => {

@@ -35,12 +35,17 @@ func init() {
 		}
 		delayMs, _ := strconv.Atoi(cfg["request_delay_ms"])
 
+		httpClient, err := gollm.HTTPClientFor(cfg, gollm.ResolveHTTPTimeout(cfg, claudeDefaultTimeout))
+		if err != nil {
+			return nil, fmt.Errorf("claude: %w", err)
+		}
 		return NewClaudeProvider(ClaudeConfig{
 			APIKey:         cfg["credentials_json"],
 			Model:          cfg["model"],
 			MaxRetries:     maxRetries,
 			Timeout:        gollm.ResolveHTTPTimeout(cfg, claudeDefaultTimeout),
 			RequestDelayMs: delayMs,
+			HTTPClient:     httpClient,
 		})
 	}, gollm.ProviderMeta{
 		Name:        "Claude (Anthropic)",
@@ -65,8 +70,10 @@ func init() {
 				},
 			},
 		},
-		Models:                 buildClaudeCatalog(),
-		DefaultMaxOutputTokens: 16384,
+		Models: buildClaudeCatalog(),
+		// Unknown Claude models default to 64K output (#338). Catalogued
+		// models resolve to their exact caps first.
+		DefaultMaxOutputTokens: 64000,
 		// Claude supports tool_use natively. Enables function-calling on
 		// /ask and any other tool-dependent flow.
 		SupportsTools: true,
@@ -80,6 +87,11 @@ type ClaudeConfig struct {
 	MaxRetries     int
 	Timeout        time.Duration
 	RequestDelayMs int
+	// HTTPClient, when non-nil, is used verbatim for API calls — the
+	// factory injects one built by gollm.HTTPClientFor so a per-project
+	// custom CA / skip-verify applies. Nil falls back to a default client
+	// with Timeout (unchanged behaviour for direct constructor callers).
+	HTTPClient *http.Client
 }
 
 // ClaudeProvider implements llm.Provider for Anthropic Claude.
@@ -106,10 +118,15 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 		cfg.Timeout = claudeDefaultTimeout
 	}
 
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: cfg.Timeout}
+	}
+
 	return &ClaudeProvider{
 		apiKey:     cfg.APIKey,
 		model:      cfg.Model,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
+		httpClient: httpClient,
 		maxRetries: cfg.MaxRetries,
 		delayMs:    cfg.RequestDelayMs,
 	}, nil

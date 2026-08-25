@@ -88,7 +88,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **More warehouses ship weekly** — request one on [GitHub Issues](https://github.com/decisionbox-io/decisionbox-platform/issues) to fast-track it
 
 ### LLM Providers
-Claude (direct API), OpenAI, Ollama (local), Vertex AI (Claude + Gemini on GCP), AWS Bedrock, Azure AI Foundry. Per-project configuration; editable prompts; per-model max output token limits.
+Claude (direct API), OpenAI, Ollama (local), Vertex AI (Claude + Gemini on GCP), AWS Bedrock, Azure AI Foundry, LiteLLM (self-hosted OpenAI-compatible proxy). Per-project configuration; editable prompts; per-model max output token limits. Custom TLS (private-CA upload or skip-verify) for on-prem HTTPS endpoints.
 
 ### Embedding Providers
 OpenAI, Vertex AI, Bedrock, Azure OpenAI, Voyage AI, Ollama. Used for insight/recommendation embeddings, semantic search, and /ask.
@@ -277,7 +277,7 @@ DecisionBox collects anonymous usage telemetry to help improve the product. No P
 | Database | MongoDB |
 | Vector store | Qdrant (HNSW) |
 | Warehouses | BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server |
-| LLM providers | Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry |
+| LLM providers | Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry, LiteLLM |
 | Embedding providers | OpenAI, Vertex AI, Bedrock, Azure OpenAI, Voyage AI, Ollama |
 | Secret providers | MongoDB (AES-256-GCM), GCP Secret Manager, AWS Secrets Manager, Azure Key Vault |
 | CI/CD | GitHub Actions, GHCR |

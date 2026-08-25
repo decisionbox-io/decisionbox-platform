@@ -51,11 +51,15 @@ func init() {
 		}
 
 		timeout := gollm.ResolveHTTPTimeout(cfg, openaiDefaultTimeout)
-		return NewOpenAIProvider(apiKey, model, baseURL, timeout), nil
+		client, err := gollm.HTTPClientFor(cfg, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("openai: %w", err)
+		}
+		return NewOpenAIProviderWithClient(apiKey, model, baseURL, client), nil
 	}, gollm.ProviderMeta{
 		Name:        "OpenAI",
 		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append(append([]gollm.ConfigField{
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -66,7 +70,7 @@ func init() {
 				Description: "Pick a catalogued model or type any OpenAI model ID.",
 			},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
-		},
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",
@@ -76,9 +80,11 @@ func init() {
 				},
 			},
 		},
-		Models:                 buildOpenAICatalog(),
-		FamilyInferrer:         inferOpenAIWire,
-		DefaultMaxOutputTokens: 16384,
+		Models:         buildOpenAICatalog(),
+		FamilyInferrer: inferOpenAIWire,
+		// Unknown OpenAI-compatible models default to 64K output (#338).
+		// Catalogued models still resolve to their exact caps first.
+		DefaultMaxOutputTokens: 64000,
 		// OpenAI's chat-completions endpoint supports function calling on
 		// gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini. Reasoning models
 		// (o3, o4-mini) do not expose tool_use through Converse-style
@@ -98,19 +104,32 @@ type OpenAIProvider struct {
 
 // NewOpenAIProvider creates a new OpenAI LLM provider. A zero or
 // negative timeout falls back to openaiDefaultTimeout so callers that
-// don't care (mainly tests) don't have to think about it.
+// don't care (mainly tests) don't have to think about it. It uses Go's
+// default transport (system trust store); for custom TLS build the
+// client with gollm.HTTPClientFor and use NewOpenAIProviderWithClient.
 func NewOpenAIProvider(apiKey, model, baseURL string, timeout time.Duration) *OpenAIProvider {
+	if timeout <= 0 {
+		timeout = openaiDefaultTimeout
+	}
+	return NewOpenAIProviderWithClient(apiKey, model, baseURL, &http.Client{Timeout: timeout})
+}
+
+// NewOpenAIProviderWithClient creates a provider using a caller-supplied
+// *http.Client. The factory uses this to inject a client whose transport
+// trusts a per-project custom CA or skips verification (gollm.HTTPClientFor).
+// A nil client falls back to a default client with openaiDefaultTimeout.
+func NewOpenAIProviderWithClient(apiKey, model, baseURL string, client *http.Client) *OpenAIProvider {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	if timeout <= 0 {
-		timeout = openaiDefaultTimeout
+	if client == nil {
+		client = &http.Client{Timeout: openaiDefaultTimeout}
 	}
 	return &OpenAIProvider{
 		apiKey:  apiKey,
 		model:   model,
 		baseURL: baseURL,
-		client:  &http.Client{Timeout: timeout},
+		client:  client,
 	}
 }
 

@@ -641,6 +641,7 @@ export interface ModelInfo {
   id: string;
   display_name: string;
   wire: string; // "anthropic" | "openai-compat" | "google-native" | "" (unknown)
+  max_input_tokens?: number;
   max_output_tokens?: number;
   input_price_per_million?: number;
   output_price_per_million?: number;

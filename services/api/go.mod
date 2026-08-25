@@ -8,6 +8,7 @@ require (
 	github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/bedrock v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/embedding/litellm v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai v0.0.0
@@ -15,6 +16,7 @@ require (
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/claude v0.0.0
+	github.com/decisionbox-io/decisionbox/providers/llm/litellm v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/openai v0.0.0
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai v0.0.0
@@ -241,6 +243,7 @@ replace (
 	github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant => ../../libs/go-common/vectorstore/qdrant
 	github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai => ../../providers/embedding/azure-openai
 	github.com/decisionbox-io/decisionbox/providers/embedding/bedrock => ../../providers/embedding/bedrock
+	github.com/decisionbox-io/decisionbox/providers/embedding/litellm => ../../providers/embedding/litellm
 	github.com/decisionbox-io/decisionbox/providers/embedding/ollama => ../../providers/embedding/ollama
 	github.com/decisionbox-io/decisionbox/providers/embedding/openai => ../../providers/embedding/openai
 	github.com/decisionbox-io/decisionbox/providers/embedding/vertex-ai => ../../providers/embedding/vertex-ai
@@ -248,6 +251,7 @@ replace (
 	github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry => ../../providers/llm/azure-foundry
 	github.com/decisionbox-io/decisionbox/providers/llm/bedrock => ../../providers/llm/bedrock
 	github.com/decisionbox-io/decisionbox/providers/llm/claude => ../../providers/llm/claude
+	github.com/decisionbox-io/decisionbox/providers/llm/litellm => ../../providers/llm/litellm
 	github.com/decisionbox-io/decisionbox/providers/llm/ollama => ../../providers/llm/ollama
 	github.com/decisionbox-io/decisionbox/providers/llm/openai => ../../providers/llm/openai
 	github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai => ../../providers/llm/vertex-ai

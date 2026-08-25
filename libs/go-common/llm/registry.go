@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -261,7 +262,7 @@ type ProviderMeta struct {
 	// provider — high enough that long-form generations do not
 	// truncate, low enough that no shipped model rejects it as
 	// exceeding the upstream cap. 0 means "fall back to the global
-	// 8192 default".
+	// DefaultMaxOutputTokens".
 	DefaultMaxOutputTokens int `json:"default_max_output_tokens,omitempty"`
 
 	// DefaultMaxInputTokens is the context-window cap returned for IDs
@@ -370,7 +371,7 @@ func (m ProviderMeta) ResolveWire(model string, wireOverride Wire) (Wire, error)
 
 // MaxOutputTokensFor returns the cap for the given model ID.
 // Resolution: catalog (ID + aliases) → DefaultMaxOutputTokens →
-// global 8192.
+// global DefaultMaxOutputTokens.
 func (m ProviderMeta) MaxOutputTokensFor(model string) int {
 	if e, ok := m.FindModel(model); ok && e.MaxOutputTokens > 0 {
 		return e.MaxOutputTokens
@@ -378,15 +379,28 @@ func (m ProviderMeta) MaxOutputTokensFor(model string) int {
 	if m.DefaultMaxOutputTokens > 0 {
 		return m.DefaultMaxOutputTokens
 	}
-	return 8192
+	return DefaultMaxOutputTokens
 }
 
 // DefaultMaxInputTokens is the global fallback context-window size
 // returned when neither the catalog nor the provider's
-// DefaultMaxInputTokens supplies one. Chosen conservatively (~32K) so
-// callers under-fill rather than overshoot an unknown model's
-// upstream window.
-const DefaultMaxInputTokens = 32000
+// DefaultMaxInputTokens supplies one. Set to 128K — the de-facto
+// context window for current-generation models — so an uncatalogued
+// model on any provider budgets its prompt history against a modern
+// window instead of a stale, over-conservative one.
+const DefaultMaxInputTokens = 131072
+
+// DefaultMaxOutputTokens is the global fallback output-token cap
+// returned when neither the catalog nor the provider's
+// DefaultMaxOutputTokens supplies one. Set to 64K (64000) so long-form
+// generations on an uncatalogued model do not truncate at the old 8K
+// floor. 64000 rather than 65536 because that is the hard max_tokens
+// cap on current Bedrock Claude models — an unknown model routed
+// through a proxy (e.g. LiteLLM → Bedrock) rejects 65536 with a 400,
+// and 64000 is accepted by every 64K-class model we've seen. Providers
+// whose upstream rejects even this should keep a lower per-provider
+// DefaultMaxOutputTokens.
+const DefaultMaxOutputTokens = 64000
 
 // MaxInputTokensFor returns the context-window size for the given
 // model ID. Resolution: catalog (ID + aliases) → ProviderMeta
@@ -670,14 +684,14 @@ func GetProviderMeta(name string) (ProviderMeta, bool) {
 // model) combination. Resolution:
 //  1. ProviderMeta.MaxOutputTokensFor — catalog (ID + aliases) →
 //     DefaultMaxOutputTokens.
-//  2. Global 8192 fallback (provider not registered, or no
-//     DefaultMaxOutputTokens).
+//  2. Global DefaultMaxOutputTokens fallback (provider not registered,
+//     or no DefaultMaxOutputTokens).
 func GetMaxOutputTokens(providerName, model string) int {
 	providersMu.RLock()
 	meta, ok := providerMeta[providerName]
 	providersMu.RUnlock()
 	if !ok {
-		return 8192
+		return DefaultMaxOutputTokens
 	}
 	return meta.MaxOutputTokensFor(model)
 }
@@ -732,9 +746,55 @@ func IsReasoningModel(providerName, model string) bool {
 	return e.Reasoning
 }
 
+// MaxInputTokensKey is the project-config key for a manual context-window
+// override (positive integer, tokens). When set it wins over the catalog,
+// the provider hook, and the global default — the operator knows the real
+// window of an uncatalogued or proxied model (e.g. a LiteLLM route) that
+// DecisionBox cannot infer. Stored in project.LLM.Config.
+const MaxInputTokensKey = "max_input_tokens"
+
+// MaxOutputTokensKey is the project-config key for a manual output-token
+// cap (positive integer). When set, providers clamp the request's
+// max_tokens to it — the operator knows the real generation limit of an
+// uncatalogued or proxied model whose cap is below the default (e.g.
+// qwen3-32b on Bedrock caps output at 32768, below the 64K default).
+const MaxOutputTokensKey = "max_output_tokens"
+
+// MaxOutputOverride returns the operator's manual output-token cap from
+// cfg (a positive integer), or 0 when absent / not a positive integer.
+// Providers read it once at construction and clamp their request's
+// max_tokens to it in Chat via ClampMaxTokens, so the override reaches
+// every caller — discovery, /ask, and the enterprise pack generator —
+// without each threading config through.
+func MaxOutputOverride(cfg ProviderConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(cfg[MaxOutputTokensKey])); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// ClampMaxTokens caps a caller's requested max_tokens to override. When
+// override > 0: a requested value above it (or 0/unspecified) becomes
+// override; a smaller positive request is left alone. override <= 0
+// (no operator cap) leaves requested unchanged.
+func ClampMaxTokens(requested, override int) int {
+	if override <= 0 {
+		return requested
+	}
+	if requested <= 0 || requested > override {
+		return override
+	}
+	return requested
+}
+
 // GetEffectiveInputWindow returns the input-window size budgeting
 // call-sites should respect for a (provider, model, project-config)
 // triple. Resolution order:
+//  0. cfg["max_input_tokens"] — explicit operator override (any positive
+//     integer). Wins over everything below.
 //  1. ProviderMeta.EffectiveInputWindow hook — providers that expose
 //     a per-deployment override (currently only Ollama's `num_ctx`)
 //     clamp the catalog value here.
@@ -745,6 +805,9 @@ func IsReasoningModel(providerName, model string) bool {
 // pass project.LLM.Config when they have one; tests pass nil when
 // they only care about the catalog-driven value.
 func GetEffectiveInputWindow(providerName, model string, cfg ProviderConfig) int {
+	if v := parseMaxInputOverride(cfg); v > 0 {
+		return v
+	}
 	providersMu.RLock()
 	meta, ok := providerMeta[providerName]
 	providersMu.RUnlock()
@@ -755,4 +818,40 @@ func GetEffectiveInputWindow(providerName, model string, cfg ProviderConfig) int
 		return meta.EffectiveInputWindow(model, cfg)
 	}
 	return meta.MaxInputTokensFor(model)
+}
+
+// parseMaxInputOverride returns the operator's manual context-window
+// override from cfg, or 0 when absent / not a positive integer.
+func parseMaxInputOverride(cfg ProviderConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(cfg[MaxInputTokensKey])); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// ContextWindowConfigFields returns the dashboard config field for the
+// manual context-window override (MaxInputTokensKey). Providers append
+// it to their ProviderMeta.ConfigFields so an operator can set the real
+// input window of an uncatalogued or proxied model that DecisionBox
+// cannot infer. Kept here so the key and copy stay in one place.
+func ContextWindowConfigFields() []ConfigField {
+	return []ConfigField{
+		{
+			Key:         MaxInputTokensKey,
+			Label:       "Context window override (tokens)",
+			Type:        "string",
+			Placeholder: "e.g. 131072",
+			Description: "Optional. Override the model's input context window used for prompt budgeting. Leave blank to use the model's catalogued value or the default. Set this when a custom or proxied model's real window differs from what DecisionBox knows.",
+		},
+		{
+			Key:         MaxOutputTokensKey,
+			Label:       "Max output tokens override",
+			Type:        "string",
+			Placeholder: "e.g. 32768",
+			Description: "Optional. Cap the tokens the model may generate per request. Leave blank to use the model's catalogued value or the default. Set this when a custom or proxied model's real output limit is below the default (a too-high value is rejected with a 4xx).",
+		},
+	}
 }

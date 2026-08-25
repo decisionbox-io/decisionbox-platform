@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Custom TLS for LLM endpoints (private-CA upload + skip-verify).** A per-project **Custom CA certificate (PEM)** field (`tls_ca_cert`) appends an internal CA to the system trust store, and a **Disable TLS verification** toggle (`tls_skip_verify`, warned as insecure) skips verification. Both live in `project.LLM.Config`, so they reach the API, `/ask`, **and the spawned discovery agent** — no env vars, no image rebuild. A new `llm.HTTPClientFor` helper builds the client; wired into `openai`, `claude`, `ollama`, `azure-foundry`, `vertex-ai`, `litellm` (and Bedrock's AWS SDK transport when configured). Malformed PEMs are rejected at connect time.
+- **First-class LiteLLM provider (`litellm`).** An OpenAI-compatible proxy provider mirroring Ollama: dedicated config form (`base_url` + optional Bearer key), live model listing via `GET /v1/models`, dispatch-any-model, and custom TLS. Registered across the agent, API, and validation-replay.
+
+### Changed
+
+- **Unknown-model token defaults raised.** A model that matches no catalog entry (and no per-provider override) now resolves to **128K input** (was 32K) and **64K output** (`64000`, was 8K), across every LLM provider. Catalogued models still resolve to their exact caps. The five API providers' unknown-model output default (`claude`, `openai`, `bedrock`, `azure-foundry`, `vertex-ai`) rose from 16K to 64K. `64000` (not `65536`) is used because that is the hard `max_tokens` cap on current Bedrock Claude models — a proxied unknown model (LiteLLM → Bedrock) rejects `65536` with a 400.
+
 ## [0.21.0] - 2026-07-28
 
 ### Changed

@@ -99,6 +99,7 @@ jobs:
           mkdir -p "$COV"
           (cd libs/go-common && go test -coverprofile="$COV/go-common.txt" ./...)
           (cd providers/llm/claude && go test -coverprofile="$COV/llm-claude.txt" ./...)
+          (cd providers/llm/litellm && go test -coverprofile="$COV/llm-litellm.txt" ./...)
           (cd providers/llm/openai && go test -coverprofile="$COV/llm-openai.txt" ./...)
           (cd providers/llm/ollama && go test -coverprofile="$COV/llm-ollama.txt" ./...)
           (cd providers/llm/vertex-ai && go test -coverprofile="$COV/llm-vertex.txt" ./...)
@@ -117,6 +118,7 @@ jobs:
           (cd providers/embedding/azure-openai && go test -coverprofile="$COV/embedding-azure-openai.txt" ./...)
           (cd providers/embedding/bedrock && go test -coverprofile="$COV/embedding-bedrock.txt" ./...)
           (cd providers/embedding/openai && go test -coverprofile="$COV/embedding-openai.txt" ./...)
+          (cd providers/embedding/litellm && go test -coverprofile="$COV/embedding-litellm.txt" ./...)
           (cd providers/embedding/ollama && go test -coverprofile="$COV/embedding-ollama.txt" ./...)
           (cd providers/embedding/vertex-ai && go test -coverprofile="$COV/embedding-vertex-ai.txt" ./...)
           (cd providers/embedding/voyage && go test -coverprofile="$COV/embedding-voyage.txt" ./...)

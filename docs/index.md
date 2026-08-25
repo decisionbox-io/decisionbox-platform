@@ -48,7 +48,7 @@ Step-by-step instructions for common tasks.
 - [Adding LLM Providers](guides/adding-llm-providers.md) — Support a new LLM service
 - [Adding Warehouse Providers](guides/adding-warehouse-providers.md) — Support a new data warehouse
 - [Adding Secret Providers](guides/adding-secret-providers.md) — Support a new secret manager
-- [Configuring LLM Providers](guides/configuring-llm.md) — Claude, OpenAI, Ollama, Vertex AI, Bedrock
+- [Configuring LLM Providers](guides/configuring-llm.md) — Claude, OpenAI, Ollama, Vertex AI, Bedrock, Azure AI Foundry, LiteLLM
 - [Configuring Warehouses](guides/configuring-warehouse.md) — BigQuery, Redshift, Snowflake, PostgreSQL, Databricks, Microsoft SQL Server setup
 - [Configuring Secrets](guides/configuring-secrets.md) — Encrypted key management
 - [Customizing Prompts](guides/customizing-prompts.md) — Edit prompts, add analysis areas
