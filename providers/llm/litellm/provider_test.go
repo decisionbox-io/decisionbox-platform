@@ -49,6 +49,21 @@ func TestProviderRegistered(t *testing.T) {
 	if !hasCA || !hasSkip {
 		t.Errorf("TLS config fields missing: ca=%v skip=%v", hasCA, hasSkip)
 	}
+	// An open proxy must be configurable: a credential-less "none" auth
+	// method has to exist alongside the api_key one so the dashboard can
+	// skip the key entirely.
+	var hasAPIKey, hasNone bool
+	for _, m := range meta.AuthMethods {
+		switch m.ID {
+		case "api_key":
+			hasAPIKey = true
+		case "none":
+			hasNone = len(m.Fields) == 0
+		}
+	}
+	if !hasAPIKey || !hasNone {
+		t.Errorf("auth methods incomplete: api_key=%v none(no-fields)=%v", hasAPIKey, hasNone)
+	}
 }
 
 func TestFactory_MissingBaseURL(t *testing.T) {

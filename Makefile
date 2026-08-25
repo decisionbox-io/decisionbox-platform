@@ -148,7 +148,7 @@ test-ollama: ## Run Ollama LLM integration tests (requires Docker, slow)
 	cd services/agent && go test -tags='integration ollama' -count=1 -timeout=10m -run TestOllama .
 
 test-litellm: ## Run LiteLLM custom-TLS integration tests (real LiteLLM proxy over HTTPS behind a private CA; requires Docker)
-	cd providers/llm/litellm && go test -tags=integration -count=1 -timeout=10m -v ./...
+	cd services/agent && go test -tags=integration -count=1 -timeout=10m -run TestLiteLLMTLS -v .
 
 test-llm: ## Run LLM provider integration tests (set INTEGRATION_TEST_* env vars, see below)
 	@echo "LLM integration tests — skips providers without credentials."

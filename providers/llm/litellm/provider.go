@@ -67,10 +67,18 @@ func init() {
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",
-				Description: "LiteLLM master or virtual key, sent as a Bearer token. Leave blank for a proxy that requires no key.",
+				Description: "LiteLLM master or virtual key, sent as a Bearer token.",
 				Fields: []gollm.ConfigField{
-					{Key: "credentials_json", Label: "LiteLLM key", Type: "credential", Placeholder: "sk-..."},
+					{Key: "credentials_json", Label: "LiteLLM key", Required: true, Type: "credential", Placeholder: "sk-..."},
 				},
+			},
+			{
+				// Open proxies need no key. A credential-less auth method
+				// lets the dashboard skip the key field entirely (the
+				// credentials phase gates on a credential field existing),
+				// so "Load models" works and no stale key is ever sent.
+				ID: "none", Name: "No authentication",
+				Description: "For a LiteLLM proxy that requires no key.",
 			},
 		},
 		// LiteLLM routes any configured model name through one OpenAI-
