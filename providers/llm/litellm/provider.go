@@ -45,7 +45,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "LiteLLM",
 		Description: "LiteLLM proxy — an OpenAI-compatible gateway that routes to any configured upstream model",
-		ConfigFields: append([]gollm.ConfigField{
+		ConfigFields: append(append([]gollm.ConfigField{
 			{
 				Key:         "base_url",
 				Label:       "LiteLLM proxy URL",
@@ -63,7 +63,7 @@ func init() {
 				Placeholder: "gpt-4o",
 				Description: "Any model name the LiteLLM proxy is configured to route. Load models to pick from the proxy's live list.",
 			},
-		}, gollm.TLSConfigFields()...),
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",

@@ -59,7 +59,7 @@ func init() {
 	}, gollm.ProviderMeta{
 		Name:        "OpenAI",
 		Description: "OpenAI API - GPT-4o, GPT-4o-mini, and compatible APIs",
-		ConfigFields: append([]gollm.ConfigField{
+		ConfigFields: append(append([]gollm.ConfigField{
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -70,7 +70,7 @@ func init() {
 				Description: "Pick a catalogued model or type any OpenAI model ID.",
 			},
 			{Key: "base_url", Label: "Base URL", Type: "string", Default: "https://api.openai.com/v1", Description: "For OpenAI-compatible APIs"},
-		}, gollm.TLSConfigFields()...),
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",

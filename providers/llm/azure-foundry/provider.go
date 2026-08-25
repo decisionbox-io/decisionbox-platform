@@ -49,7 +49,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Azure AI Foundry",
 		Description: "Microsoft Azure-managed AI platform — Claude & OpenAI models with API key auth",
-		ConfigFields: append([]gollm.ConfigField{
+		ConfigFields: append(append([]gollm.ConfigField{
 			{Key: "endpoint", Label: "Endpoint URL", Required: true, Type: "string", Placeholder: "https://my-resource.services.ai.azure.com"},
 			{
 				Key:         "model",
@@ -73,7 +73,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		}, gollm.TLSConfigFields()...),
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",

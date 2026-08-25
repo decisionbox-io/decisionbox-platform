@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -745,9 +746,18 @@ func IsReasoningModel(providerName, model string) bool {
 	return e.Reasoning
 }
 
+// MaxInputTokensKey is the project-config key for a manual context-window
+// override (positive integer, tokens). When set it wins over the catalog,
+// the provider hook, and the global default — the operator knows the real
+// window of an uncatalogued or proxied model (e.g. a LiteLLM route) that
+// DecisionBox cannot infer. Stored in project.LLM.Config.
+const MaxInputTokensKey = "max_input_tokens"
+
 // GetEffectiveInputWindow returns the input-window size budgeting
 // call-sites should respect for a (provider, model, project-config)
 // triple. Resolution order:
+//  0. cfg["max_input_tokens"] — explicit operator override (any positive
+//     integer). Wins over everything below.
 //  1. ProviderMeta.EffectiveInputWindow hook — providers that expose
 //     a per-deployment override (currently only Ollama's `num_ctx`)
 //     clamp the catalog value here.
@@ -758,6 +768,9 @@ func IsReasoningModel(providerName, model string) bool {
 // pass project.LLM.Config when they have one; tests pass nil when
 // they only care about the catalog-driven value.
 func GetEffectiveInputWindow(providerName, model string, cfg ProviderConfig) int {
+	if v := parseMaxInputOverride(cfg); v > 0 {
+		return v
+	}
 	providersMu.RLock()
 	meta, ok := providerMeta[providerName]
 	providersMu.RUnlock()
@@ -768,4 +781,33 @@ func GetEffectiveInputWindow(providerName, model string, cfg ProviderConfig) int
 		return meta.EffectiveInputWindow(model, cfg)
 	}
 	return meta.MaxInputTokensFor(model)
+}
+
+// parseMaxInputOverride returns the operator's manual context-window
+// override from cfg, or 0 when absent / not a positive integer.
+func parseMaxInputOverride(cfg ProviderConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(cfg[MaxInputTokensKey])); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// ContextWindowConfigFields returns the dashboard config field for the
+// manual context-window override (MaxInputTokensKey). Providers append
+// it to their ProviderMeta.ConfigFields so an operator can set the real
+// input window of an uncatalogued or proxied model that DecisionBox
+// cannot infer. Kept here so the key and copy stay in one place.
+func ContextWindowConfigFields() []ConfigField {
+	return []ConfigField{
+		{
+			Key:         MaxInputTokensKey,
+			Label:       "Context window override (tokens)",
+			Type:        "string",
+			Placeholder: "e.g. 131072",
+			Description: "Optional. Override the model's input context window used for prompt budgeting. Leave blank to use the model's catalogued value or the default. Set this when a custom or proxied model's real window differs from what DecisionBox knows.",
+		},
+	}
 }
