@@ -339,7 +339,7 @@ func TestSQLFixer_FixSQL_UsesCatalogMaxOutputTokens(t *testing.T) {
 
 func TestSQLFixer_FixSQL_FallsBackToDefaultWhenProviderUnregistered(t *testing.T) {
 	// Unknown provider name — GetMaxOutputTokens must fall back to the
-	// 8192 global default, so the fixer never sends a 0 max_tokens
+	// global default (64K, #338), so the fixer never sends a 0 max_tokens
 	// (some providers reject 0 outright; Ollama interprets it as
 	// "unlimited" which can hang).
 	provider := testutil.NewMockLLMProvider()
@@ -361,8 +361,8 @@ func TestSQLFixer_FixSQL_FallsBackToDefaultWhenProviderUnregistered(t *testing.T
 	}
 
 	gotMax := provider.Calls[0].Request.MaxTokens
-	if gotMax != 8192 {
-		t.Errorf("MaxTokens for unknown provider = %d, want 8192 (global default)", gotMax)
+	if gotMax != 65536 {
+		t.Errorf("MaxTokens for unknown provider = %d, want 65536 (global default)", gotMax)
 	}
 }
 
