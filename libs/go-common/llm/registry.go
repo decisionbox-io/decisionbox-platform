@@ -753,6 +753,43 @@ func IsReasoningModel(providerName, model string) bool {
 // DecisionBox cannot infer. Stored in project.LLM.Config.
 const MaxInputTokensKey = "max_input_tokens"
 
+// MaxOutputTokensKey is the project-config key for a manual output-token
+// cap (positive integer). When set, providers clamp the request's
+// max_tokens to it — the operator knows the real generation limit of an
+// uncatalogued or proxied model whose cap is below the default (e.g.
+// qwen3-32b on Bedrock caps output at 32768, below the 64K default).
+const MaxOutputTokensKey = "max_output_tokens"
+
+// MaxOutputOverride returns the operator's manual output-token cap from
+// cfg (a positive integer), or 0 when absent / not a positive integer.
+// Providers read it once at construction and clamp their request's
+// max_tokens to it in Chat via ClampMaxTokens, so the override reaches
+// every caller — discovery, /ask, and the enterprise pack generator —
+// without each threading config through.
+func MaxOutputOverride(cfg ProviderConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(cfg[MaxOutputTokensKey])); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// ClampMaxTokens caps a caller's requested max_tokens to override. When
+// override > 0: a requested value above it (or 0/unspecified) becomes
+// override; a smaller positive request is left alone. override <= 0
+// (no operator cap) leaves requested unchanged.
+func ClampMaxTokens(requested, override int) int {
+	if override <= 0 {
+		return requested
+	}
+	if requested <= 0 || requested > override {
+		return override
+	}
+	return requested
+}
+
 // GetEffectiveInputWindow returns the input-window size budgeting
 // call-sites should respect for a (provider, model, project-config)
 // triple. Resolution order:
@@ -808,6 +845,13 @@ func ContextWindowConfigFields() []ConfigField {
 			Type:        "string",
 			Placeholder: "e.g. 131072",
 			Description: "Optional. Override the model's input context window used for prompt budgeting. Leave blank to use the model's catalogued value or the default. Set this when a custom or proxied model's real window differs from what DecisionBox knows.",
+		},
+		{
+			Key:         MaxOutputTokensKey,
+			Label:       "Max output tokens override",
+			Type:        "string",
+			Placeholder: "e.g. 32768",
+			Description: "Optional. Cap the tokens the model may generate per request. Leave blank to use the model's catalogued value or the default. Set this when a custom or proxied model's real output limit is below the default (a too-high value is rejected with a 4xx).",
 		},
 	}
 }

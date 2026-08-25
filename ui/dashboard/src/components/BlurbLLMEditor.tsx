@@ -150,22 +150,24 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
             value={value.model}
             onChange={(val) => onChange({ ...value, model: val })}
           />
-          {(() => {
-            const ctxField = selected?.config_fields.find((f) => f.key === 'max_input_tokens');
-            if (!ctxField) return null;
-            const DEFAULT_INPUT = 131072;
-            const known = (liveModels ?? []).find((m) => m.id === value.model)?.max_input_tokens ?? 0;
-            const effective = known > 0 ? known : DEFAULT_INPUT;
+          {(['max_input_tokens', 'max_output_tokens'] as const).map((key) => {
+            const f = selected?.config_fields.find((cf) => cf.key === key);
+            if (!f) return null;
+            const live = (liveModels ?? []).find((m) => m.id === value.model);
+            const def = key === 'max_input_tokens' ? 131072 : 64000;
+            const known = (key === 'max_input_tokens' ? live?.max_input_tokens : live?.max_output_tokens) ?? 0;
+            const effective = known > 0 ? known : def;
             return (
               <TextInput
-                label={ctxField.label}
-                description={ctxField.description}
+                key={key}
+                label={f.label}
+                description={f.description}
                 placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
-                value={value.config['max_input_tokens'] || ''}
-                onChange={(e) => onChange({ ...value, config: { ...value.config, max_input_tokens: e.currentTarget.value } })}
+                value={value.config[key] || ''}
+                onChange={(e) => onChange({ ...value, config: { ...value.config, [key]: e.currentTarget.value } })}
               />
             );
-          })()}
+          })}
           {footer}
         </ProviderCredentialsPhase>
       )}

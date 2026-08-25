@@ -595,3 +595,31 @@ var _ = []*sync.Once{
 	&onceMeta, &onceCatalog, &onceValidate, &onceResolveWire,
 	&onceMaxTokens, &oncePricing, &onceJSONMarshal, &onceFamilyInfer, &onceSingleWire,
 }
+
+func TestClampMaxTokensAndOverride(t *testing.T) {
+	// MaxOutputOverride parsing.
+	if MaxOutputOverride(ProviderConfig{MaxOutputTokensKey: "32768"}) != 32768 {
+		t.Error("override parse failed")
+	}
+	for _, bad := range []string{"", "0", "-1", "x"} {
+		if MaxOutputOverride(ProviderConfig{MaxOutputTokensKey: bad}) != 0 {
+			t.Errorf("override %q should be 0", bad)
+		}
+	}
+	if MaxOutputOverride(nil) != 0 {
+		t.Error("nil cfg override should be 0")
+	}
+	// ClampMaxTokens behaviour.
+	cases := []struct{ requested, override, want int }{
+		{64000, 32768, 32768}, // over the cap -> capped
+		{16000, 32768, 16000}, // under the cap -> unchanged
+		{0, 32768, 32768},     // unspecified -> cap
+		{64000, 0, 64000},     // no cap -> unchanged
+		{0, 0, 0},             // neither
+	}
+	for _, c := range cases {
+		if got := ClampMaxTokens(c.requested, c.override); got != c.want {
+			t.Errorf("ClampMaxTokens(%d,%d)=%d want %d", c.requested, c.override, got, c.want)
+		}
+	}
+}

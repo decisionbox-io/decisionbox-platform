@@ -118,7 +118,7 @@ export function LLMFormFields({
       {(phase === 'credentials' || usingEndpoint) && (
         <>
           {selected?.config_fields
-            .filter((f) => f.key !== 'model' && f.key !== 'wire_override' && f.key !== 'max_input_tokens')
+            .filter((f) => f.key !== 'model' && f.key !== 'wire_override' && f.key !== 'max_input_tokens' && f.key !== 'max_output_tokens')
             .map((field) => (
               <CatalogAwareField
                 key={field.key}
@@ -215,26 +215,27 @@ export function LLMFormFields({
             onChange={(val) => setConfigField('model', val)}
           />
 
-          {(() => {
-            const ctxField = selected?.config_fields.find((f) => f.key === 'max_input_tokens');
-            if (!ctxField) return null;
-            // Show the effective context window as a placeholder when the
-            // operator leaves the override blank: the picked model's known
-            // window, else the 128K unknown-model default.
-            const DEFAULT_INPUT = 131072;
+          {/* Manual token overrides (context window + max output) shown on
+              the model step with the effective value as a placeholder. */}
+          {(['max_input_tokens', 'max_output_tokens'] as const).map((key) => {
+            const f = selected?.config_fields.find((cf) => cf.key === key);
+            if (!f) return null;
             const model = value.config['model'] || '';
-            const known = (liveModels ?? []).find((m) => m.id === model)?.max_input_tokens ?? 0;
-            const effective = known > 0 ? known : DEFAULT_INPUT;
+            const live = (liveModels ?? []).find((m) => m.id === model);
+            const def = key === 'max_input_tokens' ? 131072 : 64000;
+            const known = (key === 'max_input_tokens' ? live?.max_input_tokens : live?.max_output_tokens) ?? 0;
+            const effective = known > 0 ? known : def;
             return (
               <TextInput
-                label={ctxField.label}
-                description={ctxField.description}
+                key={key}
+                label={f.label}
+                description={f.description}
                 placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
-                value={value.config['max_input_tokens'] || ''}
-                onChange={(e) => setConfigField('max_input_tokens', e.currentTarget.value)}
+                value={value.config[key] || ''}
+                onChange={(e) => setConfigField(key, e.currentTarget.value)}
               />
             );
-          })()}
+          })}
 
           {(() => {
             const wireField = selected?.config_fields.find((f) => f.key === 'wire_override');

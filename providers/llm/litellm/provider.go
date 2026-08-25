@@ -128,7 +128,11 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		return nil, fmt.Errorf("litellm: %w", err)
 	}
 
-	return NewLiteLLMProvider(apiKey, model, baseURL, client), nil
+	p := NewLiteLLMProvider(apiKey, model, baseURL, client)
+	// Operator-set output cap: proxied models (e.g. qwen3-32b) may cap
+	// generation below the 64K default, so clamp every request to it.
+	p.maxOutputTokens = gollm.MaxOutputOverride(cfg)
+	return p, nil
 }
 
 // LiteLLMProvider implements llm.Provider against a LiteLLM proxy using
@@ -138,6 +142,9 @@ type LiteLLMProvider struct {
 	model   string
 	baseURL string // normalised, ends with /v1 (no trailing slash)
 	client  *http.Client
+	// maxOutputTokens, when > 0, caps every request's max_tokens (the
+	// operator's max_output_tokens override). 0 means no cap.
+	maxOutputTokens int
 }
 
 // NewLiteLLMProvider creates a provider. baseURL is the LiteLLM proxy
@@ -209,6 +216,11 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 	if model == "" {
 		return nil, fmt.Errorf("litellm: chat requires a model — neither ChatRequest.Model nor provider model is set (list-only construction)")
 	}
+
+	// Apply the operator's output-token cap (if any) before building the
+	// request, so a proxied model whose real limit is below the default
+	// isn't sent an oversized max_tokens (rejected with a 4xx upstream).
+	req.MaxTokens = gollm.ClampMaxTokens(req.MaxTokens, p.maxOutputTokens)
 
 	body := openaicompat.BuildRequestBody(model, req)
 

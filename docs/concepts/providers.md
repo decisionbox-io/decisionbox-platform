@@ -144,6 +144,7 @@ Adding a new model to an existing cloud is a single `ModelEntry` in the provider
 - Provider-specific: `project_id` + `location` (Vertex AI), `region` (Bedrock), `host` (Ollama), `base_url` (LiteLLM)
 - `tls_ca_cert` / `tls_skip_verify` — Custom TLS for a private-CA HTTPS endpoint (LiteLLM, OpenAI, Ollama, Azure Foundry, Vertex AI). See [Custom TLS (private CA)](../guides/configuring-llm.md#custom-tls-private-ca).
 - `max_input_tokens` — Manual context-window override (positive integer). Wins over the catalog and the default when set — for a custom or proxied model (e.g. a LiteLLM route) whose real window DecisionBox cannot infer. Surfaced in the dashboard as "Context window override (tokens)".
+- `max_output_tokens` — Manual output-token cap (positive integer). Providers clamp each request's `max_tokens` to it — for a custom or proxied model whose real output limit is below the default (e.g. `qwen3-32b` caps output at 32768). Surfaced as "Max output tokens override".
 
 **Unknown-model defaults:** a model that matches no catalog entry (and no per-provider default) resolves to **128K input / 64K output** tokens, so budgeting and long-form generations use a modern window rather than a stale floor.
 
