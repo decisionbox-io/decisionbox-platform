@@ -112,7 +112,7 @@ func init() {
 		Models: buildVertexCatalog(),
 		// Unknown Vertex models default to 64K output (#338); catalogued
 		// models resolve to their exact caps first.
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		FamilyInferrer:         inferVertexWire,
 		EffectiveInputWindow:   vertexEffectiveInputWindow,
 	})

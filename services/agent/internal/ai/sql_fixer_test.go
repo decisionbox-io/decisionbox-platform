@@ -361,8 +361,8 @@ func TestSQLFixer_FixSQL_FallsBackToDefaultWhenProviderUnregistered(t *testing.T
 	}
 
 	gotMax := provider.Calls[0].Request.MaxTokens
-	if gotMax != 65536 {
-		t.Errorf("MaxTokens for unknown provider = %d, want 65536 (global default)", gotMax)
+	if gotMax != 64000 {
+		t.Errorf("MaxTokens for unknown provider = %d, want 64000 (global default)", gotMax)
 	}
 }
 

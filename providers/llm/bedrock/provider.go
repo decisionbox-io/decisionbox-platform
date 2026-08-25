@@ -97,7 +97,7 @@ func init() {
 		Models: buildBedrockCatalog(),
 		// Unknown Bedrock models default to 64K output (#338); catalogued
 		// models resolve to their exact caps first.
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		FamilyInferrer:         inferBedrockWire,
 		// Bedrock supports tool_use natively on the Anthropic wire.
 		// OpenAI-compat Bedrock models inherit tool support from the

@@ -320,8 +320,8 @@ func TestProviderRegistered(t *testing.T) {
 		}
 	}
 	// Default fallback for unknown models (64K, #338).
-	if got := gollm.GetMaxOutputTokens("openai", "gpt-future"); got != 65536 {
-		t.Errorf("GetMaxOutputTokens(openai, gpt-future) = %d, want 65536", got)
+	if got := gollm.GetMaxOutputTokens("openai", "gpt-future"); got != 64000 {
+		t.Errorf("GetMaxOutputTokens(openai, gpt-future) = %d, want 64000", got)
 	}
 }
 

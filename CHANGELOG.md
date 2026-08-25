@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Unknown-model token defaults raised.** A model that matches no catalog entry (and no per-provider override) now resolves to **128K input** (was 32K) and **64K output** (was 8K, matching the Qwen 3.6 cap), across every LLM provider. Catalogued models still resolve to their exact caps. The five API providers' unknown-model output default (`claude`, `openai`, `bedrock`, `azure-foundry`, `vertex-ai`) rose from 16K to 64K.
+- **Unknown-model token defaults raised.** A model that matches no catalog entry (and no per-provider override) now resolves to **128K input** (was 32K) and **64K output** (`64000`, was 8K), across every LLM provider. Catalogued models still resolve to their exact caps. The five API providers' unknown-model output default (`claude`, `openai`, `bedrock`, `azure-foundry`, `vertex-ai`) rose from 16K to 64K. `64000` (not `65536`) is used because that is the hard `max_tokens` cap on current Bedrock Claude models — a proxied unknown model (LiteLLM → Bedrock) rejects `65536` with a 400.
 
 ## [0.21.0] - 2026-07-28
 

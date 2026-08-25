@@ -29,8 +29,8 @@ func TestCatalog_GatewayAliasMaxOutputTokens(t *testing.T) {
 
 	// A model the catalog doesn't know falls back to the provider default
 	// (64K for unknown models, #338).
-	if got := gollm.GetMaxOutputTokens("openai", "some-unknown-model"); got != 65536 {
-		t.Errorf("unknown model fell back to %d, want the 65536 default", got)
+	if got := gollm.GetMaxOutputTokens("openai", "some-unknown-model"); got != 64000 {
+		t.Errorf("unknown model fell back to %d, want the 64000 default", got)
 	}
 }
 

@@ -78,8 +78,8 @@ func TestUnknownModelDefaults(t *testing.T) {
 	if got := gollm.GetMaxInputTokens(providerName, "whatever-model"); got != 131072 {
 		t.Errorf("GetMaxInputTokens = %d, want 131072", got)
 	}
-	if got := gollm.GetMaxOutputTokens(providerName, "whatever-model"); got != 65536 {
-		t.Errorf("GetMaxOutputTokens = %d, want 65536", got)
+	if got := gollm.GetMaxOutputTokens(providerName, "whatever-model"); got != 64000 {
+		t.Errorf("GetMaxOutputTokens = %d, want 64000", got)
 	}
 }
 

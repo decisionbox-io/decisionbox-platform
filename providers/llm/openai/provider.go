@@ -84,7 +84,7 @@ func init() {
 		FamilyInferrer: inferOpenAIWire,
 		// Unknown OpenAI-compatible models default to 64K output (#338).
 		// Catalogued models still resolve to their exact caps first.
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		// OpenAI's chat-completions endpoint supports function calling on
 		// gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini. Reasoning models
 		// (o3, o4-mini) do not expose tool_use through Converse-style

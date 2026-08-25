@@ -91,7 +91,7 @@ func init() {
 		// No fixed catalog — rely on live listing + the unknown-model
 		// defaults. Unknown models get 128K input / 64K output (#338).
 		DefaultMaxInputTokens:  131072,
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		// LiteLLM speaks the OpenAI-compatible wire, which supports
 		// function calling; whether a given proxied model implements it
 		// reliably varies, as with the bare openai provider.

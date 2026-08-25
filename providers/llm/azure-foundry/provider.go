@@ -86,7 +86,7 @@ func init() {
 		Models: buildAzureFoundryCatalog(),
 		// Unknown deployments default to 64K output (#338); catalogued
 		// models resolve to their exact caps first.
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		FamilyInferrer:         inferAzureWire,
 	})
 }

@@ -180,8 +180,8 @@ func TestVertexAIProvider_Registered(t *testing.T) {
 		t.Errorf("GetMaxOutputTokens(gemini-2.5-pro-002) = %d, want %d", got, geminiMax)
 	}
 	// Unknown model falls back to provider default (64K, #338).
-	if got := gollm.GetMaxOutputTokens(providerName, "vendor.unknown-2099"); got != 65536 {
-		t.Errorf("GetMaxOutputTokens default = %d, want 65536", got)
+	if got := gollm.GetMaxOutputTokens(providerName, "vendor.unknown-2099"); got != 64000 {
+		t.Errorf("GetMaxOutputTokens default = %d, want 64000", got)
 	}
 }
 

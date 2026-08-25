@@ -201,8 +201,8 @@ func TestGlobalDefaults(t *testing.T) {
 	if DefaultMaxInputTokens != 131072 {
 		t.Errorf("DefaultMaxInputTokens = %d, want 131072 (128K)", DefaultMaxInputTokens)
 	}
-	if DefaultMaxOutputTokens != 65536 {
-		t.Errorf("DefaultMaxOutputTokens = %d, want 65536 (64K)", DefaultMaxOutputTokens)
+	if DefaultMaxOutputTokens != 64000 {
+		t.Errorf("DefaultMaxOutputTokens = %d, want 64000 (64K)", DefaultMaxOutputTokens)
 	}
 }
 

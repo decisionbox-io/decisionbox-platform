@@ -391,12 +391,15 @@ const DefaultMaxInputTokens = 131072
 
 // DefaultMaxOutputTokens is the global fallback output-token cap
 // returned when neither the catalog nor the provider's
-// DefaultMaxOutputTokens supplies one. Set to 64K, matching the
-// Qwen 3.6 catalog output cap, so long-form generations on an
-// uncatalogued model do not truncate at the old 8K floor. Providers
-// whose upstream rejects an oversized max_tokens should keep a lower
-// per-provider DefaultMaxOutputTokens.
-const DefaultMaxOutputTokens = 65536
+// DefaultMaxOutputTokens supplies one. Set to 64K (64000) so long-form
+// generations on an uncatalogued model do not truncate at the old 8K
+// floor. 64000 rather than 65536 because that is the hard max_tokens
+// cap on current Bedrock Claude models — an unknown model routed
+// through a proxy (e.g. LiteLLM → Bedrock) rejects 65536 with a 400,
+// and 64000 is accepted by every 64K-class model we've seen. Providers
+// whose upstream rejects even this should keep a lower per-provider
+// DefaultMaxOutputTokens.
+const DefaultMaxOutputTokens = 64000
 
 // MaxInputTokensFor returns the context-window size for the given
 // model ID. Resolution: catalog (ID + aliases) → ProviderMeta

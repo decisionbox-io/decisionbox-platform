@@ -73,7 +73,7 @@ func init() {
 		Models: buildClaudeCatalog(),
 		// Unknown Claude models default to 64K output (#338). Catalogued
 		// models resolve to their exact caps first.
-		DefaultMaxOutputTokens: 65536,
+		DefaultMaxOutputTokens: 64000,
 		// Claude supports tool_use natively. Enables function-calling on
 		// /ask and any other tool-dependent flow.
 		SupportsTools: true,
