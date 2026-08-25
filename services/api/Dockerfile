@@ -13,6 +13,7 @@ COPY providers/embedding/azure-openai/go.mod providers/embedding/azure-openai/
 COPY providers/embedding/bedrock/go.mod providers/embedding/bedrock/go.sum providers/embedding/bedrock/
 COPY providers/embedding/ollama/go.mod providers/embedding/ollama/
 COPY providers/embedding/openai/go.mod providers/embedding/openai/
+COPY providers/embedding/litellm/go.mod providers/embedding/litellm/
 COPY providers/embedding/vertex-ai/go.mod providers/embedding/vertex-ai/go.sum providers/embedding/vertex-ai/
 COPY providers/embedding/voyage/go.mod providers/embedding/voyage/
 COPY providers/llm/claude/go.mod providers/llm/claude/
