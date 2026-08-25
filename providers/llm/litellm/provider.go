@@ -112,8 +112,15 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 	model := cfg["model"]
 
 	// The LiteLLM key is optional — some proxies run open. Sent as a
-	// Bearer header only when present.
+	// Bearer header only when present. When the project explicitly chose
+	// the "none" auth method, drop any credential the caller still merged
+	// in (a saved llm-credentials secret or the LLM_API_KEY env fallback):
+	// an open proxy must not receive a stale/global key, which could leak
+	// it or be rejected.
 	apiKey := cfg["credentials_json"]
+	if cfg["auth_method"] == "none" {
+		apiKey = ""
+	}
 
 	timeout := gollm.ResolveHTTPTimeout(cfg, litellmDefaultTimeout)
 	client, err := gollm.HTTPClientFor(cfg, timeout)
@@ -230,7 +237,11 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 
 	if httpResp.StatusCode != http.StatusOK {
 		if apiErr := openaicompat.ExtractAPIError(respBody); apiErr != nil {
-			return nil, fmt.Errorf("litellm: API error (%d): %s - %s", httpResp.StatusCode, apiErr.Type, apiErr.Message)
+			// Sanitize the parsed message too — a proxy that echoes the
+			// Authorization header or key in its error body must not leak
+			// it into logs / the dashboard.
+			return nil, fmt.Errorf("litellm: API error (%d): %s - %s",
+				httpResp.StatusCode, apiErr.Type, gollm.SanitizeErrorBody([]byte(apiErr.Message), 500))
 		}
 		return nil, fmt.Errorf("litellm: API error (%d): %s", httpResp.StatusCode, gollm.SanitizeErrorBody(respBody, 500))
 	}

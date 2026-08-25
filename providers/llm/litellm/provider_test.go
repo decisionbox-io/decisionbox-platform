@@ -133,6 +133,35 @@ func TestChat_SendsBearerAndModel(t *testing.T) {
 	}
 }
 
+func TestFactory_NoneAuthDropsMergedCredential(t *testing.T) {
+	// auth_method=none must drop any credential the caller merged in
+	// (saved secret / LLM_API_KEY), so an open proxy never receives a
+	// stale/global key.
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadAuth = r.Header["Authorization"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	prov, err := gollm.NewProvider("litellm", gollm.ProviderConfig{
+		"base_url":         srv.URL,
+		"model":            "m",
+		"auth_method":      "none",
+		"credentials_json": "sk-should-be-dropped",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	if _, err := prov.Chat(context.Background(), gollm.ChatRequest{Messages: []gollm.Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if hadAuth {
+		t.Error("auth_method=none must not send an Authorization header even when credentials_json is set")
+	}
+}
+
 func TestChat_NoKeyOmitsAuthHeader(t *testing.T) {
 	var hadAuth bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
