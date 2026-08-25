@@ -34,7 +34,7 @@ func TLSConfigFields() []ConfigField {
 		{
 			Key:         TLSCACertKey,
 			Label:       "Custom CA certificate (PEM)",
-			Type:        "textarea",
+			Type:        "file",
 			Placeholder: "-----BEGIN CERTIFICATE-----",
 			Description: "Paste or upload the PEM CA certificate for an HTTPS endpoint fronted by a private / internal CA. Appended to the system trust store. Leave blank for endpoints with a publicly-trusted certificate.",
 		},

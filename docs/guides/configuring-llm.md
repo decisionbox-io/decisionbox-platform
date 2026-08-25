@@ -1,6 +1,8 @@
 # Configuring LLM Providers
 
-DecisionBox supports six LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through their inline catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
+DecisionBox supports seven LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through their inline catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
+
+Any HTTPS LLM endpoint fronted by a private / internal CA can be trusted without rebuilding an image — see [Custom TLS (private CA)](#custom-tls-private-ca) below.
 
 ## Provider Comparison
 
@@ -12,6 +14,7 @@ DecisionBox supports six LLM providers. Cloud providers (Bedrock, Vertex AI, Azu
 | **Vertex AI** | Gemini, Claude, Llama MaaS, Qwen MaaS, DeepSeek MaaS, Mistral MaaS | GCP ADC | GCP users. Managed billing, IAM auth. |
 | **AWS Bedrock** | Claude, Qwen, DeepSeek, Mistral, Llama | AWS credentials | AWS users. Managed billing, IAM auth. |
 | **Azure AI Foundry** | Claude, GPT-5 / GPT-4.1 / GPT-4o, Mistral | API key | Azure users. Managed billing, Azure RBAC. |
+| **LiteLLM** | Any model the proxy routes | API key (optional) | Self-hosted OpenAI-compatible gateway; one endpoint for many upstreams. |
 
 ## Claude (Direct Anthropic API)
 
@@ -300,6 +303,47 @@ Azure AI Foundry supports API key authentication.
 The API key is set per-project via the dashboard's AI Provider settings tab.
 
 For production on AKS, you can also use Entra ID (Azure AD) with managed identity, but this requires custom configuration outside DecisionBox.
+
+## LiteLLM
+
+[LiteLLM](https://github.com/BerriAI/litellm) is an OpenAI-compatible proxy that fronts many upstream models behind one endpoint and one key.
+DecisionBox talks to it as a first-class provider — a dedicated config form, live model listing, and dispatch-any-model handling (parity with Ollama).
+This is the recommended way to reach a self-hosted gateway, especially on-prem behind a private CA.
+
+### 1. Point at your proxy
+
+1. Select **LiteLLM** as the LLM provider.
+2. Enter the **LiteLLM proxy URL** as `base_url` (e.g. `https://litellm.internal:4000`). The OpenAI-compatible `/v1` routes are derived from it.
+3. If the proxy requires a master or virtual key, set it as the **LiteLLM key** under **Settings → AI Provider** (sent as a `Bearer` token). Leave it blank for an open proxy.
+
+### 2. Pick a model
+
+Click **Load models** to query the proxy's live `GET /v1/models` list and choose one, or type any model name the proxy is configured to route.
+LiteLLM routes any configured model name through one OpenAI-compatible path, so the exact name the proxy exposes is saved and used verbatim.
+
+### 3. Unknown-model budgets
+
+A model that is not in any shipped catalog resolves to the default context/output window — **128K input / 64K output** — so long-form generations do not truncate. See [Model catalog and wire formats](#model-catalog-and-wire-formats).
+
+## Custom TLS (private CA)
+
+An LLM endpoint served over HTTPS behind a **private or internal CA** (a common on-prem setup for LiteLLM, Ollama, an OpenAI-compatible gateway, or a self-deployed Vertex/Azure endpoint) is not trusted by the system certificate store, so DecisionBox would otherwise fail the connection with `x509: certificate signed by unknown authority`.
+
+Two per-project options close that gap. Both live in the project's LLM config, so they reach the API, `/ask`, **and the spawned discovery agent** through the same config the provider is built from — no environment variables, no image rebuild.
+
+| Field | Effect |
+|---|---|
+| **Custom CA certificate (PEM)** (`tls_ca_cert`) | The pasted / uploaded PEM CA is **appended** to the system trust store for this endpoint. The secure, recommended option. |
+| **Disable TLS verification** (`tls_skip_verify`) | Skips certificate verification entirely. **Insecure** — an escape hatch for a trusted network only; prefer uploading the CA. |
+
+### Configure in the dashboard
+
+1. On the LLM provider (LiteLLM, OpenAI, Ollama, Azure AI Foundry, or Vertex AI), open the provider config.
+2. Paste the CA certificate into **Custom CA certificate (PEM)**, or click **Load from file…** to upload a `.pem` / `.crt`.
+3. Click **Load models** or **Test connection** — a malformed certificate is rejected immediately, and a private-CA endpoint now connects.
+
+The CA certificate is public material (not a private key), so it is stored in the project's LLM config rather than the secret store.
+Only enable **Disable TLS verification** when you cannot obtain the CA and the network is trusted; the dashboard shows a warning while it is on.
 
 ## Model catalog and wire formats
 

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Autocomplete, Badge, Group, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core';
+import { Alert, Autocomplete, Badge, Button, FileButton, Group, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core';
+import { IconAlertTriangle } from '@tabler/icons-react';
 import type { ConfigField, ConfigOption, LiveModel, ProviderMeta } from '@/lib/api';
 
 // DynamicField renders one ConfigField from the backend provider meta.
@@ -72,19 +73,61 @@ export function DynamicField({
     );
   }
 
-  if (field.type === 'textarea') {
+  // Boolean toggle (e.g. tls_skip_verify). Values are transported as the
+  // strings "true" / "false" since config is Record<string,string>.
+  if (field.type === 'boolean') {
+    const checked = value === 'true';
     return (
-      <Textarea
-        label={field.label}
-        required={field.required}
-        placeholder={field.placeholder || field.default}
-        description={field.description}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        minRows={6}
-        autosize
-        styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
-      />
+      <Stack gap="xs">
+        <Switch
+          label={field.label}
+          description={field.description}
+          checked={checked}
+          onChange={(e) => onChange(e.currentTarget.checked ? 'true' : 'false')}
+        />
+        {checked && field.key === 'tls_skip_verify' && (
+          <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />} title="TLS verification disabled">
+            Certificate verification is off for this endpoint — the connection can be intercepted. Prefer uploading a CA certificate instead; use this only on a trusted network.
+          </Alert>
+        )}
+      </Stack>
+    );
+  }
+
+  // Textarea, plus an optional file picker for "file" fields (e.g. a CA
+  // certificate PEM — paste directly or load from a .pem/.crt file).
+  if (field.type === 'textarea' || field.type === 'file') {
+    return (
+      <Stack gap={4}>
+        <Textarea
+          label={field.label}
+          required={field.required}
+          placeholder={field.placeholder || field.default}
+          description={field.description}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          minRows={6}
+          autosize
+          styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
+        />
+        {field.type === 'file' && (
+          <Group>
+            <FileButton
+              accept=".pem,.crt,.cer,.cert,.txt"
+              onChange={(file) => {
+                if (file) file.text().then(onChange);
+              }}
+            >
+              {(props) => <Button {...props} size="xs" variant="light">Load from file…</Button>}
+            </FileButton>
+            {value && (
+              <Button size="xs" variant="subtle" color="gray" onClick={() => onChange('')}>
+                Clear
+              </Button>
+            )}
+          </Group>
+        )}
+      </Stack>
     );
   }
 

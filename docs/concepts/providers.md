@@ -119,6 +119,7 @@ Used by the "Test Connection" button in the dashboard.
 | Google Vertex AI | `vertex-ai` | GCP ADC | Gemini, Claude, Llama/Qwen/DeepSeek/Mistral MaaS |
 | AWS Bedrock | `bedrock` | AWS credentials | Claude, Qwen, DeepSeek, Mistral, Llama |
 | Azure AI Foundry | `azure-foundry` | API key | Claude, GPT-5/4.1/4o, Mistral |
+| LiteLLM | `litellm` | API key (optional) | Any model the proxy routes (OpenAI-compatible; live `/v1/models` listing) |
 
 ### Model catalog and wire dispatch
 
@@ -140,7 +141,10 @@ Adding a new model to an existing cloud is a single `ModelEntry` in the provider
 - `credentials_json` — API key (Claude, OpenAI) or other credential payload
 - `model` — Model identifier
 - `timeout_seconds` — Per-call timeout (default: `LLM_TIMEOUT` env var; provider fallback is 60s for Claude direct API and 300s for OpenAI / Ollama / Bedrock / Vertex / Azure Foundry)
-- Provider-specific: `project_id` + `location` (Vertex AI), `region` (Bedrock), `host` (Ollama)
+- Provider-specific: `project_id` + `location` (Vertex AI), `region` (Bedrock), `host` (Ollama), `base_url` (LiteLLM)
+- `tls_ca_cert` / `tls_skip_verify` — Custom TLS for a private-CA HTTPS endpoint (LiteLLM, OpenAI, Ollama, Azure Foundry, Vertex AI). See [Custom TLS (private CA)](../guides/configuring-llm.md#custom-tls-private-ca).
+
+**Unknown-model defaults:** a model that matches no catalog entry (and no per-provider default) resolves to **128K input / 64K output** tokens, so budgeting and long-form generations use a modern window rather than a stale floor.
 
 See [Adding LLM Providers](../guides/adding-llm-providers.md) to implement your own.
 
