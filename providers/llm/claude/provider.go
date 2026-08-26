@@ -198,7 +198,9 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	for attempt := 1; attempt <= p.maxRetries; attempt++ {
 		resp, err := p.sendRequest(ctx, &apiReq)
 		if err == nil {
-			gollm.NormalizeStructuredToolResponse(resp, structured)
+			if nerr := gollm.NormalizeStructuredToolResponse(resp, structured); nerr != nil {
+				return nil, fmt.Errorf("claude: %w", nerr)
+			}
 			return resp, nil
 		}
 		lastErr = err

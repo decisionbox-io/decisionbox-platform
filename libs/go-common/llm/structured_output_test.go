@@ -116,7 +116,9 @@ func TestNormalizeStructuredToolResponse_FoldsToolInputToContent(t *testing.T) {
 			Input: map[string]interface{}{"slug": "acme"},
 		}},
 	}
-	NormalizeStructuredToolResponse(resp, true)
+	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
 	if resp.Content == "" {
 		t.Fatal("content not populated from tool input")
 	}
@@ -145,7 +147,9 @@ func TestNormalizeStructuredToolResponse_EmptyObjectFolded(t *testing.T) {
 		StopReason: "tool_use",
 		ToolCalls:  []ToolCall{{ID: "t1", Name: "domain_pack", Input: map[string]interface{}{}}},
 	}
-	NormalizeStructuredToolResponse(resp, true)
+	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
 	if resp.Content != "{}" {
 		t.Errorf("Content = %q, want %q", resp.Content, "{}")
 	}
@@ -158,7 +162,9 @@ func TestNormalizeStructuredToolResponse_EmptyObjectFolded(t *testing.T) {
 // "null".
 func TestNormalizeStructuredToolResponse_NilInputBecomesEmptyObject(t *testing.T) {
 	resp := &ChatResponse{ToolCalls: []ToolCall{{ID: "t1", Name: "domain_pack"}}}
-	NormalizeStructuredToolResponse(resp, true)
+	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
 	if resp.Content != "{}" {
 		t.Errorf("Content = %q, want %q", resp.Content, "{}")
 	}
@@ -166,9 +172,27 @@ func TestNormalizeStructuredToolResponse_NilInputBecomesEmptyObject(t *testing.T
 
 func TestNormalizeStructuredToolResponse_NotInjectedIsNoop(t *testing.T) {
 	resp := &ChatResponse{Content: "hello", ToolCalls: []ToolCall{{Name: "x", Input: map[string]interface{}{"a": 1}}}}
-	NormalizeStructuredToolResponse(resp, false)
+	if err := NormalizeStructuredToolResponse(resp, false); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
 	if resp.Content != "hello" || resp.ToolCalls == nil {
 		t.Error("no-op expected when injected=false")
+	}
+}
+
+// More than one tool call for the forced schema tool (possible under
+// Anthropic parallel tool use) must error rather than silently folding the
+// first and dropping the rest.
+func TestNormalizeStructuredToolResponse_MultipleToolCallsError(t *testing.T) {
+	resp := &ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls: []ToolCall{
+			{ID: "t1", Name: "domain_pack", Input: map[string]interface{}{"a": 1}},
+			{ID: "t2", Name: "domain_pack", Input: map[string]interface{}{"b": 2}},
+		},
+	}
+	if err := NormalizeStructuredToolResponse(resp, true); err == nil {
+		t.Fatal("want error for multiple tool calls, got nil")
 	}
 }
 
@@ -176,7 +200,9 @@ func TestNormalizeStructuredToolResponse_NotInjectedIsNoop(t *testing.T) {
 // the caller's own parser must still see it — Content is left untouched.
 func TestNormalizeStructuredToolResponse_TextResponseLeftIntact(t *testing.T) {
 	resp := &ChatResponse{Content: `{"slug":"acme"}`}
-	NormalizeStructuredToolResponse(resp, true)
+	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
 	if resp.Content != `{"slug":"acme"}` {
 		t.Errorf("content mutated: %q", resp.Content)
 	}

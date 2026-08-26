@@ -125,7 +125,9 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		},
 		ToolCalls: toolCalls,
 	}
-	gollm.NormalizeStructuredToolResponse(resp, structured)
+	if err := gollm.NormalizeStructuredToolResponse(resp, structured); err != nil {
+		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
+	}
 	return resp, nil
 }
 

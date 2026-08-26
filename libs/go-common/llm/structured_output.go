@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -69,14 +70,24 @@ func isReservedToolChoice(s string) bool {
 // to know a tool was used to satisfy their ResponseFormat.
 //
 // It only acts when injected is true (i.e. ApplyResponseFormatAsTool
-// injected the synthetic tool). If the model called the tool, its Input
-// map is marshalled to JSON and written to Content, and ToolCalls is
-// cleared. If the model returned text instead of calling the tool (rare
-// under a forced tool_choice), Content is left as-is so the caller's own
-// parser still sees whatever was produced.
-func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) {
+// injected the synthetic tool). If the model called the tool exactly once,
+// its Input map is marshalled to JSON and written to Content, ToolCalls is
+// cleared, and the "tool_use" stop reason is normalised to a terminal turn.
+// If the model returned text instead of calling the tool (rare under a
+// forced tool_choice), Content is left as-is so the caller's own parser
+// still sees whatever was produced.
+//
+// It returns an error if the model produced MORE than one tool call for the
+// forced tool (possible on the Anthropic wire, where parallel tool use is
+// on by default): folding only the first would silently drop the rest, so
+// the caller must surface the failure and retry rather than persist a
+// partial object.
+func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	if !injected || resp == nil || len(resp.ToolCalls) == 0 {
-		return
+		return nil
+	}
+	if len(resp.ToolCalls) > 1 {
+		return fmt.Errorf("structured output: model returned %d tool calls for the forced schema tool; expected exactly one", len(resp.ToolCalls))
 	}
 	// The forced tool is the model's structured answer. Fold its input back
 	// into Content even when it is an empty object ({} — valid for a schema
@@ -89,7 +100,7 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) {
 	}
 	b, err := json.Marshal(input)
 	if err != nil {
-		return
+		return fmt.Errorf("structured output: marshal tool input: %w", err)
 	}
 	resp.Content = string(b)
 	resp.ToolCalls = nil
@@ -97,4 +108,5 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) {
 	// stop reason would violate the invariant that tool_use implies there
 	// are tool calls to execute. Present it as a normal terminal turn.
 	resp.StopReason = "end_turn"
+	return nil
 }
