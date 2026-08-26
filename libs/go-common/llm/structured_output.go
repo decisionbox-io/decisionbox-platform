@@ -1,6 +1,9 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // defaultStructuredToolName is the synthetic tool name used when a
 // ResponseFormat carries no Name. Providers on the Anthropic wire (which
@@ -32,8 +35,13 @@ func ApplyResponseFormatAsTool(req ChatRequest) (ChatRequest, bool) {
 	if rf == nil || len(rf.Schema) == 0 || len(req.Tools) > 0 {
 		return req, false
 	}
+	// The name doubles as ToolChoice below, which providers interpret via
+	// their tool-choice mapping. A name that collides with a reserved
+	// tool-choice token ("auto"/"any"/"required"/"none") would be read as a
+	// MODE (e.g. "none" → don't call any tool) and silently disable forced
+	// tool use, so fall back to the default synthetic name in that case.
 	name := rf.Name
-	if name == "" {
+	if name == "" || isReservedToolChoice(name) {
 		name = defaultStructuredToolName
 	}
 	req.Tools = []ToolDefinition{{
@@ -43,6 +51,17 @@ func ApplyResponseFormatAsTool(req ChatRequest) (ChatRequest, bool) {
 	}}
 	req.ToolChoice = name
 	return req, true
+}
+
+// isReservedToolChoice reports whether s is one of the wire-neutral
+// tool-choice mode tokens (see ChatRequest.ToolChoice). A tool named like
+// one of these must not be used as a forced tool name.
+func isReservedToolChoice(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "auto", "any", "required", "none":
+		return true
+	}
+	return false
 }
 
 // NormalizeStructuredToolResponse folds a forced-tool reply back into

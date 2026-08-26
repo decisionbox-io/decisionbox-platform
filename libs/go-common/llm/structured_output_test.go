@@ -63,6 +63,22 @@ func TestApplyResponseFormatAsTool_InjectsForcedTool(t *testing.T) {
 	}
 }
 
+// A ResponseFormat.Name that collides with a reserved tool-choice token
+// must not be used as the forced tool name (it would serialise as a mode
+// like {type:"none"} and disable forced tool use).
+func TestApplyResponseFormatAsTool_ReservedNameFallsBack(t *testing.T) {
+	for _, reserved := range []string{"none", "auto", "any", "required", "NONE"} {
+		req := ChatRequest{ResponseFormat: &ResponseFormat{Name: reserved, Schema: sampleSchema()}}
+		got, injected := ApplyResponseFormatAsTool(req)
+		if !injected {
+			t.Fatalf("%s: injected=false", reserved)
+		}
+		if got.ToolChoice != defaultStructuredToolName || got.Tools[0].Name != defaultStructuredToolName {
+			t.Errorf("reserved name %q: tool/tool_choice = %q/%q, want default %q", reserved, got.Tools[0].Name, got.ToolChoice, defaultStructuredToolName)
+		}
+	}
+}
+
 func TestApplyResponseFormatAsTool_DefaultName(t *testing.T) {
 	req := ChatRequest{ResponseFormat: &ResponseFormat{Schema: sampleSchema()}}
 	got, _ := ApplyResponseFormatAsTool(req)
