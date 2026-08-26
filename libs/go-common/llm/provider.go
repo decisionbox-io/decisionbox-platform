@@ -80,6 +80,14 @@ type ChatRequest struct {
 	// set the caller's Tools win and ResponseFormat is ignored, so an
 	// existing tool-using flow can never be disturbed by this field.
 	ResponseFormat *ResponseFormat
+
+	// DisableParallelToolUse asks providers whose tool calling is parallel
+	// by default (Anthropic) to emit AT MOST ONE tool call. It is set
+	// automatically when a ResponseFormat is satisfied by a forced
+	// synthetic tool (see ApplyResponseFormatAsTool), so the structured
+	// answer comes back as exactly one object rather than several partial
+	// tool calls. Providers without a parallel-tool-use control ignore it.
+	DisableParallelToolUse bool
 }
 
 // ResponseFormat constrains a chat response to a JSON Schema. Providers

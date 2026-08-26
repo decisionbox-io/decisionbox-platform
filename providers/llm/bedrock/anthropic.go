@@ -56,6 +56,11 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		body["tools"] = buildAnthropicTools(req.Tools)
 	}
 	if tc := buildAnthropicToolChoice(req.ToolChoice); tc != nil {
+		if req.DisableParallelToolUse {
+			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
+				tc["disable_parallel_tool_use"] = true
+			}
+		}
 		body["tool_choice"] = tc
 	}
 

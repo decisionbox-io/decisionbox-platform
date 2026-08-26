@@ -79,6 +79,19 @@ func TestApplyResponseFormatAsTool_ReservedNameFallsBack(t *testing.T) {
 	}
 }
 
+// Injecting the forced structured tool must also request single-tool-use
+// so a parallel-tool-use provider (Anthropic) returns exactly one object.
+func TestApplyResponseFormatAsTool_DisablesParallelToolUse(t *testing.T) {
+	req := ChatRequest{ResponseFormat: &ResponseFormat{Name: "domain_pack", Schema: sampleSchema()}}
+	got, injected := ApplyResponseFormatAsTool(req)
+	if !injected {
+		t.Fatal("injected=false")
+	}
+	if !got.DisableParallelToolUse {
+		t.Error("DisableParallelToolUse should be set when forcing the structured tool")
+	}
+}
+
 func TestApplyResponseFormatAsTool_DefaultName(t *testing.T) {
 	req := ChatRequest{ResponseFormat: &ResponseFormat{Schema: sampleSchema()}}
 	got, _ := ApplyResponseFormatAsTool(req)

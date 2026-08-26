@@ -51,6 +51,11 @@ func ApplyResponseFormatAsTool(req ChatRequest) (ChatRequest, bool) {
 		InputSchema: rf.Schema,
 	}}
 	req.ToolChoice = name
+	// The structured answer is a single object, so forbid parallel tool use
+	// where the provider supports it (Anthropic) — otherwise Claude could
+	// legally return several calls to the synthetic tool and the fold-back
+	// would have to reject them.
+	req.DisableParallelToolUse = true
 	return req, true
 }
 

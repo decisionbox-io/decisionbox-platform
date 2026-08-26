@@ -191,6 +191,11 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		apiReq.Tools = convertToolsForClaude(req.Tools)
 	}
 	if tc := convertToolChoiceForClaude(req.ToolChoice); tc != nil {
+		if req.DisableParallelToolUse {
+			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
+				tc["disable_parallel_tool_use"] = true
+			}
+		}
 		apiReq.ToolChoice = tc
 	}
 
