@@ -56,19 +56,22 @@ func ApplyResponseFormatAsTool(req ChatRequest) (ChatRequest, bool) {
 // under a forced tool_choice), Content is left as-is so the caller's own
 // parser still sees whatever was produced.
 func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) {
-	if !injected || resp == nil {
+	if !injected || resp == nil || len(resp.ToolCalls) == 0 {
 		return
 	}
-	for _, tc := range resp.ToolCalls {
-		if len(tc.Input) == 0 {
-			continue
-		}
-		b, err := json.Marshal(tc.Input)
-		if err != nil {
-			continue
-		}
-		resp.Content = string(b)
-		resp.ToolCalls = nil
+	// The forced tool is the model's structured answer. Fold its input back
+	// into Content even when it is an empty object ({} — valid for a schema
+	// whose fields are all optional), so the caller never sees the
+	// synthetic tool call and always gets a parseable JSON string. A nil
+	// input map marshals to "null", so normalise it to an empty object.
+	input := resp.ToolCalls[0].Input
+	if input == nil {
+		input = map[string]interface{}{}
+	}
+	b, err := json.Marshal(input)
+	if err != nil {
 		return
 	}
+	resp.Content = string(b)
+	resp.ToolCalls = nil
 }

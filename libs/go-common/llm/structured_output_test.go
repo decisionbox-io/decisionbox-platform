@@ -116,6 +116,33 @@ func TestNormalizeStructuredToolResponse_FoldsToolInputToContent(t *testing.T) {
 	}
 }
 
+// An empty object {} is a valid structured response (schema with only
+// optional fields / empty dynamic maps) and must still be folded into
+// Content — not left as an exposed tool call with empty Content.
+func TestNormalizeStructuredToolResponse_EmptyObjectFolded(t *testing.T) {
+	resp := &ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls:  []ToolCall{{ID: "t1", Name: "domain_pack", Input: map[string]interface{}{}}},
+	}
+	NormalizeStructuredToolResponse(resp, true)
+	if resp.Content != "{}" {
+		t.Errorf("Content = %q, want %q", resp.Content, "{}")
+	}
+	if resp.ToolCalls != nil {
+		t.Error("ToolCalls should be cleared")
+	}
+}
+
+// A nil input map (no arguments captured) normalises to {} rather than
+// "null".
+func TestNormalizeStructuredToolResponse_NilInputBecomesEmptyObject(t *testing.T) {
+	resp := &ChatResponse{ToolCalls: []ToolCall{{ID: "t1", Name: "domain_pack"}}}
+	NormalizeStructuredToolResponse(resp, true)
+	if resp.Content != "{}" {
+		t.Errorf("Content = %q, want %q", resp.Content, "{}")
+	}
+}
+
 func TestNormalizeStructuredToolResponse_NotInjectedIsNoop(t *testing.T) {
 	resp := &ChatResponse{Content: "hello", ToolCalls: []ToolCall{{Name: "x", Input: map[string]interface{}{"a": 1}}}}
 	NormalizeStructuredToolResponse(resp, false)
