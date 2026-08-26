@@ -114,6 +114,11 @@ func TestNormalizeStructuredToolResponse_FoldsToolInputToContent(t *testing.T) {
 	if resp.ToolCalls != nil {
 		t.Error("ToolCalls should be cleared after folding")
 	}
+	// The tool_use stop reason must be normalised — a hidden tool call must
+	// not leave callers thinking there is a tool to execute.
+	if resp.StopReason == "tool_use" {
+		t.Errorf("StopReason should be normalised away from tool_use, got %q", resp.StopReason)
+	}
 }
 
 // An empty object {} is a valid structured response (schema with only

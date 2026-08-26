@@ -74,4 +74,8 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) {
 	}
 	resp.Content = string(b)
 	resp.ToolCalls = nil
+	// The synthetic tool call is now hidden, so the upstream "tool_use"
+	// stop reason would violate the invariant that tool_use implies there
+	// are tool calls to execute. Present it as a normal terminal turn.
+	resp.StopReason = "end_turn"
 }

@@ -20,6 +20,10 @@ import (
 //
 //	https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/endpoints
 func (p *AzureFoundryProvider) openaiChat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Azure Foundry does not advertise SupportsStructuredOutput, so honour
+	// the ResponseFormat contract ("unsupported providers ignore it")
+	// rather than forwarding response_format to a backend that may reject it.
+	req.ResponseFormat = nil
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
 	jsonBody, err := json.Marshal(body)
