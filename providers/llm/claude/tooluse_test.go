@@ -291,3 +291,29 @@ func TestChat_StructuredOutput_ForcesToolAndFolds(t *testing.T) {
 		t.Errorf("want 1 forced tool on the wire, got %d", len(tools))
 	}
 }
+
+// TestChat_DisableParallelToolUse_AutoChoice verifies the exported flag is
+// honoured even when the caller leaves tool_choice at the default: a
+// {type:"auto"} choice is synthesized carrying disable_parallel_tool_use.
+func TestChat_DisableParallelToolUse_AutoChoice(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"model":"claude-sonnet-4-6","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p := newTestClaudeWithServer(t, srv.URL)
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:               []gollm.Message{{Role: "user", Content: "go"}},
+		Tools:                  []gollm.ToolDefinition{{Name: "search", InputSchema: map[string]interface{}{"type": "object"}}},
+		DisableParallelToolUse: true,
+	})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	tc, _ := body["tool_choice"].(map[string]interface{})
+	if tc == nil || tc["type"] != "auto" || tc["disable_parallel_tool_use"] != true {
+		t.Errorf("tool_choice = %v, want {type:auto, disable_parallel_tool_use:true}", body["tool_choice"])
+	}
+}

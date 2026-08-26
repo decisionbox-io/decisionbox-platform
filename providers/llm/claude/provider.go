@@ -190,12 +190,21 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	if len(req.Tools) > 0 {
 		apiReq.Tools = convertToolsForClaude(req.Tools)
 	}
-	if tc := convertToolChoiceForClaude(req.ToolChoice); tc != nil {
-		if req.DisableParallelToolUse {
-			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
-				tc["disable_parallel_tool_use"] = true
-			}
+	tc := convertToolChoiceForClaude(req.ToolChoice)
+	// disable_parallel_tool_use is only honoured by Anthropic inside a
+	// tool_choice object, including {type:"auto"}. When the caller asks for
+	// single-tool-use but left tool_choice at the default, synthesize the
+	// auto choice so the flag is applied (only meaningful when tools are
+	// present). Existing callers that don't set the flag are unchanged.
+	if req.DisableParallelToolUse && len(req.Tools) > 0 {
+		if tc == nil {
+			tc = map[string]interface{}{"type": "auto"}
 		}
+		if t, _ := tc["type"].(string); t == "tool" || t == "any" || t == "auto" {
+			tc["disable_parallel_tool_use"] = true
+		}
+	}
+	if tc != nil {
 		apiReq.ToolChoice = tc
 	}
 
