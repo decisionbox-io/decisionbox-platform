@@ -23,6 +23,11 @@ import (
 // format — they talk the same Anthropic Messages API, just at different
 // endpoints.
 func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Structured output: the Anthropic wire has no response_format field,
+	// so a ResponseFormat becomes a single forced tool. No-op when unset
+	// or the caller supplied its own tools.
+	req, structured := gollm.ApplyResponseFormatAsTool(req)
+
 	messages, err := buildAnthropicMessages(req.Messages)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
@@ -110,7 +115,7 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		}
 	}
 
-	return &gollm.ChatResponse{
+	resp := &gollm.ChatResponse{
 		Content:    content,
 		Model:      anthropicResp.Model,
 		StopReason: anthropicResp.StopReason,
@@ -119,7 +124,9 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 			OutputTokens: anthropicResp.Usage.OutputTokens,
 		},
 		ToolCalls: toolCalls,
-	}, nil
+	}
+	gollm.NormalizeStructuredToolResponse(resp, structured)
+	return resp, nil
 }
 
 // buildAnthropicMessages translates the neutral Message shape into

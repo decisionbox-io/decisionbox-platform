@@ -41,6 +41,32 @@ type RequestBody struct {
 	// always did.
 	Tools      []Tool      `json:"tools,omitempty"`
 	ToolChoice interface{} `json:"tool_choice,omitempty"`
+
+	// ResponseFormat is populated only when the caller supplies
+	// ChatRequest.ResponseFormat. Omitted otherwise so requests that
+	// don't ask for structured output keep exactly the shape they always
+	// had.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// ResponseFormat is the OpenAI `response_format` object. Only the
+// json_schema variant is emitted here (Type == "json_schema"); the
+// json_object and text variants have no consumer.
+type ResponseFormat struct {
+	Type       string      `json:"type"`
+	JSONSchema *JSONSchema `json:"json_schema,omitempty"`
+}
+
+// JSONSchema is the inner object of a json_schema response_format.
+// Strict is intentionally left false for schemas that use open-ended
+// (dynamic-key) objects: OpenAI strict mode forbids them (it requires
+// additionalProperties:false and every property required), which would
+// drop such fields. Non-strict json_schema still steers the model to a
+// single conforming object while keeping open maps expressible.
+type JSONSchema struct {
+	Name   string                 `json:"name"`
+	Schema map[string]interface{} `json:"schema"`
+	Strict bool                   `json:"strict"`
 }
 
 // Tool is one entry in the `tools` array. OpenAI distinguishes tool type
@@ -65,7 +91,7 @@ type ToolFunction struct {
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
-	Name       string     `json:"name,omitempty"`        // legacy function-call naming
+	Name       string     `json:"name,omitempty"`         // legacy function-call naming
 	ToolCallID string     `json:"tool_call_id,omitempty"` // only on role=tool
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
@@ -86,10 +112,10 @@ type ToolCallFunction struct {
 
 // ResponseBody is the OpenAI /chat/completions response body.
 type ResponseBody struct {
-	ID      string   `json:"id"`
-	Model   string   `json:"model"`
-	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
+	ID      string    `json:"id"`
+	Model   string    `json:"model"`
+	Choices []Choice  `json:"choices"`
+	Usage   Usage     `json:"usage"`
 	Error   *APIError `json:"error,omitempty"`
 }
 
@@ -228,6 +254,20 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 	}
 	if tc := translateToolChoice(req.ToolChoice); tc != nil {
 		body.ToolChoice = tc
+	}
+	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
+		name := rf.Name
+		if name == "" {
+			name = "response"
+		}
+		body.ResponseFormat = &ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &JSONSchema{
+				Name:   name,
+				Schema: rf.Schema,
+				Strict: rf.Strict,
+			},
+		}
 	}
 	return body
 }

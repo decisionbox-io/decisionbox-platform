@@ -1,0 +1,135 @@
+package llm
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func sampleSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"slug": map[string]interface{}{"type": "string"},
+		},
+		// An open-ended (dynamic-key) object — the exact shape strict
+		// OpenAI json_schema forbids but Ollama grammar and Anthropic tool
+		// input schemas accept. Kept here so the helper is exercised with
+		// the shape the feature must preserve.
+		"categories": map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": map[string]interface{}{"type": "string"},
+		},
+	}
+}
+
+func TestApplyResponseFormatAsTool_NoResponseFormat(t *testing.T) {
+	req := ChatRequest{Model: "m"}
+	got, injected := ApplyResponseFormatAsTool(req)
+	if injected {
+		t.Fatal("injected=true with no ResponseFormat")
+	}
+	if len(got.Tools) != 0 || got.ToolChoice != "" {
+		t.Errorf("request mutated: tools=%v toolChoice=%q", got.Tools, got.ToolChoice)
+	}
+}
+
+func TestApplyResponseFormatAsTool_EmptySchemaNoop(t *testing.T) {
+	req := ChatRequest{ResponseFormat: &ResponseFormat{Name: "x"}}
+	_, injected := ApplyResponseFormatAsTool(req)
+	if injected {
+		t.Fatal("injected=true with empty schema")
+	}
+}
+
+func TestApplyResponseFormatAsTool_InjectsForcedTool(t *testing.T) {
+	req := ChatRequest{ResponseFormat: &ResponseFormat{Name: "domain_pack", Schema: sampleSchema()}}
+	got, injected := ApplyResponseFormatAsTool(req)
+	if !injected {
+		t.Fatal("injected=false, want true")
+	}
+	if len(got.Tools) != 1 {
+		t.Fatalf("want 1 tool, got %d", len(got.Tools))
+	}
+	if got.Tools[0].Name != "domain_pack" {
+		t.Errorf("tool name = %q, want domain_pack", got.Tools[0].Name)
+	}
+	if got.ToolChoice != "domain_pack" {
+		t.Errorf("tool_choice = %q, want domain_pack (forced)", got.ToolChoice)
+	}
+	// The open-ended object must survive into the tool input schema.
+	cats, ok := got.Tools[0].InputSchema["categories"].(map[string]interface{})
+	if !ok || cats["additionalProperties"] == nil {
+		t.Errorf("open-ended 'categories' object dropped from tool schema: %v", got.Tools[0].InputSchema)
+	}
+}
+
+func TestApplyResponseFormatAsTool_DefaultName(t *testing.T) {
+	req := ChatRequest{ResponseFormat: &ResponseFormat{Schema: sampleSchema()}}
+	got, _ := ApplyResponseFormatAsTool(req)
+	if got.Tools[0].Name != defaultStructuredToolName {
+		t.Errorf("tool name = %q, want %q", got.Tools[0].Name, defaultStructuredToolName)
+	}
+}
+
+// The caller's own tools must always win — ResponseFormat can never
+// disturb an existing tool-using flow (e.g. /ask function calling).
+func TestApplyResponseFormatAsTool_CallerToolsWin(t *testing.T) {
+	req := ChatRequest{
+		ResponseFormat: &ResponseFormat{Name: "domain_pack", Schema: sampleSchema()},
+		Tools:          []ToolDefinition{{Name: "search"}},
+		ToolChoice:     "auto",
+	}
+	got, injected := ApplyResponseFormatAsTool(req)
+	if injected {
+		t.Fatal("injected=true despite caller-supplied tools")
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Name != "search" {
+		t.Errorf("caller tools mutated: %v", got.Tools)
+	}
+	if got.ToolChoice != "auto" {
+		t.Errorf("caller tool_choice mutated: %q", got.ToolChoice)
+	}
+}
+
+func TestNormalizeStructuredToolResponse_FoldsToolInputToContent(t *testing.T) {
+	resp := &ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls: []ToolCall{{
+			ID:    "t1",
+			Name:  "domain_pack",
+			Input: map[string]interface{}{"slug": "acme"},
+		}},
+	}
+	NormalizeStructuredToolResponse(resp, true)
+	if resp.Content == "" {
+		t.Fatal("content not populated from tool input")
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(resp.Content), &got); err != nil {
+		t.Fatalf("content is not valid JSON: %v (%q)", err, resp.Content)
+	}
+	if got["slug"] != "acme" {
+		t.Errorf("content = %q, want slug=acme", resp.Content)
+	}
+	if resp.ToolCalls != nil {
+		t.Error("ToolCalls should be cleared after folding")
+	}
+}
+
+func TestNormalizeStructuredToolResponse_NotInjectedIsNoop(t *testing.T) {
+	resp := &ChatResponse{Content: "hello", ToolCalls: []ToolCall{{Name: "x", Input: map[string]interface{}{"a": 1}}}}
+	NormalizeStructuredToolResponse(resp, false)
+	if resp.Content != "hello" || resp.ToolCalls == nil {
+		t.Error("no-op expected when injected=false")
+	}
+}
+
+// When the model returned plain text (rare under a forced tool_choice)
+// the caller's own parser must still see it — Content is left untouched.
+func TestNormalizeStructuredToolResponse_TextResponseLeftIntact(t *testing.T) {
+	resp := &ChatResponse{Content: `{"slug":"acme"}`}
+	NormalizeStructuredToolResponse(resp, true)
+	if resp.Content != `{"slug":"acme"}` {
+		t.Errorf("content mutated: %q", resp.Content)
+	}
+}

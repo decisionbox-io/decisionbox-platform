@@ -77,6 +77,11 @@ func init() {
 		// Claude supports tool_use natively. Enables function-calling on
 		// /ask and any other tool-dependent flow.
 		SupportsTools: true,
+		// Chat honours ChatRequest.ResponseFormat by forcing a single
+		// tool whose input schema is the requested schema (the Anthropic
+		// wire has no response_format field). Tool input schemas accept
+		// open-ended objects, so the full shape is representable.
+		SupportsStructuredOutput: true,
 	})
 }
 
@@ -165,6 +170,12 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		maxTokens = 4096
 	}
 
+	// Structured output: the Anthropic Messages API has no response_format
+	// field, so a ResponseFormat is satisfied by forcing a single tool
+	// whose input schema is the requested schema. This is a no-op when no
+	// ResponseFormat was set or the caller supplied its own tools.
+	req, structured := gollm.ApplyResponseFormatAsTool(req)
+
 	claudeMessages, err := convertMessagesForClaude(req.Messages)
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
@@ -187,6 +198,7 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	for attempt := 1; attempt <= p.maxRetries; attempt++ {
 		resp, err := p.sendRequest(ctx, &apiReq)
 		if err == nil {
+			gollm.NormalizeStructuredToolResponse(resp, structured)
 			return resp, nil
 		}
 		lastErr = err
@@ -324,10 +336,10 @@ func convertMessagesForClaude(msgs []gollm.Message) ([]claudeMessage, error) {
 					input = map[string]interface{}{}
 				}
 				blocks = append(blocks, claudeContentBlock{
-					Type:       "tool_use",
-					ID:         call.ID,
-					Name:       call.Name,
-					Input:      input,
+					Type:  "tool_use",
+					ID:    call.ID,
+					Name:  call.Name,
+					Input: input,
 				})
 			}
 			out = append(out, claudeMessage{Role: m.Role, Content: blocks})

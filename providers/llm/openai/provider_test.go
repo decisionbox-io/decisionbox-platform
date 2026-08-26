@@ -390,3 +390,10 @@ func TestProviderFactory_DefaultModel(t *testing.T) {
 		t.Error("provider should not be nil")
 	}
 }
+
+func TestOpenAIProvider_SupportsStructuredOutput(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("openai")
+	if !meta.SupportsStructuredOutput {
+		t.Error("openai should advertise SupportsStructuredOutput (response_format json_schema)")
+	}
+}
