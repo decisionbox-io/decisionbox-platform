@@ -55,20 +55,14 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 	if len(req.Tools) > 0 {
 		body["tools"] = buildAnthropicTools(req.Tools)
 	}
-	tc := buildAnthropicToolChoice(req.ToolChoice)
-	// disable_parallel_tool_use is only honoured inside a tool_choice object
-	// (including {type:"auto"}). Synthesize the auto choice when the caller
-	// asked for single-tool-use but left tool_choice at the default, so the
-	// flag is applied. Only meaningful with tools; no-op without the flag.
-	if req.DisableParallelToolUse && len(req.Tools) > 0 {
-		if tc == nil {
-			tc = map[string]interface{}{"type": "auto"}
+	if tc := buildAnthropicToolChoice(req.ToolChoice); tc != nil {
+		// Forcing the synthetic structured-output tool asks for a single
+		// object, so disable parallel tool use on it.
+		if req.DisableParallelToolUse {
+			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
+				tc["disable_parallel_tool_use"] = true
+			}
 		}
-		if t, _ := tc["type"].(string); t == "tool" || t == "any" || t == "auto" {
-			tc["disable_parallel_tool_use"] = true
-		}
-	}
-	if tc != nil {
 		body["tool_choice"] = tc
 	}
 
