@@ -32,7 +32,7 @@ func TestExtractJSON_ReasoningAndActionCorpus(t *testing.T) {
 		{"lookup_schema_with_noise", "<think>need schemas {unbalanced</think>\n{\"lookup_schema\":[\"ds.t1\",\"ds.t2\"]}", "lookup_schema", "ds.t1"},
 		{"tool_envelope_in_prose", "Sure, running it.\n{\"name\":\"query_data\",\"input\":{\"query\":\"SELECT 8\"}}", "query_data", "SELECT 8"},
 		{"single_element_array", "[{\"query\":\"SELECT 9\"}]", "query_data", "SELECT 9"},
-		{"unbalanced_preamble", "oops here is a stray { brace\n{\"query\":\"SELECT 10\"}", "query_data", "SELECT 10"},
+		{"balanced_planning_then_action", "{\"plan\":\"first inspect\"} then {\"query\":\"SELECT 10\"}", "query_data", "SELECT 10"},
 		{"draft_in_think_real_after", "<think>{\"search_tables\":\"draft\"}</think>\n{\"search_tables\":\"real query\"}", "search_tables", "real query"},
 	}
 	for _, tc := range cases {
@@ -64,7 +64,9 @@ func TestExtractJSON_NoActionCorpus(t *testing.T) {
 		{"truncated_unclosed_think", "<think>reasoning that never closes and has a {partial fragment"},
 		// A truncated planning object with a nested draft action must NOT run
 		// the draft — it should be a parse error that triggers the retry.
-		{"truncated_plan_nested_action", "{\"plan\":{\"query\":\"SELECT draft\"}"},
+		{"truncated_plan_nested_object", "{\"plan\":{\"query\":\"SELECT draft\"}"},
+		{"truncated_plan_nested_array", "{\"plan\":[{\"query\":\"SELECT draft\"}]"},
+		{"stray_unbalanced_preamble", "oops here is a stray { brace\n{\"query\":\"SELECT 10\"}"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,13 +106,17 @@ func TestJSONHasActionKey_Widened(t *testing.T) {
 	}
 }
 
-func TestFindBalancedJSONObjects_SkipsUnbalancedPrefix(t *testing.T) {
-	// A stray unbalanced '{' before a valid object must not abort the scan.
-	got := findBalancedJSONObjects("prefix { never closes ... {\"query\":\"ok\"}")
-	if len(got) != 1 || !strings.Contains(got[0], `"query":"ok"`) {
-		t.Fatalf("got %v, want the trailing balanced object", got)
+func TestFindBalancedJSONObjects_AbortsOnUnbalanced(t *testing.T) {
+	// A balanced object before an unbalanced one is still returned.
+	got := findBalancedJSONObjects(`{"a":1} then {unbalanced`)
+	if len(got) != 1 || !strings.Contains(got[0], `"a":1`) {
+		t.Fatalf("got %v, want the leading balanced object", got)
 	}
-	// A single trailing unbalanced object still yields nothing.
+	// An unbalanced object stops the scan so a nested fragment after it is not
+	// extracted (issue #341 — don't run a draft from a truncated preamble).
+	if out := findBalancedJSONObjects(`{"plan":[{"query":"draft"}]`); len(out) != 0 {
+		t.Errorf("unbalanced outer must yield no objects, got %v", out)
+	}
 	if out := findBalancedJSONObjects("text { unbalanced only"); len(out) != 0 {
 		t.Errorf("unbalanced-only should yield no objects, got %v", out)
 	}
@@ -143,6 +149,8 @@ func driveOneStep(t *testing.T, engine *ExplorationEngine, providerName string) 
 }
 
 func TestExploration_TokenCapFromCatalog(t *testing.T) {
+	// A catalog cap below the per-step ceiling is used as-is (and is well above
+	// the old hard-coded 4096).
 	const pn = "test-explore-maxtok"
 	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
 		gollm.ProviderMeta{ID: pn, Name: "explore maxtok",
@@ -151,7 +159,22 @@ func TestExploration_TokenCapFromCatalog(t *testing.T) {
 	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
 	driveOneStep(t, engine, pn)
 	if got := provider.Calls[0].Request.MaxTokens; got != 12321 {
-		t.Errorf("MaxTokens = %d, want 12321 (catalog cap, not the old hard-coded 4096)", got)
+		t.Errorf("MaxTokens = %d, want 12321 (catalog cap below the ceiling)", got)
+	}
+}
+
+func TestExploration_TokenCapClampedToCeiling(t *testing.T) {
+	// A huge catalog cap (64K) is clamped to the per-step ceiling so the
+	// reservation can't overflow the context window (Codex review, #341).
+	const pn = "test-explore-bigmaxtok"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: pn, Name: "explore big maxtok",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 64000}}})
+
+	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine, pn)
+	if got := provider.Calls[0].Request.MaxTokens; got != explorationStepMaxOutputTokens {
+		t.Errorf("MaxTokens = %d, want %d (clamped to the per-step ceiling)", got, explorationStepMaxOutputTokens)
 	}
 }
 

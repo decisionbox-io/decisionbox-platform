@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -96,6 +97,17 @@ type ExplorationEngine struct {
 // when it returns a response we can't parse. Each retry injects a short
 // "please respond in JSON" nudge into the conversation.
 const maxParseRetries = 3
+
+// explorationStepMaxOutputTokens bounds the per-step output budget. It must be
+// large enough for a reasoning model's <think> block plus the action JSON (the
+// old hard-coded 4096 truncated verbose reasoners — issue #341), yet small
+// enough that reserving it as max_tokens does not overflow a model's context
+// window once the conversation has grown. The effective budget is
+// min(this, the model's catalogued output cap); override with
+// EXPLORATION_MAX_OUTPUT_TOKENS.
+const explorationStepMaxOutputTokens = 16384
+
+const explorationMaxOutputTokensEnv = "EXPLORATION_MAX_OUTPUT_TOKENS"
 
 // StepCallback is called after each exploration step with live progress data.
 //
@@ -586,12 +598,17 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
-	// Size the output budget to the model's catalogued cap rather than a
-	// hard-coded 4096 (Rule 2): a reasoning model's <think> block can consume
-	// the whole budget and truncate the action to empty before it is emitted
-	// (issue #341). GetMaxOutputTokens falls back to a safe global default for
-	// unknown models, so this never yields 0.
+	// Size the per-step output budget above the old hard-coded 4096 (Rule 2):
+	// a reasoning model's <think> block can consume the whole budget and
+	// truncate the action to empty before it is emitted (issue #341). Bounded
+	// by a per-step ceiling so reserving it as max_tokens can't exceed a
+	// model's context window once the conversation has grown — the effective
+	// value is min(catalogued output cap, ceiling), never 0.
+	ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens)
 	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
+	if ceiling > 0 && maxTokens > ceiling {
+		maxTokens = ceiling
+	}
 
 	// Constrain the action shape at generation time where the provider
 	// supports it. CreateMessageWithFormat self-gates on
@@ -964,15 +981,6 @@ func findBalancedJSONObjects(text string) []string {
 		if text[i] != '{' {
 			continue
 		}
-		// A '{' that is a JSON object value (`"key": {…}`) is nested content,
-		// not a fresh top-level object. Skipping it keeps the skip-not-abort
-		// scan from digging a nested action out of an unbalanced / truncated
-		// outer object (e.g. `{"plan":{"query":"…"}` — a draft the model never
-		// meant to run), while still finding a real action that follows a
-		// prose colon ("running the query:\n{…}"), stray braces, or an array.
-		if isNestedObjectValue(text, i) {
-			continue
-		}
 		depth := 0
 		inString := false
 		escaped := false
@@ -1007,44 +1015,20 @@ func findBalancedJSONObjects(text string) []string {
 				break
 			}
 		}
-		if balancedEnd >= 0 {
-			out = append(out, text[i:balancedEnd+1])
-			i = balancedEnd // resume after this object
-			continue
+		if balancedEnd < 0 {
+			// Unbalanced from this '{' — stop. A genuinely malformed or
+			// truncated object (e.g. an unterminated `{"plan":{…}` or
+			// `{"plan":[{…}]`) must NOT have a nested fragment extracted as an
+			// action; extraction returns nothing so the caller re-prompts
+			// (issue #341). Reasoning prose that would otherwise carry stray
+			// braces is already removed by stripReasoningBlocks before we
+			// reach here, so this rarely fires on well-formed turns.
+			break
 		}
-		// Unbalanced from this '{' — skip it and keep scanning. A stray '{'
-		// in a reasoning/preamble must not abort the search for a valid
-		// action object further down (issue #341).
+		out = append(out, text[i:balancedEnd+1])
+		i = balancedEnd // resume after this object
 	}
 	return out
-}
-
-// isNestedObjectValue reports whether the '{' at position i is a JSON object
-// value — i.e. immediately preceded (ignoring whitespace) by a ':' that is
-// itself preceded by a '"' (the end of a key string), as in `"key": {…}`. A
-// bare prose colon ("running the query:\n{…}") does not qualify, so a real
-// action after prose is still found.
-func isNestedObjectValue(text string, i int) bool {
-	k := prevNonSpace(text, i-1)
-	if k < 0 || text[k] != ':' {
-		return false
-	}
-	k = prevNonSpace(text, k-1)
-	return k >= 0 && text[k] == '"'
-}
-
-// prevNonSpace returns the index of the nearest non-whitespace byte at or
-// before start, or -1 if none.
-func prevNonSpace(text string, start int) int {
-	for k := start; k >= 0; k-- {
-		switch text[k] {
-		case ' ', '\t', '\n', '\r':
-			continue
-		default:
-			return k
-		}
-	}
-	return -1
 }
 
 // jsonHasActionKey reports whether the JSON-encoded object declares a field the
