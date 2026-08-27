@@ -964,6 +964,15 @@ func findBalancedJSONObjects(text string) []string {
 		if text[i] != '{' {
 			continue
 		}
+		// A '{' that is a JSON object value (`"key": {…}`) is nested content,
+		// not a fresh top-level object. Skipping it keeps the skip-not-abort
+		// scan from digging a nested action out of an unbalanced / truncated
+		// outer object (e.g. `{"plan":{"query":"…"}` — a draft the model never
+		// meant to run), while still finding a real action that follows a
+		// prose colon ("running the query:\n{…}"), stray braces, or an array.
+		if isNestedObjectValue(text, i) {
+			continue
+		}
 		depth := 0
 		inString := false
 		escaped := false
@@ -1008,6 +1017,34 @@ func findBalancedJSONObjects(text string) []string {
 		// action object further down (issue #341).
 	}
 	return out
+}
+
+// isNestedObjectValue reports whether the '{' at position i is a JSON object
+// value — i.e. immediately preceded (ignoring whitespace) by a ':' that is
+// itself preceded by a '"' (the end of a key string), as in `"key": {…}`. A
+// bare prose colon ("running the query:\n{…}") does not qualify, so a real
+// action after prose is still found.
+func isNestedObjectValue(text string, i int) bool {
+	k := prevNonSpace(text, i-1)
+	if k < 0 || text[k] != ':' {
+		return false
+	}
+	k = prevNonSpace(text, k-1)
+	return k >= 0 && text[k] == '"'
+}
+
+// prevNonSpace returns the index of the nearest non-whitespace byte at or
+// before start, or -1 if none.
+func prevNonSpace(text string, start int) int {
+	for k := start; k >= 0; k-- {
+		switch text[k] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return k
+		}
+	}
+	return -1
 }
 
 // jsonHasActionKey reports whether the JSON-encoded object declares a field the

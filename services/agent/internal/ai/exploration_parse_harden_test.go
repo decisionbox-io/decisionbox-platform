@@ -62,6 +62,9 @@ func TestExtractJSON_NoActionCorpus(t *testing.T) {
 		{"prose_only", "I have no idea what to do next."},
 		{"thinking_only_object", "{\"thinking\":\"hmm, not sure\"}"},
 		{"truncated_unclosed_think", "<think>reasoning that never closes and has a {partial fragment"},
+		// A truncated planning object with a nested draft action must NOT run
+		// the draft — it should be a parse error that triggers the retry.
+		{"truncated_plan_nested_action", "{\"plan\":{\"query\":\"SELECT draft\"}"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
