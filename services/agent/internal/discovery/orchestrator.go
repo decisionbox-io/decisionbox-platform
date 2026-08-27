@@ -1484,6 +1484,11 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 		if !found {
 			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
 		}
+		if strings.TrimSpace(string(recRaw)) == "null" {
+			// A null array decodes into a nil slice without error; treat it as a
+			// parse failure (→ retry) rather than a silent empty result.
+			return nil, 0, fmt.Errorf(`"recommendations" is null`)
+		}
 		if err := json.Unmarshal(recRaw, &raws); err != nil {
 			return nil, 0, fmt.Errorf(`"recommendations" is not an array: %w`, err)
 		}

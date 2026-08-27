@@ -100,9 +100,9 @@ func TestParseRecommendations_WrongEnvelopeKeyIsError(t *testing.T) {
 	// A JSON object without the "recommendations" key is a parse failure, not
 	// a legitimately empty result — otherwise it silently yields 0 recs with
 	// no retry (Codex review, #342).
-	for _, in := range []string{`{"recommendation":[{"title":"a"}]}`, `{"items":[{"title":"a"}]}`, `{}`} {
+	for _, in := range []string{`{"recommendation":[{"title":"a"}]}`, `{"items":[{"title":"a"}]}`, `{}`, `{"recommendations":null}`} {
 		if _, _, err := parseRecommendations(in); err == nil {
-			t.Errorf("parseRecommendations(%s): want error for missing recommendations key, got nil", in)
+			t.Errorf("parseRecommendations(%s): want error for missing/null recommendations key, got nil", in)
 		}
 	}
 }

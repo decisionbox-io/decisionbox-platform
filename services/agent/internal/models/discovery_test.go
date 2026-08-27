@@ -850,3 +850,17 @@ func TestNumericFieldCoercion(t *testing.T) {
 		t.Errorf("Confidence = %v, want 0.85", rec.Confidence)
 	}
 }
+
+// TestNonFiniteNumericRejected ensures NaN/Inf strings don't poison a stored
+// float (which would later break JSON serialization of the discovery).
+func TestNonFiniteNumericRejected(t *testing.T) {
+	for _, in := range []string{`{"title":"t","confidence":"NaN"}`, `{"title":"t","confidence":"Inf"}`, `{"title":"t","segment_size":"-Inf"}`} {
+		var rec Recommendation
+		if err := json.Unmarshal([]byte(in), &rec); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", in, err)
+		}
+		if rec.Confidence != 0 || rec.SegmentSize != 0 {
+			t.Errorf("%s: non-finite value leaked (confidence=%v segment=%d)", in, rec.Confidence, rec.SegmentSize)
+		}
+	}
+}

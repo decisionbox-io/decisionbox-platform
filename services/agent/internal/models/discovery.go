@@ -3,6 +3,7 @@ package models
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -233,7 +234,10 @@ func coerceFlexFloat(raw json.RawMessage) float64 {
 	return 0
 }
 
-// flexNumber parses a JSON number or numeric string into a float64.
+// flexNumber parses a JSON number or numeric string into a finite float64.
+// Non-finite values (NaN/Inf, which strconv.ParseFloat accepts from strings
+// like "NaN"/"Inf") are rejected — storing one would later break JSON
+// serialization of the whole discovery ("json: unsupported value: NaN").
 func flexNumber(raw json.RawMessage) (float64, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -249,10 +253,13 @@ func flexNumber(raw json.RawMessage) (float64, bool) {
 			return 0, false
 		}
 		f, err := strconv.ParseFloat(s, 64)
-		return f, err == nil
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
 	}
 	var n float64
-	if json.Unmarshal(raw, &n) == nil {
+	if json.Unmarshal(raw, &n) == nil && !math.IsNaN(n) && !math.IsInf(n, 0) {
 		return n, true
 	}
 	return 0, false
