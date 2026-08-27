@@ -3,6 +3,8 @@ package models
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -141,6 +143,117 @@ type Recommendation struct {
 	// orchestrator's recommendation-validation phase runs. Nil on
 	// legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
+}
+
+// UnmarshalJSON decodes a recommendation tolerantly. Beyond the tolerant
+// Impact decoding, it coerces the numeric scalar fields (priority,
+// segment_size, confidence) when a model emits them as strings — a common,
+// model-independent behaviour that, under strict decoding, failed the whole
+// recommendation and (because the batch was decoded in one shot) silently
+// zeroed the run's recommendations (issue #342). priority accepts descriptive
+// words ("high", "critical", "P2") as well as numbers; segment_size and
+// confidence accept numeric strings (including thousands separators).
+//
+// Only JSON decoding is customized; BSON is unaffected, so persisted
+// recommendations read back unchanged.
+func (r *Recommendation) UnmarshalJSON(data []byte) error {
+	type alias Recommendation
+	aux := &struct {
+		Priority    json.RawMessage `json:"priority"`
+		SegmentSize json.RawMessage `json:"segment_size"`
+		Confidence  json.RawMessage `json:"confidence"`
+		*alias
+	}{alias: (*alias)(r)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.Priority = coercePriority(aux.Priority)
+	r.SegmentSize = coerceFlexInt(aux.SegmentSize)
+	r.Confidence = coerceFlexFloat(aux.Confidence)
+	return nil
+}
+
+// coercePriority reads a recommendation priority that may be a number or a
+// descriptive string. Numbers pass through; "P2"/"2" parse directly; and
+// severity words map onto the 1 (highest) – 5 (lowest) scale. An
+// unrecognized value yields 0 (unset) rather than failing the decode.
+func coercePriority(raw json.RawMessage) int {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return 0
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimPrefix(s, "p") // "P2" -> "2"
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			return n
+		}
+		switch {
+		case strings.Contains(s, "critical"), strings.Contains(s, "highest"), strings.Contains(s, "urgent"):
+			return 1
+		case strings.Contains(s, "high"):
+			return 2
+		case strings.Contains(s, "medium"), strings.Contains(s, "moderate"), strings.Contains(s, "med"):
+			return 3
+		case strings.Contains(s, "low"):
+			return 4
+		case strings.Contains(s, "optional"), strings.Contains(s, "minimal"), strings.Contains(s, "lowest"):
+			return 5
+		}
+		return 0
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) == nil {
+		return int(n)
+	}
+	return 0
+}
+
+// coerceFlexInt reads an int that may arrive as a number or a numeric string
+// (thousands separators tolerated). Unparseable input yields 0.
+func coerceFlexInt(raw json.RawMessage) int {
+	if f, ok := flexNumber(raw); ok {
+		return int(f)
+	}
+	return 0
+}
+
+// coerceFlexFloat reads a float that may arrive as a number or a numeric
+// string. Unparseable input yields 0.
+func coerceFlexFloat(raw json.RawMessage) float64 {
+	if f, ok := flexNumber(raw); ok {
+		return f
+	}
+	return 0
+}
+
+// flexNumber parses a JSON number or numeric string into a float64.
+func flexNumber(raw json.RawMessage) (float64, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return 0, false
+		}
+		s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
+		if s == "" {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		return f, err == nil
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) == nil {
+		return n, true
+	}
+	return 0, false
 }
 
 // Impact represents the expected impact of a recommendation.

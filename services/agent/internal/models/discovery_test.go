@@ -802,3 +802,50 @@ func TestRecommendationUnmarshalJSON_StringImpact(t *testing.T) {
 		t.Errorf("prose impact not coerced into Reasoning: %+v", rec.ExpectedImpact)
 	}
 }
+
+// TestPriorityCoercion covers priority arriving as a number or a descriptive
+// string (issue #342 — models emit "high" instead of 2, which used to drop
+// the whole recommendation batch).
+func TestPriorityCoercion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{`3`, 3},
+		{`"2"`, 2},
+		{`"P1"`, 1},
+		{`"critical"`, 1},
+		{`"high"`, 2},
+		{`"Medium"`, 3},
+		{`"low"`, 4},
+		{`"optional"`, 5},
+		{`"nonsense"`, 0},
+		{`null`, 0},
+	}
+	for _, c := range cases {
+		in := `{"title":"t","priority":` + c.in + `}`
+		var rec Recommendation
+		if err := json.Unmarshal([]byte(in), &rec); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", c.in, err)
+		}
+		if rec.Priority != c.want {
+			t.Errorf("priority %s → %d, want %d", c.in, rec.Priority, c.want)
+		}
+	}
+}
+
+// TestNumericFieldCoercion covers segment_size / confidence arriving as numeric
+// strings (same class as priority — a stringified number must not drop the rec).
+func TestNumericFieldCoercion(t *testing.T) {
+	const in = `{"title":"t","segment_size":"1,311,488","confidence":"0.85"}`
+	var rec Recommendation
+	if err := json.Unmarshal([]byte(in), &rec); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if rec.SegmentSize != 1311488 {
+		t.Errorf("SegmentSize = %d, want 1311488", rec.SegmentSize)
+	}
+	if rec.Confidence != 0.85 {
+		t.Errorf("Confidence = %v, want 0.85", rec.Confidence)
+	}
+}

@@ -92,7 +92,7 @@ Expected impact of a recommendation.
 | `estimated_improvement` | string | Expected improvement (e.g., "+15-20%", "+$4,975/month") |
 | `reasoning` | string | Why this improvement is expected |
 
-If an LLM emits `expected_impact` as a bare prose string instead of the object (a common, model-independent behaviour), the agent coerces it into `Impact{reasoning: <string>}` at parse time rather than discarding the recommendation. Providers that support schema-constrained output are additionally asked to emit the object shape at generation time.
+If an LLM emits `expected_impact` as a bare prose string instead of the object (a common, model-independent behaviour), the agent coerces it into `Impact{reasoning: <string>}` at parse time rather than discarding the recommendation. The same tolerance applies to the numeric scalar fields: `priority` accepts descriptive words (`"high"`, `"critical"`, `"P2"`) as well as numbers, and `segment_size` / `confidence` accept numeric strings. Providers that support schema-constrained output are additionally asked to emit the object shape at generation time.
 
 ## Summary
 

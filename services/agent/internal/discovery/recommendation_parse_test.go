@@ -50,11 +50,11 @@ func TestParseRecommendations_TopLevelArray(t *testing.T) {
 }
 
 func TestParseRecommendations_SkipsMalformedItem(t *testing.T) {
-	// Second item has a type-wrong scalar field (priority as a string) that the
-	// tolerant Impact decoder can't rescue — it must be skipped, not fatal.
+	// Second item has a genuinely type-wrong field (actions as a string, not an
+	// array) that coercion can't rescue — it must be skipped, not fatal.
 	const in = `{"recommendations":[
 		{"title":"Good","priority":1,"expected_impact":{"metric":"m"}},
-		{"title":"Bad","priority":"high","expected_impact":{"metric":"m"}}
+		{"title":"Bad","actions":"not an array","expected_impact":{"metric":"m"}}
 	]}`
 	recs, dropped, err := parseRecommendations(in)
 	if err != nil {
@@ -65,6 +65,28 @@ func TestParseRecommendations_SkipsMalformedItem(t *testing.T) {
 	}
 	if recs[0].Title != "Good" {
 		t.Errorf("kept the wrong rec: %+v", recs[0])
+	}
+}
+
+func TestParseRecommendations_StringScalarsKept(t *testing.T) {
+	// Real-world shapes: priority as a descriptive string and a stringified
+	// segment_size must be coerced and kept, not dropped (issue #342).
+	const in = `{"recommendations":[
+		{"title":"A","priority":"high","segment_size":"27,889","expected_impact":"boosts conversion"},
+		{"title":"B","priority":"P1","confidence":"0.9"}
+	]}`
+	recs, dropped, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(recs) != 2 || dropped != 0 {
+		t.Fatalf("got %d recs, %d dropped; want 2, 0", len(recs), dropped)
+	}
+	if recs[0].Priority != 2 || recs[0].SegmentSize != 27889 {
+		t.Errorf("rec A coercion wrong: priority=%d segment=%d", recs[0].Priority, recs[0].SegmentSize)
+	}
+	if recs[1].Priority != 1 {
+		t.Errorf("rec B priority = %d, want 1", recs[1].Priority)
 	}
 }
 
@@ -157,7 +179,7 @@ func TestGenerateRecommendations_AllFailSetsStatus(t *testing.T) {
 func TestGenerateRecommendations_NoRetryOnPartialSuccess(t *testing.T) {
 	const partial = `{"recommendations":[
 		{"title":"Good","priority":1,"expected_impact":{"metric":"m"}},
-		{"title":"Bad","priority":"high"}
+		{"title":"Bad","actions":"not an array"}
 	]}`
 	o, provider := newRecOrchestrator(partial)
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
