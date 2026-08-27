@@ -85,6 +85,20 @@ Reuse the existing drop-telemetry infrastructure (`RecommendationStep` from #240
 - **Expose to the API.** Add `Status` and `RecommendationsDroppedParse` to `RecommendationLogEntry` (`services/api/database/discovery_log_repo.go:99`) so `GET /api/v1/discoveries/{id}/recommendation-log` returns them (it already returns `error` + the other drop counters).
 - **Render in the dashboard.** On the discovery detail page (`ui/dashboard/src/app/projects/[id]/discoveries/[runId]/page.tsx`), fetch the recommendation-log alongside the other split logs and, when `recommendations.length === 0`, render the reason in the existing `EmptyState` (`status`/`error`) instead of the generic *"No actionable recommendations."* Extend the `getRecommendationLog` return type in `src/lib/api.ts` with `status?` + the `recommendations_dropped*` fields.
 
+### Fix 4 — Bounded LLM re-prompt (self-heal), added per plan-review
+
+**Two layers of self-healing.** Fixes 1–2 are already *deterministic* self-healing at the parse layer — coerce a string impact, skip/repair a bad item — free, and they cover the reported failure. Fix 4 adds an **LLM-level** self-heal for the residual case where in-process parsing still salvages **zero** recommendations from a **non-empty** response (a fully-garbled envelope, prose-wrapped JSON the extractor misses, or a wrong top-level shape).
+
+**This is not new machinery — it's an existing pattern.** The exploration engine already does exactly this: `runStepWithRetry` (`services/agent/internal/ai/exploration.go:582`) re-prompts the model on an unparseable action — *"Your previous response could not be parsed… respond with exactly ONE JSON object…"* — bounded by `maxParseRetries` (`:97`). There is also transport-level retry (`chatWithRetry`, `ai/retry.go`, bounded backoff on 429/5xx/network, `LLM_RETRY_MAX_ATTEMPTS`) and the SQL self-heal fixer (`SQLFixer.FixSQL` → `FixAttempt`/`FixHistory`). Fix 4 is the *content*-level analogue for the recommendation phase, mirroring `runStepWithRetry`.
+
+Design (in `generateRecommendations`):
+- After `parseRecommendations`, retry **only** when `kept == 0 && strings.TrimSpace(response) != ""` **and** the response is not a legitimate empty `{"recommendations": []}`. Never retry when ≥1 rec survived (partial loss is already counted and persisted) — so the happy path and the partial-success path cost **nothing** extra. The retry fires precisely in the silent-zero case this issue is about.
+- Each attempt re-issues the call with a correction suffix (same shape as exploration's nudge): the parse error + the required envelope shape + an explicit *"`expected_impact` is an object, not prose"* reminder. Reuse `GetMaxOutputTokens(provider, model)` so a retry does not re-truncate. Take the first attempt that yields ≥1 rec.
+- **Config-driven** cap (Rule 2) via `config.GetEnvAsInt("RECOMMENDATION_PARSE_MAX_RETRIES", …)` with a small named-const default — **1** (one corrective shot; Rule 8). Lower than exploration's `3` on purpose: the recommendation call is a single large-output batch, so extra rounds are far more expensive than a per-step exploration turn.
+- Telemetry: `RecommendationStep.RecommendationParseRetries int` (`omitempty`) + a WARN per attempt; `step.Response` keeps the last raw body for post-mortem. Surfaced on the recommendation-log endpoint like the drop counters.
+
+**Honest scope note.** After Fixes 1–2 the marginal value is small: the coercion is what fixes the *reported* bug; the re-prompt only earns its keep on the rare fully-unparseable batch, and it does **not** fix genuine max-token truncation (that's the #140 per-model token-budget path — we log when `len(response) ≈ maxTokens` so the two are distinguishable rather than conflated). Kept deliberately minimal: one bounded batch-level retry, no per-item re-prompting, no negative-example `FixHistory` apparatus unless a later issue asks for it.
+
 ### Decision for review — Fix item #3 in the issue (schema-constrained output): **recommend deferring**
 
 The issue's fix list also proposes *"prefer schema-constrained output where the provider supports it (reuse #340) to pin the recommendation shape at generation time."* I recommend **not** doing this in this PR:
@@ -96,28 +110,29 @@ If Can wants it in-scope, it's a clean follow-up: a `ChatStructured` path gated 
 
 ## 4. Files to change
 
-**Agent (core fix):**
+**Agent (core fix + self-heal):**
 | File | Change |
 |------|--------|
-| `services/agent/internal/models/discovery.go` | Add `Impact.UnmarshalJSON` (object/string/null tolerant); add `RecommendationsDroppedParse` field to `RecommendationStep` |
-| `services/agent/internal/discovery/orchestrator.go` | Extract `parseRecommendations` (per-item `json.RawMessage` decode + drop count); rewire `generateRecommendations` to use it, stamp `RecommendationsDroppedParse`, set `Status`/`Error`/WARN on parse-caused 0-recs |
+| `services/agent/internal/models/discovery.go` | Add `Impact.UnmarshalJSON` (object/string/null tolerant); add `RecommendationsDroppedParse` + `RecommendationParseRetries` fields to `RecommendationStep` |
+| `services/agent/internal/discovery/orchestrator.go` | Extract `parseRecommendations` (per-item `json.RawMessage` decode + drop count); rewire `generateRecommendations` to use it, stamp `RecommendationsDroppedParse`, set `Status`/`Error`/WARN on parse-caused 0-recs; **Fix 4** — bounded re-prompt loop (mirrors `runStepWithRetry`) with a `RECOMMENDATION_PARSE_MAX_RETRIES` named-const default (Rule 2 via `config.GetEnvAsInt`) |
 | `services/agent/internal/discovery/validation_phase.go` | `applyRecommendationDropStats`: compose `RecommendationsDropped = Parse + stats.Total` instead of overwriting |
 
 **API (surface):**
 | File | Change |
 |------|--------|
-| `services/api/database/discovery_log_repo.go` | Add `Status` + `RecommendationsDroppedParse` to `RecommendationLogEntry` |
+| `services/api/database/discovery_log_repo.go` | Add `Status`, `RecommendationsDroppedParse`, `RecommendationParseRetries` to `RecommendationLogEntry` |
 
 **Dashboard (surface):**
 | File | Change |
 |------|--------|
-| `ui/dashboard/src/lib/api.ts` | Extend `getRecommendationLog` return type (`status?`, `recommendations_dropped*?`) |
+| `ui/dashboard/src/lib/api.ts` | Extend `getRecommendationLog` return type (`status?`, `recommendations_dropped*?`, `recommendation_parse_retries?`) |
 | `ui/dashboard/src/app/projects/[id]/discoveries/[runId]/page.tsx` | Fetch recommendation-log; render reason in the recommendations `EmptyState` when empty |
 
 **Docs / changelog (Rule 4):**
 | File | Change |
 |------|--------|
-| `docs/reference/data-models.md` | Impact §: note string→`reasoning` coercion; RecommendationStep §: add `recommendations_dropped_parse` row + new `status` value |
+| `docs/reference/data-models.md` | Impact §: note string→`reasoning` coercion; RecommendationStep §: add `recommendations_dropped_parse` + `recommendation_parse_retries` rows + new `status` value |
+| `docs/reference/configuration.md` | Document `RECOMMENDATION_PARSE_MAX_RETRIES` (new env var — Fix 4) |
 | `CHANGELOG.md` | Entry under `[Unreleased] → Fixed` |
 
 ## 5. Phases
@@ -125,10 +140,11 @@ If Can wants it in-scope, it's a clean follow-up: a `ChatStructured` path gated 
 1. **Fix 1** — `Impact.UnmarshalJSON` + unit tests (object, string, null, invalid). Confirms existing round-trip tests still green.
 2. **Fix 2** — `parseRecommendations` helper + rewire `generateRecommendations`; unit tests (all-valid, one-string-impact, one-fully-malformed-item, whole-envelope-garbage, empty array).
 3. **Fix 3 (agent)** — `RecommendationsDroppedParse`, `Status`/`Error`/WARN, `applyRecommendationDropStats` composition + tests (partial drop keeps others; parse-error sets status; parse + related-id drops sum correctly).
-4. **Fix 3 (API)** — mirror `Status` + `RecommendationsDroppedParse`; handler/repo test asserts they round-trip.
-5. **Fix 3 (UI)** — type + `EmptyState` reason; `make test-ui` / `make lint-ui`. **Verify** whether this page is in the enterprise dashboard overlay; if so, note it (the enterprise repo isn't present in this container — flag for sync, don't guess).
-6. **Docs + CHANGELOG**, then full local gate: `make build`, `make test-go`, `make lint-go` (after `export PATH=$PATH:$(go env GOPATH)/bin`), `make test-ui`, `make lint-ui`.
-7. **Replay verification** — a Go test that feeds the captured redshift response shape (string `expected_impact`) through `parseRecommendations` and asserts ≥1 recommendation, satisfying acceptance criterion 3. (The real Mongo doc lives in the dev stack; the test encodes its shape as a fixture so it runs in CI without the DB.)
+4. **Fix 4** — bounded re-prompt loop in `generateRecommendations` (mirrors `runStepWithRetry`), config const + `RECOMMENDATION_PARSE_MAX_RETRIES`, `RecommendationParseRetries` telemetry; tests (retry fires only on zero-from-nonempty; recovers on second try; never fires on partial success or legit-empty; respects the cap).
+5. **Fix 3 (API)** — mirror `Status`, `RecommendationsDroppedParse`, `RecommendationParseRetries`; handler/repo test asserts they round-trip.
+6. **Fix 3 (UI)** — type + `EmptyState` reason; `make test-ui` / `make lint-ui`. **Verify** whether this page is in the enterprise dashboard overlay; if so, note it (the enterprise repo isn't present in this container — flag for sync, don't guess).
+7. **Docs + CHANGELOG**, then full local gate: `make build`, `make test-go`, `make lint-go` (after `export PATH=$PATH:$(go env GOPATH)/bin`), `make test-ui`, `make lint-ui`.
+8. **Replay verification** — a Go test that feeds the captured redshift response shape (string `expected_impact`) through `parseRecommendations` and asserts ≥1 recommendation, satisfying acceptance criterion 3. (The real Mongo doc lives in the dev stack; the test encodes its shape as a fixture so it runs in CI without the DB.)
 
 ## 6. Data / schema / API / UI impact
 
@@ -145,6 +161,7 @@ If Can wants it in-scope, it's a clean follow-up: a `ChatStructured` path gated 
 **`discovery` unit (`orchestrator_test.go` / new `_test.go`):**
 - `parseRecommendations`: 2 valid → 2, drop 0; one item with string impact → **coerced, kept** (not dropped); one item with a genuinely malformed field (e.g. `priority: "high"`) → that item dropped, others kept, `parseDropped=1`; whole envelope garbage → hard error, 0 recs; empty `recommendations: []` → 0, no error.
 - `generateRecommendations` (via `MockLLMProvider`, existing harness): string-impact response → ≥1 rec + `step.Error==""`; mixed valid+malformed batch → keeps valid, stamps `RecommendationsDroppedParse`; all-items-fail → 0 recs + `Status=="recommendation_parse_error"` + `Error` set.
+- **Fix 4 retry** (`MockLLMProvider` with a scripted sequence of responses): first response garbage + second valid → recovers, `RecommendationParseRetries==1`, `Error==""`; partial success (≥1 kept) → **no** retry issued; legit-empty `{"recommendations": []}` → no retry; cap of 0 disables it; cap respected when every attempt fails (bounded, then `Status`/`Error` set).
 - `applyRecommendationDropStats`: parse-drop + related-id-drop compose into `RecommendationsDropped` without clobbering; per-reason counters correct.
 - **Replay fixture** (acceptance #3): captured-shape response → ≥1 recommendation.
 
@@ -159,6 +176,7 @@ If Can wants it in-scope, it's a clean follow-up: a `ChatStructured` path gated 
 - **Telemetry double-count.** Parse-drops and related-id-drops must sum, not clobber. Mitigated by the explicit `Parse + stats.Total` composition and a dedicated test.
 - **Enterprise dashboard overlay.** If `discoveries/[runId]/page.tsx` is overlaid in `decisionbox-enterprise`, the overlay must be synced. The enterprise repo isn't in this container; the build step will flag it explicitly rather than silently diverge.
 - **Masking a systemic prompt/model regression.** Tolerant parsing could hide that a model always emits prose impact. Mitigated by `recommendations_dropped_parse` telemetry — the drop is counted and queryable per provider even when the rec is repaired/kept.
+- **Retry cost / runaway loop (Fix 4).** A re-prompt doubles the (expensive) recommendation output tokens. Mitigated by firing *only* on zero-recs-from-nonempty (never on the happy or partial path), a default cap of **1**, and reuse of the existing `config.GetEnvAsInt` bound — same guard rails as exploration's `maxParseRetries` and `chatWithRetry`. Retry does **not** paper over truncation; the `len(response) ≈ maxTokens` signal is logged so a token-budget problem isn't misdiagnosed as a parse problem.
 
 ## 9. Alternatives considered
 
@@ -166,6 +184,8 @@ If Can wants it in-scope, it's a clean follow-up: a `ChatStructured` path gated 
 - **Schema-constrained output now (#340)** — deferred (see §3 decision): doesn't cover the unsupported providers, adds a drift-prone hand-maintained schema, moves no acceptance criterion. Better as a follow-up.
 - **Tolerant decoding on all three `Impact`/`ExpectedImpact` types** — rejected: only the agent parse boundary ingests raw LLM JSON; the other two decode already-object BSON, so methods there would be dead code (Rule 6).
 - **Keep whole-batch decode, only add tolerant `Impact`** — rejected: fixes the `expected_impact` case but leaves the "one bad field drops the whole array" class open (acceptance criterion 2 explicitly requires per-item resilience).
+- **Retry-only (no tolerant parse)** — rejected: an LLM re-prompt is slow, costs a full extra batch, and isn't guaranteed to converge; the deterministic coercion fixes the reported case with zero extra calls. Retry (Fix 4) is the *last-resort* layer on top, not the primary fix.
+- **Full `FixHistory`/negative-example apparatus for recommendations** (like the SQL fixer) — rejected for now (Rule 8): a single bounded batch-level retry + a retry counter is enough; the per-attempt training-example machinery is warranted for SQL self-heal but over-built for this path unless a later issue needs it.
 
 ## 10. Acceptance criteria → coverage
 
