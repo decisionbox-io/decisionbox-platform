@@ -1470,8 +1470,18 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
 			return nil, 0, err
 		}
-		recRaw, ok := envelope["recommendations"]
-		if !ok {
+		// Match the key case-insensitively, as encoding/json does when
+		// decoding into a struct tag — some models capitalize it
+		// (`{"Recommendations":[…]}`).
+		var recRaw json.RawMessage
+		found := false
+		for k, v := range envelope {
+			if strings.EqualFold(k, "recommendations") {
+				recRaw, found = v, true
+				break
+			}
+		}
+		if !found {
 			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
 		}
 		if err := json.Unmarshal(recRaw, &raws); err != nil {

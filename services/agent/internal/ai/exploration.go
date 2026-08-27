@@ -874,38 +874,34 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // state. Lifting it to package level lets the verifier reuse the same parser
 // without depending on the engine.
 func extractJSON(text string) string {
-	// Strip reasoning blocks first so JSON-looking content a model writes
-	// *inside* its <think> reasoning (e.g. a discarded draft query) can't be
-	// selected over the real action that follows (issue #341). The stripped
-	// text is the primary source; last-recognised-candidate wins, with the
-	// last balanced object as the final fallback (unchanged so ParseAction
-	// still gets an object to emit its precise error on and drive a retry).
-	stripped := stripReasoningBlocks(text)
-	if got := pickActionCandidate(collectJSONCandidates(stripped), true); got != "" {
+	// Selection order (issue #341):
+	//   1. a recognised action in the reasoning-stripped text — so JSON a model
+	//      writes *inside* its <think> reasoning can't shadow the real action;
+	//   2. a recognised action in the FULL text — recovers the case where the
+	//      model put its only action inside a reasoning block;
+	//   3. the last balanced object in the stripped text — the lenient fallback
+	//      so ParseAction still gets an object to emit its precise error on and
+	//      drive a targeted retry, without resurrecting reasoning-only prose.
+	strippedCandidates := collectJSONCandidates(stripReasoningBlocks(text))
+	if got := lastRecognizedAction(strippedCandidates); got != "" {
 		return got
 	}
-	// Fallback: the model may have put its ONLY action inside a reasoning
-	// block. Recover a *recognised* action from the full text — but do not
-	// resurrect the non-action prose stripping intentionally removed, so a
-	// truncated thinking-only response still yields "".
-	return pickActionCandidate(collectJSONCandidates(text), false)
+	if got := lastRecognizedAction(collectJSONCandidates(text)); got != "" {
+		return got
+	}
+	if len(strippedCandidates) > 0 {
+		return strippedCandidates[len(strippedCandidates)-1]
+	}
+	return ""
 }
 
-// pickActionCandidate returns the last candidate carrying a recognised action
-// key. When allowFallback is true it falls back to the last balanced object
-// (the historical lenient contract); when false it returns "" if nothing is
-// recognised.
-func pickActionCandidate(candidates []string, allowFallback bool) string {
-	if len(candidates) == 0 {
-		return ""
-	}
+// lastRecognizedAction returns the last candidate carrying a recognised action
+// key, or "" if none.
+func lastRecognizedAction(candidates []string) string {
 	for i := len(candidates) - 1; i >= 0; i-- {
 		if jsonHasActionKey(candidates[i]) {
 			return candidates[i]
 		}
-	}
-	if allowFallback {
-		return candidates[len(candidates)-1]
 	}
 	return ""
 }

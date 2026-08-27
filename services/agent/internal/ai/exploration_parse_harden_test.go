@@ -34,6 +34,9 @@ func TestExtractJSON_ReasoningAndActionCorpus(t *testing.T) {
 		{"single_element_array", "[{\"query\":\"SELECT 9\"}]", "query_data", "SELECT 9"},
 		{"balanced_planning_then_action", "{\"plan\":\"first inspect\"} then {\"query\":\"SELECT 10\"}", "query_data", "SELECT 10"},
 		{"draft_in_think_real_after", "<think>{\"search_tables\":\"draft\"}</think>\n{\"search_tables\":\"real query\"}", "search_tables", "real query"},
+		// Action inside <think>, then a non-action JSON object after it: the
+		// full-text recovery must still find the action, not stop at the note.
+		{"action_in_think_then_note", "<think>{\"query\":\"SELECT 11\"}</think>{\"note\":\"ok\"}", "query_data", "SELECT 11"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

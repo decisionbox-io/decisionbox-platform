@@ -107,6 +107,18 @@ func TestParseRecommendations_WrongEnvelopeKeyIsError(t *testing.T) {
 	}
 }
 
+func TestParseRecommendations_CapitalizedEnvelopeKey(t *testing.T) {
+	// encoding/json matches struct tags case-insensitively; the key check must
+	// too, so a capitalized envelope key still parses (Codex review, #342).
+	recs, _, err := parseRecommendations(`{"Recommendations":[{"title":"a","priority":1}]}`)
+	if err != nil {
+		t.Fatalf("err = %v, want nil for capitalized key", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d recs, want 1", len(recs))
+	}
+}
+
 func TestParseRecommendations_EmptyEnvelope(t *testing.T) {
 	recs, dropped, err := parseRecommendations(`{"recommendations":[]}`)
 	if err != nil {
