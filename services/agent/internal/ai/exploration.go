@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -585,13 +586,27 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
+	// Size the output budget to the model's catalogued cap rather than a
+	// hard-coded 4096 (Rule 2): a reasoning model's <think> block can consume
+	// the whole budget and truncate the action to empty before it is emitted
+	// (issue #341). GetMaxOutputTokens falls back to a safe global default for
+	// unknown models, so this never yields 0.
+	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
+
+	// Constrain the action shape at generation time where the provider
+	// supports it. CreateMessageWithFormat self-gates on
+	// SupportsStructuredOutput, so this is a safe no-op elsewhere and the
+	// tolerant extractor above stays the net.
+	actionFormat := explorationActionSchema()
+
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
-		response, err := e.client.CreateMessage(
+		response, err := e.client.CreateMessageWithFormat(
 			ctx,
 			conversation.GetMessages(),
 			conversation.GetSystemPrompt(),
-			4096,
+			maxTokens,
+			actionFormat,
 		)
 		if err != nil {
 			logger.WithFields(logger.Fields{
@@ -642,13 +657,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(
-			"Your previous response could not be parsed as an exploration action. " +
-				"Respond with exactly ONE JSON object, no prose around it, matching one of:\n" +
-				`  {"thinking": "...", "query": "SELECT ..."}  — to run a query, or` + "\n" +
-				`  {"done": true, "summary": "..."}            — only when exploration is truly finished.` + "\n" +
-				"Do not wrap it in markdown fences unless necessary and do not emit planning JSON before the action.",
-		)
+		conversation.AddUserMessage(explorationRepairNudge(err))
 	}
 
 	in, out := usage.Totals()
@@ -848,7 +857,28 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // state. Lifting it to package level lets the verifier reuse the same parser
 // without depending on the engine.
 func extractJSON(text string) string {
-	candidates := collectJSONCandidates(text)
+	// Strip reasoning blocks first so JSON-looking content a model writes
+	// *inside* its <think> reasoning (e.g. a discarded draft query) can't be
+	// selected over the real action that follows (issue #341). The stripped
+	// text is the primary source; last-recognised-candidate wins, with the
+	// last balanced object as the final fallback (unchanged so ParseAction
+	// still gets an object to emit its precise error on and drive a retry).
+	stripped := stripReasoningBlocks(text)
+	if got := pickActionCandidate(collectJSONCandidates(stripped), true); got != "" {
+		return got
+	}
+	// Fallback: the model may have put its ONLY action inside a reasoning
+	// block. Recover a *recognised* action from the full text — but do not
+	// resurrect the non-action prose stripping intentionally removed, so a
+	// truncated thinking-only response still yields "".
+	return pickActionCandidate(collectJSONCandidates(text), false)
+}
+
+// pickActionCandidate returns the last candidate carrying a recognised action
+// key. When allowFallback is true it falls back to the last balanced object
+// (the historical lenient contract); when false it returns "" if nothing is
+// recognised.
+func pickActionCandidate(candidates []string, allowFallback bool) string {
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -857,7 +887,30 @@ func extractJSON(text string) string {
 			return candidates[i]
 		}
 	}
-	return candidates[len(candidates)-1]
+	if allowFallback {
+		return candidates[len(candidates)-1]
+	}
+	return ""
+}
+
+// reasoningBlockRe matches a complete <think>…</think> / <thinking>…</thinking>
+// pair (case-insensitive, across newlines). reasoningDanglingRe matches an
+// unclosed trailing block — truncated output whose reasoning ran to the token
+// limit before any action was emitted; its content is all reasoning, so
+// dropping it lets extraction return "" cleanly instead of mis-selecting a
+// half-JSON fragment.
+var (
+	reasoningBlockRe    = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*?</(think|thinking)>`)
+	reasoningDanglingRe = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*$`)
+)
+
+// stripReasoningBlocks removes <think>/<thinking> reasoning blocks so their
+// contents cannot interfere with action extraction. Matched pairs are removed
+// first, then any unclosed trailing block.
+func stripReasoningBlocks(text string) string {
+	text = reasoningBlockRe.ReplaceAllString(text, "")
+	text = reasoningDanglingRe.ReplaceAllString(text, "")
+	return text
 }
 
 // collectJSONCandidates returns every plausible JSON object in text:
@@ -914,6 +967,7 @@ func findBalancedJSONObjects(text string) []string {
 		depth := 0
 		inString := false
 		escaped := false
+		balancedEnd := -1
 		for j := i; j < len(text); j++ {
 			c := text[j]
 			if inString {
@@ -937,30 +991,110 @@ func findBalancedJSONObjects(text string) []string {
 			case '}':
 				depth--
 				if depth == 0 {
-					out = append(out, text[i:j+1])
-					i = j
-					goto next
+					balancedEnd = j
 				}
 			}
+			if balancedEnd >= 0 {
+				break
+			}
 		}
-		// Unbalanced from i — stop scanning (no further balanced objects possible).
-		break
-	next:
+		if balancedEnd >= 0 {
+			out = append(out, text[i:balancedEnd+1])
+			i = balancedEnd // resume after this object
+			continue
+		}
+		// Unbalanced from this '{' — skip it and keep scanning. A stray '{'
+		// in a reasoning/preamble must not abort the search for a valid
+		// action object further down (issue #341).
 	}
 	return out
 }
 
-// jsonHasActionKey reports whether the JSON-encoded object declares a field
-// the exploration parser understands (query, done, or action).
+// jsonHasActionKey reports whether the JSON-encoded object declares a field the
+// exploration parser understands: a key-driven action (query, done, action,
+// lookup_schema, search_tables) or a tool-use envelope ({"name": "<known
+// tool>", "input": {…}}). Recognition is presence-based and lenient — e.g.
+// {"query": ""} still counts — so a recognised-but-incomplete action reaches
+// ParseAction, which emits a precise error and drives a targeted retry, rather
+// than extractJSON silently guessing (issue #341).
 func jsonHasActionKey(s string) bool {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(s), &probe); err != nil {
 		return false
 	}
-	_, hasQuery := probe["query"]
-	_, hasDone := probe["done"]
-	_, hasAction := probe["action"]
-	return hasQuery || hasDone || hasAction
+	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables"} {
+		if _, ok := probe[k]; ok {
+			return true
+		}
+	}
+	// Tool-use envelope: {"name": "<known tool>", "input": {…}}.
+	nameRaw, hasName := probe["name"]
+	if _, hasInput := probe["input"]; hasName && hasInput {
+		var name string
+		if json.Unmarshal(nameRaw, &name) == nil {
+			switch name {
+			case "query_data", "lookup_schema", "search_tables", "complete":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// explorationRepairNudge builds the corrective instruction appended to the
+// conversation when a response could not be parsed. It is reason-aware:
+// "no JSON at all" and "JSON but no usable action" get different leads so the
+// model corrects the specific failure instead of getting the same generic
+// re-ask each time (issue #341). The menu lists every recognised action shape
+// (including the schema-discovery actions the old nudge omitted).
+func explorationRepairNudge(parseErr error) string {
+	const menu = "Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n" +
+		`  {"query": "SELECT ..."}                     — run one read-only query, or` + "\n" +
+		`  {"lookup_schema": ["dataset.table", ...]}   — inspect table schemas, or` + "\n" +
+		`  {"search_tables": "..."}                    — find relevant tables, or` + "\n" +
+		`  {"done": true, "summary": "..."}            — only when exploration is truly finished.`
+	lead := "Your previous response could not be parsed as an exploration action."
+	if parseErr != nil {
+		switch msg := parseErr.Error(); {
+		case strings.Contains(msg, "no action JSON"):
+			lead = "Your previous response contained no JSON action object (only prose or reasoning)."
+		case strings.Contains(msg, "no query, lookup_schema"):
+			lead = "Your previous JSON had no usable action — it must carry one of query, lookup_schema, search_tables, or done."
+		}
+	}
+	return lead + " " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+}
+
+// explorationActionSchema is the structured-output request for an exploration
+// turn. It is deliberately permissive (a typed object with additionalProperties
+// allowed, non-strict): the action is a union of query / lookup_schema /
+// search_tables / done, and a strict oneOf is brittle on quantised open-model
+// grammars and forbids the open-ended shapes platform#340 preserves. The schema
+// pins the field types where it can; the tolerant extractor + repair retry are
+// the net for anything that slips through (issue #341).
+func explorationActionSchema() *gollm.ResponseFormat {
+	str := func(d string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": d}
+	}
+	return &gollm.ResponseFormat{
+		Name: "exploration_action",
+		Schema: map[string]interface{}{
+			"type":        "object",
+			"description": "A single exploration action. Provide exactly one of query, lookup_schema, search_tables, or done, plus optional thinking.",
+			"properties": map[string]interface{}{
+				"thinking":      str("Brief reasoning for this action"),
+				"query":         str("One read-only SQL query to run"),
+				"query_purpose": str("What the query is for"),
+				"lookup_schema": map[string]interface{}{"type": "array", "items": str("A dataset.table reference"), "description": "Tables to fetch schema for"},
+				"search_tables": str("Natural-language search for relevant tables"),
+				"search_top_k":  map[string]interface{}{"type": "integer", "description": "How many tables to return"},
+				"done":          map[string]interface{}{"type": "boolean", "description": "True only when exploration is complete"},
+				"summary":       str("Summary of findings, required when done is true"),
+			},
+			"additionalProperties": true,
+		},
+		Strict: false,
+	}
 }
 
 // executeAction executes the action and returns the user-message string
