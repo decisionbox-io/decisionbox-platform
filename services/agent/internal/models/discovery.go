@@ -192,17 +192,19 @@ func coercePriority(raw json.RawMessage) int {
 		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 			return n
 		}
+		// Order matters: more specific words are checked before substrings
+		// they contain ("lowest"/"highest" before "low"/"high").
 		switch {
 		case strings.Contains(s, "critical"), strings.Contains(s, "highest"), strings.Contains(s, "urgent"):
 			return 1
+		case strings.Contains(s, "optional"), strings.Contains(s, "minimal"), strings.Contains(s, "lowest"):
+			return 5
 		case strings.Contains(s, "high"):
 			return 2
 		case strings.Contains(s, "medium"), strings.Contains(s, "moderate"), strings.Contains(s, "med"):
 			return 3
 		case strings.Contains(s, "low"):
 			return 4
-		case strings.Contains(s, "optional"), strings.Contains(s, "minimal"), strings.Contains(s, "lowest"):
-			return 5
 		}
 		return 0
 	}

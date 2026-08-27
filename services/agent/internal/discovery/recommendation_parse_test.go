@@ -96,6 +96,17 @@ func TestParseRecommendations_Garbage(t *testing.T) {
 	}
 }
 
+func TestParseRecommendations_WrongEnvelopeKeyIsError(t *testing.T) {
+	// A JSON object without the "recommendations" key is a parse failure, not
+	// a legitimately empty result — otherwise it silently yields 0 recs with
+	// no retry (Codex review, #342).
+	for _, in := range []string{`{"recommendation":[{"title":"a"}]}`, `{"items":[{"title":"a"}]}`, `{}`} {
+		if _, _, err := parseRecommendations(in); err == nil {
+			t.Errorf("parseRecommendations(%s): want error for missing recommendations key, got nil", in)
+		}
+	}
+}
+
 func TestParseRecommendations_EmptyEnvelope(t *testing.T) {
 	recs, dropped, err := parseRecommendations(`{"recommendations":[]}`)
 	if err != nil {
@@ -174,6 +185,35 @@ func TestGenerateRecommendations_AllFailSetsStatus(t *testing.T) {
 	if step.RecommendationParseRetries != 1 {
 		t.Errorf("RecommendationParseRetries = %d, want 1", step.RecommendationParseRetries)
 	}
+}
+
+func TestGenerateRecommendations_AllItemsDroppedStampsParseCount(t *testing.T) {
+	// Every item is individually malformed → 0 recs, but the parse-drop count
+	// must still be stamped on the parse-error path (Codex review, #342).
+	const allBad = `{"recommendations":[
+		{"title":"a","actions":"not an array"},
+		{"title":"b","actions":42}
+	]}`
+	o, _ := newRecOrchestrator("")
+	o.aiClient, _ = ai.New(mustQueueProvider(allBad, allBad), "mock-model")
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	if len(recs) != 0 {
+		t.Fatalf("recs = %d, want 0", len(recs))
+	}
+	if step.Status != statusRecommendationParseError {
+		t.Errorf("Status = %q, want %q", step.Status, statusRecommendationParseError)
+	}
+	if step.RecommendationsDroppedParse != 2 {
+		t.Errorf("RecommendationsDroppedParse = %d, want 2 (both items dropped)", step.RecommendationsDroppedParse)
+	}
+}
+
+func mustQueueProvider(responses ...string) *testutil.MockLLMProvider {
+	p := testutil.NewMockLLMProvider()
+	for _, c := range responses {
+		p.ResponseQueue = append(p.ResponseQueue, &gollm.ChatResponse{Content: c, Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}})
+	}
+	return p
 }
 
 func TestGenerateRecommendations_NoRetryOnPartialSuccess(t *testing.T) {

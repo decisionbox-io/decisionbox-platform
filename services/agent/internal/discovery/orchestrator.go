@@ -1019,7 +1019,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// a "N dropped due to invalid related_insight_ids" hint instead of
 	// silently showing fewer recs than the model emitted.
 	if recStep != nil {
-		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.RecommendationsDropped, recStep.Error, recStep.TokensIn, recStep.TokensOut)
+		// The live RunStep message attributes drops to invalid
+		// related_insight_ids, so pass only those two reasons here — parse
+		// drops are surfaced separately via the recommendation_parse_error
+		// status and the recommendations_dropped_parse counter.
+		relatedIDDrops := recStep.RecommendationsDroppedMissingIDs + recStep.RecommendationsDroppedUnknownID
+		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), relatedIDDrops, recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
 	// Phase 5.5: Validate recommendations via the LLM-native verifier
@@ -1366,15 +1371,19 @@ func (o *Orchestrator) generateRecommendations(
 		step.DurationMs += chatResult.DurationMs
 
 		parsed, dropped, perr := parseRecommendations(chatResult.Content)
-		if perr == nil && (len(parsed) > 0 || dropped == 0) {
-			// >=1 kept, or a legitimately empty result — accept either.
-			recs, parseDropped, lastParseErr = parsed, dropped, nil
-			break
-		}
-		if perr != nil {
-			lastParseErr = perr
-		} else {
+		if perr == nil {
+			// The response was a recognizable envelope/array; record how many
+			// items it dropped even when every one failed, so the telemetry
+			// is stamped on the parse-error path below too.
+			parseDropped = dropped
+			if len(parsed) > 0 || dropped == 0 {
+				// >=1 kept, or a legitimately empty result — accept either.
+				recs, lastParseErr = parsed, nil
+				break
+			}
 			lastParseErr = fmt.Errorf("all %d recommendation(s) failed to parse", dropped)
+		} else {
+			lastParseErr = perr
 		}
 	}
 
@@ -1382,6 +1391,7 @@ func (o *Orchestrator) generateRecommendations(
 	// failure is stamped with a status + error the dashboard renders, instead
 	// of silently showing an empty section (issue #342).
 	if len(recs) == 0 && lastParseErr != nil {
+		step.RecommendationsDroppedParse = parseDropped
 		step.Error = fmt.Sprintf("parse error: %s", lastParseErr.Error())
 		step.Status = statusRecommendationParseError
 		applog.WithError(lastParseErr).Warn("Failed to parse recommendations")
@@ -1446,14 +1456,27 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 	cleaned := cleanJSONResponse(response)
 
 	var raws []json.RawMessage
-	var envelope struct {
-		Recommendations []json.RawMessage `json:"recommendations"`
-	}
-	if envErr := json.Unmarshal([]byte(cleaned), &envelope); envErr == nil {
-		raws = envelope.Recommendations
-	} else if arrErr := json.Unmarshal([]byte(cleaned), &raws); arrErr != nil {
-		// Neither the envelope object nor a bare array — unparseable.
-		return nil, 0, envErr
+	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
+		// Bare top-level array (some models emit the array directly).
+		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		// Envelope object: the "recommendations" key must be present. An object
+		// with a different key (e.g. {"recommendation":[…]} or {"items":[…]})
+		// is a parse failure, not a legitimately empty result — otherwise it
+		// would silently yield 0 recommendations with no retry (issue #342).
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+			return nil, 0, err
+		}
+		recRaw, ok := envelope["recommendations"]
+		if !ok {
+			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
+		}
+		if err := json.Unmarshal(recRaw, &raws); err != nil {
+			return nil, 0, fmt.Errorf(`"recommendations" is not an array: %w`, err)
+		}
 	}
 
 	recs := make([]models.Recommendation, 0, len(raws))

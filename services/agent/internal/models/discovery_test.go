@@ -818,6 +818,7 @@ func TestPriorityCoercion(t *testing.T) {
 		{`"high"`, 2},
 		{`"Medium"`, 3},
 		{`"low"`, 4},
+		{`"lowest"`, 5},
 		{`"optional"`, 5},
 		{`"nonsense"`, 0},
 		{`null`, 0},
