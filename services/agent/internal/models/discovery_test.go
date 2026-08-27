@@ -33,7 +33,7 @@ func TestInsightWithMetrics(t *testing.T) {
 		Name:         "High LTV Churn",
 		Metrics: map[string]interface{}{
 			"churn_rate":   0.68,
-			"avg_ltv":     23.50,
+			"avg_ltv":      23.50,
 			"avg_sessions": 12.5,
 		},
 		Indicators: []string{
@@ -723,5 +723,82 @@ func TestInsightValidation_JSONRoundTrip(t *testing.T) {
 	}
 	if parsed.OriginalCount != 2847 {
 		t.Errorf("OriginalCount = %d, want 2847", parsed.OriginalCount)
+	}
+}
+
+// --- Impact tolerant JSON decoding (issue #342) ---
+
+// TestImpactUnmarshalJSON_Object verifies the normal object form still decodes
+// into all fields (the custom UnmarshalJSON must not regress the happy path).
+func TestImpactUnmarshalJSON_Object(t *testing.T) {
+	const in = `{"metric":"retention","estimated_improvement":"+15%","reasoning":"cohort uplift","estimated_value":1234.5}`
+	var im Impact
+	if err := json.Unmarshal([]byte(in), &im); err != nil {
+		t.Fatalf("Unmarshal object: %v", err)
+	}
+	if im.Metric != "retention" || im.EstimatedImprovement != "+15%" || im.Reasoning != "cohort uplift" {
+		t.Errorf("object fields not decoded: %+v", im)
+	}
+	if im.EstimatedValue != 1234.5 {
+		t.Errorf("EstimatedValue = %v, want 1234.5", im.EstimatedValue)
+	}
+}
+
+// TestImpactUnmarshalJSON_BareString is the core #342 fix: a prose string is
+// coerced into Impact{Reasoning: <string>} instead of failing the decode.
+func TestImpactUnmarshalJSON_BareString(t *testing.T) {
+	const in = `"improves utilization accuracy and revenue forecasting"`
+	var im Impact
+	if err := json.Unmarshal([]byte(in), &im); err != nil {
+		t.Fatalf("Unmarshal bare string must not error: %v", err)
+	}
+	if im.Reasoning != "improves utilization accuracy and revenue forecasting" {
+		t.Errorf("Reasoning = %q, want the prose string", im.Reasoning)
+	}
+	if im.Metric != "" || im.EstimatedImprovement != "" {
+		t.Errorf("other fields must stay empty on string coercion: %+v", im)
+	}
+}
+
+// TestImpactUnmarshalJSON_Null leaves the zero value and does not error.
+func TestImpactUnmarshalJSON_Null(t *testing.T) {
+	var im = Impact{Metric: "preset"}
+	if err := json.Unmarshal([]byte("null"), &im); err != nil {
+		t.Fatalf("Unmarshal null: %v", err)
+	}
+	// json treats a top-level null as a no-op on the destination.
+	if im.Metric != "preset" {
+		t.Errorf("null must be a no-op, got %+v", im)
+	}
+}
+
+// TestImpactUnmarshalJSON_WrongType errors so the enclosing recommendation is
+// dropped per-item rather than silently accepted.
+func TestImpactUnmarshalJSON_WrongType(t *testing.T) {
+	for _, in := range []string{`42`, `[1,2,3]`, `true`} {
+		var im Impact
+		if err := json.Unmarshal([]byte(in), &im); err == nil {
+			t.Errorf("Unmarshal(%s) into Impact: want error, got none (%+v)", in, im)
+		}
+	}
+}
+
+// TestRecommendationUnmarshalJSON_StringImpact is the end-to-end #342 case: a
+// whole recommendation whose expected_impact is a prose string decodes cleanly.
+func TestRecommendationUnmarshalJSON_StringImpact(t *testing.T) {
+	const in = `{
+		"title":"Right-size idle warehouses",
+		"expected_impact":"improves utilization accuracy and revenue forecasting",
+		"priority":1
+	}`
+	var rec Recommendation
+	if err := json.Unmarshal([]byte(in), &rec); err != nil {
+		t.Fatalf("recommendation with string expected_impact must decode: %v", err)
+	}
+	if rec.Title != "Right-size idle warehouses" || rec.Priority != 1 {
+		t.Errorf("scalar fields not decoded: %+v", rec)
+	}
+	if rec.ExpectedImpact.Reasoning != "improves utilization accuracy and revenue forecasting" {
+		t.Errorf("prose impact not coerced into Reasoning: %+v", rec.ExpectedImpact)
 	}
 }

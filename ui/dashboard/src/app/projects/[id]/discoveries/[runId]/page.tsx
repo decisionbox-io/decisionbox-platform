@@ -37,6 +37,9 @@ export default function DiscoveryDetailPage() {
   const [explorationLog, setExplorationLog] = useState<ExplorationStep[]>([]);
   const [analysisLog, setAnalysisLog] = useState<AnalysisLogStep[]>([]);
   const [validationLog, setValidationLog] = useState<ValidationLogEntry[]>([]);
+  // Recommendation-phase log: used only to explain an empty recommendations
+  // section (parse error / skipped), so an empty section is never silent.
+  const [recLog, setRecLog] = useState<{ status?: string; recommendations_dropped_parse?: number; error?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('Severity');
@@ -56,6 +59,7 @@ export default function DiscoveryDetailPage() {
       api.listExplorationSteps(runId).then((s) => setExplorationLog(s || [])).catch(() => {}),
       api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
       api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
+      api.getRecommendationLog(runId).then(setRecLog).catch(() => {}),
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
@@ -110,6 +114,21 @@ export default function DiscoveryDetailPage() {
 
   const visibleRecs = showAllRecs ? recommendations : recommendations.slice(0, 3);
   const hiddenRecCount = recommendations.length - 3;
+
+  // Reason shown when the recommendations section is empty, so it is never
+  // silent (issue #342). Derived from the recommendation-phase log status.
+  const recEmptyReason = (() => {
+    if (recLog?.status === 'recommendation_parse_error') {
+      return 'The recommendation model returned a response that could not be parsed, so none were saved. This has been logged for investigation.';
+    }
+    if (recLog?.status === 'skipped_no_eligible_insights') {
+      return 'No insights passed validation, so no recommendations were generated.';
+    }
+    if ((recLog?.recommendations_dropped_parse ?? 0) > 0) {
+      return 'Some recommendations could not be parsed and were dropped. See the recommendation log for details.';
+    }
+    return 'No actionable recommendations for the insights found.';
+  })();
 
   return (
     <Shell breadcrumb={breadcrumb}>
@@ -264,7 +283,7 @@ export default function DiscoveryDetailPage() {
         </div>
       ) : (
         <EmptyState icon={<IconClipboardX size={32} />} title="No recommendations available"
-          description="No actionable recommendations for the insights found." />
+          description={recEmptyReason} />
       )}
 
       {/* Transparency: How the AI Found This */}

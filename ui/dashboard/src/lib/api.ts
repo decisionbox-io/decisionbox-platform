@@ -1256,7 +1256,7 @@ export const api = {
   cancelValidationJob: (jobId: string) =>
     request<{ status: string }>(`/api/v1/validation-jobs/${jobId}/cancel`, { method: 'POST' }),
   getRecommendationLog: (discoveryId: string) =>
-    request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
+    request<{ run_at: string; insight_count: number; tokens_in?: number; tokens_out?: number; duration_ms?: number; status?: string; recommendations_dropped?: number; recommendations_dropped_parse?: number; recommendation_parse_retries?: number; error?: string }>(`/api/v1/discoveries/${discoveryId}/recommendation-log`),
   // Live run-step stream. The dashboard polls with the last `id` it
   // has rendered (opaque cursor); the server returns rows strictly
   // after that id, ordered by ObjectID. ms-precision timestamps would

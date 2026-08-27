@@ -198,3 +198,58 @@ func TestChat_CustomMaxTokens(t *testing.T) {
 		t.Errorf("SystemPrompt = %q, want 'system'", provider.Calls[0].Request.SystemPrompt)
 	}
 }
+
+// --- Structured output plumbing (issue #342 / #341 shared) ---
+
+func TestSupportsStructuredOutput(t *testing.T) {
+	const pn = "test-struct-cap"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: pn, Name: "struct cap", SupportsStructuredOutput: true,
+			Models: []gollm.ModelEntry{{ID: "m", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}}})
+
+	c, _ := New(testutil.NewMockLLMProvider(), "m")
+	if c.SupportsStructuredOutput() {
+		t.Error("no provenance set → provider unknown → must be false")
+	}
+	c.SetProvenance("p", "r", pn)
+	if !c.SupportsStructuredOutput() {
+		t.Error("registered provider declares SupportsStructuredOutput=true")
+	}
+	c.SetProvenance("p", "r", "totally-unknown-provider")
+	if c.SupportsStructuredOutput() {
+		t.Error("unknown provider → false")
+	}
+}
+
+func TestCreateMessageWithFormat_GatesOnSupport(t *testing.T) {
+	const pn = "test-struct-attach"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: pn, Name: "struct attach", SupportsStructuredOutput: true,
+			Models: []gollm.ModelEntry{{ID: "m", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}}})
+
+	format := &gollm.ResponseFormat{Name: "x", Schema: map[string]interface{}{"type": "object"}}
+	msgs := []gollm.Message{{Role: "user", Content: "hi"}}
+
+	// Supported → format threaded onto the request.
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{Content: "{}", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}}
+	c, _ := New(provider, "m")
+	c.SetProvenance("p", "r", pn)
+	if _, err := c.CreateMessageWithFormat(context.Background(), msgs, "", 100, format); err != nil {
+		t.Fatalf("CreateMessageWithFormat: %v", err)
+	}
+	if provider.Calls[0].Request.ResponseFormat == nil {
+		t.Error("supported provider must carry ResponseFormat on the wire")
+	}
+
+	// Unsupported → format dropped (byte-identical to a plain call).
+	provider2 := testutil.NewMockLLMProvider()
+	provider2.DefaultResponse = &gollm.ChatResponse{Content: "{}", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}}
+	c2, _ := New(provider2, "m")
+	if _, err := c2.CreateMessageWithFormat(context.Background(), msgs, "", 100, format); err != nil {
+		t.Fatalf("CreateMessageWithFormat: %v", err)
+	}
+	if provider2.Calls[0].Request.ResponseFormat != nil {
+		t.Error("unsupported provider must not carry ResponseFormat")
+	}
+}

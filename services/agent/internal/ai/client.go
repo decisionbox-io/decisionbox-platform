@@ -95,6 +95,15 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 // is false reject a non-empty tools slice with gollm.ErrToolsNotSupported, so
 // callers must gate on tool support before passing tools.
 func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string) (*gollm.ChatResponse, error) {
+	return c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+}
+
+// createMessage is the single low-level LLM call: it builds the request
+// (optionally carrying a ResponseFormat for structured output), retries on
+// transient upstream failures, and records observability. All public Chat /
+// CreateMessage* helpers funnel through here so retry, usage accounting, and
+// debug logging behave identically regardless of tools or structured output.
+func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, error) {
 	startTime := time.Now()
 
 	if c.testMode {
@@ -106,12 +115,13 @@ func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Me
 	}
 
 	req := gollm.ChatRequest{
-		Model:        c.model,
-		SystemPrompt: systemPrompt,
-		Messages:     messages,
-		MaxTokens:    maxTokens,
-		Tools:        tools,
-		ToolChoice:   toolChoice,
+		Model:          c.model,
+		SystemPrompt:   systemPrompt,
+		Messages:       messages,
+		MaxTokens:      maxTokens,
+		Tools:          tools,
+		ToolChoice:     toolChoice,
+		ResponseFormat: format,
 	}
 
 	logger.WithFields(logger.Fields{
@@ -162,6 +172,47 @@ func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Me
 	return resp, nil
 }
 
+// SupportsStructuredOutput reports whether the active provider honours
+// ChatRequest.ResponseFormat by constraining output to a JSON Schema
+// (platform#340). Callers gate on this before building a schema so an
+// unsupported provider (e.g. vertex-ai, azure-foundry) transparently falls
+// back to plain prompting + tolerant parsing. Returns false when the provider
+// name is unknown or SetProvenance was never called.
+func (c *Client) SupportsStructuredOutput() bool {
+	meta, ok := gollm.GetProviderMeta(c.providerName)
+	return ok && meta.SupportsStructuredOutput
+}
+
+// CreateMessageWithFormat is CreateMessage with structured output: format
+// constrains the reply to a JSON Schema on providers that support it. The
+// format is attached only when SupportsStructuredOutput() is true, so passing a
+// non-nil format to an unsupported provider is a safe no-op (identical wire to
+// a plain call). The reply's Content still carries the JSON object, so callers
+// parse it exactly as they would an unconstrained response.
+func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, format *gollm.ResponseFormat) (*gollm.ChatResponse, error) {
+	if format != nil && !c.SupportsStructuredOutput() {
+		format = nil
+	}
+	return c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+}
+
+// ChatWithFormat is Chat with structured output — the single-prompt convenience
+// wrapper over CreateMessageWithFormat, mirroring Chat's ChatResult return.
+func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int, format *gollm.ResponseFormat) (*ChatResult, error) {
+	start := time.Now()
+	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
+	resp, err := c.CreateMessageWithFormat(ctx, messages, systemPrompt, maxTokens, format)
+	if err != nil {
+		return nil, err
+	}
+	return &ChatResult{
+		Content:    resp.Content,
+		TokensIn:   resp.Usage.InputTokens,
+		TokensOut:  resp.Usage.OutputTokens,
+		DurationMs: time.Since(start).Milliseconds(),
+	}, nil
+}
+
 // emitLLMUsage is the single observability sink for every LLM call.
 // Writes a structured log event (always, self-hosted and cloud alike)
 // and fires the policy ObserveLLMTokens hook (a no-op on self-hosted
@@ -210,19 +261,19 @@ func (c *Client) ExtractText(resp *gollm.ChatResponse) string {
 	return resp.Content
 }
 
-func (c *Client) ModelName() string             { return c.model }
+func (c *Client) ModelName() string { return c.model }
 
 // ProviderName returns the registered provider ID (e.g. "ollama",
 // "openai", "bedrock") set via SetProvenance. Empty when SetProvenance
 // was never called. Callers that need to look up catalog metadata for
 // the active (provider, model) pair — e.g. the SQL fixer resolving
 // MaxOutputTokens against the central registry — read it through here.
-func (c *Client) ProviderName() string          { return c.providerName }
+func (c *Client) ProviderName() string { return c.providerName }
 
-func (c *Client) SetTestMode(enabled bool)     { c.testMode = enabled }
+func (c *Client) SetTestMode(enabled bool)        { c.testMode = enabled }
 func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
-func (c *Client) SetStep(step int)             { c.currentStep = step }
-func (c *Client) SetPhase(phase string)        { c.currentPhase = phase }
+func (c *Client) SetStep(step int)                { c.currentStep = step }
+func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }
 
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	c.promptCount++
