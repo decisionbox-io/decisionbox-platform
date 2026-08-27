@@ -96,6 +96,12 @@ func init() {
 		// function calling; whether a given proxied model implements it
 		// reliably varies, as with the bare openai provider.
 		SupportsTools: true,
+		// LiteLLM honours ChatRequest.ResponseFormat via the OpenAI
+		// response_format json_schema field; the proxy forwards it to the
+		// backend's native structured-output mode (e.g. Ollama's grammar
+		// `format`), which is how a self-hosted qwen quant gets a
+		// guaranteed single object.
+		SupportsStructuredOutput: true,
 	})
 }
 

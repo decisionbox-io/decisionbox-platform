@@ -206,3 +206,10 @@ func TestChat_APIErrorSanitised(t *testing.T) {
 		t.Errorf("error leaked a secret-looking token: %v", err)
 	}
 }
+
+func TestLiteLLMProvider_SupportsStructuredOutput(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("litellm")
+	if !meta.SupportsStructuredOutput {
+		t.Error("litellm should advertise SupportsStructuredOutput (response_format forwarded to backend)")
+	}
+}

@@ -58,6 +58,60 @@ type ChatRequest struct {
 	// provider rollout never errors on a value an older caller can't
 	// know to omit.
 	ReasoningEffort string
+
+	// ResponseFormat, when non-nil, asks the provider to constrain the
+	// model's output to the given JSON Schema using its native
+	// structured-output mode: OpenAI-compatible `response_format` with a
+	// json_schema, Ollama's `format` field (a llama.cpp grammar), or —
+	// for the Anthropic wire, which has no response_format — a single
+	// forced tool whose input schema is the requested schema, with the
+	// tool result normalised back into ChatResponse.Content so callers
+	// parse output uniformly regardless of provider.
+	//
+	// Unlike Tools (which errors when unsupported, so a caller learns a
+	// relied-upon capability is missing), ResponseFormat is advisory: a
+	// provider whose ProviderMeta.SupportsStructuredOutput is false
+	// ignores it. Callers should gate on that flag and fall back to
+	// tolerant parsing when it is not set.
+	//
+	// ResponseFormat is orthogonal to Tools. A provider that satisfies
+	// ResponseFormat by forcing an internal tool must do so ONLY when the
+	// caller supplied no Tools of its own (len(Tools) == 0); when both are
+	// set the caller's Tools win and ResponseFormat is ignored, so an
+	// existing tool-using flow can never be disturbed by this field.
+	ResponseFormat *ResponseFormat
+
+	// DisableParallelToolUse asks providers whose tool calling is parallel
+	// by default (Anthropic) to emit AT MOST ONE tool call. It is set
+	// automatically when a ResponseFormat is satisfied by a forced
+	// synthetic tool (see ApplyResponseFormatAsTool), so the structured
+	// answer comes back as exactly one object rather than several partial
+	// tool calls. Providers without a parallel-tool-use control ignore it.
+	DisableParallelToolUse bool
+}
+
+// ResponseFormat constrains a chat response to a JSON Schema. Providers
+// translate it to their native structured-output control; see the
+// ChatRequest.ResponseFormat doc for the per-wire mapping.
+type ResponseFormat struct {
+	// Name is a short identifier for the schema (e.g. "domain_pack").
+	// Required by the OpenAI json_schema wire and used as the forced
+	// tool name on the Anthropic wire; ignored by Ollama.
+	Name string
+
+	// Schema is the JSON Schema (draft 2020-12) object the output must
+	// conform to. Open-ended objects (`additionalProperties` with a value
+	// schema and dynamic keys) are honoured by the Ollama grammar and the
+	// Anthropic tool input_schema; the OpenAI wire therefore uses
+	// non-strict json_schema so such shapes remain expressible.
+	Schema map[string]interface{}
+
+	// Strict requests strict adherence where the provider supports it.
+	// Left false by callers whose schema uses open-ended maps, because
+	// OpenAI strict mode forbids them (it requires additionalProperties
+	// false and every key required). Providers that cannot honour strict
+	// simply treat it as best-effort.
+	Strict bool
 }
 
 // ReasoningEffort* are the documented values for

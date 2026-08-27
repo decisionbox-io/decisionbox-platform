@@ -91,6 +91,10 @@ func init() {
 		// function calling today — tool-dependent callers must pick a
 		// non-reasoning model or accept a no-tool fallback.
 		SupportsTools: true,
+		// Chat honours ChatRequest.ResponseFormat via OpenAI's
+		// response_format json_schema (non-strict, so open-ended objects
+		// in the schema stay expressible).
+		SupportsStructuredOutput: true,
 	})
 }
 

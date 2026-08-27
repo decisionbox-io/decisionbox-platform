@@ -430,3 +430,10 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestClaudeProvider_SupportsStructuredOutput(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("claude")
+	if !meta.SupportsStructuredOutput {
+		t.Error("claude should advertise SupportsStructuredOutput (forced tool-use)")
+	}
+}

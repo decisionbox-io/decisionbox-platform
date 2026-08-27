@@ -2,6 +2,9 @@ package ollama
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -213,5 +216,87 @@ func TestNewOllamaProvider_InvalidURL(t *testing.T) {
 	_, err := NewOllamaProvider("://invalid", "model", 0, 0)
 	if err == nil {
 		t.Error("should error on invalid URL")
+	}
+}
+
+func TestOllamaProvider_SupportsStructuredOutput(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("ollama")
+	if !meta.SupportsStructuredOutput {
+		t.Error("ollama should advertise SupportsStructuredOutput (grammar-constrained decoding via `format`)")
+	}
+}
+
+// TestOllamaProvider_Chat_SetsFormatFromResponseFormat drives a real
+// (hermetic) Ollama /api/chat round-trip against an httptest server and
+// asserts the request carries the ResponseFormat schema in the `format`
+// field — that is how llama.cpp grammar-constrained decoding is engaged.
+// The schema includes an open-ended (additionalProperties) object to
+// prove dynamic-key maps survive onto the wire.
+func TestOllamaProvider_Chat_SetsFormatFromResponseFormat(t *testing.T) {
+	var capturedFormat json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Format json.RawMessage `json:"format"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		capturedFormat = body.Format
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		// A single terminal NDJSON line is a complete non-streamed reply.
+		_, _ = w.Write([]byte(`{"model":"qwen3","done":true,"message":{"role":"assistant","content":"{}"}}` + "\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewOllamaProvider(srv.URL, "qwen3", 0, 0)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"slug": map[string]interface{}{"type": "string"}},
+		"categories": map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": map[string]interface{}{"type": "string"},
+		},
+	}
+	_, err = p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:       []gollm.Message{{Role: "user", Content: "go"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "domain_pack", Schema: schema},
+	})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if len(capturedFormat) == 0 {
+		t.Fatal("format field not sent to Ollama")
+	}
+	var gotSchema map[string]interface{}
+	if err := json.Unmarshal(capturedFormat, &gotSchema); err != nil {
+		t.Fatalf("format is not a JSON schema object: %v", err)
+	}
+	cats, ok := gotSchema["categories"].(map[string]interface{})
+	if !ok || cats["additionalProperties"] == nil {
+		t.Errorf("open-ended 'categories' object dropped from format: %v", gotSchema)
+	}
+}
+
+// TestOllamaProvider_Chat_NoFormatWhenUnset locks the non-regression:
+// without a ResponseFormat, no `format` field is sent.
+func TestOllamaProvider_Chat_NoFormatWhenUnset(t *testing.T) {
+	sawFormat := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, sawFormat = body["format"]
+		_, _ = w.Write([]byte(`{"model":"qwen3","done":true,"message":{"role":"assistant","content":"hi"}}` + "\n"))
+	}))
+	defer srv.Close()
+
+	p, _ := NewOllamaProvider(srv.URL, "qwen3", 0, 0)
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "go"}},
+	}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if sawFormat {
+		t.Error("format field must be omitted when no ResponseFormat is set")
 	}
 }

@@ -14,6 +14,7 @@ package ollama
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -116,6 +117,11 @@ func init() {
 		// because the catalog row's aliases include the tagged forms,
 		// so max-tokens enrichment still resolves.
 		PreferLiveModelID: true,
+		// Chat honours ChatRequest.ResponseFormat by driving llama.cpp
+		// grammar-constrained decoding from the schema (`format` field).
+		// The grammar supports open-ended objects, so the full requested
+		// shape is representable.
+		SupportsStructuredOutput: true,
 		// Clamp the input window budgeting call-sites see to the
 		// operator-configured num_ctx when it's lower than the
 		// catalog. Without this, /ask would assemble prompts up to
@@ -298,12 +304,28 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	// at either end produces malformed output without any signal to
 	// the caller.
 	truncate := false
+
+	// Structured output: Ollama accepts a JSON Schema in the `format`
+	// field and drives llama.cpp's grammar-constrained decoding from it,
+	// so the model can only emit a value matching the schema. The schema
+	// may contain open-ended objects (additionalProperties with dynamic
+	// keys); the grammar honours them, so nothing in the requested shape
+	// is dropped. A marshal failure falls back to an unconstrained call
+	// rather than erroring — the caller still has its own parsing net.
+	var format json.RawMessage
+	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
+		if b, err := json.Marshal(rf.Schema); err == nil {
+			format = b
+		}
+	}
+
 	ollamaReq := &ollamaapi.ChatRequest{
 		Model:    model,
 		Messages: messages,
 		Stream:   &stream,
 		Options:  options,
 		Truncate: &truncate,
+		Format:   format,
 		Think:    reasoningEffortToThinkValue(req.ReasoningEffort, gollm.IsReasoningModel("ollama", model)),
 	}
 

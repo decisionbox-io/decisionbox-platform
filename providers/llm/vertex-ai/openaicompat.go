@@ -36,6 +36,10 @@ import (
 //
 // Both shapes authenticate with the same GCP bearer token as Gemini.
 func (p *VertexAIProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Vertex does not advertise SupportsStructuredOutput, so honour the
+	// ResponseFormat contract ("unsupported providers ignore it") rather
+	// than forwarding response_format to a MaaS backend that may reject it.
+	req.ResponseFormat = nil
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
 	reqBody, err := json.Marshal(body)

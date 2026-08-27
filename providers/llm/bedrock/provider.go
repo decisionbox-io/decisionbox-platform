@@ -105,6 +105,11 @@ func init() {
 		// function calling reliably varies, but the catalog flag is
 		// per-provider not per-model.
 		SupportsTools: true,
+		// Both Bedrock wires honour ChatRequest.ResponseFormat: the
+		// OpenAI-compat path via response_format json_schema, the
+		// Anthropic path via a forced tool. Both accept open-ended
+		// schemas, so the full requested shape is representable.
+		SupportsStructuredOutput: true,
 	})
 }
 
@@ -229,4 +234,3 @@ func (p *BedrockProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 	}
 	return p.dispatch(ctx, req)
 }
-

@@ -249,3 +249,45 @@ func TestChat_WithoutTools_UnchangedBehavior(t *testing.T) {
 		t.Error("tools should be omitted when empty")
 	}
 }
+
+// TestChat_StructuredOutput_ForcesToolAndFolds is an end-to-end wire test:
+// a ChatRequest.ResponseFormat must go out as a forced tool with
+// disable_parallel_tool_use set, and the tool_use reply must be folded back
+// into Content so the caller sees a bare JSON object.
+func TestChat_StructuredOutput_ForcesToolAndFolds(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"claude-sonnet-4-6","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"domain_pack","input":{"slug":"acme"}}],"usage":{"input_tokens":5,"output_tokens":3}}`))
+	}))
+	defer srv.Close()
+
+	p := newTestClaudeWithServer(t, srv.URL)
+	resp, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:       []gollm.Message{{Role: "user", Content: "go"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "domain_pack", Schema: map[string]interface{}{"type": "object"}},
+	})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	// The reply folded into Content, tool call hidden.
+	if resp.Content != `{"slug":"acme"}` {
+		t.Errorf("Content = %q, want the folded object", resp.Content)
+	}
+	if len(resp.ToolCalls) != 0 {
+		t.Errorf("ToolCalls should be cleared, got %d", len(resp.ToolCalls))
+	}
+	// The request forced the synthetic tool with parallel use disabled.
+	tc, _ := body["tool_choice"].(map[string]interface{})
+	if tc == nil || tc["type"] != "tool" || tc["name"] != "domain_pack" {
+		t.Fatalf("tool_choice not a forced tool: %v", body["tool_choice"])
+	}
+	if tc["disable_parallel_tool_use"] != true {
+		t.Errorf("tool_choice missing disable_parallel_tool_use: %v", tc)
+	}
+	tools, _ := body["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Errorf("want 1 forced tool on the wire, got %d", len(tools))
+	}
+}

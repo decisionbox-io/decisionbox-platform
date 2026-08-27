@@ -23,6 +23,11 @@ import (
 // format — they talk the same Anthropic Messages API, just at different
 // endpoints.
 func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Structured output: the Anthropic wire has no response_format field,
+	// so a ResponseFormat becomes a single forced tool. No-op when unset
+	// or the caller supplied its own tools.
+	req, structured := gollm.ApplyResponseFormatAsTool(req)
+
 	messages, err := buildAnthropicMessages(req.Messages)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
@@ -51,6 +56,13 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		body["tools"] = buildAnthropicTools(req.Tools)
 	}
 	if tc := buildAnthropicToolChoice(req.ToolChoice); tc != nil {
+		// Forcing the synthetic structured-output tool asks for a single
+		// object, so disable parallel tool use on it.
+		if req.DisableParallelToolUse {
+			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
+				tc["disable_parallel_tool_use"] = true
+			}
+		}
 		body["tool_choice"] = tc
 	}
 
@@ -110,7 +122,7 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		}
 	}
 
-	return &gollm.ChatResponse{
+	resp := &gollm.ChatResponse{
 		Content:    content,
 		Model:      anthropicResp.Model,
 		StopReason: anthropicResp.StopReason,
@@ -119,7 +131,11 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 			OutputTokens: anthropicResp.Usage.OutputTokens,
 		},
 		ToolCalls: toolCalls,
-	}, nil
+	}
+	if err := gollm.NormalizeStructuredToolResponse(resp, structured); err != nil {
+		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
+	}
+	return resp, nil
 }
 
 // buildAnthropicMessages translates the neutral Message shape into

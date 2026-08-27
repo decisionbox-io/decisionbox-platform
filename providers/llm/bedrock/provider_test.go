@@ -444,3 +444,10 @@ func TestFactory_StashesAwsCfg_AccessKeys(t *testing.T) {
 		t.Errorf("Region = %q, want us-east-1", bp.awsCfg.Region)
 	}
 }
+
+func TestBedrockProvider_SupportsStructuredOutput(t *testing.T) {
+	meta, _ := gollm.GetProviderMeta("bedrock")
+	if !meta.SupportsStructuredOutput {
+		t.Error("bedrock should advertise SupportsStructuredOutput (both wires)")
+	}
+}

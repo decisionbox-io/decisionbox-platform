@@ -371,3 +371,80 @@ func TestAPIError_ErrorString(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRequestBody_ResponseFormatJSONSchema verifies a ChatRequest
+// ResponseFormat is rendered as an OpenAI response_format json_schema
+// object carrying the caller's schema, and that Strict is threaded
+// through (kept false by callers whose schema has open-ended maps).
+func TestBuildRequestBody_ResponseFormatJSONSchema(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"slug": map[string]interface{}{"type": "string"},
+		},
+		// Open-ended object — must survive verbatim into the wire schema.
+		"categories": map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": map[string]interface{}{"type": "string"},
+		},
+	}
+	body := BuildRequestBody("gpt-4o", gollm.ChatRequest{
+		Messages:       []gollm.Message{{Role: "user", Content: "go"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "domain_pack", Schema: schema},
+	})
+	if body.ResponseFormat == nil {
+		t.Fatal("response_format not set")
+	}
+	if body.ResponseFormat.Type != "json_schema" {
+		t.Errorf("type = %q, want json_schema", body.ResponseFormat.Type)
+	}
+	js := body.ResponseFormat.JSONSchema
+	if js == nil || js.Name != "domain_pack" {
+		t.Fatalf("json_schema = %+v", js)
+	}
+	if js.Strict {
+		t.Error("strict should default to false so open-ended maps stay expressible")
+	}
+	cats, ok := js.Schema["categories"].(map[string]interface{})
+	if !ok || cats["additionalProperties"] == nil {
+		t.Errorf("open-ended 'categories' object dropped from wire schema: %v", js.Schema)
+	}
+
+	// Round-trips to the OpenAI wire shape.
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"response_format"`) || !strings.Contains(string(raw), `"json_schema"`) {
+		t.Errorf("wire body missing response_format/json_schema: %s", raw)
+	}
+}
+
+// TestBuildRequestBody_NoResponseFormatOmitted locks the non-regression
+// contract: a request without ResponseFormat carries no response_format
+// key on the wire, so existing (non-structured) calls are unchanged.
+func TestBuildRequestBody_NoResponseFormatOmitted(t *testing.T) {
+	body := BuildRequestBody("gpt-4o", gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if body.ResponseFormat != nil {
+		t.Fatal("response_format should be nil when unset")
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "response_format") {
+		t.Errorf("response_format must be omitted from the wire when unset: %s", raw)
+	}
+}
+
+// TestBuildRequestBody_EmptySchemaResponseFormatOmitted — a ResponseFormat
+// with no schema is ignored (nothing to constrain), keeping the request
+// identical to the unset case.
+func TestBuildRequestBody_EmptySchemaResponseFormatOmitted(t *testing.T) {
+	body := BuildRequestBody("gpt-4o", gollm.ChatRequest{
+		Messages:       []gollm.Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "x"},
+	})
+	if body.ResponseFormat != nil {
+		t.Error("response_format should be omitted when schema is empty")
+	}
+}

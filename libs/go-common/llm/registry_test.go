@@ -459,8 +459,9 @@ func TestProviderMeta_MarshalJSON(t *testing.T) {
 					Pricing:         TokenPricing{InputPerMillion: 1, OutputPerMillion: 2},
 				},
 			},
-			DefaultMaxOutputTokens: 999,
-			SupportsTools:          true,
+			DefaultMaxOutputTokens:   999,
+			SupportsTools:            true,
+			SupportsStructuredOutput: true,
 		})
 	})
 	meta, _ := GetProviderMeta(name)
@@ -485,6 +486,10 @@ func TestProviderMeta_MarshalJSON(t *testing.T) {
 	// supports_tools serialised.
 	if !strings.Contains(got, `"supports_tools":true`) {
 		t.Errorf("supports_tools missing in %q", got)
+	}
+	// supports_structured_output serialised.
+	if !strings.Contains(got, `"supports_structured_output":true`) {
+		t.Errorf("supports_structured_output missing in %q", got)
 	}
 }
 

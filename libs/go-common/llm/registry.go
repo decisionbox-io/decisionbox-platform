@@ -296,6 +296,16 @@ type ProviderMeta struct {
 	// different provider or skip tools.
 	SupportsTools bool `json:"supports_tools"`
 
+	// SupportsStructuredOutput declares whether the provider's Chat
+	// method honours ChatRequest.ResponseFormat by constraining output to
+	// the supplied JSON Schema (OpenAI response_format, Ollama format, or
+	// Anthropic forced tool-use). When false the field is ignored and
+	// callers must fall back to tolerant parsing. A provider advertises
+	// this only on a mode that can represent every field of the caller's
+	// schema — including open-ended (dynamic-key) objects — so setting a
+	// ResponseFormat never silently drops part of the requested shape.
+	SupportsStructuredOutput bool `json:"supports_structured_output"`
+
 	// DispatchAnyModelID declares that this provider's Chat method
 	// accepts ANY non-empty model ID through one SDK path, with no
 	// wire dispatch step that needs the ID classified. Today only
@@ -509,15 +519,16 @@ type AuthMethod struct {
 // shape stays "{...meta, models: [...]}", but with one row per
 // canonical ID and aliases hidden.
 type providerMetaJSON struct {
-	ID                     string        `json:"id"`
-	Name                   string        `json:"name"`
-	Description            string        `json:"description"`
-	ConfigFields           []ConfigField `json:"config_fields"`
-	AuthMethods            []AuthMethod  `json:"auth_methods,omitempty"`
-	Models                 []ModelInfo   `json:"models,omitempty"`
-	DefaultMaxOutputTokens int           `json:"default_max_output_tokens,omitempty"`
-	DefaultMaxInputTokens  int           `json:"default_max_input_tokens,omitempty"`
-	SupportsTools          bool          `json:"supports_tools"`
+	ID                       string        `json:"id"`
+	Name                     string        `json:"name"`
+	Description              string        `json:"description"`
+	ConfigFields             []ConfigField `json:"config_fields"`
+	AuthMethods              []AuthMethod  `json:"auth_methods,omitempty"`
+	Models                   []ModelInfo   `json:"models,omitempty"`
+	DefaultMaxOutputTokens   int           `json:"default_max_output_tokens,omitempty"`
+	DefaultMaxInputTokens    int           `json:"default_max_input_tokens,omitempty"`
+	SupportsTools            bool          `json:"supports_tools"`
+	SupportsStructuredOutput bool          `json:"supports_structured_output"`
 }
 
 // MarshalJSON renders ProviderMeta with the catalog flattened to
@@ -527,15 +538,16 @@ type providerMetaJSON struct {
 // the combobox.
 func (m ProviderMeta) MarshalJSON() ([]byte, error) {
 	return json.Marshal(providerMetaJSON{
-		ID:                     m.ID,
-		Name:                   m.Name,
-		Description:            m.Description,
-		ConfigFields:           m.ConfigFields,
-		AuthMethods:            m.AuthMethods,
-		Models:                 m.CatalogModels(),
-		DefaultMaxOutputTokens: m.DefaultMaxOutputTokens,
-		DefaultMaxInputTokens:  m.DefaultMaxInputTokens,
-		SupportsTools:          m.SupportsTools,
+		ID:                       m.ID,
+		Name:                     m.Name,
+		Description:              m.Description,
+		ConfigFields:             m.ConfigFields,
+		AuthMethods:              m.AuthMethods,
+		Models:                   m.CatalogModels(),
+		DefaultMaxOutputTokens:   m.DefaultMaxOutputTokens,
+		DefaultMaxInputTokens:    m.DefaultMaxInputTokens,
+		SupportsTools:            m.SupportsTools,
+		SupportsStructuredOutput: m.SupportsStructuredOutput,
 	})
 }
 
