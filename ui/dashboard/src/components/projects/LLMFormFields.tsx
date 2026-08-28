@@ -119,6 +119,14 @@ export function LLMFormFields({
     const live = (liveModels ?? []).find((m) => m.id === val);
     const next: typeof autofilledRef.current = {};
     (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
+      // Only touch fields the provider actually declares. Providers that budget
+      // differently (Ollama uses num_ctx, not max_input_tokens) don't render
+      // these inputs, and the save path persists every config key — writing an
+      // auto-filled value here would silently become a top-priority override
+      // the operator can neither see nor clear.
+      if (!selected?.config_fields.some((f) => f.key === key)) {
+        return;
+      }
       const detected = key === 'max_input_tokens' ? live?.max_input_tokens : live?.max_output_tokens;
       const current = config[key]?.trim() ?? '';
       const wasAutofilled = current !== '' && current === autofilledRef.current[key];

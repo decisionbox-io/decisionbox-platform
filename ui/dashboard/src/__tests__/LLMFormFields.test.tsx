@@ -445,6 +445,31 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(cfg.max_output_tokens ?? '').toBe('');
   });
 
+  test('a provider without the token fields (Ollama) never has them auto-persisted', () => {
+    // Ollama budgets via num_ctx and does NOT declare max_input_tokens /
+    // max_output_tokens. Selecting a live model that reports a window must not
+    // silently write a hidden override into config.
+    const ollamaMeta: ProviderMeta = {
+      id: 'ollama', name: 'Ollama', description: 'local',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'num_ctx', label: 'Context window (num_ctx)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [],
+    };
+    const live: LiveModel[] = [
+      { id: 'qwen3:32b', display_name: 'qwen3:32b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
+    ];
+    const initial: LLMFormState = { provider: 'ollama', authMethod: '', config: { model: '' }, apiKey: '' };
+    render(<ControlledHarness providers={[ollamaMeta]} initial={initial} initialPhase="model" liveModels={live} />);
+    const input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'qwen3:32b' } });
+    const cfg = getDump().value.config;
+    expect(cfg.model).toBe('qwen3:32b');
+    expect(cfg.max_input_tokens).toBeUndefined();
+    expect(cfg.max_output_tokens).toBeUndefined();
+  });
+
   test('typing into wire_override updates state via setConfigField', () => {
     // Use the inline-render variant (unknown model) so wire_override is
     // rendered without going through the Advanced disclosure.

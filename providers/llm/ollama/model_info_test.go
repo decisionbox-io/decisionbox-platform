@@ -35,6 +35,37 @@ func TestResolveModelInfo_ContextLength(t *testing.T) {
 	}
 }
 
+func TestResolveModelInfo_ClampsToNumCtx(t *testing.T) {
+	mock := &mockOllamaClient{
+		showResp: &ollamaapi.ShowResponse{ModelInfo: map[string]any{"qwen3.context_length": float64(262144)}},
+	}
+	// Operator set num_ctx below the architectural context → the effective
+	// request window is num_ctx (Chat sends at most that).
+	p := &OllamaProvider{client: mock, model: "qwen3:32b", numCtx: 8192}
+	caps, err := p.ResolveModelInfo(context.Background(), "qwen3:32b")
+	if err != nil {
+		t.Fatalf("ResolveModelInfo err: %v", err)
+	}
+	if caps.MaxInputTokens != 8192 {
+		t.Fatalf("num_ctx below architectural: window = %d, want 8192", caps.MaxInputTokens)
+	}
+
+	// num_ctx above architectural → the smaller architectural value wins.
+	p = &OllamaProvider{client: mock, model: "qwen3:32b", numCtx: 999999}
+	caps, _ = p.ResolveModelInfo(context.Background(), "qwen3:32b")
+	if caps.MaxInputTokens != 262144 {
+		t.Fatalf("num_ctx above architectural: window = %d, want 262144", caps.MaxInputTokens)
+	}
+
+	// num_ctx set but architectural unknown → report num_ctx.
+	mock2 := &mockOllamaClient{showResp: &ollamaapi.ShowResponse{ModelInfo: map[string]any{}}}
+	p = &OllamaProvider{client: mock2, model: "m", numCtx: 4096}
+	caps, _ = p.ResolveModelInfo(context.Background(), "m")
+	if caps.MaxInputTokens != 4096 {
+		t.Fatalf("architectural unknown: window = %d, want num_ctx 4096", caps.MaxInputTokens)
+	}
+}
+
 func TestResolveModelInfo_NoContextLength(t *testing.T) {
 	mock := &mockOllamaClient{showResp: &ollamaapi.ShowResponse{ModelInfo: map[string]any{"general.architecture": "x"}}}
 	p := newMockOllamaProvider(mock, "m")

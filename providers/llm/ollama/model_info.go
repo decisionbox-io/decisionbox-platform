@@ -22,7 +22,17 @@ func (p *OllamaProvider) ResolveModelInfo(ctx context.Context, model string) (go
 	if err != nil {
 		return gollm.ModelCapabilities{}, err
 	}
-	return gollm.ModelCapabilities{MaxInputTokens: contextLengthFromModelInfo(resp.ModelInfo)}, nil
+	window := contextLengthFromModelInfo(resp.ModelInfo)
+	// Respect an operator-configured num_ctx: Chat sends at most num_ctx tokens
+	// of context, so the effective request window is min(architectural
+	// context_length, num_ctx). Reporting the larger architectural value would
+	// let budgeting size prompts above what Chat actually sends, reintroducing
+	// context-length failures. Mirrors ollamaEffectiveInputWindow's downward
+	// clamp.
+	if p.numCtx > 0 && (window == 0 || p.numCtx < window) {
+		window = p.numCtx
+	}
+	return gollm.ModelCapabilities{MaxInputTokens: window}, nil
 }
 
 // contextLengthFromModelInfo pulls the "<arch>.context_length" value out of an
