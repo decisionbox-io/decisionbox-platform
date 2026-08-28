@@ -98,60 +98,25 @@ type ExplorationEngine struct {
 // "please respond in JSON" nudge into the conversation.
 const maxParseRetries = 3
 
-// explorationStepMaxOutputTokens bounds the per-step output budget. It must be
-// large enough for a reasoning model's <think> block plus the action JSON (the
-// old hard-coded 4096 truncated verbose reasoners — issue #341), yet small
-// enough that reserving it as max_tokens does not overflow a model's context
-// window once the conversation has grown. The effective budget is
-// min(this, the model's catalogued output cap); override with
-// EXPLORATION_MAX_OUTPUT_TOKENS.
-const explorationStepMaxOutputTokens = 16384
+// defaultExplorationMaxOutputTokens is the per-step output ceiling for the
+// exploration LLM call. The old value was a hard-coded 4096 (Rule 2); it is now
+// the default of the EXPLORATION_MAX_OUTPUT_TOKENS knob. The default is kept at
+// the proven-safe 4096 so the reservation cannot overflow a small-context
+// deployment (e.g. an 8K/4K Ollama num_ctx); operators running reasoning models
+// on large-context backends raise it to give the <think> block room without
+// truncating the action (issue #341). The effective budget is
+// min(catalogued output cap, this).
+const defaultExplorationMaxOutputTokens = 4096
 
 const explorationMaxOutputTokensEnv = "EXPLORATION_MAX_OUTPUT_TOKENS"
 
-// explorationContextSafetyMargin is reserved below the model's context window
-// (on top of the estimated prompt) so a slightly-off token estimate can't tip
-// the request over the limit. explorationMinOutputTokens is the floor the
-// per-step budget is never reduced below — enough for an action object even
-// when the estimate says little context remains.
-const (
-	explorationContextSafetyMargin = 1024
-	explorationMinOutputTokens     = 1024
-)
-
-// estimatePromptTokens is a cheap upper-ish estimate of the tokens already in
-// the conversation (system prompt + messages), using the conventional ~4
-// characters per token heuristic. It only needs to be good enough to keep the
-// output reservation from overflowing the context window.
-func estimatePromptTokens(conversation *Conversation) int {
-	chars := len(conversation.GetSystemPrompt())
-	for _, m := range conversation.GetMessages() {
-		chars += len(m.Content) + 4 // + small per-message role/overhead
-	}
-	return chars / 4
-}
-
-// stepOutputTokens sizes the per-step output budget above the old hard-coded
-// 4096 (Rule 2) — a reasoning model's <think> block can consume the whole
-// budget and truncate the action to empty (issue #341) — while keeping the
-// reservation from overflowing the context window. The budget is the model's
-// catalogued output cap, bounded by a per-step ceiling and by the context left
-// after the (growing) conversation, and never below a floor. Recomputed every
-// attempt so a retry that appended a large response is accounted for.
-func (e *ExplorationEngine) stepOutputTokens(conversation *Conversation) int {
-	provider, model := e.client.ProviderName(), e.client.ModelName()
-	maxTokens := gollm.GetMaxOutputTokens(provider, model)
-	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
+// explorationOutputTokens returns the per-step output budget: the model's
+// catalogued output cap bounded by the configurable ceiling. It is constant
+// across a step's parse retries, so it is computed once per step.
+func (e *ExplorationEngine) explorationOutputTokens() int {
+	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
+	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, defaultExplorationMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
 		maxTokens = ceiling
-	}
-	if ctxWindow := gollm.GetMaxInputTokens(provider, model); ctxWindow > 0 {
-		remaining := ctxWindow - estimatePromptTokens(conversation) - explorationContextSafetyMargin
-		if remaining < explorationMinOutputTokens {
-			remaining = explorationMinOutputTokens
-		}
-		if maxTokens > remaining {
-			maxTokens = remaining
-		}
 	}
 	return maxTokens
 }
@@ -650,14 +615,10 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// SupportsStructuredOutput, so this is a safe no-op elsewhere and the
 	// tolerant extractor above stays the net.
 	actionFormat := explorationActionSchema()
+	maxTokens := e.explorationOutputTokens()
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
-		// Recompute the output budget each attempt: a parse retry appended the
-		// previous (possibly large) response + repair nudge to the conversation,
-		// so the remaining-context clamp must reflect the grown prompt (issue
-		// #341 review).
-		maxTokens := e.stepOutputTokens(conversation)
 		response, err := e.client.CreateMessageWithFormat(
 			ctx,
 			conversation.GetMessages(),

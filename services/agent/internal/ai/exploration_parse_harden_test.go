@@ -162,24 +162,9 @@ func driveOneStep(t *testing.T, engine *ExplorationEngine, providerName string) 
 	}
 }
 
-func TestExploration_TokenCapFromCatalog(t *testing.T) {
-	// A catalog cap below the per-step ceiling is used as-is (and is well above
-	// the old hard-coded 4096).
-	const pn = "test-explore-maxtok"
-	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
-		gollm.ProviderMeta{ID: pn, Name: "explore maxtok",
-			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 12321}}})
-
-	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
-	driveOneStep(t, engine, pn)
-	if got := provider.Calls[0].Request.MaxTokens; got != 12321 {
-		t.Errorf("MaxTokens = %d, want 12321 (catalog cap below the ceiling)", got)
-	}
-}
-
-func TestExploration_TokenCapClampedToCeiling(t *testing.T) {
-	// A huge catalog cap (64K) is clamped to the per-step ceiling so the
-	// reservation can't overflow the context window (Codex review, #341).
+func TestExploration_TokenBudgetDefaultCeiling(t *testing.T) {
+	// A huge catalog cap is bounded by the safe default ceiling (4096) so the
+	// reservation can't overflow a small-context deployment (Codex review, #341).
 	const pn = "test-explore-bigmaxtok"
 	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
 		gollm.ProviderMeta{ID: pn, Name: "explore big maxtok",
@@ -187,8 +172,33 @@ func TestExploration_TokenCapClampedToCeiling(t *testing.T) {
 
 	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
 	driveOneStep(t, engine, pn)
-	if got := provider.Calls[0].Request.MaxTokens; got != explorationStepMaxOutputTokens {
-		t.Errorf("MaxTokens = %d, want %d (clamped to the per-step ceiling)", got, explorationStepMaxOutputTokens)
+	if got := provider.Calls[0].Request.MaxTokens; got != defaultExplorationMaxOutputTokens {
+		t.Errorf("MaxTokens = %d, want %d (default ceiling)", got, defaultExplorationMaxOutputTokens)
+	}
+}
+
+func TestExploration_TokenBudgetEnvOverrideAndCatalogFloor(t *testing.T) {
+	t.Setenv(explorationMaxOutputTokensEnv, "8000")
+	// Env raises the ceiling; the budget is min(catalog cap, ceiling).
+	const big = "test-explore-envbig"
+	gollm.RegisterWithMeta(big, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: big, Name: "env big",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 64000}}})
+	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine, big)
+	if got := provider.Calls[0].Request.MaxTokens; got != 8000 {
+		t.Errorf("MaxTokens = %d, want 8000 (env ceiling below catalog cap)", got)
+	}
+
+	// A small catalog cap wins over the (larger) env ceiling.
+	const small = "test-explore-envsmall"
+	gollm.RegisterWithMeta(small, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: small, Name: "env small",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 2000}}})
+	engine2, provider2 := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine2, small)
+	if got := provider2.Calls[0].Request.MaxTokens; got != 2000 {
+		t.Errorf("MaxTokens = %d, want 2000 (catalog cap below env ceiling)", got)
 	}
 }
 

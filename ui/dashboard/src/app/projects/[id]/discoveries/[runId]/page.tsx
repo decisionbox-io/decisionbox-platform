@@ -59,7 +59,7 @@ export default function DiscoveryDetailPage() {
       api.listExplorationSteps(runId).then((s) => setExplorationLog(s || [])).catch(() => {}),
       api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
       api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
-      api.getRecommendationLog(runId).then(setRecLog).catch(() => {}),
+      api.getRecommendationLog(runId).then(setRecLog).catch(() => setRecLog(null)),
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
@@ -126,6 +126,11 @@ export default function DiscoveryDetailPage() {
     }
     if ((recLog?.recommendations_dropped_parse ?? 0) > 0) {
       return 'Some recommendations could not be parsed and were dropped. See the recommendation log for details.';
+    }
+    if (recLog?.error) {
+      // Generation failed (e.g. LLM timeout / rate limit) before parsing —
+      // don't present it as a valid empty result.
+      return 'Recommendation generation did not complete (see the recommendation log). This has been logged for investigation.';
     }
     return 'No actionable recommendations for the insights found.';
   })();
