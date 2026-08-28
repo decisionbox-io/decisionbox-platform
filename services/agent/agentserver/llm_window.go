@@ -45,8 +45,6 @@ func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerNa
 	var windowSource string
 	switch {
 	case gollm.MaxInputOverride(cfg) > 0:
-		// Operator override is authoritative and left uncapped — the operator may
-		// deliberately know a window DecisionBox cannot detect.
 		window, windowSource = gollm.MaxInputOverride(cfg), "operator_override"
 	case persistedWindow > 0:
 		window, windowSource = persistedWindow, "persisted_calibration"
@@ -56,14 +54,17 @@ func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerNa
 		window, windowSource = gollm.GetEffectiveInputWindow(providerName, model, cfg), "catalog_default"
 	}
 
-	// Cap a persisted (self-calibrated) window by the current live-detected
-	// window. Live detection reflects the deployment's real limit right now —
-	// notably Ollama's num_ctx (ResolveModelInfo clamps to it) — so a stale
-	// larger calibration (e.g. 128K learned before num_ctx was lowered to 8K)
-	// can't budget above what Chat will actually send. The operator override is
-	// intentionally exempt above.
-	if windowSource == "persisted_calibration" && live.MaxInputTokens > 0 && live.MaxInputTokens < window {
-		window, windowSource = live.MaxInputTokens, "live_autodetect_capped"
+	// Cap the chosen window by the current live-detected window. Live detection
+	// reflects the endpoint's real limit right now — the gateway's reported
+	// window, or Ollama's num_ctx (ResolveModelInfo clamps to it) — and the
+	// endpoint physically won't accept more than it reports. This caps both a
+	// stale self-calibration AND a stale operator override (e.g. a window the
+	// dashboard prefilled once, that the gateway later lowered), so neither
+	// budgets above what Chat will actually send. When there is no live
+	// detection (e.g. Bedrock), the chosen value stands — there the override /
+	// calibration is the best signal we have.
+	if live.MaxInputTokens > 0 && live.MaxInputTokens < window {
+		window, windowSource = live.MaxInputTokens, windowSource+"_capped_by_live"
 	}
 
 	base := gollm.GetMaxOutputTokens(providerName, model)

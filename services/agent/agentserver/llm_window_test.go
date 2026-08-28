@@ -68,13 +68,26 @@ func TestResolveModelBudget_StalePersistedCappedByLive(t *testing.T) {
 	}
 }
 
-func TestResolveModelBudget_OverrideNotCappedByLive(t *testing.T) {
-	// The operator override is authoritative and is NOT capped by live detection.
+func TestResolveModelBudget_StaleOverrideCappedByLive(t *testing.T) {
+	// A stale/prefilled operator override larger than the current live-detected
+	// window is capped by live — the endpoint won't accept more than it reports,
+	// and this is what prevents a once-prefilled window from freezing after the
+	// gateway lowers it.
 	p := &fakeResolverProvider{caps: gollm.ModelCapabilities{MaxInputTokens: 8192}}
 	cfg := gollm.ProviderConfig{gollm.MaxInputTokensKey: "200000"}
 	window, _ := resolveModelBudget(context.Background(), p, unregistered, "m", cfg, 0)
+	if window != 8192 {
+		t.Fatalf("stale override must be capped by live: window=%d, want 8192", window)
+	}
+}
+
+func TestResolveModelBudget_OverrideUncappedWithoutLive(t *testing.T) {
+	// With no live detection (e.g. Bedrock), the operator override stands — it is
+	// the best signal available and may exceed the conservative default.
+	window, _ := resolveModelBudget(context.Background(), plainProvider{}, unregistered, "m",
+		gollm.ProviderConfig{gollm.MaxInputTokensKey: "200000"}, 0)
 	if window != 200000 {
-		t.Fatalf("operator override must not be capped by live: window=%d, want 200000", window)
+		t.Fatalf("override without live detection must stand: window=%d, want 200000", window)
 	}
 }
 
