@@ -64,6 +64,35 @@ func TestApplyCalibratedWindow_PersistsOnceOnChange(t *testing.T) {
 	}
 }
 
+func TestModelWindowKey(t *testing.T) {
+	// Normal model id.
+	if got := ModelWindowKey("gpt-4o", nil); got != "gpt-4o" {
+		t.Fatalf("model key = %q, want gpt-4o", got)
+	}
+	// Endpoint-based project (blank model) → keyed by endpoint id.
+	if got := ModelWindowKey("", map[string]string{"endpoint_id": "ep-123"}); got != "endpoint:ep-123" {
+		t.Fatalf("endpoint key = %q, want endpoint:ep-123", got)
+	}
+	// Neither → empty (persistence skipped).
+	if got := ModelWindowKey("  ", map[string]string{}); got != "" {
+		t.Fatalf("no model / no endpoint should be empty, got %q", got)
+	}
+}
+
+func TestApplyCalibratedWindow_EndpointProjectPersistsByEndpointKey(t *testing.T) {
+	store := &fakeWindowStore{}
+	o := &Orchestrator{
+		llmProvider:     "vertex-ai",
+		llmModel:        "", // endpoint project: model blank
+		llmConfig:       map[string]string{"endpoint_id": "ep-abc"},
+		modelWindowRepo: store,
+	}
+	o.applyCalibratedWindow(context.Background(), "", 200000)
+	if len(store.saved) != 1 || store.saved[0].model != "endpoint:ep-abc" {
+		t.Fatalf("endpoint calibration should persist under endpoint key, got %+v", store.saved)
+	}
+}
+
 func TestApplyCalibratedWindow_IgnoresNonPositive(t *testing.T) {
 	store := &fakeWindowStore{}
 	o := &Orchestrator{llmProvider: "p", llmModel: "m", modelWindowRepo: store}

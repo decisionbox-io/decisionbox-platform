@@ -2,11 +2,32 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
+
+// ModelWindowKey is the identifier under which a model's self-calibrated
+// context window is persisted (project + provider + this key). It is the model
+// id, except for endpoint-based projects (user-deployed Vertex endpoints) whose
+// llm.model is intentionally blank and whose deployment is identified by
+// endpoint_id — there it keys by "endpoint:<id>" so calibration still persists
+// and reloads across runs. Returns "" only when neither a model nor an endpoint
+// id is present (persistence is then skipped). Used by both the run-start
+// resolver (read) and the calibration observer (write) so the keys match.
+func ModelWindowKey(model string, cfg gollm.ProviderConfig) string {
+	if m := strings.TrimSpace(model); m != "" {
+		return m
+	}
+	if cfg != nil {
+		if ep := strings.TrimSpace(cfg["endpoint_id"]); ep != "" {
+			return "endpoint:" + ep
+		}
+	}
+	return ""
+}
 
 // modelWindowSaveTimeout bounds the best-effort calibration write. The observer
 // fires inline on the LLM call path (before the adaptive retry), so an
@@ -90,14 +111,17 @@ func (o *Orchestrator) applyCalibratedWindow(ctx context.Context, model string, 
 		"window":   window,
 	}).Info("Calibrated model context window from a context-overflow error")
 
-	if o.modelWindowRepo != nil {
+	// Key by the persistence key (endpoint id for endpoint-based projects whose
+	// model is blank), so endpoint deployments also persist/reload calibration.
+	key := ModelWindowKey(model, o.llmConfig)
+	if o.modelWindowRepo != nil && key != "" {
 		// Persist under a detached context so a cancelled run still records what
 		// it learned, but bounded by a short timeout so a slow/unavailable Mongo
 		// can't stall the inline LLM retry path. Best-effort — a write failure
 		// must not affect the run.
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelWindowSaveTimeout)
 		defer cancel()
-		if err := o.modelWindowRepo.SaveWindow(saveCtx, o.llmProvider, model, window); err != nil {
+		if err := o.modelWindowRepo.SaveWindow(saveCtx, o.llmProvider, key, window); err != nil {
 			applog.WithFields(applog.Fields{
 				"provider": o.llmProvider,
 				"model":    model,

@@ -886,9 +886,15 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err := modelWindowRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure llm_model_windows indexes")
 	}
-	persistedWindow, err := modelWindowRepo.GetWindow(ctx, projectID, project.LLM.Provider, project.LLM.Model)
-	if err != nil {
-		applog.WithError(err).Debug("Failed to read persisted model window; continuing with live/catalog resolution")
+	// Key by the same identifier the calibration observer writes — the model id,
+	// or the endpoint id for endpoint-based projects whose model is blank.
+	modelWindowKey := discovery.ModelWindowKey(project.LLM.Model, project.LLM.Config)
+	var persistedWindow int
+	if modelWindowKey != "" {
+		persistedWindow, err = modelWindowRepo.GetWindow(ctx, projectID, project.LLM.Provider, modelWindowKey)
+		if err != nil {
+			applog.WithError(err).Debug("Failed to read persisted model window; continuing with live/catalog resolution")
+		}
 	}
 	resolvedWindow, resolvedOutputCap := resolveModelBudget(ctx, llm, project.LLM.Provider, project.LLM.Model, project.LLM.Config, persistedWindow)
 
