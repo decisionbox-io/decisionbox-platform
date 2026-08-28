@@ -802,6 +802,16 @@ func ClampMaxTokens(requested, override int) int {
 	return requested
 }
 
+// MaxInputOverride returns the operator's manual context-window override from
+// cfg (the max_input_tokens key, a positive integer), or 0 when absent / not a
+// positive integer. Exported counterpart of MaxOutputOverride so callers that
+// build their own resolution chain (e.g. the discovery agent's run-start window
+// resolver) can give the operator override top priority over live
+// auto-detection and the catalog.
+func MaxInputOverride(cfg ProviderConfig) int {
+	return parseMaxInputOverride(cfg)
+}
+
 // GetEffectiveInputWindow returns the input-window size budgeting
 // call-sites should respect for a (provider, model, project-config)
 // triple. Resolution order:

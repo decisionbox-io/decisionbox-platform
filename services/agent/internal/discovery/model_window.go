@@ -57,33 +57,40 @@ func (o *Orchestrator) installContextWindowObserver(ctx context.Context) {
 		return
 	}
 	o.aiClient.SetContextWindowObserver(func(model string, window int) {
-		if window <= 0 {
-			return
-		}
-		o.calibMu.Lock()
-		changed := window != o.calibratedWindow
-		o.calibratedWindow = window
-		o.calibMu.Unlock()
-		if !changed {
-			return
-		}
-		applog.WithFields(applog.Fields{
-			"provider": o.llmProvider,
-			"model":    model,
-			"window":   window,
-		}).Info("Calibrated model context window from a context-overflow error")
-
-		if o.modelWindowRepo != nil {
-			// Persist under a detached context so a cancelled run still records
-			// what it learned. Best-effort — a write failure must not affect the
-			// run.
-			if err := o.modelWindowRepo.SaveWindow(context.WithoutCancel(ctx), o.llmProvider, model, window); err != nil {
-				applog.WithFields(applog.Fields{
-					"provider": o.llmProvider,
-					"model":    model,
-					"error":    err.Error(),
-				}).Warn("Failed to persist calibrated model context window")
-			}
-		}
+		o.applyCalibratedWindow(ctx, model, window)
 	})
+}
+
+// applyCalibratedWindow records a context window learned from an overflow 400:
+// it caches the value in memory (so the remaining areas re-budget against it)
+// and, on the first change, persists it best-effort. Ignores non-positive
+// windows and no-op repeats.
+func (o *Orchestrator) applyCalibratedWindow(ctx context.Context, model string, window int) {
+	if window <= 0 {
+		return
+	}
+	o.calibMu.Lock()
+	changed := window != o.calibratedWindow
+	o.calibratedWindow = window
+	o.calibMu.Unlock()
+	if !changed {
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"provider": o.llmProvider,
+		"model":    model,
+		"window":   window,
+	}).Info("Calibrated model context window from a context-overflow error")
+
+	if o.modelWindowRepo != nil {
+		// Persist under a detached context so a cancelled run still records what
+		// it learned. Best-effort — a write failure must not affect the run.
+		if err := o.modelWindowRepo.SaveWindow(context.WithoutCancel(ctx), o.llmProvider, model, window); err != nil {
+			applog.WithFields(applog.Fields{
+				"provider": o.llmProvider,
+				"model":    model,
+				"error":    err.Error(),
+			}).Warn("Failed to persist calibrated model context window")
+		}
+	}
 }

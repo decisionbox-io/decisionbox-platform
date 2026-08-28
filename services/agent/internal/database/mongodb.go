@@ -20,6 +20,7 @@ const (
 	CollectionFeedback            = "feedback"
 	CollectionSchemaIndexProgress = "project_schema_index_progress"
 	CollectionSchemaCache         = "project_schema_cache"
+	CollectionLLMModelWindows     = "llm_model_windows"
 
 	// Re-exports from libs/go-common/mongodb so existing call sites in
 	// the agent module (database/discovery_repo.go, run_repo.go,
