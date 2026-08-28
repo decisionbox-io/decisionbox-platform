@@ -137,7 +137,7 @@ export function LLMFormFields({
   // live-detected value (robust across a form remount, where the ref is empty).
   // A value the operator typed themselves is preserved. Fields stay editable.
   const handleModelSelect = (val: string) => {
-    const config = { ...value.config, model: val };
+    const config: Record<string, string> = { ...value.config, model: val };
     const prevLive = (liveModels ?? []).find((m) => m.id === value.config.model);
     const live = (liveModels ?? []).find((m) => m.id === val);
     const next: typeof autofilledRef.current = {};
