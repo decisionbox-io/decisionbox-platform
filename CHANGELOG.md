@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Discovery run errors collapse to a warning icon.** A failed or partial run's raw error (for example a long `bedrock/openai-compat … ValidationException` context-length dump) is no longer rendered in full by default. A compact warning indicator now sits next to the run status on both the project home and the discovery run detail page; clicking it expands the full error(s) in a scrollable, word-wrapped popover, and collapsing hides the detail again while the indicator itself persists across refresh.
 - **Unknown-model token defaults raised.** A model that matches no catalog entry (and no per-provider override) now resolves to **128K input** (was 32K) and **64K output** (`64000`, was 8K), across every LLM provider. Catalogued models still resolve to their exact caps. The five API providers' unknown-model output default (`claude`, `openai`, `bedrock`, `azure-foundry`, `vertex-ai`) rose from 16K to 64K. `64000` (not `65536`) is used because that is the hard `max_tokens` cap on current Bedrock Claude models — a proxied unknown model (LiteLLM → Bedrock) rejects `65536` with a 400.
 
 ### Fixed
