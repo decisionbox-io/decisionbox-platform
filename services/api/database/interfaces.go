@@ -15,7 +15,7 @@ type ProjectRepo interface {
 	List(ctx context.Context, limit, offset int) ([]*models.Project, error)
 	Update(ctx context.Context, id string, p *models.Project) error
 	Delete(ctx context.Context, id string) error
-	// DeleteCascade removes the project AND all rows in the 14
+	// DeleteCascade removes the project AND all rows in its
 	// project-scoped child collections + feedback by discovery_id.
 	// Idempotent on missing/already-deleted projects. See
 	// database.ProjectRepository.DeleteCascade for the full collection
