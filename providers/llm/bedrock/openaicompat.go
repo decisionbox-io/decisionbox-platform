@@ -23,6 +23,15 @@ import (
 // outright if "model" is missing, so we leave the shared helper's default
 // in place.
 func (p *BedrockProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// Do NOT forward response_format on this wire. Bedrock's OpenAI-compat
+	// open models (Qwen, GLM, DeepSeek, …) corrupt their output when a
+	// json_schema response_format is set — verified: the same prompt returns
+	// clean JSON without it and garbage (broken quotes / truncated fields)
+	// with it. Callers gate on ProviderMeta.SupportsStructuredOutput (true for
+	// the Anthropic wire, where a forced tool works); dropping it here makes
+	// structured output a safe no-op for these models rather than a
+	// response-mangling one. Mirrors vertex-ai / azure-foundry.
+	req.ResponseFormat = nil
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
 	reqBody, err := json.Marshal(body)
