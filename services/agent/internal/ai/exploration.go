@@ -109,6 +109,28 @@ const explorationStepMaxOutputTokens = 16384
 
 const explorationMaxOutputTokensEnv = "EXPLORATION_MAX_OUTPUT_TOKENS"
 
+// explorationContextSafetyMargin is reserved below the model's context window
+// (on top of the estimated prompt) so a slightly-off token estimate can't tip
+// the request over the limit. explorationMinOutputTokens is the floor the
+// per-step budget is never reduced below — enough for an action object even
+// when the estimate says little context remains.
+const (
+	explorationContextSafetyMargin = 1024
+	explorationMinOutputTokens     = 1024
+)
+
+// estimatePromptTokens is a cheap upper-ish estimate of the tokens already in
+// the conversation (system prompt + messages), using the conventional ~4
+// characters per token heuristic. It only needs to be good enough to keep the
+// output reservation from overflowing the context window.
+func estimatePromptTokens(conversation *Conversation) int {
+	chars := len(conversation.GetSystemPrompt())
+	for _, m := range conversation.GetMessages() {
+		chars += len(m.Content) + 4 // + small per-message role/overhead
+	}
+	return chars / 4
+}
+
 // StepCallback is called after each exploration step with live progress data.
 //
 // inputTokens / outputTokens are the totals for the LLM call(s) the engine
@@ -600,14 +622,24 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 
 	// Size the per-step output budget above the old hard-coded 4096 (Rule 2):
 	// a reasoning model's <think> block can consume the whole budget and
-	// truncate the action to empty before it is emitted (issue #341). Bounded
-	// by a per-step ceiling so reserving it as max_tokens can't exceed a
-	// model's context window once the conversation has grown — the effective
-	// value is min(catalogued output cap, ceiling), never 0.
-	ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens)
-	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
-	if ceiling > 0 && maxTokens > ceiling {
+	// truncate the action to empty before it is emitted (issue #341). The
+	// budget is the model's catalogued output cap, bounded by a per-step
+	// ceiling and, crucially, by the context left after the (growing)
+	// conversation — so reserving output can't overflow a small context window
+	// on providers that count input + requested output. Never below a floor.
+	provider, model := e.client.ProviderName(), e.client.ModelName()
+	maxTokens := gollm.GetMaxOutputTokens(provider, model)
+	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
 		maxTokens = ceiling
+	}
+	if ctxWindow := gollm.GetMaxInputTokens(provider, model); ctxWindow > 0 {
+		remaining := ctxWindow - estimatePromptTokens(conversation) - explorationContextSafetyMargin
+		if remaining < explorationMinOutputTokens {
+			remaining = explorationMinOutputTokens
+		}
+		if maxTokens > remaining {
+			maxTokens = remaining
+		}
 	}
 
 	// Constrain the action shape at generation time where the provider
@@ -874,23 +906,21 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // state. Lifting it to package level lets the verifier reuse the same parser
 // without depending on the engine.
 func extractJSON(text string) string {
-	// Selection order (issue #341):
-	//   1. a recognised action in the reasoning-stripped text — so JSON a model
-	//      writes *inside* its <think> reasoning can't shadow the real action;
-	//   2. a recognised action in the FULL text — recovers the case where the
-	//      model put its only action inside a reasoning block;
-	//   3. the last balanced object in the stripped text — the lenient fallback
-	//      so ParseAction still gets an object to emit its precise error on and
-	//      drive a targeted retry, without resurrecting reasoning-only prose.
-	strippedCandidates := collectJSONCandidates(stripReasoningBlocks(text))
-	if got := lastRecognizedAction(strippedCandidates); got != "" {
+	// Mask <think>/<thinking> reasoning blocks — position-preserving: each is
+	// replaced by an equal-length run of spaces — so their contents are ignored
+	// when scanning for the action, while candidates are sliced from the
+	// ORIGINAL text. An action JSON that legitimately contains "<think>" inside
+	// a string literal (e.g. a query filtering log text) is therefore never
+	// mutated (issue #341). Selection: the last candidate carrying a recognised
+	// action key wins, with the last balanced object as the lenient fallback so
+	// ParseAction can emit its precise error and drive a targeted retry.
+	mask := maskReasoningBlocks(text)
+	candidates := collectJSONCandidates(mask, text)
+	if got := lastRecognizedAction(candidates); got != "" {
 		return got
 	}
-	if got := lastRecognizedAction(collectJSONCandidates(text)); got != "" {
-		return got
-	}
-	if len(strippedCandidates) > 0 {
-		return strippedCandidates[len(strippedCandidates)-1]
+	if len(candidates) > 0 {
+		return candidates[len(candidates)-1]
 	}
 	return ""
 }
@@ -909,80 +939,100 @@ func lastRecognizedAction(candidates []string) string {
 // reasoningBlockRe matches a complete <think>…</think> / <thinking>…</thinking>
 // pair (case-insensitive, across newlines). reasoningDanglingRe matches an
 // unclosed trailing block — truncated output whose reasoning ran to the token
-// limit before any action was emitted; its content is all reasoning, so
-// dropping it lets extraction return "" cleanly instead of mis-selecting a
-// half-JSON fragment.
+// limit before any action was emitted.
 var (
 	reasoningBlockRe    = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*?</(think|thinking)>`)
 	reasoningDanglingRe = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*$`)
 )
 
-// stripReasoningBlocks removes <think>/<thinking> reasoning blocks so their
-// contents cannot interfere with action extraction. Matched pairs are removed
-// first, then any unclosed trailing block.
-func stripReasoningBlocks(text string) string {
-	text = reasoningBlockRe.ReplaceAllString(text, "")
-	text = reasoningDanglingRe.ReplaceAllString(text, "")
+// maskReasoningBlocks replaces <think>/<thinking> reasoning blocks (matched
+// pairs, then any unclosed trailing block) with equal-length runs of spaces.
+// Byte positions are preserved so a caller can scan the mask for structure and
+// slice the original text at the same offsets without mutating it.
+func maskReasoningBlocks(text string) string {
+	blank := func(s string) string { return strings.Repeat(" ", len(s)) }
+	text = reasoningBlockRe.ReplaceAllStringFunc(text, blank)
+	text = reasoningDanglingRe.ReplaceAllStringFunc(text, blank)
 	return text
 }
 
-// collectJSONCandidates returns every plausible JSON object in text:
-// first the contents of each fenced block (```json / ``` / ```JSON) that
-// starts with '{', then every balanced top-level { ... } found by a
-// scan over the raw text. Fenced blocks are listed first so that, when
-// no candidate carries an action key, the fallback prefers raw trailing
-// JSON over a fenced preamble.
-func collectJSONCandidates(text string) []string {
-	var out []string
-	out = append(out, fencedJSONBlocks(text)...)
-	out = append(out, findBalancedJSONObjects(text)...)
+// collectJSONCandidates returns every plausible JSON object, scanning `scan`
+// for structure (so masked reasoning is ignored) and slicing the returned
+// bytes from `source` (so the originals are never mutated). scan and source
+// must be the same length. Fenced blocks are listed first so that, when no
+// candidate carries an action key, the fallback prefers raw trailing JSON.
+func collectJSONCandidates(scan, source string) []string {
+	out := fencedJSONBlocks(scan, source)
+	out = append(out, findBalancedJSONObjects(scan, source)...)
 	return out
 }
 
-// fencedJSONBlocks returns every markdown-fenced block whose body starts
-// with '{'. Language tags json / JSON / (empty) are all accepted.
-func fencedJSONBlocks(text string) []string {
+// fencedJSONBlocks returns every markdown-fenced block whose body starts with
+// '{'. Language tags json / JSON / (empty) are accepted. Fences are located in
+// `scan`; each body is sliced from `source` at the same offsets.
+func fencedJSONBlocks(scan, source string) []string {
 	var out []string
-	for rest := text; ; {
-		idx := strings.Index(rest, "```")
-		if idx < 0 {
+	pos := 0
+	for {
+		rel := strings.Index(scan[pos:], "```")
+		if rel < 0 {
 			break
 		}
-		after := rest[idx+3:]
-		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
-			maybeLang := strings.TrimSpace(after[:nl])
-			if maybeLang == "" || strings.EqualFold(maybeLang, "json") {
-				after = after[nl+1:]
+		start := pos + rel + 3
+		bodyStart := start
+		if nl := strings.IndexByte(scan[start:], '\n'); nl >= 0 {
+			if lang := strings.TrimSpace(scan[start : start+nl]); lang == "" || strings.EqualFold(lang, "json") {
+				bodyStart = start + nl + 1
 			}
 		}
-		end := strings.Index(after, "```")
-		if end < 0 {
+		rel2 := strings.Index(scan[bodyStart:], "```")
+		if rel2 < 0 {
 			break
 		}
-		block := strings.TrimSpace(after[:end])
-		if strings.HasPrefix(block, "{") {
-			out = append(out, block)
+		bodyEnd := bodyStart + rel2
+		lo, hi := trimSpaceBounds(scan, bodyStart, bodyEnd)
+		if lo < hi && scan[lo] == '{' {
+			out = append(out, source[lo:hi])
 		}
-		rest = after[end+3:]
+		pos = bodyEnd + 3
 	}
 	return out
 }
 
-// findBalancedJSONObjects returns every balanced top-level { ... } substring
-// in text, in order. String literals are tracked so { / } inside strings
-// (e.g., inside a SQL query) don't break the brace count.
-func findBalancedJSONObjects(text string) []string {
+// trimSpaceBounds returns the [lo,hi) sub-range of s with leading and trailing
+// ASCII whitespace removed.
+func trimSpaceBounds(s string, lo, hi int) (int, int) {
+	for lo < hi && isASCIISpace(s[lo]) {
+		lo++
+	}
+	for hi > lo && isASCIISpace(s[hi-1]) {
+		hi--
+	}
+	return lo, hi
+}
+
+func isASCIISpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// findBalancedJSONObjects returns every balanced top-level { ... } substring,
+// in order. Braces are located by scanning `scan` (so masked reasoning is
+// ignored); each object is sliced from `source` at the same offsets (so an
+// object containing "<think>" inside a string literal is returned verbatim).
+// String literals are tracked so { / } inside strings (e.g. inside a SQL
+// query) don't break the brace count. scan and source must be the same length.
+func findBalancedJSONObjects(scan, source string) []string {
 	var out []string
-	for i := 0; i < len(text); i++ {
-		if text[i] != '{' {
+	for i := 0; i < len(scan); i++ {
+		if scan[i] != '{' {
 			continue
 		}
 		depth := 0
 		inString := false
 		escaped := false
 		balancedEnd := -1
-		for j := i; j < len(text); j++ {
-			c := text[j]
+		for j := i; j < len(scan); j++ {
+			c := scan[j]
 			if inString {
 				if escaped {
 					escaped = false
@@ -1017,11 +1067,11 @@ func findBalancedJSONObjects(text string) []string {
 			// `{"plan":[{…}]`) must NOT have a nested fragment extracted as an
 			// action; extraction returns nothing so the caller re-prompts
 			// (issue #341). Reasoning prose that would otherwise carry stray
-			// braces is already removed by stripReasoningBlocks before we
-			// reach here, so this rarely fires on well-formed turns.
+			// braces is already masked out before we reach here, so this
+			// rarely fires on well-formed turns.
 			break
 		}
-		out = append(out, text[i:balancedEnd+1])
+		out = append(out, source[i:balancedEnd+1])
 		i = balancedEnd // resume after this object
 	}
 	return out

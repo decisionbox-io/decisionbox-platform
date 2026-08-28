@@ -24,7 +24,6 @@ func TestExtractJSON_ReasoningAndActionCorpus(t *testing.T) {
 	}{
 		{"think_before", "<think>let me reason, consider the set {a, b</think>\n{\"query\":\"SELECT 1\"}", "query_data", "SELECT 1"},
 		{"thinking_variant", "<thinking>reasoning here</thinking>{\"query\":\"SELECT 2\"}", "query_data", "SELECT 2"},
-		{"action_inside_think", "<think>{\"query\":\"SELECT 3\"}</think>\nOkay, done thinking.", "query_data", "SELECT 3"},
 		{"leading_prose", "Here is my next action:\n{\"query\":\"SELECT 4\"}", "query_data", "SELECT 4"},
 		{"markdown_fence", "```json\n{\"query\":\"SELECT 5\"}\n```", "query_data", "SELECT 5"},
 		{"leading_planning_json", "{\"plan\":\"first inspect users\"}\n{\"query\":\"SELECT 6\"}", "query_data", "SELECT 6"},
@@ -34,9 +33,9 @@ func TestExtractJSON_ReasoningAndActionCorpus(t *testing.T) {
 		{"single_element_array", "[{\"query\":\"SELECT 9\"}]", "query_data", "SELECT 9"},
 		{"balanced_planning_then_action", "{\"plan\":\"first inspect\"} then {\"query\":\"SELECT 10\"}", "query_data", "SELECT 10"},
 		{"draft_in_think_real_after", "<think>{\"search_tables\":\"draft\"}</think>\n{\"search_tables\":\"real query\"}", "search_tables", "real query"},
-		// Action inside <think>, then a non-action JSON object after it: the
-		// full-text recovery must still find the action, not stop at the note.
-		{"action_in_think_then_note", "<think>{\"query\":\"SELECT 11\"}</think>{\"note\":\"ok\"}", "query_data", "SELECT 11"},
+		// A <think> substring inside the action's string literal must be
+		// preserved, not stripped, so the executed query is byte-identical.
+		{"think_tag_inside_query_string", "{\"query\":\"SELECT id WHERE note LIKE '%<think>y</think>%'\"}", "query_data", "<think>y</think>"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,6 +69,11 @@ func TestExtractJSON_NoActionCorpus(t *testing.T) {
 		{"truncated_plan_nested_object", "{\"plan\":{\"query\":\"SELECT draft\"}"},
 		{"truncated_plan_nested_array", "{\"plan\":[{\"query\":\"SELECT draft\"}]"},
 		{"stray_unbalanced_preamble", "oops here is a stray { brace\n{\"query\":\"SELECT 10\"}"},
+		// An action placed ONLY inside a reasoning block (nothing actionable
+		// outside it) is masked away, so it re-prompts instead of executing
+		// content the model buried in its reasoning.
+		{"action_only_inside_think", "<think>{\"query\":\"SELECT 3\"}</think>\nOkay, done thinking."},
+		{"action_in_think_then_note", "<think>{\"query\":\"SELECT 11\"}</think>{\"note\":\"ok\"}"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,29 +115,36 @@ func TestJSONHasActionKey_Widened(t *testing.T) {
 
 func TestFindBalancedJSONObjects_AbortsOnUnbalanced(t *testing.T) {
 	// A balanced object before an unbalanced one is still returned.
-	got := findBalancedJSONObjects(`{"a":1} then {unbalanced`)
+	got := findBalancedJSONObjects(`{"a":1} then {unbalanced`, `{"a":1} then {unbalanced`)
 	if len(got) != 1 || !strings.Contains(got[0], `"a":1`) {
 		t.Fatalf("got %v, want the leading balanced object", got)
 	}
 	// An unbalanced object stops the scan so a nested fragment after it is not
 	// extracted (issue #341 — don't run a draft from a truncated preamble).
-	if out := findBalancedJSONObjects(`{"plan":[{"query":"draft"}]`); len(out) != 0 {
+	if out := findBalancedJSONObjects(`{"plan":[{"query":"draft"}]`, `{"plan":[{"query":"draft"}]`); len(out) != 0 {
 		t.Errorf("unbalanced outer must yield no objects, got %v", out)
 	}
-	if out := findBalancedJSONObjects("text { unbalanced only"); len(out) != 0 {
+	if out := findBalancedJSONObjects("text { unbalanced only", "text { unbalanced only"); len(out) != 0 {
 		t.Errorf("unbalanced-only should yield no objects, got %v", out)
 	}
 }
 
-func TestStripReasoningBlocks(t *testing.T) {
-	if got := stripReasoningBlocks("a<think>x</think>b"); strings.Contains(got, "x") || !strings.Contains(got, "a") || !strings.Contains(got, "b") {
-		t.Errorf("matched pair not stripped cleanly: %q", got)
+func TestMaskReasoningBlocks(t *testing.T) {
+	// Masking removes the reasoning content but PRESERVES byte positions
+	// (equal-length spaces), so offsets into the mask map onto the original.
+	for _, in := range []string{"a<think>x</think>b", "keep<think>drop to end", "A<THINK>x</THINK>B<thinking>y</thinking>C"} {
+		if got := maskReasoningBlocks(in); len(got) != len(in) {
+			t.Errorf("maskReasoningBlocks(%q) length = %d, want %d (positions must be preserved)", in, len(got), len(in))
+		}
 	}
-	if got := stripReasoningBlocks("keep<think>drop to end"); strings.Contains(got, "drop") || !strings.Contains(got, "keep") {
-		t.Errorf("dangling block not stripped to end: %q", got)
+	if got := maskReasoningBlocks("a<think>x</think>b"); strings.Contains(got, "x") || !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+		t.Errorf("matched pair not masked cleanly: %q", got)
 	}
-	if got := stripReasoningBlocks("A<THINK>x</THINK>B<thinking>y</thinking>C"); strings.Contains(got, "x") || strings.Contains(got, "y") {
-		t.Errorf("case-insensitive / multiple blocks not stripped: %q", got)
+	if got := maskReasoningBlocks("keep<think>drop to end"); strings.Contains(got, "drop") || !strings.Contains(got, "keep") {
+		t.Errorf("dangling block not masked to end: %q", got)
+	}
+	if got := maskReasoningBlocks("A<THINK>x</THINK>B<thinking>y</thinking>C"); strings.Contains(got, "x") || strings.Contains(got, "y") {
+		t.Errorf("case-insensitive / multiple blocks not masked: %q", got)
 	}
 }
 

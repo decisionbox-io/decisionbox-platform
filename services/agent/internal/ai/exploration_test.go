@@ -954,7 +954,7 @@ func TestFindBalancedJSONObjects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := findBalancedJSONObjects(tc.in)
+			got := findBalancedJSONObjects(tc.in, tc.in)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d objects, want %d — got=%v", len(got), len(tc.want), got)
 			}
