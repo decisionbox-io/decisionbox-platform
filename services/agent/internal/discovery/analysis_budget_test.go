@@ -67,10 +67,15 @@ func TestAnalysisPickerBudgetTokens(t *testing.T) {
 		t.Fatalf("1M window: expected the default %d, got %d", def, got)
 	}
 
-	// Small window where the output cap leaves no room for input (Ollama: live
-	// info reports only the context length, output stays the 64K default) →
-	// falls to the small floor, NOT the 200K default (else input alone overflows
-	// the window and re-triggers the very 400 this guards against).
+	// Output cap >= window (Ollama qwen/deepseek/gemma: output default equals the
+	// context window) must NOT collapse the picker to the floor — it reserves the
+	// intended analysis output, leaving most of the 128K window for evidence.
+	if got := analysisPickerBudgetTokens(def, 131072, 131072); got <= minPickerBudgetTokens || got >= def {
+		t.Fatalf("cap==window (128K): expected a large budget, got %d", got)
+	}
+
+	// Genuinely tiny window (8K) where even the intended output leaves no input
+	// room → the small floor, NOT the 200K default (else input alone overflows).
 	if got := analysisPickerBudgetTokens(def, 8192, 64000); got != minPickerBudgetTokens {
 		t.Fatalf("tiny window: expected the picker floor %d, got %d", minPickerBudgetTokens, got)
 	}

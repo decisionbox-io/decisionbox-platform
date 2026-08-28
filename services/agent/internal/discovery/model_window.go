@@ -2,10 +2,18 @@ package discovery
 
 import (
 	"context"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
+
+// modelWindowSaveTimeout bounds the best-effort calibration write. The observer
+// fires inline on the LLM call path (before the adaptive retry), so an
+// unavailable/slow Mongo must not stall the retry — the write is detached from
+// the run context (so a cancelled run still records what it learned) but capped
+// so it can't block for Mongo's default server-selection window.
+const modelWindowSaveTimeout = 5 * time.Second
 
 // modelWindowPersister stores a model's context window learned at run time from
 // a context-overflow 400, keyed by project + provider + model, so a later run
@@ -84,8 +92,12 @@ func (o *Orchestrator) applyCalibratedWindow(ctx context.Context, model string, 
 
 	if o.modelWindowRepo != nil {
 		// Persist under a detached context so a cancelled run still records what
-		// it learned. Best-effort — a write failure must not affect the run.
-		if err := o.modelWindowRepo.SaveWindow(context.WithoutCancel(ctx), o.llmProvider, model, window); err != nil {
+		// it learned, but bounded by a short timeout so a slow/unavailable Mongo
+		// can't stall the inline LLM retry path. Best-effort — a write failure
+		// must not affect the run.
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelWindowSaveTimeout)
+		defer cancel()
+		if err := o.modelWindowRepo.SaveWindow(saveCtx, o.llmProvider, model, window); err != nil {
 			applog.WithFields(applog.Fields{
 				"provider": o.llmProvider,
 				"model":    model,
