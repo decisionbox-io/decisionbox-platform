@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -95,6 +97,29 @@ type ExplorationEngine struct {
 // when it returns a response we can't parse. Each retry injects a short
 // "please respond in JSON" nudge into the conversation.
 const maxParseRetries = 3
+
+// defaultExplorationMaxOutputTokens is the per-step output ceiling for the
+// exploration LLM call. The old value was a hard-coded 4096 (Rule 2); it is now
+// the default of the EXPLORATION_MAX_OUTPUT_TOKENS knob. The default is kept at
+// the proven-safe 4096 so the reservation cannot overflow a small-context
+// deployment (e.g. an 8K/4K Ollama num_ctx); operators running reasoning models
+// on large-context backends raise it to give the <think> block room without
+// truncating the action (issue #341). The effective budget is
+// min(catalogued output cap, this).
+const defaultExplorationMaxOutputTokens = 4096
+
+const explorationMaxOutputTokensEnv = "EXPLORATION_MAX_OUTPUT_TOKENS"
+
+// explorationOutputTokens returns the per-step output budget: the model's
+// catalogued output cap bounded by the configurable ceiling. It is constant
+// across a step's parse retries, so it is computed once per step.
+func (e *ExplorationEngine) explorationOutputTokens() int {
+	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
+	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, defaultExplorationMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
+		maxTokens = ceiling
+	}
+	return maxTokens
+}
 
 // StepCallback is called after each exploration step with live progress data.
 //
@@ -585,13 +610,21 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
+	// Constrain the action shape at generation time where the provider
+	// supports it. CreateMessageWithFormat self-gates on
+	// SupportsStructuredOutput, so this is a safe no-op elsewhere and the
+	// tolerant extractor above stays the net.
+	actionFormat := explorationActionSchema()
+	maxTokens := e.explorationOutputTokens()
+
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
-		response, err := e.client.CreateMessage(
+		response, err := e.client.CreateMessageWithFormat(
 			ctx,
 			conversation.GetMessages(),
 			conversation.GetSystemPrompt(),
-			4096,
+			maxTokens,
+			actionFormat,
 		)
 		if err != nil {
 			logger.WithFields(logger.Fields{
@@ -642,13 +675,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(
-			"Your previous response could not be parsed as an exploration action. " +
-				"Respond with exactly ONE JSON object, no prose around it, matching one of:\n" +
-				`  {"thinking": "...", "query": "SELECT ..."}  — to run a query, or` + "\n" +
-				`  {"done": true, "summary": "..."}            — only when exploration is truly finished.` + "\n" +
-				"Do not wrap it in markdown fences unless necessary and do not emit planning JSON before the action.",
-		)
+		conversation.AddUserMessage(explorationRepairNudge(err))
 	}
 
 	in, out := usage.Totals()
@@ -848,74 +875,133 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 // state. Lifting it to package level lets the verifier reuse the same parser
 // without depending on the engine.
 func extractJSON(text string) string {
-	candidates := collectJSONCandidates(text)
-	if len(candidates) == 0 {
-		return ""
+	// Mask <think>/<thinking> reasoning blocks — position-preserving: each is
+	// replaced by an equal-length run of spaces — so their contents are ignored
+	// when scanning for the action, while candidates are sliced from the
+	// ORIGINAL text. An action JSON that legitimately contains "<think>" inside
+	// a string literal (e.g. a query filtering log text) is therefore never
+	// mutated (issue #341). Selection: the last candidate carrying a recognised
+	// action key wins, with the last balanced object as the lenient fallback so
+	// ParseAction can emit its precise error and drive a targeted retry.
+	mask := maskReasoningBlocks(text)
+	candidates := collectJSONCandidates(mask, text)
+	if got := lastRecognizedAction(candidates); got != "" {
+		return got
 	}
+	if len(candidates) > 0 {
+		return candidates[len(candidates)-1]
+	}
+	return ""
+}
+
+// lastRecognizedAction returns the last candidate carrying a recognised action
+// key, or "" if none.
+func lastRecognizedAction(candidates []string) string {
 	for i := len(candidates) - 1; i >= 0; i-- {
 		if jsonHasActionKey(candidates[i]) {
 			return candidates[i]
 		}
 	}
-	return candidates[len(candidates)-1]
+	return ""
 }
 
-// collectJSONCandidates returns every plausible JSON object in text:
-// first the contents of each fenced block (```json / ``` / ```JSON) that
-// starts with '{', then every balanced top-level { ... } found by a
-// scan over the raw text. Fenced blocks are listed first so that, when
-// no candidate carries an action key, the fallback prefers raw trailing
-// JSON over a fenced preamble.
-func collectJSONCandidates(text string) []string {
-	var out []string
-	out = append(out, fencedJSONBlocks(text)...)
-	out = append(out, findBalancedJSONObjects(text)...)
+// reasoningBlockRe matches a complete <think>…</think> / <thinking>…</thinking>
+// pair (case-insensitive, across newlines). reasoningDanglingRe matches an
+// unclosed trailing block — truncated output whose reasoning ran to the token
+// limit before any action was emitted.
+var (
+	reasoningBlockRe    = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*?</(think|thinking)>`)
+	reasoningDanglingRe = regexp.MustCompile(`(?is)<(think|thinking)\b[^>]*>.*$`)
+)
+
+// maskReasoningBlocks replaces <think>/<thinking> reasoning blocks (matched
+// pairs, then any unclosed trailing block) with equal-length runs of spaces.
+// Byte positions are preserved so a caller can scan the mask for structure and
+// slice the original text at the same offsets without mutating it.
+func maskReasoningBlocks(text string) string {
+	blank := func(s string) string { return strings.Repeat(" ", len(s)) }
+	text = reasoningBlockRe.ReplaceAllStringFunc(text, blank)
+	text = reasoningDanglingRe.ReplaceAllStringFunc(text, blank)
+	return text
+}
+
+// collectJSONCandidates returns every plausible JSON object, scanning `scan`
+// for structure (so masked reasoning is ignored) and slicing the returned
+// bytes from `source` (so the originals are never mutated). scan and source
+// must be the same length. Fenced blocks are listed first so that, when no
+// candidate carries an action key, the fallback prefers raw trailing JSON.
+func collectJSONCandidates(scan, source string) []string {
+	out := fencedJSONBlocks(scan, source)
+	out = append(out, findBalancedJSONObjects(scan, source)...)
 	return out
 }
 
-// fencedJSONBlocks returns every markdown-fenced block whose body starts
-// with '{'. Language tags json / JSON / (empty) are all accepted.
-func fencedJSONBlocks(text string) []string {
+// fencedJSONBlocks returns every markdown-fenced block whose body starts with
+// '{'. Language tags json / JSON / (empty) are accepted. Fences are located in
+// `scan`; each body is sliced from `source` at the same offsets.
+func fencedJSONBlocks(scan, source string) []string {
 	var out []string
-	for rest := text; ; {
-		idx := strings.Index(rest, "```")
-		if idx < 0 {
+	pos := 0
+	for {
+		rel := strings.Index(scan[pos:], "```")
+		if rel < 0 {
 			break
 		}
-		after := rest[idx+3:]
-		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
-			maybeLang := strings.TrimSpace(after[:nl])
-			if maybeLang == "" || strings.EqualFold(maybeLang, "json") {
-				after = after[nl+1:]
+		start := pos + rel + 3
+		bodyStart := start
+		if nl := strings.IndexByte(scan[start:], '\n'); nl >= 0 {
+			if lang := strings.TrimSpace(scan[start : start+nl]); lang == "" || strings.EqualFold(lang, "json") {
+				bodyStart = start + nl + 1
 			}
 		}
-		end := strings.Index(after, "```")
-		if end < 0 {
+		rel2 := strings.Index(scan[bodyStart:], "```")
+		if rel2 < 0 {
 			break
 		}
-		block := strings.TrimSpace(after[:end])
-		if strings.HasPrefix(block, "{") {
-			out = append(out, block)
+		bodyEnd := bodyStart + rel2
+		lo, hi := trimSpaceBounds(scan, bodyStart, bodyEnd)
+		if lo < hi && scan[lo] == '{' {
+			out = append(out, source[lo:hi])
 		}
-		rest = after[end+3:]
+		pos = bodyEnd + 3
 	}
 	return out
 }
 
-// findBalancedJSONObjects returns every balanced top-level { ... } substring
-// in text, in order. String literals are tracked so { / } inside strings
-// (e.g., inside a SQL query) don't break the brace count.
-func findBalancedJSONObjects(text string) []string {
+// trimSpaceBounds returns the [lo,hi) sub-range of s with leading and trailing
+// ASCII whitespace removed.
+func trimSpaceBounds(s string, lo, hi int) (int, int) {
+	for lo < hi && isASCIISpace(s[lo]) {
+		lo++
+	}
+	for hi > lo && isASCIISpace(s[hi-1]) {
+		hi--
+	}
+	return lo, hi
+}
+
+func isASCIISpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// findBalancedJSONObjects returns every balanced top-level { ... } substring,
+// in order. Braces are located by scanning `scan` (so masked reasoning is
+// ignored); each object is sliced from `source` at the same offsets (so an
+// object containing "<think>" inside a string literal is returned verbatim).
+// String literals are tracked so { / } inside strings (e.g. inside a SQL
+// query) don't break the brace count. scan and source must be the same length.
+func findBalancedJSONObjects(scan, source string) []string {
 	var out []string
-	for i := 0; i < len(text); i++ {
-		if text[i] != '{' {
+	for i := 0; i < len(scan); i++ {
+		if scan[i] != '{' {
 			continue
 		}
 		depth := 0
 		inString := false
 		escaped := false
-		for j := i; j < len(text); j++ {
-			c := text[j]
+		balancedEnd := -1
+		for j := i; j < len(scan); j++ {
+			c := scan[j]
 			if inString {
 				if escaped {
 					escaped = false
@@ -937,30 +1023,114 @@ func findBalancedJSONObjects(text string) []string {
 			case '}':
 				depth--
 				if depth == 0 {
-					out = append(out, text[i:j+1])
-					i = j
-					goto next
+					balancedEnd = j
 				}
 			}
+			if balancedEnd >= 0 {
+				break
+			}
 		}
-		// Unbalanced from i — stop scanning (no further balanced objects possible).
-		break
-	next:
+		if balancedEnd < 0 {
+			// Unbalanced from this '{' — stop. A genuinely malformed or
+			// truncated object (e.g. an unterminated `{"plan":{…}` or
+			// `{"plan":[{…}]`) must NOT have a nested fragment extracted as an
+			// action; extraction returns nothing so the caller re-prompts
+			// (issue #341). Reasoning prose that would otherwise carry stray
+			// braces is already masked out before we reach here, so this
+			// rarely fires on well-formed turns.
+			break
+		}
+		out = append(out, source[i:balancedEnd+1])
+		i = balancedEnd // resume after this object
 	}
 	return out
 }
 
-// jsonHasActionKey reports whether the JSON-encoded object declares a field
-// the exploration parser understands (query, done, or action).
+// jsonHasActionKey reports whether the JSON-encoded object declares a field the
+// exploration parser understands: a key-driven action (query, done, action,
+// lookup_schema, search_tables) or a tool-use envelope ({"name": "<known
+// tool>", "input": {…}}). Recognition is presence-based and lenient — e.g.
+// {"query": ""} still counts — so a recognised-but-incomplete action reaches
+// ParseAction, which emits a precise error and drives a targeted retry, rather
+// than extractJSON silently guessing (issue #341).
 func jsonHasActionKey(s string) bool {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(s), &probe); err != nil {
 		return false
 	}
-	_, hasQuery := probe["query"]
-	_, hasDone := probe["done"]
-	_, hasAction := probe["action"]
-	return hasQuery || hasDone || hasAction
+	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables"} {
+		if _, ok := probe[k]; ok {
+			return true
+		}
+	}
+	// Tool-use envelope: {"name": "<known tool>", "input": {…}}.
+	nameRaw, hasName := probe["name"]
+	if _, hasInput := probe["input"]; hasName && hasInput {
+		var name string
+		if json.Unmarshal(nameRaw, &name) == nil {
+			switch name {
+			case "query_data", "lookup_schema", "search_tables", "complete":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// explorationRepairNudge builds the corrective instruction appended to the
+// conversation when a response could not be parsed. It is reason-aware:
+// "no JSON at all" and "JSON but no usable action" get different leads so the
+// model corrects the specific failure instead of getting the same generic
+// re-ask each time (issue #341). The menu lists every recognised action shape
+// (including the schema-discovery actions the old nudge omitted).
+func explorationRepairNudge(parseErr error) string {
+	const menu = "Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n" +
+		`  {"query": "SELECT ..."}                     — run one read-only query, or` + "\n" +
+		`  {"lookup_schema": ["dataset.table", ...]}   — inspect table schemas, or` + "\n" +
+		`  {"search_tables": "..."}                    — find relevant tables, or` + "\n" +
+		`  {"done": true, "summary": "..."}            — only when exploration is truly finished.`
+	lead := "Your previous response could not be parsed as an exploration action."
+	if parseErr != nil {
+		switch msg := parseErr.Error(); {
+		case strings.Contains(msg, "no action JSON"):
+			lead = "Your previous response contained no JSON action object (only prose or reasoning)."
+		case strings.Contains(msg, "no query, lookup_schema"):
+			lead = "Your previous JSON had no usable action — it must carry one of query, lookup_schema, search_tables, or done."
+		}
+	}
+	return lead + " " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+}
+
+// explorationActionSchema is the structured-output request for an exploration
+// turn. It is deliberately permissive (a typed object with additionalProperties
+// allowed, non-strict): the action is a union of query / lookup_schema /
+// search_tables / done, and a strict oneOf is brittle on quantised open-model
+// grammars and forbids the open-ended shapes platform#340 preserves. The schema
+// pins the field types where it can; the tolerant extractor + repair retry are
+// the net for anything that slips through (issue #341).
+func explorationActionSchema() *gollm.ResponseFormat {
+	str := func(d string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": d}
+	}
+	return &gollm.ResponseFormat{
+		Name: "exploration_action",
+		Schema: map[string]interface{}{
+			"type":        "object",
+			"description": "A single exploration action. Provide exactly one of query, lookup_schema, search_tables, or done, plus optional thinking.",
+			"properties": map[string]interface{}{
+				"thinking":      str("Brief reasoning for this action"),
+				"query":         str("One read-only SQL query to run"),
+				"query_purpose": str("What the query is for"),
+				"lookup_schema": map[string]interface{}{"type": "array", "items": str("A dataset.table reference"), "description": "Tables to fetch schema for"},
+				"search_tables": str("Natural-language search for relevant tables"),
+				"search_top_k":  map[string]interface{}{"type": "integer", "description": "How many tables to return"},
+				"done":          map[string]interface{}{"type": "boolean", "description": "True only when exploration is complete"},
+				"summary":       str("Summary of findings, required when done is true"),
+			},
+			"additionalProperties": true,
+		},
+		Strict: false,
+	}
 }
 
 // executeAction executes the action and returns the user-message string

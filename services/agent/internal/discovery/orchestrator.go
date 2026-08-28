@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
@@ -1018,7 +1019,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// a "N dropped due to invalid related_insight_ids" hint instead of
 	// silently showing fewer recs than the model emitted.
 	if recStep != nil {
-		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), recStep.RecommendationsDropped, recStep.Error, recStep.TokensIn, recStep.TokensOut)
+		// The live RunStep message attributes drops to invalid
+		// related_insight_ids, so pass only those two reasons here — parse
+		// drops are surfaced separately via the recommendation_parse_error
+		// status and the recommendations_dropped_parse counter.
+		relatedIDDrops := recStep.RecommendationsDroppedMissingIDs + recStep.RecommendationsDroppedUnknownID
+		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), relatedIDDrops, recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
 	// Phase 5.5: Validate recommendations via the LLM-native verifier
@@ -1316,50 +1322,217 @@ func (o *Orchestrator) generateRecommendations(
 	step.Prompt = prompt
 
 	maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
-	chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
-	if err != nil {
-		step.Error = err.Error()
-		applog.WithError(err).Warn("Failed to generate recommendations")
+
+	// Layer 1 (prevention): constrain the recommendation shape at generation
+	// time where the provider supports it (issue #342). ChatWithFormat
+	// self-gates on SupportsStructuredOutput, so this is a safe no-op on
+	// providers without it (vertex-ai, azure-foundry) — the tolerant parser
+	// below is the always-on net.
+	format := recommendationResponseFormat()
+	if o.aiClient.SupportsStructuredOutput() {
+		applog.Info("Recommendation generation using schema-constrained output")
+	}
+
+	// Layer 3 (self-heal): if a response yields zero parseable recommendations,
+	// re-ask with the specific reason before giving up. Mirrors the exploration
+	// engine's runStepWithRetry. Fires only on a parse failure, never on a
+	// legitimately empty result. Bounded and env-overridable (Rule 2).
+	maxRetries := goconfig.GetEnvAsInt(recommendationParseMaxRetriesEnv, defaultRecommendationParseMaxRetries)
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+
+	var (
+		recs         []models.Recommendation
+		parseDropped int
+		lastParseErr error
+	)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptPrompt := prompt
+		if attempt > 0 {
+			step.RecommendationParseRetries = attempt
+			attemptPrompt = prompt + recommendationRepairSuffix(lastParseErr)
+			applog.WithFields(applog.Fields{
+				"attempt": attempt,
+				"reason":  errString(lastParseErr),
+			}).Warn("Re-prompting for recommendations after unparseable response")
+		}
+
+		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		if err != nil {
+			step.Error = err.Error()
+			applog.WithError(err).Warn("Failed to generate recommendations")
+			return make([]models.Recommendation, 0), step
+		}
+
+		step.Response = chatResult.Content
+		step.TokensIn += chatResult.TokensIn
+		step.TokensOut += chatResult.TokensOut
+		step.DurationMs += chatResult.DurationMs
+
+		parsed, dropped, perr := parseRecommendations(chatResult.Content)
+		if perr == nil {
+			// The response was a recognizable envelope/array; record how many
+			// items it dropped even when every one failed, so the telemetry
+			// is stamped on the parse-error path below too.
+			parseDropped = dropped
+			if len(parsed) > 0 || dropped == 0 {
+				// >=1 kept, or a legitimately empty result — accept either.
+				recs, lastParseErr = parsed, nil
+				break
+			}
+			lastParseErr = fmt.Errorf("all %d recommendation(s) failed to parse", dropped)
+		} else {
+			lastParseErr = perr
+		}
+	}
+
+	// Layer 4 (surface): a zero-recommendations result caused by a parse
+	// failure is stamped with a status + error the dashboard renders, instead
+	// of silently showing an empty section (issue #342).
+	if len(recs) == 0 && lastParseErr != nil {
+		step.RecommendationsDroppedParse = parseDropped
+		step.Error = fmt.Sprintf("parse error: %s", lastParseErr.Error())
+		step.Status = statusRecommendationParseError
+		applog.WithError(lastParseErr).Warn("Failed to parse recommendations")
 		return make([]models.Recommendation, 0), step
 	}
 
-	step.Response = chatResult.Content
-	step.TokensIn = chatResult.TokensIn
-	step.TokensOut = chatResult.TokensOut
-	step.DurationMs = chatResult.DurationMs
-
-	var result struct {
-		Recommendations []models.Recommendation `json:"recommendations"`
-	}
-
-	cleaned := cleanJSONResponse(chatResult.Content)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		step.Error = fmt.Sprintf("parse error: %s", err.Error())
-		applog.WithError(err).Warn("Failed to parse recommendations")
-		return make([]models.Recommendation, 0), step
-	}
-
-	for i := range result.Recommendations {
-		if result.Recommendations[i].CreatedAt.IsZero() {
-			result.Recommendations[i].CreatedAt = time.Now()
+	for i := range recs {
+		if recs[i].CreatedAt.IsZero() {
+			recs[i].CreatedAt = time.Now()
 		}
 		// Same description split as insights: Markdown rendition into
 		// DescriptionMd, plain reduction into Description.
-		result.Recommendations[i].Description, result.Recommendations[i].DescriptionMd =
-			splitMarkdownDescription(result.Recommendations[i].Description)
+		recs[i].Description, recs[i].DescriptionMd = splitMarkdownDescription(recs[i].Description)
 		// Assign a UUID if the LLM didn't give one. Same rationale as for
 		// insights: the UUID is reused as the standalone `recommendations._id`
 		// and Qdrant point id, so URLs that hit the embedded array match
 		// without a fallback. Prior to this, the embedded `id` was "", which
 		// meant list → detail navigation was silently falling back to the
 		// array index and Ask source links to recommendations never worked.
-		if result.Recommendations[i].ID == "" {
-			result.Recommendations[i].ID = uuid.New().String()
+		if recs[i].ID == "" {
+			recs[i].ID = uuid.New().String()
 		}
 	}
 
-	step.Recommendations = result.Recommendations
-	return result.Recommendations, step
+	step.RecommendationsDroppedParse = parseDropped
+	step.Recommendations = recs
+	return recs, step
+}
+
+// Recommendation-parse tunables (issue #342).
+const (
+	// statusRecommendationParseError marks a RecommendationStep whose phase
+	// produced zero recommendations because the LLM response could not be
+	// parsed. The dashboard renders it as the reason for the empty section.
+	statusRecommendationParseError = "recommendation_parse_error"
+
+	// defaultRecommendationParseMaxRetries bounds how many corrective
+	// re-prompts the recommendation phase issues when a response yields zero
+	// parseable recommendations. One extra shot by default — the recommendation
+	// call is a single large-output batch, so extra rounds are expensive.
+	// Lower than exploration's maxParseRetries for that reason.
+	defaultRecommendationParseMaxRetries = 1
+
+	// recommendationParseMaxRetriesEnv overrides defaultRecommendationParseMaxRetries.
+	recommendationParseMaxRetriesEnv = "RECOMMENDATION_PARSE_MAX_RETRIES"
+)
+
+// parseRecommendations decodes the recommendation response tolerantly and
+// per-item. It accepts either the {"recommendations": [...]} envelope or a bare
+// top-level array (some models emit the array directly — both shapes are
+// present in discovery_recommendation_log). Each element is decoded on its own,
+// so a single malformed recommendation is skipped and counted rather than
+// discarding the whole batch (issue #342 — combined with the tolerant
+// Impact.UnmarshalJSON, a prose expected_impact is coerced, not dropped).
+//
+// Returns the kept recommendations, the number of per-item drops, and a non-nil
+// error only when the response is not recognizable as recommendations at all
+// (neither the envelope nor a bare array). A well-formed but empty result
+// returns (empty, 0, nil) so callers can distinguish "no recommendations" from
+// "could not parse".
+func parseRecommendations(response string) ([]models.Recommendation, int, error) {
+	cleaned := cleanJSONResponse(response)
+
+	var raws []json.RawMessage
+	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
+		// Bare top-level array (some models emit the array directly).
+		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		// Envelope object: the "recommendations" key must be present. An object
+		// with a different key (e.g. {"recommendation":[…]} or {"items":[…]})
+		// is a parse failure, not a legitimately empty result — otherwise it
+		// would silently yield 0 recommendations with no retry (issue #342).
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+			return nil, 0, err
+		}
+		// Match the key case-insensitively, as encoding/json does when
+		// decoding into a struct tag — some models capitalize it
+		// (`{"Recommendations":[…]}`).
+		var recRaw json.RawMessage
+		found := false
+		for k, v := range envelope {
+			if strings.EqualFold(k, "recommendations") {
+				recRaw, found = v, true
+				break
+			}
+		}
+		if !found {
+			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
+		}
+		if strings.TrimSpace(string(recRaw)) == "null" {
+			// A null array decodes into a nil slice without error; treat it as a
+			// parse failure (→ retry) rather than a silent empty result.
+			return nil, 0, fmt.Errorf(`"recommendations" is null`)
+		}
+		if err := json.Unmarshal(recRaw, &raws); err != nil {
+			return nil, 0, fmt.Errorf(`"recommendations" is not an array: %w`, err)
+		}
+	}
+
+	recs := make([]models.Recommendation, 0, len(raws))
+	dropped := 0
+	for i, raw := range raws {
+		var rec models.Recommendation
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			dropped++
+			applog.WithFields(applog.Fields{
+				"index":  i,
+				"reason": err.Error(),
+			}).Warn("Dropping unparseable recommendation; keeping the rest of the batch")
+			continue
+		}
+		recs = append(recs, rec)
+	}
+	return recs, dropped, nil
+}
+
+// recommendationRepairSuffix builds the reason-aware corrective instruction
+// appended to the prompt on a re-prompt. It names the specific failure and
+// pins the two shapes that trip the parser most (a prose expected_impact and a
+// bare top-level array).
+func recommendationRepairSuffix(err error) string {
+	reason := "it could not be parsed as JSON"
+	if err != nil {
+		reason = err.Error()
+	}
+	return "\n\nYour previous response could not be used: " + reason + ".\n" +
+		`Respond with ONLY a single JSON object of the form {"recommendations": [ ... ]} ` +
+		"— no prose, no markdown fences, and not a bare top-level array. Each " +
+		"recommendation's `expected_impact` MUST be an object with `metric`, " +
+		"`estimated_improvement`, and `reasoning` string fields, never a bare string."
+}
+
+// errString renders an error for structured logging, empty when nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // --- Helper methods ---

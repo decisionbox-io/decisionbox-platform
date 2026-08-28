@@ -216,9 +216,12 @@ func TestGetRecommendationLog_DroppedCountersFlowThroughResponse(t *testing.T) {
 	// were dropped due to invalid related_insight_ids.
 	repo := &mockDiscoveryLogRepo{rec: &database.RecommendationLogEntry{
 		InsightCount:                     5,
-		RecommendationsDropped:           4,
+		RecommendationsDropped:           6,
+		RecommendationsDroppedParse:      2,
 		RecommendationsDroppedMissingIDs: 1,
 		RecommendationsDroppedUnknownID:  3,
+		RecommendationParseRetries:       1,
+		Status:                           "recommendation_parse_error",
 	}}
 	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
@@ -238,14 +241,23 @@ func TestGetRecommendationLog_DroppedCountersFlowThroughResponse(t *testing.T) {
 		t.Fatalf("decode body: %v", err)
 	}
 	got := wrapper.Data
-	if got.RecommendationsDropped != 4 {
-		t.Errorf("RecommendationsDropped = %d, want 4 (body: %s)", got.RecommendationsDropped, w.Body.String())
+	if got.RecommendationsDropped != 6 {
+		t.Errorf("RecommendationsDropped = %d, want 6 (body: %s)", got.RecommendationsDropped, w.Body.String())
+	}
+	if got.RecommendationsDroppedParse != 2 {
+		t.Errorf("RecommendationsDroppedParse = %d, want 2", got.RecommendationsDroppedParse)
 	}
 	if got.RecommendationsDroppedMissingIDs != 1 {
 		t.Errorf("RecommendationsDroppedMissingIDs = %d, want 1", got.RecommendationsDroppedMissingIDs)
 	}
 	if got.RecommendationsDroppedUnknownID != 3 {
 		t.Errorf("RecommendationsDroppedUnknownID = %d, want 3", got.RecommendationsDroppedUnknownID)
+	}
+	if got.RecommendationParseRetries != 1 {
+		t.Errorf("RecommendationParseRetries = %d, want 1", got.RecommendationParseRetries)
+	}
+	if got.Status != "recommendation_parse_error" {
+		t.Errorf("Status = %q, want recommendation_parse_error", got.Status)
 	}
 }
 
@@ -265,8 +277,11 @@ func TestGetRecommendationLog_CleanRunOmitsDropCounters(t *testing.T) {
 	body := w.Body.String()
 	for _, banned := range []string{
 		`"recommendations_dropped"`,
+		`"recommendations_dropped_parse"`,
 		`"recommendations_dropped_missing_ids"`,
 		`"recommendations_dropped_unknown_id"`,
+		`"recommendation_parse_retries"`,
+		`"status"`,
 	} {
 		if strings.Contains(body, banned) {
 			t.Errorf("clean run leaked %s into payload: %s", banned, body)

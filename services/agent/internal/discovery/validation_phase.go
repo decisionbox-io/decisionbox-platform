@@ -410,9 +410,13 @@ func applyRecommendationDropStats(step *models.RecommendationStep, kept []models
 		return
 	}
 	step.Recommendations = kept
-	step.RecommendationsDropped = stats.Total
 	step.RecommendationsDroppedMissingIDs = stats.MissingIDs
 	step.RecommendationsDroppedUnknownID = stats.UnknownOrIneligibleID
+	// Compose, don't clobber: per-item parse drops (recorded by
+	// generateRecommendations before this validation gate runs, issue #342)
+	// and related-insight-id drops are distinct reasons for the same run, so
+	// the grand total is their sum.
+	step.RecommendationsDropped = step.RecommendationsDroppedParse + stats.Total
 }
 
 // buildStepIndex turns the exploration step slice into a map keyed by

@@ -115,6 +115,17 @@ type RecommendationLogEntry struct {
 	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
 	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
 
+	// RecommendationsDroppedParse and RecommendationParseRetries mirror the
+	// agent's parse-failure telemetry (issue #342): recommendations skipped
+	// because their JSON could not be decoded, and how many corrective
+	// re-prompts the phase issued. Status carries a machine-readable reason
+	// for an empty result (e.g. "recommendation_parse_error",
+	// "skipped_no_eligible_insights") so the dashboard renders why the section
+	// is empty instead of a generic "none found". Zero/empty values omitted.
+	RecommendationsDroppedParse int    `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+	RecommendationParseRetries  int    `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
+	Status                      string `bson:"status,omitempty" json:"status,omitempty"`
+
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
 

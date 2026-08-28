@@ -33,7 +33,7 @@ func TestInsightWithMetrics(t *testing.T) {
 		Name:         "High LTV Churn",
 		Metrics: map[string]interface{}{
 			"churn_rate":   0.68,
-			"avg_ltv":     23.50,
+			"avg_ltv":      23.50,
 			"avg_sessions": 12.5,
 		},
 		Indicators: []string{
@@ -723,5 +723,144 @@ func TestInsightValidation_JSONRoundTrip(t *testing.T) {
 	}
 	if parsed.OriginalCount != 2847 {
 		t.Errorf("OriginalCount = %d, want 2847", parsed.OriginalCount)
+	}
+}
+
+// --- Impact tolerant JSON decoding (issue #342) ---
+
+// TestImpactUnmarshalJSON_Object verifies the normal object form still decodes
+// into all fields (the custom UnmarshalJSON must not regress the happy path).
+func TestImpactUnmarshalJSON_Object(t *testing.T) {
+	const in = `{"metric":"retention","estimated_improvement":"+15%","reasoning":"cohort uplift","estimated_value":1234.5}`
+	var im Impact
+	if err := json.Unmarshal([]byte(in), &im); err != nil {
+		t.Fatalf("Unmarshal object: %v", err)
+	}
+	if im.Metric != "retention" || im.EstimatedImprovement != "+15%" || im.Reasoning != "cohort uplift" {
+		t.Errorf("object fields not decoded: %+v", im)
+	}
+	if im.EstimatedValue != 1234.5 {
+		t.Errorf("EstimatedValue = %v, want 1234.5", im.EstimatedValue)
+	}
+}
+
+// TestImpactUnmarshalJSON_BareString is the core #342 fix: a prose string is
+// coerced into Impact{Reasoning: <string>} instead of failing the decode.
+func TestImpactUnmarshalJSON_BareString(t *testing.T) {
+	const in = `"improves utilization accuracy and revenue forecasting"`
+	var im Impact
+	if err := json.Unmarshal([]byte(in), &im); err != nil {
+		t.Fatalf("Unmarshal bare string must not error: %v", err)
+	}
+	if im.Reasoning != "improves utilization accuracy and revenue forecasting" {
+		t.Errorf("Reasoning = %q, want the prose string", im.Reasoning)
+	}
+	if im.Metric != "" || im.EstimatedImprovement != "" {
+		t.Errorf("other fields must stay empty on string coercion: %+v", im)
+	}
+}
+
+// TestImpactUnmarshalJSON_Null leaves the zero value and does not error.
+func TestImpactUnmarshalJSON_Null(t *testing.T) {
+	var im = Impact{Metric: "preset"}
+	if err := json.Unmarshal([]byte("null"), &im); err != nil {
+		t.Fatalf("Unmarshal null: %v", err)
+	}
+	// json treats a top-level null as a no-op on the destination.
+	if im.Metric != "preset" {
+		t.Errorf("null must be a no-op, got %+v", im)
+	}
+}
+
+// TestImpactUnmarshalJSON_WrongType errors so the enclosing recommendation is
+// dropped per-item rather than silently accepted.
+func TestImpactUnmarshalJSON_WrongType(t *testing.T) {
+	for _, in := range []string{`42`, `[1,2,3]`, `true`} {
+		var im Impact
+		if err := json.Unmarshal([]byte(in), &im); err == nil {
+			t.Errorf("Unmarshal(%s) into Impact: want error, got none (%+v)", in, im)
+		}
+	}
+}
+
+// TestRecommendationUnmarshalJSON_StringImpact is the end-to-end #342 case: a
+// whole recommendation whose expected_impact is a prose string decodes cleanly.
+func TestRecommendationUnmarshalJSON_StringImpact(t *testing.T) {
+	const in = `{
+		"title":"Right-size idle warehouses",
+		"expected_impact":"improves utilization accuracy and revenue forecasting",
+		"priority":1
+	}`
+	var rec Recommendation
+	if err := json.Unmarshal([]byte(in), &rec); err != nil {
+		t.Fatalf("recommendation with string expected_impact must decode: %v", err)
+	}
+	if rec.Title != "Right-size idle warehouses" || rec.Priority != 1 {
+		t.Errorf("scalar fields not decoded: %+v", rec)
+	}
+	if rec.ExpectedImpact.Reasoning != "improves utilization accuracy and revenue forecasting" {
+		t.Errorf("prose impact not coerced into Reasoning: %+v", rec.ExpectedImpact)
+	}
+}
+
+// TestPriorityCoercion covers priority arriving as a number or a descriptive
+// string (issue #342 — models emit "high" instead of 2, which used to drop
+// the whole recommendation batch).
+func TestPriorityCoercion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{`3`, 3},
+		{`"2"`, 2},
+		{`"P1"`, 1},
+		{`"critical"`, 1},
+		{`"high"`, 2},
+		{`"Medium"`, 3},
+		{`"low"`, 4},
+		{`"lowest"`, 5},
+		{`"optional"`, 5},
+		{`"nonsense"`, 0},
+		{`null`, 0},
+	}
+	for _, c := range cases {
+		in := `{"title":"t","priority":` + c.in + `}`
+		var rec Recommendation
+		if err := json.Unmarshal([]byte(in), &rec); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", c.in, err)
+		}
+		if rec.Priority != c.want {
+			t.Errorf("priority %s → %d, want %d", c.in, rec.Priority, c.want)
+		}
+	}
+}
+
+// TestNumericFieldCoercion covers segment_size / confidence arriving as numeric
+// strings (same class as priority — a stringified number must not drop the rec).
+func TestNumericFieldCoercion(t *testing.T) {
+	const in = `{"title":"t","segment_size":"1,311,488","confidence":"0.85"}`
+	var rec Recommendation
+	if err := json.Unmarshal([]byte(in), &rec); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if rec.SegmentSize != 1311488 {
+		t.Errorf("SegmentSize = %d, want 1311488", rec.SegmentSize)
+	}
+	if rec.Confidence != 0.85 {
+		t.Errorf("Confidence = %v, want 0.85", rec.Confidence)
+	}
+}
+
+// TestNonFiniteNumericRejected ensures NaN/Inf strings don't poison a stored
+// float (which would later break JSON serialization of the discovery).
+func TestNonFiniteNumericRejected(t *testing.T) {
+	for _, in := range []string{`{"title":"t","confidence":"NaN"}`, `{"title":"t","confidence":"Inf"}`, `{"title":"t","segment_size":"-Inf"}`} {
+		var rec Recommendation
+		if err := json.Unmarshal([]byte(in), &rec); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", in, err)
+		}
+		if rec.Confidence != 0 || rec.SegmentSize != 0 {
+			t.Errorf("%s: non-finite value leaked (confidence=%v segment=%d)", in, rec.Confidence, rec.SegmentSize)
+		}
 	}
 }

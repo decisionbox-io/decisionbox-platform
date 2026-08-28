@@ -1,0 +1,226 @@
+package ai
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+)
+
+func actionValue(a *ExplorationAction) string {
+	return a.Query + "|" + a.SearchTables + "|" + strings.Join(a.LookupSchema, ",")
+}
+
+// TestExtractJSON_ReasoningAndActionCorpus is the issue #341 acceptance corpus:
+// every shape a reasoning / open model produces must still select the REAL
+// action, not a reasoning fragment.
+func TestExtractJSON_ReasoningAndActionCorpus(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		wantAction string
+		wantValue  string // substring that must appear in the selected action
+	}{
+		{"think_before", "<think>let me reason, consider the set {a, b</think>\n{\"query\":\"SELECT 1\"}", "query_data", "SELECT 1"},
+		{"thinking_variant", "<thinking>reasoning here</thinking>{\"query\":\"SELECT 2\"}", "query_data", "SELECT 2"},
+		{"leading_prose", "Here is my next action:\n{\"query\":\"SELECT 4\"}", "query_data", "SELECT 4"},
+		{"markdown_fence", "```json\n{\"query\":\"SELECT 5\"}\n```", "query_data", "SELECT 5"},
+		{"leading_planning_json", "{\"plan\":\"first inspect users\"}\n{\"query\":\"SELECT 6\"}", "query_data", "SELECT 6"},
+		{"trailing_think_fragment", "{\"search_tables\":\"users tables\"}\n{\"thought\":\"maybe reconsider\"}", "search_tables", "users tables"},
+		{"lookup_schema_with_noise", "<think>need schemas {unbalanced</think>\n{\"lookup_schema\":[\"ds.t1\",\"ds.t2\"]}", "lookup_schema", "ds.t1"},
+		{"tool_envelope_in_prose", "Sure, running it.\n{\"name\":\"query_data\",\"input\":{\"query\":\"SELECT 8\"}}", "query_data", "SELECT 8"},
+		{"single_element_array", "[{\"query\":\"SELECT 9\"}]", "query_data", "SELECT 9"},
+		{"balanced_planning_then_action", "{\"plan\":\"first inspect\"} then {\"query\":\"SELECT 10\"}", "query_data", "SELECT 10"},
+		{"draft_in_think_real_after", "<think>{\"search_tables\":\"draft\"}</think>\n{\"search_tables\":\"real query\"}", "search_tables", "real query"},
+		// A <think> substring inside the action's string literal must be
+		// preserved, not stripped, so the executed query is byte-identical.
+		{"think_tag_inside_query_string", "{\"query\":\"SELECT id WHERE note LIKE '%<think>y</think>%'\"}", "query_data", "<think>y</think>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action, err := ParseAction(tc.input, nil)
+			if err != nil {
+				t.Fatalf("ParseAction error: %v (extractJSON=%q)", err, extractJSON(tc.input))
+			}
+			if action.Action != tc.wantAction {
+				t.Errorf("Action = %q, want %q", action.Action, tc.wantAction)
+			}
+			if !strings.Contains(actionValue(action), tc.wantValue) {
+				t.Errorf("selected action %q does not contain %q", actionValue(action), tc.wantValue)
+			}
+		})
+	}
+}
+
+// TestExtractJSON_NoActionCorpus: genuine no-action inputs must NOT be coerced
+// into a false action — they error so the run re-prompts instead of silently
+// "completing".
+func TestExtractJSON_NoActionCorpus(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"prose_only", "I have no idea what to do next."},
+		{"thinking_only_object", "{\"thinking\":\"hmm, not sure\"}"},
+		{"truncated_unclosed_think", "<think>reasoning that never closes and has a {partial fragment"},
+		// A truncated planning object with a nested draft action must NOT run
+		// the draft — it should be a parse error that triggers the retry.
+		{"truncated_plan_nested_object", "{\"plan\":{\"query\":\"SELECT draft\"}"},
+		{"truncated_plan_nested_array", "{\"plan\":[{\"query\":\"SELECT draft\"}]"},
+		{"stray_unbalanced_preamble", "oops here is a stray { brace\n{\"query\":\"SELECT 10\"}"},
+		// An action placed ONLY inside a reasoning block (nothing actionable
+		// outside it) is masked away, so it re-prompts instead of executing
+		// content the model buried in its reasoning.
+		{"action_only_inside_think", "<think>{\"query\":\"SELECT 3\"}</think>\nOkay, done thinking."},
+		{"action_in_think_then_note", "<think>{\"query\":\"SELECT 11\"}</think>{\"note\":\"ok\"}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseAction(tc.input, nil); err == nil {
+				t.Errorf("want error for no-action input, got none (extractJSON=%q)", extractJSON(tc.input))
+			}
+		})
+	}
+}
+
+func TestJSONHasActionKey_Widened(t *testing.T) {
+	truthy := []string{
+		`{"query":"SELECT 1"}`,
+		`{"done":true}`,
+		`{"action":"query_data"}`,
+		`{"lookup_schema":["a.b"]}`,
+		`{"search_tables":"x"}`,
+		`{"name":"query_data","input":{"query":"q"}}`,
+		`{"name":"search_tables","input":{"query":"x"}}`,
+	}
+	for _, s := range truthy {
+		if !jsonHasActionKey(s) {
+			t.Errorf("jsonHasActionKey(%s) = false, want true", s)
+		}
+	}
+	falsy := []string{
+		`{"thinking":"hmm"}`,
+		`{"plan":"do X"}`,
+		`{"name":"not_a_tool","input":{}}`, // unknown tool name
+		`{"name":"query_data"}`,            // envelope without input
+		`not json`,
+	}
+	for _, s := range falsy {
+		if jsonHasActionKey(s) {
+			t.Errorf("jsonHasActionKey(%s) = true, want false", s)
+		}
+	}
+}
+
+func TestFindBalancedJSONObjects_AbortsOnUnbalanced(t *testing.T) {
+	// A balanced object before an unbalanced one is still returned.
+	got := findBalancedJSONObjects(`{"a":1} then {unbalanced`, `{"a":1} then {unbalanced`)
+	if len(got) != 1 || !strings.Contains(got[0], `"a":1`) {
+		t.Fatalf("got %v, want the leading balanced object", got)
+	}
+	// An unbalanced object stops the scan so a nested fragment after it is not
+	// extracted (issue #341 — don't run a draft from a truncated preamble).
+	if out := findBalancedJSONObjects(`{"plan":[{"query":"draft"}]`, `{"plan":[{"query":"draft"}]`); len(out) != 0 {
+		t.Errorf("unbalanced outer must yield no objects, got %v", out)
+	}
+	if out := findBalancedJSONObjects("text { unbalanced only", "text { unbalanced only"); len(out) != 0 {
+		t.Errorf("unbalanced-only should yield no objects, got %v", out)
+	}
+}
+
+func TestMaskReasoningBlocks(t *testing.T) {
+	// Masking removes the reasoning content but PRESERVES byte positions
+	// (equal-length spaces), so offsets into the mask map onto the original.
+	for _, in := range []string{"a<think>x</think>b", "keep<think>drop to end", "A<THINK>x</THINK>B<thinking>y</thinking>C"} {
+		if got := maskReasoningBlocks(in); len(got) != len(in) {
+			t.Errorf("maskReasoningBlocks(%q) length = %d, want %d (positions must be preserved)", in, len(got), len(in))
+		}
+	}
+	if got := maskReasoningBlocks("a<think>x</think>b"); strings.Contains(got, "x") || !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+		t.Errorf("matched pair not masked cleanly: %q", got)
+	}
+	if got := maskReasoningBlocks("keep<think>drop to end"); strings.Contains(got, "drop") || !strings.Contains(got, "keep") {
+		t.Errorf("dangling block not masked to end: %q", got)
+	}
+	if got := maskReasoningBlocks("A<THINK>x</THINK>B<thinking>y</thinking>C"); strings.Contains(got, "x") || strings.Contains(got, "y") {
+		t.Errorf("case-insensitive / multiple blocks not masked: %q", got)
+	}
+}
+
+// --- structured output + token cap on the exploration call (issue #341) ---
+
+func driveOneStep(t *testing.T, engine *ExplorationEngine, providerName string) {
+	t.Helper()
+	if providerName != "" {
+		engine.client.SetProvenance("p", "r", providerName)
+	}
+	conv := NewConversation(ConversationOptions{SystemPrompt: "sys", MaxMessages: 100})
+	conv.AddUserMessage("explore")
+	if _, _, _, err := engine.runStepWithRetry(context.Background(), conv, 1); err != nil {
+		t.Fatalf("runStepWithRetry: %v", err)
+	}
+}
+
+func TestExploration_TokenBudgetDefaultCeiling(t *testing.T) {
+	// A huge catalog cap is bounded by the safe default ceiling (4096) so the
+	// reservation can't overflow a small-context deployment (Codex review, #341).
+	const pn = "test-explore-bigmaxtok"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: pn, Name: "explore big maxtok",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 64000}}})
+
+	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine, pn)
+	if got := provider.Calls[0].Request.MaxTokens; got != defaultExplorationMaxOutputTokens {
+		t.Errorf("MaxTokens = %d, want %d (default ceiling)", got, defaultExplorationMaxOutputTokens)
+	}
+}
+
+func TestExploration_TokenBudgetEnvOverrideAndCatalogFloor(t *testing.T) {
+	t.Setenv(explorationMaxOutputTokensEnv, "8000")
+	// Env raises the ceiling; the budget is min(catalog cap, ceiling).
+	const big = "test-explore-envbig"
+	gollm.RegisterWithMeta(big, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: big, Name: "env big",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 64000}}})
+	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine, big)
+	if got := provider.Calls[0].Request.MaxTokens; got != 8000 {
+		t.Errorf("MaxTokens = %d, want 8000 (env ceiling below catalog cap)", got)
+	}
+
+	// A small catalog cap wins over the (larger) env ceiling.
+	const small = "test-explore-envsmall"
+	gollm.RegisterWithMeta(small, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: small, Name: "env small",
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 2000}}})
+	engine2, provider2 := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine2, small)
+	if got := provider2.Calls[0].Request.MaxTokens; got != 2000 {
+		t.Errorf("MaxTokens = %d, want 2000 (catalog cap below env ceiling)", got)
+	}
+}
+
+func TestExploration_StructuredOutputGating(t *testing.T) {
+	const pn = "test-explore-structured"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{ID: pn, Name: "explore structured", SupportsStructuredOutput: true,
+			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}}})
+
+	// Supported provider → ResponseFormat attached with the action schema.
+	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine, pn)
+	if rf := provider.Calls[0].Request.ResponseFormat; rf == nil {
+		t.Error("structured-output provider must carry ResponseFormat on the exploration call")
+	} else if rf.Name != "exploration_action" {
+		t.Errorf("ResponseFormat.Name = %q, want exploration_action", rf.Name)
+	}
+
+	// Unsupported provider (no provenance) → no format.
+	engine2, provider2 := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
+	driveOneStep(t, engine2, "")
+	if provider2.Calls[0].Request.ResponseFormat != nil {
+		t.Error("provider without structured-output support must not carry ResponseFormat")
+	}
+}

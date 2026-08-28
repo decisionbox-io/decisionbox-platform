@@ -1,6 +1,11 @@
 package models
 
 import (
+	"bytes"
+	"encoding/json"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -90,7 +95,7 @@ type Insight struct {
 	// embeddings); DescriptionMd is empty when the description carries no
 	// formatting and on legacy documents.
 	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
-	Severity     string `bson:"severity" json:"severity"` // "critical", "high", "medium", "low"
+	Severity      string `bson:"severity" json:"severity"` // "critical", "high", "medium", "low"
 
 	AffectedCount int     `bson:"affected_count" json:"affected_count"`
 	RiskScore     float64 `bson:"risk_score" json:"risk_score"`
@@ -123,7 +128,7 @@ type Recommendation struct {
 	// Description stays plain text; DescriptionMd is empty when unformatted
 	// and on legacy documents.
 	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
-	Priority    int    `bson:"priority" json:"priority"` // 1-5
+	Priority      int    `bson:"priority" json:"priority"` // 1-5
 
 	TargetSegment string `bson:"target_segment" json:"target_segment"`
 	SegmentSize   int    `bson:"segment_size" json:"segment_size"`
@@ -141,6 +146,125 @@ type Recommendation struct {
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
+// UnmarshalJSON decodes a recommendation tolerantly. Beyond the tolerant
+// Impact decoding, it coerces the numeric scalar fields (priority,
+// segment_size, confidence) when a model emits them as strings — a common,
+// model-independent behaviour that, under strict decoding, failed the whole
+// recommendation and (because the batch was decoded in one shot) silently
+// zeroed the run's recommendations (issue #342). priority accepts descriptive
+// words ("high", "critical", "P2") as well as numbers; segment_size and
+// confidence accept numeric strings (including thousands separators).
+//
+// Only JSON decoding is customized; BSON is unaffected, so persisted
+// recommendations read back unchanged.
+func (r *Recommendation) UnmarshalJSON(data []byte) error {
+	type alias Recommendation
+	aux := &struct {
+		Priority    json.RawMessage `json:"priority"`
+		SegmentSize json.RawMessage `json:"segment_size"`
+		Confidence  json.RawMessage `json:"confidence"`
+		*alias
+	}{alias: (*alias)(r)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.Priority = coercePriority(aux.Priority)
+	r.SegmentSize = coerceFlexInt(aux.SegmentSize)
+	r.Confidence = coerceFlexFloat(aux.Confidence)
+	return nil
+}
+
+// coercePriority reads a recommendation priority that may be a number or a
+// descriptive string. Numbers pass through; "P2"/"2" parse directly; and
+// severity words map onto the 1 (highest) – 5 (lowest) scale. An
+// unrecognized value yields 0 (unset) rather than failing the decode.
+func coercePriority(raw json.RawMessage) int {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return 0
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimPrefix(s, "p") // "P2" -> "2"
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			return n
+		}
+		// Order matters: more specific words are checked before substrings
+		// they contain ("lowest"/"highest" before "low"/"high").
+		switch {
+		case strings.Contains(s, "critical"), strings.Contains(s, "highest"), strings.Contains(s, "urgent"):
+			return 1
+		case strings.Contains(s, "optional"), strings.Contains(s, "minimal"), strings.Contains(s, "lowest"):
+			return 5
+		case strings.Contains(s, "high"):
+			return 2
+		case strings.Contains(s, "medium"), strings.Contains(s, "moderate"), strings.Contains(s, "med"):
+			return 3
+		case strings.Contains(s, "low"):
+			return 4
+		}
+		return 0
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) == nil {
+		return int(n)
+	}
+	return 0
+}
+
+// coerceFlexInt reads an int that may arrive as a number or a numeric string
+// (thousands separators tolerated). Unparseable input yields 0.
+func coerceFlexInt(raw json.RawMessage) int {
+	if f, ok := flexNumber(raw); ok {
+		return int(f)
+	}
+	return 0
+}
+
+// coerceFlexFloat reads a float that may arrive as a number or a numeric
+// string. Unparseable input yields 0.
+func coerceFlexFloat(raw json.RawMessage) float64 {
+	if f, ok := flexNumber(raw); ok {
+		return f
+	}
+	return 0
+}
+
+// flexNumber parses a JSON number or numeric string into a finite float64.
+// Non-finite values (NaN/Inf, which strconv.ParseFloat accepts from strings
+// like "NaN"/"Inf") are rejected — storing one would later break JSON
+// serialization of the whole discovery ("json: unsupported value: NaN").
+func flexNumber(raw json.RawMessage) (float64, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return 0, false
+		}
+		s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
+		if s == "" {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	}
+	var n float64
+	if json.Unmarshal(raw, &n) == nil && !math.IsNaN(n) && !math.IsInf(n, 0) {
+		return n, true
+	}
+	return 0, false
+}
+
 // Impact represents the expected impact of a recommendation.
 type Impact struct {
 	Metric               string  `bson:"metric" json:"metric"`
@@ -150,6 +274,48 @@ type Impact struct {
 	ConversionRate       float64 `bson:"conversion_rate,omitempty" json:"conversion_rate,omitempty"`
 	EstimatedValue       float64 `bson:"estimated_value,omitempty" json:"estimated_value,omitempty"`
 	TotalValue           float64 `bson:"total_value,omitempty" json:"total_value,omitempty"`
+}
+
+// UnmarshalJSON decodes expected_impact tolerantly: it accepts either the
+// Impact object or a bare JSON string. Several LLMs describe the expected
+// impact as prose (e.g. "improves utilization accuracy and revenue
+// forecasting") instead of the structured object; strict decoding of a
+// string into this struct fails and — because the whole recommendation
+// envelope is decoded in one shot — used to discard the entire batch of
+// recommendations (issue #342). A bare string is coerced into
+// Impact{Reasoning: <string>}, which is the free-text field that flows into
+// the embedding text and the validation digest, so the prose is preserved
+// end-to-end rather than dropped.
+//
+// A JSON null leaves the zero value. Any other shape (number, array, …)
+// returns the decode error so the offending recommendation is skipped
+// per-item by the recommendation parser rather than silently accepted.
+//
+// Only JSON decoding is customized; BSON decoding of persisted documents is
+// unaffected (the driver uses the struct tags), so already-stored impacts
+// read back exactly as before.
+func (im *Impact) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*im = Impact{Reasoning: s}
+		return nil
+	}
+	// Object form. Decode through an alias type so this method is not called
+	// recursively (the alias has no UnmarshalJSON).
+	type impactAlias Impact
+	var a impactAlias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*im = Impact(a)
+	return nil
 }
 
 // Summary holds the executive summary of a discovery run.
@@ -371,8 +537,11 @@ type RecommendationStep struct {
 	// Status is an optional observability marker. Empty on the
 	// regular happy path; set to "skipped_no_eligible_insights" when
 	// the orchestrator skips Phase 5 because no insight survived the
-	// {supported, confirmed} eligibility filter. The dashboard renders
-	// a clear reason for the empty recommendations section.
+	// {supported, confirmed} eligibility filter, or to
+	// "recommendation_parse_error" when the phase produced zero
+	// recommendations because the LLM response could not be parsed
+	// (issue #342). The dashboard renders a clear reason for the empty
+	// recommendations section instead of a generic "none found".
 	Status string `bson:"status,omitempty" json:"status,omitempty"`
 
 	// Telemetry for recommendations the orchestrator parsed from the
@@ -387,6 +556,21 @@ type RecommendationStep struct {
 	RecommendationsDropped           int `bson:"recommendations_dropped,omitempty" json:"recommendations_dropped,omitempty"`
 	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
 	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
+
+	// RecommendationsDroppedParse counts recommendations skipped because
+	// their individual JSON object could not be decoded (issue #342 —
+	// e.g. a field with the wrong type). It is a subset of
+	// RecommendationsDropped, kept separate so the parse-failure rate can
+	// be measured independently of the related_insight_ids drops above.
+	// Omitted on a clean run.
+	RecommendationsDroppedParse int `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+
+	// RecommendationParseRetries counts how many corrective re-prompts the
+	// recommendation phase issued after the model's first response yielded
+	// zero parseable recommendations (issue #342, bounded by
+	// RECOMMENDATION_PARSE_MAX_RETRIES). Zero on the happy path; omitted
+	// when zero.
+	RecommendationParseRetries int `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }

@@ -291,9 +291,9 @@ func TestExploration_Explore_Completion(t *testing.T) {
 	})
 
 	result, err := engine.Explore(context.Background(), ExplorationContext{
-		ProjectID:      "proj-123",
-		Dataset:        "test_dataset",
-		InitialPrompt:  "Explore the data",
+		ProjectID:     "proj-123",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore the data",
 	})
 
 	if err != nil {
@@ -342,9 +342,9 @@ func TestExploration_Explore_MaxSteps(t *testing.T) {
 	})
 
 	result, err := engine.Explore(context.Background(), ExplorationContext{
-		ProjectID:      "proj-123",
-		Dataset:        "test_dataset",
-		InitialPrompt:  "Explore the data",
+		ProjectID:     "proj-123",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore the data",
 	})
 
 	if err != nil {
@@ -380,9 +380,9 @@ func TestExploration_Explore_LLMError(t *testing.T) {
 	})
 
 	result, err := engine.Explore(context.Background(), ExplorationContext{
-		ProjectID:      "proj-123",
-		Dataset:        "test_dataset",
-		InitialPrompt:  "Explore the data",
+		ProjectID:     "proj-123",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore the data",
 	})
 
 	if err == nil {
@@ -640,9 +640,9 @@ func TestExploration_Explore_QueryThenComplete(t *testing.T) {
 	})
 
 	result, err := engine.Explore(context.Background(), ExplorationContext{
-		ProjectID:      "proj-123",
-		Dataset:        "test_dataset",
-		InitialPrompt:  "Explore",
+		ProjectID:     "proj-123",
+		Dataset:       "test_dataset",
+		InitialPrompt: "Explore",
 	})
 
 	if err != nil {
@@ -954,7 +954,7 @@ func TestFindBalancedJSONObjects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := findBalancedJSONObjects(tc.in)
+			got := findBalancedJSONObjects(tc.in, tc.in)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d objects, want %d — got=%v", len(got), len(tc.want), got)
 			}
@@ -1137,11 +1137,12 @@ func TestRunStepWithRetry_NudgesAndRecovers(t *testing.T) {
 	if len(provider.Calls) < 3 {
 		t.Errorf("provider got %d calls, expected at least 3 (one per retry + one to complete)", len(provider.Calls))
 	}
-	// Verify a nudge message actually went into the conversation.
+	// Verify a nudge message actually went into the conversation. The lead is
+	// now reason-aware (issue #341); the menu line is stable across variants.
 	var sawNudge bool
 	for _, call := range provider.Calls {
 		for _, msg := range call.Request.Messages {
-			if msg.Role == "user" && containsStr(msg.Content, "could not be parsed as an exploration action") {
+			if msg.Role == "user" && containsStr(msg.Content, "Respond with EXACTLY ONE JSON object") {
 				sawNudge = true
 				break
 			}
