@@ -88,16 +88,31 @@ func (p *LiteLLMProvider) fetchModelInfo(ctx context.Context) (map[string]gollm.
 }
 
 // ResolveModelInfo implements gollm.ModelInfoResolver: it returns the model's
-// context window / output cap from the proxy's /model/info map, or (zero, nil)
-// when the proxy does not report them (unknown). A call failure returns an
-// error the caller treats as "unknown" and never fails the run on.
+// context window / output cap from the proxy's /model/info map. When
+// /model/info is blocked (common for non-admin virtual keys) or reports nothing
+// for the model, it falls back to /v1/models — which is usually still
+// accessible and carries the output cap — so a model whose output cap is below
+// the 64K default is still detected and not over-requested. Returns (zero, nil)
+// when neither source reports anything; only a total failure of both surfaces
+// an error (which the caller treats as "unknown" and never fails the run on).
 func (p *LiteLLMProvider) ResolveModelInfo(ctx context.Context, model string) (gollm.ModelCapabilities, error) {
 	if model == "" {
 		return gollm.ModelCapabilities{}, nil
 	}
-	byName, err := p.fetchModelInfo(ctx)
-	if err != nil {
-		return gollm.ModelCapabilities{}, err
+	byName, infoErr := p.fetchModelInfo(ctx)
+	if infoErr == nil {
+		if caps, ok := byName[model]; ok && (caps.MaxInputTokens > 0 || caps.MaxOutputTokens > 0) {
+			return caps, nil
+		}
 	}
-	return byName[model], nil
+	// /model/info failed or knew nothing useful for this model → fall back to
+	// /v1/models for at least the output cap.
+	basic, _, v1Err := p.fetchV1Models(ctx)
+	if v1Err != nil {
+		if infoErr != nil {
+			return gollm.ModelCapabilities{}, infoErr // both endpoints failed
+		}
+		return gollm.ModelCapabilities{}, nil
+	}
+	return basic[model], nil
 }

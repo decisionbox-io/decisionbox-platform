@@ -87,6 +87,38 @@ func TestListModels_EnrichedWithWindow(t *testing.T) {
 	}
 }
 
+func TestResolveModelInfo_FallsBackToV1WhenModelInfoBlocked(t *testing.T) {
+	// /model/info 403s (non-admin key); /v1/models still serves the output cap.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"capped-model","max_output_tokens":8192}]}`))
+			return
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	p := NewLiteLLMProvider("k", "capped-model", srv.URL+"/v1", nil)
+
+	caps, err := p.ResolveModelInfo(context.Background(), "capped-model")
+	if err != nil {
+		t.Fatalf("must not error when /v1/models works: %v", err)
+	}
+	if caps.MaxOutputTokens != 8192 {
+		t.Fatalf("fallback output cap = %d, want 8192", caps.MaxOutputTokens)
+	}
+}
+
+func TestResolveModelInfo_BothEndpointsFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	p := NewLiteLLMProvider("k", "m", srv.URL+"/v1", nil)
+	if _, err := p.ResolveModelInfo(context.Background(), "m"); err == nil {
+		t.Fatal("expected an error when both /model/info and /v1/models fail")
+	}
+}
+
 func TestListModels_ModelInfoFailureDoesNotBlock(t *testing.T) {
 	// /model/info 500s, /v1/models is fine → listing still succeeds with the
 	// /v1/models-supplied output cap and no window.
