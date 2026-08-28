@@ -278,4 +278,36 @@ type RemoteModel struct {
 	// the upstream does not expose lifecycle. The dashboard can use this
 	// to hide deprecated models.
 	Lifecycle string
+
+	// MaxInputTokens / MaxOutputTokens are the model's context window and
+	// output cap when the upstream list endpoint reports them (LiteLLM
+	// /v1/models + /model/info, Ollama /api/show, vLLM max_model_len). Zero
+	// means "not reported" — the dashboard falls back to the catalog value and
+	// the runtime budgeter falls through its resolution chain. When non-zero
+	// the dashboard prefills the operator's context-window / output-cap fields.
+	MaxInputTokens  int
+	MaxOutputTokens int
+}
+
+// ModelCapabilities is what a provider can self-report about a model from its
+// upstream metadata endpoint. A zero field means "unknown" — callers fall
+// through their resolution chain rather than trusting a zero.
+type ModelCapabilities struct {
+	// MaxInputTokens is the model's context window (input side) in tokens.
+	MaxInputTokens int
+	// MaxOutputTokens is the model's max generation cap in tokens.
+	MaxOutputTokens int
+}
+
+// ModelInfoResolver is an optional capability interface: providers that expose
+// a per-model metadata endpoint (LiteLLM /model/info, Ollama /api/show)
+// implement it so callers can auto-detect an uncatalogued model's real window
+// without the operator typing it. Read-only, must not consume tokens.
+//
+// Return (zero, nil) when the upstream does not expose the numbers (callers
+// fall through their resolution chain), and a non-nil error only on a genuine
+// call failure (callers treat that as "unknown" too and never fail the run on
+// it).
+type ModelInfoResolver interface {
+	ResolveModelInfo(ctx context.Context, model string) (ModelCapabilities, error)
 }

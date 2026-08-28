@@ -16,6 +16,9 @@ type mockOllamaClient struct {
 	listResp    *ollamaapi.ListResponse
 	listErr     error
 	lastChatReq *ollamaapi.ChatRequest
+	showResp    *ollamaapi.ShowResponse
+	showErr     error
+	lastShowReq *ollamaapi.ShowRequest
 }
 
 func (m *mockOllamaClient) Chat(_ context.Context, req *ollamaapi.ChatRequest, fn ollamaapi.ChatResponseFunc) error {
@@ -31,6 +34,17 @@ func (m *mockOllamaClient) List(_ context.Context) (*ollamaapi.ListResponse, err
 		return nil, m.listErr
 	}
 	return m.listResp, nil
+}
+
+func (m *mockOllamaClient) Show(_ context.Context, req *ollamaapi.ShowRequest) (*ollamaapi.ShowResponse, error) {
+	m.lastShowReq = req
+	if m.showErr != nil {
+		return nil, m.showErr
+	}
+	if m.showResp != nil {
+		return m.showResp, nil
+	}
+	return &ollamaapi.ShowResponse{}, nil
 }
 
 // newMockOllamaProvider creates an OllamaProvider backed by a mock client.
