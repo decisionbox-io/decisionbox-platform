@@ -202,25 +202,19 @@ func TestExploration_TokenBudgetEnvOverrideAndCatalogFloor(t *testing.T) {
 	}
 }
 
-func TestExploration_StructuredOutputGating(t *testing.T) {
+func TestExploration_NeverSendsResponseFormat(t *testing.T) {
+	// Exploration must NOT constrain the action via response_format, even on a
+	// structured-output-capable provider: forcing the schema dropped the
+	// `thinking` field and corrupted output on Bedrock open models. The
+	// tolerant parser + retry are the net.
 	const pn = "test-explore-structured"
 	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
 		gollm.ProviderMeta{ID: pn, Name: "explore structured", SupportsStructuredOutput: true,
 			Models: []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}}})
 
-	// Supported provider → ResponseFormat attached with the action schema.
 	engine, provider := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
 	driveOneStep(t, engine, pn)
-	if rf := provider.Calls[0].Request.ResponseFormat; rf == nil {
-		t.Error("structured-output provider must carry ResponseFormat on the exploration call")
-	} else if rf.Name != "exploration_action" {
-		t.Errorf("ResponseFormat.Name = %q, want exploration_action", rf.Name)
-	}
-
-	// Unsupported provider (no provenance) → no format.
-	engine2, provider2 := buildTestEngine(t, ExplorationEngineOptions{MaxSteps: 3}, []string{`{"query":"SELECT 1 FROM test_dataset.users"}`})
-	driveOneStep(t, engine2, "")
-	if provider2.Calls[0].Request.ResponseFormat != nil {
-		t.Error("provider without structured-output support must not carry ResponseFormat")
+	if provider.Calls[0].Request.ResponseFormat != nil {
+		t.Error("exploration must never carry a ResponseFormat, even on a structured-output provider")
 	}
 }

@@ -610,21 +610,23 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
-	// Constrain the action shape at generation time where the provider
-	// supports it. CreateMessageWithFormat self-gates on
-	// SupportsStructuredOutput, so this is a safe no-op elsewhere and the
-	// tolerant extractor above stays the net.
-	actionFormat := explorationActionSchema()
+	// NOTE: exploration deliberately does NOT constrain the action via
+	// provider-native structured output. The action is a union (query /
+	// lookup_schema / search_tables / done) with an optional `thinking`
+	// field; forcing a response_format made models emit only the minimal
+	// shape — dropping `thinking` (so the run-step log lost its reasoning)
+	// and, on Bedrock's OpenAI-compat open models (Qwen, GLM), corrupting
+	// the JSON outright. The tolerant extractor + repair retry are the net;
+	// they don't degrade the model. See the #341 follow-up.
 	maxTokens := e.explorationOutputTokens()
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
-		response, err := e.client.CreateMessageWithFormat(
+		response, err := e.client.CreateMessage(
 			ctx,
 			conversation.GetMessages(),
 			conversation.GetSystemPrompt(),
 			maxTokens,
-			actionFormat,
 		)
 		if err != nil {
 			logger.WithFields(logger.Fields{
@@ -1085,10 +1087,10 @@ func jsonHasActionKey(s string) bool {
 // (including the schema-discovery actions the old nudge omitted).
 func explorationRepairNudge(parseErr error) string {
 	const menu = "Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n" +
-		`  {"query": "SELECT ..."}                     — run one read-only query, or` + "\n" +
-		`  {"lookup_schema": ["dataset.table", ...]}   — inspect table schemas, or` + "\n" +
-		`  {"search_tables": "..."}                    — find relevant tables, or` + "\n" +
-		`  {"done": true, "summary": "..."}            — only when exploration is truly finished.`
+		`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n" +
+		`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n" +
+		`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n" +
+		`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`
 	lead := "Your previous response could not be parsed as an exploration action."
 	if parseErr != nil {
 		switch msg := parseErr.Error(); {
@@ -1099,38 +1101,6 @@ func explorationRepairNudge(parseErr error) string {
 		}
 	}
 	return lead + " " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
-}
-
-// explorationActionSchema is the structured-output request for an exploration
-// turn. It is deliberately permissive (a typed object with additionalProperties
-// allowed, non-strict): the action is a union of query / lookup_schema /
-// search_tables / done, and a strict oneOf is brittle on quantised open-model
-// grammars and forbids the open-ended shapes platform#340 preserves. The schema
-// pins the field types where it can; the tolerant extractor + repair retry are
-// the net for anything that slips through (issue #341).
-func explorationActionSchema() *gollm.ResponseFormat {
-	str := func(d string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": d}
-	}
-	return &gollm.ResponseFormat{
-		Name: "exploration_action",
-		Schema: map[string]interface{}{
-			"type":        "object",
-			"description": "A single exploration action. Provide exactly one of query, lookup_schema, search_tables, or done, plus optional thinking.",
-			"properties": map[string]interface{}{
-				"thinking":      str("Brief reasoning for this action"),
-				"query":         str("One read-only SQL query to run"),
-				"query_purpose": str("What the query is for"),
-				"lookup_schema": map[string]interface{}{"type": "array", "items": str("A dataset.table reference"), "description": "Tables to fetch schema for"},
-				"search_tables": str("Natural-language search for relevant tables"),
-				"search_top_k":  map[string]interface{}{"type": "integer", "description": "How many tables to return"},
-				"done":          map[string]interface{}{"type": "boolean", "description": "True only when exploration is complete"},
-				"summary":       str("Summary of findings, required when done is true"),
-			},
-			"additionalProperties": true,
-		},
-		Strict: false,
-	}
 }
 
 // executeAction executes the action and returns the user-message string

@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -96,6 +97,34 @@ func TestBedrockProvider_Dispatch_CatalogOpenAICompat(t *testing.T) {
 	}
 	if resp.Usage.InputTokens != 4 || resp.Usage.OutputTokens != 3 {
 		t.Errorf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestBedrockProvider_OpenAICompat_DropsResponseFormat(t *testing.T) {
+	// Bedrock's OpenAI-compat open models (Qwen, GLM, …) corrupt their output
+	// when a json_schema response_format is set, so the wire must NOT forward
+	// it (mirrors vertex-ai / azure-foundry).
+	openaiBody := []byte(`{"id":"x","model":"qwen.qwen3-next-80b-a3b",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)
+	wrapped := &capturingMockBedrockClient{delegate: &mockBedrockClient{responseBody: openaiBody}}
+	p := &BedrockProvider{
+		client:     wrapped,
+		model:      "qwen.qwen3-next-80b-a3b",
+		httpClient: &http.Client{},
+	}
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:       []gollm.Message{{Role: "user", Content: "ping"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "x", Schema: map[string]interface{}{"type": "object"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(wrapped.lastBody, &body); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if _, ok := body["response_format"]; ok {
+		t.Errorf("bedrock openai-compat must not forward response_format; body=%s", wrapped.lastBody)
 	}
 }
 
