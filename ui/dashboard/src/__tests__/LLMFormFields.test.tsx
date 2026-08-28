@@ -455,15 +455,18 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       ],
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
-    // catalog row carries the numbers but source==='catalog' → must NOT prefill
-    // (would pin a catalog value as a top-priority override).
+    // Neither a catalog-only row nor a 'both' row (catalogued + live, whose
+    // numbers may be catalog-derived) must prefill — only pure live-only rows do.
     const live: LiveModel[] = [
       { id: 'cat-model', display_name: 'cat-model', wire: 'openai-compat', source: 'catalog', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
+      { id: 'both-model', display_name: 'both-model', wire: 'openai-compat', source: 'both', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
     ];
     const initial: LLMFormState = { provider: 'openai', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
     render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
-    const input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'cat-model' } });
+    const input = () => screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input(), { target: { value: 'cat-model' } });
+    expect(getDump().value.config.max_input_tokens).toBeUndefined();
+    fireEvent.change(input(), { target: { value: 'both-model' } });
     const cfg = getDump().value.config;
     expect(cfg.max_input_tokens).toBeUndefined();
     expect(cfg.max_output_tokens).toBeUndefined();

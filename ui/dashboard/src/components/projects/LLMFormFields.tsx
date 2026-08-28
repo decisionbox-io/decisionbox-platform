@@ -108,12 +108,17 @@ export function LLMFormFields({
   // model's detected value while preserving a value the operator actually typed.
   const autofilledRef = useRef<{ max_input_tokens?: string; max_output_tokens?: string }>({});
 
-  // liveDetectedLimit returns a model's token limit ONLY when it was genuinely
-  // reported by live detection (source live/both), never a catalog-only value.
-  // Writing a catalog number into the override field would pin it as a
-  // top-priority manual override that outranks live detection + self-calibration.
+  // liveDetectedLimit returns a model's token limit ONLY for a live-ONLY row
+  // (source === 'live') — i.e. an uncatalogued model the upstream reported. A
+  // 'both' row is catalogued, and its limits may come from the catalog (the API
+  // keeps the catalog value when the live endpoint reports none), so treating it
+  // as detected could pin a catalog estimate as a top-priority manual override
+  // that outranks live detection + self-calibration at runtime. Prefill exists
+  // to surface numbers for uncatalogued models, which are exactly the live-only
+  // rows; catalogued models are already budgeted from the catalog / live
+  // detection at run time without an override.
   const liveDetectedLimit = (m: LiveModel | undefined, key: 'max_input_tokens' | 'max_output_tokens'): number | undefined => {
-    if (!m || (m.source !== 'live' && m.source !== 'both')) return undefined;
+    if (!m || m.source !== 'live') return undefined;
     const v = key === 'max_input_tokens' ? m.max_input_tokens : m.max_output_tokens;
     return (v ?? 0) > 0 ? v : undefined;
   };
