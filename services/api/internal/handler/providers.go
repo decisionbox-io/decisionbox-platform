@@ -418,6 +418,16 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			if lm.Lifecycle != "" {
 				row.Lifecycle = lm.Lifecycle
 			}
+			// The live row's context window / output cap are the actual
+			// deployment's values (LiteLLM /model/info, Ollama /api/show, vLLM
+			// max_model_len); prefer them over the shipped catalog estimate
+			// when reported, so the dashboard prefills the real numbers.
+			if lm.MaxInputTokens > 0 {
+				row.MaxInputTokens = lm.MaxInputTokens
+			}
+			if lm.MaxOutputTokens > 0 {
+				row.MaxOutputTokens = lm.MaxOutputTokens
+			}
 			merged[canonical] = row
 		} else {
 			inferred := ""
@@ -433,10 +443,12 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 				Source:       "live",
 				Dispatchable: dispatchable,
 				ModelInfo: gollm.ModelInfo{
-					ID:          lm.ID,
-					DisplayName: displayOr(lm.DisplayName, lm.ID),
-					Wire:        inferred,
-					Lifecycle:   lm.Lifecycle,
+					ID:              lm.ID,
+					DisplayName:     displayOr(lm.DisplayName, lm.ID),
+					Wire:            inferred,
+					Lifecycle:       lm.Lifecycle,
+					MaxInputTokens:  lm.MaxInputTokens,
+					MaxOutputTokens: lm.MaxOutputTokens,
 				},
 			}
 		}

@@ -103,6 +103,25 @@ export function LLMFormFields({
     onChange({ ...value, config });
   };
 
+  // handleModelSelect sets the model and prefills the context-window / output
+  // fields from the selected model's auto-detected values (LiteLLM /model/info,
+  // Ollama /api/show, vLLM max_model_len) so the operator sees real numbers
+  // instead of having to type a window they may not know. It never clobbers a
+  // value the user already entered, and the fields stay editable.
+  const handleModelSelect = (val: string) => {
+    const config = { ...value.config, model: val };
+    const live = (liveModels ?? []).find((m) => m.id === val);
+    if (live) {
+      if ((live.max_input_tokens ?? 0) > 0 && !config['max_input_tokens']?.trim()) {
+        config['max_input_tokens'] = String(live.max_input_tokens);
+      }
+      if ((live.max_output_tokens ?? 0) > 0 && !config['max_output_tokens']?.trim()) {
+        config['max_output_tokens'] = String(live.max_output_tokens);
+      }
+    }
+    onChange({ ...value, config });
+  };
+
   return (
     <Stack>
       <Select
@@ -212,11 +231,13 @@ export function LLMFormFields({
             providerMeta={selected}
             liveModels={liveModels}
             value={value.config['model'] || ''}
-            onChange={(val) => setConfigField('model', val)}
+            onChange={handleModelSelect}
           />
 
-          {/* Manual token overrides (context window + max output) shown on
-              the model step with the effective value as a placeholder. */}
+          {/* Manual token overrides (context window + max output). Prefilled
+              from the selected model's auto-detected values by handleModelSelect;
+              the effective value is also shown as a placeholder when a field is
+              left blank. */}
           {(['max_input_tokens', 'max_output_tokens'] as const).map((key) => {
             const f = selected?.config_fields.find((cf) => cf.key === key);
             if (!f) return null;

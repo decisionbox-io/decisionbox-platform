@@ -38,6 +38,44 @@ func (s *stubSecretProvider) List(context.Context, string) ([]secrets.SecretEntr
 	return nil, nil
 }
 
+// TestWriteLiveModelsResponse_CarriesDetectedWindow verifies the merge surfaces
+// a live row's auto-detected context window / output cap into the response, so
+// the dashboard can prefill the operator's max_input_tokens / max_output_tokens
+// fields for an uncatalogued model.
+func TestWriteLiveModelsResponse_CarriesDetectedWindow(t *testing.T) {
+	meta := gollm.ProviderMeta{ID: "litellm", DispatchAnyModelID: true}
+	live := []gollm.RemoteModel{
+		{ID: "custom-gw-model", DisplayName: "custom-gw-model", MaxInputTokens: 262144, MaxOutputTokens: 16384},
+		{ID: "no-window-model", DisplayName: "no-window-model"},
+	}
+
+	rec := httptest.NewRecorder()
+	writeLiveModelsResponse(rec, meta, live, nil)
+
+	var body struct {
+		Data struct {
+			Models []struct {
+				ID              string `json:"id"`
+				MaxInputTokens  int    `json:"max_input_tokens"`
+				MaxOutputTokens int    `json:"max_output_tokens"`
+			} `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]struct{ in, out int }{}
+	for _, m := range body.Data.Models {
+		byID[m.ID] = struct{ in, out int }{m.MaxInputTokens, m.MaxOutputTokens}
+	}
+	if got := byID["custom-gw-model"]; got.in != 262144 || got.out != 16384 {
+		t.Fatalf("detected row in=%d out=%d, want 262144/16384", got.in, got.out)
+	}
+	if got := byID["no-window-model"]; got.in != 0 || got.out != 0 {
+		t.Fatalf("un-detected row in=%d out=%d, want 0/0", got.in, got.out)
+	}
+}
+
 // --- ListLiveLLMModels (cloud-neutral; POST body with credentials) ---
 
 func TestProvidersHandler_ListLiveLLMModels_UnknownProvider(t *testing.T) {

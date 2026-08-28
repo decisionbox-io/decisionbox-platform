@@ -383,6 +383,18 @@ Example (API request to create a project):
 
 A typo in `wire_override` is rejected at project-save time with HTTP 400. Once saved, the agent uses the override for every dispatch until the model is added to the catalog (at which point the override becomes unnecessary).
 
+## Context window and output limits
+
+Discovery budgets the tokens it generates against the model's context window so `input + output` never exceeds it — otherwise a large analysis prompt plus a fixed output request is rejected with a hard `maximum context length` 400 and the run degrades to Partial.
+
+DecisionBox does not need the model to be in its catalog to do this. It resolves the window in priority order — **operator override → self-calibration → live auto-detection → catalog → default** — so an arbitrary customer model works out of the box:
+
+- **Auto-detection (no typing).** When you click **Load models**, DecisionBox reads the real window/output from the provider where it is exposed — LiteLLM (`GET /model/info`), Ollama (`GET /api/show` `context_length`), and OpenAI-compatible gateways that report `max_model_len` (e.g. vLLM). Selecting such a model **prefills** the two fields below with the detected values.
+- **Manual override.** The **Context window override (tokens)** (`max_input_tokens`) and **Max output tokens override** (`max_output_tokens`) fields let you set the real limits for any model DecisionBox cannot detect. The override always wins. Leave them blank to use the detected/catalogued value or the conservative default (128K input, 64K output).
+- **Self-calibration.** If a request still overflows (an under-estimated window on an unknown model), the model's error states its true window. The agent recomputes a fitting `max_tokens`, retries once, and records the window (in the `llm_model_windows` collection) so later runs for the same model budget correctly up front — you never have to look the number up.
+
+For most catalogued models and most gateways you never touch these fields. Set `max_input_tokens` explicitly only for a model that is uncatalogued *and* whose gateway does not report its window.
+
 ## Next Steps
 
 - [Configuration Reference](../reference/configuration.md) — All environment variables

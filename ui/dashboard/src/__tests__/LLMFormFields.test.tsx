@@ -368,6 +368,48 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(getDump().value.config.model).toBe('typed-model');
   });
 
+  test('selecting a model prefills detected max_input/max_output, without clobbering user edits', () => {
+    const tokenMeta: ProviderMeta = {
+      id: 'litellm',
+      name: 'LiteLLM',
+      description: 'proxy',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_input_tokens', label: 'Context window override (tokens)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_output_tokens', label: 'Max output tokens override', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
+    };
+    const live: LiveModel[] = [
+      { id: 'gw-model', display_name: 'gw-model', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384 },
+    ];
+
+    // Case 1: empty fields → prefilled from the selected model.
+    const initial: LLMFormState = { provider: 'litellm', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
+    const { unmount } = render(
+      <ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />,
+    );
+    let input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'gw-model' } });
+    let cfg = getDump().value.config;
+    expect(cfg.model).toBe('gw-model');
+    expect(cfg.max_input_tokens).toBe('262144');
+    expect(cfg.max_output_tokens).toBe('16384');
+    unmount();
+
+    // Case 2: a user-entered value is NOT overwritten by prefill.
+    const initial2: LLMFormState = {
+      provider: 'litellm', authMethod: 'api_key',
+      config: { model: '', max_input_tokens: '100000' }, apiKey: 'k',
+    };
+    render(<ControlledHarness providers={[tokenMeta]} initial={initial2} initialPhase="model" liveModels={live} />);
+    input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'gw-model' } });
+    cfg = getDump().value.config;
+    expect(cfg.max_input_tokens).toBe('100000'); // preserved
+    expect(cfg.max_output_tokens).toBe('16384'); // still prefilled (was empty)
+  });
+
   test('typing into wire_override updates state via setConfigField', () => {
     // Use the inline-render variant (unknown model) so wire_override is
     // rendered without going through the Advanced disclosure.

@@ -117,11 +117,30 @@ any per-run collection whose run id is no longer in the active
 
 After ranking + compaction, the picker estimates the rendered
 `{{QUERY_RESULTS}}` JSON byte size and trims the lowest-scored
-steps until the prompt fits under
-`AnalysisQueryResultsBudgetTokens = 200_000`. The estimator runs
-the same renderer the orchestrator runs, so
+steps until the prompt fits under the effective budget. The estimator
+runs the same renderer the orchestrator runs, so
 `len(RenderCompactedSteps(s)) == EstimateCompactedRenderedSize(s)`
 holds for any input.
+
+The effective budget is `min(AnalysisQueryResultsBudgetTokens,
+context_window − output_cap − reserved − margin)` — the fixed
+`200_000` ceiling is coupled to the model window at run time so an
+area's input can never grow past what the window holds once the
+output is reserved. The window itself is resolved without depending on
+the catalog (operator override → self-calibration → live
+auto-detection → catalog → default), so this works for uncatalogued
+customer models too.
+
+Then, per area, the requested output `max_tokens` is budgeted against
+the *measured* input: `clamp(context_window − input − reserved −
+margin, ANALYSIS_MIN_OUTPUT_TOKENS, output_cap)`, reusing the same
+`llm.Budget` arithmetic the `/ask` path uses. Together these keep
+`input + output ≤ context_window`, which is what a "maximum context
+length" 400 rejects. If a request still overflows (an under-estimated
+window on an uncatalogued model), the adaptive retry in the AI client
+parses the model's true window + input out of the error, re-issues
+once with a corrected `max_tokens`, and records the learned window so
+the remaining areas — and later runs — budget against it.
 
 Dropped steps are reported with their step number, score, and the
 drop reason (`below_min_score` or `over_budget`). Telemetry exposes
