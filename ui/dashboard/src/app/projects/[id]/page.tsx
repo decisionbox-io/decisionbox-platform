@@ -15,6 +15,7 @@ import {
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
+import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import {
   api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY,
@@ -647,6 +648,11 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
             }}>
               {phaseLabel[run.phase] || run.phase}
             </span>
+            {/* Errored run: collapse the raw error to a compact warning icon
+                next to the status. Clicking it expands the full text; the icon
+                itself stays put and survives refresh (it is derived from
+                run.error, which the backend keeps on the run). */}
+            <RunErrorIndicator errors={run.error} label="Discovery run error" />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
@@ -692,10 +698,6 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
             </span>
           )}
         </div>
-
-        {run.error && (
-          <div style={{ fontSize: 12, color: 'var(--db-red-text)', paddingBottom: 10 }}>{run.error}</div>
-        )}
       </div>
 
       {/* Step list */}

@@ -7,7 +7,7 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
-  IconAlertCircle, IconBulb, IconChevronDown, IconClipboardX, IconDatabase, IconSearch,
+  IconBulb, IconChevronDown, IconClipboardX, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
@@ -15,6 +15,7 @@ import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
+import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import UnreadDot from '@/components/common/UnreadDot';
@@ -152,6 +153,10 @@ export default function DiscoveryDetailPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <SeverityBadge severity={discovery.run_type === 'partial' ? 'Partial' : 'Complete'}
             type="status" />
+          {/* Analysis-area failures collapse to a compact warning icon next to
+              the run status. Clicking it expands the full error(s) in a
+              scrollable popover instead of dumping the raw text into the page. */}
+          <RunErrorIndicator errors={discovery.summary?.errors} />
           {discovery.areas_requested?.map(a => (
             <span key={a} style={{
               fontSize: 11, padding: '1px 7px', borderRadius: 'var(--db-radius)',
@@ -163,24 +168,6 @@ export default function DiscoveryDetailPage() {
           </span>
         </div>
       </div>
-
-      {/* Errors banner */}
-      {discovery.summary?.errors && discovery.summary.errors.length > 0 && (
-        <div style={{
-          background: 'var(--db-red-bg)', border: '1px solid var(--db-severity-critical-text)',
-          borderRadius: 'var(--db-radius-lg)', padding: '12px 16px', marginBottom: 16,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <IconAlertCircle size={16} color="var(--db-red-text)" />
-            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--db-red-text)' }}>
-              {discovery.summary.errors.length === 1 ? '1 area failed' : `${discovery.summary.errors.length} areas failed`} during analysis
-            </span>
-          </div>
-          {discovery.summary.errors.map((err, i) => (
-            <div key={i} style={{ fontSize: 12, color: 'var(--db-red-text)', paddingLeft: 22 }}>{err}</div>
-          ))}
-        </div>
-      )}
 
       {/* Hero KPI Cards */}
       <div style={{
