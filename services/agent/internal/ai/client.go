@@ -32,6 +32,14 @@ type Client struct {
 	// package-init ordering problem with the cloud policy plugin
 	// which registers itself in its own init().
 	policyChecker policy.Checker
+
+	// contextWindowObserver, when set, is invoked with (model, window)
+	// whenever a context-overflow 400 reveals the model's true context
+	// window. The orchestrator uses it to self-calibrate: re-budget the
+	// rest of the run and persist the learned window per project+model
+	// so a later run for the same model does not repeat the overflow.
+	// Nil for callers that don't self-calibrate (tests, non-discovery).
+	contextWindowObserver func(model string, window int)
 }
 
 // New creates a new AI client backed by an llm.Provider.
@@ -135,6 +143,28 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	// network). Without this, a single Vertex shared-serving
 	// cancellation in mid-discovery killed the whole run.
 	resp, err := chatWithRetry(ctx, c.provider, req)
+
+	// Adaptive context-overflow retry. A "maximum context length" 400 is
+	// deterministic (chatWithRetry returns it immediately, no backoff), but
+	// the error states the model's true window + input size, so a single
+	// re-issue with a correctly-reduced max_tokens fits. Bounded to one extra
+	// call; every other 4xx is untouched. When the error reveals the model's
+	// real window, notify the observer so the run can self-calibrate.
+	if err != nil && isContextLengthError(err) {
+		if learned := windowFromContextLengthError(err); learned > 0 && c.contextWindowObserver != nil {
+			c.contextWindowObserver(req.Model, learned)
+		}
+		if nm, ok := reducedMaxTokensForContextOverflow(req.MaxTokens, err); ok {
+			logger.WithFields(logger.Fields{
+				"model":          req.Model,
+				"old_max_tokens": req.MaxTokens,
+				"new_max_tokens": nm,
+			}).Warn("LLM context-length overflow; retrying once with reduced max_tokens")
+			req.MaxTokens = nm
+			resp, err = chatWithRetry(ctx, c.provider, req)
+		}
+	}
+
 	latencyMs := time.Since(startTime).Milliseconds()
 
 	promptContent := ""
@@ -272,6 +302,13 @@ func (c *Client) ProviderName() string { return c.providerName }
 
 func (c *Client) SetTestMode(enabled bool)        { c.testMode = enabled }
 func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
+
+// SetContextWindowObserver registers a callback invoked with (model, window)
+// whenever a context-overflow 400 reveals the model's true context window.
+// Nil (the default) disables self-calibration for callers that don't need it.
+func (c *Client) SetContextWindowObserver(fn func(model string, window int)) {
+	c.contextWindowObserver = fn
+}
 func (c *Client) SetStep(step int)                { c.currentStep = step }
 func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }
 

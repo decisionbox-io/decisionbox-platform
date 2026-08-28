@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -175,6 +176,31 @@ type Orchestrator struct {
 	llmProvider    string
 	llmModel       string
 
+	// llmConfig is the project's LLM provider config (project.LLM.Config).
+	// Read for the max_input_tokens / max_output_tokens operator overrides
+	// when budgeting the analysis + recommendation output against the model
+	// window. May be nil.
+	llmConfig gollm.ProviderConfig
+
+	// llmInputWindow / llmOutputCap are the effective context window and
+	// output cap resolved once at run start (operator override → live
+	// auto-detection → catalog → default). Zero means "resolve from the
+	// catalog/override on demand" — the fallback path unit tests take.
+	llmInputWindow int
+	llmOutputCap   int
+
+	// calibMu guards calibratedWindow, the model's true context window learned
+	// from a context-overflow 400 during this run. When set it wins over the
+	// resolved window so the remaining areas budget against ground truth.
+	calibMu          sync.Mutex
+	calibratedWindow int
+
+	// modelWindowRepo persists a context window learned from an overflow 400
+	// so a later run for the same project+model budgets correctly up front.
+	// Optional — nil skips cross-run persistence (unit tests, and until the
+	// repo is wired).
+	modelWindowRepo modelWindowPersister
+
 	vectorStore       vectorstore.Provider
 	embeddingProvider goembedding.Provider
 	embedIndexStore   EmbedIndexStore
@@ -247,6 +273,19 @@ type OrchestratorOptions struct {
 	FilterValue       string
 	LLMProvider       string
 	LLMModel          string
+	// LLMConfig is the project's LLM provider config (project.LLM.Config),
+	// carrying the max_input_tokens / max_output_tokens operator overrides used
+	// when budgeting output against the model window. Optional.
+	LLMConfig gollm.ProviderConfig
+	// LLMInputWindow / LLMOutputCap are the effective context window and output
+	// cap resolved at run start (override → live auto-detection → catalog →
+	// default). Zero means the orchestrator resolves from the catalog/override
+	// on demand.
+	LLMInputWindow int
+	LLMOutputCap   int
+	// ModelWindowRepo persists a context window learned from an overflow 400.
+	// Optional — nil skips cross-run persistence.
+	ModelWindowRepo   modelWindowPersister
 	WarehouseProvider string // provider id used to label warehouse-query debug rows
 	EnableDebugLogs   bool
 
@@ -364,6 +403,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		filterValue:        opts.FilterValue,
 		llmProvider:        opts.LLMProvider,
 		llmModel:           opts.LLMModel,
+		llmConfig:          opts.LLMConfig,
+		llmInputWindow:     opts.LLMInputWindow,
+		llmOutputCap:       opts.LLMOutputCap,
+		modelWindowRepo:    opts.ModelWindowRepo,
 		vectorStore:        opts.VectorStore,
 		embeddingProvider:  opts.EmbeddingProvider,
 		embedIndexStore:    opts.EmbedIndexStore,
@@ -415,6 +458,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	//   Phase 8  -> Embed/index results for retrieval
 	// Each phase updates the StatusReporter so the UI can track
 	// live discovery progress and intermediate results.
+
+	// Self-calibration: learn the model's true context window from any
+	// context-overflow 400 (across every phase that calls the LLM) so the
+	// remaining areas re-budget against it and a later run starts correct.
+	o.installContextWindowObserver(ctx)
 
 	// Set max steps for accurate progress reporting
 	o.statusReporter.maxSteps = opts.MaxSteps
@@ -824,6 +872,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			continue
 		}
 
+		// Couple the picker's query-results budget to the model window so an
+		// area's input can never grow past what the window can hold once the
+		// output cap + safety margin are reserved. Recomputed per area so a
+		// window calibrated mid-run (from an overflow 400) tightens the
+		// remaining areas too.
+		areaWindow, areaOutputCap := o.resolveModelBudget()
+		picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap)
+
 		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
 		// Skip the area if step retrieval fails so the remaining areas
 		// can continue processing.
@@ -902,8 +958,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			DroppedSteps:      droppedToTelemetry(pickResult.Dropped),
 		}
 
-		// Call LLM
-		maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+		// Budget the requested output against the measured input so
+		// input + output stays inside the model window (issue #347). The
+		// adaptive context-overflow retry in the ai client is the net if the
+		// estimate still overshoots on an uncatalogued model.
+		inputTokens := approxTokens(ctx, prompt)
+		maxTokens := budgetedMaxOutputTokens(areaWindow, inputTokens, areaOutputCap, analysisMinOutputTokens())
+		applog.WithFields(applog.Fields{
+			"area":         area.ID,
+			"window":       areaWindow,
+			"input_tokens": inputTokens,
+			"output_cap":   areaOutputCap,
+			"max_tokens":   maxTokens,
+		}).Debug("Analysis area: budgeted output tokens")
 
 		// Send the selected exploration evidence to the LLM and generate
 		// structured insights for the current analysis area.
@@ -1321,7 +1388,12 @@ func (o *Orchestrator) generateRecommendations(
 
 	step.Prompt = prompt
 
-	maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+	// Budget the recommendation output against the measured input (same
+	// root cause as the analysis phase, issue #347): a large insights-JSON
+	// prompt plus a fixed output cap can overflow the model window. The
+	// adaptive context-overflow retry is the net.
+	recWindow, recOutputCap := o.resolveModelBudget()
+	maxTokens := budgetedMaxOutputTokens(recWindow, approxTokens(ctx, prompt), recOutputCap, analysisMinOutputTokens())
 
 	// Layer 1 (prevention): constrain the recommendation shape at generation
 	// time where the provider supports it (issue #342). ChatWithFormat
