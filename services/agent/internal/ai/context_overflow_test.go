@@ -172,11 +172,13 @@ func TestWindowFromContextLengthError(t *testing.T) {
 	}
 }
 
-// recordingOverflowLLM returns a scripted error on the first call and a success
-// on the second, recording the MaxTokens seen on every call.
+// recordingOverflowLLM returns a scripted error on the first call and (unless a
+// secondErr is set) a success on the second, recording the MaxTokens seen on
+// every call.
 type recordingOverflowLLM struct {
 	calls        int64
 	firstErr     error
+	secondErr    error
 	seenMaxToken []int
 }
 
@@ -186,10 +188,38 @@ func (f *recordingOverflowLLM) Chat(_ context.Context, req gollm.ChatRequest) (*
 	if n == 1 && f.firstErr != nil {
 		return nil, f.firstErr
 	}
+	if n == 2 && f.secondErr != nil {
+		return nil, f.secondErr
+	}
 	return &gollm.ChatResponse{Content: "ok", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}}, nil
 }
 
 func (f *recordingOverflowLLM) Validate(_ context.Context) error { return nil }
+
+// TestCreateMessage_LearnsWindowFromRetryFailure covers the output-cap-first
+// case: the first 400 names only an output cap (no window), the retry then fails
+// with the total-context error that finally names the window — which must reach
+// the observer so later areas budget correctly.
+func TestCreateMessage_LearnsWindowFromRetryFailure(t *testing.T) {
+	fake := &recordingOverflowLLM{
+		firstErr:  errors.New(bedrockMaxOutputErr),   // "exceeds model maximum (32768)" — no window
+		secondErr: errors.New(bedrockCharsOverflowErr), // retry reveals "maximum context length is 32768"
+	}
+	client, _ := New(fake, "qwen3-32b")
+	var learned int
+	client.SetContextWindowObserver(func(_ string, w int) { learned = w })
+
+	_, err := client.CreateMessage(context.Background(), []gollm.Message{{Role: "user", Content: "hi"}}, "", 990000)
+	if err == nil {
+		t.Fatal("both attempts fail here; expected an error")
+	}
+	if fake.calls != 2 {
+		t.Fatalf("expected one adaptive retry (2 calls), got %d", fake.calls)
+	}
+	if learned != 32768 {
+		t.Fatalf("window learned from the retry failure = %d, want 32768", learned)
+	}
+}
 
 func TestCreateMessage_AdaptiveContextOverflowRetry(t *testing.T) {
 	fake := &recordingOverflowLLM{firstErr: errors.New(bedrockOverflowErr)}

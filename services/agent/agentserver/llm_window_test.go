@@ -49,10 +49,32 @@ func TestResolveModelBudget_OperatorOverrideWins(t *testing.T) {
 }
 
 func TestResolveModelBudget_PersistedBeatsLive(t *testing.T) {
+	// Persisted wins when it does not exceed the current live-detected window.
 	p := &fakeResolverProvider{caps: gollm.ModelCapabilities{MaxInputTokens: 262144}}
 	window, _ := resolveModelBudget(context.Background(), p, unregistered, "m", nil, 200000)
 	if window != 200000 {
-		t.Fatalf("persisted must beat live: window=%d, want 200000", window)
+		t.Fatalf("persisted (≤ live) must be used: window=%d, want 200000", window)
+	}
+}
+
+func TestResolveModelBudget_StalePersistedCappedByLive(t *testing.T) {
+	// A stale large calibration (128K learned before num_ctx was lowered) must
+	// be capped by the current, smaller live-detected window (Ollama num_ctx=8K),
+	// or budgeting would exceed what Chat actually sends.
+	p := &fakeResolverProvider{caps: gollm.ModelCapabilities{MaxInputTokens: 8192}}
+	window, _ := resolveModelBudget(context.Background(), p, unregistered, "m", nil, 131072)
+	if window != 8192 {
+		t.Fatalf("stale persisted must be capped by live: window=%d, want 8192", window)
+	}
+}
+
+func TestResolveModelBudget_OverrideNotCappedByLive(t *testing.T) {
+	// The operator override is authoritative and is NOT capped by live detection.
+	p := &fakeResolverProvider{caps: gollm.ModelCapabilities{MaxInputTokens: 8192}}
+	cfg := gollm.ProviderConfig{gollm.MaxInputTokensKey: "200000"}
+	window, _ := resolveModelBudget(context.Background(), p, unregistered, "m", cfg, 0)
+	if window != 200000 {
+		t.Fatalf("operator override must not be capped by live: window=%d, want 200000", window)
 	}
 }
 

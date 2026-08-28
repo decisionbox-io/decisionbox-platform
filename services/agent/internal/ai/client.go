@@ -151,9 +151,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	// call; every other 4xx is untouched. When the error reveals the model's
 	// real window, notify the observer so the run can self-calibrate.
 	if err != nil && isContextLengthError(err) {
-		if learned := windowFromContextLengthError(err); learned > 0 && c.contextWindowObserver != nil {
-			c.contextWindowObserver(req.Model, learned)
-		}
+		c.maybeLearnWindow(req.Model, err)
 		if nm, ok := reducedMaxTokensForContextOverflow(req.MaxTokens, estimateRequestInputTokens(req), err); ok {
 			logger.WithFields(logger.Fields{
 				"model":          req.Model,
@@ -162,6 +160,13 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 			}).Warn("LLM context-length overflow; retrying once with reduced max_tokens")
 			req.MaxTokens = nm
 			resp, err = chatWithRetry(ctx, c.provider, req)
+			// The retry may fail with a *different* over-limit shape that finally
+			// names the true window — e.g. an output-cap-only first 400 whose
+			// retry then reports the total context window. Learn from it too so
+			// later areas budget correctly, even though we don't issue a third call.
+			if err != nil {
+				c.maybeLearnWindow(req.Model, err)
+			}
 		}
 	}
 
@@ -308,6 +313,18 @@ func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
 // Nil (the default) disables self-calibration for callers that don't need it.
 func (c *Client) SetContextWindowObserver(fn func(model string, window int)) {
 	c.contextWindowObserver = fn
+}
+
+// maybeLearnWindow notifies the context-window observer when err reveals the
+// model's true context window. Safe to call on any error (no-op when the error
+// carries no window or no observer is set).
+func (c *Client) maybeLearnWindow(model string, err error) {
+	if c.contextWindowObserver == nil {
+		return
+	}
+	if learned := windowFromContextLengthError(err); learned > 0 {
+		c.contextWindowObserver(model, learned)
+	}
 }
 func (c *Client) SetStep(step int)                { c.currentStep = step }
 func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }

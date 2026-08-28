@@ -445,6 +445,56 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(cfg.max_output_tokens ?? '').toBe('');
   });
 
+  test('a catalog-only row does not prefill; a live/both row does', () => {
+    const tokenMeta: ProviderMeta = {
+      id: 'openai', name: 'OpenAI', description: '',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_input_tokens', label: 'Context window override (tokens)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_output_tokens', label: 'Max output tokens override', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
+    };
+    // catalog row carries the numbers but source==='catalog' → must NOT prefill
+    // (would pin a catalog value as a top-priority override).
+    const live: LiveModel[] = [
+      { id: 'cat-model', display_name: 'cat-model', wire: 'openai-compat', source: 'catalog', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
+    ];
+    const initial: LLMFormState = { provider: 'openai', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
+    render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
+    const input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'cat-model' } });
+    const cfg = getDump().value.config;
+    expect(cfg.max_input_tokens).toBeUndefined();
+    expect(cfg.max_output_tokens).toBeUndefined();
+  });
+
+  test('remount: switching away from a saved auto-filled value refreshes it (ref empty)', () => {
+    const tokenMeta: ProviderMeta = {
+      id: 'litellm', name: 'LiteLLM', description: '',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_input_tokens', label: 'Context window override (tokens)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
+    };
+    const live: LiveModel[] = [
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768 },
+    ];
+    // Simulate a remount: model-a is already selected with its detected value
+    // saved, and the autofill ref is empty (fresh component).
+    const initial: LLMFormState = {
+      provider: 'litellm', authMethod: 'api_key',
+      config: { model: 'model-a', max_input_tokens: '262144' }, apiKey: 'k',
+    };
+    render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
+    const input = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'model-b' } });
+    // Recognised as auto-filled (== model-a's live value) → refreshed to B's, not left stale.
+    expect(getDump().value.config.max_input_tokens).toBe('32768');
+  });
+
   test('a provider without the token fields (Ollama) never has them auto-persisted', () => {
     // Ollama budgets via num_ctx and does NOT declare max_input_tokens /
     // max_output_tokens. Selecting a live model that reports a window must not

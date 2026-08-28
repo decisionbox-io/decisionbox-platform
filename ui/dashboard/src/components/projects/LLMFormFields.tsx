@@ -108,14 +108,27 @@ export function LLMFormFields({
   // model's detected value while preserving a value the operator actually typed.
   const autofilledRef = useRef<{ max_input_tokens?: string; max_output_tokens?: string }>({});
 
+  // liveDetectedLimit returns a model's token limit ONLY when it was genuinely
+  // reported by live detection (source live/both), never a catalog-only value.
+  // Writing a catalog number into the override field would pin it as a
+  // top-priority manual override that outranks live detection + self-calibration.
+  const liveDetectedLimit = (m: LiveModel | undefined, key: 'max_input_tokens' | 'max_output_tokens'): number | undefined => {
+    if (!m || (m.source !== 'live' && m.source !== 'both')) return undefined;
+    const v = key === 'max_input_tokens' ? m.max_input_tokens : m.max_output_tokens;
+    return (v ?? 0) > 0 ? v : undefined;
+  };
+
   // handleModelSelect sets the model and prefills the context-window / output
-  // fields from the selected model's auto-detected values (LiteLLM /model/info,
-  // Ollama /api/show, vLLM max_model_len) so the operator sees real numbers
-  // instead of having to type a window they may not know. A field is refreshed
-  // when it is empty or still holds the previous model's auto-filled value; a
-  // value the operator typed themselves is preserved. Fields stay editable.
+  // fields from the selected model's *live-detected* values (LiteLLM
+  // /model/info, Ollama /api/show, vLLM max_model_len) so the operator sees real
+  // numbers instead of typing a window they may not know. A field is refreshed
+  // when it is empty or still holds an auto-filled value — recognised either via
+  // autofilledRef (same session) or by matching the previously-selected model's
+  // live-detected value (robust across a form remount, where the ref is empty).
+  // A value the operator typed themselves is preserved. Fields stay editable.
   const handleModelSelect = (val: string) => {
     const config = { ...value.config, model: val };
+    const prevLive = (liveModels ?? []).find((m) => m.id === value.config.model);
     const live = (liveModels ?? []).find((m) => m.id === val);
     const next: typeof autofilledRef.current = {};
     (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
@@ -127,12 +140,17 @@ export function LLMFormFields({
       if (!selected?.config_fields.some((f) => f.key === key)) {
         return;
       }
-      const detected = key === 'max_input_tokens' ? live?.max_input_tokens : live?.max_output_tokens;
+      const detected = liveDetectedLimit(live, key);
+      const prevDetected = liveDetectedLimit(prevLive, key);
       const current = config[key]?.trim() ?? '';
-      const wasAutofilled = current !== '' && current === autofilledRef.current[key];
-      // Only overwrite an empty field or one we auto-filled for the prior model.
+      const wasAutofilled =
+        current !== '' &&
+        (current === autofilledRef.current[key] ||
+          (prevDetected !== undefined && current === String(prevDetected)));
+      // Only overwrite an empty field or one that was auto-filled — never a
+      // value the operator typed.
       if (current === '' || wasAutofilled) {
-        if ((detected ?? 0) > 0) {
+        if (detected !== undefined) {
           config[key] = String(detected);
           next[key] = String(detected);
         } else if (wasAutofilled) {
