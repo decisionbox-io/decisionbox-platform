@@ -1,8 +1,8 @@
-# Plan — Discovery analysis fails with context-length 400: `max_tokens` not budgeted against the model's context window (#347)
+# Plan — Discovery analysis fails with context-length 400: budget `max_tokens` against the model's real context window, without depending on the catalog (#347)
 
 ## 1. Problem
 
-A discovery analysis area fails (run → **Partial**) with a hard 400 from the model:
+A discovery analysis area fails (run → **Partial**) with a hard 400:
 
 ```
 channelperformance: bedrock/openai-compat: InvokeModel failed: operation error Bedrock Runtime:
@@ -12,255 +12,251 @@ tokens, for a total of at least 202753 tokens. Please reduce the length of the i
 number of requested output tokens."
 ```
 
-`138,753 input + 64,000 output = 202,753` → **exactly one token over** GLM‑5's 202,752 context. The area is lost, the run degrades to Partial, and nothing retries.
+`138,753 input + 64,000 output = 202,753` → **one token over** GLM‑5's 202,752 window. The area is lost, the run degrades to Partial, nothing retries.
 
-## 2. Root cause (confirmed in the code)
+## 2. Root cause & the real design constraint
 
-The analysis path picks a **fixed** output cap and lets the input grow to its **own, unrelated** budget. Nothing enforces `input + output ≤ context`.
+**Mechanical cause (confirmed in code):**
+- Fixed output cap: `orchestrator.go:906` (analysis) and `orchestrator.go:1324` (recommendations) request `gollm.GetMaxOutputTokens(...)`, which for uncatalogued GLM‑5 resolves to Bedrock's `DefaultMaxOutputTokens: 64000` (the #338 value).
+- Unrelated input budget: the picker trims `{{QUERY_RESULTS}}` only against a fixed `AnalysisQueryResultsBudgetTokens = 200_000` (`analysis_step_picker.go:40`).
+- No coupling: `llm.Budget` (`libs/go-common/llm/budget.go`) enforces `input + output ≤ context` but is wired into **/ask only**.
+- No overflow retry: `internal/ai/retry.go` treats a 400 `ValidationException` as terminal.
+- Unknown window: GLM‑5 is uncatalogued; `GetMaxInputTokens("bedrock","GLM-5")` falls back to the global `DefaultMaxInputTokens = 131072`, so DecisionBox never knew the real 202,752 window.
 
-- **Fixed output.** `services/agent/internal/discovery/orchestrator.go:906` sets
-  `maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)`. GLM‑5 is **uncatalogued**, so this resolves to Bedrock's `DefaultMaxOutputTokens: 64000` (`providers/llm/bedrock/provider.go:100`, the #338 value). The recommendation phase does the same at `orchestrator.go:1324`.
-- **Independent input budget.** The analysis step picker trims `{{QUERY_RESULTS}}` only against a **fixed** `AnalysisQueryResultsBudgetTokens = 200_000` (`services/agent/internal/discovery/analysis_step_picker.go:40`), which has no relationship to the model's window. On this run the assembled prompt reached ~138,753 input tokens.
-- **No coupling.** The `llm.Budget` type that computes exactly `ModelMaxInput − ReservedOutput − ReservedSystem − SafetyMargin` (`libs/go-common/llm/budget.go`) is wired into **/ask only** (`services/api/internal/handler/search.go:635`), never into discovery.
-- **No overflow retry.** `services/agent/internal/ai/retry.go` treats a 400 (including `ValidationException`) as **terminal** — `isRetryableLLMError` returns false, so `chatWithRetry` surfaces it immediately with no adaptation.
-- **Unknown window.** GLM‑5 is not in any catalog, and Bedrock sets no `DefaultMaxInputTokens`, so `GetMaxInputTokens("bedrock","GLM-5")` falls back to the global `DefaultMaxInputTokens = 131072` (`libs/go-common/llm/registry.go:401`) — DecisionBox doesn't know the real 202,752 window.
+**The design constraint (from @abacigil): the catalog will never cover customer models.** Customers point DecisionBox at arbitrary models — often through gateways (LiteLLM) or local runtimes (Ollama). We already ask for **`max_input_tokens` / `max_output_tokens`** at LLM‑config time (`ContextWindowConfigFields`, `registry.go:852`), but:
+- those are **static ceilings**, and a 400 depends on **this call's actual input** — a customer can set both correctly and still overflow when one area's input is large; and
+- asking a human to type a model's context window is a bad default — most won't know it.
 
-### Why now (regression)
-**#338** raised the uncatalogued openai‑compat/Bedrock output default from ~8K to **64,000**:
-- before: `138,753 + 8,000 = 146,753 < 202,752` → fit;
-- after: `138,753 + 64,000 = 202,753 > 202,752` → overflow.
+So the fix must **not depend on cataloging GLM‑5**. It has four pillars:
 
-## 3. Design — defense in depth, 3 layers + a config path
+| Pillar | Idea | Guarantees |
+|---|---|---|
+| **1. Enforce** | Budget output against the **measured** input at call time; couple the input budget to the window; adaptively retry a context‑overflow 400. | Works for **any** model with zero catalog / zero config. Stops the failures. |
+| **2. Auto‑detect** | Read the model's real window/output from the provider where it's exposed (LiteLLM `/model/info`, Ollama `/api/show`, OpenAI‑compat `max_model_len`). | Removes the guess for gateway/local models without user typing. |
+| **3. Prefill** | Surface the detected window/output in the live‑models API and **prefill** the `max_input_tokens` / `max_output_tokens` inputs in the dashboard (user can override). | Makes the config fields self‑populating instead of "type a number you don't know". |
+| **4. Self‑calibrate** | The overflow error states the model's **true** window; learn it, re‑budget the rest of the run, and **persist** it per project+model so we pay the 400 at most once. | The system converges to correct budgeting even for a model no one configured. |
 
-The fix is layered so the common case never 400s, the residual case self‑heals, and the whole thing reuses the existing `llm.Budget` arithmetic rather than inventing new math.
+A single **resolution order** ties them together (used by both the agent budget and the dashboard prefill):
 
-| Layer | What | Where | Fixes |
-|---|---|---|---|
-| **A — Proactive output budget** | Cap `max_tokens = clamp(context − input − system − margin, floor, effective_output_cap)` before the call, per area. Reuse `llm.Budget`. | analysis + recommendation call sites in `orchestrator.go` | issue fix #1; criteria #1, #4-partial, unit-test |
-| **B — Couple the input budget to the window** | Set the picker's `BudgetTokens` to `min(AnalysisQueryResultsBudgetTokens, Budget.Available())` where `Budget` reserves the effective output cap, so query‑results can't grow past `context − output − system − margin`. | orchestrator wiring of the existing `picker.BudgetTokens` override | issue fix #4; criterion #3 (small windows) |
-| **C — Adaptive context‑overflow retry** | On a "maximum context length" 400, parse the model's **stated** context + input tokens from the error, recompute a safe `max_tokens`, and re‑issue **once**. Universal — covers analysis, recommendation, exploration, sql‑fix. | `services/agent/internal/ai` (new file) + one hook in `client.go createMessage` | issue fix #2; criterion #2 |
-| **D — Know the real window** | Thread `project.LLM.Config` into the orchestrator so the operator override `max_input_tokens` (and `max_output_tokens`) reaches discovery budgeting via `GetEffectiveInputWindow` / `MaxOutputOverride`; document setting `max_input_tokens=202752` for GLM‑5. Optionally catalog GLM once a verified Bedrock model ID is confirmed. | orchestrator plumbing + docs (+ optional catalog) | issue fix #3 |
+```
+effective input window  = operator max_input_tokens override
+                        → self-calibrated (persisted) value
+                        → live auto-detected value
+                        → catalog MaxInputTokensFor
+                        → global DefaultMaxInputTokens (128K)
+effective output cap    = operator max_output_tokens override
+                        → live auto-detected value
+                        → catalog MaxOutputTokensFor
+                        → global DefaultMaxOutputTokens (64K)
+```
 
-### Why this composes correctly
-- Layer A is the precise guarantee: whatever the assembled prompt turns out to be, output is reduced so `input + output ≤ context − margin`. For the reported GLM‑5 run it makes the request fit on the **first** call (output auto‑reduced), so no 400.
-- Layer B protects **small‑context** models: today the fixed 200K query‑results budget can, on a 128K model, produce an input that alone exceeds the window — unfittable even at the output floor. Tying it to `Budget.Available()` prevents that. It only ever *lowers* the budget (`min(...)`), so it never loosens today's cap. (It also quietly fixes a latent bug for Claude‑200K: 200K query‑results + any output already exceeds Claude's window.)
-- Layer C is the net for estimator drift and window under/over‑estimation: rune/4 undercounts dense JSON, and an uncatalogued window is a guess. The error message states the model's **true** context and input sizes, so a single recomputed retry is exact, not a blind guess.
-- Layer D removes the guess entirely when the operator knows the window, and restores full input fidelity for large uncatalogued models (without it, Layer B against the guessed 131K window over‑trims GLM‑5's input — safe, but lower quality).
+Catalog is now just **one rung**, not a prerequisite. No GLM‑5 catalog entry is added.
 
-## 4. Exact changes
+---
 
-### 4.1 New: proactive analysis/recommendation output budget
-**File:** `services/agent/internal/discovery/analysis_budget.go` (new)
+## 3. Pillar 1 — Enforce at call time (catalog‑independent core)
 
-Small, pure, unit‑testable helpers that delegate the arithmetic to `llm.NewBudget` (the "reuse `llm.Budget`" the issue asks for):
+### 3.1 New: `services/agent/internal/discovery/analysis_budget.go`
+Pure, unit‑testable helpers delegating the arithmetic to `llm.NewBudget` (the "reuse `llm.Budget`" the issue asks for):
 
 ```go
-// reservedSystemTokens: flat headroom for chat-template / scaffolding overhead the
-// rune/4 estimate of the user prompt does not see. The analysis + recommendation
-// calls pass an empty system prompt, so this stays small.
-const analysisReservedSystemTokens = 512
-
-// analysisMinOutputTokens is the floor the output budget never drops below, so a
-// near-window input still gets a usable (if small) generation instead of a
-// zero/negative request. Env-overridable (Rule 2); mirrors EXPLORATION_MAX_OUTPUT_TOKENS.
-const defaultAnalysisMinOutputTokens = 8192
+const analysisReservedSystemTokens = 512          // chat-template / scaffolding headroom
+const defaultAnalysisMinOutputTokens = 8192       // floor; env-overridable (Rule 2)
 const analysisMinOutputTokensEnv = "ANALYSIS_MIN_OUTPUT_TOKENS"
 
-// budgetedMaxOutputTokens caps requested output so input+output fits the window.
-//   out = clamp(window − input − system − margin, floor, effectiveOutputCap)
-// window/effectiveOutputCap come from the caller (catalog/override aware).
+// out = clamp(window − input − system − margin, floor, effectiveOutputCap)
 func budgetedMaxOutputTokens(window, inputTokens, effectiveOutputCap, floor int) int {
-    avail := gollm.NewBudget(window, 0 /*reservedOutput*/, analysisReservedSystemTokens, false /*approx tier*/).Available()
+    avail := gollm.NewBudget(window, 0, analysisReservedSystemTokens, false).Available()
     out := avail - inputTokens
-    if out > effectiveOutputCap {
-        out = effectiveOutputCap
-    }
-    if out < floor {
-        out = floor
-    }
+    if out > effectiveOutputCap { out = effectiveOutputCap }
+    if out < floor { out = floor }
     return out
 }
 
-// analysisPickerBudgetTokens couples the picker's query-results budget to the window:
-// min(default, window − output − system − margin) via Budget.Available().
+// picker budget = min(default, window − output − system − margin)  (only ever lowers it)
 func analysisPickerBudgetTokens(defaultBudget, window, effectiveOutputCap int) int {
     avail := gollm.NewBudget(window, effectiveOutputCap, analysisReservedSystemTokens, false).Available()
-    if avail > 0 && avail < defaultBudget {
-        return avail
-    }
+    if avail > 0 && avail < defaultBudget { return avail }
     return defaultBudget
 }
 ```
-A tiny `analysisMinOutputTokens()` reads the env floor (default `defaultAnalysisMinOutputTokens`, `>0` guard), matching `explorationOutputTokens`'s pattern.
+Input estimate: `gollm.ApproximateCounter{}` (rune/4) over the assembled prompt — cheap, local, consistent with the picker's char/4 estimator; fall back to `utf8.RuneCountInString/4` on a ctx error. The 15% approx‑tier margin in `NewBudget` + Pillar‑1 retry absorb undercount on dense JSON.
 
-**Token estimate:** use `gollm.ApproximateCounter{}` (rune/4) over the fully assembled prompt string — cheap, local, consistent with the picker's char/4 estimator and /ask's walk. On a counter error (ctx cancel only) fall back to `utf8.RuneCountInString(prompt)/4`. The 15% approximate‑tier margin baked into `NewBudget` plus Layer C absorb the undercount on dense JSON.
+### 3.2 Wire into analysis + recommendation (`orchestrator.go`)
+- Before the area loop (~line 818): resolve `window` and `effOut` (see §7 resolution), then `picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, effOut)` (the field is already honored in `Pick`; today unset → 200K).
+- Replace line 906 with `maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), effOut, analysisMinOutputTokens())` + a Debug log of the decision.
+- Same one‑line output‑budget swap at line 1324 (recommendations). Exploration (`exploration.go:117`) and sql‑fix (`sql_fixer.go:86`) have small bounded inputs → covered by the retry alone, not proactively budgeted (Rule 8).
 
-### 4.2 Wire the budget into the analysis phase
-**File:** `services/agent/internal/discovery/orchestrator.go`
-
-- Before the `for _, area := range runAreas` loop (near line 818, where the picker is built): compute once
-  ```go
-  window := gollm.GetEffectiveInputWindow(o.llmProvider, o.llmModel, o.llmConfig)
-  effOut := gollm.ClampMaxTokens(gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel), gollm.MaxOutputOverride(o.llmConfig))
-  picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, effOut)
-  ```
-  (`picker.BudgetTokens` is already an honored override in `Pick`; today it's unset → defaults to 200K.)
-- Replace line 906 (`maxTokens := gollm.GetMaxOutputTokens(...)`) with:
-  ```go
-  inTok := approxTokens(ctx, prompt)                 // rune/4 over the assembled prompt
-  maxTokens := budgetedMaxOutputTokens(window, inTok, effOut, analysisMinOutputTokens())
-  ```
-  and add a `Debug` log (window / input / max_tokens / effOut) so operators can see the cap decision, mirroring the existing "rendered prompt sizing" debug.
-
-### 4.3 Apply the output budget to the recommendation phase
-**File:** `services/agent/internal/discovery/orchestrator.go:1324`
-
-Same root cause, same one‑line fix (recommendations assemble a large insights‑JSON prompt and call with the fixed cap). Replace the fixed `maxTokens` with `budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), effOut, analysisMinOutputTokens())`. The recommendation phase has no picker (Layer B is analysis‑only); Layer A + Layer C protect it. Scoped, not gold‑plated: exploration (`exploration.go:117`) and sql‑fix (`sql_fixer.go:86`) have small bounded inputs and are covered by Layer C alone — no proactive budget added there (Rule 8).
-
-### 4.4 New: adaptive context‑overflow retry
-**File:** `services/agent/internal/ai/context_overflow.go` (new)
-
+### 3.3 New: adaptive context‑overflow retry — `services/agent/internal/ai/context_overflow.go`
 ```go
-// Markers that identify a context-length 400 across providers.
 var contextOverflowMarkers = []string{
-    "maximum context length",        // OpenAI + Bedrock/GLM ValidationException
-    "context_length_exceeded",       // OpenAI error code
-    "reduce the length of the input prompt or the number of requested output", // Bedrock tail
+    "maximum context length", "context_length_exceeded",
+    "reduce the length of the input prompt or the number of requested output",
 }
-
-// contextOverflowRetryMarginPct is headroom kept when recomputing max_tokens from the
-// model's stated numbers — covers tokenizer disagreement between our estimate and theirs.
 const contextOverflowRetryMarginPct = 2
 const contextOverflowMinRetryTokens = 512
 
-func isContextLengthError(err error) bool { /* lowercased substring scan of err.Error() */ }
+func isContextLengthError(err error) bool
+// Bedrock/GLM: "...maximum context length is 202752 tokens. However, you requested 64000
+//   output tokens and your prompt contains at least 138753 input tokens..."
+// OpenAI:      "...maximum context length is 8192 tokens. However, you requested 9000 tokens
+//   (5000 in the messages, 4000 in the completion)..."
+func parseContextLengthError(msg string) (window, input int, ok bool)
 
-// parseContextLengthError extracts (contextWindow, inputTokens) from the two phrasings:
-//   Bedrock/GLM: "...maximum context length is 202752 tokens. However, you requested 64000
-//                 output tokens and your prompt contains at least 138753 input tokens..."
-//   OpenAI:      "...maximum context length is 8192 tokens. However, you requested 9000
-//                 tokens (5000 in the messages, 4000 in the completion)..."
-// Returns ok=false when neither shape matches.
-func parseContextLengthError(msg string) (window, input int, ok bool) { /* regexes */ }
+func reducedMaxTokensForContextOverflow(currentMax int, err error) (newMax int, ok bool)
+// window,input parsed → newMax = window − input − margin; ok=false if newMax<min or ≥ currentMax
+// recognised-but-unparseable → single blind halving
+```
+Hook in `client.go createMessage`: after `chatWithRetry` returns an error, attempt **one** adapted re‑issue (`req.MaxTokens = newMax; chatWithRetry(...)`), then run the existing usage/debug emit against the final outcome. `req` is a local value copy — safe to mutate. Deterministic, bounded to one extra call, non‑overflow 400s untouched.
 
-// reducedMaxTokensForContextOverflow returns a smaller max_tokens to retry with, or ok=false
-// when this isn't an overflow error, or when output-reduction alone cannot help (input ≥ window).
-func reducedMaxTokensForContextOverflow(currentMax int, err error) (int, bool) {
-    if !isContextLengthError(err) { return 0, false }
-    if window, input, ok := parseContextLengthError(err.Error()); ok {
-        margin := window * contextOverflowRetryMarginPct / 100
-        nm := window - input - margin
-        if nm < contextOverflowMinRetryTokens || nm >= currentMax { return 0, false }
-        return nm, true
-    }
-    // Recognised overflow but numbers unparseable → single blind halving.
-    nm := currentMax / 2
-    if nm < contextOverflowMinRetryTokens { return 0, false }
-    return nm, true
-}
+The parsed `(window)` is also surfaced upward for Pillar 4 via an optional callback on the `ai.Client`:
+```go
+// SetContextWindowObserver registers a callback invoked with (model, learnedWindow) whenever an
+// overflow 400 reveals the model's true window. Nil by default (tests, non-discovery callers).
+func (c *Client) SetContextWindowObserver(fn func(model string, window int))
 ```
 
-**File:** `services/agent/internal/ai/client.go` — in `createMessage`, after `chatWithRetry` returns an error, attempt exactly one adapted re‑issue before the error/observability path:
+---
+
+## 4. Pillar 2 — Auto‑detect the real window/output from the provider
+
+### 4.1 New capability — `libs/go-common/llm/provider.go`
+```go
+// ModelCapabilities is what a provider can self-report about a model from its upstream metadata
+// endpoint. Zero fields mean "unknown" — callers fall through the resolution order.
+type ModelCapabilities struct {
+    MaxInputTokens  int
+    MaxOutputTokens int
+}
+
+// ModelInfoResolver is an optional capability: providers that expose a per-model metadata endpoint
+// implement it. Read-only, must not consume tokens. Return (zero, nil) when the upstream doesn't
+// expose the numbers (callers fall through), and an error only on a genuine call failure.
+type ModelInfoResolver interface {
+    ResolveModelInfo(ctx context.Context, model string) (ModelCapabilities, error)
+}
+```
+Also extend `RemoteModel` with `MaxInputTokens int` / `MaxOutputTokens int` (0 = unknown) so `ListModels` can carry the detected numbers to the dashboard (Pillar 3).
+
+### 4.2 LiteLLM — `providers/llm/litellm/`
+- Implement `ResolveModelInfo` via `GET /model/info` (LiteLLM's model‑cost map exposes `model_info.max_input_tokens` / `max_output_tokens` / `max_tokens` for ~thousands of models). Runs through the existing custom‑TLS transport + `setAuth`.
+- In `list_models.go`, enrich each `RemoteModel` with those numbers when `/model/info` is reachable (best‑effort; a failure leaves them 0 and never blocks listing — same contract as today).
+
+### 4.3 Ollama — `providers/llm/ollama/`
+- Extend the `ollamaClient` interface (`client.go`) with `Show(ctx, *ShowRequest) (*ShowResponse, error)` (the official `ollamaapi` client already provides it; update the mock).
+- Implement `ResolveModelInfo` reading `ShowResponse.ModelInfo["<arch>.context_length"]` → `MaxInputTokens`. This makes the real window available even when the operator never set `num_ctx`. (`num_ctx` still wins where set, via `ollamaEffectiveInputWindow`.)
+- Enrich `RemoteModel` rows in `list_models.go` likewise.
+
+### 4.4 OpenAI‑compat gateways (vLLM, etc.)
+- Where `GET /v1/models` returns `max_model_len` (vLLM) parse it into `RemoteModel.MaxInputTokens` in the `openai` provider's list path. Best‑effort; absent field → 0. (No new endpoint; just read a field we currently drop.)
+
+---
+
+## 5. Pillar 3 — Prefill the config inputs in the dashboard
+
+### 5.1 API surface — `services/api/internal/handler/providers.go`
+`liveModelsResponse` already embeds `gollm.ModelInfo` (which serializes `max_input_tokens` / `max_output_tokens`). `writeLiveModelsResponse` must **carry the detected numbers from live rows** into the merged `ModelInfo` (today it only copies `DisplayName` / `Lifecycle` from live rows). So a live‑only or "both" row for an uncatalogued model surfaces its detected window/output.
+
+### 5.2 Dashboard prefill — `ui/dashboard/`
+- In the LLM model‑config form (the component that renders the model combobox + the `max_input_tokens` / `max_output_tokens` fields from `ContextWindowConfigFields`), when the user selects a model whose live row carries detected numbers, **prefill** the two inputs — only when the field is empty / not user‑edited, and always leave it editable (the values are hints, the customer can override).
+- Types already exist in `src/lib/api.ts` (`ModelInfo.max_input_tokens` / `max_output_tokens`); wire the prefill in the selection handler.
+- **Enterprise overlay check (per repo guide):** confirm whether this LLM‑config component is overlaid in `decisionbox-enterprise/ui/src/`; if so, sync the overlay copy. (Expected community‑only, but must be verified before merge.)
+
+---
+
+## 6. Pillar 4 — Self‑calibrate: learn the true window from the 400 and remember it
+
+### 6.1 In‑run (memory)
+The orchestrator registers a `ContextWindowObserver` (§3.3) on its `ai.Client`. When an overflow 400 reveals the true window, it updates the in‑run `window`/`picker.BudgetTokens` so **remaining areas in the same run** budget correctly — the reported failure was several areas in one run, so this alone converts a Partial into a full run after the first area's single retry.
+
+### 6.2 Cross‑run (persist) — new minimal store
+- New collection `llm_model_windows` + `database.LLMModelWindowRepo` (agent side): documents keyed `{project_id, provider, model}` → `{input_window, output_cap, source, updated_at}`. Small, self‑contained, tenant‑plane only (the agent already writes tenant Mongo — no two‑plane violation).
+- The observer upserts the learned window here.
+- The run‑start resolution (§7) reads it as rung 2 of the order, so a later run for the same project+model budgets correctly **before** the first call — no repeat 400.
+- No mutation of user `project.LLM.Config` (avoids racing user edits / surprising overwrites); the persisted value is a system‑learned hint, the config override still wins.
+
+---
+
+## 7. Resolution wiring (single source of truth)
+
+New context‑aware resolver, agent side, run once at run start (agentserver, where the provider instance + `project.LLM.Config` + Mongo are all in scope):
 
 ```go
-resp, err := chatWithRetry(ctx, c.provider, req)
-if err != nil {
-    if nm, ok := reducedMaxTokensForContextOverflow(req.MaxTokens, err); ok {
-        logger.WithFields(logger.Fields{
-            "model": req.Model, "old_max_tokens": req.MaxTokens, "new_max_tokens": nm,
-        }).Warn("LLM context-length overflow; retrying once with reduced max_tokens")
-        req.MaxTokens = nm
-        resp, err = chatWithRetry(ctx, c.provider, req)
-    }
-}
+// window, outCap resolved via the order in §2, consulting:
+//  - project.LLM.Config (max_input_tokens / max_output_tokens overrides)
+//  - LLMModelWindowRepo (persisted self-calibration)
+//  - provider.(gollm.ModelInfoResolver) live lookup (best-effort, short timeout)
+//  - gollm.GetEffectiveInputWindow / GetMaxOutputTokens (catalog + default)
 ```
-`req` is a local value copy, so mutation is safe. The existing `emitLLMUsage` / debug‑logger block then runs against the **final** `resp`/`err` (small refactor so usage is emitted once, for the outcome that actually returned). This is deterministic (not transient), bounded to one extra call, and terminal 400s that aren't overflow are unaffected.
+Pass the resolved `window` + `outCap` into `OrchestratorOptions` (new fields `LLMInputWindow int`, `LLMOutputCap int`) so the orchestrator budgets without provider‑capability plumbing. Also thread `LLMConfig gollm.ProviderConfig` (from `project.LLM.Config`) so `MaxOutputOverride`/overrides remain available. Wire at `agentserver.go:~901`.
 
-### 4.5 Thread `project.LLM.Config` into the orchestrator (Layer D)
-- `services/agent/internal/discovery/orchestrator.go`: add field `llmConfig gollm.ProviderConfig` to `Orchestrator` and `LLMConfig gollm.ProviderConfig` to `OrchestratorOptions`; set it in `NewOrchestrator`.
-- `services/agent/agentserver/agentserver.go:~901`: pass `LLMConfig: project.LLM.Config` (already in scope — it builds the provider config a few lines up at :450). This lets `GetEffectiveInputWindow` honor an operator `max_input_tokens` override and `MaxOutputOverride` honor `max_output_tokens`.
+Files: `orchestrator.go` (+3 fields, budget calls, observer), `agentserver.go` (resolve + pass), plus the resolver helper (new small file, e.g. `agentserver/llm_window.go` or a `gollm.ResolveEffectiveWindow(ctx, provider, model, cfg, persisted)` helper in go‑common — leaning to the go‑common helper so /ask can reuse it later).
 
-### 4.6 GLM / uncatalogued‑model window (Layer D, config‑first)
-- **Primary (no code guess):** document that for an uncatalogued large‑context model (GLM‑5), the operator sets **`max_input_tokens=202752`** (and, if its output cap differs from 64K, `max_output_tokens`) in the project's LLM config — the existing fields from `ContextWindowConfigFields()` (`registry.go:852`). With that set, Layer B stops over‑trimming and Layer A budgets against the true window.
-- **Optional catalog entry:** a Bedrock `ModelEntry` for GLM‑5 (`MaxInputTokens: 202752`, its real output cap, `Wire: WireOpenAICompat`, alias list) is the clean long‑term fix — **but only with a verified Bedrock `ModelId`**. I don't have a confirmed AWS model identifier for "GLM‑5" (it appears to reach Bedrock via the openai‑compat wire, possibly a Marketplace/proxy deployment), and hard‑coding a guessed ID/alias that never matches (or a wrong window) is worse than none (Rule 2). **Open question for @abacigil below** — if you give me the exact model string the project uses, I'll add the catalog entry in the build step.
+---
 
-## 5. Phases (build‑step order)
+## 8. Phases (build order)
 
-1. `analysis_budget.go` + `analysis_budget_test.go` — pure helpers, TDD the acceptance‑criteria case first.
-2. `context_overflow.go` + `context_overflow_test.go` — parser + reducer, both phrasings + unparseable + input‑too‑big.
-3. `client.go` adaptive‑retry hook + a `createMessage`‑level test (fake provider: overflow‑400 then success on reduced retry). Refactor `emitLLMUsage` to fire once on the final outcome.
-4. `orchestrator.go` + `agentserver.go` wiring: `llmConfig` field, per‑loop `window`/`effOut`/`picker.BudgetTokens`, per‑area output budget, recommendation output budget.
-5. Docs (§7) + `CHANGELOG.md`.
-6. Local gates: `make build`, `make test-go`, `make lint-go` (after `export PATH=$PATH:$(go env GOPATH)/bin`). No UI changes → no `test-ui`/`lint-ui`.
-7. `make test-integration` for the agent module (testcontainers) to confirm nothing in the discovery wiring regressed.
+1. **Enforce core** — `analysis_budget.go` (+test), `context_overflow.go` (+test), `client.go` hook + observer (+test), `orchestrator.go`/`agentserver.go` budget wiring (`LLMConfig`, `window`, `outCap`, picker budget, per‑area + recommendation output budget). *Ships the fix on its own — every model, no catalog.*
+2. **Auto‑detect** — `ModelInfoResolver` + `RemoteModel` fields (go‑common); LiteLLM `/model/info`; Ollama `/api/show` (+ mock); OpenAI‑compat `max_model_len`. Tests per provider.
+3. **Resolution wiring** — the run‑start resolver consuming §7 order; live lookup best‑effort with a short timeout.
+4. **Self‑calibrate** — `LLMModelWindowRepo` + collection; observer upsert; in‑run re‑budget; resolver reads persisted value.
+5. **Prefill** — API merge carries detected numbers; dashboard prefill; enterprise‑overlay sync check; `make test-ui` / `make lint-ui`.
+6. **Docs + CHANGELOG** (§10).
+7. **Gates:** `make build`, `make test-go`, `make lint-go` (after `export PATH=$PATH:$(go env GOPATH)/bin`), `make test-ui`/`make lint-ui` (dashboard touched), `make test-integration` (agent testcontainers).
 
-## 6. Data / schema / API / UI impact
+## 9. Test strategy (Rule 9 — failure & edge cases)
 
-- **None to persisted schemas, Mongo docs, REST contracts, or the dashboard.** All changes are internal agent budgeting + one agent‑side LLM‑retry path. `AnalysisStep.TokensIn/Out` telemetry shape is unchanged.
-- New **env var** `ANALYSIS_MIN_OUTPUT_TOKENS` (agent). New **operator‑facing guidance** for the existing `max_input_tokens` / `max_output_tokens` LLM config fields (no new fields — they already exist).
-- No enterprise‑overlay files touched.
+- **`analysis_budget_test.go`:** the acceptance case (`window=202752, input=138753, effOut=64000` → output ≤ `202752−138753−margin`, `input+out ≤ window`); input>window → floor (never negative); tiny input → exactly `effOut`; output override lowers `effOut`; `analysisPickerBudgetTokens` lowers on 128K, stays 200K on 1M, never ≤0.
+- **`context_overflow_test.go`:** parse the verbatim Bedrock/GLM string → `(202752,138753)`; parse the OpenAI "(X in the messages, Y in the completion)" shape; recognised‑but‑unparseable → halve; non‑overflow 400 → `ok=false`; input≥window → `ok=false`; `newMax≥currentMax` → `ok=false`.
+- **`client.go` retry test** (existing fake‑provider pattern): overflow‑400 then success on the reduced retry → returns success, second request's `MaxTokens` == parsed target, usage emitted once, observer fired with the learned window; non‑overflow 400 → no second call, observer not fired.
+- **Provider auto‑detect tests:** LiteLLM `/model/info` parse (httptest); Ollama `/api/show` `context_length` parse (mock `Show`); OpenAI‑compat `max_model_len` parse; each: missing/garbled field → `(0,nil)` (graceful).
+- **Resolver test:** order precedence (override > persisted > live > catalog > default), incl. live‑error fallthrough.
+- **Persistence test:** `LLMModelWindowRepo` upsert/get round‑trip (Mongo testcontainer via the agent integration suite).
+- **API merge test:** live row with detected numbers → surfaced in `liveModelsResponse.ModelInfo`.
+- **Dashboard test (Jest):** selecting a model with detected numbers prefills the two inputs; user edit is not overwritten.
+- **Integration:** `make test-integration` confirms discovery wiring still runs end‑to‑end. A full live GLM‑5 reproduction needs Bedrock GLM access; the PR will state whether a live rerun was possible or whether verification rests on the unit + integration suites + the parsed real error string.
 
-## 7. Docs to update (Rule 4)
+## 10. Docs (Rule 4)
 
-- `docs/reference/configuration.md`:
-  - Agent → "LLM Behavior": add `ANALYSIS_MIN_OUTPUT_TOKENS` (default 8192) row.
-  - "Analysis Phase Compaction Tunables": update the `AnalysisQueryResultsBudgetTokens` row/"when to tune" note to say it's now a **ceiling** that is further capped to `context − output − system − margin` at run time.
-  - Note that the analysis + recommendation phases budget `max_tokens` against the model window and adaptively retry a context‑length 400.
-- `docs/architecture/agent-analysis-compaction.md`: "Per‑area token budget" section — document the window‑coupled budget + the output cap + the adaptive retry.
-- `docs/concepts/providers.md` (and/or the LLM config guide): document `max_input_tokens` / `max_output_tokens` as the escape hatch for uncatalogued large‑context models (GLM‑5 example → `202752`).
-- `CHANGELOG.md` `[Unreleased] → Fixed`: one entry describing the overflow fix (budget‑against‑window + adaptive retry), referencing the #338 regression.
+- `docs/reference/configuration.md`: add `ANALYSIS_MIN_OUTPUT_TOKENS`; update the `AnalysisQueryResultsBudgetTokens` note (now a ceiling further capped to `context − output − system − margin`); note analysis/recommendation budget `max_tokens` against the window + adaptively retry a context‑length 400.
+- `docs/architecture/agent-analysis-compaction.md`: window‑coupled budget + output cap + adaptive retry.
+- `docs/concepts/providers.md` + the LLM‑config guide: **auto‑detect** (LiteLLM `/model/info`, Ollama `/api/show`, vLLM `max_model_len`), **prefill**, and the `max_input_tokens`/`max_output_tokens` overrides as the final escape hatch; document the self‑calibration behavior.
+- `docs/reference/api.md`: live‑models response now carries `max_input_tokens`/`max_output_tokens` for detected models.
+- `CHANGELOG.md` `[Unreleased] → Fixed` (+ `Added` for auto‑detect/prefill): describe the overflow fix + the #338 regression.
 
-## 8. Test strategy (Rule 9 — failure & edge cases, not just happy path)
+## 11. Data / schema / API / UI impact
 
-**`analysis_budget_test.go`** (table‑driven):
-- **Acceptance‑criteria case:** `window=202752, input=138753, effOut=64000` → output ≤ `202752 − 138753 − margin` and `> 0`. Assert `input + out ≤ window`.
-- Small window forcing the **floor**: `window=131072, input=138753` (input > window) → returns `analysisMinOutputTokens()` (floor), never negative.
-- Large headroom: tiny input → returns `effOut` exactly (not more).
-- Operator output override lowers `effOut` (via `ClampMaxTokens`) → output capped to the override.
-- `analysisPickerBudgetTokens`: 128K window → below the 200K default (protective); 1M window → stays at the 200K default; never returns ≤0.
-- Zero/negative window guards (NewBudget clamps → floor).
+- **New Mongo collection** `llm_model_windows` (agent‑written, tenant plane). No change to existing docs/collections.
+- **API:** live‑models response gains populated `max_input_tokens`/`max_output_tokens` on detected rows (additive, backward‑compatible).
+- **UI:** prefill logic in the LLM‑config form (additive; fields already exist). Enterprise‑overlay sync verified.
+- **Env:** new `ANALYSIS_MIN_OUTPUT_TOKENS` (agent).
+- No enterprise‑feature mentions in community code (Rule 11).
 
-**`context_overflow_test.go`:**
-- Parse the **Bedrock/GLM** ValidationException (the issue's verbatim string) → `(202752, 138753)`.
-- Parse the **OpenAI** "N tokens (X in the messages, Y in the completion)" phrasing.
-- Unparseable‑but‑recognised overflow → blind‑halve branch.
-- Non‑overflow 400 (e.g. `AccessDenied`) → `ok=false` (untouched).
-- Input ≥ window (output reduction can't help) → `ok=false` (no infinite/pointless retry).
-- Computed `nm ≥ currentMax` → `ok=false` (never a no‑op or larger retry).
+## 12. Risks & mitigations
 
-**`client.go` retry test** (reuse the existing fake‑provider pattern in `services/agent/internal/ai/*_test.go`): a provider that returns the Bedrock overflow 400 on call 1 and a valid response on call 2 → `createMessage` returns the success, having re‑issued with the reduced `max_tokens`; assert the second request's `MaxTokens` equals the parsed target and that usage is emitted once. A provider that returns a **non‑overflow** 400 → no second call.
+- **Estimator drift (rune/4 undercounts dense JSON).** 15% margin in `NewBudget` + the adaptive retry (uses the model's exact numbers). Worst case: one extra round‑trip.
+- **Provider error‑string / metadata coupling.** Overflow parsing matches multiple stable markers with graceful fallthrough (never worse than today's terminal failure); auto‑detect is best‑effort and never blocks. Both pinned by tests to real strings/payloads.
+- **Live lookup latency at run start.** Short timeout, best‑effort, cached (persisted); on failure we fall through to catalog/default and still self‑calibrate from the first 400.
+- **PR size.** Four pillars across agent + go‑common + providers + API + dashboard is a large PR. Structured so Phase 1 alone resolves the reported failure; if the review loop shows it's unwieldy we can split at the phase boundaries — but per @abacigil's direction it's planned as one deliverable.
+- **Persisted value going stale** (operator swaps the model behind the same gateway alias). Keyed by model string; the override always wins and a fresh 400 re‑calibrates.
 
-**Existing `analysis_step_picker_test.go`** already exercises `BudgetTokens` trimming; no change needed beyond confirming the new wiring passes a positive budget.
+## 13. Alternatives considered
 
-**Integration:** `make test-integration` (agent testcontainers) to confirm the discovery orchestrator still wires and runs end‑to‑end. (A full live GLM‑5 reproduction needs Bedrock GLM access; I'll note in the PR whether a live rerun was possible or whether verification rests on the unit + integration suite plus the parsed real error string.)
+- **Catalog GLM‑5 (original fix #3).** Dropped per @abacigil — the catalog can't track customer models; auto‑detect + self‑calibrate + override generalize instead.
+- **Adaptive retry only.** Insufficient: wastes a round‑trip per area and can't help a small‑window model whose input alone overflows — the window‑coupled input budget (Pillar 1) is needed.
+- **Trim input on retry (re‑run the picker).** Unnecessary: the model states exact numbers, so a single output‑reduction retry is deterministic; input is bounded proactively.
+- **Persist detected window into `project.LLM.Config`.** Rejected: a background agent shouldn't overwrite user config (races, cloud two‑plane surprises). A dedicated system‑owned store keeps the override authoritative.
+- **Exact `TokenCounter` per area.** A network round‑trip per area for marginal accuracy over rune/4; rejected on latency (approx + margin + retry is the right trade for discovery).
 
-## 9. Risks & mitigations
-
-- **Estimator drift (rune/4 undercounts dense JSON).** Mitigated by the 15% approx‑tier margin inside `NewBudget` **and** Layer C (which uses the model's exact stated numbers). Worst case: one extra round‑trip.
-- **Over‑trimming input on uncatalogued large‑context models.** Layer B against a guessed 131K window trims GLM‑5's input more than necessary (safe, lower quality). Mitigated by Layer D's `max_input_tokens` override / catalog entry. Called out in docs.
-- **Provider error‑string coupling.** Layer C parses free‑text error messages. Mitigated by matching multiple stable markers + graceful `ok=false` fallthrough (never worse than today's terminal failure), and by unit tests pinned to the real strings. A future typed‑error refactor in `gollm` would localize to this one file (same rationale as the existing `retry.go` substring matching).
-- **Double retry cost.** Layer C composes with `chatWithRetry`'s transient loop, but the overflow branch fires only on a deterministic 400 that `chatWithRetry` returns immediately (no backoff), and is bounded to a single adapted re‑issue.
-
-## 10. Alternatives considered
-
-- **Only add the adaptive retry (skip proactive budget).** Simpler, but every overflow costs a wasted round‑trip + backoff and the retry can't help when input alone exceeds a small window — Layer B is needed for 128K‑class models. Rejected as insufficient.
-- **Trim the input on retry (re‑run the picker) instead of reducing output.** More complex, and unnecessary: the model's error states exact numbers, so a single output‑reduction retry is deterministic. Input trimming is already handled proactively by Layer B. Noted, not implemented.
-- **Put the proactive budget in `ai.Client` for all callers.** Broader blast radius (exploration/sql‑fix don't need it) and violates Rule 8. Kept proactive budgeting at the two large‑prompt call sites; used Layer C as the universal net.
-- **Hard‑code a GLM‑5 catalog entry now.** Rejected without a verified Bedrock model ID (guessed alias never matches / wrong window is worse than none). Deferred to the open question.
-- **Use the provider's exact `TokenCounter` per area.** A network round‑trip per area (dozens per run) for marginal accuracy over rune/4; /ask does one exact check for one prompt. Rejected on latency; approx + margin + Layer C is the right trade for discovery.
-
-## 11. Acceptance‑criteria mapping
+## 14. Acceptance‑criteria mapping
 
 | Criterion | Covered by |
 |---|---|
-| ~138K‑input analysis on a 202,752 model **succeeds** (output auto‑reduced, no 400) | Layer A (first‑call fit) + Layer C (net) |
-| Context‑overflow 400 triggers a reduced‑budget **retry**, not an area failure | Layer C |
-| No area fails purely because `input + fixed_output > context` | Layer A + Layer B + Layer C |
+| ~138K‑input analysis on a 202,752 model **succeeds** (output auto‑reduced, no 400) | Pillar 1 (first‑call fit) + retry |
+| Context‑overflow 400 triggers a reduced‑budget **retry**, not an area failure | Pillar 1 retry |
+| No area fails purely because `input + fixed_output > context` | Pillar 1 (budget + coupled input budget + retry) |
 | Unit test: `context=202752, input=138753, default_output=64000` → output ≤ `202752 − 138753 − margin` | `analysis_budget_test.go` |
-
-## 12. Open question for @abacigil (non‑blocking)
-
-For **fix #3 (catalog GLM‑5)** I need the exact model string the failing project uses (the Bedrock `ModelId` / the value in `project.LLM.Model`) and its real output cap. Without a verified ID I'll ship the robust path (budget‑against‑window + adaptive retry + the `max_input_tokens=202752` override, documented) and add the catalog entry once you confirm the ID. If you'd rather I catalog it now with a best‑guess alias set, say so and I will. I'll proceed with the config‑first approach in the meantime so the run stops failing regardless.
+| Works for **uncatalogued customer models** (the real constraint) | Pillars 2–4 (auto‑detect, prefill, self‑calibrate) |
 
 ---
 
