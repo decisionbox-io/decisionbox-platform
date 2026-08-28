@@ -177,7 +177,12 @@ func reducedMaxTokensForContextOverflow(currentMax, inputTokens int, err error) 
 		if effInput < 0 {
 			effInput = 0
 		}
-		if _, inTok, ok := parseContextLengthError(msg); ok && inTok > effInput {
+		// The error's reported input count is the model's own count of the failed
+		// request — authoritative — so trust it whenever it parses, replacing our
+		// rune/4 estimate. (Using only the larger of the two could keep an
+		// over-count that pushes the retry below the floor and skips a
+		// recoverable retry.)
+		if _, inTok, ok := parseContextLengthError(msg); ok {
 			effInput = inTok
 		}
 		margin := window * contextOverflowRetryMarginPct / 100

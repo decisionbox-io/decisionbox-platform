@@ -107,6 +107,11 @@ export function LLMFormFields({
   // so switching models refreshes a still-auto-filled field with the new
   // model's detected value while preserving a value the operator actually typed.
   const autofilledRef = useRef<{ max_input_tokens?: string; max_output_tokens?: string }>({});
+  // touchedRef records fields the operator edited by hand this session. A touched
+  // field is never treated as auto-filled — even if its value happens to equal a
+  // model's detected limit — so browsing models can't silently overwrite a
+  // manual entry.
+  const touchedRef = useRef<Set<string>>(new Set());
 
   // liveDetectedLimit returns a model's token limit ONLY for a live-ONLY row
   // (source === 'live') — i.e. an uncatalogued model the upstream reported. A
@@ -148,8 +153,11 @@ export function LLMFormFields({
       const detected = liveDetectedLimit(live, key);
       const prevDetected = liveDetectedLimit(prevLive, key);
       const current = config[key]?.trim() ?? '';
+      // A field the operator edited by hand is never auto-filled, even if its
+      // value coincidentally equals a detected limit.
       const wasAutofilled =
         current !== '' &&
+        !touchedRef.current.has(key) &&
         (current === autofilledRef.current[key] ||
           (prevDetected !== undefined && current === String(prevDetected)));
       // Only overwrite an empty field or one that was auto-filled — never a
@@ -300,7 +308,10 @@ export function LLMFormFields({
                 description={f.description}
                 placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
                 value={value.config[key] || ''}
-                onChange={(e) => setConfigField(key, e.currentTarget.value)}
+                onChange={(e) => {
+                  touchedRef.current.add(key);
+                  setConfigField(key, e.currentTarget.value);
+                }}
               />
             );
           })}

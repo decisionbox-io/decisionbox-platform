@@ -498,6 +498,33 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(getDump().value.config.max_input_tokens).toBe('32768');
   });
 
+  test('a hand-edited override is not overwritten on model switch even if it matches a detected value', () => {
+    const tokenMeta: ProviderMeta = {
+      id: 'litellm', name: 'LiteLLM', description: '',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_input_tokens', label: 'Context window override (tokens)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
+    };
+    const live: LiveModel[] = [
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768 },
+    ];
+    const initial: LLMFormState = { provider: 'litellm', authMethod: 'api_key', config: { model: 'model-a' }, apiKey: 'k' };
+    render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
+
+    // Operator hand-types a value that coincidentally equals model-a's detected limit.
+    const tokenInput = screen.getByLabelText(/Context window override/) as HTMLInputElement;
+    fireEvent.change(tokenInput, { target: { value: '262144' } });
+    expect(getDump().value.config.max_input_tokens).toBe('262144');
+
+    // Switching models must NOT overwrite the hand-edited value.
+    const modelInput = screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+    fireEvent.change(modelInput, { target: { value: 'model-b' } });
+    expect(getDump().value.config.max_input_tokens).toBe('262144');
+  });
+
   test('a provider without the token fields (Ollama) never has them auto-persisted', () => {
     // Ollama budgets via num_ctx and does NOT declare max_input_tokens /
     // max_output_tokens. Selecting a live model that reports a window must not

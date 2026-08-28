@@ -18,19 +18,26 @@ func (p *OllamaProvider) ResolveModelInfo(ctx context.Context, model string) (go
 	if model == "" {
 		return gollm.ModelCapabilities{}, nil
 	}
+	// When num_ctx is unset, Chat deliberately omits options["num_ctx"], so
+	// Ollama enforces its SERVER default context window (OLLAMA_CONTEXT_LENGTH,
+	// commonly 2K–8K), NOT the GGUF architectural context_length from /api/show.
+	// Reporting the (much larger) architectural value would size analysis prompts
+	// above what the chat request actually gets, so we report "unknown" and let
+	// budgeting fall through to the conservative catalog/default. We only trust a
+	// concrete effective window when num_ctx is set (what Chat actually sends).
+	if p.numCtx <= 0 {
+		return gollm.ModelCapabilities{}, nil
+	}
 	resp, err := p.client.Show(ctx, &ollamaapi.ShowRequest{Model: model})
 	if err != nil {
 		return gollm.ModelCapabilities{}, err
 	}
-	window := contextLengthFromModelInfo(resp.ModelInfo)
-	// Respect an operator-configured num_ctx: Chat sends at most num_ctx tokens
-	// of context, so the effective request window is min(architectural
-	// context_length, num_ctx). Reporting the larger architectural value would
-	// let budgeting size prompts above what Chat actually sends, reintroducing
-	// context-length failures. Mirrors ollamaEffectiveInputWindow's downward
-	// clamp.
-	if p.numCtx > 0 && (window == 0 || p.numCtx < window) {
-		window = p.numCtx
+	// Effective window = min(architectural context_length, num_ctx): num_ctx is
+	// what Chat sends, but the model can't exceed its own architectural max even
+	// if the operator set num_ctx higher.
+	window := p.numCtx
+	if arch := contextLengthFromModelInfo(resp.ModelInfo); arch > 0 && arch < window {
+		window = arch
 	}
 	return gollm.ModelCapabilities{MaxInputTokens: window}, nil
 }

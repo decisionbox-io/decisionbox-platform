@@ -163,6 +163,22 @@ func TestReducedMaxTokensForContextOverflow(t *testing.T) {
 	}
 }
 
+func TestReducedMaxTokens_TrustsReportedInputOverEstimate(t *testing.T) {
+	// The rune/4 estimate over-counts (99000) but the error reports the true
+	// input (50000). Using the estimate would push the retry below the floor and
+	// skip it; trusting the reported count yields a fitting retry.
+	e := errors.New(`maximum context length is 100000 tokens. However, you requested 64000 ` +
+		`output tokens and your prompt contains at least 50000 input tokens`)
+	nm, ok := reducedMaxTokensForContextOverflow(64000, 99000, e)
+	if !ok {
+		t.Fatal("expected a retry using the reported input count, not the inflated estimate")
+	}
+	margin := 100000 * contextOverflowRetryMarginPct / 100
+	if want := 100000 - 50000 - margin; nm != want {
+		t.Fatalf("nm=%d, want %d (window-reportedInput-margin)", nm, want)
+	}
+}
+
 func TestWindowFromContextLengthError(t *testing.T) {
 	if got := windowFromContextLengthError(errors.New(bedrockOverflowErr)); got != 202752 {
 		t.Fatalf("got window=%d, want 202752", got)
