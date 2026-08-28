@@ -108,6 +108,31 @@ func TestResolveModelInfo_FallsBackToV1WhenModelInfoBlocked(t *testing.T) {
 	}
 }
 
+func TestResolveModelInfo_MergesV1OutputCapWhenInfoHasOnlyInput(t *testing.T) {
+	// /model/info reports the input window but not the output cap; /v1/models
+	// carries the (lower) output cap. The result must merge both.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/model/info":
+			_, _ = w.Write([]byte(`{"data":[{"model_name":"m","model_info":{"max_input_tokens":128000,"max_output_tokens":null,"max_tokens":null}}]}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"m","max_output_tokens":8192}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	p := NewLiteLLMProvider("k", "m", srv.URL+"/v1", nil)
+
+	caps, err := p.ResolveModelInfo(context.Background(), "m")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if caps.MaxInputTokens != 128000 || caps.MaxOutputTokens != 8192 {
+		t.Fatalf("merged caps in=%d out=%d, want 128000/8192", caps.MaxInputTokens, caps.MaxOutputTokens)
+	}
+}
+
 func TestResolveModelInfo_BothEndpointsFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)

@@ -100,19 +100,33 @@ func (p *LiteLLMProvider) ResolveModelInfo(ctx context.Context, model string) (g
 		return gollm.ModelCapabilities{}, nil
 	}
 	byName, infoErr := p.fetchModelInfo(ctx)
+	var caps gollm.ModelCapabilities
 	if infoErr == nil {
-		if caps, ok := byName[model]; ok && (caps.MaxInputTokens > 0 || caps.MaxOutputTokens > 0) {
-			return caps, nil
-		}
+		caps = byName[model]
 	}
-	// /model/info failed or knew nothing useful for this model → fall back to
-	// /v1/models for at least the output cap.
+	// Both known → done. Otherwise consult /v1/models to fill whatever
+	// /model/info omitted (notably the output cap, which /v1/models carries and
+	// which is accessible to non-admin keys). This covers both a fully-blocked
+	// /model/info and a partial one that reports only the input window.
+	if caps.MaxInputTokens > 0 && caps.MaxOutputTokens > 0 {
+		return caps, nil
+	}
 	basic, _, v1Err := p.fetchV1Models(ctx)
 	if v1Err != nil {
+		if caps.MaxInputTokens > 0 || caps.MaxOutputTokens > 0 {
+			return caps, nil // return what /model/info did give
+		}
 		if infoErr != nil {
 			return gollm.ModelCapabilities{}, infoErr // both endpoints failed
 		}
 		return gollm.ModelCapabilities{}, nil
 	}
-	return basic[model], nil
+	b := basic[model]
+	if caps.MaxInputTokens == 0 {
+		caps.MaxInputTokens = b.MaxInputTokens
+	}
+	if caps.MaxOutputTokens == 0 {
+		caps.MaxOutputTokens = b.MaxOutputTokens
+	}
+	return caps, nil
 }
