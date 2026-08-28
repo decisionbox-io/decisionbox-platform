@@ -131,6 +131,31 @@ func estimatePromptTokens(conversation *Conversation) int {
 	return chars / 4
 }
 
+// stepOutputTokens sizes the per-step output budget above the old hard-coded
+// 4096 (Rule 2) — a reasoning model's <think> block can consume the whole
+// budget and truncate the action to empty (issue #341) — while keeping the
+// reservation from overflowing the context window. The budget is the model's
+// catalogued output cap, bounded by a per-step ceiling and by the context left
+// after the (growing) conversation, and never below a floor. Recomputed every
+// attempt so a retry that appended a large response is accounted for.
+func (e *ExplorationEngine) stepOutputTokens(conversation *Conversation) int {
+	provider, model := e.client.ProviderName(), e.client.ModelName()
+	maxTokens := gollm.GetMaxOutputTokens(provider, model)
+	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
+		maxTokens = ceiling
+	}
+	if ctxWindow := gollm.GetMaxInputTokens(provider, model); ctxWindow > 0 {
+		remaining := ctxWindow - estimatePromptTokens(conversation) - explorationContextSafetyMargin
+		if remaining < explorationMinOutputTokens {
+			remaining = explorationMinOutputTokens
+		}
+		if maxTokens > remaining {
+			maxTokens = remaining
+		}
+	}
+	return maxTokens
+}
+
 // StepCallback is called after each exploration step with live progress data.
 //
 // inputTokens / outputTokens are the totals for the LLM call(s) the engine
@@ -620,28 +645,6 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// ExplorationStep / RunStep), so we sum across them.
 	var usage gollm.UsageAccumulator
 
-	// Size the per-step output budget above the old hard-coded 4096 (Rule 2):
-	// a reasoning model's <think> block can consume the whole budget and
-	// truncate the action to empty before it is emitted (issue #341). The
-	// budget is the model's catalogued output cap, bounded by a per-step
-	// ceiling and, crucially, by the context left after the (growing)
-	// conversation — so reserving output can't overflow a small context window
-	// on providers that count input + requested output. Never below a floor.
-	provider, model := e.client.ProviderName(), e.client.ModelName()
-	maxTokens := gollm.GetMaxOutputTokens(provider, model)
-	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, explorationStepMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
-		maxTokens = ceiling
-	}
-	if ctxWindow := gollm.GetMaxInputTokens(provider, model); ctxWindow > 0 {
-		remaining := ctxWindow - estimatePromptTokens(conversation) - explorationContextSafetyMargin
-		if remaining < explorationMinOutputTokens {
-			remaining = explorationMinOutputTokens
-		}
-		if maxTokens > remaining {
-			maxTokens = remaining
-		}
-	}
-
 	// Constrain the action shape at generation time where the provider
 	// supports it. CreateMessageWithFormat self-gates on
 	// SupportsStructuredOutput, so this is a safe no-op elsewhere and the
@@ -650,6 +653,11 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
+		// Recompute the output budget each attempt: a parse retry appended the
+		// previous (possibly large) response + repair nudge to the conversation,
+		// so the remaining-context clamp must reflect the grown prompt (issue
+		// #341 review).
+		maxTokens := e.stepOutputTokens(conversation)
 		response, err := e.client.CreateMessageWithFormat(
 			ctx,
 			conversation.GetMessages(),
