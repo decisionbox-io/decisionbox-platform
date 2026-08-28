@@ -22,6 +22,20 @@ const openaiOverflowErr = `openai: API error (400): invalid_request_error - This
 	`context length is 8192 tokens. However, you requested 9000 tokens (5000 in the messages, ` +
 	`4000 in the completion). Please reduce the length of the messages or completion.`
 
+// Real Bedrock openai-compat (qwen3-32b) captures — two distinct shapes.
+// Output-cap alone exceeded:
+const bedrockMaxOutputErr = `bedrock/openai-compat: InvokeModel failed: operation error Bedrock ` +
+	`Runtime: InvokeModel, https response error StatusCode: 400, RequestID: x, ValidationException: ` +
+	`{"error":{"code":"validation_error","message":"'max_tokens' (990000) exceeds model maximum ` +
+	`(32768)","param":null,"type":"invalid_request_error"}}`
+
+// Total-context exceeded, but input reported in CHARACTERS ("0 input tokens"):
+const bedrockCharsOverflowErr = `bedrock/openai-compat: InvokeModel failed: operation error Bedrock ` +
+	`Runtime: InvokeModel, https response error StatusCode: 400, ValidationException: This model's ` +
+	`maximum context length is 32768 tokens. However, you requested 32768 output tokens and your ` +
+	`prompt contains 600069 characters (more than 0 characters, which is the upper bound for 0 ` +
+	`input tokens). Please reduce the length of the input prompt or the number of requested output tokens.`
+
 func TestParseContextLengthError_Bedrock(t *testing.T) {
 	window, input, ok := parseContextLengthError(bedrockOverflowErr)
 	if !ok {
@@ -60,6 +74,8 @@ func TestIsContextLengthError(t *testing.T) {
 	}{
 		{errors.New(bedrockOverflowErr), true},
 		{errors.New(openaiOverflowErr), true},
+		{errors.New(bedrockMaxOutputErr), true},
+		{errors.New(bedrockCharsOverflowErr), true},
 		{errors.New("openai: API error: context_length_exceeded"), true},
 		{errors.New("bedrock: AccessDeniedException: not authorized"), false},
 		{nil, false},
@@ -71,9 +87,43 @@ func TestIsContextLengthError(t *testing.T) {
 	}
 }
 
+func TestReducedMaxTokens_OutputCapShape(t *testing.T) {
+	// "'max_tokens' (990000) exceeds model maximum (32768)" → retry below 32768,
+	// leaving room for input + margin (some models set output cap == window, so
+	// requesting exactly 32768 would re-overflow once input is counted).
+	nm, ok := reducedMaxTokensForContextOverflow(990000, 100, errors.New(bedrockMaxOutputErr))
+	if !ok {
+		t.Fatal("output-cap shape should produce a retry")
+	}
+	margin := 32768 * contextOverflowRetryMarginPct / 100
+	if want := 32768 - 100 - margin; nm != want {
+		t.Fatalf("output-cap shape nm=%d, want %d", nm, want)
+	}
+	if nm >= 32768 {
+		t.Fatalf("retry must be strictly below the output cap, got %d", nm)
+	}
+	// The output cap is NOT a context window — self-calibration must not learn it.
+	if w := windowFromContextLengthError(errors.New(bedrockMaxOutputErr)); w != 0 {
+		t.Fatalf("output-cap shape must not yield a window, got %d", w)
+	}
+}
+
+func TestReducedMaxTokens_CharsShape_NoRetryButLearnsWindow(t *testing.T) {
+	// The real client passes an input estimate from the request (here ~150K
+	// tokens for the 600K-char prompt), which alone overflows the 32768 window →
+	// output reduction can't help, so no retry...
+	if _, ok := reducedMaxTokensForContextOverflow(32768, 150000, errors.New(bedrockCharsOverflowErr)); ok {
+		t.Fatal("input alone overfilling the window must yield no retry")
+	}
+	// ...but the true window (32768) is still learned for self-calibration.
+	if w := windowFromContextLengthError(errors.New(bedrockCharsOverflowErr)); w != 32768 {
+		t.Fatalf("chars shape window = %d, want 32768", w)
+	}
+}
+
 func TestReducedMaxTokensForContextOverflow(t *testing.T) {
 	// Bedrock: newMax = 202752 - 138753 - (202752*2/100=4055) = 59944.
-	nm, ok := reducedMaxTokensForContextOverflow(64000, errors.New(bedrockOverflowErr))
+	nm, ok := reducedMaxTokensForContextOverflow(64000, 0, errors.New(bedrockOverflowErr))
 	if !ok {
 		t.Fatal("expected a reduced max for the Bedrock overflow")
 	}
@@ -85,27 +135,27 @@ func TestReducedMaxTokensForContextOverflow(t *testing.T) {
 	}
 
 	// Non-overflow error → no retry.
-	if _, ok := reducedMaxTokensForContextOverflow(64000, errors.New("bedrock: AccessDenied")); ok {
+	if _, ok := reducedMaxTokensForContextOverflow(64000, 0, errors.New("bedrock: AccessDenied")); ok {
 		t.Fatal("non-overflow error must not trigger a retry")
 	}
 
 	// Input alone overfills the window → output reduction can't help.
 	tight := `maximum context length is 1000 tokens. However, you requested 500 output tokens ` +
 		`and your prompt contains at least 2000 input tokens`
-	if _, ok := reducedMaxTokensForContextOverflow(500, errors.New(tight)); ok {
+	if _, ok := reducedMaxTokensForContextOverflow(500, 0, errors.New(tight)); ok {
 		t.Fatal("input >= window must yield ok=false")
 	}
 
-	// Recognised overflow, unparseable numbers → single halving.
-	nm, ok = reducedMaxTokensForContextOverflow(20000, errors.New("maximum context length exceeded"))
-	if !ok || nm != 10000 {
-		t.Fatalf("expected halving to 10000, got ok=%v nm=%d", ok, nm)
+	// Recognised overflow but no usable number to recompute from → no retry
+	// (rely on self-calibration + the window-coupled input budget).
+	if _, ok := reducedMaxTokensForContextOverflow(20000, 0, errors.New("maximum context length exceeded")); ok {
+		t.Fatal("unparseable overflow must yield ok=false (no blind retry)")
 	}
 
 	// Computed newMax would not actually reduce currentMax → ok=false.
 	roomy := `maximum context length is 200000 tokens. However, you requested 5 output tokens ` +
 		`and your prompt contains at least 100 input tokens`
-	if _, ok := reducedMaxTokensForContextOverflow(4096, errors.New(roomy)); ok {
+	if _, ok := reducedMaxTokensForContextOverflow(4096, 0, errors.New(roomy)); ok {
 		t.Fatal("a newMax >= currentMax must yield ok=false")
 	}
 }

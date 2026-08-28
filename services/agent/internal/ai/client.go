@@ -154,7 +154,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 		if learned := windowFromContextLengthError(err); learned > 0 && c.contextWindowObserver != nil {
 			c.contextWindowObserver(req.Model, learned)
 		}
-		if nm, ok := reducedMaxTokensForContextOverflow(req.MaxTokens, err); ok {
+		if nm, ok := reducedMaxTokensForContextOverflow(req.MaxTokens, estimateRequestInputTokens(req), err); ok {
 			logger.WithFields(logger.Fields{
 				"model":          req.Model,
 				"old_max_tokens": req.MaxTokens,
