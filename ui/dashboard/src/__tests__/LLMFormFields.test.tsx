@@ -381,7 +381,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
     const live: LiveModel[] = [
-      { id: 'gw-model', display_name: 'gw-model', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384 },
+      { id: 'gw-model', display_name: 'gw-model', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384, live_max_input_tokens: 262144, live_max_output_tokens: 16384 },
     ];
 
     // Case 1: empty fields → prefilled from the selected model.
@@ -421,8 +421,8 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
     const live: LiveModel[] = [
-      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384 },
-      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768, max_output_tokens: 8192 },
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384, live_max_input_tokens: 262144, live_max_output_tokens: 16384 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768, max_output_tokens: 8192, live_max_input_tokens: 32768, live_max_output_tokens: 8192 },
       { id: 'model-c', display_name: 'model-c', wire: '', source: 'live', dispatchable: true },
     ];
     const initial: LLMFormState = { provider: 'litellm', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
@@ -445,7 +445,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(cfg.max_output_tokens ?? '').toBe('');
   });
 
-  test('a catalog-only row does not prefill; a live/both row does', () => {
+  test('prefill follows live provenance, not source: catalog value never prefills; genuine live value does even on a both row', () => {
     const tokenMeta: ProviderMeta = {
       id: 'openai', name: 'OpenAI', description: '',
       config_fields: [
@@ -455,21 +455,29 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       ],
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
-    // Neither a catalog-only row nor a 'both' row (catalogued + live, whose
-    // numbers may be catalog-derived) must prefill — only pure live-only rows do.
     const live: LiveModel[] = [
+      // catalog-only: display value from the catalog, NO live provenance → no prefill.
       { id: 'cat-model', display_name: 'cat-model', wire: 'openai-compat', source: 'catalog', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
-      { id: 'both-model', display_name: 'both-model', wire: 'openai-compat', source: 'both', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
+      // 'both' but the upstream reported nothing (numbers are catalog-derived) → no prefill.
+      { id: 'both-catalog', display_name: 'both-catalog', wire: 'openai-compat', source: 'both', dispatchable: true, max_input_tokens: 128000, max_output_tokens: 16384 },
+      // 'both' with genuine live provenance (gateway's real, smaller window) → prefills.
+      { id: 'both-live', display_name: 'both-live', wire: 'openai-compat', source: 'both', dispatchable: true, max_input_tokens: 40000, max_output_tokens: 4096, live_max_input_tokens: 40000, live_max_output_tokens: 4096 },
     ];
     const initial: LLMFormState = { provider: 'openai', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
     render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
     const input = () => screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+
     fireEvent.change(input(), { target: { value: 'cat-model' } });
     expect(getDump().value.config.max_input_tokens).toBeUndefined();
-    fireEvent.change(input(), { target: { value: 'both-model' } });
+
+    fireEvent.change(input(), { target: { value: 'both-catalog' } });
+    expect(getDump().value.config.max_input_tokens).toBeUndefined();
+    expect(getDump().value.config.max_output_tokens).toBeUndefined();
+
+    fireEvent.change(input(), { target: { value: 'both-live' } });
     const cfg = getDump().value.config;
-    expect(cfg.max_input_tokens).toBeUndefined();
-    expect(cfg.max_output_tokens).toBeUndefined();
+    expect(cfg.max_input_tokens).toBe('40000');
+    expect(cfg.max_output_tokens).toBe('4096');
   });
 
   test('remount: switching away from a saved auto-filled value refreshes it (ref empty)', () => {
@@ -482,8 +490,8 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
     const live: LiveModel[] = [
-      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
-      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768 },
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, live_max_input_tokens: 262144 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768, live_max_input_tokens: 32768 },
     ];
     // Simulate a remount: model-a is already selected with its detected value
     // saved, and the autofill ref is empty (fresh component).
@@ -508,8 +516,8 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
     };
     const live: LiveModel[] = [
-      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
-      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768 },
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, live_max_input_tokens: 262144 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768, live_max_input_tokens: 32768 },
     ];
     const initial: LLMFormState = { provider: 'litellm', authMethod: 'api_key', config: { model: 'model-a' }, apiKey: 'k' };
     render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
@@ -538,7 +546,7 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
       auth_methods: [],
     };
     const live: LiveModel[] = [
-      { id: 'qwen3:32b', display_name: 'qwen3:32b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144 },
+      { id: 'qwen3:32b', display_name: 'qwen3:32b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, live_max_input_tokens: 262144 },
     ];
     const initial: LLMFormState = { provider: 'ollama', authMethod: '', config: { model: '' }, apiKey: '' };
     render(<ControlledHarness providers={[ollamaMeta]} initial={initial} initialPhase="model" liveModels={live} />);

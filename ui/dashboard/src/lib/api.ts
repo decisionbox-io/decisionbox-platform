@@ -662,6 +662,13 @@ export interface ModelInfo {
 export interface LiveModel extends ModelInfo {
   source: 'catalog' | 'live' | 'both';
   dispatchable: boolean;
+  // Limits the upstream live endpoint actually reported (never a catalog
+  // estimate). Present on any row — including "both" — whose values came from
+  // live detection; absent when only the catalog knew them. The dashboard
+  // prefills the operator override fields only from these, so a catalog value
+  // is never pinned as a manual override.
+  live_max_input_tokens?: number;
+  live_max_output_tokens?: number;
 }
 
 export interface LiveModelsResponse {
