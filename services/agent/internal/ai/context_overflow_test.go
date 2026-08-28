@@ -88,19 +88,22 @@ func TestIsContextLengthError(t *testing.T) {
 }
 
 func TestReducedMaxTokens_OutputCapShape(t *testing.T) {
-	// "'max_tokens' (990000) exceeds model maximum (32768)" → retry below 32768,
-	// leaving room for input + margin (some models set output cap == window, so
-	// requesting exactly 32768 would re-overflow once input is counted).
-	nm, ok := reducedMaxTokensForContextOverflow(990000, 100, errors.New(bedrockMaxOutputErr))
-	if !ok {
-		t.Fatal("output-cap shape should produce a retry")
-	}
+	// "'max_tokens' (990000) exceeds model maximum (32768)" → retry just below
+	// 32768. The output cap is independent of the (un-named) context window, so
+	// the input is NOT subtracted — a model with ample context but a small
+	// output cap must still recover.
 	margin := 32768 * contextOverflowRetryMarginPct / 100
-	if want := 32768 - 100 - margin; nm != want {
-		t.Fatalf("output-cap shape nm=%d, want %d", nm, want)
-	}
-	if nm >= 32768 {
-		t.Fatalf("retry must be strictly below the output cap, got %d", nm)
+	want := 32768 - margin
+	// Same result regardless of input size (small or large), because input is
+	// not subtracted for the output-cap-only shape.
+	for _, in := range []int{100, 40000} {
+		nm, ok := reducedMaxTokensForContextOverflow(990000, in, errors.New(bedrockMaxOutputErr))
+		if !ok || nm != want {
+			t.Fatalf("output-cap shape (input=%d): got ok=%v nm=%d, want %d", in, ok, nm, want)
+		}
+		if nm >= 32768 {
+			t.Fatalf("retry must be strictly below the output cap, got %d", nm)
+		}
 	}
 	// The output cap is NOT a context window — self-calibration must not learn it.
 	if w := windowFromContextLengthError(errors.New(bedrockMaxOutputErr)); w != 0 {

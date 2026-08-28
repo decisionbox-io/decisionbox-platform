@@ -67,9 +67,35 @@ func TestAnalysisPickerBudgetTokens(t *testing.T) {
 		t.Fatalf("1M window: expected the default %d, got %d", def, got)
 	}
 
-	// Degenerate window: never returns <= 0.
-	if got := analysisPickerBudgetTokens(def, 0, 64000); got != def {
-		t.Fatalf("zero window: expected fallback to default %d, got %d", def, got)
+	// Small window where the output cap leaves no room for input (Ollama: live
+	// info reports only the context length, output stays the 64K default) →
+	// falls to the small floor, NOT the 200K default (else input alone overflows
+	// the window and re-triggers the very 400 this guards against).
+	if got := analysisPickerBudgetTokens(def, 8192, 64000); got != minPickerBudgetTokens {
+		t.Fatalf("tiny window: expected the picker floor %d, got %d", minPickerBudgetTokens, got)
+	}
+
+	// Degenerate window: falls to the floor, never the 200K default.
+	if got := analysisPickerBudgetTokens(def, 0, 64000); got != minPickerBudgetTokens {
+		t.Fatalf("zero window: expected the picker floor %d, got %d", minPickerBudgetTokens, got)
+	}
+}
+
+func TestBudgetedMaxOutputTokens_OutputCapBelowFloor(t *testing.T) {
+	// A model whose documented output cap (4096, e.g. Mistral Large) is below
+	// the default floor must never be asked for more than it allows.
+	out := budgetedMaxOutputTokens(128000, 1000, 4096, defaultAnalysisMinOutputTokens)
+	if out != 4096 {
+		t.Fatalf("output cap below floor: got %d, want 4096 (cap wins over floor)", out)
+	}
+}
+
+func TestBudgetedMaxOutputTokens_OutputNeverExceedsWindow(t *testing.T) {
+	// Output cap larger than the (auto-detected, small) window → bounded to the
+	// window, never requesting more than the context can hold.
+	out := budgetedMaxOutputTokens(8192, 100, 64000, defaultAnalysisMinOutputTokens)
+	if out > 8192 {
+		t.Fatalf("output %d must not exceed the window 8192", out)
 	}
 }
 

@@ -2,7 +2,7 @@
 
 import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { LiveModel, ProviderMeta } from '@/lib/api';
 import { buildDefaults } from './WarehouseFormFields';
@@ -103,22 +103,38 @@ export function LLMFormFields({
     onChange({ ...value, config });
   };
 
+  // autofilledRef remembers the exact values handleModelSelect last prefilled,
+  // so switching models refreshes a still-auto-filled field with the new
+  // model's detected value while preserving a value the operator actually typed.
+  const autofilledRef = useRef<{ max_input_tokens?: string; max_output_tokens?: string }>({});
+
   // handleModelSelect sets the model and prefills the context-window / output
   // fields from the selected model's auto-detected values (LiteLLM /model/info,
   // Ollama /api/show, vLLM max_model_len) so the operator sees real numbers
-  // instead of having to type a window they may not know. It never clobbers a
-  // value the user already entered, and the fields stay editable.
+  // instead of having to type a window they may not know. A field is refreshed
+  // when it is empty or still holds the previous model's auto-filled value; a
+  // value the operator typed themselves is preserved. Fields stay editable.
   const handleModelSelect = (val: string) => {
     const config = { ...value.config, model: val };
     const live = (liveModels ?? []).find((m) => m.id === val);
-    if (live) {
-      if ((live.max_input_tokens ?? 0) > 0 && !config['max_input_tokens']?.trim()) {
-        config['max_input_tokens'] = String(live.max_input_tokens);
+    const next: typeof autofilledRef.current = {};
+    (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
+      const detected = key === 'max_input_tokens' ? live?.max_input_tokens : live?.max_output_tokens;
+      const current = config[key]?.trim() ?? '';
+      const wasAutofilled = current !== '' && current === autofilledRef.current[key];
+      // Only overwrite an empty field or one we auto-filled for the prior model.
+      if (current === '' || wasAutofilled) {
+        if ((detected ?? 0) > 0) {
+          config[key] = String(detected);
+          next[key] = String(detected);
+        } else if (wasAutofilled) {
+          // New model reports nothing — clear the stale auto-filled value rather
+          // than persist the prior model's window as an override for this one.
+          delete config[key];
+        }
       }
-      if ((live.max_output_tokens ?? 0) > 0 && !config['max_output_tokens']?.trim()) {
-        config['max_output_tokens'] = String(live.max_output_tokens);
-      }
-    }
+    });
+    autofilledRef.current = next;
     onChange({ ...value, config });
   };
 

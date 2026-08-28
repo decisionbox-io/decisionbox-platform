@@ -167,35 +167,41 @@ func reducedMaxTokensForContextOverflow(currentMax, inputTokens int, err error) 
 	window := contextWindowFromError(msg)
 	outCap := modelMaxOutputFromError(msg)
 
-	effInput := inputTokens
-	if effInput < 0 {
-		effInput = 0
-	}
-	if _, inTok, ok := parseContextLengthError(msg); ok && inTok > effInput {
-		effInput = inTok
-	}
-
-	// Budget the retry against whichever ceiling the model named, leaving the
-	// input and a margin free.
-	var ceiling int
 	switch {
 	case window > 0:
-		ceiling = window
+		// Total-context overflow: input and output share the window, so leave
+		// room for the input (the model's own token count when it reported one,
+		// else our estimate) plus a margin. Some models set the output cap equal
+		// to the window, so also respect an explicit output cap when present.
+		effInput := inputTokens
+		if effInput < 0 {
+			effInput = 0
+		}
+		if _, inTok, ok := parseContextLengthError(msg); ok && inTok > effInput {
+			effInput = inTok
+		}
+		margin := window * contextOverflowRetryMarginPct / 100
+		candidate := window - effInput - margin
+		if outCap > 0 && candidate > outCap {
+			candidate = outCap
+		}
+		return clampRetryMaxTokens(candidate, currentMax)
+
 	case outCap > 0:
-		ceiling = outCap
+		// Output-cap only ("exceeds model maximum (N)"): N bounds the output,
+		// independent of the (usually larger, un-named) context window. Retry
+		// just below N — do NOT subtract the input, or a model with ample
+		// context (e.g. 128K window, 32K output cap, 40K prompt) would compute a
+		// negative value and never recover.
+		margin := outCap * contextOverflowRetryMarginPct / 100
+		return clampRetryMaxTokens(outCap-margin, currentMax)
+
 	default:
 		// Recognised over-limit but no usable number (e.g. input reported in
 		// characters). Rely on self-calibration (the window is still learned)
 		// and the window-coupled input budget on the next area/run.
 		return 0, false
 	}
-	margin := ceiling * contextOverflowRetryMarginPct / 100
-	candidate := ceiling - effInput - margin
-	// Never exceed an explicit output cap, even when the window is larger.
-	if outCap > 0 && candidate > outCap {
-		candidate = outCap
-	}
-	return clampRetryMaxTokens(candidate, currentMax)
 }
 
 // clampRetryMaxTokens accepts a recomputed max_tokens only when it is usable

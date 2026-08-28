@@ -410,6 +410,41 @@ describe('LLMFormFields — model phase wire_override disclosure', () => {
     expect(cfg.max_output_tokens).toBe('16384'); // still prefilled (was empty)
   });
 
+  test('switching models refreshes a still-auto-filled override; a model with no numbers clears it', () => {
+    const tokenMeta: ProviderMeta = {
+      id: 'litellm', name: 'LiteLLM', description: 'proxy',
+      config_fields: [
+        { key: 'model', label: 'Model', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_input_tokens', label: 'Context window override (tokens)', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+        { key: 'max_output_tokens', label: 'Max output tokens override', required: false, type: 'string', placeholder: '', description: '', default: '', options: [] },
+      ],
+      auth_methods: [{ id: 'api_key', name: 'API Key', description: '', fields: [] }],
+    };
+    const live: LiveModel[] = [
+      { id: 'model-a', display_name: 'model-a', wire: '', source: 'live', dispatchable: true, max_input_tokens: 262144, max_output_tokens: 16384 },
+      { id: 'model-b', display_name: 'model-b', wire: '', source: 'live', dispatchable: true, max_input_tokens: 32768, max_output_tokens: 8192 },
+      { id: 'model-c', display_name: 'model-c', wire: '', source: 'live', dispatchable: true },
+    ];
+    const initial: LLMFormState = { provider: 'litellm', authMethod: 'api_key', config: { model: '' }, apiKey: 'k' };
+    render(<ControlledHarness providers={[tokenMeta]} initial={initial} initialPhase="model" liveModels={live} />);
+    const input = () => screen.getAllByLabelText(/Model/).find((el) => el.tagName === 'INPUT') as HTMLInputElement;
+
+    fireEvent.change(input(), { target: { value: 'model-a' } });
+    expect(getDump().value.config.max_input_tokens).toBe('262144');
+
+    // Switch A → B: the still-auto-filled A values are replaced with B's, not left stale.
+    fireEvent.change(input(), { target: { value: 'model-b' } });
+    let cfg = getDump().value.config;
+    expect(cfg.max_input_tokens).toBe('32768');
+    expect(cfg.max_output_tokens).toBe('8192');
+
+    // Switch B → C (reports nothing): the stale auto-filled values are cleared.
+    fireEvent.change(input(), { target: { value: 'model-c' } });
+    cfg = getDump().value.config;
+    expect(cfg.max_input_tokens ?? '').toBe('');
+    expect(cfg.max_output_tokens ?? '').toBe('');
+  });
+
   test('typing into wire_override updates state via setConfigField', () => {
     // Use the inline-render variant (unknown model) so wire_override is
     // rendered without going through the Advanced disclosure.

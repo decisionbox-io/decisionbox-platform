@@ -50,25 +50,49 @@ func analysisMinOutputTokens() int {
 	return defaultAnalysisMinOutputTokens
 }
 
+// minPickerBudgetTokens is the small floor the picker budget drops to when the
+// window is too small to reserve the full output cap (window ≤ output + system
+// + margin). It must never be the 200K default there, or the picker would feed
+// a huge input to a tiny-window model and re-trigger the overflow this guards
+// against. Kept small so at least a few steps still make it into the prompt;
+// the output budget + adaptive retry are the net on a pathologically small
+// window.
+const minPickerBudgetTokens = 4096
+
+// boundOutputCap clamps an output cap to the model window — output can never
+// exceed the context window, so a catalog/default cap larger than a
+// (possibly auto-detected, smaller) window must not drive the budget.
+func boundOutputCap(effectiveOutputCap, window int) int {
+	if window > 0 && effectiveOutputCap > window {
+		return window
+	}
+	return effectiveOutputCap
+}
+
 // budgetedMaxOutputTokens returns the max_tokens the caller should request so
 // that inputTokens + output stays inside the model's context window, leaving
 // the reserved-system headroom and a safety margin free:
 //
-//	out = clamp(window − input − system − margin, floor, effectiveOutputCap)
+//	out = clamp(window − input − system − margin, floor, cap)
 //
-// It never returns more than effectiveOutputCap (the model/provider output cap
-// resolved for this run) and never less than floor. The window and output cap
-// come from the caller's resolution chain, so this works for catalogued and
-// uncatalogued models alike.
+// where cap = min(effectiveOutputCap, window) — output can't exceed the window
+// — and the floor is itself capped at cap so a model whose documented output
+// limit is below the floor (e.g. Mistral Large at 4096) is never asked for more
+// than it allows. The window and output cap come from the caller's resolution
+// chain, so this works for catalogued and uncatalogued models alike.
 func budgetedMaxOutputTokens(window, inputTokens, effectiveOutputCap, floor int) int {
+	outCap := boundOutputCap(effectiveOutputCap, window)
+	if floor > outCap {
+		floor = outCap
+	}
 	// Reuse llm.Budget for the window − system − margin arithmetic (the same
 	// math /ask uses). ReservedOutput is 0 here because output is exactly what
 	// we are solving for. The approximate-counter safety tier is chosen (false)
 	// because inputTokens is a rune/4 estimate that under-counts dense JSON.
 	avail := gollm.NewBudget(window, 0, analysisReservedSystemTokens, false).Available()
 	out := avail - inputTokens
-	if out > effectiveOutputCap {
-		out = effectiveOutputCap
+	if out > outCap {
+		out = outCap
 	}
 	if out < floor {
 		out = floor
@@ -80,12 +104,18 @@ func budgetedMaxOutputTokens(window, inputTokens, effectiveOutputCap, floor int)
 // budget to the model window: it returns the smaller of the default soft cap
 // and the room left for input once the effective output cap, reserved system,
 // and safety margin are set aside (Budget.Available with ReservedOutput =
-// effectiveOutputCap). It only ever *lowers* the default, so a large-window
-// model keeps the default soft cap while a small-window model can no longer be
-// handed an input that alone exceeds its window.
+// effectiveOutputCap, bounded by the window). It only ever *lowers* the
+// default, so a large-window model keeps the default soft cap while a
+// small-window model can no longer be handed an input that alone exceeds its
+// window. When the window leaves no room for the reserved output at all, it
+// falls to a small floor rather than the 200K default.
 func analysisPickerBudgetTokens(defaultBudget, window, effectiveOutputCap int) int {
-	avail := gollm.NewBudget(window, effectiveOutputCap, analysisReservedSystemTokens, false).Available()
-	if avail > 0 && avail < defaultBudget {
+	outCap := boundOutputCap(effectiveOutputCap, window)
+	avail := gollm.NewBudget(window, outCap, analysisReservedSystemTokens, false).Available()
+	if avail <= 0 {
+		return minPickerBudgetTokens
+	}
+	if avail < defaultBudget {
 		return avail
 	}
 	return defaultBudget
