@@ -627,3 +627,51 @@ func expectFloat(t *testing.T, label string, got *float64, want float64) {
 		t.Errorf("%s: got %v want %v", label, *got, want)
 	}
 }
+
+// --- BuildCompactResultWithLimits (smart-overflow re-compaction) ---
+
+// TestBuildCompactResultWithLimits_DefaultMatchesBuildCompactResult locks the
+// byte-identical guarantee: the default limits reproduce BuildCompactResult
+// exactly, so the split is a pure refactor for existing callers.
+func TestBuildCompactResultWithLimits_DefaultMatchesBuildCompactResult(t *testing.T) {
+	for _, n := range []int{0, 1, 5, 10, 20, 21, 50} {
+		rows := numericRows("v", n)
+		want := BuildCompactResult(rows)
+		got := BuildCompactResultWithLimits(rows, DefaultCompactLimits())
+		if !reflect.DeepEqual(want, got) {
+			t.Errorf("n=%d: default limits diverged from BuildCompactResult\n want=%+v\n got =%+v", n, want, got)
+		}
+	}
+}
+
+// TestBuildCompactResultWithLimits_Tighter shrinks the boundary rows: 2/2 head
+// and tail on a large result, and a lower inline threshold.
+func TestBuildCompactResultWithLimits_Tighter(t *testing.T) {
+	rows := numericRows("v", 40)
+	tight := BuildCompactResultWithLimits(rows, CompactLimits{HeadTailRowCount: 2, CompactInlineThreshold: 6})
+	if len(tight.HeadRows) != 2 {
+		t.Errorf("HeadRows = %d, want 2", len(tight.HeadRows))
+	}
+	if len(tight.TailRows) != 2 {
+		t.Errorf("TailRows = %d, want 2", len(tight.TailRows))
+	}
+	if tight.AllRows != nil {
+		t.Errorf("AllRows must be nil above the tight inline threshold, got %d", len(tight.AllRows))
+	}
+	// Row count + column statistics are unaffected by the row limits.
+	if tight.RowCount != 40 {
+		t.Errorf("RowCount = %d, want 40", tight.RowCount)
+	}
+}
+
+// TestBuildCompactResultWithLimits_NonPositiveFallsBack guards against a
+// misconfigured caller: non-positive limits fall back to the defaults rather
+// than producing a zero-row digest.
+func TestBuildCompactResultWithLimits_NonPositiveFallsBack(t *testing.T) {
+	rows := numericRows("v", 40)
+	got := BuildCompactResultWithLimits(rows, CompactLimits{HeadTailRowCount: 0, CompactInlineThreshold: -1})
+	want := BuildCompactResult(rows)
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("non-positive limits must fall back to defaults\n want=%+v\n got =%+v", want, got)
+	}
+}

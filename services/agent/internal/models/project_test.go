@@ -320,6 +320,22 @@ func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
 	}
 }
 
+func TestProject_EffectiveSmartOverflowEnabled_NilIsTrue(t *testing.T) {
+	if !(&Project{}).EffectiveSmartOverflowEnabled() {
+		t.Errorf("EffectiveSmartOverflowEnabled() with nil pointer = false, want true (default on)")
+	}
+}
+
+func TestProject_EffectiveSmartOverflowEnabled_PassThrough(t *testing.T) {
+	yes, no := true, false
+	if !(&Project{SmartOverflowEnabled: &yes}).EffectiveSmartOverflowEnabled() {
+		t.Errorf("EffectiveSmartOverflowEnabled() with *true = false")
+	}
+	if (&Project{SmartOverflowEnabled: &no}).EffectiveSmartOverflowEnabled() {
+		t.Errorf("EffectiveSmartOverflowEnabled() with *false = true")
+	}
+}
+
 func TestProject_EffectiveState_PassThrough(t *testing.T) {
 	// Plugins may decode additional state strings; the community
 	// agent helper just echoes the value back.

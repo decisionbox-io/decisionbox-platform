@@ -83,6 +83,11 @@ export default function ProjectSettingsPage() {
   const [validationEnabled, setValidationEnabled] = useState(true);
   const [savingValidation, setSavingValidation] = useState(false);
 
+  // Advanced — Smart overflow toggle (lives on the project document).
+  // Defaults to true (smart_overflow_enabled === undefined).
+  const [smartOverflowEnabled, setSmartOverflowEnabled] = useState(true);
+  const [savingSmartOverflow, setSavingSmartOverflow] = useState(false);
+
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab. The AI/Blurb
   // tabs drop out of the valid set in managed mode.
@@ -127,6 +132,7 @@ export default function ProjectSettingsPage() {
         setDescription(proj.description || '');
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
+        setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           const blurbProviderID = proj.blurb_llm.provider;
@@ -215,6 +221,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingValidation(false);
+    }
+  };
+
+  // Save the smart-overflow toggle. Optimistic update + rollback on failure.
+  const saveSmartOverflowEnabled = async (next: boolean) => {
+    const prev = smartOverflowEnabled;
+    setSmartOverflowEnabled(next);
+    setSavingSmartOverflow(true);
+    try {
+      const saved = await api.updateProject(id, { smart_overflow_enabled: next });
+      setProject(saved);
+      setSmartOverflowEnabled(saved.smart_overflow_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Smart overflow enabled' : 'Smart overflow disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setSmartOverflowEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingSmartOverflow(false);
     }
   };
 
@@ -362,6 +390,13 @@ export default function ProjectSettingsPage() {
                 checked={validationEnabled}
                 disabled={savingValidation}
                 onChange={(e) => saveValidationEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Smart overflow handling for large evidence"
+                description="When the evidence selected for an analysis area exceeds the model's context budget, keep more of it by de-duplicating near-identical queries, tightening per-step detail, and leaving a short note of what was examined but not shown — instead of simply dropping the lowest-scored steps. Only affects runs that would otherwise overflow, so it has no effect on large-context models. Recommended on."
+                checked={smartOverflowEnabled}
+                disabled={savingSmartOverflow}
+                onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
               />
               <Divider my="xs" />
               <Text size="sm" fw={500}>Debugging</Text>

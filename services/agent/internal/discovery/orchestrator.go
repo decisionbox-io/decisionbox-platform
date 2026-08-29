@@ -440,6 +440,13 @@ type DiscoveryOptions struct {
 	// every insight + recommendation with combined=validation_disabled
 	// (and backfilling the legacy Status field for old consumers).
 	ValidationEnabled bool
+
+	// SmartOverflowEnabled is the resolved per-project toggle for the analysis
+	// picker's smart budget-overflow handling (dedup + breadcrumb + tighter
+	// re-compaction). The caller resolves project.EffectiveSmartOverflowEnabled()
+	// into a bool. Only affects runs whose picked evidence exceeds the window
+	// budget; inert on big-window models.
+	SmartOverflowEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -886,6 +893,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return o.runStepIndex.Search(c, q, sopts)
 	})
 	picker.EstimateRenderedSize = EstimateCompactedRenderedSize
+	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
 	for _, area := range runAreas {
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
@@ -963,6 +971,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"prompt_chars":  len(baseContext) + len(areaPrompt) + len(queryResultsJSON),
 		}).Debug("Analysis area: rendered prompt sizing")
 		prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
+
+		// Smart-overflow breadcrumb (R5): when the picker trimmed steps for
+		// budget, tell the model what evidence exists but wasn't shown, so it
+		// doesn't conclude the un-shown angles were never examined. Empty (and
+		// thus a no-op) on any run that fit without trimming — i.e. every
+		// big-window run.
+		if bc := formatAlsoExamined(pickResult.AlsoExamined); bc != "" {
+			prompt += bc
+		}
 
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)

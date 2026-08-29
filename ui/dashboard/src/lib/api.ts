@@ -273,6 +273,12 @@ export interface Project {
   // *current* value of this field (not a snapshot from discovery time)
   // when deciding whether to show "Run validation" or "Disabled".
   validation_enabled?: boolean;
+  // Undefined → default (true). Controls the analysis picker's smart
+  // budget-overflow handling (dedup + "also examined" breadcrumb + tighter
+  // re-compaction instead of dropping the lowest-scored steps). Only affects
+  // runs whose evidence exceeds the model-window budget, so it is inert on
+  // large-window models.
+  smart_overflow_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }

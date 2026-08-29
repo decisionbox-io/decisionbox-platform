@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -86,6 +88,13 @@ const (
 type PickResult struct {
 	Picked  []PickedStep
 	Dropped []DroppedStep
+
+	// AlsoExamined carries a one-line purpose for each step the smart-overflow
+	// trim dropped, so the orchestrator can tell the model what evidence exists
+	// but wasn't shown ("Also examined (not shown): …"). Empty unless the smart
+	// path trimmed something — so big-window runs, which never trim, produce no
+	// breadcrumb and an unchanged prompt.
+	AlsoExamined []string
 }
 
 // stepRenderer estimates the rendered byte size for a slice of steps.
@@ -119,6 +128,16 @@ type AnalysisStepPicker struct {
 	// non-zero. Set to a small value in tests to exercise the
 	// trimming branch.
 	BudgetTokens int
+
+	// SmartOverflowEnabled turns on the smart budget-trim path (R5/R6): when
+	// the picked evidence exceeds the budget, survivors are first re-compacted
+	// to a tighter digest to fit more steps, then near-duplicate steps are
+	// dropped in preference to unique evidence, and the dropped purposes are
+	// surfaced to the model as an "also examined" breadcrumb. It engages ONLY
+	// on the over-budget trim path (which big-window models never reach, so
+	// they are unaffected). Off → the classic drop-lowest-scored trim, exactly
+	// as before. Resolved per project (default on) by the caller.
+	SmartOverflowEnabled bool
 }
 
 // NewAnalysisStepPicker returns a picker with the canonical
@@ -269,6 +288,8 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 		estimate = defaultRenderedSize
 	}
 	preTrimCount := len(pickedList)
+	var alsoExamined []string
+	recompacted := false
 	for len(pickedList) > 1 {
 		stepsForEstimate := stepsFromPicked(pickedList)
 		size := estimate(stepsForEstimate)
@@ -276,22 +297,50 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 		if tokens <= budgetTokens {
 			break
 		}
-		// Drop the lowest-scored step (last after sort).
-		victim := pickedList[len(pickedList)-1]
+
+		// R6 (smart overflow): before dropping any step, try once to shrink
+		// per-step detail — re-compact survivors to a tighter head/tail digest
+		// so more steps fit. If that alone brings us under budget, no step is
+		// dropped. Only steps that still carry their raw rows can be rebuilt;
+		// the digest can only shrink, never grow, so this never inflates.
+		if p.SmartOverflowEnabled && !recompacted {
+			recompacted = true
+			if recompactSurvivorsTighter(pickedList) {
+				continue
+			}
+		}
+
+		// Choose the victim. The classic path drops the lowest-scored step
+		// (last after sort). The smart path prefers dropping a near-duplicate of
+		// a higher-scored survivor (redundant evidence) so unique evidence
+		// survives; it falls back to lowest-scored when nothing is redundant.
+		victimIdx := len(pickedList) - 1
+		if p.SmartOverflowEnabled {
+			if idx, ok := lowestScoredDuplicateIdx(pickedList); ok {
+				victimIdx = idx
+			}
+		}
+		victim := pickedList[victimIdx]
 		applog.WithFields(applog.Fields{
-			"area":           area.ID,
-			"step":           victim.Step.Step,
-			"score":          victim.Score,
-			"size_chars":     size,
+			"area":            area.ID,
+			"step":            victim.Step.Step,
+			"score":           victim.Score,
+			"size_chars":      size,
 			"tokens_estimate": tokens,
 			"budget_tokens":   budgetTokens,
+			"smart_overflow":  p.SmartOverflowEnabled,
 		}).Debug("analysis_step_picker: dropping step over budget")
 		dropped = append(dropped, DroppedStep{
 			StepNumber: victim.Step.Step,
 			Score:      victim.Score,
 			Reason:     DropReasonOverBudget,
 		})
-		pickedList = pickedList[:len(pickedList)-1]
+		if p.SmartOverflowEnabled {
+			if bc := breadcrumbForStep(victim.Step); bc != "" {
+				alsoExamined = append(alsoExamined, bc)
+			}
+		}
+		pickedList = append(pickedList[:victimIdx], pickedList[victimIdx+1:]...)
 	}
 
 	finalSize := estimate(stepsFromPicked(pickedList))
@@ -305,8 +354,9 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 		"rendered_tokens":  finalSize / charsPerToken,
 	}).Info("analysis_step_picker: pick result")
 	return &PickResult{
-		Picked:  pickedList,
-		Dropped: dropped,
+		Picked:       pickedList,
+		Dropped:      dropped,
+		AlsoExamined: alsoExamined,
 	}, nil
 }
 
@@ -340,3 +390,183 @@ func stepsFromPicked(picked []PickedStep) []models.ExplorationStep {
 // without a renderer fall back here. Returns 0 so an unset renderer
 // never accidentally trims.
 func defaultRenderedSize(_ []models.ExplorationStep) int { return 0 }
+
+// Smart-overflow tunables (R5/R6). These only bite on the over-budget trim
+// path, so a big-window model that fits never sees them.
+const (
+	// smartOverflowHeadTailRows / smartOverflowInlineThreshold are the tighter
+	// digest limits survivors are re-compacted to when the picked evidence
+	// overflows the budget. They are strictly smaller than the exploration-time
+	// defaults (5 / 20), so a re-compact can only shrink a step, never grow it.
+	smartOverflowHeadTailRows    = 2
+	smartOverflowInlineThreshold = 6
+
+	// maxAlsoExaminedBreadcrumbs caps how many dropped-step purposes are echoed
+	// back to the model, so the breadcrumb itself never re-bloats the prompt it
+	// exists to shrink.
+	maxAlsoExaminedBreadcrumbs = 12
+
+	// maxBreadcrumbLen caps a single breadcrumb line's length.
+	maxBreadcrumbLen = 140
+)
+
+// recompactSurvivorsTighter rebuilds each survivor's CompactResult digest at a
+// tighter head/tail so the rendered evidence shrinks and more steps fit. It
+// only rebuilds steps that still carry their raw rows (QueryResult) — steps
+// restored from persistence or schema-only actions are left untouched. Because
+// PickedStep.Step is a value copy, replacing its CompactResult pointer does NOT
+// mutate the shared exploration step, so the original 5+5 digest (persisted and
+// reused by other areas) is preserved. Returns true when at least one step was
+// re-compacted (so the caller re-estimates before deciding to drop).
+func recompactSurvivorsTighter(picked []PickedStep) bool {
+	limits := gomodels.CompactLimits{
+		HeadTailRowCount:       smartOverflowHeadTailRows,
+		CompactInlineThreshold: smartOverflowInlineThreshold,
+	}
+	changed := false
+	for i := range picked {
+		rows := picked[i].Step.QueryResult
+		if len(rows) == 0 {
+			continue
+		}
+		tight := gomodels.BuildCompactResultWithLimits(rows, limits)
+		picked[i].Step.CompactResult = &tight
+		changed = true
+	}
+	return changed
+}
+
+// lowestScoredDuplicateIdx returns the index of the lowest-scored step that is a
+// near-duplicate of a higher-scored survivor (same cluster key appearing
+// earlier in the score-desc list), preferring to drop redundant evidence over
+// unique evidence. picked is sorted score-desc, so a later index with a cluster
+// key already seen earlier is the redundant, lower-scored copy. Returns
+// (0,false) when no step is redundant — the caller then falls back to dropping
+// the lowest-scored step (classic behaviour).
+func lowestScoredDuplicateIdx(picked []PickedStep) (int, bool) {
+	seen := make(map[string]struct{}, len(picked))
+	dupIdx := -1
+	for i := range picked {
+		key := stepClusterKey(picked[i].Step)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			// A duplicate of an earlier (higher-scored) step. Track the latest
+			// (lowest-scored) such duplicate.
+			dupIdx = i
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	if dupIdx < 0 {
+		return 0, false
+	}
+	return dupIdx, true
+}
+
+// stepClusterKey is the near-duplicate signature of a step: its normalized
+// query purpose plus the sorted set of tables its query reads. Two steps with
+// the same key examine the same tables for the same stated purpose, so keeping
+// the higher-scored one loses no distinct evidence. Empty when the step has
+// neither a purpose nor a table signature (never clustered).
+func stepClusterKey(s models.ExplorationStep) string {
+	purpose := normalizeWhitespace(strings.ToLower(s.QueryPurpose))
+	tables := queryTableSignature(s.Query)
+	if purpose == "" && tables == "" {
+		return ""
+	}
+	return purpose + "\x00" + tables
+}
+
+// queryTableRefRe extracts the identifier following FROM / JOIN in a SQL
+// statement — a cheap table-set signature without a full parser. Handles
+// dotted (schema.table) and quoted identifiers.
+var queryTableRefRe = regexp.MustCompile(`(?i)\b(?:from|join)\s+[` + "`" + `"\[]?([a-zA-Z0-9_.$-]+)`)
+
+// queryTableSignature returns the sorted, de-duplicated set of table references
+// in a query, joined by commas. Empty for a blank query or one with no
+// FROM/JOIN (e.g. a scalar SELECT). Lowercased for case-insensitive matching.
+func queryTableSignature(query string) string {
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+	matches := queryTableRefRe.FindAllStringSubmatch(query, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	set := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		t := strings.ToLower(strings.Trim(m[1], `"`+"`"+`[]`))
+		if t != "" {
+			set[t] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return ""
+	}
+	tables := make([]string, 0, len(set))
+	for t := range set {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	return strings.Join(tables, ",")
+}
+
+// normalizeWhitespace lowercases nothing (callers decide case) but collapses
+// every run of whitespace to a single space and trims the ends, so trivial
+// formatting differences don't split a cluster.
+func normalizeWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// breadcrumbForStep renders the one-line "also examined" note for a dropped
+// step: its query purpose, or a truncated query when the purpose is blank.
+// Capped so the breadcrumb never re-bloats the prompt.
+func breadcrumbForStep(s models.ExplorationStep) string {
+	text := normalizeWhitespace(s.QueryPurpose)
+	if text == "" {
+		text = normalizeWhitespace(s.Query)
+	}
+	if text == "" {
+		return ""
+	}
+	if len(text) > maxBreadcrumbLen {
+		text = text[:maxBreadcrumbLen] + "…"
+	}
+	return text
+}
+
+// formatAlsoExamined renders the breadcrumb appended to an analysis prompt when
+// smart-overflow trimming dropped steps. It de-duplicates purposes (dropped
+// near-duplicates often share one), caps the count, and returns "" when there
+// is nothing to show — so a run that fit without trimming has an unchanged
+// prompt.
+func formatAlsoExamined(purposes []string) string {
+	if len(purposes) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(purposes))
+	uniq := make([]string, 0, len(purposes))
+	for _, p := range purposes {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		key := strings.ToLower(p)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		uniq = append(uniq, p)
+		if len(uniq) >= maxAlsoExaminedBreadcrumbs {
+			break
+		}
+	}
+	if len(uniq) == 0 {
+		return ""
+	}
+	return "\n\nAlso examined during exploration but omitted here for length " +
+		"(the underlying data exists — cite it via source_steps if a finding needs it): " +
+		strings.Join(uniq, "; ") + "."
+}

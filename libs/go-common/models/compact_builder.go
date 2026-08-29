@@ -27,6 +27,44 @@ import (
 //     and counted toward NullCount so a single bad row cannot poison
 //     the statistics.
 func BuildCompactResult(rows []map[string]any) CompactResult {
+	return BuildCompactResultWithLimits(rows, DefaultCompactLimits())
+}
+
+// CompactLimits governs how many boundary rows a digest keeps (HeadTailRowCount)
+// and the row-count below which it inlines every row (CompactInlineThreshold).
+// DefaultCompactLimits() reproduces the historical fixed shape; the analysis
+// picker's smart-overflow re-compaction passes tighter limits to shrink
+// per-step detail so more steps fit a small model window.
+type CompactLimits struct {
+	HeadTailRowCount       int
+	CompactInlineThreshold int
+}
+
+// DefaultCompactLimits returns the standard digest shape (Head/Tail =
+// HeadTailRowCount, inline below CompactInlineThreshold). BuildCompactResult
+// uses these, so the default digest is byte-identical to before this split.
+func DefaultCompactLimits() CompactLimits {
+	return CompactLimits{
+		HeadTailRowCount:       HeadTailRowCount,
+		CompactInlineThreshold: CompactInlineThreshold,
+	}
+}
+
+// BuildCompactResultWithLimits is BuildCompactResult with caller-chosen row
+// limits. Non-positive limits fall back to the defaults so a misconfigured
+// caller can never produce a zero-row digest. The column statistics are always
+// computed over the full row set (they don't depend on the limits); only the
+// verbatim head/tail/all row slices shrink.
+func BuildCompactResultWithLimits(rows []map[string]any, lim CompactLimits) CompactResult {
+	headTail := lim.HeadTailRowCount
+	if headTail <= 0 {
+		headTail = HeadTailRowCount
+	}
+	inlineThreshold := lim.CompactInlineThreshold
+	if inlineThreshold <= 0 {
+		inlineThreshold = CompactInlineThreshold
+	}
+
 	out := CompactResult{
 		RowCount: len(rows),
 		Columns:  []ColumnSummary{},
@@ -36,19 +74,19 @@ func BuildCompactResult(rows []map[string]any) CompactResult {
 		return out
 	}
 
-	headLimit := HeadTailRowCount
+	headLimit := headTail
 	if headLimit > len(rows) {
 		headLimit = len(rows)
 	}
 	out.HeadRows = cloneRows(rows[:headLimit])
 
 	// AllRows wins over TailRows. When the entire result fits inline
-	// (RowCount <= CompactInlineThreshold) AllRows carries every row,
-	// so emitting TailRows in addition would just duplicate them.
-	if len(rows) <= CompactInlineThreshold {
+	// (RowCount <= inlineThreshold) AllRows carries every row, so emitting
+	// TailRows in addition would just duplicate them.
+	if len(rows) <= inlineThreshold {
 		out.AllRows = cloneRows(rows)
-	} else if len(rows) > 2*HeadTailRowCount {
-		tailStart := len(rows) - HeadTailRowCount
+	} else if len(rows) > 2*headTail {
+		tailStart := len(rows) - headTail
 		out.TailRows = cloneRows(rows[tailStart:])
 	}
 

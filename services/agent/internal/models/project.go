@@ -70,6 +70,15 @@ type Project struct {
 	// reads the same field via EffectiveValidationEnabled at click time.
 	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
 
+	// SmartOverflowEnabled is the per-project toggle for the analysis picker's
+	// smart budget-overflow handling (dedup + "also examined" breadcrumb +
+	// tighter re-compaction of survivors, instead of plainly dropping the
+	// lowest-scored steps). Nil pointer means "use the default" — see
+	// EffectiveSmartOverflowEnabled (default on). It only changes behaviour when
+	// picked evidence exceeds the model-window budget, so on big-window models
+	// it is inert regardless of the setting.
+	SmartOverflowEnabled *bool `bson:"smart_overflow_enabled,omitempty" json:"smart_overflow_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -201,6 +210,16 @@ func (p *Project) EffectiveValidationEnabled() bool {
 		return true
 	}
 	return *p.ValidationEnabled
+}
+
+// EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.
+// Returns true when unset (default-on for legacy projects and any project the
+// user has not explicitly opted out of); returns the stored value when set.
+func (p *Project) EffectiveSmartOverflowEnabled() bool {
+	if p.SmartOverflowEnabled == nil {
+		return true
+	}
+	return *p.SmartOverflowEnabled
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

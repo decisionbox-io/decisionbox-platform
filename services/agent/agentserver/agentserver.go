@@ -978,6 +978,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		TestMode:              testMode,
 		SelectedAreas:         selectedAreas,
 		ValidationEnabled:     project.EffectiveValidationEnabled(),
+		SmartOverflowEnabled:  project.EffectiveSmartOverflowEnabled(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{

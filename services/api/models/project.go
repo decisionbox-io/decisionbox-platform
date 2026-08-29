@@ -102,6 +102,15 @@ type Project struct {
 	// definitions in sync.
 	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
 
+	// SmartOverflowEnabled is the per-project toggle for the analysis picker's
+	// smart budget-overflow handling (dedup + "also examined" breadcrumb +
+	// tighter re-compaction of survivors instead of plainly dropping the
+	// lowest-scored steps). Nil means "use the default" (true). It only changes
+	// behaviour when picked evidence exceeds the model-window budget, so it is
+	// inert on big-window models. The agent reads its own copy of this field via
+	// the agent's models.Project — keep the two definitions in sync.
+	SmartOverflowEnabled *bool `bson:"smart_overflow_enabled,omitempty" json:"smart_overflow_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -231,6 +240,16 @@ func (p *Project) EffectiveValidationEnabled() bool {
 		return true
 	}
 	return *p.ValidationEnabled
+}
+
+// EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.
+// Nil pointer → true (default-on). The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveSmartOverflowEnabled() bool {
+	if p.SmartOverflowEnabled == nil {
+		return true
+	}
+	return *p.SmartOverflowEnabled
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a
