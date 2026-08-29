@@ -145,7 +145,7 @@ func TestSmartOverflow_RecompactsToFitWithoutDropping(t *testing.T) {
 		tightSteps[i] = s
 	}
 	tightTokens := EstimateCompactedRenderedSize(tightSteps) / charsPerToken
-	if !(tightTokens < defaultTokens) {
+	if tightTokens >= defaultTokens {
 		t.Fatalf("test premise broken: tight (%d) must be smaller than default (%d)", tightTokens, defaultTokens)
 	}
 	budget := (tightTokens + defaultTokens) / 2 // fits tight, not default
