@@ -82,42 +82,48 @@ Facts verified in the code that the plan depends on:
 
 ---
 
-## P2 backend approach — DECIDED: thread the form params to the agent (Option B)
+## P2 backend approach — DECIDED: real draft projects (test the saved draft)
 
-Per Can (issue + Slack): **the API must never open a DB connection** — that is
-the agent's job and stays that way (invariant #5 above). So the connection test
-keeps running in the agent; we feed it the **form** instead of the saved Mongo
-record. This is Can's Option B, done in the agent.
+Per Can (issue + Slack), two constraints govern P2:
+1. **The API must never open a DB connection** — that stays the agent's job
+   (invariant #5). So the connection test keeps running in the **agent, via the
+   existing `POST /projects/{id}/test/{target}` path, unchanged.**
+2. **Test the current form, and do it properly** — via a **real draft project**
+   that starts **no indexing and no side effects** until the user activates it.
 
-**Design.** The test endpoint reads the current connection params from the
-request body and passes them to the agent through the runner. The agent, when a
-test payload is present, builds the provider **from the payload** and skips the
-`projectRepo.GetByID` load (`agentserver.go:502`) — so create (no project yet)
-and edit behave identically. Nothing about the API's no-DB posture changes.
+**Why a draft (not agent-threading, not test-in-process).** A draft is a real
+persisted project, so the existing agent test reads its saved config + secret
+from Mongo and connects exactly as discovery would — no new test endpoint, **no
+transient credential, no runner/agent/secret-delivery machinery.** "Test before
+Save fails" disappears because the wizard persists the draft before testing it.
 
-**One remaining sub-decision — how the credential reaches the agent process**
-(the whole issue is about not exposing secrets, so this matters). The runner
-passes only `ProjectID` + CLI `Args` today (`runner.go:72`); delivery must not
-put the secret in a place it can leak:
+**What `Create` does today that a draft must defer** (`projects.go`): plan-quota
+reservations `CheckCreateProject` (`:328`) / `CheckAddDataSource` (`:347`) and
+the schema-index enqueue `SetSchemaIndexStatus(pending_indexing)` (`:400`). A
+draft skips **all** of these until activation.
 
-| Delivery | subprocess | docker | k8s | Verdict |
-|---|---|---|---|---|
-| CLI args | visible in `ps` | `docker inspect` | Job spec + etcd | ✗ never for a secret |
-| Env var (plain) | ok (local) | ok (local) | ⚠ in Job spec + etcd (~60s TTL) | simplest; first time a customer secret sits in a manifest |
-| **Sensitive-env, Secret-backed in k8s** | env | env | one-shot K8s `Secret` via `secretKeyRef`, owned by the Job (GC'd) | ✅ recommended — one agent read-path, plaintext never in the Pod spec |
-| stdin | clean | needs attach | can't stream to a Job | good locally, breaks k8s |
+**Draft lifecycle**
 
-**Default in this plan: the Secret-backed sensitive-env channel.** Extend
-`RunSyncOptions` with the test payload split into non-secret config (safe in a
-JSON arg) and a sensitive-env map (the credential + any secret sub-fields). Each
-runner delivers the sensitive-env map: subprocess/docker set it as process env;
-the **k8s runner** creates a short-lived `Secret`, references it via
-`env.valueFrom.secretKeyRef`, and sets an `ownerReference` to the Job so it is
-garbage-collected with the Job. The agent reads one env var regardless of runner.
-*(If Can prefers plain env for simplicity, drop the k8s Secret step — one-line
-change; flagged for his pick.)*
+| Step | Endpoint | Behavior |
+|---|---|---|
+| Create draft | `POST /projects` `{state:"draft", …}` | Persist; **skip** quota reservation, schema-index enqueue, and telemetry. No side effects. |
+| Edit draft | `PUT /projects/{id}` | Drafts are **freely mutable** — bypass the settings route's datasource-edit guard (`:537`); still no indexing while draft. |
+| Set draft secret | `PUT /projects/{id}/secrets/{key}` | Existing keys, encrypted — same as any project. |
+| **Test** draft | `POST /projects/{id}/test/{target}` | **Existing, unchanged.** Reads the draft's saved config + secret; runs the agent. |
+| **Activate** | `POST /projects/{id}/activate` (new) | Validate completeness → run the deferred plan gates → `state=ready` → **now** enqueue schema indexing + telemetry. |
+| Discard | `DELETE /projects/{id}` | Existing cascade (drops the draft's secrets too). Wizard calls on cancel. |
+| GC | API sweep | Delete drafts older than `PROJECT_DRAFT_TTL_HOURS` (default 24h) + cascade — backstop for abandoned wizards. |
 
-The rest of the plan assumes this agent-based Option B.
+`GET /projects` **excludes** drafts (no dashboard pollution); `GET /projects/{id}`
+still returns them (the wizard reads its draft by id). The schema-index worker
+only picks up `pending_indexing`, which a draft never has — so no worker change.
+
+**Sub-decisions (defaulted; flagged for Can):** (1) a dedicated
+`POST /projects/{id}/activate` rather than overloading `PUT` with a state
+transition (keeps the settings route's "no quota / no indexing" contract intact);
+(2) draft GC as an API sweep, 24h default TTL. (Community policy is Noop, so quota
+timing is a no-op there; in cloud the reservation simply moves create→activate, so
+drafts don't consume a slot until activated — no `contract.yaml`/helm change.)
 
 ---
 
@@ -192,96 +198,84 @@ The read-only "saved" chips (`WarehouseConfigPanel.tsx:142-151`,
 
 ## Problem 2 — Replace standalone "Test" with **Save** and **Save and Test**
 
-### Approach (agent-based Option B)
-The test always runs in the agent (the API never opens a DB). The test endpoint
-accepts the current form params in the request body and threads them to the
-agent; the agent builds the provider from the payload and connects. This tests
-the **form** directly — no "save first" requirement — so create (no project) and
-edit are identical. Testing never blocks: a failed/absent test still persists (on
-Save) and leaves a persistent non-blocking warning on the section.
+### Approach (real draft projects)
+The test always runs in the agent through the **existing**
+`POST /projects/{id}/test/{target}` path — the API never opens a DB. It tests the
+**current form** because the form is persisted first: in edit against the real
+project, in create against a **draft** project (a real, side-effect-free project
+that indexes/reserves nothing until the user activates it). Testing never blocks:
+a failed test still leaves the config saved with a persistent non-blocking
+warning on the section.
 
-### Backend (platform)
-Threading, from browser → API → runner → agent:
+### Backend (platform) — draft lifecycle
+See the "P2 backend approach" section above for the full table. Concretely:
 
-1. **API handler** — `test_connection.go:runTest` (`:51`) reads the request body
-   `{ provider, config, credential, datasets?, warehouse_id? }` (the credential
-   under its auth-method field key). When a body is present it forwards the
-   params to the runner as a **test payload**; when absent it falls back to
-   today's behavior (test the saved project) so existing callers/the internal
-   flows keep working. The project-scoped route
-   (`POST /api/v1/projects/{id}/test/{target}`) is reused; a **project-less**
-   variant (`POST /api/v1/providers/{warehouse|llm|embedding}/test`) is added for
-   the create wizard, where there is no project id yet. Both hand the same
-   payload to the runner.
-2. **Runner** — extend `RunSyncOptions` (`runner.go:72`) with the test payload:
-   a **non-secret config** part (provider, host, dataset, region, auth_method →
-   marshalled into a JSON CLI arg) and a **sensitive-env** map (credential + any
-   secret sub-fields). Each runner delivers the sensitive-env map without leaking
-   it: `subprocess.go`/`docker.go` set it as process env; `kubernetes.go` creates
-   a short-lived `Secret`, references it via `env.valueFrom.secretKeyRef`, and
-   sets an `ownerReference` to the Job so it is GC'd with the Job. (See the P2
-   decision table for the plain-env fallback if Can prefers it.)
-3. **Agent** — `runTestConnection` (`agentserver.go:481`): when the test payload
-   is present, build the warehouse/LLM/embedding provider **from the payload**
-   (provider id + non-secret config + credential from the sensitive env var) and
-   run the existing `HealthCheck` / `Validate` / `Embed(["ping"])` checks —
-   **skipping** the `projectRepo.GetByID` load (`:502`) and the
-   `project.WarehouseByID` lookups (`:519-523`). The `--project-id` requirement is
-   relaxed for payload-driven test mode (create has no project). When no payload
-   is present, the current saved-project path is unchanged (back-compat; still
-   used by the blurb path). The provider-init helpers
-   (`initWarehouseProvider`/`initLLMProvider`/`initEmbeddingProvider`) are
-   refactored to accept an explicit config+credential source so both the saved
-   and payload paths share one code path.
-
-Result: the agent connects using the **form** values; the API still never opens a
-DB; create and edit use one mechanism.
+1. **`models/project.go`** — add `ProjectStateDraft = "draft"` + an `IsDraft()`
+   helper. `EffectiveState()` already refuses discovery for non-`ready` states,
+   so a draft can't run discovery.
+2. **`handler/projects.go` `Create` (`:207`)** — accept `state:"draft"`. For a
+   draft: **skip** `CheckCreateProject`/`CheckAddDataSource` reservations
+   (`:328/347`), the `SetSchemaIndexStatus(pending_indexing)` enqueue (`:400`),
+   and `TrackProjectCreated`. A draft is a pure persist.
+3. **`handler/projects.go` `Update` (`:455`)** — when `existing.IsDraft()`,
+   bypass the datasource-edit guard (`:537`) so the wizard can freely set/replace
+   the warehouse; still no indexing while draft.
+4. **`handler/projects.go` `Activate` (new, `POST /projects/{id}/activate`)** —
+   validate the draft is complete (warehouse + llm + embedding present), run the
+   deferred plan gates, set `state=ready`, then enqueue schema indexing +
+   telemetry (the create-side side effects, now user-triggered).
+5. **`handler/projects.go` `List` (`:412`)** — exclude `state=="draft"` (repo
+   query filter) so drafts don't appear on the dashboard. `Get` returns them.
+6. **Draft GC** — a periodic API sweep deletes drafts older than
+   `PROJECT_DRAFT_TTL_HOURS` (default 24h) via the existing cascade (project +
+   secrets). Runs in the existing background-worker wiring in `apiserver.go`.
+7. **Test path** — `test_connection.go` + `agentserver.go` **unchanged**. The
+   existing project-scoped test reads the draft's saved config + secret and runs
+   the agent. No runner/agent/secret change.
 
 ### Frontend (platform)
-- **`lib/api.ts`**: extend `testWarehouse/testLLM/testEmbedding/testBlurbLLM` to
-  send the current form params in the body; add project-less
-  `test{Warehouse,LLM,Embedding}Config(providerId, config)` for the create
-  wizard.
-- **`WarehouseConfigPanel.tsx`**:
+- **`lib/api.ts`**: add `createDraftProject`, `activateProject(id)`; the existing
+  `testWarehouse/testLLM/testEmbedding/testBlurbLLM(projectId)` are reused as-is.
+- **Create wizard** (`app/projects/new/page.tsx`): create the **draft** when the
+  user first needs to test (or on entering the config steps), `PUT`-update it as
+  they edit, write its secrets, and **test** it via the existing endpoints. The
+  final "Create Project" (`:459`) calls **`activateProject`** (draft→ready →
+  indexing). Cancel/leaving the wizard **discards** the draft (`DELETE`); the GC
+  sweep is the backstop. Per-step **"Save and Test"** persists to the draft then
+  tests; a failed test is non-blocking.
+- **`WarehouseConfigPanel.tsx`** (edit, real project):
   - Remove the standalone `<TestConnectionButton>` render (`:161`).
   - Replace the single "Save …" button (`:163-167`) with **Save** and **Save and
-    Test**. "Save" = existing `handleSave`. "Save and Test" = save then test the
-    form (`api.testWarehouse(projectId, formParams)`); on `!success`/throw keep a
-    persistent non-blocking warning on the section
-    ("⚠ Last test failed: <reason>" / "⚠ Connection not verified"), never block.
-  - Delete the now-unused `TestConnectionButton` (Rule 6). It is defined here and
-    imported only by `ProvidersPanel.tsx:17` (grep-verified), which also drops it.
-- **`ProvidersPanel.tsx`**:
-  - Remove the LLM (`:310-312`) and embedding (`:330-332`)
-    `<TestConnectionButton>` renders and the `TestConnectionButton` import
-    (`:17`).
-  - Replace the single "Save providers" button (`:334-338`) with **Save** +
-    **Save and Test** (tests LLM + embedding with the form params after save;
-    aggregates results into per-section non-blocking warnings).
+    Test**. "Save" = existing `handleSave`. "Save and Test" = save then test
+    (`api.testWarehouse(projectId)`); on `!success`/throw keep a persistent
+    non-blocking warning ("⚠ Last test failed: <reason>"), never block.
+  - Delete the now-unused `TestConnectionButton` (Rule 6) — defined here, imported
+    only by `ProvidersPanel.tsx:17` (grep-verified), which also drops it.
+- **`ProvidersPanel.tsx`** (edit): remove the LLM (`:310-312`) + embedding
+  (`:330-332`) `<TestConnectionButton>` renders and the import (`:17`); replace
+  the single "Save providers" button (`:334-338`) with **Save** + **Save and
+  Test** (tests LLM + embedding after save; per-section non-blocking warnings).
 - **Blurb** (`app/projects/[id]/settings/page.tsx`, `saveBlurb:234`): add "Save
   and Test" alongside "Save blurb model" (`:335`) using
-  `api.testBlurbLLM(projectId, formParams)`; non-blocking warning on failure.
-- **Create wizard** (`app/projects/new/page.tsx`): add an optional, non-blocking
-  **"Test connection"** button to the warehouse step and the AI step that calls
-  the **project-less** endpoints with the current form config (no project needed
-  — satisfies "first-time create can Save-and-Test without a prior save"). The
-  final "Create Project" (`:459`) is unchanged and never blocked by a test.
-- **Non-blocking warning state**: a small per-section piece of state
+  `api.testBlurbLLM(projectId)`; non-blocking warning on failure.
+- **Non-blocking warning state**: a small per-section state
   (`'unverified' | 'failed:<reason>' | 'ok'`) rendered as a persistent Mantine
-  `Alert`/`Text` under the section. It does **not** gate Save / Next / Create.
+  `Alert`/`Text`. It does **not** gate Save / Next / Create / activate.
 
 ### Enterprise (companion PR)
 - `enterprise/ui/src/components/projects/WarehouseConfigPanel.tsx` — remove its
   `WarehouseTestButton` render (`:188`) + component (`:277`); add Save / Save &
   Test mirroring the platform panel.
 - `enterprise/ui/src/app/projects/[id]/data-sources/page.tsx:377`
-  (`WarehouseTestButton`, multi-warehouse) — same treatment; per-datasource test
-  sends the datasource's form params (or `?warehouse_id=` for a saved one).
-- `enterprise/ui/src/lib/warehouses-api.ts:127-131` — send form params in the
-  body.
-- `enterprise/ui/src/app/projects/new/page.tsx:232` — optional form-value test
-  as in platform. No enterprise agent change needed — Oracle/HANA already run in
-  the enterprise agent, which is exactly where the payload-driven test executes.
+  (`WarehouseTestButton`, multi-warehouse) — Save & Test against the saved
+  datasource (`?warehouse_id=`).
+- `enterprise/ui/src/lib/warehouses-api.ts:127-131` — unchanged call shape (the
+  existing project-scoped test is reused).
+- `enterprise/ui/src/app/projects/new/page.tsx:232` — draft create + activate as
+  in platform. **No enterprise agent or test-endpoint change** — the draft is a
+  normal project the enterprise agent already knows how to test (incl.
+  Oracle/HANA). The draft state itself lives in the community model/handlers, so
+  enterprise inherits it.
 
 ### Acceptance mapping
 - No standalone "Test" anywhere in DB/LLM/embedding/blurb config → removed from
@@ -289,8 +283,9 @@ DB; create and edit use one mechanism.
 - Save persists without testing; Save & Test persists then tests.
 - Always proceed on no/failed test; persistent non-blocking warning on the
   section.
-- Testing validates the **current form** (payload → agent) in both create and
-  edit — a first-time create Save-and-Tests without a prior save.
+- Testing validates the **current form** in both create and edit — create tests
+  the saved **draft**, edit tests the saved project; a first-time create
+  Save-and-Tests against its draft (no separate prior save).
 - Applies to community + enterprise warehouses (incl. multi-warehouse) and
   analysis/embedding/blurb models.
 
@@ -334,28 +329,30 @@ Exploration/Minimum-steps inputs, Estimate checkbox, "Run All Areas", and the
 | P1 | `ui/dashboard/src/components/projects/LLMFormFields.tsx` | Credential slot |
 | P1 | `ui/dashboard/src/components/ProviderCredentialsPhase.tsx` | Credential slot (covers embedding + blurb) |
 | P1 | `ui/dashboard/src/components/common/LLMModelField.tsx` | `DynamicField` credential guard |
-| P2 | `services/api/internal/handler/test_connection.go` | Read form params from body; forward as a test payload; add project-less variant |
-| P2 | `services/api/internal/runner/runner.go` | Extend `RunSyncOptions` with test payload (non-secret config + sensitive-env) |
-| P2 | `services/api/internal/runner/{subprocess,docker,kubernetes}.go` | Deliver the payload; k8s backs sensitive-env with a Job-owned `Secret` |
-| P2 | `services/api/apiserver/apiserver.go` | Register the project-less `…/test` route(s) |
-| P2 | `services/agent/agentserver/agentserver.go` | `runTestConnection` builds provider from payload (skips Mongo load); refactor init helpers to share one config source |
-| P2 | `ui/dashboard/src/lib/api.ts` | Send form params in test bodies; add project-less `test*Config` |
+| P2 | `services/api/models/project.go` | Add `ProjectStateDraft = "draft"` + `IsDraft()` |
+| P2 | `services/api/internal/handler/projects.go` | `Create`: honor `state:"draft"` (skip quota/index/telemetry); `Update`: bypass datasource guard for drafts; **new** `Activate`; `List`: exclude drafts |
+| P2 | `services/api/database/*project*` | Repo: `List` filter `state != draft`; draft-GC query (list drafts older than TTL) |
+| P2 | `services/api/apiserver/apiserver.go` | Register `POST /projects/{id}/activate`; wire the draft-GC sweep |
+| P2 | (new) draft-GC sweep | Periodic delete of stale drafts + cascade; `PROJECT_DRAFT_TTL_HOURS` (default 24h) |
+| P2 | `services/api/internal/server/server.go` | Route for `Activate` |
+| P2 | `ui/dashboard/src/lib/api.ts` | `createDraftProject`, `activateProject(id)`; reuse existing `test*` |
 | P2 | `ui/dashboard/src/components/projects/WarehouseConfigPanel.tsx` | Remove Test btn; Save + Save&Test; non-blocking warning; delete `TestConnectionButton` |
 | P2 | `ui/dashboard/src/components/projects/ProvidersPanel.tsx` | Remove Test btns/import; Save + Save&Test |
 | P2 | `ui/dashboard/src/app/projects/[id]/settings/page.tsx` | Blurb Save + Save&Test |
-| P2 | `ui/dashboard/src/app/projects/new/page.tsx` | Optional form-value Test buttons (project-less) |
+| P2 | `ui/dashboard/src/app/projects/new/page.tsx` | Draft create → edit/test → activate on finish; discard on cancel |
 | P3 | `ui/dashboard/src/app/projects/[id]/page.tsx` | `ScrollArea.Autosize` around area list |
-| Docs | `CHANGELOG.md` | `[Unreleased]` entries for the three fixes |
+| Docs | `CHANGELOG.md`, `docs/reference/configuration.md` | Three fixes; new `PROJECT_DRAFT_TTL_HOURS` env var + draft-project note |
 
 ### Enterprise (companion bridge PR — not editable from this container)
 P1: `finetuning/ProviderConfigForm.tsx`; verify overlaid `WarehouseConfigPanel`
 + Oracle/HANA. P2: `projects/WarehouseConfigPanel.tsx`,
-`app/projects/[id]/data-sources/page.tsx`, `lib/warehouses-api.ts`,
-`app/projects/new/page.tsx` — send form params in the test body. **No enterprise
-agent change** — Oracle/HANA already run in the enterprise agent, which is where
-the payload-driven test executes. P3: `app/projects/[id]/page.tsx` (duplicate).
-Remove any `.platform-ref` pin so enterprise CI builds against the platform
-bridge branch.
+`app/projects/[id]/data-sources/page.tsx`, `app/projects/new/page.tsx` — Save /
+Save & Test + draft create/activate in the wizard, reusing the existing test
+endpoint (`lib/warehouses-api.ts` unchanged). **No enterprise agent or
+test-endpoint change** — the draft state lives in the community model/handlers,
+so enterprise inherits it; the enterprise agent already tests Oracle/HANA. P3:
+`app/projects/[id]/page.tsx` (duplicate). Remove any `.platform-ref` pin so
+enterprise CI builds against the platform bridge branch.
 
 ---
 
@@ -364,12 +361,12 @@ bridge branch.
 1. **P1** — new `MaskedSecretInput` + helper; wire the 3 credential slots + 2
    `DynamicField` guards. `make test-ui lint-ui`, visual check via the local
    dashboard image build (enterprise overlay validation pattern).
-2. **P2 backend** — handler body-parsing; `RunSyncOptions` payload + per-runner
-   delivery (incl. k8s Job-owned Secret); agent payload path + init-helper
-   refactor; unit tests. `make build test-go lint-go`.
-3. **P2 frontend** — `api.ts` helpers; Save / Save&Test in both panels + blurb;
-   remove standalone Test buttons + `TestConnectionButton`; wizard form-test
-   buttons; non-blocking warning UI.
+2. **P2 backend** — draft state + `Create`/`Update`/`Activate`/`List` handling;
+   repo list filter; draft-GC sweep; route wiring; unit + integration tests.
+   `make build test-go lint-go`. (Test endpoint + agent are untouched.)
+3. **P2 frontend** — `api.ts` draft/activate helpers; wizard draft→test→activate
+   →discard; Save / Save&Test in both panels + blurb; remove standalone Test
+   buttons + `TestConnectionButton`; non-blocking warning UI.
 4. **P3** — `ScrollArea.Autosize` wrap.
 5. **Docs** — CHANGELOG. Full local check suite, then open the (non-draft) PR
    and run the review loop.
@@ -377,16 +374,18 @@ bridge branch.
 ---
 
 ## Data / schema / API / UI impacts
-- **No schema/model changes.** No secret storage change (out of scope — storage
-  already encrypts). **The API still opens no DB connection** — the test runs in
-  the agent as before.
-- **API:** the project-scoped test routes now accept an optional body of form
-  params (back-compat when omitted); one additive project-less `…/test` route
-  for the create wizard. `RunSyncOptions` gains a test-payload field.
-- **Agent:** `runTestConnection` gains a payload-driven path; the saved-project
-  path is unchanged.
-- **UI:** credential inputs masked; per-section Save/Save&Test; scrollable
-  popover. No route/nav changes.
+- **Model:** one new `Project.State` value, `"draft"` (the `State` field already
+  exists; empty/`ready` unchanged, no migration). No secret-storage change (a
+  draft uses the existing encrypted keys; cascade-deleted on discard).
+- **API:** one new route `POST /projects/{id}/activate`; `Create` honors
+  `state:"draft"`; `List` excludes drafts. **Test endpoint + agent + runner are
+  unchanged** — the API still opens no DB connection.
+- **Behavior:** for a draft, schema-index enqueue + plan-quota reservation +
+  telemetry move from create → **activate** (user-triggered). Cloud plan counting
+  stays correct (drafts don't reserve until activated); no `contract.yaml`/helm
+  change. One new optional env var `PROJECT_DRAFT_TTL_HOURS` (default 24h).
+- **UI:** credential inputs masked; wizard uses a draft; per-section
+  Save/Save&Test; scrollable popover.
 
 ---
 
@@ -398,36 +397,35 @@ bridge branch.
   round-trips; `autoComplete` set. `credentialIsMultiline`: "Service Account
   JSON" → true, "API Key" / "Access Key ID : Secret Access Key" → false,
   value-with-newline → true.
-- Panels: standalone Test button gone; **Save** does not call any test endpoint;
-  **Save and Test** calls save then the test endpoint; a **failed** test still
-  persists and shows a non-blocking warning while leaving Save/Next enabled;
-  "leave empty to keep current" preserved for a saved credential (no secret
-  write when the field is blank).
+- Panels/wizard: standalone Test button gone; **Save** does not call any test
+  endpoint; **Save and Test** saves then tests; a **failed** test still persists
+  and shows a non-blocking warning while leaving Save/Next/Create enabled;
+  "leave empty to keep current" preserved for a saved credential (no secret write
+  when the field is blank); wizard **activates** on finish and **discards** the
+  draft on cancel.
 - Popover: area list wrapped in a bounded scroll container; header + Run
   Selected/All remain outside it.
 
 **Backend (Go, `make test-go`)**
-- Handler: body present → payload forwarded to the runner (mock runner asserts
-  the non-secret config + sensitive-env split, and that **no secret appears in
-  argv**); body absent → legacy saved-project path; malformed body → 400.
-- Runner: `RunSyncOptions` payload delivered correctly per mode — subprocess/
-  docker set the sensitive env; the **k8s** runner creates the Job-owned Secret
-  and references it via `secretKeyRef` (fake clientset asserts the Secret exists,
-  has an `ownerReference` to the Job, and that the credential is **not** in the
-  Pod container args/plain env).
-- Agent `runTestConnection`: payload path builds the provider from the payload
-  and skips the Mongo load (unit test with a payload + no project row → still
-  attempts connect); missing/blank credential → clear error; back-compat saved
-  path unchanged.
+- Draft `Create`: `state:"draft"` → project persisted with **no** quota
+  reservation, **no** `pending_indexing`, **no** telemetry; a non-draft create is
+  unchanged (still reserves + enqueues).
+- `Update` on a draft: datasource edits allowed (guard bypassed); on a ready
+  project the guard still rejects them.
+- `Activate`: incomplete draft (missing warehouse/llm/embedding) → 400; complete
+  draft → `state=ready` + `pending_indexing` set + plan gates run (over-quota →
+  policy error, project stays draft); activating a non-draft → 409/no-op.
+- `List`: drafts excluded; `Get` by id returns a draft.
+- Draft GC: a draft older than the TTL is deleted with its secrets; a fresh draft
+  and any ready project are untouched.
 
 **Integration (Rule 9 — real, testcontainers; `run-integration-tests` label)**
-- End-to-end warehouse test against a Postgres testcontainer via the
-  subprocess runner: good form creds → success; wrong password →
-  `success:false` with the driver error (the real "test the form, no prior save"
-  path a first-time create exercises).
-- LLM/embedding payload test env-var-gated with real keys where available
-  (mirrors existing `providers_embedding_live_test.go` gating); skipped
-  otherwise.
+- Mongo-backed: create draft → set warehouse-credentials secret → existing
+  `POST /projects/{id}/test/warehouse` against a Postgres testcontainer: good
+  creds → success; wrong password → `success:false` with the driver error (the
+  real create-time "test the form" path). Then `activate` → assert
+  `pending_indexing`. Discard → assert project + secret both gone.
+- Draft excluded from `List`; GC removes a stale draft + its secret.
 
 **Manual (local dashboard image, enterprise-overlay validation memory)**
 - Create + edit: every credential field masked by default with a working toggle
@@ -438,14 +436,19 @@ bridge branch.
 ---
 
 ## Risks & mitigations
-- **Credential delivery to the agent** — the one open sub-decision (P2 table).
-  Default = sensitive-env backed by a Job-owned k8s `Secret` so the plaintext
-  never sits in a Pod spec; plain-env is the simpler fallback if Can accepts the
-  transient (~60s TTL) Job-spec exposure. Either way no secret goes in argv.
-- **Agent init-helper refactor** — `initWarehouseProvider`/`initLLMProvider`/
-  `initEmbeddingProvider` are shared with discovery; the refactor to a common
-  config source must not change the saved-project (discovery) path. Covered by
-  keeping the saved path as the default and unit-testing both branches.
+- **Draft ripples into other reads** — any code that lists/counts projects must
+  ignore drafts (dashboard list, cloud plan counting, run summaries). Mitigation:
+  filter at the repo `List`; drafts never get `pending_indexing` (worker ignores
+  them) and never reserve quota (moved to activate). Audit read sites during
+  build.
+- **Abandoned drafts leak rows/secrets** — mitigated by wizard discard-on-cancel
+  **plus** the GC sweep (TTL). GC uses the existing cascade so secrets go too.
+- **Activation partial failure** — plan gate passes but index-enqueue fails, or
+  vice-versa: order as gate → `state=ready` → enqueue, and treat a failed enqueue
+  as non-fatal (the existing create path already logs-and-continues at `:401`;
+  user can Re-index). The project is `ready` and usable regardless.
+- **Sub-decisions** — dedicated `/activate` vs `PUT` state-transition; GC TTL
+  default. Defaulted above; flagged for Can.
 - **`-webkit-text-security` browser support** — Chromium/Safari/Firefox 117+;
   universal by 2026. Single-line path uses Mantine `PasswordInput` (no reliance
   on it). If a reviewer objects, the multi-line path can fall back to a
@@ -453,19 +456,32 @@ bridge branch.
 - **Cross-repo lockstep** — platform + enterprise land together on paired bridge
   branches; enterprise `.platform-ref` pin removed so its CI builds against the
   platform branch. Jale runs one repo per issue, so the enterprise PR is a
-  documented companion (flagged to Can). No enterprise **agent** change needed.
+  documented companion (flagged to Can). No enterprise **agent/test-endpoint**
+  change needed.
 - **Removing `TestConnectionButton`** — defined in `WarehouseConfigPanel.tsx`,
   imported only by `ProvidersPanel.tsx:17` (grep-verified); safe to delete once
   both usages are gone (Rule 6).
+- **Scope** — P2 now adds a real draft-project lifecycle (a feature), larger than
+  the issue's original "swap the buttons". Done at Can's explicit direction; P1/P3
+  are unchanged.
 
 ## Alternatives considered
-- **P2 Option A** (Save-then-existing-Mongo-test only): works for edit but the
-  create wizard has no persisted project, so it needs a draft-persist first.
-  Rejected per Can + issue (Option B).
 - **P2 "test in-process in the API"** (build the provider + `HealthCheck` in the
-  API): the smallest code change and reuses the "Load models" pattern, but it
-  would open a **warehouse/DB connection in the API** — which the API never does
-  today (invariant #5). Rejected by Can to keep DB connections in the agent.
+  API): smallest change, reuses the "Load models" pattern — but it opens a
+  **warehouse/DB connection in the API**, which the API never does (invariant #5).
+  Rejected by Can to keep DB connections in the agent.
+- **P2 thread the form params to the agent** (extend the runner with the test
+  payload + deliver the credential via a Job-owned k8s Secret): tests the form
+  without persisting, but adds runner/agent/secret-delivery machinery and a
+  transient credential. Rejected in favor of a real draft — no new test path, no
+  transient secret.
+- **P2 "save-then-test the real project"** (no draft state): zero backend change,
+  but a mid-wizard project would start indexing + count against quota. Rejected —
+  Can wants a real draft that does nothing until activated.
+- **P2 activation via `PUT {state:"ready"}`** instead of a dedicated `/activate`:
+  fewer routes, but overloads the settings route (which by contract does not
+  reserve quota or enqueue indexing). Dedicated `/activate` keeps that contract
+  clean; flagged for Can.
 - **P1 backend multi-line flag** (add `Multiline`/`Format:"json"` to
   `ConfigField`): cleaner signal but a cross-cutting backend + every-provider +
   marshaling + enterprise change for a UI-only concern. Rejected — UI heuristic
