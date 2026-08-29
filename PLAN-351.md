@@ -53,15 +53,20 @@ Facts verified in the code that the plan depends on:
    above fixes the wizard for free. The edit panels
    (`WarehouseConfigPanel`, `ProvidersPanel`) also consume them.
 
-5. **The API server already registers every warehouse/LLM/embedding provider
-   in-process** (`services/api/apiserver/apiserver.go:43-67` blank imports) and
-   already **builds providers in-process from user-entered form credentials**
-   for the "Load models" feature: `fetchLiveModels`
-   (`services/api/internal/handler/providers.go:185` → `gollm.NewProvider`) and
-   `fetchLiveEmbeddingModels` (`:583` → `goembedding.NewProvider`). This is the
-   established precedent for "use the current form's provider + credential
-   against the real upstream, before anything is saved" — and it is decisive for
-   the P2 approach (below).
+5. **The API never opens a warehouse/DB connection — connections are the
+   agent's job alone (confirmed, architectural invariant to preserve).**
+   `grep` of `services/api` (non-test) finds **no** `gowarehouse.NewProvider`
+   or any warehouse client construction; the only warehouse import use is the
+   metadata *listing* (`ListWarehouseProviders`) and *pricing*. The only DB/
+   network `Ping`/`HealthCheck` calls in the API are MongoDB
+   (`database/health.go:19`), the Mongo-backed schema cache
+   (`schema_index.go:449` → `SchemaCacheRepository` Distinct), Qdrant
+   (`backfill/embeddings.go:504`, `apiserver.go:423`), and the Docker engine
+   (`runner/docker.go:119`) — none are a warehouse. (The LLM/embedding "Load
+   models" endpoints build providers in-process but make **HTTP** calls to the
+   model APIs, not DB connections.) **The connection test therefore stays in the
+   agent** — the API must not gain a warehouse connection. This decides the P2
+   backend approach below.
 
 6. **Why "Test before Save" fails today.** The test endpoint ignores the form
    entirely and tests the last-saved Mongo record:
@@ -77,48 +82,42 @@ Facts verified in the code that the plan depends on:
 
 ---
 
-## ⚠️ Decision needed before build — P2 backend approach
+## P2 backend approach — DECIDED: thread the form params to the agent (Option B)
 
-Can chose **Option B** (root-cause: test the current form values, works in
-create and edit). His comment describes threading the params *"→ agent (instead
-of `projectRepo.GetByID` at `agentserver.go:502/519-523`)"*. Investigation
-surfaced a cleaner realization of that same intent, plus a security problem with
-the literal agent-threading path. I want sign-off on which to build.
+Per Can (issue + Slack): **the API must never open a DB connection** — that is
+the agent's job and stays that way (invariant #5 above). So the connection test
+keeps running in the agent; we feed it the **form** instead of the saved Mongo
+record. This is Can's Option B, done in the agent.
 
-**Recommended — B2: test in-process in the API** (mirrors the existing
-`/models/live` endpoints).
-The API already constructs providers from posted form credentials for "Load
-models". The connection test is the same shape of problem, so the test endpoint
-builds the provider in-process from the request body and calls
-`HealthCheck` / `Validate` / `Embed` directly — **no agent subprocess, no runner
-plumbing, and the secret never leaves the API process.**
-- Pros: small, reuses an established pattern; identical behavior for create (no
-  project) and edit; nothing written to argv/env/Mongo; no cross-runner work.
-- Cons: a warehouse `HealthCheck` now runs in the API process rather than the
-  agent. In practice reachability is the same (compose: shared network; K8s:
-  same namespace, and the API already egresses to LLM/embedding upstreams). It
-  skips the agent's warehouse governance middleware — but a connectivity ping
-  runs no SQL, so governance (which masks *query results*) has nothing to gate.
-- Enterprise note: B2 tests Oracle/HANA in-process in the **enterprise API**
-  binary. That binary already registers those providers (it must, to list them
-  under `/api/v1/providers/warehouse`), so this works with no new registration —
-  to be confirmed on the enterprise bridge branch.
+**Design.** The test endpoint reads the current connection params from the
+request body and passes them to the agent through the runner. The agent, when a
+test payload is present, builds the provider **from the payload** and skips the
+`projectRepo.GetByID` load (`agentserver.go:502`) — so create (no project yet)
+and edit behave identically. Nothing about the API's no-DB posture changes.
 
-**Literal alternative — B1: thread the body through the runner to the agent.**
-Matches Can's wording exactly and keeps byte-for-byte parity with discovery's
-connect path (same middleware, same network context). But delivering an *unsaved
-secret* to the agent is the problem: the runner passes only `ProjectID` + CLI
-`Args` (`runner.go:72`), and the three runners deliver via argv
-(`subprocess.go:137`, `docker.go:637`, `kubernetes.go:306`). Putting a
-credential in a K8s **Job spec** (argv/env) exposes it via `kubectl get job -o
-yaml` / etcd — a real regression. Doing it safely needs either stdin (K8s Jobs
-can't stream it) or an ephemeral encrypted Mongo hand-off the agent reads by
-token — a lot of new surface for a Test button.
+**One remaining sub-decision — how the credential reaches the agent process**
+(the whole issue is about not exposing secrets, so this matters). The runner
+passes only `ProjectID` + CLI `Args` today (`runner.go:72`); delivery must not
+put the secret in a place it can leak:
 
-**My recommendation: build B2.** It is the minimal, secure, precedent-following
-way to achieve exactly what Can asked for ("test the form, works in create and
-edit"). I'll proceed on B2 unless Can prefers B1. This is flagged to him in the
-issue + Slack; the rest of the plan assumes **B2**.
+| Delivery | subprocess | docker | k8s | Verdict |
+|---|---|---|---|---|
+| CLI args | visible in `ps` | `docker inspect` | Job spec + etcd | ✗ never for a secret |
+| Env var (plain) | ok (local) | ok (local) | ⚠ in Job spec + etcd (~60s TTL) | simplest; first time a customer secret sits in a manifest |
+| **Sensitive-env, Secret-backed in k8s** | env | env | one-shot K8s `Secret` via `secretKeyRef`, owned by the Job (GC'd) | ✅ recommended — one agent read-path, plaintext never in the Pod spec |
+| stdin | clean | needs attach | can't stream to a Job | good locally, breaks k8s |
+
+**Default in this plan: the Secret-backed sensitive-env channel.** Extend
+`RunSyncOptions` with the test payload split into non-secret config (safe in a
+JSON arg) and a sensitive-env map (the credential + any secret sub-fields). Each
+runner delivers the sensitive-env map: subprocess/docker set it as process env;
+the **k8s runner** creates a short-lived `Secret`, references it via
+`env.valueFrom.secretKeyRef`, and sets an `ownerReference` to the Job so it is
+garbage-collected with the Job. The agent reads one env var regardless of runner.
+*(If Can prefers plain env for simplicity, drop the k8s Secret step — one-line
+change; flagged for his pick.)*
+
+The rest of the plan assumes this agent-based Option B.
 
 ---
 
@@ -193,70 +192,80 @@ The read-only "saved" chips (`WarehouseConfigPanel.tsx:142-151`,
 
 ## Problem 2 — Replace standalone "Test" with **Save** and **Save and Test**
 
-### Approach (assumes B2)
-"Save and Test" always saves first, so the edit panels can test the
-just-saved state; the create wizard tests the **form** through new project-less
-endpoints. Testing never blocks — a failed/absent test persists anyway and
-leaves a non-blocking warning on the section.
+### Approach (agent-based Option B)
+The test always runs in the agent (the API never opens a DB). The test endpoint
+accepts the current form params in the request body and threads them to the
+agent; the agent builds the provider from the payload and connects. This tests
+the **form** directly — no "save first" requirement — so create (no project) and
+edit are identical. Testing never blocks: a failed/absent test still persists (on
+Save) and leaves a persistent non-blocking warning on the section.
 
 ### Backend (platform)
-Add three **project-less** test endpoints that build the provider in-process
-from the posted config (direct analogues of the existing
-`providers/{llm,embedding}/{id}/models/live` handlers in
-`services/api/internal/handler/providers.go`):
+Threading, from browser → API → runner → agent:
 
-- `POST /api/v1/providers/warehouse/{id}/test` — body `{ config }` →
-  `gowarehouse.NewProvider(id, cfg)` → `ApplyMiddleware` → `HealthCheck(ctx)`.
-  Returns `{ success, provider, datasets?, error? }`.
-- `POST /api/v1/providers/llm/{id}/test` — body `{ config }` →
-  `gollm.NewProvider` → `Validate(ctx)`.
-- `POST /api/v1/providers/embedding/{id}/test` — body `{ config }` →
-  `goembedding.NewProvider` → `Embed(ctx, ["ping"])`.
+1. **API handler** — `test_connection.go:runTest` (`:51`) reads the request body
+   `{ provider, config, credential, datasets?, warehouse_id? }` (the credential
+   under its auth-method field key). When a body is present it forwards the
+   params to the runner as a **test payload**; when absent it falls back to
+   today's behavior (test the saved project) so existing callers/the internal
+   flows keep working. The project-scoped route
+   (`POST /api/v1/projects/{id}/test/{target}`) is reused; a **project-less**
+   variant (`POST /api/v1/providers/{warehouse|llm|embedding}/test`) is added for
+   the create wizard, where there is no project id yet. Both hand the same
+   payload to the runner.
+2. **Runner** — extend `RunSyncOptions` (`runner.go:72`) with the test payload:
+   a **non-secret config** part (provider, host, dataset, region, auth_method →
+   marshalled into a JSON CLI arg) and a **sensitive-env** map (credential + any
+   secret sub-fields). Each runner delivers the sensitive-env map without leaking
+   it: `subprocess.go`/`docker.go` set it as process env; `kubernetes.go` creates
+   a short-lived `Secret`, references it via `env.valueFrom.secretKeyRef`, and
+   sets an `ownerReference` to the Job so it is GC'd with the Job. (See the P2
+   decision table for the plain-env fallback if Can prefers it.)
+3. **Agent** — `runTestConnection` (`agentserver.go:481`): when the test payload
+   is present, build the warehouse/LLM/embedding provider **from the payload**
+   (provider id + non-secret config + credential from the sensitive env var) and
+   run the existing `HealthCheck` / `Validate` / `Embed(["ping"])` checks —
+   **skipping** the `projectRepo.GetByID` load (`:502`) and the
+   `project.WarehouseByID` lookups (`:519-523`). The `--project-id` requirement is
+   relaxed for payload-driven test mode (create has no project). When no payload
+   is present, the current saved-project path is unchanged (back-compat; still
+   used by the blurb path). The provider-init helpers
+   (`initWarehouseProvider`/`initLLMProvider`/`initEmbeddingProvider`) are
+   refactored to accept an explicit config+credential source so both the saved
+   and payload paths share one code path.
 
-`config` carries the credential under its auth-method field key (same shape
-`fetchLiveModels` already accepts). These live next to the `models/live`
-handlers, reusing their config-building and error-shaping. Registered in
-`apiserver.go` alongside the existing provider routes.
-
-The existing **project-scoped** endpoints
-(`POST /api/v1/projects/{id}/test/{warehouse|llm|embedding|blurb-llm}`,
-`test_connection.go`) are **unchanged**: edit-panel "Save and Test" calls Save,
-then the existing project test (which now reads the freshly-saved config — the
-"before Save" bug is gone because Save always precedes Test). This keeps the
-agent-backed project test intact for the blurb path and avoids touching the
-runner. (If Can prefers literal body-testing in edit too, the project-scoped
-handler can additionally accept a `{ config }` override — noted as an option, not
-in the default build; Rule 8.)
+Result: the agent connects using the **form** values; the API still never opens a
+DB; create and edit use one mechanism.
 
 ### Frontend (platform)
-- **`lib/api.ts`**: add `testWarehouseConfig(providerId, config)`,
-  `testLLMConfig(providerId, config)`, `testEmbeddingConfig(providerId, config)`
-  hitting the new project-less endpoints.
+- **`lib/api.ts`**: extend `testWarehouse/testLLM/testEmbedding/testBlurbLLM` to
+  send the current form params in the body; add project-less
+  `test{Warehouse,LLM,Embedding}Config(providerId, config)` for the create
+  wizard.
 - **`WarehouseConfigPanel.tsx`**:
   - Remove the standalone `<TestConnectionButton>` render (`:161`).
-  - Replace the single "Save …" button (`:163-167`) with **Save** and **Save
-    and Test**. "Save" = existing `handleSave`. "Save and Test" = `handleSave`
-    then `api.testWarehouse(projectId)`; on `!success`/throw, keep a persistent
-    non-blocking warning on the section
+  - Replace the single "Save …" button (`:163-167`) with **Save** and **Save and
+    Test**. "Save" = existing `handleSave`. "Save and Test" = save then test the
+    form (`api.testWarehouse(projectId, formParams)`); on `!success`/throw keep a
+    persistent non-blocking warning on the section
     ("⚠ Last test failed: <reason>" / "⚠ Connection not verified"), never block.
-  - Keep the `TestConnectionButton` export only if still referenced; otherwise
-    delete it (Rule 6 — no dead code). It is imported by `ProvidersPanel.tsx:17`,
-    so it will be removed there too → delete the component.
+  - Delete the now-unused `TestConnectionButton` (Rule 6). It is defined here and
+    imported only by `ProvidersPanel.tsx:17` (grep-verified), which also drops it.
 - **`ProvidersPanel.tsx`**:
   - Remove the LLM (`:310-312`) and embedding (`:330-332`)
     `<TestConnectionButton>` renders and the `TestConnectionButton` import
     (`:17`).
   - Replace the single "Save providers" button (`:334-338`) with **Save** +
-    **Save and Test** (tests LLM and embedding via the project endpoints after a
-    successful save; aggregates results into per-section non-blocking warnings).
-- **Blurb** (`app/projects/[id]/settings/page.tsx`, `saveBlurb:234`): add a
-  "Save and Test" alongside "Save blurb model" (`:335`) using
-  `api.testBlurbLLM(projectId)` after save; non-blocking warning on failure.
+    **Save and Test** (tests LLM + embedding with the form params after save;
+    aggregates results into per-section non-blocking warnings).
+- **Blurb** (`app/projects/[id]/settings/page.tsx`, `saveBlurb:234`): add "Save
+  and Test" alongside "Save blurb model" (`:335`) using
+  `api.testBlurbLLM(projectId, formParams)`; non-blocking warning on failure.
 - **Create wizard** (`app/projects/new/page.tsx`): add an optional, non-blocking
   **"Test connection"** button to the warehouse step and the AI step that calls
-  the new **project-less** endpoints with the current form config (no project
-  needed — satisfies "first-time create can Save-and-Test without a prior save").
-  The final "Create Project" (`:459`) is unchanged and never blocked by a test.
+  the **project-less** endpoints with the current form config (no project needed
+  — satisfies "first-time create can Save-and-Test without a prior save"). The
+  final "Create Project" (`:459`) is unchanged and never blocked by a test.
 - **Non-blocking warning state**: a small per-section piece of state
   (`'unverified' | 'failed:<reason>' | 'ok'`) rendered as a persistent Mantine
   `Alert`/`Text` under the section. It does **not** gate Save / Next / Create.
@@ -266,12 +275,13 @@ in the default build; Rule 8.)
   `WarehouseTestButton` render (`:188`) + component (`:277`); add Save / Save &
   Test mirroring the platform panel.
 - `enterprise/ui/src/app/projects/[id]/data-sources/page.tsx:377`
-  (`WarehouseTestButton`, multi-warehouse) — same treatment; per-datasource
-  test uses `?warehouse_id=` (project-scoped) after save, or the project-less
-  endpoint for the form.
-- `enterprise/ui/src/lib/warehouses-api.ts:127-131` — align test call shape.
+  (`WarehouseTestButton`, multi-warehouse) — same treatment; per-datasource test
+  sends the datasource's form params (or `?warehouse_id=` for a saved one).
+- `enterprise/ui/src/lib/warehouses-api.ts:127-131` — send form params in the
+  body.
 - `enterprise/ui/src/app/projects/new/page.tsx:232` — optional form-value test
-  as in platform.
+  as in platform. No enterprise agent change needed — Oracle/HANA already run in
+  the enterprise agent, which is exactly where the payload-driven test executes.
 
 ### Acceptance mapping
 - No standalone "Test" anywhere in DB/LLM/embedding/blurb config → removed from
@@ -279,8 +289,8 @@ in the default build; Rule 8.)
 - Save persists without testing; Save & Test persists then tests.
 - Always proceed on no/failed test; persistent non-blocking warning on the
   section.
-- Testing validates the **current form** — create via project-less endpoint;
-  edit via save-then-test (the saved state *is* the form after Save).
+- Testing validates the **current form** (payload → agent) in both create and
+  edit — a first-time create Save-and-Tests without a prior save.
 - Applies to community + enterprise warehouses (incl. multi-warehouse) and
   analysis/embedding/blurb models.
 
@@ -324,9 +334,12 @@ Exploration/Minimum-steps inputs, Estimate checkbox, "Run All Areas", and the
 | P1 | `ui/dashboard/src/components/projects/LLMFormFields.tsx` | Credential slot |
 | P1 | `ui/dashboard/src/components/ProviderCredentialsPhase.tsx` | Credential slot (covers embedding + blurb) |
 | P1 | `ui/dashboard/src/components/common/LLMModelField.tsx` | `DynamicField` credential guard |
-| P2 | `services/api/internal/handler/providers.go` | 3 project-less `…/test` handlers (in-process provider build) |
-| P2 | `services/api/apiserver/apiserver.go` | Register the 3 new routes |
-| P2 | `ui/dashboard/src/lib/api.ts` | `test{Warehouse,LLM,Embedding}Config` |
+| P2 | `services/api/internal/handler/test_connection.go` | Read form params from body; forward as a test payload; add project-less variant |
+| P2 | `services/api/internal/runner/runner.go` | Extend `RunSyncOptions` with test payload (non-secret config + sensitive-env) |
+| P2 | `services/api/internal/runner/{subprocess,docker,kubernetes}.go` | Deliver the payload; k8s backs sensitive-env with a Job-owned `Secret` |
+| P2 | `services/api/apiserver/apiserver.go` | Register the project-less `…/test` route(s) |
+| P2 | `services/agent/agentserver/agentserver.go` | `runTestConnection` builds provider from payload (skips Mongo load); refactor init helpers to share one config source |
+| P2 | `ui/dashboard/src/lib/api.ts` | Send form params in test bodies; add project-less `test*Config` |
 | P2 | `ui/dashboard/src/components/projects/WarehouseConfigPanel.tsx` | Remove Test btn; Save + Save&Test; non-blocking warning; delete `TestConnectionButton` |
 | P2 | `ui/dashboard/src/components/projects/ProvidersPanel.tsx` | Remove Test btns/import; Save + Save&Test |
 | P2 | `ui/dashboard/src/app/projects/[id]/settings/page.tsx` | Blurb Save + Save&Test |
@@ -338,9 +351,11 @@ Exploration/Minimum-steps inputs, Estimate checkbox, "Run All Areas", and the
 P1: `finetuning/ProviderConfigForm.tsx`; verify overlaid `WarehouseConfigPanel`
 + Oracle/HANA. P2: `projects/WarehouseConfigPanel.tsx`,
 `app/projects/[id]/data-sources/page.tsx`, `lib/warehouses-api.ts`,
-`app/projects/new/page.tsx`; confirm enterprise API registers Oracle/HANA
-in-process (for B2). P3: `app/projects/[id]/page.tsx` (duplicate). Remove any
-`.platform-ref` pin so enterprise CI builds against the platform bridge branch.
+`app/projects/new/page.tsx` — send form params in the test body. **No enterprise
+agent change** — Oracle/HANA already run in the enterprise agent, which is where
+the payload-driven test executes. P3: `app/projects/[id]/page.tsx` (duplicate).
+Remove any `.platform-ref` pin so enterprise CI builds against the platform
+bridge branch.
 
 ---
 
@@ -349,8 +364,9 @@ in-process (for B2). P3: `app/projects/[id]/page.tsx` (duplicate). Remove any
 1. **P1** — new `MaskedSecretInput` + helper; wire the 3 credential slots + 2
    `DynamicField` guards. `make test-ui lint-ui`, visual check via the local
    dashboard image build (enterprise overlay validation pattern).
-2. **P2 backend** — 3 project-less `…/test` handlers + routes; unit tests.
-   `make build test-go lint-go`.
+2. **P2 backend** — handler body-parsing; `RunSyncOptions` payload + per-runner
+   delivery (incl. k8s Job-owned Secret); agent payload path + init-helper
+   refactor; unit tests. `make build test-go lint-go`.
 3. **P2 frontend** — `api.ts` helpers; Save / Save&Test in both panels + blurb;
    remove standalone Test buttons + `TestConnectionButton`; wizard form-test
    buttons; non-blocking warning UI.
@@ -362,9 +378,13 @@ in-process (for B2). P3: `app/projects/[id]/page.tsx` (duplicate). Remove any
 
 ## Data / schema / API / UI impacts
 - **No schema/model changes.** No secret storage change (out of scope — storage
-  already encrypts). No agent/runner change (B2).
-- **New API:** 3 additive project-less `POST …/{id}/test` routes. Existing
-  project-scoped test routes unchanged and still used by the blurb path.
+  already encrypts). **The API still opens no DB connection** — the test runs in
+  the agent as before.
+- **API:** the project-scoped test routes now accept an optional body of form
+  params (back-compat when omitted); one additive project-less `…/test` route
+  for the create wizard. `RunSyncOptions` gains a test-payload field.
+- **Agent:** `runTestConnection` gains a payload-driven path; the saved-project
+  path is unchanged.
 - **UI:** credential inputs masked; per-section Save/Save&Test; scrollable
   popover. No route/nav changes.
 
@@ -387,16 +407,25 @@ in-process (for B2). P3: `app/projects/[id]/page.tsx` (duplicate). Remove any
   Selected/All remain outside it.
 
 **Backend (Go, `make test-go`)**
-- New handlers: success (valid config → `success:true`), provider-build failure
-  (bad config → `success:false` + error, HTTP 200), unknown provider id → 400,
-  malformed body → 400, upstream/connect failure surfaced as
-  `success:false`. Table-driven, per target (warehouse/llm/embedding).
+- Handler: body present → payload forwarded to the runner (mock runner asserts
+  the non-secret config + sensitive-env split, and that **no secret appears in
+  argv**); body absent → legacy saved-project path; malformed body → 400.
+- Runner: `RunSyncOptions` payload delivered correctly per mode — subprocess/
+  docker set the sensitive env; the **k8s** runner creates the Job-owned Secret
+  and references it via `secretKeyRef` (fake clientset asserts the Secret exists,
+  has an `ownerReference` to the Job, and that the credential is **not** in the
+  Pod container args/plain env).
+- Agent `runTestConnection`: payload path builds the provider from the payload
+  and skips the Mongo load (unit test with a payload + no project row → still
+  attempts connect); missing/blank credential → clear error; back-compat saved
+  path unchanged.
 
 **Integration (Rule 9 — real, testcontainers; `run-integration-tests` label)**
-- Warehouse `…/test` against a Postgres testcontainer: good creds → success;
-  wrong password → `success:false` with the driver error (this is the real
-  "test the form" path that a first-time create exercises).
-- LLM/embedding `…/test` env-var-gated with real keys where available
+- End-to-end warehouse test against a Postgres testcontainer via the
+  subprocess runner: good form creds → success; wrong password →
+  `success:false` with the driver error (the real "test the form, no prior save"
+  path a first-time create exercises).
+- LLM/embedding payload test env-var-gated with real keys where available
   (mirrors existing `providers_embedding_live_test.go` gating); skipped
   otherwise.
 
@@ -409,29 +438,34 @@ in-process (for B2). P3: `app/projects/[id]/page.tsx` (duplicate). Remove any
 ---
 
 ## Risks & mitigations
-- **B2 vs Can's "→ agent" wording** — flagged for sign-off above; default build
-  is B2, switchable to B1 if he prefers. *(Primary open item.)*
-- **Warehouse HealthCheck in the API process (B2)** — reachability parity is
-  fine in compose/K8s; governance is irrelevant to a no-SQL ping. Documented.
+- **Credential delivery to the agent** — the one open sub-decision (P2 table).
+  Default = sensitive-env backed by a Job-owned k8s `Secret` so the plaintext
+  never sits in a Pod spec; plain-env is the simpler fallback if Can accepts the
+  transient (~60s TTL) Job-spec exposure. Either way no secret goes in argv.
+- **Agent init-helper refactor** — `initWarehouseProvider`/`initLLMProvider`/
+  `initEmbeddingProvider` are shared with discovery; the refactor to a common
+  config source must not change the saved-project (discovery) path. Covered by
+  keeping the saved path as the default and unit-testing both branches.
 - **`-webkit-text-security` browser support** — Chromium/Safari/Firefox 117+;
   universal by 2026. Single-line path uses Mantine `PasswordInput` (no reliance
   on it). If a reviewer objects, the multi-line path can fall back to a
   raw↔dots swap.
-- **Enterprise Oracle/HANA in-process registration (B2)** — confirm on the
-  bridge branch that the enterprise API blank-imports them (near-certain, since
-  the enterprise dashboard already lists them). If not, register them (one blank
-  import each) or fall back to B1 for enterprise warehouses.
 - **Cross-repo lockstep** — platform + enterprise land together on paired bridge
   branches; enterprise `.platform-ref` pin removed so its CI builds against the
   platform branch. Jale runs one repo per issue, so the enterprise PR is a
-  documented companion (flagged to Can).
-- **Removing `TestConnectionButton`** — it is exported and imported across two
-  files; grep-verify no other importer before deletion (Rule 6).
+  documented companion (flagged to Can). No enterprise **agent** change needed.
+- **Removing `TestConnectionButton`** — defined in `WarehouseConfigPanel.tsx`,
+  imported only by `ProvidersPanel.tsx:17` (grep-verified); safe to delete once
+  both usages are gone (Rule 6).
 
 ## Alternatives considered
 - **P2 Option A** (Save-then-existing-Mongo-test only): works for edit but the
   create wizard has no persisted project, so it needs a draft-persist first.
   Rejected per Can + issue (Option B).
+- **P2 "test in-process in the API"** (build the provider + `HealthCheck` in the
+  API): the smallest code change and reuses the "Load models" pattern, but it
+  would open a **warehouse/DB connection in the API** — which the API never does
+  today (invariant #5). Rejected by Can to keep DB connections in the agent.
 - **P1 backend multi-line flag** (add `Multiline`/`Format:"json"` to
   `ConfigField`): cleaner signal but a cross-cutting backend + every-provider +
   marshaling + enterprise change for a UI-only concern. Rejected — UI heuristic
