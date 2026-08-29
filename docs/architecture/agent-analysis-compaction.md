@@ -146,6 +146,33 @@ Dropped steps are reported with their step number, score, and the
 drop reason (`below_min_score` or `over_budget`). Telemetry exposes
 the totals on the run document.
 
+## Smart overflow (over-budget trim only)
+
+The plain trim drops the lowest-scored steps until the evidence fits.
+On small-window models that can throw away useful, unique evidence
+just because a redundant high-scored step outranked it. The per-project
+**smart_overflow_enabled** toggle (default on) makes the *over-budget*
+trim smarter without touching any run that already fits:
+
+- **Re-compact survivors first (R6).** Before dropping any step, the
+  survivors' `CompactResult` digests are rebuilt at a tighter head/tail
+  (`BuildCompactResultWithLimits`, e.g. 2+2 rows) from the raw rows
+  still held in memory, so more steps fit at reduced per-step detail.
+  If that alone brings the prompt under budget, nothing is dropped.
+- **Drop near-duplicates, not unique evidence (R5).** When a step must
+  still be dropped, a near-duplicate of a higher-scored survivor (same
+  table set + normalized query purpose) is preferred over unique
+  evidence; the classic lowest-scored drop is the fallback when nothing
+  is redundant.
+- **Leave a breadcrumb.** The dropped steps' purposes are appended to
+  the analysis prompt as an "also examined (not shown)" line, so the
+  model knows the evidence exists and can cite it via `source_steps`.
+
+All of this lives entirely inside the `tokens > budget` trim loop, so a
+run whose evidence fits — every large-context model — produces an
+identical picked set and prompt regardless of the toggle. Turning the
+toggle off restores the plain drop-lowest-scored trim exactly.
+
 ## Flow
 
 ```

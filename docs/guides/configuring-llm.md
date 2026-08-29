@@ -116,9 +116,34 @@ To explicitly opt out of reasoning on a per-call basis, callers set
 `ChatRequest.ReasoningEffort = "off"`. Other documented values:
 `"on"`, `"low"`, `"medium"`, `"high"`, and the default (`""`) which
 leaves the model's own behavior unchanged. Effort values other than
-`"off"` are silently ignored on models the catalog flags as
+`"off"` are silently ignored on models the provider reports as
 non-reasoning so the request doesn't 400 against an upstream that
 rejects `think=true` on a non-thinking model.
+
+#### Enable reasoning (Ollama only)
+
+Ollama LLM configs expose an **Enable reasoning** checkbox (off by
+default — behavior is unchanged unless you turn it on). It is shown
+only for the Ollama provider, because Ollama is the provider whose
+native thinking toggle DecisionBox wires. When on, discovery requests
+the model's hidden chain-of-thought (`ReasoningEffort=on`) for every
+phase, and reasoning models also get extra exploration output headroom
+(see `EXPLORATION_MAX_OUTPUT_TOKENS`).
+
+Native thinking is enabled only after DecisionBox confirms the model
+actually supports it, by reading the model's own capabilities from
+Ollama's `/api/show` (the `thinking` capability) — the same call used
+to auto-detect the context window. This means a reasoning model you
+just pulled (e.g. `qwen3`, `deepseek-r1`) gets thinking enabled even
+if it is not in the built-in catalog, and a non-reasoning model
+silently ignores the checkbox instead of erroring. If a server still
+rejects thinking, the request is retried once without it so the run
+continues.
+
+You do not need this checkbox for models the catalog already flags as
+reasoning — those get the exploration headroom automatically. The
+checkbox exists so uncatalogued Ollama reasoning models can be opted
+in without a code release.
 
 ### Quality Considerations
 
