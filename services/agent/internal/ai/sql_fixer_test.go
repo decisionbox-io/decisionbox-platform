@@ -337,6 +337,71 @@ func TestSQLFixer_FixSQL_UsesCatalogMaxOutputTokens(t *testing.T) {
 	}
 }
 
+// newBudgetFixer builds a SQL fixer over a mock provider whose unregistered
+// model resolves to the 64K default catalog cap — the exact shape that 400'd on
+// a 32K/8K deployment before this fix.
+func newBudgetFixer(window, outputCap int) (*SQLFixer, *testutil.MockLLMProvider) {
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content: "```sql\nSELECT 1\n```",
+		Usage:   gollm.Usage{InputTokens: 5, OutputTokens: 3},
+	}
+	client, _ := New(provider, "uncatalogued-model")
+	client.SetProvenance("p1", "r1", "uncatalogued-provider")
+	fixer := NewSQLFixer(SQLFixerOptions{
+		Client:       client,
+		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}",
+		Dataset:      "ds",
+		Window:       window,
+		OutputCap:    outputCap,
+	})
+	return fixer, provider
+}
+
+// TestSQLFixer_BudgetsToResolvedOutputCap is the #347-class fix: an uncatalogued
+// model resolves to the 64K default cap, but with a resolved window/output cap
+// the fix request is bounded to the real cap (8192) so a 32K/8K deployment does
+// not reject it with a hard 400 (observed on qwen3.5-27b via vLLM/LiteLLM).
+func TestSQLFixer_BudgetsToResolvedOutputCap(t *testing.T) {
+	fixer, provider := newBudgetFixer(32768, 8192)
+	if _, err := fixer.FixSQL(context.Background(), "SELECT BAD", "broken", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	got := provider.Calls[0].Request.MaxTokens
+	if got != 8192 {
+		t.Errorf("fix max_tokens = %d, want 8192 (resolved output cap, not the 64K default)", got)
+	}
+}
+
+// TestSQLFixer_BudgetsDownOnTinyWindow: when even the output cap doesn't fit the
+// window, the request is budgeted down but never below the floor.
+func TestSQLFixer_BudgetsDownOnTinyWindow(t *testing.T) {
+	fixer, provider := newBudgetFixer(2000, 8192)
+	if _, err := fixer.FixSQL(context.Background(), "SELECT BAD", "broken", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	got := provider.Calls[0].Request.MaxTokens
+	if got >= 8192 {
+		t.Errorf("fix max_tokens = %d, expected budgeted below the 8192 cap on a 2000-token window", got)
+	}
+	if got < sqlFixMinOutputTokens {
+		t.Errorf("fix max_tokens = %d dropped below the floor %d", got, sqlFixMinOutputTokens)
+	}
+}
+
+// TestSQLFixer_BigModelUnchanged is the no-op proof: a wide-window model keeps
+// the full catalog cap, because the tiny fix prompt leaves the whole cap free.
+func TestSQLFixer_BigModelUnchanged(t *testing.T) {
+	fixer, provider := newBudgetFixer(200000, 64000)
+	if _, err := fixer.FixSQL(context.Background(), "SELECT BAD", "broken", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	got := provider.Calls[0].Request.MaxTokens
+	if got != 64000 {
+		t.Errorf("fix max_tokens = %d, want 64000 unchanged for a wide-window model", got)
+	}
+}
+
 func TestSQLFixer_FixSQL_FallsBackToDefaultWhenProviderUnregistered(t *testing.T) {
 	// Unknown provider name — GetMaxOutputTokens must fall back to the
 	// global default (64K, #338), so the fixer never sends a 0 max_tokens
