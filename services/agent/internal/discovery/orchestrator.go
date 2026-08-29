@@ -734,6 +734,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		dsExecutors = dc.executors
 	}
 
+	// Resolve the model window + output cap once for the exploration engine's
+	// reasoning-aware output budget (R3). At exploration time no overflow has
+	// been observed yet, so this is the run-start resolved window (operator
+	// override → live auto-detect → catalog → default). Only consulted on the
+	// reasoning-effective path — a non-reasoning model keeps today's fixed
+	// exploration ceiling regardless of these values.
+	exploreWindow, exploreOutputCap := o.resolveModelBudget()
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -745,6 +753,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
+
+		// R3: reasoning-aware, window-budgeted per-step output ceiling.
+		Window:             exploreWindow,
+		OutputCap:          exploreOutputCap,
+		ReasoningEffective: o.effectiveReasoning(),
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.
@@ -973,29 +986,33 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Debug("Analysis area: budgeted output tokens")
 
 		// Send the selected exploration evidence to the LLM and generate
-		// structured insights for the current analysis area.
-		chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
-		if err != nil {
-			step.Error = err.Error()
+		// structured insights for the current analysis area. The first call is
+		// a plain Chat (byte-identical for big models); the self-heal retry
+		// fires only when it yields zero parseable insights from a response that
+		// wasn't a legitimately empty area (see analyzeAreaInsights).
+		outcome := o.analyzeAreaInsights(ctx, area.ID, prompt, maxTokens)
+		step.Response = outcome.response
+		step.TokensIn = outcome.tokensIn
+		step.TokensOut = outcome.tokensOut
+		step.DurationMs = outcome.durationMs
+		step.AnalysisParseRetries = outcome.parseRetries
+		step.InsightsDroppedParse = outcome.droppedParse
+
+		if outcome.chatErr != nil {
+			step.Error = outcome.chatErr.Error()
 			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": err.Error()}).Warn("Analysis failed")
+			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.chatErr.Error()}).Warn("Analysis failed")
 			continue
 		}
 
-		step.Response = chatResult.Content
-		step.TokensIn = chatResult.TokensIn
-		step.TokensOut = chatResult.TokensOut
-		step.DurationMs = chatResult.DurationMs
-
-		// Parse insights from response
-		insights, parseErr := o.parseInsights(chatResult.Content, area.ID)
-		if parseErr != nil {
-			step.Error = fmt.Sprintf("parse error: %s", parseErr.Error())
+		if len(outcome.insights) == 0 && outcome.parseErr != nil {
+			step.Error = fmt.Sprintf("parse error: %s", outcome.parseErr.Error())
 			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": parseErr.Error()}).Warn("Failed to parse insights")
+			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.parseErr.Error()}).Warn("Failed to parse insights")
 			continue
 		}
 
+		insights := outcome.insights
 		step.Insights = insights
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
@@ -1308,39 +1325,185 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 	return plain, md
 }
 
-func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, error) {
-	var result struct {
-		Insights []models.Insight `json:"insights"`
-	}
-
+// parseInsights decodes the analysis response tolerantly and per-item. It
+// accepts either the {"insights": [...]} envelope or a bare top-level array
+// (some models emit the array directly — both shapes appear in
+// discovery_analysis_steps). Each element is decoded on its own through the
+// tolerant models.Insight.UnmarshalJSON, so a single malformed insight is
+// skipped and counted rather than discarding the whole area (the insight
+// analogue of the recommendation loss fixed in issue #342). Mirrors
+// parseRecommendations.
+//
+// Returns the kept insights, the number of per-item drops, and a non-nil error
+// only when the response is not recognizable as insights at all (neither the
+// envelope nor a bare array). A well-formed but empty result returns
+// (empty, 0, nil) so callers can distinguish "no insights" from "could not
+// parse".
+func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
 	cleaned := cleanJSONResponse(response)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse analysis response: %w", err)
+
+	var raws []json.RawMessage
+	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
+		// Bare top-level array (some models emit the array directly).
+		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		// Envelope object: the "insights" key must be present. An object with a
+		// different key is a parse failure, not a legitimately empty result —
+		// otherwise it would silently yield 0 insights with no retry.
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+			return nil, 0, fmt.Errorf("failed to parse analysis response: %w", err)
+		}
+		// Match the key case-insensitively, as encoding/json does when decoding
+		// into a struct tag — some models capitalize it (`{"Insights":[…]}`).
+		var insRaw json.RawMessage
+		found := false
+		for k, v := range envelope {
+			if strings.EqualFold(k, "insights") {
+				insRaw, found = v, true
+				break
+			}
+		}
+		if !found {
+			return nil, 0, fmt.Errorf(`response is missing the "insights" key`)
+		}
+		if strings.TrimSpace(string(insRaw)) == "null" {
+			// A null array decodes into a nil slice without error; treat it as a
+			// parse failure (→ retry) rather than a silent empty result.
+			return nil, 0, fmt.Errorf(`"insights" is null`)
+		}
+		if err := json.Unmarshal(insRaw, &raws); err != nil {
+			return nil, 0, fmt.Errorf(`"insights" is not an array: %w`, err)
+		}
 	}
 
-	for i := range result.Insights {
-		result.Insights[i].AnalysisArea = areaID
-		if result.Insights[i].DiscoveredAt.IsZero() {
-			result.Insights[i].DiscoveredAt = time.Now()
+	insights := make([]models.Insight, 0, len(raws))
+	dropped := 0
+	for i, raw := range raws {
+		var insight models.Insight
+		if err := json.Unmarshal(raw, &insight); err != nil {
+			dropped++
+			applog.WithFields(applog.Fields{
+				"area":   areaID,
+				"index":  i,
+				"reason": err.Error(),
+			}).Warn("Dropping unparseable insight; keeping the rest of the area")
+			continue
+		}
+
+		insight.AnalysisArea = areaID
+		if insight.DiscoveredAt.IsZero() {
+			insight.DiscoveredAt = time.Now()
 		}
 		// Split the authored description: the LLM writes Markdown into
 		// `description`; keep that rendition in DescriptionMd for the
 		// dashboard, and reduce Description to the plain-text form that API
 		// consumers, previews, and embeddings read.
-		result.Insights[i].Description, result.Insights[i].DescriptionMd =
-			splitMarkdownDescription(result.Insights[i].Description)
+		insight.Description, insight.DescriptionMd =
+			splitMarkdownDescription(insight.Description)
 		// Assign a UUID if the LLM didn't give one. The same UUID is later
 		// reused as the standalone `insights._id` and the Qdrant point id, so
 		// every link built from a search hit (Ask sources, related cards) can
 		// use the existing /discoveries/{did}/insights/{id} route without any
 		// client-side fallback. Qdrant only accepts UUID / uint64 point ids,
 		// which is why the embedded id itself has to be a UUID.
-		if result.Insights[i].ID == "" {
-			result.Insights[i].ID = uuid.New().String()
+		if insight.ID == "" {
+			insight.ID = uuid.New().String()
+		}
+
+		insights = append(insights, insight)
+	}
+
+	return insights, dropped, nil
+}
+
+// analysisParseOutcome carries the result of one analysis area's chat +
+// per-item parse + self-heal loop, so the loop can be unit-tested in isolation
+// (mirrors how generateRecommendations is testable). parseErr is set only when
+// the area produced zero insights because of a parse failure (not a
+// legitimately empty area); chatErr is a transport/model error that skips the
+// area outright.
+type analysisParseOutcome struct {
+	insights     []models.Insight
+	response     string
+	tokensIn     int
+	tokensOut    int
+	durationMs   int64
+	parseRetries int
+	droppedParse int
+	chatErr      error
+	parseErr     error
+}
+
+// analyzeAreaInsights runs one analysis area: a first plain Chat (no structured
+// output, so big models that already work stay byte-identical), then — only if
+// that first response yields zero parseable insights from a response that
+// wasn't a legitimately empty area — up to ANALYSIS_PARSE_MAX_RETRIES
+// corrective re-prompts. The retry appends analysisRepairSuffix and uses
+// ChatWithFormat with a schema-constrained insight envelope, which self-gates
+// on SupportsStructuredOutput (a safe no-op on providers without it, where the
+// tolerant per-item parser remains the net). Mirrors generateRecommendations'
+// self-heal loop.
+func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt string, maxTokens int) analysisParseOutcome {
+	maxRetries := goconfig.GetEnvAsInt(analysisParseMaxRetriesEnv, defaultAnalysisParseMaxRetries)
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	insightFormat := insightResponseFormat()
+
+	var out analysisParseOutcome
+	var lastParseErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var (
+			chatResult *ai.ChatResult
+			err        error
+		)
+		if attempt == 0 {
+			chatResult, err = o.aiClient.Chat(ctx, prompt, "", maxTokens)
+		} else {
+			out.parseRetries = attempt
+			attemptPrompt := prompt + analysisRepairSuffix(lastParseErr)
+			applog.WithFields(applog.Fields{
+				"area":    areaID,
+				"attempt": attempt,
+				"reason":  errString(lastParseErr),
+			}).Warn("Re-prompting for insights after unparseable response")
+			chatResult, err = o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, insightFormat)
+		}
+		if err != nil {
+			out.chatErr = err
+			return out
+		}
+
+		out.response = chatResult.Content
+		if attempt == 0 {
+			out.tokensIn = chatResult.TokensIn
+			out.tokensOut = chatResult.TokensOut
+			out.durationMs = chatResult.DurationMs
+		} else {
+			out.tokensIn += chatResult.TokensIn
+			out.tokensOut += chatResult.TokensOut
+			out.durationMs += chatResult.DurationMs
+		}
+
+		parsed, dropped, perr := o.parseInsights(chatResult.Content, areaID)
+		if perr == nil {
+			out.droppedParse = dropped
+			if len(parsed) > 0 || dropped == 0 {
+				// >=1 kept, or a legitimately empty area — accept either.
+				out.insights = parsed
+				return out
+			}
+			lastParseErr = fmt.Errorf("all %d insight(s) failed to parse", dropped)
+		} else {
+			lastParseErr = perr
 		}
 	}
 
-	return result.Insights, nil
+	out.parseErr = lastParseErr
+	return out
 }
 
 // generateRecommendations generates actionable recommendations and captures the full dialog.
@@ -1493,6 +1656,20 @@ func (o *Orchestrator) generateRecommendations(
 	return recs, step
 }
 
+// Analysis-parse tunables (small/open-model insight recovery). Mirror the
+// recommendation-parse knobs below; the first analysis call stays a plain Chat
+// (byte-identical for big models), and these govern only the corrective retry.
+const (
+	// defaultAnalysisParseMaxRetries bounds how many corrective re-prompts an
+	// analysis area issues when a non-empty response yields zero parseable
+	// insights. One extra shot by default — mirrors the recommendation phase.
+	// A legitimately empty area (the model found nothing) never retries.
+	defaultAnalysisParseMaxRetries = 1
+
+	// analysisParseMaxRetriesEnv overrides defaultAnalysisParseMaxRetries.
+	analysisParseMaxRetriesEnv = "ANALYSIS_PARSE_MAX_RETRIES"
+)
+
 // Recommendation-parse tunables (issue #342).
 const (
 	// statusRecommendationParseError marks a RecommendationStep whose phase
@@ -1597,6 +1774,23 @@ func recommendationRepairSuffix(err error) string {
 		"— no prose, no markdown fences, and not a bare top-level array. Each " +
 		"recommendation's `expected_impact` MUST be an object with `metric`, " +
 		"`estimated_improvement`, and `reasoning` string fields, never a bare string."
+}
+
+// analysisRepairSuffix builds the reason-aware corrective instruction appended
+// to an analysis-area prompt on a re-prompt. It names the specific failure and
+// pins the two shapes that trip the parser most (a bare top-level array and
+// off-typed scalar fields the tolerant decoder still could not salvage).
+func analysisRepairSuffix(err error) string {
+	reason := "it could not be parsed as JSON"
+	if err != nil {
+		reason = err.Error()
+	}
+	return "\n\nYour previous response could not be used: " + reason + ".\n" +
+		`Respond with ONLY a single JSON object of the form {"insights": [ ... ]} ` +
+		"— no prose, no markdown fences, and not a bare top-level array. In each " +
+		"insight, `affected_count` MUST be a plain integer, `risk_score` and " +
+		"`confidence` plain numbers between 0 and 1, `source_steps` an array of " +
+		"integers, and `indicators` an array of strings."
 }
 
 // errString renders an error for structured logging, empty when nil.

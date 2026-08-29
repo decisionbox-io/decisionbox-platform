@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -861,6 +862,130 @@ func TestNonFiniteNumericRejected(t *testing.T) {
 		}
 		if rec.Confidence != 0 || rec.SegmentSize != 0 {
 			t.Errorf("%s: non-finite value leaked (confidence=%v segment=%d)", in, rec.Confidence, rec.SegmentSize)
+		}
+	}
+}
+
+// --- Insight.UnmarshalJSON (small/open-model insight recovery) ---
+
+// TestInsightUnmarshalJSON_GoldenEquality is the big-model no-op proof at the
+// struct level: a fully populated, well-typed insight survives a Marshal →
+// Unmarshal round trip byte-for-byte identical. The tolerant decoder must not
+// change any value that was already the right type (as an Opus/GPT response
+// is). If this ever fails, the coercion is altering good data.
+func TestInsightUnmarshalJSON_GoldenEquality(t *testing.T) {
+	original := Insight{
+		ID:            "11111111-2222-3333-4444-555555555555",
+		AnalysisArea:  "churn",
+		Name:          "High churn at level 45",
+		Description:   "Players drop off at level 45.",
+		DescriptionMd: "Players drop off at **level 45**.",
+		Severity:      "critical",
+		AffectedCount: 2847,
+		RiskScore:     0.85,
+		Confidence:    0.92,
+		Metrics:       map[string]interface{}{"drop_rate": 0.67, "cohort": "week-3"},
+		Indicators:    []string{"session drop", "revenue decline"},
+		TargetSegment: "new players",
+		SourceSteps:   []int{1, 3, 5},
+		DiscoveredAt:  time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded Insight
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(original, decoded) {
+		t.Errorf("round trip changed a well-typed insight:\n orig = %+v\n got  = %+v", original, decoded)
+	}
+}
+
+// TestInsightUnmarshalJSON_StringTypedScalars covers the dominant small/open
+// model failure: numeric fields emitted as strings. Under strict decoding a
+// single one of these failed the whole insight and zeroed the analysis area.
+func TestInsightUnmarshalJSON_StringTypedScalars(t *testing.T) {
+	const in = `{
+		"name":"Revenue drop",
+		"affected_count":"1,200",
+		"risk_score":"0.7",
+		"confidence":"0.88"
+	}`
+	var ins Insight
+	if err := json.Unmarshal([]byte(in), &ins); err != nil {
+		t.Fatalf("string-typed scalars must decode: %v", err)
+	}
+	if ins.AffectedCount != 1200 {
+		t.Errorf("AffectedCount = %d, want 1200", ins.AffectedCount)
+	}
+	if ins.RiskScore != 0.7 {
+		t.Errorf("RiskScore = %v, want 0.7", ins.RiskScore)
+	}
+	if ins.Confidence != 0.88 {
+		t.Errorf("Confidence = %v, want 0.88", ins.Confidence)
+	}
+}
+
+// TestInsightUnmarshalJSON_SourceStepsFlexible covers source_steps arriving as
+// an array of numeric strings, a single scalar, or a comma-joined string — all
+// shapes small models produce instead of the []int the schema asks for.
+func TestInsightUnmarshalJSON_SourceStepsFlexible(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []int
+	}{
+		{`[1,3,5]`, []int{1, 3, 5}},
+		{`["1","3","5"]`, []int{1, 3, 5}},
+		{`"1,2,3"`, []int{1, 2, 3}},
+		{`7`, []int{7}},
+		{`"9"`, []int{9}},
+		{`null`, nil},
+	}
+	for _, c := range cases {
+		in := `{"name":"n","source_steps":` + c.in + `}`
+		var ins Insight
+		if err := json.Unmarshal([]byte(in), &ins); err != nil {
+			t.Fatalf("Unmarshal(source_steps=%s): %v", c.in, err)
+		}
+		if !reflect.DeepEqual(ins.SourceSteps, c.want) {
+			t.Errorf("source_steps %s → %v, want %v", c.in, ins.SourceSteps, c.want)
+		}
+	}
+}
+
+// TestInsightUnmarshalJSON_IndicatorsScalar covers indicators arriving as a bare
+// string (one signal) instead of a list, and a list with a stray number.
+func TestInsightUnmarshalJSON_IndicatorsScalar(t *testing.T) {
+	var single Insight
+	if err := json.Unmarshal([]byte(`{"name":"n","indicators":"session drop"}`), &single); err != nil {
+		t.Fatalf("scalar indicators must decode: %v", err)
+	}
+	if !reflect.DeepEqual(single.Indicators, []string{"session drop"}) {
+		t.Errorf("scalar indicators → %v, want [\"session drop\"]", single.Indicators)
+	}
+
+	var mixed Insight
+	if err := json.Unmarshal([]byte(`{"name":"n","indicators":["a",2]}`), &mixed); err != nil {
+		t.Fatalf("mixed indicators must decode: %v", err)
+	}
+	if !reflect.DeepEqual(mixed.Indicators, []string{"a", "2"}) {
+		t.Errorf("mixed indicators → %v, want [\"a\",\"2\"]", mixed.Indicators)
+	}
+}
+
+// TestInsightUnmarshalJSON_NonFiniteRejected ensures a NaN/Inf risk_score or
+// confidence string cannot poison a stored float (which would later break JSON
+// serialization of the whole discovery). Same guard as the recommendation path.
+func TestInsightUnmarshalJSON_NonFiniteRejected(t *testing.T) {
+	for _, in := range []string{`{"name":"n","risk_score":"NaN"}`, `{"name":"n","confidence":"Inf"}`, `{"name":"n","risk_score":"-Inf"}`} {
+		var ins Insight
+		if err := json.Unmarshal([]byte(in), &ins); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", in, err)
+		}
+		if ins.RiskScore != 0 || ins.Confidence != 0 {
+			t.Errorf("%s: non-finite value leaked (risk=%v confidence=%v)", in, ins.RiskScore, ins.Confidence)
 		}
 	}
 }

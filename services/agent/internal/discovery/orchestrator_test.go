@@ -267,7 +267,7 @@ func TestParseInsights_ValidJSON(t *testing.T) {
 		]
 	}`
 
-	insights, err := o.parseInsights(response, "churn")
+	insights, _, err := o.parseInsights(response, "churn")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestParseInsights_JSONInCodeBlock(t *testing.T) {
 
 	response := "Here are the insights:\n```json\n{\"insights\": [{\"name\": \"Test\", \"severity\": \"low\"}]}\n```\nDone."
 
-	insights, err := o.parseInsights(response, "engagement")
+	insights, _, err := o.parseInsights(response, "engagement")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestParseInsights_MalformedJSON(t *testing.T) {
 
 	response := "This is not valid JSON at all, just some text about churn patterns."
 
-	_, err := o.parseInsights(response, "churn")
+	_, _, err := o.parseInsights(response, "churn")
 	if err == nil {
 		t.Error("parseInsights should return error for malformed JSON")
 	}
@@ -339,7 +339,7 @@ func TestParseInsights_EmptyArray(t *testing.T) {
 
 	response := `{"insights": []}`
 
-	insights, err := o.parseInsights(response, "churn")
+	insights, _, err := o.parseInsights(response, "churn")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestParseInsights_WithSourceSteps(t *testing.T) {
 		}]
 	}`
 
-	insights, err := o.parseInsights(response, "retention")
+	insights, _, err := o.parseInsights(response, "retention")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestParseInsights_MarkdownDescriptionSplit(t *testing.T) {
 		}]
 	}`
 
-	insights, err := o.parseInsights(response, "churn")
+	insights, _, err := o.parseInsights(response, "churn")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestParseInsights_PlainDescriptionLeavesMdEmpty(t *testing.T) {
 		}]
 	}`
 
-	insights, err := o.parseInsights(response, "churn")
+	insights, _, err := o.parseInsights(response, "churn")
 	if err != nil {
 		t.Fatalf("parseInsights error: %v", err)
 	}

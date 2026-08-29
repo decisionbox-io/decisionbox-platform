@@ -76,6 +76,17 @@ func (o *Orchestrator) resolveModelBudget() (window, outputCap int) {
 	return window, outputCap
 }
 
+// effectiveReasoning reports whether the run's analysis model should be treated
+// as reasoning-capable for the exploration output-headroom budget (R3): either
+// the operator enabled reasoning (the "Enable reasoning" checkbox, surfaced only
+// for providers that wire native thinking) or the catalog flags the model.
+// Catalog-independent by design — an uncatalogued reasoning model the operator
+// opted into still gets headroom, and a big non-reasoning model (Opus, GPT, ...)
+// with the box unchecked returns false, so its exploration budget is unchanged.
+func (o *Orchestrator) effectiveReasoning() bool {
+	return gollm.ReasoningEnabled(o.llmConfig) || gollm.IsReasoningModel(o.llmProvider, o.llmModel)
+}
+
 // installContextWindowObserver wires the ai.Client's context-window observer to
 // this run's self-calibration: when a context-overflow 400 reveals the model's
 // true window, cache it in memory (so the remaining areas re-budget against it)
