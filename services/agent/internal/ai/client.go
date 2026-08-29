@@ -40,6 +40,14 @@ type Client struct {
 	// so a later run for the same model does not repeat the overflow.
 	// Nil for callers that don't self-calibrate (tests, non-discovery).
 	contextWindowObserver func(model string, window int)
+
+	// reasoning, when true, sets ReasoningEffort=on on every LLM request so a
+	// provider that wires native thinking (currently Ollama, capability-gated)
+	// produces hidden chain-of-thought. Set from the operator's "Enable
+	// reasoning" opt-in (SetReasoning). Default false = today: the request
+	// carries ReasoningEffortDefault, which every provider ignores, so big
+	// models are byte-identical.
+	reasoning bool
 }
 
 // New creates a new AI client backed by an llm.Provider.
@@ -122,14 +130,24 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 		maxTokens = 4096
 	}
 
+	// Reasoning is opt-in: default leaves ReasoningEffortDefault (""), which
+	// every provider ignores (byte-identical to today). When the operator
+	// enabled reasoning, request it explicitly — only Ollama acts on it, and
+	// only after confirming the model supports thinking.
+	reasoningEffort := gollm.ReasoningEffortDefault
+	if c.reasoning {
+		reasoningEffort = gollm.ReasoningEffortOn
+	}
+
 	req := gollm.ChatRequest{
-		Model:          c.model,
-		SystemPrompt:   systemPrompt,
-		Messages:       messages,
-		MaxTokens:      maxTokens,
-		Tools:          tools,
-		ToolChoice:     toolChoice,
-		ResponseFormat: format,
+		Model:           c.model,
+		SystemPrompt:    systemPrompt,
+		Messages:        messages,
+		MaxTokens:       maxTokens,
+		Tools:           tools,
+		ToolChoice:      toolChoice,
+		ResponseFormat:  format,
+		ReasoningEffort: reasoningEffort,
 	}
 
 	logger.WithFields(logger.Fields{
@@ -307,6 +325,13 @@ func (c *Client) ProviderName() string { return c.providerName }
 
 func (c *Client) SetTestMode(enabled bool)        { c.testMode = enabled }
 func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
+
+// SetReasoning enables or disables native reasoning (hidden chain-of-thought)
+// for every LLM call this client makes. When true, requests carry
+// ReasoningEffort=on; providers that don't wire reasoning ignore it, and Ollama
+// enables native thinking only after confirming the model supports it. Default
+// false = today. Set from the operator's "Enable reasoning" opt-in.
+func (c *Client) SetReasoning(enabled bool) { c.reasoning = enabled }
 
 // SetContextWindowObserver registers a callback invoked with (model, window)
 // whenever a context-overflow 400 reveals the model's true context window.

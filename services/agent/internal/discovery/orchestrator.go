@@ -464,6 +464,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// remaining areas re-budget against it and a later run starts correct.
 	o.installContextWindowObserver(ctx)
 
+	// Reasoning opt-in: when the operator enabled reasoning (the "Enable
+	// reasoning" checkbox, surfaced only for providers that wire native
+	// thinking), request it on every LLM call. Default off = today, so big
+	// models are byte-identical. Only Ollama acts on it, and only after
+	// confirming the model supports thinking (/api/show capability).
+	if o.aiClient != nil {
+		o.aiClient.SetReasoning(gollm.ReasoningEnabled(o.llmConfig))
+	}
+
 	// Set max steps for accurate progress reporting
 	o.statusReporter.maxSteps = opts.MaxSteps
 	if o.statusReporter.maxSteps <= 0 {

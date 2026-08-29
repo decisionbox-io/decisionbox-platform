@@ -20,10 +20,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	ollamaapi "github.com/ollama/ollama/api"
+	ollamamodel "github.com/ollama/ollama/types/model"
 )
 
 // ollamaDefaultTimeout is the default HTTP timeout for Ollama calls.
@@ -95,6 +97,20 @@ func init() {
 				Placeholder: "32768",
 				Description: "Optional per-request context window override (token count). Leave blank to use the Ollama server's OLLAMA_CONTEXT_LENGTH default. Setting a higher value than the server default forces a larger KV cache allocation and can OOM on tight VRAM.",
 			},
+			{
+				// Surfaced only for Ollama (the dashboard renders the selected
+				// provider's config_fields), because Ollama is the provider whose
+				// native thinking toggle we wire. Off by default = today. When on,
+				// discovery enables the model's hidden chain-of-thought — but only
+				// after confirming the model reports it supports thinking via
+				// /api/show, so a non-reasoning model silently ignores it — and
+				// gives reasoning models extra exploration output headroom.
+				Key:         gollm.ReasoningEnabledKey,
+				Label:       "Enable reasoning",
+				Type:        "boolean",
+				Default:     "false",
+				Description: "Produce hidden chain-of-thought during discovery. Off by default; enable for reasoning models like qwen3 / DeepSeek-R1. Native thinking is turned on only when the model reports it supports it, so it is safe to leave on for mixed model fleets.",
+			},
 		}, gollm.TLSConfigFields()...),
 		Models: buildOllamaCatalog(),
 		// Fallbacks for models the catalog does not list. Output uses the
@@ -165,6 +181,14 @@ type OllamaProvider struct {
 	// that were running at 4k/8k when a catalog model happens to
 	// publish a much larger architectural window.
 	numCtx int
+
+	// thinkingCache memoizes per-model "does this model support native
+	// thinking" answers resolved from /api/show capabilities, so the reasoning
+	// gate costs at most one extra localhost call per model per run. Guarded by
+	// thinkingMu. Only successful probes are cached (a transient Show failure is
+	// retried on the next call).
+	thinkingMu    sync.Mutex
+	thinkingCache map[string]bool
 }
 
 // NewOllamaProvider creates a new Ollama LLM provider. A zero or
@@ -200,10 +224,11 @@ func NewOllamaProviderWithClient(host, model string, httpClient *http.Client, nu
 		numCtx = 0
 	}
 	return &OllamaProvider{
-		client:      client,
-		model:       model,
-		httpTimeout: httpClient.Timeout,
-		numCtx:      numCtx,
+		client:        client,
+		model:         model,
+		httpTimeout:   httpClient.Timeout,
+		numCtx:        numCtx,
+		thinkingCache: make(map[string]bool),
 	}, nil
 }
 
@@ -319,6 +344,13 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		}
 	}
 
+	// Native thinking is gated on the model actually supporting it (catalog
+	// flag OR /api/show "thinking" capability), checked BEFORE sending
+	// think=true so a non-reasoning model never trips Ollama's "does not
+	// support thinking" 400. The capability probe runs only when the effort
+	// would request thinking (default/off never touch the network).
+	think := p.thinkValueFor(ctx, req.ReasoningEffort, model)
+
 	ollamaReq := &ollamaapi.ChatRequest{
 		Model:    model,
 		Messages: messages,
@@ -326,14 +358,23 @@ func (p *OllamaProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 		Options:  options,
 		Truncate: &truncate,
 		Format:   format,
-		Think:    reasoningEffortToThinkValue(req.ReasoningEffort, gollm.IsReasoningModel("ollama", model)),
+		Think:    think,
 	}
 
 	var finalResp ollamaapi.ChatResponse
-	err := p.client.Chat(ctx, ollamaReq, func(resp ollamaapi.ChatResponse) error {
+	collect := func(resp ollamaapi.ChatResponse) error {
 		finalResp = resp
 		return nil
-	})
+	}
+	err := p.client.Chat(ctx, ollamaReq, collect)
+	if err != nil && think.Bool() && isThinkingUnsupportedError(err) {
+		// Backstop: the capability probe (or catalog) said the model supports
+		// thinking, but the server still rejected it (e.g. an older Ollama, or a
+		// tag whose capabilities drifted from the catalog). Retry once without
+		// thinking so the run continues rather than failing the whole call.
+		ollamaReq.Think = nil
+		err = p.client.Chat(ctx, ollamaReq, collect)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ollama: chat failed: %w", err)
 	}
@@ -404,4 +445,74 @@ func reasoningEffortToThinkValue(effort string, modelIsReasoning bool) *ollamaap
 	default:
 		return nil
 	}
+}
+
+// thinkValueFor resolves the Think field for a Chat request, adding
+// capability-from-the-model detection on top of reasoningEffortToThinkValue's
+// pure mapping. It probes the model's thinking capability ONLY when the effort
+// would actually request thinking (on/low/medium/high) — default/off never hit
+// the network. This is what lets the operator's "Enable reasoning" opt-in turn
+// on native thinking for an UNCATALOGUED reasoning model (e.g. a freshly pulled
+// qwen3) without a catalog entry, mirroring #347's window auto-detection.
+func (p *OllamaProvider) thinkValueFor(ctx context.Context, effort, model string) *ollamaapi.ThinkValue {
+	needsCapability := effort == gollm.ReasoningEffortOn ||
+		effort == gollm.ReasoningEffortLow ||
+		effort == gollm.ReasoningEffortMedium ||
+		effort == gollm.ReasoningEffortHigh
+	modelIsReasoning := needsCapability && p.modelSupportsThinking(ctx, model)
+	return reasoningEffortToThinkValue(effort, modelIsReasoning)
+}
+
+// modelSupportsThinking reports whether the model can emit native reasoning
+// ("thinking"). It trusts the catalog flag first (no network), then falls back
+// to the model's own /api/show capabilities — so an uncatalogued reasoning
+// model is detected from the model itself rather than requiring a catalog
+// entry. Successful probes are cached per model. A Show failure is treated as
+// "unknown → not thinking" (and NOT cached, so a later call retries) so we
+// never send think=true to a model that can't take it.
+func (p *OllamaProvider) modelSupportsThinking(ctx context.Context, model string) bool {
+	if model == "" {
+		return false
+	}
+	if gollm.IsReasoningModel("ollama", model) {
+		return true
+	}
+
+	p.thinkingMu.Lock()
+	if v, ok := p.thinkingCache[model]; ok {
+		p.thinkingMu.Unlock()
+		return v
+	}
+	p.thinkingMu.Unlock()
+
+	resp, err := p.client.Show(ctx, &ollamaapi.ShowRequest{Model: model})
+	if err != nil {
+		// Unknown (transient localhost failure): don't cache, don't force
+		// thinking. The next call retries the probe.
+		return false
+	}
+	supported := false
+	for _, c := range resp.Capabilities {
+		if c == ollamamodel.CapabilityThinking {
+			supported = true
+			break
+		}
+	}
+	p.thinkingMu.Lock()
+	if p.thinkingCache == nil {
+		p.thinkingCache = make(map[string]bool)
+	}
+	p.thinkingCache[model] = supported
+	p.thinkingMu.Unlock()
+	return supported
+}
+
+// isThinkingUnsupportedError reports whether err is Ollama's "<model> does not
+// support thinking" rejection, so the caller can retry once without thinking as
+// a backstop. Matched on the stable substring the server returns.
+func isThinkingUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "does not support thinking")
 }

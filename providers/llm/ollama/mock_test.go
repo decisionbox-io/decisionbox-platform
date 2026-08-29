@@ -19,10 +19,24 @@ type mockOllamaClient struct {
 	showResp    *ollamaapi.ShowResponse
 	showErr     error
 	lastShowReq *ollamaapi.ShowRequest
+
+	// chatCalls / showCalls count invocations so tests can assert the
+	// retry-without-think backstop issued a second Chat, and that the
+	// thinking-capability probe is cached (one Show per model).
+	chatCalls int
+	showCalls int
+	// failWhenThinking makes Chat return Ollama's "does not support thinking"
+	// error while the request carries a truthy Think, and succeed once Think is
+	// cleared — exercising the retry-without-think backstop.
+	failWhenThinking bool
 }
 
 func (m *mockOllamaClient) Chat(_ context.Context, req *ollamaapi.ChatRequest, fn ollamaapi.ChatResponseFunc) error {
 	m.lastChatReq = req
+	m.chatCalls++
+	if m.failWhenThinking && req.Think.Bool() {
+		return fmt.Errorf("model %q does not support thinking", req.Model)
+	}
 	if m.chatErr != nil {
 		return m.chatErr
 	}
@@ -38,6 +52,7 @@ func (m *mockOllamaClient) List(_ context.Context) (*ollamaapi.ListResponse, err
 
 func (m *mockOllamaClient) Show(_ context.Context, req *ollamaapi.ShowRequest) (*ollamaapi.ShowResponse, error) {
 	m.lastShowReq = req
+	m.showCalls++
 	if m.showErr != nil {
 		return nil, m.showErr
 	}
