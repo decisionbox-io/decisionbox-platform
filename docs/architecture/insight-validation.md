@@ -28,6 +28,8 @@ Validation runs in two phases of the discovery lifecycle, both inside `services/
 
 Phase 5 also gains a **pre-generation filter**: insights whose `combined` verdict is in the project's **recommendation-eligibility set** are forwarded to the recommendation prompt. That set is configurable per-project (`recommendation_verdicts`, Settings → Advanced — see [Per-project toggle](#per-project-toggle--on-demand-manual-validation)) and defaults to `{supported, confirmed}`, so an unset/legacy project reproduces the historical filter exactly. The filter is **fail-open** regardless of the configured set: insights with `combined == "validation_disabled"` (and legacy docs whose `Validation` field is missing entirely) are always forwarded, on the principle that the recommendation phase should not penalise documents for an absent validator. When the resulting set is empty, recommendation generation is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
 
+**Citation recovery (#347).** A recommendation must cite ≥1 eligible insight via `related_insight_ids`, but small/open models routinely omit or slug-ify that field — which previously caused every such rec to be *dropped*, zeroing the run's recommendations even though the content was good. Citations are now **recovered, not dropped**, in layers that are all inert for a model that cites correctly (big models are byte-identical): (1) the per-item structured-output schema marks `related_insight_ids` required (advisory); (2) `generateRecommendations` runs one bounded **citation self-heal** re-prompt (`RECOMMENDATION_CITATION_MAX_RETRIES`, default 1) when the parsed batch cites nothing eligible, listing the eligible UUIDs to copy; (3) `recoverRelatedInsightIDs` **salvages** the valid ids on each rec (dropping only the bogus ones) and **fail-open backfills** a rec left with zero valid citations to the eligible insight set. `validateRelatedInsightIDs` then runs as a defense-in-depth guard (it finds every rec already valid). Recovery counts are stamped on `RecommendationStep` (`recommendations_citations_salvaged` / `_backfilled`, `recommendation_citation_retries`).
+
 ```
 Phase 3   exploration              ────► explorationResult.Steps (in-memory)
 Phase 4   analysis (per area)
@@ -41,8 +43,9 @@ Phase 4   analysis (per area)
    └───────────────────────────────────────────────────┘
 Phase 5   recommendations
             recommenderInput = filter(allInsights, project.recommendation_verdicts)  // default {supported, confirmed}
-            recs            = generateRecommendations(recommenderInput)
-            recs            = validateRelatedInsightIDs(recs, eligibleSet)
+            recs            = generateRecommendations(recommenderInput)  // + citation self-heal re-prompt
+            recs            = recoverRelatedInsightIDs(recs, eligibleSet) // salvage bad ids + fail-open backfill
+            recs            = validateRelatedInsightIDs(recs, eligibleSet)// defense-in-depth guard (now a no-op)
    ┌───────────────────────────────────────────────────┐
    │ Phase 5.5  validate RECOMMENDATIONS               │
    │   for each rec:                                   │
