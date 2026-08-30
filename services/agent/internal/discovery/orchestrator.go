@@ -1163,6 +1163,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		recStep = &models.RecommendationStep{Status: "skipped_no_eligible_insights", RunAt: time.Now(), InsightCount: 0}
 	} else {
 		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
+		// Citation recovery (#347): salvage valid ids + fail-open backfill so a
+		// small/open model that omits or slug-ifies related_insight_ids doesn't
+		// lose an otherwise-good recommendation. Big models cite correctly and
+		// pass through untouched (zero stats). The validateRelatedInsightIDs
+		// guard below then finds every rec already valid.
+		var citationStats RecommendationCitationStats
+		recommendations, citationStats = recoverRelatedInsightIDs(recommendations, recommenderInput)
+		if recStep != nil {
+			recStep.RecommendationsCitationsSalvaged = citationStats.Salvaged
+			recStep.RecommendationsCitationsBackfilled = citationStats.Backfilled
+		}
 		var dropStats RecommendationDropStats
 		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
 		applyRecommendationDropStats(recStep, recommendations, dropStats)
