@@ -301,14 +301,20 @@ func indicesByAffectedDesc(insights []models.Insight) []int {
 	return idx
 }
 
-// filterEligibleInsights returns the subset of insights whose
-// Combined verdict is in {confirmed, supported} — the recommender
-// input filter from plan §"Recommendation policy". When an insight
-// has no Validation (the orchestrator's validationPhase ran but
-// emitted nothing for this insight, or no agent was wired), the
-// insight is treated as eligible — failing-open keeps the
-// recommender from starving when validation is disabled.
-func filterEligibleInsights(all []models.Insight) []models.Insight {
+// filterEligibleInsights returns the subset of insights whose Combined
+// verdict is in the per-project eligibility set — the recommender input
+// filter from plan §"Recommendation policy", made configurable via the
+// per-project recommendation_verdicts setting (Settings → Advanced). The
+// caller passes o.recommendationVerdicts, which defaults to
+// {confirmed, supported} (today's IsTerminalPositive) when the project has
+// not configured its own, so unset projects are byte-identical.
+//
+// Two states always fail-open regardless of the set: an insight with no
+// Validation (validationPhase ran but emitted nothing for it, or no agent
+// was wired) and Combined == validation_disabled (validation turned off).
+// Both mean "validation didn't produce a verdict", not "operator excluded
+// this verdict" — failing-open keeps the recommender from starving.
+func filterEligibleInsights(all []models.Insight, eligible map[valmodels.Status]bool) []models.Insight {
 	out := make([]models.Insight, 0, len(all))
 	for i := range all {
 		v := all[i].Validation
@@ -316,7 +322,7 @@ func filterEligibleInsights(all []models.Insight) []models.Insight {
 			out = append(out, all[i])
 			continue
 		}
-		if v.Combined.IsTerminalPositive() || v.Combined == valmodels.StatusValidationDisabled {
+		if v.Combined == valmodels.StatusValidationDisabled || eligible[v.Combined] {
 			out = append(out, all[i])
 		}
 	}

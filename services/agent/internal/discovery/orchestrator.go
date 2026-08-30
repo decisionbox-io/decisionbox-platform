@@ -15,6 +15,7 @@ import (
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -199,6 +200,14 @@ type Orchestrator struct {
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
 	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
 	reasoningEnabled bool
+
+	// recommendationVerdicts is the resolved per-project set of validation
+	// verdicts that make an insight eligible for recommendation generation
+	// (from DiscoveryOptions.RecommendationVerdicts). A set for O(1) lookup in
+	// filterEligibleInsights. Empty is treated as the default
+	// {confirmed, supported} when built in RunDiscovery, so a run always has a
+	// non-empty eligibility set.
+	recommendationVerdicts map[valmodels.Status]bool
 
 	// modelWindowRepo persists a context window learned from an overflow 400
 	// so a later run for the same project+model budgets correctly up front.
@@ -459,6 +468,13 @@ type DiscoveryOptions struct {
 	// output headroom (R3) + ReasoningEffort=on on every LLM call. Default off
 	// = today, so big models are byte-identical.
 	ReasoningEnabled bool
+
+	// RecommendationVerdicts is the resolved per-project set of validation
+	// verdicts that make an insight eligible for recommendation generation
+	// (project.EffectiveRecommendationVerdicts()). Empty means "use the default"
+	// ({confirmed, supported} — today's IsTerminalPositive filter), so an
+	// unset/legacy project produces the identical recommender input.
+	RecommendationVerdicts []valmodels.Status
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -492,6 +508,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	o.reasoningEnabled = opts.ReasoningEnabled
 	if o.aiClient != nil {
 		o.aiClient.SetReasoning(o.reasoningEnabled || gollm.ReasoningEnabled(o.llmConfig))
+	}
+
+	// Recommendation eligibility: the per-project set of validation verdicts an
+	// insight must carry to flow to the recommender (Settings → Advanced). Empty
+	// falls back to the default {confirmed, supported} so unset/legacy projects
+	// reproduce today's IsTerminalPositive filter exactly.
+	verdicts := opts.RecommendationVerdicts
+	if len(verdicts) == 0 {
+		verdicts = valmodels.DefaultRecommendationVerdicts()
+	}
+	o.recommendationVerdicts = make(map[valmodels.Status]bool, len(verdicts))
+	for _, s := range verdicts {
+		o.recommendationVerdicts[s] = true
 	}
 
 	// Set max steps for accurate progress reporting
@@ -1112,11 +1141,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Warn("Some analysis areas failed")
 	}
 
-	// Phase 5: Generate recommendations — only insights with
-	// Combined∈{supported,confirmed} flow to the recommender.
+	// Phase 5: Generate recommendations — only insights whose Combined verdict
+	// is in the per-project eligibility set (o.recommendationVerdicts; default
+	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
-	recommenderInput := filterEligibleInsights(allInsights)
+	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),
 		"eligible_insights": len(recommenderInput),

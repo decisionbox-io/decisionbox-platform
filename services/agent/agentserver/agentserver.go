@@ -972,14 +972,15 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	defer cancel()
 
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
-		MaxSteps:              maxSteps,
-		MinSteps:              minSteps,
-		IncludeExplorationLog: includeLog,
-		TestMode:              testMode,
-		SelectedAreas:         selectedAreas,
-		ValidationEnabled:     project.EffectiveValidationEnabled(),
-		SmartOverflowEnabled:  project.EffectiveSmartOverflowEnabled(),
-		ReasoningEnabled:      project.EffectiveReasoningEnabled(),
+		MaxSteps:               maxSteps,
+		MinSteps:               minSteps,
+		IncludeExplorationLog:  includeLog,
+		TestMode:               testMode,
+		SelectedAreas:          selectedAreas,
+		ValidationEnabled:      project.EffectiveValidationEnabled(),
+		SmartOverflowEnabled:   project.EffectiveSmartOverflowEnabled(),
+		ReasoningEnabled:       project.EffectiveReasoningEnabled(),
+		RecommendationVerdicts: project.EffectiveRecommendationVerdicts(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{
