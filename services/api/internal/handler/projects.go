@@ -608,6 +608,15 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.ReasoningEnabled = incoming.ReasoningEnabled
 	}
 
+	// RecommendationVerdicts is a slice — nil means "do not touch", non-nil
+	// (including an explicit empty array, which EffectiveRecommendationVerdicts
+	// resolves back to the default) means "replace with this set". The
+	// dashboard sends the field only when the operator changes it, always as
+	// the full desired selection, so replace-on-present is correct.
+	if incoming.RecommendationVerdicts != nil {
+		existing.RecommendationVerdicts = incoming.RecommendationVerdicts
+	}
+
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
 		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())

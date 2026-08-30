@@ -4,6 +4,7 @@ import (
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
 // Project represents a DecisionBox project configuration.
@@ -89,6 +90,17 @@ type Project struct {
 	// providers that wire native thinking, e.g. Ollama, act on — capability-
 	// gated — and others ignore).
 	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
+	// RecommendationVerdicts is the per-project set of validation verdicts
+	// that make an insight eligible for recommendation generation. Empty /
+	// unset means "use the default" ({confirmed, supported} — today's
+	// hardcoded IsTerminalPositive filter). Selectable values are the five
+	// user-facing per-claim verdicts (confirmed, supported, partial,
+	// unverifiable, rejected); insights whose validation never ran
+	// (validation_disabled / nil) stay eligible fail-open regardless. The
+	// agent reads its own copy of this field via the agent's models.Project —
+	// keep the API models.Project definition in sync.
+	RecommendationVerdicts []string `bson:"recommendation_verdicts,omitempty" json:"recommendation_verdicts,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -241,6 +253,20 @@ func (p *Project) EffectiveReasoningEnabled() bool {
 		return false
 	}
 	return *p.ReasoningEnabled
+}
+
+// EffectiveRecommendationVerdicts resolves the per-project set of validation
+// verdicts that make an insight eligible for recommendation generation.
+// Sanitises the stored strings (case-insensitive, unknowns/dupes dropped)
+// and falls back to the default {confirmed, supported} when unset or empty —
+// so legacy projects reproduce today's hardcoded IsTerminalPositive filter
+// exactly. The matching helper on the API's models.Project must stay in sync.
+func (p *Project) EffectiveRecommendationVerdicts() []valmodels.Status {
+	parsed := valmodels.ParseStatuses(p.RecommendationVerdicts)
+	if len(parsed) == 0 {
+		return valmodels.DefaultRecommendationVerdicts()
+	}
+	return parsed
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

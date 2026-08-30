@@ -4,6 +4,7 @@ import (
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
 type Project struct {
@@ -117,6 +118,14 @@ type Project struct {
 	// output headroom + ReasoningEffort=on). The agent reads its own copy via
 	// the agent's models.Project — keep the two definitions in sync.
 	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
+	// RecommendationVerdicts is the per-project set of validation verdicts that
+	// make an insight eligible for recommendation generation. Empty / unset →
+	// default {confirmed, supported} (today's hardcoded IsTerminalPositive
+	// filter). Selectable values: confirmed, supported, partial, unverifiable,
+	// rejected. The agent reads its own copy via the agent's models.Project —
+	// keep the two definitions in sync.
+	RecommendationVerdicts []string `bson:"recommendation_verdicts,omitempty" json:"recommendation_verdicts,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -267,6 +276,19 @@ func (p *Project) EffectiveReasoningEnabled() bool {
 		return false
 	}
 	return *p.ReasoningEnabled
+}
+
+// EffectiveRecommendationVerdicts resolves the per-project set of validation
+// verdicts eligible for recommendation generation. Sanitises the stored
+// strings and falls back to {confirmed, supported} when unset/empty — today's
+// hardcoded IsTerminalPositive filter. The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveRecommendationVerdicts() []valmodels.Status {
+	parsed := valmodels.ParseStatuses(p.RecommendationVerdicts)
+	if len(parsed) == 0 {
+		return valmodels.DefaultRecommendationVerdicts()
+	}
+	return parsed
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

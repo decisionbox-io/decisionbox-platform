@@ -2,8 +2,11 @@ package models
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
+
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
 func TestGetDatasets_MultipleDatasets(t *testing.T) {
@@ -351,6 +354,29 @@ func TestProject_EffectiveReasoningEnabled_PassThrough(t *testing.T) {
 	}
 	if (&Project{ReasoningEnabled: &no}).EffectiveReasoningEnabled() {
 		t.Errorf("EffectiveReasoningEnabled() with *false = true")
+	}
+}
+
+func TestProject_EffectiveRecommendationVerdicts(t *testing.T) {
+	def := []valmodels.Status{valmodels.StatusConfirmed, valmodels.StatusSupported}
+
+	// Unset → default {confirmed, supported} = today's IsTerminalPositive filter.
+	if got := (&Project{}).EffectiveRecommendationVerdicts(); !reflect.DeepEqual(got, def) {
+		t.Errorf("nil verdicts = %v, want default %v", got, def)
+	}
+	// Explicit empty → default (deselect-all is not a footgun that kills recs).
+	if got := (&Project{RecommendationVerdicts: []string{}}).EffectiveRecommendationVerdicts(); !reflect.DeepEqual(got, def) {
+		t.Errorf("empty verdicts = %v, want default %v", got, def)
+	}
+	// Set passes through, sanitised (case-insensitive, unknowns dropped).
+	got := (&Project{RecommendationVerdicts: []string{"Partial", "unverifiable", "bogus"}}).EffectiveRecommendationVerdicts()
+	want := []valmodels.Status{valmodels.StatusPartial, valmodels.StatusUnverifiable}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("set verdicts = %v, want %v", got, want)
+	}
+	// A set of only unknowns collapses to the default (never zero-eligible).
+	if got := (&Project{RecommendationVerdicts: []string{"nope"}}).EffectiveRecommendationVerdicts(); !reflect.DeepEqual(got, def) {
+		t.Errorf("all-unknown verdicts = %v, want default %v", got, def)
 	}
 }
 

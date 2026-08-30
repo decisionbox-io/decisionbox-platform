@@ -1,6 +1,11 @@
 package models
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+)
 
 // Default-on contract for the per-project validation toggle: legacy
 // projects (validation_enabled field missing from Mongo) resolve to
@@ -34,5 +39,20 @@ func TestProject_EffectiveReasoningEnabled(t *testing.T) {
 	}
 	if (&Project{ReasoningEnabled: &no}).EffectiveReasoningEnabled() {
 		t.Errorf("EffectiveReasoningEnabled() with *false = true")
+	}
+}
+
+// Recommendation-eligibility verdicts: unset/empty → default
+// {confirmed, supported} (today's filter); a set passes through sanitised.
+// Mirrors the agent-side helper.
+func TestProject_EffectiveRecommendationVerdicts(t *testing.T) {
+	def := []valmodels.Status{valmodels.StatusConfirmed, valmodels.StatusSupported}
+	if got := (&Project{}).EffectiveRecommendationVerdicts(); !reflect.DeepEqual(got, def) {
+		t.Errorf("nil verdicts = %v, want default %v", got, def)
+	}
+	got := (&Project{RecommendationVerdicts: []string{"supported", "partial"}}).EffectiveRecommendationVerdicts()
+	want := []valmodels.Status{valmodels.StatusSupported, valmodels.StatusPartial}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("set verdicts = %v, want %v", got, want)
 	}
 }
