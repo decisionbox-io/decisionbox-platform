@@ -41,6 +41,19 @@ const OUTPUT_LANGUAGE_OPTIONS = [
   { value: 'Thai',       label: 'ไทย (Thai)' },
 ];
 
+// Validation verdicts that can qualify an insight for recommendation
+// generation (Advanced → Recommendation eligibility). Values mirror the
+// Go-side validation.Status per-claim taxonomy; the default is
+// {confirmed, supported} = the historical recommender filter.
+const RECOMMENDATION_VERDICT_DEFAULT = ['confirmed', 'supported'];
+const RECOMMENDATION_VERDICT_OPTIONS = [
+  { value: 'confirmed', label: 'Confirmed — evidence directly equals the claim' },
+  { value: 'supported', label: 'Supported — evidence consistent with the claim (default positive)' },
+  { value: 'partial', label: 'Partial — some claims covered, or coverage incomplete' },
+  { value: 'unverifiable', label: 'Unverifiable — verifier could not produce evidence (caution)' },
+  { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
+];
+
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -93,6 +106,14 @@ export default function ProjectSettingsPage() {
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [savingReasoning, setSavingReasoning] = useState(false);
 
+  // Advanced — Recommendation eligibility verdicts (lives on the project
+  // document). Which validation verdicts qualify an insight for recommendation
+  // generation. Empty / undefined → default {confirmed, supported}.
+  const [recommendationVerdicts, setRecommendationVerdicts] = useState<string[]>(
+    RECOMMENDATION_VERDICT_DEFAULT,
+  );
+  const [savingVerdicts, setSavingVerdicts] = useState(false);
+
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab. The AI/Blurb
   // tabs drop out of the valid set in managed mode.
@@ -139,6 +160,11 @@ export default function ProjectSettingsPage() {
         setValidationEnabled(proj.validation_enabled !== false);
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
+        setRecommendationVerdicts(
+          proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
+            ? proj.recommendation_verdicts
+            : RECOMMENDATION_VERDICT_DEFAULT,
+        );
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           const blurbProviderID = proj.blurb_llm.provider;
@@ -271,6 +297,30 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReasoning(false);
+    }
+  };
+
+  // Save the recommendation-eligibility verdicts. Optimistic update + rollback.
+  // An empty selection is persisted as-is; the backend resolves empty back to
+  // the default {confirmed, supported}, so deselecting all is not a footgun.
+  const saveRecommendationVerdicts = async (next: string[]) => {
+    const prev = recommendationVerdicts;
+    setRecommendationVerdicts(next);
+    setSavingVerdicts(true);
+    try {
+      const saved = await api.updateProject(id, { recommendation_verdicts: next });
+      setProject(saved);
+      setRecommendationVerdicts(
+        saved.recommendation_verdicts && saved.recommendation_verdicts.length > 0
+          ? saved.recommendation_verdicts
+          : RECOMMENDATION_VERDICT_DEFAULT,
+      );
+      notifications.show({ title: 'Saved', message: 'Recommendation eligibility updated', color: 'green' });
+    } catch (e: unknown) {
+      setRecommendationVerdicts(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingVerdicts(false);
     }
   };
 
@@ -432,6 +482,15 @@ export default function ProjectSettingsPage() {
                 checked={reasoningEnabled}
                 disabled={savingReasoning}
                 onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
+              />
+              <MultiSelect
+                label="Recommendation eligibility"
+                description="Which validation verdicts qualify an insight for recommendation generation. Default is Confirmed + Supported (only positively-validated insights). Add Partial / Unverifiable when the warehouse can't self-verify (e.g. no temp-table permission) but you trust the analysis. Rejected means the evidence contradicts the insight — include with caution. Insights whose validation didn't run stay eligible regardless. Clearing the selection reverts to the default."
+                data={RECOMMENDATION_VERDICT_OPTIONS}
+                value={recommendationVerdicts}
+                disabled={savingVerdicts}
+                onChange={saveRecommendationVerdicts}
+                clearable
               />
               <Divider my="xs" />
               <Text size="sm" fw={500}>Debugging</Text>

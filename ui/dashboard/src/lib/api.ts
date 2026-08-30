@@ -285,6 +285,12 @@ export interface Project {
   // chain-of-thought doesn't truncate the action, plus a reasoning hint on the
   // request (providers that wire native thinking act on it; others ignore it).
   reasoning_enabled?: boolean;
+  // Which validation verdicts make an insight eligible for recommendation
+  // generation. Undefined / empty → default {confirmed, supported} (the
+  // historical filter). Selectable values: confirmed, supported, partial,
+  // unverifiable, rejected. Insights whose validation never ran stay eligible
+  // fail-open regardless.
+  recommendation_verdicts?: string[];
   created_at: string;
   updated_at: string;
 }
