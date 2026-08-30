@@ -110,6 +110,13 @@ type ExplorationEngine struct {
 // "please respond in JSON" nudge into the conversation.
 const maxParseRetries = 3
 
+// emptyAssistantTurnPlaceholder stands in for an assistant turn whose Content
+// (and Reasoning) came back empty, so the conversation never carries an empty
+// assistant message — some providers (Moonshot/Kimi via LiteLLM) reject that on
+// the follow-up request with a hard 400. It is intentionally not valid JSON so
+// parseAction never mistakes it for an action.
+const emptyAssistantTurnPlaceholder = "(no output returned; see the instruction below)"
+
 // defaultExplorationMaxOutputTokens is the per-step output ceiling for the
 // exploration LLM call. The old value was a hard-coded 4096 (Rule 2); it is now
 // the default of the EXPLORATION_MAX_OUTPUT_TOKENS knob. The default is kept at
@@ -775,7 +782,23 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			responseText = response.Content
 		}
 
-		conversation.AddAssistantMessage(responseText)
+		// The assistant turn recorded in the conversation must never be empty:
+		// a reasoning model can return its output on the reasoning channel with
+		// an empty Content, and some providers (observed: Moonshot/Kimi via
+		// LiteLLM) reject an empty assistant message on the FOLLOW-UP request —
+		// turning a recoverable parse-retry into a hard 400. Carry the reasoning
+		// (or a short placeholder) as the turn text so the retry conversation
+		// stays valid on every provider. parseAction still runs on Content, so an
+		// empty Content correctly falls through to a reformat nudge + retry.
+		turnText := responseText
+		if turnText == "" {
+			if strings.TrimSpace(response.Reasoning) != "" {
+				turnText = response.Reasoning
+			} else {
+				turnText = emptyAssistantTurnPlaceholder
+			}
+		}
+		conversation.AddAssistantMessage(turnText)
 
 		action, err := e.parseAction(responseText)
 		if err == nil {

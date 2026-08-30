@@ -120,30 +120,33 @@ leaves the model's own behavior unchanged. Effort values other than
 non-reasoning so the request doesn't 400 against an upstream that
 rejects `think=true` on a non-thinking model.
 
-#### Enable reasoning (Ollama only)
+#### Enable reasoning (model-agnostic, project setting)
 
-Ollama LLM configs expose an **Enable reasoning** checkbox (off by
-default — behavior is unchanged unless you turn it on). It is shown
-only for the Ollama provider, because Ollama is the provider whose
-native thinking toggle DecisionBox wires. When on, discovery requests
-the model's hidden chain-of-thought (`ReasoningEffort=on`) for every
-phase, and reasoning models also get extra exploration output headroom
-(see `EXPLORATION_MAX_OUTPUT_TOKENS`).
+Projects expose an **Enable reasoning** toggle under **Settings →
+Advanced** (off by default — behavior is unchanged unless you turn it
+on). It is **model-agnostic**: it applies to whatever model the project
+uses, on any provider — a reasoning model routed through a LiteLLM
+proxy (Kimi, qwen3, DeepSeek-R1), an Ollama thinking model, etc.
 
-Native thinking is enabled only after DecisionBox confirms the model
-actually supports it, by reading the model's own capabilities from
-Ollama's `/api/show` (the `thinking` capability) — the same call used
-to auto-detect the context window. This means a reasoning model you
-just pulled (e.g. `qwen3`, `deepseek-r1`) gets thinking enabled even
-if it is not in the built-in catalog, and a non-reasoning model
-silently ignores the checkbox instead of erroring. If a server still
-rejects thinking, the request is retried once without it so the run
-continues.
+When on, discovery (a) gives the model **extra, window-budgeted
+exploration output headroom** so a long hidden chain-of-thought doesn't
+truncate the step's action (see `EXPLORATION_MAX_OUTPUT_TOKENS`), and
+(b) requests reasoning (`ReasoningEffort=on`) on every LLM call.
+Providers that wire native thinking act on the request; others ignore
+the param and simply benefit from the headroom.
 
-You do not need this checkbox for models the catalog already flags as
-reasoning — those get the exploration headroom automatically. The
-checkbox exists so uncatalogued Ollama reasoning models can be opted
-in without a code release.
+For **Ollama** specifically, native thinking is enabled only after
+DecisionBox confirms the model supports it, by reading the model's own
+capabilities from `/api/show` (the `thinking` capability) — so a
+freshly-pulled `qwen3` / `deepseek-r1` reasons even if it is not in the
+built-in catalog, a non-reasoning model silently ignores the request,
+and if a server still rejects thinking the request is retried once
+without it.
+
+You do not need the toggle for models the catalog already flags as
+reasoning — those get the exploration headroom automatically. It exists
+so uncatalogued reasoning models can be opted in without a code
+release.
 
 ### Quality Considerations
 

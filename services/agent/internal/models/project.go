@@ -79,6 +79,17 @@ type Project struct {
 	// it is inert regardless of the setting.
 	SmartOverflowEnabled *bool `bson:"smart_overflow_enabled,omitempty" json:"smart_overflow_enabled,omitempty"`
 
+	// ReasoningEnabled is the model-agnostic per-project "Enable reasoning"
+	// toggle. Nil / false means "off" (= today, no reasoning param, no
+	// exploration headroom) — reasoning is opt-in, so unlike the validation /
+	// smart-overflow toggles this defaults OFF. When true the model is treated
+	// as reasoning-effective for every provider: it gets window-budgeted
+	// exploration output headroom (so a long hidden chain-of-thought doesn't
+	// truncate the action) and the request carries ReasoningEffort=on (which
+	// providers that wire native thinking, e.g. Ollama, act on — capability-
+	// gated — and others ignore).
+	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -220,6 +231,16 @@ func (p *Project) EffectiveSmartOverflowEnabled() bool {
 		return true
 	}
 	return *p.SmartOverflowEnabled
+}
+
+// EffectiveReasoningEnabled resolves the per-project reasoning toggle. Returns
+// false when unset — reasoning is opt-in, so the default matches today's
+// behaviour (no reasoning param, no exploration headroom).
+func (p *Project) EffectiveReasoningEnabled() bool {
+	if p.ReasoningEnabled == nil {
+		return false
+	}
+	return *p.ReasoningEnabled
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

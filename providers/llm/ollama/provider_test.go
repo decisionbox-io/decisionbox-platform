@@ -99,20 +99,11 @@ func TestOllamaProvider_ConfigFields(t *testing.T) {
 	if !keys["model"] {
 		t.Error("missing model config field")
 	}
-	// The "Enable reasoning" checkbox is surfaced only for Ollama (it lives in
-	// Ollama's provider meta), so it must be present here and absent elsewhere.
-	if !keys[gollm.ReasoningEnabledKey] {
-		t.Errorf("missing %q config field (the Enable reasoning checkbox)", gollm.ReasoningEnabledKey)
-	}
-	for _, f := range meta.ConfigFields {
-		if f.Key == gollm.ReasoningEnabledKey {
-			if f.Type != "boolean" {
-				t.Errorf("%s type = %q, want boolean", gollm.ReasoningEnabledKey, f.Type)
-			}
-			if f.Default != "false" {
-				t.Errorf("%s default = %q, want \"false\" (off = today)", gollm.ReasoningEnabledKey, f.Default)
-			}
-		}
+	// "Enable reasoning" is now a model-agnostic per-project setting (Settings →
+	// Advanced), not a provider ConfigField, so it must NOT appear in any
+	// provider's config_fields.
+	if keys[gollm.ReasoningEnabledKey] {
+		t.Errorf("%q must not be a provider config field (it is a per-project setting now)", gollm.ReasoningEnabledKey)
 	}
 	// Should NOT have api_key — local models
 	if keys["api_key"] {

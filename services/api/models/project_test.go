@@ -21,3 +21,18 @@ func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
 		t.Errorf("EffectiveValidationEnabled() with *false = true")
 	}
 }
+
+// Reasoning is opt-in: nil resolves to false (= today), and the stored value
+// passes through. Mirrors the agent-side helper.
+func TestProject_EffectiveReasoningEnabled(t *testing.T) {
+	if (&Project{}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with nil pointer = true, want false")
+	}
+	yes, no := true, false
+	if !(&Project{ReasoningEnabled: &yes}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with *true = false")
+	}
+	if (&Project{ReasoningEnabled: &no}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with *false = true")
+	}
+}

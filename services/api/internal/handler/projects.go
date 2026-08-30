@@ -603,6 +603,11 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.SmartOverflowEnabled = incoming.SmartOverflowEnabled
 	}
 
+	// ReasoningEnabled: same nil-means-untouched pointer semantics.
+	if incoming.ReasoningEnabled != nil {
+		existing.ReasoningEnabled = incoming.ReasoningEnabled
+	}
+
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
 		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())

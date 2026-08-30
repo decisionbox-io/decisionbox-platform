@@ -279,6 +279,12 @@ export interface Project {
   // runs whose evidence exceeds the model-window budget, so it is inert on
   // large-window models.
   smart_overflow_enabled?: boolean;
+  // Undefined → off (opt-in). Model-agnostic "Enable reasoning": treats the
+  // configured model as reasoning-capable for every provider — extra
+  // window-budgeted exploration output headroom so a long hidden
+  // chain-of-thought doesn't truncate the action, plus a reasoning hint on the
+  // request (providers that wire native thinking act on it; others ignore it).
+  reasoning_enabled?: boolean;
   created_at: string;
   updated_at: string;
 }

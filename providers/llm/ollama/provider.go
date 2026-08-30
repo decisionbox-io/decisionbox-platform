@@ -97,20 +97,6 @@ func init() {
 				Placeholder: "32768",
 				Description: "Optional per-request context window override (token count). Leave blank to use the Ollama server's OLLAMA_CONTEXT_LENGTH default. Setting a higher value than the server default forces a larger KV cache allocation and can OOM on tight VRAM.",
 			},
-			{
-				// Surfaced only for Ollama (the dashboard renders the selected
-				// provider's config_fields), because Ollama is the provider whose
-				// native thinking toggle we wire. Off by default = today. When on,
-				// discovery enables the model's hidden chain-of-thought — but only
-				// after confirming the model reports it supports thinking via
-				// /api/show, so a non-reasoning model silently ignores it — and
-				// gives reasoning models extra exploration output headroom.
-				Key:         gollm.ReasoningEnabledKey,
-				Label:       "Enable reasoning",
-				Type:        "boolean",
-				Default:     "false",
-				Description: "Produce hidden chain-of-thought during discovery. Off by default; enable for reasoning models like qwen3 / DeepSeek-R1. Native thinking is turned on only when the model reports it supports it, so it is safe to leave on for mixed model fleets.",
-			},
 		}, gollm.TLSConfigFields()...),
 		Models: buildOllamaCatalog(),
 		// Fallbacks for models the catalog does not list. Output uses the

@@ -195,6 +195,11 @@ type Orchestrator struct {
 	calibMu          sync.Mutex
 	calibratedWindow int
 
+	// reasoningEnabled is the resolved model-agnostic per-project "Enable
+	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
+	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
+	reasoningEnabled bool
+
 	// modelWindowRepo persists a context window learned from an overflow 400
 	// so a later run for the same project+model budgets correctly up front.
 	// Optional — nil skips cross-run persistence (unit tests, and until the
@@ -447,6 +452,13 @@ type DiscoveryOptions struct {
 	// into a bool. Only affects runs whose picked evidence exceeds the window
 	// budget; inert on big-window models.
 	SmartOverflowEnabled bool
+
+	// ReasoningEnabled is the resolved model-agnostic per-project "Enable
+	// reasoning" toggle (project.EffectiveReasoningEnabled()). When true the run
+	// treats the model as reasoning-effective: window-budgeted exploration
+	// output headroom (R3) + ReasoningEffort=on on every LLM call. Default off
+	// = today, so big models are byte-identical.
+	ReasoningEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -471,13 +483,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// remaining areas re-budget against it and a later run starts correct.
 	o.installContextWindowObserver(ctx)
 
-	// Reasoning opt-in: when the operator enabled reasoning (the "Enable
-	// reasoning" checkbox, surfaced only for providers that wire native
-	// thinking), request it on every LLM call. Default off = today, so big
-	// models are byte-identical. Only Ollama acts on it, and only after
-	// confirming the model supports thinking (/api/show capability).
+	// Reasoning opt-in: the model-agnostic per-project "Enable reasoning"
+	// toggle (Settings → Advanced), OR a legacy llm.config flag for
+	// back-compat. When on, request reasoning on every LLM call. Default off =
+	// today, so big models are byte-identical. Providers that wire native
+	// thinking (Ollama, capability-gated) act on it; others ignore the param
+	// and just get the R3 exploration headroom.
+	o.reasoningEnabled = opts.ReasoningEnabled
 	if o.aiClient != nil {
-		o.aiClient.SetReasoning(gollm.ReasoningEnabled(o.llmConfig))
+		o.aiClient.SetReasoning(o.reasoningEnabled || gollm.ReasoningEnabled(o.llmConfig))
 	}
 
 	// Set max steps for accurate progress reporting

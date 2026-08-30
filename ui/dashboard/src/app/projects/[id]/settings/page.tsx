@@ -88,6 +88,11 @@ export default function ProjectSettingsPage() {
   const [smartOverflowEnabled, setSmartOverflowEnabled] = useState(true);
   const [savingSmartOverflow, setSavingSmartOverflow] = useState(false);
 
+  // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
+  // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
+  const [reasoningEnabled, setReasoningEnabled] = useState(false);
+  const [savingReasoning, setSavingReasoning] = useState(false);
+
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab. The AI/Blurb
   // tabs drop out of the valid set in managed mode.
@@ -133,6 +138,7 @@ export default function ProjectSettingsPage() {
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
+        setReasoningEnabled(proj.reasoning_enabled === true);
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           const blurbProviderID = proj.blurb_llm.provider;
@@ -243,6 +249,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingSmartOverflow(false);
+    }
+  };
+
+  // Save the reasoning toggle. Optimistic update + rollback on failure.
+  const saveReasoningEnabled = async (next: boolean) => {
+    const prev = reasoningEnabled;
+    setReasoningEnabled(next);
+    setSavingReasoning(true);
+    try {
+      const saved = await api.updateProject(id, { reasoning_enabled: next });
+      setProject(saved);
+      setReasoningEnabled(saved.reasoning_enabled === true);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Reasoning enabled' : 'Reasoning disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setReasoningEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingReasoning(false);
     }
   };
 
@@ -397,6 +425,13 @@ export default function ProjectSettingsPage() {
                 checked={smartOverflowEnabled}
                 disabled={savingSmartOverflow}
                 onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Enable reasoning"
+                description="Turn on for reasoning models (e.g. Kimi, qwen3, DeepSeek-R1, Ollama thinking models). Off by default. When on, the model gets extra window-budgeted output headroom during exploration so a long hidden chain-of-thought doesn't truncate the step, and discovery requests reasoning on every call — providers that support native thinking act on it (capability-checked); others simply get the headroom. Leave off for non-reasoning models."
+                checked={reasoningEnabled}
+                disabled={savingReasoning}
+                onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
               />
               <Divider my="xs" />
               <Text size="sm" fw={500}>Debugging</Text>

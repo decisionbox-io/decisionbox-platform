@@ -111,6 +111,13 @@ type Project struct {
 	// the agent's models.Project — keep the two definitions in sync.
 	SmartOverflowEnabled *bool `bson:"smart_overflow_enabled,omitempty" json:"smart_overflow_enabled,omitempty"`
 
+	// ReasoningEnabled is the model-agnostic per-project "Enable reasoning"
+	// toggle. Nil / false = off (= today, opt-in). When true the discovery run
+	// treats the model as reasoning-effective for every provider (exploration
+	// output headroom + ReasoningEffort=on). The agent reads its own copy via
+	// the agent's models.Project — keep the two definitions in sync.
+	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -250,6 +257,16 @@ func (p *Project) EffectiveSmartOverflowEnabled() bool {
 		return true
 	}
 	return *p.SmartOverflowEnabled
+}
+
+// EffectiveReasoningEnabled resolves the per-project reasoning toggle. Nil → false
+// (opt-in; default matches today). The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveReasoningEnabled() bool {
+	if p.ReasoningEnabled == nil {
+		return false
+	}
+	return *p.ReasoningEnabled
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

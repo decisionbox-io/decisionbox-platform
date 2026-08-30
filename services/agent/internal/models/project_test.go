@@ -336,6 +336,24 @@ func TestProject_EffectiveSmartOverflowEnabled_PassThrough(t *testing.T) {
 	}
 }
 
+func TestProject_EffectiveReasoningEnabled_NilIsFalse(t *testing.T) {
+	// Reasoning is opt-in — nil must be false (= today), unlike the
+	// smart-overflow / validation toggles which default on.
+	if (&Project{}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with nil pointer = true, want false (opt-in)")
+	}
+}
+
+func TestProject_EffectiveReasoningEnabled_PassThrough(t *testing.T) {
+	yes, no := true, false
+	if !(&Project{ReasoningEnabled: &yes}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with *true = false")
+	}
+	if (&Project{ReasoningEnabled: &no}).EffectiveReasoningEnabled() {
+		t.Errorf("EffectiveReasoningEnabled() with *false = true")
+	}
+}
+
 func TestProject_EffectiveState_PassThrough(t *testing.T) {
 	// Plugins may decode additional state strings; the community
 	// agent helper just echoes the value back.
