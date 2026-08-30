@@ -1719,6 +1719,40 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
+	// Layer 3b (citation self-heal, #347): the batch parsed, but if NO
+	// recommendation cites an eligible insight id, re-ask once with the eligible
+	// UUIDs spelled out — real citations beat the downstream blunt backfill.
+	// Fires only when zero recs are cited (the small/open-model case, e.g.
+	// DeepSeek-V3.1 which omits related_insight_ids); a big model cites on the
+	// first try and skips this. Bounded + env-overridable (Rule 2). On failure
+	// we keep the uncited batch — recoverRelatedInsightIDs backfills it, so a
+	// recommendation is never lost.
+	citationRetries := goconfig.GetEnvAsInt(recommendationCitationMaxRetriesEnv, defaultRecommendationCitationMaxRetries)
+	if citationRetries < 0 {
+		citationRetries = 0
+	}
+	if len(recs) > 0 && citationRetries > 0 && !anyRecCitesEligible(recs, insights) {
+		for cAttempt := 1; cAttempt <= citationRetries; cAttempt++ {
+			step.RecommendationCitationRetries = cAttempt
+			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
+				"Re-prompting for recommendations: response cited no eligible insight id")
+			chatResult, err := o.aiClient.ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
+			if err != nil {
+				break // keep the uncited batch; backfill grounds it downstream
+			}
+			step.TokensIn += chatResult.TokensIn
+			step.TokensOut += chatResult.TokensOut
+			step.DurationMs += chatResult.DurationMs
+			parsed, _, perr := parseRecommendations(chatResult.Content)
+			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
+				// Adopt the re-prompt only when it actually recovered a citation.
+				recs = parsed
+				step.Response = chatResult.Content
+				break
+			}
+		}
+	}
+
 	for i := range recs {
 		if recs[i].CreatedAt.IsZero() {
 			recs[i].CreatedAt = time.Now()
@@ -1772,7 +1806,53 @@ const (
 
 	// recommendationParseMaxRetriesEnv overrides defaultRecommendationParseMaxRetries.
 	recommendationParseMaxRetriesEnv = "RECOMMENDATION_PARSE_MAX_RETRIES"
+
+	// defaultRecommendationCitationMaxRetries bounds the citation self-heal
+	// re-prompt (#347): when a parsed batch cites no eligible insight id, re-ask
+	// once with the eligible UUIDs spelled out before falling back to backfill.
+	// One extra shot — the call is a large-output batch and backfill is the net.
+	defaultRecommendationCitationMaxRetries = 1
+
+	// recommendationCitationMaxRetriesEnv overrides defaultRecommendationCitationMaxRetries.
+	recommendationCitationMaxRetriesEnv = "RECOMMENDATION_CITATION_MAX_RETRIES"
 )
+
+// anyRecCitesEligible reports whether at least one recommendation cites an
+// insight id in the eligible set — the trigger for the citation self-heal
+// (false → the whole batch is uncited, the small/open-model failure mode).
+func anyRecCitesEligible(recs []models.Recommendation, eligible []models.Insight) bool {
+	set := make(map[string]struct{}, len(eligible))
+	for _, ins := range eligible {
+		if ins.ID != "" {
+			set[ins.ID] = struct{}{}
+		}
+	}
+	for _, r := range recs {
+		for _, id := range r.RelatedInsightIDs {
+			if _, ok := set[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recommendationCitationRepairSuffix builds the corrective instruction for the
+// citation self-heal: it names the failure and lists the exact eligible insight
+// UUIDs the model must copy into related_insight_ids.
+func recommendationCitationRepairSuffix(insights []models.Insight) string {
+	ids := make([]string, 0, len(insights))
+	for _, ins := range insights {
+		if ins.ID != "" {
+			ids = append(ids, ins.ID)
+		}
+	}
+	return "\n\nYour previous response cited no valid insight. Every recommendation MUST " +
+		"include a `related_insight_ids` array containing one or more of these EXACT insight " +
+		"ids, copied verbatim — do NOT invent ids, abbreviate them, or use category/severity/" +
+		"theme slugs:\n" + strings.Join(ids, "\n") +
+		"\n\nRe-emit the full JSON object {\"recommendations\": [ ... ]} with valid related_insight_ids on every item."
+}
 
 // parseRecommendations decodes the recommendation response tolerantly and
 // per-item. It accepts either the {"recommendations": [...]} envelope or a bare
