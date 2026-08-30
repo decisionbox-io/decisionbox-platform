@@ -714,6 +714,23 @@ type RecommendationStep struct {
 	// when zero.
 	RecommendationParseRetries int `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 
+	// Citation-recovery telemetry (#347). Small/open models routinely emit
+	// good recommendations but omit or mis-cite `related_insight_ids`; rather
+	// than dropping those recs to zero (the old behaviour), the phase now
+	// salvages the valid citations, self-heals via a bounded re-prompt, and
+	// finally fail-open backfills so a grounded recommendation survives. Big
+	// models cite correctly and hit none of these paths, so all three stay
+	// zero (and omitted) on a clean run.
+	//
+	// RecommendationsCitationsSalvaged: recs that cited ≥1 bad id which was
+	// trimmed while ≥1 valid id was kept. RecommendationsCitationsBackfilled:
+	// recs that had zero valid citations and were linked to the run's eligible
+	// insights as a last resort. RecommendationCitationRetries: corrective
+	// citation re-prompts issued (bounded by RECOMMENDATION_CITATION_MAX_RETRIES).
+	RecommendationsCitationsSalvaged   int `bson:"recommendations_citations_salvaged,omitempty" json:"recommendations_citations_salvaged,omitempty"`
+	RecommendationsCitationsBackfilled int `bson:"recommendations_citations_backfilled,omitempty" json:"recommendations_citations_backfilled,omitempty"`
+	RecommendationCitationRetries      int `bson:"recommendation_citation_retries,omitempty" json:"recommendation_citation_retries,omitempty"`
+
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
 
