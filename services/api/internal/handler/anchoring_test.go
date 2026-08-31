@@ -23,9 +23,15 @@ func anchoringProbe(t *testing.T, name string, canAnchor bool) string {
 	gowarehouse.RegisterWithMeta(slug, func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
 		return nil, fmt.Errorf("probe provider is not constructible")
 	}, gowarehouse.ProviderMeta{
-		Name:       slug,
-		Dialect:    "Probe SQL",
-		Capability: gowarehouse.Capability{CanAnchor: gowarehouse.Anchoring(canAnchor)},
+		Name:    slug,
+		Dialect: "Probe SQL",
+		// The registry is process-global, so a probe registered here is visible
+		// to every other test in this package — including the invariant that
+		// every registered warehouse provider declares pricing. A probe that
+		// skipped it would fail that test rather than this one, from a file
+		// that has nothing to do with pricing.
+		DefaultPricing: &gowarehouse.WarehousePricing{CostModel: "per_query"},
+		Capability:     gowarehouse.Capability{CanAnchor: gowarehouse.Anchoring(canAnchor)},
 	})
 	return slug
 }
