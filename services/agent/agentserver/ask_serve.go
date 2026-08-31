@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/askserve"
@@ -222,6 +223,18 @@ func runAskServe(cfg *config.Config) error {
 					KeyMetrics:   wh.Card.KeyMetrics,
 				}
 			}
+			// Capability descriptor, resolved by provider slug from the
+			// registry — declared at registration, so this needs no
+			// connection and no credentials. An unregistered slug yields the
+			// zero descriptor, which resolves to SQL / entity-shaped /
+			// anchoring: what was true before the descriptor existed.
+			capability := gowarehouse.Capability{}
+			if meta, ok := gowarehouse.GetProviderMeta(wh.Provider); ok {
+				capability = meta.Capability
+				// Resolve the Dialect fallback here so downstream consumers
+				// read one already-resolved language.
+				capability.QueryLanguage = meta.Language()
+			}
 			datasources = append(datasources, askserve.DatasourceInfo{
 				ID:          warehouseID(wh),
 				Label:       wh.Label,
@@ -233,6 +246,7 @@ func runAskServe(cfg *config.Config) error {
 				FilterField: wh.FilterField,
 				FilterValue: wh.FilterValue,
 				Card:        card,
+				Capability:  capability,
 			})
 		}
 

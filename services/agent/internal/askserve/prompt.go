@@ -122,6 +122,15 @@ func writeDataSection(b *strings.Builder, routing turnRouting) {
 // (dialect, datasets, read-only rule, and the tenant-scope predicate when the
 // dataset is multi-tenant). Shared verbatim by both prompt builders on a
 // single-datasource / pinned turn.
+//
+// The block is SQL-shaped throughout, as is the prompt around it — the tool
+// contract offers a `query` string documented as "SELECT / CTE only", and the
+// grounding guidance points at INFORMATION_SCHEMA. A cube-shaped source has no
+// coherent rendering here until there is an adapter defining what its query
+// actually is, so generalising this section alone would hand the model a cube
+// description wrapped in SQL instructions: contradictory guidance it would
+// resolve by writing SQL anyway. The prompt and tool surface generalise
+// together with the first non-SQL adapter.
 func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
 	b.WriteString("WAREHOUSE\n")
 	if d.Dialect != "" {

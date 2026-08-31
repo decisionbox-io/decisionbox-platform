@@ -32,7 +32,15 @@ type ProviderMeta struct {
 	// constructed Provider (and therefore config/credentials), this label is
 	// declared at registration and available by slug with no instantiation.
 	// Every registered provider sets it.
-	Dialect        string            `json:"dialect"`
+	Dialect string `json:"dialect"`
+
+	// Capability is the source-capability descriptor — query language, shape,
+	// and whether the source can anchor a project. Embedded, so its fields are
+	// declared and serialised inline. Every field defaults to what was true
+	// before the descriptor existed; a provider that declares none is
+	// unaffected. ProviderMeta.Language() additionally falls back to Dialect.
+	Capability
+
 	ConfigFields   []ConfigField     `json:"config_fields"`
 	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`
 	DefaultPricing *WarehousePricing `json:"default_pricing,omitempty"`

@@ -3,6 +3,7 @@ package askserve
 import (
 	"context"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
@@ -83,6 +84,15 @@ type DatasourceInfo struct {
 	// Card is the structured routing card (subject areas / entities / metrics).
 	// Optional; nil when the datasource has no card yet.
 	Card *DatasourceCard
+	// Capability is the source-capability descriptor resolved from the
+	// provider registry at runtime-build time: the query language, the source
+	// shape, and whether this kind of source can anchor a project. Carried
+	// here so routing and prompt construction can reason about a datasource
+	// without opening a connection to it.
+	//
+	// Zero-valued for a datasource whose provider declares nothing, which
+	// resolves to the pre-descriptor behaviour: SQL, entity-shaped, anchoring.
+	gowarehouse.Capability
 }
 
 // DatasourceCard mirrors models.WarehouseCard — the structured routing signal
