@@ -225,16 +225,8 @@ func TestCapability_AnchorsDefaultsToTrue(t *testing.T) {
 	}
 }
 
-// TestRegisteredSQLProvidersAnchorAndAreEntityShaped asserts the defaults hold
-// for whatever is registered in this binary, so a provider added later cannot
-// silently acquire a wrong shape or anchoring value by omission.
-func TestRegisteredSQLProvidersAnchorAndAreEntityShaped(t *testing.T) {
-	for _, m := range RegisteredProvidersMeta() {
-		if m.Language() == "" {
-			t.Errorf("provider %q resolves to an empty query language", m.ID)
-		}
-		if m.EffectiveShape() != ShapeEntities && m.EffectiveShape() != ShapeCube {
-			t.Errorf("provider %q has shape %q, which is not a known shape", m.ID, m.EffectiveShape())
-		}
-	}
-}
+// Note: the "every registered provider resolves sanely" guard deliberately does
+// NOT live here. This package registers no providers, so iterating
+// RegisteredProvidersMeta() in this test binary walks an empty registry and
+// asserts nothing. It lives in services/api/apiserver, whose package
+// blank-imports every provider — see TestWarehouseProvidersDeclareShortDialect.

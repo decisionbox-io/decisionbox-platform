@@ -28,7 +28,8 @@ var expectedDialects = map[string]string{
 
 // TestWarehouseProvidersDeclareShortDialect asserts that every registered
 // warehouse provider exposes a non-empty, short Dialect label via the registry
-// metadata (no provider instantiation required). The apiserver package
+// metadata, and that its capability descriptor resolves to the right query
+// language, shape and anchoring value (no provider instantiation required). The apiserver package
 // blank-imports all community warehouse providers, so RegisteredProvidersMeta()
 // returns the full set here — any new provider added to that import block is
 // covered automatically.
@@ -77,6 +78,24 @@ func TestWarehouseProvidersDeclareShortDialect(t *testing.T) {
 		// Pin the exact value for the known community providers.
 		if want, known := expectedDialects[m.ID]; known && m.Dialect != want {
 			t.Errorf("provider %q Dialect = %q, want %q", m.ID, m.Dialect, want)
+		}
+
+		// The capability descriptor must resolve correctly for every provider,
+		// declared or not. All three fields default, which is what lets a
+		// provider — including an enterprise-only driver this repo cannot see —
+		// work without declaring anything; it is equally what makes a wrong
+		// value invisible. Assert the resolved values rather than the raw
+		// fields, because the defaults are the contract.
+		if m.Language() != m.Dialect {
+			t.Errorf("provider %q Language() = %q, want its Dialect label %q", m.ID, m.Language(), m.Dialect)
+		}
+		if m.EffectiveShape() != gowarehouse.ShapeEntities {
+			t.Errorf("provider %q EffectiveShape() = %q, want %q — every SQL warehouse is tables of rows",
+				m.ID, m.EffectiveShape(), gowarehouse.ShapeEntities)
+		}
+		if !m.Anchors() {
+			t.Errorf("provider %q Anchors() = false; a SQL warehouse is a system of record and must be able "+
+				"to carry a project alone", m.ID)
 		}
 	}
 
