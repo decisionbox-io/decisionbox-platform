@@ -1,11 +1,21 @@
 package warehouse
 
-import "testing"
+import (
+	"fmt"
+	"sync/atomic"
+	"testing"
+)
+
+// probeSeq keeps each probe registration unique. The registry is package-global
+// and RegisterWithMeta panics on a duplicate name, so fixed slugs would panic
+// on the second iteration under `go test -count=2`.
+var probeSeq atomic.Int32
 
 // anchoringProbe registers a provider with a given CanAnchor value under a
 // unique slug, so these tests exercise the real registry rather than a stub.
-func anchoringProbe(t *testing.T, slug string, canAnchor bool) string {
+func anchoringProbe(t *testing.T, name string, canAnchor bool) string {
 	t.Helper()
+	slug := fmt.Sprintf("%s_%d", name, probeSeq.Add(1))
 	RegisterWithMeta(slug, func(ProviderConfig) (Provider, error) {
 		return &mockWarehouseProvider{}, nil
 	}, ProviderMeta{
