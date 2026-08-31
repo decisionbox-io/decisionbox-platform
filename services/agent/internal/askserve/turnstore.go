@@ -193,6 +193,12 @@ func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 	if fin.RoutingConfidence > 0 {
 		set["routing_confidence"] = fin.RoutingConfidence
 	}
+	if len(fin.RoutingCandidateIDs) > 0 {
+		set["routing_candidate_ids"] = fin.RoutingCandidateIDs
+	}
+	if len(fin.RoutingChosenIDs) > 0 {
+		set["routing_chosen_ids"] = fin.RoutingChosenIDs
+	}
 	if fin.RoutingClarify {
 		set["routing_clarify"] = true
 	}
@@ -317,4 +323,10 @@ type TurnFinal struct {
 	RoutingReason     string
 	RoutingConfidence float64
 	RoutingClarify    bool
+	// RoutingCandidateIDs are the datasources the router chose FROM;
+	// RoutingChosenIDs the ones it chose. Both empty when the router did not
+	// run. See the model field docs for why the candidate set is recorded
+	// separately from what the turn queried.
+	RoutingCandidateIDs []string
+	RoutingChosenIDs    []string
 }

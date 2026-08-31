@@ -52,6 +52,12 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		}
 	}
 
+	// Record the ballot before asking. A router that errors, or one that never
+	// picks a particular datasource, is only diagnosable against the set it was
+	// offered — otherwise "the router ignored the analytics property" and "the
+	// analytics property was correctly irrelevant" produce identical records.
+	st.routeCandidates = datasourceIDs(st.routing.datasources)
+
 	dec, err := r.decideRoute(ctx, st, evidence)
 	if err != nil {
 		applog.WithError(err).WithField("turn_id", st.req.TurnID).Warn("ask-serve: router failed; letting the model choose datasources")
@@ -81,6 +87,7 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 	// datasource(s) are recorded in telemetry even on the single-datasource
 	// pin path (which flips multi off).
 	st.routing.routed = true
+	st.routeChosen = valid
 
 	chosen := datasourceInfosFor(rt, valid)
 	if len(valid) == 1 {
@@ -180,6 +187,18 @@ func filterKnownDatasources(rt *ProjectRuntime, ids []string) []string {
 			seen[id] = true
 			out = append(out, id)
 		}
+	}
+	return out
+}
+
+// datasourceIDs projects a datasource list to its ids, preserving order.
+func datasourceIDs(ds []DatasourceInfo) []string {
+	if len(ds) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, d.ID)
 	}
 	return out
 }

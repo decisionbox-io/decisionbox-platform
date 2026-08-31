@@ -69,6 +69,16 @@ type AskTurn struct {
 	// empty/zero for a single-datasource project or a turn pinned to an
 	// explicit datasource, where no routing decision is made.
 	RoutedDatasourceIDs []string `bson:"routed_datasource_ids,omitempty" json:"routed_datasource_ids,omitempty"`
+	// RoutingCandidateIDs are the datasources the router chose FROM, and
+	// RoutingChosenIDs the ones it chose. Both are distinct from
+	// RoutedDatasourceIDs, which records what the turn went on to query.
+	//
+	// The distinction is the whole point: without the candidate set, a turn
+	// that ignored a connected datasource is indistinguishable from one where
+	// that datasource was correctly irrelevant. Answering "is the router blind
+	// to this source?" needs to know it was on the ballot and lost.
+	RoutingCandidateIDs []string `bson:"routing_candidate_ids,omitempty" json:"routing_candidate_ids,omitempty"`
+	RoutingChosenIDs    []string `bson:"routing_chosen_ids,omitempty" json:"routing_chosen_ids,omitempty"`
 	RoutingReason       string   `bson:"routing_reason,omitempty" json:"routing_reason,omitempty"`
 	RoutingConfidence   float64  `bson:"routing_confidence,omitempty" json:"routing_confidence,omitempty"`
 	RoutingClarify      bool     `bson:"routing_clarify,omitempty" json:"routing_clarify,omitempty"`
