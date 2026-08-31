@@ -1,6 +1,9 @@
 package warehouse
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // SourceShape describes how a source organises what can be queried. It is not
 // cosmetic bookkeeping: it decides what a correct query even looks like, and
@@ -104,10 +107,20 @@ func AsQueryRunner(p Provider) QueryRunner {
 type sqlRunner struct{ p Provider }
 
 // RunQuery forwards the query text to Provider.Query with nil params, exactly
-// as the executor did before the seam existed. A structured payload is a
-// programming error here rather than a runtime condition to recover from: a
-// caller that builds one has chosen a non-SQL query shape for a SQL provider.
+// as the executor did before the seam existed.
+//
+// A structured payload is refused rather than ignored. Running Text alone
+// would execute something other than what the caller asked for — Text is only
+// a readable rendering when a payload is present, and may be empty — and a SQL
+// provider cannot interpret the payload. Dropping it would produce a
+// well-formed result for the wrong question, which is the failure mode this
+// seam exists to prevent; a caller that reaches here with a payload has paired
+// a non-SQL query shape with a SQL provider.
 func (r sqlRunner) RunQuery(ctx context.Context, q NativeQuery) (*QueryResult, error) {
+	if q.IsStructured() {
+		return nil, fmt.Errorf("warehouse: %T cannot execute a structured query payload (%T); "+
+			"a structured query needs a provider that implements QueryRunner", r.p, q.Payload)
+	}
 	return r.p.Query(ctx, q.Text, nil)
 }
 

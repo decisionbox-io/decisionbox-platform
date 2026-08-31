@@ -126,6 +126,30 @@ func TestExecuteNative_StructuredQueryIsNotRepaired(t *testing.T) {
 	}
 }
 
+// TestExecuteNative_StructuredFailureIsClassifiedBeforeTheFixerCheck pins the
+// order of the two terminal branches. A non-SQL source is exactly the case
+// that legitimately runs without a SQL fixer, so checking the fixer first
+// would report "no SQL fixer available" for a query no SQL fixer could have
+// repaired — an accurate-sounding message pointing at the wrong thing.
+func TestExecuteNative_StructuredFailureIsClassifiedBeforeTheFixerCheck(t *testing.T) {
+	runner := &stubRunner{err: context.DeadlineExceeded}
+	// No SQLFixer configured — the expected shape for a non-SQL source.
+	e := NewQueryExecutor(QueryExecutorOptions{Runner: runner, MaxRetries: 3})
+
+	q := gowarehouse.NativeQuery{Text: "sessions by date", Payload: map[string]any{"m": 1}}
+
+	_, err := e.ExecuteNative(context.Background(), q, "test", FixOpts{})
+	if err == nil {
+		t.Fatal("expected the failure to surface")
+	}
+	if strings.Contains(err.Error(), "no SQL fixer available") {
+		t.Errorf("error = %q, want the structured no-repair message, not the missing-fixer one", err.Error())
+	}
+	if !strings.Contains(err.Error(), "structured queries have no repair path") {
+		t.Errorf("error = %q, want it to say why no repair was attempted", err.Error())
+	}
+}
+
 // TestExecute_StringPathIsUnaffectedByTheRefusal pins that a plain SQL query
 // under tenant scope still behaves exactly as before: the text check runs and
 // a scoped query passes it.

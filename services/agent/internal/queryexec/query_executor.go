@@ -255,17 +255,22 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			return result, fmt.Errorf("query failed after %d attempts: %w", attempt+1, err)
 		}
 
-		if e.sqlFixer == nil {
-			applog.Error("Query failed and no SQL fixer available — cannot retry")
-			return result, fmt.Errorf("query failed and no SQL fixer available: %w", err)
-		}
-
+		// Classify a structured failure first. A non-SQL source is the case
+		// that legitimately runs without a SQL fixer, so checking the fixer
+		// first would report "no SQL fixer available" for a query that could
+		// not have been repaired by one anyway — an accurate-sounding message
+		// pointing at the wrong thing.
 		if currentQuery.IsStructured() {
 			applog.WithFields(applog.Fields{
 				"purpose": purpose,
 				"error":   err.Error(),
 			}).Error("Structured query failed and the text repair loop cannot repair it")
 			return result, fmt.Errorf("query failed and structured queries have no repair path: %w", err)
+		}
+
+		if e.sqlFixer == nil {
+			applog.Error("Query failed and no SQL fixer available — cannot retry")
+			return result, fmt.Errorf("query failed and no SQL fixer available: %w", err)
 		}
 
 		applog.WithFields(applog.Fields{

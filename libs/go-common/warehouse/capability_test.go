@@ -3,6 +3,7 @@ package warehouse
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,32 @@ func TestAsQueryRunner_AdaptsASQLProvider(t *testing.T) {
 	}
 	if got := r.QueryFixPrompt(); got != "fix {{ORIGINAL_SQL}}" {
 		t.Errorf("QueryFixPrompt() = %q, want the provider's SQLFixPrompt", got)
+	}
+}
+
+// TestAsQueryRunner_RefusesAStructuredPayload pins that the SQL adapter never
+// silently runs Text while dropping a payload. Text is only a readable
+// rendering when a payload is present and may be empty, so executing it alone
+// would return a well-formed answer to a different question — the exact
+// failure this seam exists to prevent.
+func TestAsQueryRunner_RefusesAStructuredPayload(t *testing.T) {
+	p := &recordingProvider{}
+	r := AsQueryRunner(p)
+
+	q := NativeQuery{Text: "sessions by date", Payload: map[string]any{"metrics": []string{"sessions"}}}
+	res, err := r.RunQuery(context.Background(), q)
+
+	if err == nil {
+		t.Fatal("a SQL provider must refuse a structured payload, not drop it")
+	}
+	if res != nil {
+		t.Error("a refused query must not return a result")
+	}
+	if p.called != 0 {
+		t.Errorf("Provider.Query called %d times, want 0 — the refusal must precede execution", p.called)
+	}
+	if !strings.Contains(err.Error(), "structured query") {
+		t.Errorf("error = %q, want it to name the structured payload as the problem", err.Error())
 	}
 }
 
