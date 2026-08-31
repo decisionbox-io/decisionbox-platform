@@ -191,6 +191,17 @@ type WarehouseConfig struct {
 	Location    string            `bson:"location,omitempty" json:"location,omitempty"`
 	FilterField string            `bson:"filter_field,omitempty" json:"filter_field,omitempty"`
 	FilterValue string            `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
+	// Anchoring is the per-datasource override of whether this source may
+	// carry the project by itself. Nil means "not set" — the provider's own
+	// capability decides. It may only DEMOTE: a provider that declares it
+	// cannot anchor is never promoted by this field. Resolve it with
+	// warehouse.EffectiveAnchoring(Provider, Anchoring) rather than reading it
+	// directly, so the provider ceiling is always applied.
+	//
+	// Deliberately not called "primary": a project's primary datasource is a
+	// selection among the ones connected, which is a different concept already
+	// in use here.
+	Anchoring *bool `bson:"anchoring,omitempty" json:"anchoring,omitempty"`
 	Config      map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
 }
 

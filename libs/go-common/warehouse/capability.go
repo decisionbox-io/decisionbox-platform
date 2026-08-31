@@ -212,3 +212,46 @@ func (m ProviderMeta) Language() string {
 	}
 	return "SQL"
 }
+
+// EffectiveAnchoring resolves whether one connected datasource may carry a
+// project by itself, from its provider's capability and the per-datasource
+// override.
+//
+// The two inputs answer different questions and compose one way only.
+// `CanAnchor` on the provider is what a source of this TYPE is capable of, and
+// it is a ceiling: a provider that cannot anchor can never be promoted, because
+// promotion would be a claim about the data that isn't true. The override is
+// what THIS customer's datasource is being used as, and it may only demote —
+// saying "our warehouse already holds this, treat it as enrichment" is a
+// legitimate statement about where the records actually live.
+//
+// override nil means "not set", which resolves to the provider's capability.
+//
+// An unregistered provider resolves to anchoring. That is the safe reading
+// rather than the permissive one: a binary that has not linked a provider
+// cannot construct it either, so such a datasource cannot be connected at all —
+// the project is broken in an obvious way long before anchoring is consulted.
+// The alternative default would make anchoring depend on which providers a
+// binary happens to blank-import, which is invisible at the call site.
+func EffectiveAnchoring(provider string, override *bool) bool {
+	if meta, ok := GetProviderMeta(provider); ok && !meta.Anchors() {
+		return false
+	}
+	if override != nil {
+		return *override
+	}
+	return true
+}
+
+// AnchoringOverrideAllowed reports whether `want` is a legal override for a
+// datasource of this provider type. Only demotion is legal; promoting a
+// provider that declares CanAnchor false is refused rather than ignored, so the
+// caller can tell the user why instead of silently storing a value that does
+// nothing.
+func AnchoringOverrideAllowed(provider string, want bool) bool {
+	if !want {
+		return true // demotion is always legal
+	}
+	meta, ok := GetProviderMeta(provider)
+	return !ok || meta.Anchors()
+}
