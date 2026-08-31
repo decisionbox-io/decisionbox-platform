@@ -1,0 +1,170 @@
+package warehouse
+
+import "context"
+
+// SourceShape describes how a source organises what can be queried. It is not
+// cosmetic bookkeeping: it decides what a correct query even looks like, and
+// downstream consumers (prompt construction, pack generation, exploration)
+// branch on it rather than guessing from the provider name.
+type SourceShape string
+
+const (
+	// ShapeEntities is the table/object model: named collections of rows with
+	// columns, selected from and joined. Every SQL warehouse is this shape, as
+	// is an object-based API such as a CRM.
+	ShapeEntities SourceShape = "entities"
+
+	// ShapeCube is the metric/dimension model: there are no tables and no rows
+	// to select from. A query is a choice of metrics, dimensions, a date range
+	// and optional filters, and the source computes the result. A web-analytics
+	// property is this shape.
+	//
+	// Modelling a cube as pseudo-tables would lie about capability — the agent
+	// would generate joins and filters the source cannot honour, and the
+	// failure would surface as a confusing query-time error rather than an
+	// honest "this source can't do that".
+	ShapeCube SourceShape = "cube"
+)
+
+// NativeQuery is a query expressed in a source's own language.
+//
+// SQL sources carry the statement in Text and leave Payload nil. A source
+// whose query is a structured request rather than a string — a report
+// specification, for instance — carries that request in Payload and may leave
+// Text empty, or set it to a human-readable rendering for logs and prompts.
+//
+// The two fields exist because the repair loop, the debug log and the stored
+// query history all want something printable, while the executing provider
+// wants the real payload. Collapsing them to a string would force structured
+// sources to serialise and re-parse their own requests.
+type NativeQuery struct {
+	// Text is the query as text: the SQL statement, or a readable rendering of
+	// a structured payload. Never empty for SQL sources.
+	Text string
+
+	// Payload is the provider-native structured request, or nil when Text is
+	// the whole query. A provider that sets this is responsible for type-
+	// asserting it back in RunQuery.
+	Payload any
+}
+
+// SQLQuery builds a NativeQuery for a plain SQL statement.
+func SQLQuery(sql string) NativeQuery { return NativeQuery{Text: sql} }
+
+// IsStructured reports whether the query carries a payload the executing
+// provider must interpret, rather than text it can run directly.
+func (q NativeQuery) IsStructured() bool { return q.Payload != nil }
+
+// String renders the query for logs, prompts and stored history. It never
+// returns the payload, so a provider that wants its structured request to be
+// legible must render it into Text.
+func (q NativeQuery) String() string { return q.Text }
+
+// QueryRunner is the narrow seam the query-execution loop actually depends on:
+// generate a query in the source's language, run it, and on failure ask for a
+// repair prompt in that same language. Everything else the SQL Provider
+// interface offers — dataset listing, schema introspection, identifier
+// quoting — is irrelevant to executing a query and is deliberately absent.
+//
+// SQL providers do not implement this directly; AsQueryRunner adapts them, so
+// the SQL path is unchanged. A non-SQL adapter implements QueryRunner itself
+// and needs none of the table-shaped surface.
+type QueryRunner interface {
+	// RunQuery executes a query in the source's native language.
+	RunQuery(ctx context.Context, q NativeQuery) (*QueryResult, error)
+
+	// QueryLanguage names the language queries are written in — "SQL" and its
+	// dialects, or a source's own request format. Used to tell the model what
+	// it is writing.
+	QueryLanguage() string
+
+	// QueryFixPrompt returns the repair-prompt template for this language, or
+	// "" when the source offers none. This is the generalisation of
+	// Provider.SQLFixPrompt; the same placeholder contract applies.
+	QueryFixPrompt() string
+}
+
+// AsQueryRunner returns p as a QueryRunner. A provider that implements the
+// interface itself is returned unchanged; any other provider is wrapped in an
+// adapter that maps RunQuery onto Query, QueryLanguage onto SQLDialect, and
+// QueryFixPrompt onto SQLFixPrompt.
+//
+// The adapter is what keeps this extraction behaviour-preserving: every
+// existing SQL provider — including the ones registered from the enterprise
+// plugin repo, which this package cannot see — keeps working with no change
+// and no compile break.
+func AsQueryRunner(p Provider) QueryRunner {
+	if r, ok := p.(QueryRunner); ok {
+		return r
+	}
+	return sqlRunner{p: p}
+}
+
+// sqlRunner adapts a SQL Provider to the QueryRunner seam.
+type sqlRunner struct{ p Provider }
+
+// RunQuery forwards the query text to Provider.Query with nil params, exactly
+// as the executor did before the seam existed. A structured payload is a
+// programming error here rather than a runtime condition to recover from: a
+// caller that builds one has chosen a non-SQL query shape for a SQL provider.
+func (r sqlRunner) RunQuery(ctx context.Context, q NativeQuery) (*QueryResult, error) {
+	return r.p.Query(ctx, q.Text, nil)
+}
+
+func (r sqlRunner) QueryLanguage() string  { return r.p.SQLDialect() }
+func (r sqlRunner) QueryFixPrompt() string { return r.p.SQLFixPrompt() }
+
+// Unwrap exposes the adapted Provider so callers that still need the
+// table-shaped surface (schema discovery, identifier quoting) can reach it
+// without keeping a second reference alongside the runner.
+func (r sqlRunner) Unwrap() Provider { return r.p }
+
+// Anchoring returns a pointer to v, for declaring ProviderMeta.CanAnchor.
+//
+// Only a provider that cannot anchor needs to say so:
+//
+//	CanAnchor: warehouse.Anchoring(false)
+func Anchoring(v bool) *bool { return &v }
+
+// Language returns the query language for this provider: the declared
+// QueryLanguage, falling back to the display Dialect, and finally to "SQL".
+//
+// The fallback is what lets every already-registered SQL provider — in this
+// repo and in the enterprise plugin repo — carry a correct language without
+// being edited.
+func (m ProviderMeta) Language() string {
+	if m.QueryLanguage != "" {
+		return m.QueryLanguage
+	}
+	if m.Dialect != "" {
+		return m.Dialect
+	}
+	return "SQL"
+}
+
+// EffectiveShape returns the declared source shape, defaulting to
+// ShapeEntities. The default is safe for an undeclared provider because every
+// source that existed before shape did is table-shaped; a cube source cannot
+// be introduced without declaring itself one, since nothing else about it
+// would work.
+func (m ProviderMeta) EffectiveShape() SourceShape {
+	if m.Shape != "" {
+		return m.Shape
+	}
+	return ShapeEntities
+}
+
+// Anchors reports whether a source of this type can carry a project by itself
+// — a system of record rather than a system of observation.
+//
+// Undeclared means true. That direction is deliberate: a warehouse or CRM is
+// the system of record by construction, so the sources that existed before
+// this flag are all anchoring, and a provider that forgets to declare keeps
+// working. The failure mode of the opposite default would be silent — an
+// existing datasource quietly becoming ineligible to be a project's only
+// source, refused with no error anyone would connect to a missing field.
+//
+// Only a source whose value is purely correlative declares CanAnchor false.
+func (m ProviderMeta) Anchors() bool {
+	return m.CanAnchor == nil || *m.CanAnchor
+}

@@ -12,9 +12,15 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// QueryExecutor executes warehouse queries with self-healing capabilities.
+// QueryExecutor executes queries with self-healing capabilities.
+//
+// It depends on the narrow gowarehouse.QueryRunner seam rather than on the
+// full SQL Provider interface: executing a query and repairing a failed one
+// are all it does, and neither needs schema introspection or identifier
+// quoting. A SQL provider is adapted onto the seam by
+// gowarehouse.AsQueryRunner, so the SQL path is unchanged.
 type QueryExecutor struct {
-	warehouse    gowarehouse.Provider
+	runner       gowarehouse.QueryRunner
 	sqlFixer     SQLFixer
 	debugLogger  *debug.Logger
 	maxRetries   int
@@ -63,7 +69,12 @@ type SQLFixer interface {
 
 // QueryExecutorOptions configures the query executor.
 type QueryExecutorOptions struct {
-	Warehouse   gowarehouse.Provider
+	// Warehouse is a SQL provider, adapted onto the QueryRunner seam. This is
+	// how every existing caller configures the executor.
+	Warehouse gowarehouse.Provider
+	// Runner supplies the query seam directly, for a source that is not a SQL
+	// provider. When set it takes precedence over Warehouse.
+	Runner      gowarehouse.QueryRunner
 	SQLFixer    SQLFixer
 	DebugLogger *debug.Logger
 	MaxRetries  int
@@ -76,8 +87,12 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	if opts.MaxRetries == 0 {
 		opts.MaxRetries = 5
 	}
+	runner := opts.Runner
+	if runner == nil && opts.Warehouse != nil {
+		runner = gowarehouse.AsQueryRunner(opts.Warehouse)
+	}
 	return &QueryExecutor{
-		warehouse:    opts.Warehouse,
+		runner:       runner,
 		sqlFixer:     opts.SQLFixer,
 		debugLogger:  opts.DebugLogger,
 		maxRetries:   opts.MaxRetries,
@@ -131,17 +146,34 @@ func (e *QueryExecutor) Execute(ctx context.Context, query string, purpose strin
 // each time, so the LLM sees the same evidence regardless of which retry
 // attempt is in flight.
 func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, purpose string, opts FixOpts) (*ExecuteResult, error) {
+	return e.ExecuteNative(ctx, gowarehouse.SQLQuery(query), purpose, opts)
+}
+
+// ExecuteNative is ExecuteWithFixOpts over a query in any source's language.
+// It is the executor's general entry point; the string-based methods above
+// wrap a SQL statement into a NativeQuery and call through here.
+//
+// A structured query — one carrying a provider-native payload rather than
+// text — executes through the same loop but is NOT repaired on failure. The
+// repair path rewrites query *text*, and applying a text rewrite to a query
+// whose meaning lives in its payload would either drop the payload or pair it
+// with contradicting text: a query that runs cleanly and answers a different
+// question than the one asked. Sources with structured queries are expected to
+// bring their own repair mechanism (a pre-flight validator catches more, and
+// earlier, than a post-hoc rewrite); until one is wired in, such a failure is
+// returned honestly rather than silently patched.
+func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.NativeQuery, purpose string, opts FixOpts) (*ExecuteResult, error) {
 	startTime := time.Now()
 
 	result := &ExecuteResult{
-		OriginalQuery: query,
-		FinalQuery:    query,
+		OriginalQuery: query.String(),
+		FinalQuery:    query.String(),
 		Errors:        make([]string, 0),
 	}
 
 	currentQuery := query
 
-	if err := e.verifyFilter(currentQuery); err != nil {
+	if err := e.verifyFilter(currentQuery.String()); err != nil {
 		return nil, fmt.Errorf("security violation: %w", err)
 	}
 
@@ -152,17 +184,17 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 			"purpose":  purpose,
 			"phase":    e.currentPhase,
 			"step":     e.currentStep,
-			"query_len": len(currentQuery),
+			"query_len": len(currentQuery.String()),
 		}).Debug("Executing warehouse query")
 
-		qr, err := e.warehouse.Query(ctx, currentQuery, nil)
+		qr, err := e.runner.RunQuery(ctx, currentQuery)
 		executionTime := time.Since(startTime).Milliseconds()
 
 		if err == nil {
 			result.Data = qr.Rows
 			result.RowCount = len(qr.Rows)
 			result.ExecutionTimeMs = executionTime
-			result.FinalQuery = currentQuery
+			result.FinalQuery = currentQuery.String()
 			result.Fixed = attempt > 0
 
 			applog.WithFields(applog.Fields{
@@ -179,7 +211,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 					fixedQuery = result.FinalQuery
 				}
 				e.debugLogger.LogWarehouseQuery(ctx, e.currentStep, e.currentPhase,
-					query, purpose, result.Data, result.RowCount, result.ExecutionTimeMs,
+					query.String(), purpose, result.Data, result.RowCount, result.ExecutionTimeMs,
 					nil, result.FixAttempts, fixedQuery)
 			}
 
@@ -204,7 +236,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 
 			if e.debugLogger != nil {
 				e.debugLogger.LogWarehouseQuery(ctx, e.currentStep, e.currentPhase,
-					query, purpose, nil, 0, time.Since(startTime).Milliseconds(),
+					query.String(), purpose, nil, 0, time.Since(startTime).Milliseconds(),
 					err, result.FixAttempts, "")
 			}
 			return result, fmt.Errorf("query failed after %d attempts: %w", attempt+1, err)
@@ -215,12 +247,20 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 			return result, fmt.Errorf("query failed and no SQL fixer available: %w", err)
 		}
 
+		if currentQuery.IsStructured() {
+			applog.WithFields(applog.Fields{
+				"purpose": purpose,
+				"error":   err.Error(),
+			}).Error("Structured query failed and the text repair loop cannot repair it")
+			return result, fmt.Errorf("query failed and structured queries have no repair path: %w", err)
+		}
+
 		applog.WithFields(applog.Fields{
 			"attempt": attempt + 1,
 			"error":   err.Error(),
 		}).Info("Attempting SQL fix via LLM")
 
-		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery, err.Error(), attempt, opts)
+		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery.String(), err.Error(), attempt, opts)
 		if fixErr != nil {
 			// The fixer call failed (LLM transport error OR the response
 			// couldn't be parsed into SQL). Record the attempt so the
@@ -232,7 +272,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 				Attempt:      attempt,
 				PromptIn:     fix.Prompt,
 				ResponseOut:  fix.Response,
-				SQLBefore:    currentQuery,
+				SQLBefore:    currentQuery.String(),
 				SQLAfter:     fix.FixedSQL,
 				ErrorIn:      err.Error(),
 				FixerError:   fixErr.Error(),
@@ -255,7 +295,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 				Attempt:      attempt,
 				PromptIn:     fix.Prompt,
 				ResponseOut:  fix.Response,
-				SQLBefore:    currentQuery,
+				SQLBefore:    currentQuery.String(),
 				SQLAfter:     fix.FixedSQL,
 				ErrorIn:      err.Error(),
 				FixerError:   "fixed query security violation: " + verifyErr.Error(),
@@ -273,7 +313,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 			Attempt:      attempt,
 			PromptIn:     fix.Prompt,
 			ResponseOut:  fix.Response,
-			SQLBefore:    currentQuery,
+			SQLBefore:    currentQuery.String(),
 			SQLAfter:     fix.FixedSQL,
 			ErrorIn:      err.Error(),
 			InputTokens:  fix.InputTokens,
@@ -284,7 +324,7 @@ func (e *QueryExecutor) ExecuteWithFixOpts(ctx context.Context, query string, pu
 
 		applog.Debug("SQL fix applied, retrying with corrected query")
 		result.FixAttempts++
-		currentQuery = fix.FixedSQL
+		currentQuery = gowarehouse.SQLQuery(fix.FixedSQL)
 		startTime = time.Now()
 	}
 

@@ -32,7 +32,24 @@ type ProviderMeta struct {
 	// constructed Provider (and therefore config/credentials), this label is
 	// declared at registration and available by slug with no instantiation.
 	// Every registered provider sets it.
-	Dialect        string            `json:"dialect"`
+	Dialect string `json:"dialect"`
+
+	// QueryLanguage names the language queries against this source are written
+	// in. Empty means "the Dialect label" — see ProviderMeta.Language() — so
+	// every SQL provider is already correct without declaring it. A non-SQL
+	// source declares its own ("SOQL", a report specification, ...).
+	QueryLanguage string `json:"query_language,omitempty"`
+
+	// Shape is how the source organises what can be queried: rows in named
+	// entities, or a cube of metrics and dimensions. Empty means
+	// ShapeEntities — see ProviderMeta.EffectiveShape().
+	Shape SourceShape `json:"shape,omitempty"`
+
+	// CanAnchor declares whether a source of this type can carry a project by
+	// itself. Nil means true — see ProviderMeta.Anchors() for why the default
+	// runs that way. Declare it only to say false, via warehouse.Anchoring(false).
+	CanAnchor *bool `json:"can_anchor,omitempty"`
+
 	ConfigFields   []ConfigField     `json:"config_fields"`
 	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`
 	DefaultPricing *WarehousePricing `json:"default_pricing,omitempty"`
