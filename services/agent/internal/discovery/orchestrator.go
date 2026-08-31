@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -175,6 +177,44 @@ type Orchestrator struct {
 	llmProvider    string
 	llmModel       string
 
+	// llmConfig is the project's LLM provider config (project.LLM.Config).
+	// Read for the max_input_tokens / max_output_tokens operator overrides
+	// when budgeting the analysis + recommendation output against the model
+	// window. May be nil.
+	llmConfig gollm.ProviderConfig
+
+	// llmInputWindow / llmOutputCap are the effective context window and
+	// output cap resolved once at run start (operator override → live
+	// auto-detection → catalog → default). Zero means "resolve from the
+	// catalog/override on demand" — the fallback path unit tests take.
+	llmInputWindow int
+	llmOutputCap   int
+
+	// calibMu guards calibratedWindow, the model's true context window learned
+	// from a context-overflow 400 during this run. When set it wins over the
+	// resolved window so the remaining areas budget against ground truth.
+	calibMu          sync.Mutex
+	calibratedWindow int
+
+	// reasoningEnabled is the resolved model-agnostic per-project "Enable
+	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
+	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
+	reasoningEnabled bool
+
+	// recommendationVerdicts is the resolved per-project set of validation
+	// verdicts that make an insight eligible for recommendation generation
+	// (from DiscoveryOptions.RecommendationVerdicts). A set for O(1) lookup in
+	// filterEligibleInsights. Empty is treated as the default
+	// {confirmed, supported} when built in RunDiscovery, so a run always has a
+	// non-empty eligibility set.
+	recommendationVerdicts map[valmodels.Status]bool
+
+	// modelWindowRepo persists a context window learned from an overflow 400
+	// so a later run for the same project+model budgets correctly up front.
+	// Optional — nil skips cross-run persistence (unit tests, and until the
+	// repo is wired).
+	modelWindowRepo modelWindowPersister
+
 	vectorStore       vectorstore.Provider
 	embeddingProvider goembedding.Provider
 	embedIndexStore   EmbedIndexStore
@@ -247,6 +287,19 @@ type OrchestratorOptions struct {
 	FilterValue       string
 	LLMProvider       string
 	LLMModel          string
+	// LLMConfig is the project's LLM provider config (project.LLM.Config),
+	// carrying the max_input_tokens / max_output_tokens operator overrides used
+	// when budgeting output against the model window. Optional.
+	LLMConfig gollm.ProviderConfig
+	// LLMInputWindow / LLMOutputCap are the effective context window and output
+	// cap resolved at run start (override → live auto-detection → catalog →
+	// default). Zero means the orchestrator resolves from the catalog/override
+	// on demand.
+	LLMInputWindow int
+	LLMOutputCap   int
+	// ModelWindowRepo persists a context window learned from an overflow 400.
+	// Optional — nil skips cross-run persistence.
+	ModelWindowRepo   modelWindowPersister
 	WarehouseProvider string // provider id used to label warehouse-query debug rows
 	EnableDebugLogs   bool
 
@@ -364,6 +417,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		filterValue:        opts.FilterValue,
 		llmProvider:        opts.LLMProvider,
 		llmModel:           opts.LLMModel,
+		llmConfig:          opts.LLMConfig,
+		llmInputWindow:     opts.LLMInputWindow,
+		llmOutputCap:       opts.LLMOutputCap,
+		modelWindowRepo:    opts.ModelWindowRepo,
 		vectorStore:        opts.VectorStore,
 		embeddingProvider:  opts.EmbeddingProvider,
 		embedIndexStore:    opts.EmbedIndexStore,
@@ -397,6 +454,27 @@ type DiscoveryOptions struct {
 	// every insight + recommendation with combined=validation_disabled
 	// (and backfilling the legacy Status field for old consumers).
 	ValidationEnabled bool
+
+	// SmartOverflowEnabled is the resolved per-project toggle for the analysis
+	// picker's smart budget-overflow handling (dedup + breadcrumb + tighter
+	// re-compaction). The caller resolves project.EffectiveSmartOverflowEnabled()
+	// into a bool. Only affects runs whose picked evidence exceeds the window
+	// budget; inert on big-window models.
+	SmartOverflowEnabled bool
+
+	// ReasoningEnabled is the resolved model-agnostic per-project "Enable
+	// reasoning" toggle (project.EffectiveReasoningEnabled()). When true the run
+	// treats the model as reasoning-effective: window-budgeted exploration
+	// output headroom (R3) + ReasoningEffort=on on every LLM call. Default off
+	// = today, so big models are byte-identical.
+	ReasoningEnabled bool
+
+	// RecommendationVerdicts is the resolved per-project set of validation
+	// verdicts that make an insight eligible for recommendation generation
+	// (project.EffectiveRecommendationVerdicts()). Empty means "use the default"
+	// ({confirmed, supported} — today's IsTerminalPositive filter), so an
+	// unset/legacy project produces the identical recommender input.
+	RecommendationVerdicts []valmodels.Status
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -415,6 +493,35 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	//   Phase 8  -> Embed/index results for retrieval
 	// Each phase updates the StatusReporter so the UI can track
 	// live discovery progress and intermediate results.
+
+	// Self-calibration: learn the model's true context window from any
+	// context-overflow 400 (across every phase that calls the LLM) so the
+	// remaining areas re-budget against it and a later run starts correct.
+	o.installContextWindowObserver(ctx)
+
+	// Reasoning opt-in: the model-agnostic per-project "Enable reasoning"
+	// toggle (Settings → Advanced), OR a legacy llm.config flag for
+	// back-compat. When on, request reasoning on every LLM call. Default off =
+	// today, so big models are byte-identical. Providers that wire native
+	// thinking (Ollama, capability-gated) act on it; others ignore the param
+	// and just get the R3 exploration headroom.
+	o.reasoningEnabled = opts.ReasoningEnabled
+	if o.aiClient != nil {
+		o.aiClient.SetReasoning(o.reasoningEnabled || gollm.ReasoningEnabled(o.llmConfig))
+	}
+
+	// Recommendation eligibility: the per-project set of validation verdicts an
+	// insight must carry to flow to the recommender (Settings → Advanced). Empty
+	// falls back to the default {confirmed, supported} so unset/legacy projects
+	// reproduce today's IsTerminalPositive filter exactly.
+	verdicts := opts.RecommendationVerdicts
+	if len(verdicts) == 0 {
+		verdicts = valmodels.DefaultRecommendationVerdicts()
+	}
+	o.recommendationVerdicts = make(map[valmodels.Status]bool, len(verdicts))
+	for _, s := range verdicts {
+		o.recommendationVerdicts[s] = true
+	}
 
 	// Set max steps for accurate progress reporting
 	o.statusReporter.maxSteps = opts.MaxSteps
@@ -440,11 +547,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	datasetsStr := strings.Join(o.datasets, ", ")
 
 	// Initialize query executor (uses the warehouse provider which can query any dataset)
+	sqlFixWindow, sqlFixOutputCap := o.resolveModelBudget()
 	sqlFixer := ai.NewSQLFixer(ai.SQLFixerOptions{
 		Client:       o.aiClient,
 		SQLFixPrompt: o.warehouse.SQLFixPrompt(),
 		Dataset:      datasetsStr,
 		Filter:       filterClause,
+		// Budget the fix call against the resolved window/output cap so it can't
+		// overflow a small model (#347-class fix).
+		Window:    sqlFixWindow,
+		OutputCap: sqlFixOutputCap,
 	})
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 		Warehouse:   o.warehouse,
@@ -686,6 +798,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		dsExecutors = dc.executors
 	}
 
+	// Resolve the model window + output cap once for the exploration engine's
+	// reasoning-aware output budget (R3). At exploration time no overflow has
+	// been observed yet, so this is the run-start resolved window (operator
+	// override → live auto-detect → catalog → default). Only consulted on the
+	// reasoning-effective path — a non-reasoning model keeps today's fixed
+	// exploration ceiling regardless of these values.
+	exploreWindow, exploreOutputCap := o.resolveModelBudget()
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -697,6 +817,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
+
+		// R3: reasoning-aware, window-budgeted per-step output ceiling.
+		Window:             exploreWindow,
+		OutputCap:          exploreOutputCap,
+		ReasoningEffective: o.effectiveReasoning(),
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.
@@ -816,6 +941,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return o.runStepIndex.Search(c, q, sopts)
 	})
 	picker.EstimateRenderedSize = EstimateCompactedRenderedSize
+	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
 	for _, area := range runAreas {
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
@@ -823,6 +949,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			applog.WithField("area", area.ID).Warn("No prompt for analysis area, skipping")
 			continue
 		}
+
+		// Couple the picker's query-results budget to the model window so an
+		// area's input can never grow past what the window can hold once the
+		// output cap + safety margin are reserved. Recomputed per area so a
+		// window calibrated mid-run (from an overflow 400) tightens the
+		// remaining areas too.
+		areaWindow, areaOutputCap := o.resolveModelBudget()
+		picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap)
 
 		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
 		// Skip the area if step retrieval fails so the remaining areas
@@ -886,6 +1020,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Debug("Analysis area: rendered prompt sizing")
 		prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
 
+		// Smart-overflow breadcrumb (R5): when the picker trimmed steps for
+		// budget, tell the model what evidence exists but wasn't shown, so it
+		// doesn't conclude the un-shown angles were never examined. Empty (and
+		// thus a no-op) on any run that fit without trimming — i.e. every
+		// big-window run.
+		if bc := formatAlsoExamined(pickResult.AlsoExamined); bc != "" {
+			prompt += bc
+		}
+
 		// Inject project knowledge sources relevant to this analysis area.
 		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
 		prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis)
@@ -902,33 +1045,48 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			DroppedSteps:      droppedToTelemetry(pickResult.Dropped),
 		}
 
-		// Call LLM
-		maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+		// Budget the requested output against the measured input so
+		// input + output stays inside the model window (issue #347). The
+		// adaptive context-overflow retry in the ai client is the net if the
+		// estimate still overshoots on an uncatalogued model.
+		inputTokens := approxTokens(ctx, prompt)
+		maxTokens := budgetedMaxOutputTokens(areaWindow, inputTokens, areaOutputCap, analysisMinOutputTokens())
+		applog.WithFields(applog.Fields{
+			"area":         area.ID,
+			"window":       areaWindow,
+			"input_tokens": inputTokens,
+			"output_cap":   areaOutputCap,
+			"max_tokens":   maxTokens,
+		}).Debug("Analysis area: budgeted output tokens")
 
 		// Send the selected exploration evidence to the LLM and generate
-		// structured insights for the current analysis area.
-		chatResult, err := o.aiClient.Chat(ctx, prompt, "", maxTokens)
-		if err != nil {
-			step.Error = err.Error()
+		// structured insights for the current analysis area. The first call is
+		// a plain Chat (byte-identical for big models); the self-heal retry
+		// fires only when it yields zero parseable insights from a response that
+		// wasn't a legitimately empty area (see analyzeAreaInsights).
+		outcome := o.analyzeAreaInsights(ctx, area.ID, prompt, maxTokens)
+		step.Response = outcome.response
+		step.TokensIn = outcome.tokensIn
+		step.TokensOut = outcome.tokensOut
+		step.DurationMs = outcome.durationMs
+		step.AnalysisParseRetries = outcome.parseRetries
+		step.InsightsDroppedParse = outcome.droppedParse
+
+		if outcome.chatErr != nil {
+			step.Error = outcome.chatErr.Error()
 			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": err.Error()}).Warn("Analysis failed")
+			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.chatErr.Error()}).Warn("Analysis failed")
 			continue
 		}
 
-		step.Response = chatResult.Content
-		step.TokensIn = chatResult.TokensIn
-		step.TokensOut = chatResult.TokensOut
-		step.DurationMs = chatResult.DurationMs
-
-		// Parse insights from response
-		insights, parseErr := o.parseInsights(chatResult.Content, area.ID)
-		if parseErr != nil {
-			step.Error = fmt.Sprintf("parse error: %s", parseErr.Error())
+		if len(outcome.insights) == 0 && outcome.parseErr != nil {
+			step.Error = fmt.Sprintf("parse error: %s", outcome.parseErr.Error())
 			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": parseErr.Error()}).Warn("Failed to parse insights")
+			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.parseErr.Error()}).Warn("Failed to parse insights")
 			continue
 		}
 
+		insights := outcome.insights
 		step.Insights = insights
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
@@ -983,11 +1141,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Warn("Some analysis areas failed")
 	}
 
-	// Phase 5: Generate recommendations — only insights with
-	// Combined∈{supported,confirmed} flow to the recommender.
+	// Phase 5: Generate recommendations — only insights whose Combined verdict
+	// is in the per-project eligibility set (o.recommendationVerdicts; default
+	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
-	recommenderInput := filterEligibleInsights(allInsights)
+	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),
 		"eligible_insights": len(recommenderInput),
@@ -1004,6 +1163,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		recStep = &models.RecommendationStep{Status: "skipped_no_eligible_insights", RunAt: time.Now(), InsightCount: 0}
 	} else {
 		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
+		// Citation recovery (#347): salvage valid ids + fail-open backfill so a
+		// small/open model that omits or slug-ifies related_insight_ids doesn't
+		// lose an otherwise-good recommendation. Big models cite correctly and
+		// pass through untouched (zero stats). The validateRelatedInsightIDs
+		// guard below then finds every rec already valid.
+		var citationStats RecommendationCitationStats
+		recommendations, citationStats = recoverRelatedInsightIDs(recommendations, recommenderInput)
+		if recStep != nil {
+			recStep.RecommendationsCitationsSalvaged = citationStats.Salvaged
+			recStep.RecommendationsCitationsBackfilled = citationStats.Backfilled
+		}
 		var dropStats RecommendationDropStats
 		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
 		applyRecommendationDropStats(recStep, recommendations, dropStats)
@@ -1241,39 +1411,185 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 	return plain, md
 }
 
-func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, error) {
-	var result struct {
-		Insights []models.Insight `json:"insights"`
-	}
-
+// parseInsights decodes the analysis response tolerantly and per-item. It
+// accepts either the {"insights": [...]} envelope or a bare top-level array
+// (some models emit the array directly — both shapes appear in
+// discovery_analysis_steps). Each element is decoded on its own through the
+// tolerant models.Insight.UnmarshalJSON, so a single malformed insight is
+// skipped and counted rather than discarding the whole area (the insight
+// analogue of the recommendation loss fixed in issue #342). Mirrors
+// parseRecommendations.
+//
+// Returns the kept insights, the number of per-item drops, and a non-nil error
+// only when the response is not recognizable as insights at all (neither the
+// envelope nor a bare array). A well-formed but empty result returns
+// (empty, 0, nil) so callers can distinguish "no insights" from "could not
+// parse".
+func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
 	cleaned := cleanJSONResponse(response)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse analysis response: %w", err)
+
+	var raws []json.RawMessage
+	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
+		// Bare top-level array (some models emit the array directly).
+		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		// Envelope object: the "insights" key must be present. An object with a
+		// different key is a parse failure, not a legitimately empty result —
+		// otherwise it would silently yield 0 insights with no retry.
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+			return nil, 0, fmt.Errorf("failed to parse analysis response: %w", err)
+		}
+		// Match the key case-insensitively, as encoding/json does when decoding
+		// into a struct tag — some models capitalize it (`{"Insights":[…]}`).
+		var insRaw json.RawMessage
+		found := false
+		for k, v := range envelope {
+			if strings.EqualFold(k, "insights") {
+				insRaw, found = v, true
+				break
+			}
+		}
+		if !found {
+			return nil, 0, fmt.Errorf(`response is missing the "insights" key`)
+		}
+		if strings.TrimSpace(string(insRaw)) == "null" {
+			// A null array decodes into a nil slice without error; treat it as a
+			// parse failure (→ retry) rather than a silent empty result.
+			return nil, 0, fmt.Errorf(`"insights" is null`)
+		}
+		if err := json.Unmarshal(insRaw, &raws); err != nil {
+			return nil, 0, fmt.Errorf(`"insights" is not an array: %w`, err)
+		}
 	}
 
-	for i := range result.Insights {
-		result.Insights[i].AnalysisArea = areaID
-		if result.Insights[i].DiscoveredAt.IsZero() {
-			result.Insights[i].DiscoveredAt = time.Now()
+	insights := make([]models.Insight, 0, len(raws))
+	dropped := 0
+	for i, raw := range raws {
+		var insight models.Insight
+		if err := json.Unmarshal(raw, &insight); err != nil {
+			dropped++
+			applog.WithFields(applog.Fields{
+				"area":   areaID,
+				"index":  i,
+				"reason": err.Error(),
+			}).Warn("Dropping unparseable insight; keeping the rest of the area")
+			continue
+		}
+
+		insight.AnalysisArea = areaID
+		if insight.DiscoveredAt.IsZero() {
+			insight.DiscoveredAt = time.Now()
 		}
 		// Split the authored description: the LLM writes Markdown into
 		// `description`; keep that rendition in DescriptionMd for the
 		// dashboard, and reduce Description to the plain-text form that API
 		// consumers, previews, and embeddings read.
-		result.Insights[i].Description, result.Insights[i].DescriptionMd =
-			splitMarkdownDescription(result.Insights[i].Description)
+		insight.Description, insight.DescriptionMd =
+			splitMarkdownDescription(insight.Description)
 		// Assign a UUID if the LLM didn't give one. The same UUID is later
 		// reused as the standalone `insights._id` and the Qdrant point id, so
 		// every link built from a search hit (Ask sources, related cards) can
 		// use the existing /discoveries/{did}/insights/{id} route without any
 		// client-side fallback. Qdrant only accepts UUID / uint64 point ids,
 		// which is why the embedded id itself has to be a UUID.
-		if result.Insights[i].ID == "" {
-			result.Insights[i].ID = uuid.New().String()
+		if insight.ID == "" {
+			insight.ID = uuid.New().String()
+		}
+
+		insights = append(insights, insight)
+	}
+
+	return insights, dropped, nil
+}
+
+// analysisParseOutcome carries the result of one analysis area's chat +
+// per-item parse + self-heal loop, so the loop can be unit-tested in isolation
+// (mirrors how generateRecommendations is testable). parseErr is set only when
+// the area produced zero insights because of a parse failure (not a
+// legitimately empty area); chatErr is a transport/model error that skips the
+// area outright.
+type analysisParseOutcome struct {
+	insights     []models.Insight
+	response     string
+	tokensIn     int
+	tokensOut    int
+	durationMs   int64
+	parseRetries int
+	droppedParse int
+	chatErr      error
+	parseErr     error
+}
+
+// analyzeAreaInsights runs one analysis area: a first plain Chat (no structured
+// output, so big models that already work stay byte-identical), then — only if
+// that first response yields zero parseable insights from a response that
+// wasn't a legitimately empty area — up to ANALYSIS_PARSE_MAX_RETRIES
+// corrective re-prompts. The retry appends analysisRepairSuffix and uses
+// ChatWithFormat with a schema-constrained insight envelope, which self-gates
+// on SupportsStructuredOutput (a safe no-op on providers without it, where the
+// tolerant per-item parser remains the net). Mirrors generateRecommendations'
+// self-heal loop.
+func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt string, maxTokens int) analysisParseOutcome {
+	maxRetries := goconfig.GetEnvAsInt(analysisParseMaxRetriesEnv, defaultAnalysisParseMaxRetries)
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	insightFormat := insightResponseFormat()
+
+	var out analysisParseOutcome
+	var lastParseErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var (
+			chatResult *ai.ChatResult
+			err        error
+		)
+		if attempt == 0 {
+			chatResult, err = o.aiClient.Chat(ctx, prompt, "", maxTokens)
+		} else {
+			out.parseRetries = attempt
+			attemptPrompt := prompt + analysisRepairSuffix(lastParseErr)
+			applog.WithFields(applog.Fields{
+				"area":    areaID,
+				"attempt": attempt,
+				"reason":  errString(lastParseErr),
+			}).Warn("Re-prompting for insights after unparseable response")
+			chatResult, err = o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, insightFormat)
+		}
+		if err != nil {
+			out.chatErr = err
+			return out
+		}
+
+		out.response = chatResult.Content
+		if attempt == 0 {
+			out.tokensIn = chatResult.TokensIn
+			out.tokensOut = chatResult.TokensOut
+			out.durationMs = chatResult.DurationMs
+		} else {
+			out.tokensIn += chatResult.TokensIn
+			out.tokensOut += chatResult.TokensOut
+			out.durationMs += chatResult.DurationMs
+		}
+
+		parsed, dropped, perr := o.parseInsights(chatResult.Content, areaID)
+		if perr == nil {
+			out.droppedParse = dropped
+			if len(parsed) > 0 || dropped == 0 {
+				// >=1 kept, or a legitimately empty area — accept either.
+				out.insights = parsed
+				return out
+			}
+			lastParseErr = fmt.Errorf("all %d insight(s) failed to parse", dropped)
+		} else {
+			lastParseErr = perr
 		}
 	}
 
-	return result.Insights, nil
+	out.parseErr = lastParseErr
+	return out
 }
 
 // generateRecommendations generates actionable recommendations and captures the full dialog.
@@ -1321,7 +1637,12 @@ func (o *Orchestrator) generateRecommendations(
 
 	step.Prompt = prompt
 
-	maxTokens := gollm.GetMaxOutputTokens(o.llmProvider, o.llmModel)
+	// Budget the recommendation output against the measured input (same
+	// root cause as the analysis phase, issue #347): a large insights-JSON
+	// prompt plus a fixed output cap can overflow the model window. The
+	// adaptive context-overflow retry is the net.
+	recWindow, recOutputCap := o.resolveModelBudget()
+	maxTokens := budgetedMaxOutputTokens(recWindow, approxTokens(ctx, prompt), recOutputCap, analysisMinOutputTokens())
 
 	// Layer 1 (prevention): constrain the recommendation shape at generation
 	// time where the provider supports it (issue #342). ChatWithFormat
@@ -1398,6 +1719,40 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
+	// Layer 3b (citation self-heal, #347): the batch parsed, but if NO
+	// recommendation cites an eligible insight id, re-ask once with the eligible
+	// UUIDs spelled out — real citations beat the downstream blunt backfill.
+	// Fires only when zero recs are cited (the small/open-model case, e.g.
+	// DeepSeek-V3.1 which omits related_insight_ids); a big model cites on the
+	// first try and skips this. Bounded + env-overridable (Rule 2). On failure
+	// we keep the uncited batch — recoverRelatedInsightIDs backfills it, so a
+	// recommendation is never lost.
+	citationRetries := goconfig.GetEnvAsInt(recommendationCitationMaxRetriesEnv, defaultRecommendationCitationMaxRetries)
+	if citationRetries < 0 {
+		citationRetries = 0
+	}
+	if len(recs) > 0 && citationRetries > 0 && !anyRecCitesEligible(recs, insights) {
+		for cAttempt := 1; cAttempt <= citationRetries; cAttempt++ {
+			step.RecommendationCitationRetries = cAttempt
+			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
+				"Re-prompting for recommendations: response cited no eligible insight id")
+			chatResult, err := o.aiClient.ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
+			if err != nil {
+				break // keep the uncited batch; backfill grounds it downstream
+			}
+			step.TokensIn += chatResult.TokensIn
+			step.TokensOut += chatResult.TokensOut
+			step.DurationMs += chatResult.DurationMs
+			parsed, _, perr := parseRecommendations(chatResult.Content)
+			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
+				// Adopt the re-prompt only when it actually recovered a citation.
+				recs = parsed
+				step.Response = chatResult.Content
+				break
+			}
+		}
+	}
+
 	for i := range recs {
 		if recs[i].CreatedAt.IsZero() {
 			recs[i].CreatedAt = time.Now()
@@ -1421,6 +1776,20 @@ func (o *Orchestrator) generateRecommendations(
 	return recs, step
 }
 
+// Analysis-parse tunables (small/open-model insight recovery). Mirror the
+// recommendation-parse knobs below; the first analysis call stays a plain Chat
+// (byte-identical for big models), and these govern only the corrective retry.
+const (
+	// defaultAnalysisParseMaxRetries bounds how many corrective re-prompts an
+	// analysis area issues when a non-empty response yields zero parseable
+	// insights. One extra shot by default — mirrors the recommendation phase.
+	// A legitimately empty area (the model found nothing) never retries.
+	defaultAnalysisParseMaxRetries = 1
+
+	// analysisParseMaxRetriesEnv overrides defaultAnalysisParseMaxRetries.
+	analysisParseMaxRetriesEnv = "ANALYSIS_PARSE_MAX_RETRIES"
+)
+
 // Recommendation-parse tunables (issue #342).
 const (
 	// statusRecommendationParseError marks a RecommendationStep whose phase
@@ -1437,7 +1806,53 @@ const (
 
 	// recommendationParseMaxRetriesEnv overrides defaultRecommendationParseMaxRetries.
 	recommendationParseMaxRetriesEnv = "RECOMMENDATION_PARSE_MAX_RETRIES"
+
+	// defaultRecommendationCitationMaxRetries bounds the citation self-heal
+	// re-prompt (#347): when a parsed batch cites no eligible insight id, re-ask
+	// once with the eligible UUIDs spelled out before falling back to backfill.
+	// One extra shot — the call is a large-output batch and backfill is the net.
+	defaultRecommendationCitationMaxRetries = 1
+
+	// recommendationCitationMaxRetriesEnv overrides defaultRecommendationCitationMaxRetries.
+	recommendationCitationMaxRetriesEnv = "RECOMMENDATION_CITATION_MAX_RETRIES"
 )
+
+// anyRecCitesEligible reports whether at least one recommendation cites an
+// insight id in the eligible set — the trigger for the citation self-heal
+// (false → the whole batch is uncited, the small/open-model failure mode).
+func anyRecCitesEligible(recs []models.Recommendation, eligible []models.Insight) bool {
+	set := make(map[string]struct{}, len(eligible))
+	for _, ins := range eligible {
+		if ins.ID != "" {
+			set[ins.ID] = struct{}{}
+		}
+	}
+	for _, r := range recs {
+		for _, id := range r.RelatedInsightIDs {
+			if _, ok := set[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recommendationCitationRepairSuffix builds the corrective instruction for the
+// citation self-heal: it names the failure and lists the exact eligible insight
+// UUIDs the model must copy into related_insight_ids.
+func recommendationCitationRepairSuffix(insights []models.Insight) string {
+	ids := make([]string, 0, len(insights))
+	for _, ins := range insights {
+		if ins.ID != "" {
+			ids = append(ids, ins.ID)
+		}
+	}
+	return "\n\nYour previous response cited no valid insight. Every recommendation MUST " +
+		"include a `related_insight_ids` array containing one or more of these EXACT insight " +
+		"ids, copied verbatim — do NOT invent ids, abbreviate them, or use category/severity/" +
+		"theme slugs:\n" + strings.Join(ids, "\n") +
+		"\n\nRe-emit the full JSON object {\"recommendations\": [ ... ]} with valid related_insight_ids on every item."
+}
 
 // parseRecommendations decodes the recommendation response tolerantly and
 // per-item. It accepts either the {"recommendations": [...]} envelope or a bare
@@ -1525,6 +1940,23 @@ func recommendationRepairSuffix(err error) string {
 		"— no prose, no markdown fences, and not a bare top-level array. Each " +
 		"recommendation's `expected_impact` MUST be an object with `metric`, " +
 		"`estimated_improvement`, and `reasoning` string fields, never a bare string."
+}
+
+// analysisRepairSuffix builds the reason-aware corrective instruction appended
+// to an analysis-area prompt on a re-prompt. It names the specific failure and
+// pins the two shapes that trip the parser most (a bare top-level array and
+// off-typed scalar fields the tolerant decoder still could not salvage).
+func analysisRepairSuffix(err error) string {
+	reason := "it could not be parsed as JSON"
+	if err != nil {
+		reason = err.Error()
+	}
+	return "\n\nYour previous response could not be used: " + reason + ".\n" +
+		`Respond with ONLY a single JSON object of the form {"insights": [ ... ]} ` +
+		"— no prose, no markdown fences, and not a bare top-level array. In each " +
+		"insight, `affected_count` MUST be a plain integer, `risk_score` and " +
+		"`confidence` plain numbers between 0 and 1, `source_steps` an array of " +
+		"integers, and `indicators` an array of strings."
 }
 
 // errString renders an error for structured logging, empty when nil.

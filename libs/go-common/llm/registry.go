@@ -802,6 +802,41 @@ func ClampMaxTokens(requested, override int) int {
 	return requested
 }
 
+// MaxInputOverride returns the operator's manual context-window override from
+// cfg (the max_input_tokens key, a positive integer), or 0 when absent / not a
+// positive integer. Exported counterpart of MaxOutputOverride so callers that
+// build their own resolution chain (e.g. the discovery agent's run-start window
+// resolver) can give the operator override top priority over live
+// auto-detection and the catalog.
+func MaxInputOverride(cfg ProviderConfig) int {
+	return parseMaxInputOverride(cfg)
+}
+
+// ReasoningEnabledKey is the project-config key for the operator's "Enable
+// reasoning" opt-in (a boolean, default false = today). When true it (a) marks
+// the analysis model reasoning-effective for the exploration output-headroom
+// budget and (b) turns on native provider thinking where the provider wires it
+// (currently Ollama, capability-gated via /api/show). Surfaced as a dashboard
+// checkbox only for providers that expose a native reasoning toggle, so it does
+// nothing — and is hidden — elsewhere. Stored in project.LLM.Config.
+const ReasoningEnabledKey = "reasoning_enabled"
+
+// ReasoningEnabled reports whether the operator opted into reasoning for this
+// model via cfg[ReasoningEnabledKey]. Accepts the boolean-string shapes a
+// dashboard checkbox produces ("true"/"1"/"on"/"yes", case-insensitive); any
+// other value — including absent or nil cfg — is false, so the default matches
+// today's behaviour exactly (no reasoning param, no exploration headroom).
+func ReasoningEnabled(cfg ProviderConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg[ReasoningEnabledKey])) {
+	case "true", "1", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // GetEffectiveInputWindow returns the input-window size budgeting
 // call-sites should respect for a (provider, model, project-config)
 // triple. Resolution order:

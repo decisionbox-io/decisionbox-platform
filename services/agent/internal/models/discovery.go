@@ -118,6 +118,40 @@ type Insight struct {
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 }
 
+// UnmarshalJSON decodes an insight tolerantly. Like the recommendation decoder,
+// it coerces the numeric and list fields that smaller/open models frequently
+// emit with the wrong JSON type — affected_count / risk_score / confidence as
+// strings ("1200", "0.8"), source_steps as string-typed or single values, and
+// indicators as a bare string instead of a list. Under strict decoding a single
+// off-typed field failed the whole insight and — because the analysis batch was
+// decoded in one shot — silently zeroed the area's insights (the insight
+// analogue of the recommendation loss fixed in issue #342). It reuses the
+// recommendation coercion helpers, so valid input (Opus, GPT) decodes to
+// identical values.
+//
+// Only JSON decoding is customized; BSON is unaffected, so persisted insights
+// read back unchanged.
+func (in *Insight) UnmarshalJSON(data []byte) error {
+	type alias Insight
+	aux := &struct {
+		AffectedCount json.RawMessage `json:"affected_count"`
+		RiskScore     json.RawMessage `json:"risk_score"`
+		Confidence    json.RawMessage `json:"confidence"`
+		SourceSteps   json.RawMessage `json:"source_steps"`
+		Indicators    json.RawMessage `json:"indicators"`
+		*alias
+	}{alias: (*alias)(in)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	in.AffectedCount = coerceFlexInt(aux.AffectedCount)
+	in.RiskScore = coerceFlexFloat(aux.RiskScore)
+	in.Confidence = coerceFlexFloat(aux.Confidence)
+	in.SourceSteps = coerceFlexIntSlice(aux.SourceSteps)
+	in.Indicators = coerceStringSlice(aux.Indicators)
+	return nil
+}
+
 // Recommendation is an actionable suggestion based on discovered insights.
 type Recommendation struct {
 	ID          string `bson:"id" json:"id"`
@@ -263,6 +297,101 @@ func flexNumber(raw json.RawMessage) (float64, bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// coerceFlexIntSlice reads a []int that may arrive as a JSON array of numbers
+// or numeric strings (["1","2"] / [1,2]), a single number or numeric string, or
+// a comma-joined string ("1,2,3"). Unparseable elements are skipped. A JSON
+// null or empty input yields nil. Used for insight source_steps, which smaller
+// models often emit with string-typed elements or as a single value. A valid
+// array of numbers decodes to the identical slice.
+func coerceFlexIntSlice(raw json.RawMessage) []int {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	if raw[0] == '[' {
+		var elems []json.RawMessage
+		if json.Unmarshal(raw, &elems) != nil {
+			return nil
+		}
+		out := make([]int, 0, len(elems))
+		for _, e := range elems {
+			if f, ok := flexNumber(e); ok {
+				out = append(out, int(f))
+			}
+		}
+		return out
+	}
+	if raw[0] == '"' {
+		// A single numeric string ("5") or a comma-joined list ("1,2,3").
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return nil
+		}
+		out := make([]int, 0)
+		for _, p := range strings.Split(s, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if f, err := strconv.ParseFloat(p, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+				out = append(out, int(f))
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if f, ok := flexNumber(raw); ok {
+		return []int{int(f)}
+	}
+	return nil
+}
+
+// coerceStringSlice reads a []string that may arrive as a JSON array of strings,
+// a single bare string (wrapped into a one-element slice), or an array mixing
+// strings with numbers (numbers keep their JSON text). A JSON null or empty
+// input yields nil. Used for insight indicators, which smaller models sometimes
+// emit as a single string instead of a list. A valid array of strings decodes
+// to the identical slice.
+func coerceStringSlice(raw json.RawMessage) []string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return nil
+		}
+		return []string{s}
+	}
+	if raw[0] == '[' {
+		var elems []json.RawMessage
+		if json.Unmarshal(raw, &elems) != nil {
+			return nil
+		}
+		out := make([]string, 0, len(elems))
+		for _, e := range elems {
+			e = bytes.TrimSpace(e)
+			if len(e) == 0 || string(e) == "null" {
+				continue
+			}
+			var s string
+			if json.Unmarshal(e, &s) == nil {
+				out = append(out, s)
+				continue
+			}
+			// Non-string scalar (number/bool): keep its JSON text so the
+			// indicator isn't silently lost.
+			out = append(out, string(e))
+		}
+		return out
+	}
+	// Bare non-string scalar (number/bool): stringify into a one-element slice.
+	return []string{string(raw)}
 }
 
 // Impact represents the expected impact of a recommendation.
@@ -494,6 +623,19 @@ type AnalysisStep struct {
 	// Parsed results
 	Insights []Insight `bson:"insights" json:"insights"`
 
+	// InsightsDroppedParse counts insights skipped because their individual
+	// JSON object could not be decoded even after tolerant coercion (the
+	// insight analogue of RecommendationsDroppedParse). Kept separate so the
+	// per-item parse-failure rate can be measured per LLM provider. Omitted on
+	// a clean run.
+	InsightsDroppedParse int `bson:"insights_dropped_parse,omitempty" json:"insights_dropped_parse,omitempty"`
+
+	// AnalysisParseRetries counts how many corrective re-prompts this area
+	// issued after the model's first response yielded zero parseable insights
+	// from a non-empty response (bounded by ANALYSIS_PARSE_MAX_RETRIES). Zero
+	// on the happy path; omitted when zero.
+	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
+
 	// Validation
 	ValidationResults []ValidationResult `bson:"validation_results,omitempty" json:"validation_results,omitempty"`
 
@@ -571,6 +713,23 @@ type RecommendationStep struct {
 	// RECOMMENDATION_PARSE_MAX_RETRIES). Zero on the happy path; omitted
 	// when zero.
 	RecommendationParseRetries int `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
+
+	// Citation-recovery telemetry (#347). Small/open models routinely emit
+	// good recommendations but omit or mis-cite `related_insight_ids`; rather
+	// than dropping those recs to zero (the old behaviour), the phase now
+	// salvages the valid citations, self-heals via a bounded re-prompt, and
+	// finally fail-open backfills so a grounded recommendation survives. Big
+	// models cite correctly and hit none of these paths, so all three stay
+	// zero (and omitted) on a clean run.
+	//
+	// RecommendationsCitationsSalvaged: recs that cited ≥1 bad id which was
+	// trimmed while ≥1 valid id was kept. RecommendationsCitationsBackfilled:
+	// recs that had zero valid citations and were linked to the run's eligible
+	// insights as a last resort. RecommendationCitationRetries: corrective
+	// citation re-prompts issued (bounded by RECOMMENDATION_CITATION_MAX_RETRIES).
+	RecommendationsCitationsSalvaged   int `bson:"recommendations_citations_salvaged,omitempty" json:"recommendations_citations_salvaged,omitempty"`
+	RecommendationsCitationsBackfilled int `bson:"recommendations_citations_backfilled,omitempty" json:"recommendations_citations_backfilled,omitempty"`
+	RecommendationCitationRetries      int `bson:"recommendation_citation_retries,omitempty" json:"recommendation_citation_retries,omitempty"`
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }

@@ -230,7 +230,7 @@ func mustQueueProvider(responses ...string) *testutil.MockLLMProvider {
 
 func TestGenerateRecommendations_NoRetryOnPartialSuccess(t *testing.T) {
 	const partial = `{"recommendations":[
-		{"title":"Good","priority":1,"expected_impact":{"metric":"m"}},
+		{"title":"Good","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]},
 		{"title":"Bad","actions":"not an array"}
 	]}`
 	o, provider := newRecOrchestrator(partial)
@@ -260,6 +260,41 @@ func TestGenerateRecommendations_LegitEmptyNoRetry(t *testing.T) {
 	}
 	if len(provider.Calls) != 1 {
 		t.Errorf("provider called %d times, want 1 (no retry on legit empty)", len(provider.Calls))
+	}
+}
+
+// Citation self-heal (#347): a first batch that cites no eligible insight
+// triggers exactly one re-prompt; when the re-prompt returns valid citations
+// they are adopted (the small/open-model recovery path — DeepSeek-V3.1).
+func TestGenerateRecommendations_CitationSelfHealRecovers(t *testing.T) {
+	uncited := `{"recommendations":[{"title":"X","priority":1,"expected_impact":{"metric":"m"}}]}`
+	cited := `{"recommendations":[{"title":"X","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`
+	provider := mustQueueProvider(uncited, cited)
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	if len(provider.Calls) != 2 {
+		t.Fatalf("provider called %d times, want 2 (initial + citation self-heal)", len(provider.Calls))
+	}
+	if step.RecommendationCitationRetries != 1 {
+		t.Errorf("RecommendationCitationRetries = %d, want 1", step.RecommendationCitationRetries)
+	}
+	if len(recs) != 1 || len(recs[0].RelatedInsightIDs) != 1 || recs[0].RelatedInsightIDs[0] != "i-1" {
+		t.Errorf("expected the re-prompt's cited rec (i-1) adopted, got %+v", recs)
+	}
+}
+
+// Big-model path: a first batch that already cites a valid insight must NOT
+// trigger the citation self-heal — one call, zero citation retries.
+func TestGenerateRecommendations_NoCitationRetryWhenAlreadyCited(t *testing.T) {
+	o, provider := newRecOrchestrator(validRecEnvelope) // rec "A" cites i-1
+	_, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	if len(provider.Calls) != 1 {
+		t.Errorf("provider called %d times, want 1 (no citation self-heal when already cited)", len(provider.Calls))
+	}
+	if step.RecommendationCitationRetries != 0 {
+		t.Errorf("RecommendationCitationRetries = %d, want 0", step.RecommendationCitationRetries)
 	}
 }
 

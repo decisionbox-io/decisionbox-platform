@@ -4,6 +4,8 @@
 // avoiding cross-module-internal coupling.
 package validation
 
+import "strings"
+
 // Status is the validation taxonomy emitted by verifier + refuter and
 // combined by Combine() into the document's final verdict state.
 // Seven terminal statuses — see the constants below.
@@ -80,6 +82,41 @@ func (s Status) IsValidPerClaim() bool {
 		return true
 	}
 	return false
+}
+
+// DefaultRecommendationVerdicts is the eligibility set used for
+// recommendation generation when a project has not configured its own
+// (the per-project recommendation_verdicts setting). It reproduces the
+// historical hardcoded filter (IsTerminalPositive): only confirmed +
+// supported insights flow to the recommender, so unset / legacy
+// projects are byte-identical to today.
+func DefaultRecommendationVerdicts() []Status {
+	return []Status{StatusConfirmed, StatusSupported}
+}
+
+// ParseStatuses sanitises a free-form (case-insensitive) list of verdict
+// names into the five user-selectable per-claim statuses — confirmed,
+// supported, partial, unverifiable, rejected — dropping unknowns,
+// duplicates, and the two internal "agent never ran" states
+// (validation_disabled, skipped_budget_cap, which are handled fail-open
+// by the eligibility filter, not selectable by operators). Used to clean
+// the per-project recommendation-eligibility setting coming from the API
+// / dashboard before it reaches the discovery filter.
+func ParseStatuses(in []string) []Status {
+	out := make([]Status, 0, len(in))
+	seen := make(map[Status]struct{}, len(in))
+	for _, raw := range in {
+		s := Status(strings.ToLower(strings.TrimSpace(raw)))
+		if !s.IsValidPerClaim() {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // DocKind discriminates insight verdicts from recommendation verdicts.

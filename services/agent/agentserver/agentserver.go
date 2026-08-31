@@ -877,6 +877,27 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	sweepCancel()
 
+	// Resolve the effective context window + output cap for this run without
+	// depending on the model being catalogued: operator override → persisted
+	// self-calibration → live auto-detection → catalog/default (see #347). The
+	// orchestrator budgets the analysis + recommendation output against this so
+	// input + output never overflows the window.
+	modelWindowRepo := database.NewLLMModelWindowRepository(db)
+	if err := modelWindowRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure llm_model_windows indexes")
+	}
+	// Key by the same identifier the calibration observer writes — the model id,
+	// or the endpoint id for endpoint-based projects whose model is blank.
+	modelWindowKey := discovery.ModelWindowKey(project.LLM.Model, project.LLM.Config)
+	var persistedWindow int
+	if modelWindowKey != "" {
+		persistedWindow, err = modelWindowRepo.GetWindow(ctx, projectID, project.LLM.Provider, modelWindowKey)
+		if err != nil {
+			applog.WithError(err).Debug("Failed to read persisted model window; continuing with live/catalog resolution")
+		}
+	}
+	resolvedWindow, resolvedOutputCap := resolveModelBudget(ctx, llm, project.LLM.Provider, project.LLM.Model, project.LLM.Config, persistedWindow)
+
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:           aiClient,
@@ -900,6 +921,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		FilterValue:        primaryWH.FilterValue,
 		LLMProvider:        project.LLM.Provider,
 		LLMModel:           project.LLM.Model,
+		LLMConfig:          project.LLM.Config,
+		LLMInputWindow:     resolvedWindow,
+		LLMOutputCap:       resolvedOutputCap,
+		ModelWindowRepo:    projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
 		WarehouseProvider:  primaryWH.Provider,
 		EnableDebugLogs:    enableDebugLogs,
 		VectorStore:        qdrantProvider,
@@ -947,12 +972,15 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	defer cancel()
 
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
-		MaxSteps:              maxSteps,
-		MinSteps:              minSteps,
-		IncludeExplorationLog: includeLog,
-		TestMode:              testMode,
-		SelectedAreas:         selectedAreas,
-		ValidationEnabled:     project.EffectiveValidationEnabled(),
+		MaxSteps:               maxSteps,
+		MinSteps:               minSteps,
+		IncludeExplorationLog:  includeLog,
+		TestMode:               testMode,
+		SelectedAreas:          selectedAreas,
+		ValidationEnabled:      project.EffectiveValidationEnabled(),
+		SmartOverflowEnabled:   project.EffectiveSmartOverflowEnabled(),
+		ReasoningEnabled:       project.EffectiveReasoningEnabled(),
+		RecommendationVerdicts: project.EffectiveRecommendationVerdicts(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{

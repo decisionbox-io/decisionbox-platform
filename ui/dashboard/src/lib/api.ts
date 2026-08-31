@@ -273,6 +273,24 @@ export interface Project {
   // *current* value of this field (not a snapshot from discovery time)
   // when deciding whether to show "Run validation" or "Disabled".
   validation_enabled?: boolean;
+  // Undefined → default (true). Controls the analysis picker's smart
+  // budget-overflow handling (dedup + "also examined" breadcrumb + tighter
+  // re-compaction instead of dropping the lowest-scored steps). Only affects
+  // runs whose evidence exceeds the model-window budget, so it is inert on
+  // large-window models.
+  smart_overflow_enabled?: boolean;
+  // Undefined → off (opt-in). Model-agnostic "Enable reasoning": treats the
+  // configured model as reasoning-capable for every provider — extra
+  // window-budgeted exploration output headroom so a long hidden
+  // chain-of-thought doesn't truncate the action, plus a reasoning hint on the
+  // request (providers that wire native thinking act on it; others ignore it).
+  reasoning_enabled?: boolean;
+  // Which validation verdicts make an insight eligible for recommendation
+  // generation. Undefined / empty → default {confirmed, supported} (the
+  // historical filter). Selectable values: confirmed, supported, partial,
+  // unverifiable, rejected. Insights whose validation never ran stay eligible
+  // fail-open regardless.
+  recommendation_verdicts?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -662,6 +680,13 @@ export interface ModelInfo {
 export interface LiveModel extends ModelInfo {
   source: 'catalog' | 'live' | 'both';
   dispatchable: boolean;
+  // Limits the upstream live endpoint actually reported (never a catalog
+  // estimate). Present on any row — including "both" — whose values came from
+  // live detection; absent when only the catalog knew them. The dashboard
+  // prefills the operator override fields only from these, so a catalog value
+  // is never pinned as a manual override.
+  live_max_input_tokens?: number;
+  live_max_output_tokens?: number;
 }
 
 export interface LiveModelsResponse {

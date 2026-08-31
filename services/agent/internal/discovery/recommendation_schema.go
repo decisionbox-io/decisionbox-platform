@@ -81,6 +81,14 @@ func recommendationResponseSchema() map[string]interface{} {
 				"items": map[string]interface{}{
 					"type":       "object",
 					"properties": recProps,
+					// Prevention layer (#347): mark related_insight_ids required on
+					// each item so schema-honouring providers (Ollama grammar,
+					// OpenAI/LiteLLM json_schema) are nudged to emit the citation a
+					// small model otherwise omits — the field the server-side
+					// citation recovery would otherwise have to salvage/backfill.
+					// Advisory (Strict stays false); byte-identical for models that
+					// already cite, and a no-op on providers without structured output.
+					"required": []interface{}{"related_insight_ids"},
 				},
 			},
 		},

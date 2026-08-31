@@ -122,6 +122,16 @@ type liveModelsResponse struct {
 	// live endpoint returned but whose wire format we haven't
 	// implemented (e.g. Amazon Nova / Titan, Cohere, AI21 on Bedrock).
 	Dispatchable bool `json:"dispatchable"`
+	// LiveMaxInputTokens / LiveMaxOutputTokens carry ONLY values the upstream
+	// live endpoint actually reported (LiteLLM /model/info, Ollama /api/show,
+	// vLLM max_model_len) — never a catalog estimate. The embedded ModelInfo's
+	// MaxInput/MaxOutput are the best-known display values (catalog or live);
+	// these separate fields give the dashboard the provenance it needs to
+	// prefill the operator's override fields only from genuine live detection,
+	// even on a "both" row whose display value came from the catalog. Zero when
+	// the upstream reported nothing.
+	LiveMaxInputTokens  int `json:"live_max_input_tokens,omitempty"`
+	LiveMaxOutputTokens int `json:"live_max_output_tokens,omitempty"`
 	gollm.ModelInfo
 }
 
@@ -418,6 +428,20 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			if lm.Lifecycle != "" {
 				row.Lifecycle = lm.Lifecycle
 			}
+			// The live row's context window / output cap are the actual
+			// deployment's values (LiteLLM /model/info, Ollama /api/show, vLLM
+			// max_model_len); prefer them over the shipped catalog estimate
+			// when reported, so the dashboard prefills the real numbers. Record
+			// them separately as live-provenance so the dashboard can tell a
+			// genuine live value apart from a catalog estimate on this "both" row.
+			if lm.MaxInputTokens > 0 {
+				row.MaxInputTokens = lm.MaxInputTokens
+				row.LiveMaxInputTokens = lm.MaxInputTokens
+			}
+			if lm.MaxOutputTokens > 0 {
+				row.MaxOutputTokens = lm.MaxOutputTokens
+				row.LiveMaxOutputTokens = lm.MaxOutputTokens
+			}
 			merged[canonical] = row
 		} else {
 			inferred := ""
@@ -430,13 +454,17 @@ func writeLiveModelsResponse(w http.ResponseWriter, meta gollm.ProviderMeta, liv
 			dispatchable := meta.DispatchAnyModelID ||
 				(inferred != "" && inferred != string(gollm.WireUnknown))
 			merged[lm.ID] = liveModelsResponse{
-				Source:       "live",
-				Dispatchable: dispatchable,
+				Source:              "live",
+				Dispatchable:        dispatchable,
+				LiveMaxInputTokens:  lm.MaxInputTokens,
+				LiveMaxOutputTokens: lm.MaxOutputTokens,
 				ModelInfo: gollm.ModelInfo{
-					ID:          lm.ID,
-					DisplayName: displayOr(lm.DisplayName, lm.ID),
-					Wire:        inferred,
-					Lifecycle:   lm.Lifecycle,
+					ID:              lm.ID,
+					DisplayName:     displayOr(lm.DisplayName, lm.ID),
+					Wire:            inferred,
+					Lifecycle:       lm.Lifecycle,
+					MaxInputTokens:  lm.MaxInputTokens,
+					MaxOutputTokens: lm.MaxOutputTokens,
 				},
 			}
 		}

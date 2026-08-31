@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -66,6 +67,17 @@ type ExplorationEngine struct {
 	dataset         string
 	onStep          StepCallback
 
+	// window / outputCap / reasoningEffective drive the reasoning-aware
+	// per-step output budget (R3). window and outputCap are the model's
+	// effective context window and output cap resolved at run start (#347
+	// chain); reasoningEffective is true when the operator enabled reasoning or
+	// the catalog flags the model. They are consulted ONLY on the
+	// reasoning-effective path in explorationOutputTokens — a non-reasoning
+	// model keeps exactly today's fixed ceiling, so big models are unaffected.
+	window             int
+	outputCap          int
+	reasoningEffective bool
+
 	// schemaProvider serves the on-demand schema actions (lookup_schema,
 	// search_tables). Optional — when nil the engine still parses those
 	// actions and reports a graceful "schema service unavailable" reply
@@ -98,6 +110,13 @@ type ExplorationEngine struct {
 // "please respond in JSON" nudge into the conversation.
 const maxParseRetries = 3
 
+// emptyAssistantTurnPlaceholder stands in for an assistant turn whose Content
+// (and Reasoning) came back empty, so the conversation never carries an empty
+// assistant message — some providers (Moonshot/Kimi via LiteLLM) reject that on
+// the follow-up request with a hard 400. It is intentionally not valid JSON so
+// parseAction never mistakes it for an action.
+const emptyAssistantTurnPlaceholder = "(no output returned; see the instruction below)"
+
 // defaultExplorationMaxOutputTokens is the per-step output ceiling for the
 // exploration LLM call. The old value was a hard-coded 4096 (Rule 2); it is now
 // the default of the EXPLORATION_MAX_OUTPUT_TOKENS knob. The default is kept at
@@ -110,15 +129,98 @@ const defaultExplorationMaxOutputTokens = 4096
 
 const explorationMaxOutputTokensEnv = "EXPLORATION_MAX_OUTPUT_TOKENS"
 
-// explorationOutputTokens returns the per-step output budget: the model's
-// catalogued output cap bounded by the configurable ceiling. It is constant
+// reasoningExplorationOutputTokens is the raised per-step output ceiling for a
+// reasoning-EFFECTIVE model, giving the hidden <think> block room so the action
+// that follows it isn't truncated — the main cause of short-runs on Qwen3 /
+// DeepSeek-R1 (issue #341). It is only the *intended* ceiling: it is still
+// bounded by the model's output cap and budgeted against the context window, so
+// it can never overflow. A non-reasoning model (Opus, GPT, ...) never reaches
+// this path and keeps exactly defaultExplorationMaxOutputTokens.
+const reasoningExplorationOutputTokens = 16384
+
+// explorationReservedSystemTokens is the flat headroom kept for chat-template
+// scaffolding on top of the measured conversation input when budgeting the
+// reasoning output ceiling against the window (mirrors
+// analysisReservedSystemTokens in the analysis phase).
+const explorationReservedSystemTokens = 512
+
+// explorationOutputTokens returns the per-step output budget. It is constant
 // across a step's parse retries, so it is computed once per step.
-func (e *ExplorationEngine) explorationOutputTokens() int {
-	maxTokens := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
-	if ceiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, defaultExplorationMaxOutputTokens); ceiling > 0 && maxTokens > ceiling {
-		maxTokens = ceiling
+//
+// For a NON-reasoning model it is exactly today's value — the catalogued output
+// cap bounded by the EXPLORATION_MAX_OUTPUT_TOKENS ceiling (default 4096) — so
+// big models that already work are byte-identical. For a reasoning-EFFECTIVE
+// model with a known window it is raised toward reasoningExplorationOutputTokens
+// (or higher if the operator raised EXPLORATION_MAX_OUTPUT_TOKENS above it),
+// bounded by the model's output cap AND budgeted against the window so input +
+// output stays inside it. The #347 adaptive context-overflow retry is the net
+// if the rune/4 input estimate still overshoots on a tight window.
+//
+// inputEst (rune/4 tokens of the conversation so far) is consulted ONLY on the
+// reasoning path; the non-reasoning path ignores it, preserving the
+// byte-identical guarantee.
+func (e *ExplorationEngine) explorationOutputTokens(inputEst int) int {
+	catalogCap := gollm.GetMaxOutputTokens(e.client.ProviderName(), e.client.ModelName())
+	envCeiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, defaultExplorationMaxOutputTokens)
+
+	// Reasoning-effective path: window-budgeted headroom. Requires a known
+	// window; without one (tests / unresolved) we fall through to today's fixed
+	// ceiling so an unknown window can never cause a regression.
+	if e.reasoningEffective && e.window > 0 {
+		outCap := e.outputCap
+		if outCap <= 0 {
+			outCap = catalogCap
+		}
+		// Intended ceiling: the reasoning default, or the operator's explicitly
+		// raised EXPLORATION_MAX_OUTPUT_TOKENS when that is higher (don't shrink
+		// a deployment that was already tuned up for reasoning, issue #341).
+		ceiling := reasoningExplorationOutputTokens
+		if envCeiling > ceiling {
+			ceiling = envCeiling
+		}
+		if outCap > 0 && ceiling > outCap {
+			ceiling = outCap
+		}
+		// Budget against the window: leave room for the measured input, the
+		// reserved-system headroom, and the safety margin (same arithmetic the
+		// analysis phase uses). ReservedOutput is 0 because output is exactly
+		// what we are solving for.
+		avail := gollm.NewBudget(e.window, 0, explorationReservedSystemTokens, false).Available() - inputEst
+		if ceiling > avail {
+			ceiling = avail
+		}
+		// Never drop below today's proven-safe floor (itself bounded by the cap
+		// so a model whose output limit is under the floor is not over-asked).
+		floor := defaultExplorationMaxOutputTokens
+		if outCap > 0 && floor > outCap {
+			floor = outCap
+		}
+		if ceiling < floor {
+			ceiling = floor
+		}
+		return ceiling
+	}
+
+	// Non-reasoning path (today, byte-identical): catalogued cap bounded by the
+	// configurable ceiling.
+	maxTokens := catalogCap
+	if envCeiling > 0 && maxTokens > envCeiling {
+		maxTokens = envCeiling
 	}
 	return maxTokens
+}
+
+// conversationInputEst estimates the input-token size of the conversation with
+// the tokenizer-free rune/4 heuristic (consistent with the analysis phase's
+// approxTokens and /ask's budget walk). It sums the system prompt and every
+// message body; used only to budget the reasoning-effective exploration output
+// ceiling against the window.
+func conversationInputEst(conv *Conversation) int {
+	total := utf8.RuneCountInString(conv.GetSystemPrompt())
+	for _, m := range conv.GetMessages() {
+		total += utf8.RuneCountInString(m.Content)
+	}
+	return total / 4
 }
 
 // StepCallback is called after each exploration step with live progress data.
@@ -185,6 +287,26 @@ type ExplorationEngineOptions struct {
 	// production wiring (the orchestrator surfaces a clear error
 	// when it's nil at run start).
 	StepIndexer StepIndexer
+
+	// Window is the model's effective context window (input tokens), resolved
+	// at run start via the #347 chain (operator override → live auto-detect →
+	// catalog → default). Used only on the reasoning-effective output-headroom
+	// path (R3) to budget the raised exploration ceiling against the window.
+	// 0 (tests / unresolved) disables that path — the engine keeps today's
+	// fixed ceiling.
+	Window int
+
+	// OutputCap is the model's effective max output tokens (same resolution
+	// chain). Bounds the raised reasoning ceiling. 0 falls back to the catalog
+	// output cap for the model.
+	OutputCap int
+
+	// ReasoningEffective marks the run's analysis model as reasoning-capable —
+	// either the operator enabled reasoning (the "Enable reasoning" checkbox)
+	// or the catalog flags the model. Only then does the exploration output
+	// ceiling get window-budgeted headroom; a non-reasoning model (Opus, GPT,
+	// ...) keeps exactly today's fixed 4096 ceiling.
+	ReasoningEffective bool
 }
 
 // NewExplorationEngine creates a new exploration engine.
@@ -253,6 +375,10 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		maxLookupsPerRun:  maxLookups,
 		maxSearchesPerRun: maxSearches,
 		fetchedTables:     make(map[string]struct{}),
+
+		window:             opts.Window,
+		outputCap:          opts.OutputCap,
+		reasoningEffective: opts.ReasoningEffective,
 	}
 }
 
@@ -618,7 +744,10 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 	// and, on Bedrock's OpenAI-compat open models (Qwen, GLM), corrupting
 	// the JSON outright. The tolerant extractor + repair retry are the net;
 	// they don't degrade the model. See the #341 follow-up.
-	maxTokens := e.explorationOutputTokens()
+	//
+	// inputEst is measured once per step (the conversation is fixed for the
+	// duration of a step's parse retries) and only affects the reasoning path.
+	maxTokens := e.explorationOutputTokens(conversationInputEst(conversation))
 
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
 		llmStart := time.Now()
@@ -653,7 +782,23 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			responseText = response.Content
 		}
 
-		conversation.AddAssistantMessage(responseText)
+		// The assistant turn recorded in the conversation must never be empty:
+		// a reasoning model can return its output on the reasoning channel with
+		// an empty Content, and some providers (observed: Moonshot/Kimi via
+		// LiteLLM) reject an empty assistant message on the FOLLOW-UP request —
+		// turning a recoverable parse-retry into a hard 400. Carry the reasoning
+		// (or a short placeholder) as the turn text so the retry conversation
+		// stays valid on every provider. parseAction still runs on Content, so an
+		// empty Content correctly falls through to a reformat nudge + retry.
+		turnText := responseText
+		if turnText == "" {
+			if strings.TrimSpace(response.Reasoning) != "" {
+				turnText = response.Reasoning
+			} else {
+				turnText = emptyAssistantTurnPlaceholder
+			}
+		}
+		conversation.AddAssistantMessage(turnText)
 
 		action, err := e.parseAction(responseText)
 		if err == nil {

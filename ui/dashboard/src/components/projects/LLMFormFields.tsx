@@ -2,7 +2,7 @@
 
 import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { LiveModel, ProviderMeta } from '@/lib/api';
 import { buildDefaults } from './WarehouseFormFields';
@@ -100,6 +100,76 @@ export function LLMFormFields({
     if (key === 'endpoint_id' && val.trim()) {
       delete config['wire_override'];
     }
+    onChange({ ...value, config });
+  };
+
+  // autofilledRef remembers the exact values handleModelSelect last prefilled,
+  // so switching models refreshes a still-auto-filled field with the new
+  // model's detected value while preserving a value the operator actually typed.
+  const autofilledRef = useRef<{ max_input_tokens?: string; max_output_tokens?: string }>({});
+  // touchedRef records fields the operator edited by hand this session. A touched
+  // field is never treated as auto-filled — even if its value happens to equal a
+  // model's detected limit — so browsing models can't silently overwrite a
+  // manual entry.
+  const touchedRef = useRef<Set<string>>(new Set());
+
+  // liveDetectedLimit returns a model's token limit ONLY when the upstream live
+  // endpoint actually reported it (the live_max_* provenance fields the API
+  // sets), never a catalog estimate. This works on any row — including a "both"
+  // row (catalogued + live) whose real gateway window differs from our catalog —
+  // while still never pinning a catalog value as a top-priority manual override.
+  const liveDetectedLimit = (m: LiveModel | undefined, key: 'max_input_tokens' | 'max_output_tokens'): number | undefined => {
+    if (!m) return undefined;
+    const v = key === 'max_input_tokens' ? m.live_max_input_tokens : m.live_max_output_tokens;
+    return (v ?? 0) > 0 ? v : undefined;
+  };
+
+  // handleModelSelect sets the model and prefills the context-window / output
+  // fields from the selected model's *live-detected* values (LiteLLM
+  // /model/info, Ollama /api/show, vLLM max_model_len) so the operator sees real
+  // numbers instead of typing a window they may not know. A field is refreshed
+  // when it is empty or still holds an auto-filled value — recognised either via
+  // autofilledRef (same session) or by matching the previously-selected model's
+  // live-detected value (robust across a form remount, where the ref is empty).
+  // A value the operator typed themselves is preserved. Fields stay editable.
+  const handleModelSelect = (val: string) => {
+    const config: Record<string, string> = { ...value.config, model: val };
+    const prevLive = (liveModels ?? []).find((m) => m.id === value.config.model);
+    const live = (liveModels ?? []).find((m) => m.id === val);
+    const next: typeof autofilledRef.current = {};
+    (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
+      // Only touch fields the provider actually declares. Providers that budget
+      // differently (Ollama uses num_ctx, not max_input_tokens) don't render
+      // these inputs, and the save path persists every config key — writing an
+      // auto-filled value here would silently become a top-priority override
+      // the operator can neither see nor clear.
+      if (!selected?.config_fields.some((f) => f.key === key)) {
+        return;
+      }
+      const detected = liveDetectedLimit(live, key);
+      const prevDetected = liveDetectedLimit(prevLive, key);
+      const current = config[key]?.trim() ?? '';
+      // A field the operator edited by hand is never auto-filled, even if its
+      // value coincidentally equals a detected limit.
+      const wasAutofilled =
+        current !== '' &&
+        !touchedRef.current.has(key) &&
+        (current === autofilledRef.current[key] ||
+          (prevDetected !== undefined && current === String(prevDetected)));
+      // Only overwrite an empty field or one that was auto-filled — never a
+      // value the operator typed.
+      if (current === '' || wasAutofilled) {
+        if (detected !== undefined) {
+          config[key] = String(detected);
+          next[key] = String(detected);
+        } else if (wasAutofilled) {
+          // New model reports nothing — clear the stale auto-filled value rather
+          // than persist the prior model's window as an override for this one.
+          delete config[key];
+        }
+      }
+    });
+    autofilledRef.current = next;
     onChange({ ...value, config });
   };
 
@@ -212,11 +282,13 @@ export function LLMFormFields({
             providerMeta={selected}
             liveModels={liveModels}
             value={value.config['model'] || ''}
-            onChange={(val) => setConfigField('model', val)}
+            onChange={handleModelSelect}
           />
 
-          {/* Manual token overrides (context window + max output) shown on
-              the model step with the effective value as a placeholder. */}
+          {/* Manual token overrides (context window + max output). Prefilled
+              from the selected model's auto-detected values by handleModelSelect;
+              the effective value is also shown as a placeholder when a field is
+              left blank. */}
           {(['max_input_tokens', 'max_output_tokens'] as const).map((key) => {
             const f = selected?.config_fields.find((cf) => cf.key === key);
             if (!f) return null;
@@ -232,7 +304,10 @@ export function LLMFormFields({
                 description={f.description}
                 placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
                 value={value.config[key] || ''}
-                onChange={(e) => setConfigField(key, e.currentTarget.value)}
+                onChange={(e) => {
+                  touchedRef.current.add(key);
+                  setConfigField(key, e.currentTarget.value);
+                }}
               />
             );
           })}

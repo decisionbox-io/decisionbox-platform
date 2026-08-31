@@ -34,7 +34,9 @@ The agent reads LLM API keys and warehouse credentials from a secret provider. T
 | `LLM_TIMEOUT` | `300s` | HTTP timeout per LLM API call. Go duration format: `30s`, `2m`, `5m`. Read by the agent at startup and threaded through to every provider as `cfg["timeout_seconds"]`. Per-project `timeout_seconds` in the LLM config (dashboard) overrides this when set. Invalid or zero values fall back to the `300s` default. The API process reads the same env var but with no default — when unset, each provider keeps its own hard-coded fallback (60s for Claude direct API, 5m for OpenAI/Bedrock/Vertex/Azure Foundry, 15m for Ollama (reasoning-on local generations want a longer window)); see the API Configuration section below. |
 | `LLM_REQUEST_DELAY_MS` | `1000` | Delay between consecutive LLM calls in milliseconds. Helps with rate limiting and cost control. Set to `0` for no delay. |
 | `RECOMMENDATION_PARSE_MAX_RETRIES` | `1` | How many corrective re-prompts the recommendation phase issues when a response yields zero parseable recommendations. The retry fires only on a genuine parse failure (never on a partial success or a legitimately empty result), so it costs nothing on the happy path. Set to `0` to disable. |
-| `EXPLORATION_MAX_OUTPUT_TOKENS` | `4096` | Per-step output-token ceiling for the exploration LLM call (the effective budget is the smaller of this and the model's catalogued output cap). The default is conservative so the reservation can't overflow a small-context deployment (e.g. an 8K/4K Ollama `num_ctx`). Raise it when running reasoning models on large-context backends so a long thinking block doesn't truncate the action to empty. |
+| `ANALYSIS_PARSE_MAX_RETRIES` | `1` | How many corrective re-prompts an analysis area issues when a non-empty response yields zero parseable insights. The first analysis call is always a plain request (byte-identical for large models); only the retry adds a schema-constrained format where the provider supports it. The retry fires only on a genuine parse failure — never on a legitimately empty area — so it costs nothing on the happy path. Set to `0` to disable. Analysis insights are also parsed per-item and type-coerced, so a single malformed insight is dropped and counted rather than zeroing the whole area even without a retry. |
+| `EXPLORATION_MAX_OUTPUT_TOKENS` | `4096` | Per-step output-token ceiling for the exploration LLM call on **non-reasoning** models (the effective budget is the smaller of this and the model's catalogued output cap). The default is conservative so the reservation can't overflow a small-context deployment (e.g. an 8K/4K Ollama `num_ctx`). For a **reasoning-effective** model (the analysis LLM is catalog-flagged as reasoning, or the operator enabled the *Enable reasoning* toggle) the exploration ceiling is instead raised toward `16384` and budgeted against the model window (`window − input − margin`), so a long thinking block doesn't truncate the action to empty; setting this variable *above* `16384` raises that reasoning ceiling too. Non-reasoning models and large models are unaffected by the reasoning path. |
+| `ANALYSIS_MIN_OUTPUT_TOKENS` | `8192` | Floor on the output-token budget the analysis and recommendation phases request. Each phase caps `max_tokens` at `context_window − input − reserved − margin` so `input + output` never exceeds the model window (see the note below); this floor stops a very large input from squeezing the output to zero. When even the floor won't fit, the request may still be rejected and the adaptive context-overflow retry recomputes a fitting `max_tokens` from the model's own error. Set to `0`/blank to keep the default. |
 
 ### Discovery Run Budget
 
@@ -337,7 +339,7 @@ for the full design.
 | `discovery.AnalysisAreaTopK`                                          | `24`        | Maximum vector hits per area before exact-match boost + budget trim.                                              |
 | `discovery.AnalysisAreaMinScore`                                      | `0.30`      | Cosine-similarity floor; vector hits below it are dropped (recorded as `below_min_score` in telemetry).           |
 | `discovery.ExactMatchFloor`                                           | `0.55`      | Score assigned to steps promoted via the keyword exact-match boost — set above the min-score floor.               |
-| `discovery.AnalysisQueryResultsBudgetTokens`                          | `200_000`   | Soft cap on the rendered `{{QUERY_RESULTS}}` block, in tokens. Picker drops lowest-scored steps until under cap.   |
+| `discovery.AnalysisQueryResultsBudgetTokens`                          | `200_000`   | Ceiling on the rendered `{{QUERY_RESULTS}}` block, in tokens. At run time this is further capped to `context_window − output − reserved − margin`, so an area's input can never grow past what the model window holds once the output is reserved. Picker drops lowest-scored steps until under the effective budget. |
 
 When to tune:
 
@@ -350,7 +352,31 @@ When to tune:
   where cosine similarity is naturally smaller across languages.
 - **`AnalysisQueryResultsBudgetTokens`** — Lower if the surrounding
   prompt grows; raise only on models with substantially-larger context
-  windows.
+  windows. It is already auto-capped at run time to the model's window
+  minus the reserved output, so on small-window models you rarely need
+  to touch it.
+
+### Budgeting output against the model window
+
+The analysis and recommendation phases size their requested `max_tokens`
+against the model's context window so `input + output` never overflows it
+(the cause of hard "maximum context length" 400s on ~200K-context models).
+The window is resolved without depending on the shipped catalog, so it
+works for arbitrary customer models: **operator override → self-calibration
+→ live auto-detection → catalog → default**.
+
+- **Operator override** — set `max_input_tokens` (and, if the model's
+  output cap differs from the default, `max_output_tokens`) in the
+  project's LLM config. Highest priority; use it for any model DecisionBox
+  cannot detect.
+- **Live auto-detection** — LiteLLM (`GET /model/info`), Ollama
+  (`GET /api/show` `context_length`), and OpenAI-compatible gateways that
+  expose `max_model_len` report their real window; the dashboard prefills
+  the two override fields from it on model selection.
+- **Self-calibration** — if a request still overflows, the model's error
+  states its true window; the agent recomputes a fitting `max_tokens`,
+  retries once, and records the window (`llm_model_windows` collection) so
+  later runs budget correctly up front.
 
 ## Next Steps
 

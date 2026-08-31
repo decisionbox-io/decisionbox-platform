@@ -11,6 +11,7 @@ import (
 type ollamaClient interface {
 	Chat(ctx context.Context, req *ollamaapi.ChatRequest, fn ollamaapi.ChatResponseFunc) error
 	List(ctx context.Context) (*ollamaapi.ListResponse, error)
+	Show(ctx context.Context, req *ollamaapi.ShowRequest) (*ollamaapi.ShowResponse, error)
 }
 
 // Compile-time check that the real client satisfies the interface.

@@ -116,9 +116,37 @@ To explicitly opt out of reasoning on a per-call basis, callers set
 `ChatRequest.ReasoningEffort = "off"`. Other documented values:
 `"on"`, `"low"`, `"medium"`, `"high"`, and the default (`""`) which
 leaves the model's own behavior unchanged. Effort values other than
-`"off"` are silently ignored on models the catalog flags as
+`"off"` are silently ignored on models the provider reports as
 non-reasoning so the request doesn't 400 against an upstream that
 rejects `think=true` on a non-thinking model.
+
+#### Enable reasoning (model-agnostic, project setting)
+
+Projects expose an **Enable reasoning** toggle under **Settings →
+Advanced** (off by default — behavior is unchanged unless you turn it
+on). It is **model-agnostic**: it applies to whatever model the project
+uses, on any provider — a reasoning model routed through a LiteLLM
+proxy (Kimi, qwen3, DeepSeek-R1), an Ollama thinking model, etc.
+
+When on, discovery (a) gives the model **extra, window-budgeted
+exploration output headroom** so a long hidden chain-of-thought doesn't
+truncate the step's action (see `EXPLORATION_MAX_OUTPUT_TOKENS`), and
+(b) requests reasoning (`ReasoningEffort=on`) on every LLM call.
+Providers that wire native thinking act on the request; others ignore
+the param and simply benefit from the headroom.
+
+For **Ollama** specifically, native thinking is enabled only after
+DecisionBox confirms the model supports it, by reading the model's own
+capabilities from `/api/show` (the `thinking` capability) — so a
+freshly-pulled `qwen3` / `deepseek-r1` reasons even if it is not in the
+built-in catalog, a non-reasoning model silently ignores the request,
+and if a server still rejects thinking the request is retried once
+without it.
+
+You do not need the toggle for models the catalog already flags as
+reasoning — those get the exploration headroom automatically. It exists
+so uncatalogued reasoning models can be opted in without a code
+release.
 
 ### Quality Considerations
 
@@ -382,6 +410,18 @@ Example (API request to create a project):
 ```
 
 A typo in `wire_override` is rejected at project-save time with HTTP 400. Once saved, the agent uses the override for every dispatch until the model is added to the catalog (at which point the override becomes unnecessary).
+
+## Context window and output limits
+
+Discovery budgets the tokens it generates against the model's context window so `input + output` never exceeds it — otherwise a large analysis prompt plus a fixed output request is rejected with a hard `maximum context length` 400 and the run degrades to Partial.
+
+DecisionBox does not need the model to be in its catalog to do this. It resolves the window in priority order — **operator override → self-calibration → live auto-detection → catalog → default** — so an arbitrary customer model works out of the box:
+
+- **Auto-detection (no typing).** When you click **Load models**, DecisionBox reads the real window/output from the provider where it is exposed — LiteLLM (`GET /model/info`), Ollama (`GET /api/show` `context_length`), and OpenAI-compatible gateways that report `max_model_len` (e.g. vLLM). Selecting such a model **prefills** the two fields below with the detected values.
+- **Manual override.** The **Context window override (tokens)** (`max_input_tokens`) and **Max output tokens override** (`max_output_tokens`) fields let you set the real limits for any model DecisionBox cannot detect. The override always wins. Leave them blank to use the detected/catalogued value or the conservative default (128K input, 64K output).
+- **Self-calibration.** If a request still overflows (an under-estimated window on an unknown model), the model's error states its true window. The agent recomputes a fitting `max_tokens`, retries once, and records the window (in the `llm_model_windows` collection) so later runs for the same model budget correctly up front — you never have to look the number up.
+
+For most catalogued models and most gateways you never touch these fields. Set `max_input_tokens` explicitly only for a model that is uncatalogued *and* whose gateway does not report its window.
 
 ## Next Steps
 

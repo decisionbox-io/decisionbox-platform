@@ -628,3 +628,25 @@ func TestClampMaxTokensAndOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestReasoningEnabled(t *testing.T) {
+	// Truthy shapes a dashboard checkbox may produce (case-insensitive).
+	for _, v := range []string{"true", "TRUE", "True", "1", "on", "yes", " true "} {
+		if !ReasoningEnabled(ProviderConfig{ReasoningEnabledKey: v}) {
+			t.Errorf("ReasoningEnabled(%q) = false, want true", v)
+		}
+	}
+	// Everything else — including the default "false", empty, absent, and nil —
+	// is false, so the default matches today's behaviour.
+	for _, v := range []string{"false", "0", "off", "no", "", "nonsense"} {
+		if ReasoningEnabled(ProviderConfig{ReasoningEnabledKey: v}) {
+			t.Errorf("ReasoningEnabled(%q) = true, want false", v)
+		}
+	}
+	if ReasoningEnabled(ProviderConfig{}) {
+		t.Error("absent key should be false")
+	}
+	if ReasoningEnabled(nil) {
+		t.Error("nil cfg should be false")
+	}
+}

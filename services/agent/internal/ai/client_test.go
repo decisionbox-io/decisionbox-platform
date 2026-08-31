@@ -52,6 +52,38 @@ func TestChat(t *testing.T) {
 	}
 }
 
+func TestSetReasoning(t *testing.T) {
+	// Default (off) leaves ReasoningEffortDefault on the request — byte-identical
+	// to today for every provider.
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "test-model")
+	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := provider.Calls[0].Request.ReasoningEffort; got != gollm.ReasoningEffortDefault {
+		t.Errorf("default ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
+	}
+
+	// Enabled → every request carries ReasoningEffort=on (providers that don't
+	// wire reasoning ignore it; Ollama capability-gates it).
+	client.SetReasoning(true)
+	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := provider.Calls[1].Request.ReasoningEffort; got != gollm.ReasoningEffortOn {
+		t.Errorf("enabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortOn)
+	}
+
+	// Toggling back off returns to the default.
+	client.SetReasoning(false)
+	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := provider.Calls[2].Request.ReasoningEffort; got != gollm.ReasoningEffortDefault {
+		t.Errorf("re-disabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
+	}
+}
+
 func TestChatError(t *testing.T) {
 
 	provider := testutil.NewMockLLMProvider()

@@ -38,6 +38,104 @@ func (s *stubSecretProvider) List(context.Context, string) ([]secrets.SecretEntr
 	return nil, nil
 }
 
+// TestWriteLiveModelsResponse_CarriesDetectedWindow verifies the merge surfaces
+// a live row's auto-detected context window / output cap into the response, so
+// the dashboard can prefill the operator's max_input_tokens / max_output_tokens
+// fields for an uncatalogued model.
+func TestWriteLiveModelsResponse_CarriesDetectedWindow(t *testing.T) {
+	meta := gollm.ProviderMeta{ID: "litellm", DispatchAnyModelID: true}
+	live := []gollm.RemoteModel{
+		{ID: "custom-gw-model", DisplayName: "custom-gw-model", MaxInputTokens: 262144, MaxOutputTokens: 16384},
+		{ID: "no-window-model", DisplayName: "no-window-model"},
+	}
+
+	rec := httptest.NewRecorder()
+	writeLiveModelsResponse(rec, meta, live, nil)
+
+	var body struct {
+		Data struct {
+			Models []struct {
+				ID                  string `json:"id"`
+				MaxInputTokens      int    `json:"max_input_tokens"`
+				MaxOutputTokens     int    `json:"max_output_tokens"`
+				LiveMaxInputTokens  int    `json:"live_max_input_tokens"`
+				LiveMaxOutputTokens int    `json:"live_max_output_tokens"`
+			} `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	type caps struct{ in, out, liveIn, liveOut int }
+	byID := map[string]caps{}
+	for _, m := range body.Data.Models {
+		byID[m.ID] = caps{m.MaxInputTokens, m.MaxOutputTokens, m.LiveMaxInputTokens, m.LiveMaxOutputTokens}
+	}
+	// A live row surfaces both the display value AND the live-provenance fields.
+	if got := byID["custom-gw-model"]; got.in != 262144 || got.out != 16384 || got.liveIn != 262144 || got.liveOut != 16384 {
+		t.Fatalf("detected row = %+v, want in/out/liveIn/liveOut 262144/16384/262144/16384", got)
+	}
+	if got := byID["no-window-model"]; got.in != 0 || got.out != 0 || got.liveIn != 0 || got.liveOut != 0 {
+		t.Fatalf("un-detected row = %+v, want all 0", got)
+	}
+}
+
+// TestWriteLiveModelsResponse_BothRowProvenance verifies that on a "both" row
+// (catalogued + live), the live-provenance fields carry ONLY the live value —
+// while a catalogued row the upstream did not report leaves them zero even
+// though its display value comes from the catalog.
+func TestWriteLiveModelsResponse_BothRowProvenance(t *testing.T) {
+	meta := gollm.ProviderMeta{
+		ID: "openai",
+		Models: []gollm.ModelEntry{
+			{ID: "gpt-4o", MaxInputTokens: 128000, MaxOutputTokens: 16384, Wire: gollm.WireOpenAICompat},
+			{ID: "catalog-only", MaxInputTokens: 200000, MaxOutputTokens: 8192, Wire: gollm.WireOpenAICompat},
+		},
+	}
+	// Live endpoint reports gpt-4o with a SMALLER real window than the catalog,
+	// and does not list catalog-only.
+	live := []gollm.RemoteModel{
+		{ID: "gpt-4o", MaxInputTokens: 40000, MaxOutputTokens: 4096},
+	}
+
+	rec := httptest.NewRecorder()
+	writeLiveModelsResponse(rec, meta, live, nil)
+
+	var body struct {
+		Data struct {
+			Models []struct {
+				ID                 string `json:"id"`
+				Source             string `json:"source"`
+				MaxInputTokens     int    `json:"max_input_tokens"`
+				LiveMaxInputTokens int    `json:"live_max_input_tokens"`
+			} `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rows := map[string]struct {
+		src    string
+		disp   int
+		live   int
+	}{}
+	for _, m := range body.Data.Models {
+		rows[m.ID] = struct {
+			src  string
+			disp int
+			live int
+		}{m.Source, m.MaxInputTokens, m.LiveMaxInputTokens}
+	}
+	// gpt-4o: both row; display prefers the live 40000; provenance = 40000.
+	if got := rows["gpt-4o"]; got.src != "both" || got.disp != 40000 || got.live != 40000 {
+		t.Fatalf("gpt-4o = %+v, want both/40000/40000", got)
+	}
+	// catalog-only: display from catalog (200000) but NO live provenance.
+	if got := rows["catalog-only"]; got.src != "catalog" || got.disp != 200000 || got.live != 0 {
+		t.Fatalf("catalog-only = %+v, want catalog/200000/0", got)
+	}
+}
+
 // --- ListLiveLLMModels (cloud-neutral; POST body with credentials) ---
 
 func TestProvidersHandler_ListLiveLLMModels_UnknownProvider(t *testing.T) {

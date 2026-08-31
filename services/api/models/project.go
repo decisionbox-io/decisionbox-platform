@@ -4,6 +4,7 @@ import (
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
 type Project struct {
@@ -101,6 +102,30 @@ type Project struct {
 	// copy of this field via the agent's models.Project — keep the two
 	// definitions in sync.
 	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
+
+	// SmartOverflowEnabled is the per-project toggle for the analysis picker's
+	// smart budget-overflow handling (dedup + "also examined" breadcrumb +
+	// tighter re-compaction of survivors instead of plainly dropping the
+	// lowest-scored steps). Nil means "use the default" (true). It only changes
+	// behaviour when picked evidence exceeds the model-window budget, so it is
+	// inert on big-window models. The agent reads its own copy of this field via
+	// the agent's models.Project — keep the two definitions in sync.
+	SmartOverflowEnabled *bool `bson:"smart_overflow_enabled,omitempty" json:"smart_overflow_enabled,omitempty"`
+
+	// ReasoningEnabled is the model-agnostic per-project "Enable reasoning"
+	// toggle. Nil / false = off (= today, opt-in). When true the discovery run
+	// treats the model as reasoning-effective for every provider (exploration
+	// output headroom + ReasoningEffort=on). The agent reads its own copy via
+	// the agent's models.Project — keep the two definitions in sync.
+	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
+	// RecommendationVerdicts is the per-project set of validation verdicts that
+	// make an insight eligible for recommendation generation. Empty / unset →
+	// default {confirmed, supported} (today's hardcoded IsTerminalPositive
+	// filter). Selectable values: confirmed, supported, partial, unverifiable,
+	// rejected. The agent reads its own copy via the agent's models.Project —
+	// keep the two definitions in sync.
+	RecommendationVerdicts []string `bson:"recommendation_verdicts,omitempty" json:"recommendation_verdicts,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -231,6 +256,39 @@ func (p *Project) EffectiveValidationEnabled() bool {
 		return true
 	}
 	return *p.ValidationEnabled
+}
+
+// EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.
+// Nil pointer → true (default-on). The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveSmartOverflowEnabled() bool {
+	if p.SmartOverflowEnabled == nil {
+		return true
+	}
+	return *p.SmartOverflowEnabled
+}
+
+// EffectiveReasoningEnabled resolves the per-project reasoning toggle. Nil → false
+// (opt-in; default matches today). The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveReasoningEnabled() bool {
+	if p.ReasoningEnabled == nil {
+		return false
+	}
+	return *p.ReasoningEnabled
+}
+
+// EffectiveRecommendationVerdicts resolves the per-project set of validation
+// verdicts eligible for recommendation generation. Sanitises the stored
+// strings and falls back to {confirmed, supported} when unset/empty — today's
+// hardcoded IsTerminalPositive filter. The matching helper on the agent's
+// models.Project must stay in sync.
+func (p *Project) EffectiveRecommendationVerdicts() []valmodels.Status {
+	parsed := valmodels.ParseStatuses(p.RecommendationVerdicts)
+	if len(parsed) == 0 {
+		return valmodels.DefaultRecommendationVerdicts()
+	}
+	return parsed
 }
 
 // EffectiveWarehouses returns the project's warehouses, synthesising a

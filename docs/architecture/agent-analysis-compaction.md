@@ -117,15 +117,61 @@ any per-run collection whose run id is no longer in the active
 
 After ranking + compaction, the picker estimates the rendered
 `{{QUERY_RESULTS}}` JSON byte size and trims the lowest-scored
-steps until the prompt fits under
-`AnalysisQueryResultsBudgetTokens = 200_000`. The estimator runs
-the same renderer the orchestrator runs, so
+steps until the prompt fits under the effective budget. The estimator
+runs the same renderer the orchestrator runs, so
 `len(RenderCompactedSteps(s)) == EstimateCompactedRenderedSize(s)`
 holds for any input.
+
+The effective budget is `min(AnalysisQueryResultsBudgetTokens,
+context_window − output_cap − reserved − margin)` — the fixed
+`200_000` ceiling is coupled to the model window at run time so an
+area's input can never grow past what the window holds once the
+output is reserved. The window itself is resolved without depending on
+the catalog (operator override → self-calibration → live
+auto-detection → catalog → default), so this works for uncatalogued
+customer models too.
+
+Then, per area, the requested output `max_tokens` is budgeted against
+the *measured* input: `clamp(context_window − input − reserved −
+margin, ANALYSIS_MIN_OUTPUT_TOKENS, output_cap)`, reusing the same
+`llm.Budget` arithmetic the `/ask` path uses. Together these keep
+`input + output ≤ context_window`, which is what a "maximum context
+length" 400 rejects. If a request still overflows (an under-estimated
+window on an uncatalogued model), the adaptive retry in the AI client
+parses the model's true window + input out of the error, re-issues
+once with a corrected `max_tokens`, and records the learned window so
+the remaining areas — and later runs — budget against it.
 
 Dropped steps are reported with their step number, score, and the
 drop reason (`below_min_score` or `over_budget`). Telemetry exposes
 the totals on the run document.
+
+## Smart overflow (over-budget trim only)
+
+The plain trim drops the lowest-scored steps until the evidence fits.
+On small-window models that can throw away useful, unique evidence
+just because a redundant high-scored step outranked it. The per-project
+**smart_overflow_enabled** toggle (default on) makes the *over-budget*
+trim smarter without touching any run that already fits:
+
+- **Re-compact survivors first (R6).** Before dropping any step, the
+  survivors' `CompactResult` digests are rebuilt at a tighter head/tail
+  (`BuildCompactResultWithLimits`, e.g. 2+2 rows) from the raw rows
+  still held in memory, so more steps fit at reduced per-step detail.
+  If that alone brings the prompt under budget, nothing is dropped.
+- **Drop near-duplicates, not unique evidence (R5).** When a step must
+  still be dropped, a near-duplicate of a higher-scored survivor (same
+  table set + normalized query purpose) is preferred over unique
+  evidence; the classic lowest-scored drop is the fallback when nothing
+  is redundant.
+- **Leave a breadcrumb.** The dropped steps' purposes are appended to
+  the analysis prompt as an "also examined (not shown)" line, so the
+  model knows the evidence exists and can cite it via `source_steps`.
+
+All of this lives entirely inside the `tokens > budget` trim loop, so a
+run whose evidence fits — every large-context model — produces an
+identical picked set and prompt regardless of the toggle. Turning the
+toggle off restores the plain drop-lowest-scored trim exactly.
 
 ## Flow
 

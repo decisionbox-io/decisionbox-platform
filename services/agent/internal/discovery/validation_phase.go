@@ -301,14 +301,20 @@ func indicesByAffectedDesc(insights []models.Insight) []int {
 	return idx
 }
 
-// filterEligibleInsights returns the subset of insights whose
-// Combined verdict is in {confirmed, supported} — the recommender
-// input filter from plan §"Recommendation policy". When an insight
-// has no Validation (the orchestrator's validationPhase ran but
-// emitted nothing for this insight, or no agent was wired), the
-// insight is treated as eligible — failing-open keeps the
-// recommender from starving when validation is disabled.
-func filterEligibleInsights(all []models.Insight) []models.Insight {
+// filterEligibleInsights returns the subset of insights whose Combined
+// verdict is in the per-project eligibility set — the recommender input
+// filter from plan §"Recommendation policy", made configurable via the
+// per-project recommendation_verdicts setting (Settings → Advanced). The
+// caller passes o.recommendationVerdicts, which defaults to
+// {confirmed, supported} (today's IsTerminalPositive) when the project has
+// not configured its own, so unset projects are byte-identical.
+//
+// Two states always fail-open regardless of the set: an insight with no
+// Validation (validationPhase ran but emitted nothing for it, or no agent
+// was wired) and Combined == validation_disabled (validation turned off).
+// Both mean "validation didn't produce a verdict", not "operator excluded
+// this verdict" — failing-open keeps the recommender from starving.
+func filterEligibleInsights(all []models.Insight, eligible map[valmodels.Status]bool) []models.Insight {
 	out := make([]models.Insight, 0, len(all))
 	for i := range all {
 		v := all[i].Validation
@@ -316,7 +322,7 @@ func filterEligibleInsights(all []models.Insight) []models.Insight {
 			out = append(out, all[i])
 			continue
 		}
-		if v.Combined.IsTerminalPositive() || v.Combined == valmodels.StatusValidationDisabled {
+		if v.Combined == valmodels.StatusValidationDisabled || eligible[v.Combined] {
 			out = append(out, all[i])
 		}
 	}
@@ -342,6 +348,92 @@ type RecommendationDropStats struct {
 	UnknownOrIneligibleID int
 }
 
+// RecommendationCitationStats summarizes how recoverRelatedInsightIDs
+// repaired recommendations whose related_insight_ids were missing or
+// hallucinated — instead of dropping them (the old server-side discipline,
+// which zeroed the run's recommendations on small/open models that omit the
+// field). Both counters are zero for a model that cites correctly, so a big
+// model's output is untouched.
+type RecommendationCitationStats struct {
+	Salvaged   int // recs that cited ≥1 bad id (trimmed) but kept ≥1 valid id
+	Backfilled int // recs with zero valid citations, fail-open linked to eligible insights
+}
+
+// recoverRelatedInsightIDs repairs each recommendation's related_insight_ids
+// against the eligible insight set instead of discarding recs. For each rec:
+//
+//   - valid cited ids are kept and hallucinated / ineligible ones are dropped
+//     from the list (salvage) — a rec that cites 2 real + 1 bogus id survives
+//     with the 2 real ids;
+//   - a rec left with zero valid citations is fail-open linked to every
+//     eligible insight id (backfill), so a grounded recommendation is never
+//     lost just because a small model omitted or slug-ified the field.
+//
+// It never drops a recommendation. The follow-on validateRelatedInsightIDs
+// stays as a defensive guard (it now finds every rec already valid, so it
+// drops nothing). A big model that cites correctly is returned byte-identical
+// with zero stats. Backfill attaches the full eligible set because the true
+// per-rec provenance is unknown once the model failed to cite it; Phase 5.5
+// recommendation validation still budgets the resulting source steps.
+func recoverRelatedInsightIDs(recs []models.Recommendation, eligible []models.Insight) ([]models.Recommendation, RecommendationCitationStats) {
+	eligibleSet := make(map[string]struct{}, len(eligible))
+	allIDs := make([]string, 0, len(eligible))
+	for _, ins := range eligible {
+		if ins.ID == "" {
+			continue
+		}
+		if _, dup := eligibleSet[ins.ID]; dup {
+			continue
+		}
+		eligibleSet[ins.ID] = struct{}{}
+		allIDs = append(allIDs, ins.ID)
+	}
+
+	var stats RecommendationCitationStats
+	out := make([]models.Recommendation, 0, len(recs))
+	for _, rec := range recs {
+		valid := make([]string, 0, len(rec.RelatedInsightIDs))
+		bad := make([]string, 0)
+		for _, id := range rec.RelatedInsightIDs {
+			if _, ok := eligibleSet[id]; ok {
+				valid = append(valid, id)
+			} else {
+				bad = append(bad, id)
+			}
+		}
+		switch {
+		case len(valid) > 0:
+			if len(bad) > 0 {
+				applog.WithFields(applog.Fields{
+					"recommendation_id": rec.ID,
+					"title":             rec.Title,
+					"dropped_ids":       bad,
+					"kept":              len(valid),
+				}).Info("Salvaged recommendation citations: trimmed ineligible ids, kept valid ones")
+				stats.Salvaged++
+			}
+			rec.RelatedInsightIDs = valid
+		case len(allIDs) > 0:
+			// Zero valid citations → fail-open backfill (never drop). The rec
+			// content is usable; ground it in the run's eligible insight set.
+			applog.WithFields(applog.Fields{
+				"recommendation_id": rec.ID,
+				"title":             rec.Title,
+				"cited":             rec.RelatedInsightIDs,
+				"backfilled":        len(allIDs),
+			}).Warn("Backfilling recommendation citations: model cited no eligible insight")
+			rec.RelatedInsightIDs = append([]string(nil), allIDs...)
+			stats.Backfilled++
+		default:
+			// No eligible insights at all (unreachable — Phase 5 skips when the
+			// eligible set is empty). Leave the rec's ids as-is.
+			rec.RelatedInsightIDs = valid
+		}
+		out = append(out, rec)
+	}
+	return out, stats
+}
+
 // validateRelatedInsightIDs drops recommendations whose
 // related_insight_ids reference unknown / ineligible insights, or
 // whose list is empty (the discipline rule requires every rec to
@@ -349,6 +441,11 @@ type RecommendationDropStats struct {
 // RecommendationDropStats summarizing how many were dropped and why.
 // A warning is logged per dropped recommendation so the agent log
 // retains the offending ids for post-mortem analysis.
+//
+// As of #347 this runs AFTER recoverRelatedInsightIDs, which salvages /
+// backfills citations, so in the normal path every rec is already valid and
+// nothing is dropped here — it remains as defense-in-depth (a bug in recovery,
+// or a future caller that skips it, still cannot persist an ungrounded rec).
 func validateRelatedInsightIDs(recs []models.Recommendation, eligible []models.Insight) ([]models.Recommendation, RecommendationDropStats) {
 	eligibleSet := make(map[string]struct{}, len(eligible))
 	for _, ins := range eligible {

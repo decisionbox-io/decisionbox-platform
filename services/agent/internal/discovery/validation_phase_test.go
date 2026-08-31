@@ -187,6 +187,97 @@ func TestValidateRelatedInsightIDs_EmptyInputsReturnEmptyAndZeroStats(t *testing
 	}
 }
 
+// --- recoverRelatedInsightIDs (#347): salvage + fail-open backfill ---
+
+// A model that cites correctly must be returned byte-identical with zero
+// recovery stats — the big-model non-regression guarantee.
+func TestRecoverRelatedInsightIDs_ValidCitationsUntouched(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+		{ID: "02665b9e-468f-41eb-b50e-28702b95e999"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", RelatedInsightIDs: []string{"6e9261f5-c4ec-404b-bdf0-760a4644f384"}},
+		{ID: "r2", RelatedInsightIDs: []string{
+			"6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999",
+		}},
+	}
+	out, stats := recoverRelatedInsightIDs(recs, insights)
+	if len(out) != 2 {
+		t.Fatalf("kept %d recs, want 2", len(out))
+	}
+	if stats.Salvaged != 0 || stats.Backfilled != 0 {
+		t.Errorf("expected zero recovery, got %+v", stats)
+	}
+	if len(out[1].RelatedInsightIDs) != 2 {
+		t.Errorf("valid rec citations changed: %v", out[1].RelatedInsightIDs)
+	}
+}
+
+// A rec citing one real + one bogus id keeps the real id and is salvaged
+// (kept), NOT dropped — the key behavior change from the old validator.
+func TestRecoverRelatedInsightIDs_SalvagesPartialBadIDs(t *testing.T) {
+	insights := []models.Insight{{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"}}
+	recs := []models.Recommendation{
+		{ID: "r1", RelatedInsightIDs: []string{"6e9261f5-c4ec-404b-bdf0-760a4644f384", "some-slug-thing"}},
+	}
+	out, stats := recoverRelatedInsightIDs(recs, insights)
+	if len(out) != 1 {
+		t.Fatalf("kept %d recs, want 1 (salvage, not drop)", len(out))
+	}
+	if got := out[0].RelatedInsightIDs; len(got) != 1 || got[0] != "6e9261f5-c4ec-404b-bdf0-760a4644f384" {
+		t.Errorf("salvaged ids = %v, want the single valid uuid", got)
+	}
+	if stats.Salvaged != 1 || stats.Backfilled != 0 {
+		t.Errorf("stats = %+v, want Salvaged=1 Backfilled=0", stats)
+	}
+}
+
+// Recs with missing / all-hallucinated citations are fail-open backfilled to
+// the eligible insight set and KEPT — the Run C case (DeepSeek-V3.1 recs with
+// no citations were dropped to zero under the old validator).
+func TestRecoverRelatedInsightIDs_BackfillsMissingAndAllBad(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "6e9261f5-c4ec-404b-bdf0-760a4644f384"},
+		{ID: "02665b9e-468f-41eb-b50e-28702b95e999"},
+	}
+	recs := []models.Recommendation{
+		{ID: "r1", RelatedInsightIDs: nil},                                        // missing
+		{ID: "r2", RelatedInsightIDs: []string{}},                                 // empty
+		{ID: "r3", RelatedInsightIDs: []string{"cat:crit:slug", "another-slug"}},  // all bad
+	}
+	out, stats := recoverRelatedInsightIDs(recs, insights)
+	if len(out) != 3 {
+		t.Fatalf("kept %d recs, want 3 (backfill, never drop)", len(out))
+	}
+	for _, r := range out {
+		if len(r.RelatedInsightIDs) != 2 {
+			t.Errorf("rec %s backfilled ids = %v, want the 2 eligible ids", r.ID, r.RelatedInsightIDs)
+		}
+	}
+	if stats.Backfilled != 3 || stats.Salvaged != 0 {
+		t.Errorf("stats = %+v, want Backfilled=3 Salvaged=0", stats)
+	}
+	// After recovery, the defensive validator must drop nothing.
+	kept, drop := validateRelatedInsightIDs(out, insights)
+	if len(kept) != 3 || drop.Total != 0 {
+		t.Errorf("post-recovery validator dropped recs: kept=%d stats=%+v", len(kept), drop)
+	}
+}
+
+func TestRecoverRelatedInsightIDs_EmptyEligibleLeavesRecsUnchanged(t *testing.T) {
+	// Unreachable in Phase 5 (it skips when eligible is empty) but must not
+	// panic or fabricate ids from nothing.
+	recs := []models.Recommendation{{ID: "r1", RelatedInsightIDs: []string{"x"}}}
+	out, stats := recoverRelatedInsightIDs(recs, nil)
+	if len(out) != 1 || len(out[0].RelatedInsightIDs) != 0 {
+		t.Errorf("out = %+v, want the rec kept with its bad id trimmed to empty", out)
+	}
+	if stats.Salvaged != 0 || stats.Backfilled != 0 {
+		t.Errorf("stats = %+v, want zero", stats)
+	}
+}
+
 func TestApplyRecommendationDropStats_SyncsStructuredRecsAndCounters(t *testing.T) {
 	// The orchestrator's persistence path writes recStep verbatim into
 	// discovery_recommendation_log. generateRecommendations seeds

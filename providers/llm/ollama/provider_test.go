@@ -99,6 +99,12 @@ func TestOllamaProvider_ConfigFields(t *testing.T) {
 	if !keys["model"] {
 		t.Error("missing model config field")
 	}
+	// "Enable reasoning" is now a model-agnostic per-project setting (Settings →
+	// Advanced), not a provider ConfigField, so it must NOT appear in any
+	// provider's config_fields.
+	if keys[gollm.ReasoningEnabledKey] {
+		t.Errorf("%q must not be a provider config field (it is a per-project setting now)", gollm.ReasoningEnabledKey)
+	}
 	// Should NOT have api_key — local models
 	if keys["api_key"] {
 		t.Error("ollama should not have api_key field")

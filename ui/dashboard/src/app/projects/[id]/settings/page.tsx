@@ -41,6 +41,19 @@ const OUTPUT_LANGUAGE_OPTIONS = [
   { value: 'Thai',       label: 'ไทย (Thai)' },
 ];
 
+// Validation verdicts that can qualify an insight for recommendation
+// generation (Advanced → Recommendation eligibility). Values mirror the
+// Go-side validation.Status per-claim taxonomy; the default is
+// {confirmed, supported} = the historical recommender filter.
+const RECOMMENDATION_VERDICT_DEFAULT = ['confirmed', 'supported'];
+const RECOMMENDATION_VERDICT_OPTIONS = [
+  { value: 'confirmed', label: 'Confirmed — evidence directly equals the claim' },
+  { value: 'supported', label: 'Supported — evidence consistent with the claim (default positive)' },
+  { value: 'partial', label: 'Partial — some claims covered, or coverage incomplete' },
+  { value: 'unverifiable', label: 'Unverifiable — verifier could not produce evidence (caution)' },
+  { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
+];
+
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -82,6 +95,24 @@ export default function ProjectSettingsPage() {
   // Defaults to true for legacy projects (validation_enabled === undefined).
   const [validationEnabled, setValidationEnabled] = useState(true);
   const [savingValidation, setSavingValidation] = useState(false);
+
+  // Advanced — Smart overflow toggle (lives on the project document).
+  // Defaults to true (smart_overflow_enabled === undefined).
+  const [smartOverflowEnabled, setSmartOverflowEnabled] = useState(true);
+  const [savingSmartOverflow, setSavingSmartOverflow] = useState(false);
+
+  // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
+  // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
+  const [reasoningEnabled, setReasoningEnabled] = useState(false);
+  const [savingReasoning, setSavingReasoning] = useState(false);
+
+  // Advanced — Recommendation eligibility verdicts (lives on the project
+  // document). Which validation verdicts qualify an insight for recommendation
+  // generation. Empty / undefined → default {confirmed, supported}.
+  const [recommendationVerdicts, setRecommendationVerdicts] = useState<string[]>(
+    RECOMMENDATION_VERDICT_DEFAULT,
+  );
+  const [savingVerdicts, setSavingVerdicts] = useState(false);
 
   // Tab routing — honor `location.hash` so deep-links like
   // `/projects/:id/settings#advanced` open the right tab. The AI/Blurb
@@ -127,6 +158,13 @@ export default function ProjectSettingsPage() {
         setDescription(proj.description || '');
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
+        setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
+        setReasoningEnabled(proj.reasoning_enabled === true);
+        setRecommendationVerdicts(
+          proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
+            ? proj.recommendation_verdicts
+            : RECOMMENDATION_VERDICT_DEFAULT,
+        );
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
         if (proj.blurb_llm && proj.blurb_llm.provider) {
           const blurbProviderID = proj.blurb_llm.provider;
@@ -215,6 +253,74 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingValidation(false);
+    }
+  };
+
+  // Save the smart-overflow toggle. Optimistic update + rollback on failure.
+  const saveSmartOverflowEnabled = async (next: boolean) => {
+    const prev = smartOverflowEnabled;
+    setSmartOverflowEnabled(next);
+    setSavingSmartOverflow(true);
+    try {
+      const saved = await api.updateProject(id, { smart_overflow_enabled: next });
+      setProject(saved);
+      setSmartOverflowEnabled(saved.smart_overflow_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Smart overflow enabled' : 'Smart overflow disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setSmartOverflowEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingSmartOverflow(false);
+    }
+  };
+
+  // Save the reasoning toggle. Optimistic update + rollback on failure.
+  const saveReasoningEnabled = async (next: boolean) => {
+    const prev = reasoningEnabled;
+    setReasoningEnabled(next);
+    setSavingReasoning(true);
+    try {
+      const saved = await api.updateProject(id, { reasoning_enabled: next });
+      setProject(saved);
+      setReasoningEnabled(saved.reasoning_enabled === true);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Reasoning enabled' : 'Reasoning disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setReasoningEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingReasoning(false);
+    }
+  };
+
+  // Save the recommendation-eligibility verdicts. Optimistic update + rollback.
+  // An empty selection is persisted as-is; the backend resolves empty back to
+  // the default {confirmed, supported}, so deselecting all is not a footgun.
+  const saveRecommendationVerdicts = async (next: string[]) => {
+    const prev = recommendationVerdicts;
+    setRecommendationVerdicts(next);
+    setSavingVerdicts(true);
+    try {
+      const saved = await api.updateProject(id, { recommendation_verdicts: next });
+      setProject(saved);
+      setRecommendationVerdicts(
+        saved.recommendation_verdicts && saved.recommendation_verdicts.length > 0
+          ? saved.recommendation_verdicts
+          : RECOMMENDATION_VERDICT_DEFAULT,
+      );
+      notifications.show({ title: 'Saved', message: 'Recommendation eligibility updated', color: 'green' });
+    } catch (e: unknown) {
+      setRecommendationVerdicts(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingVerdicts(false);
     }
   };
 
@@ -362,6 +468,29 @@ export default function ProjectSettingsPage() {
                 checked={validationEnabled}
                 disabled={savingValidation}
                 onChange={(e) => saveValidationEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Smart overflow handling for large evidence"
+                description="When the evidence selected for an analysis area exceeds the model's context budget, keep more of it by de-duplicating near-identical queries, tightening per-step detail, and leaving a short note of what was examined but not shown — instead of simply dropping the lowest-scored steps. Only affects runs that would otherwise overflow, so it has no effect on large-context models. Recommended on."
+                checked={smartOverflowEnabled}
+                disabled={savingSmartOverflow}
+                onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Enable reasoning"
+                description="Turn on for reasoning models (e.g. Kimi, qwen3, DeepSeek-R1, Ollama thinking models). Off by default. When on, the model gets extra window-budgeted output headroom during exploration so a long hidden chain-of-thought doesn't truncate the step, and discovery requests reasoning on every call — providers that support native thinking act on it (capability-checked); others simply get the headroom. Leave off for non-reasoning models."
+                checked={reasoningEnabled}
+                disabled={savingReasoning}
+                onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
+              />
+              <MultiSelect
+                label="Recommendation eligibility"
+                description="Which validation verdicts qualify an insight for recommendation generation. Default is Confirmed + Supported (only positively-validated insights). Add Partial / Unverifiable when the warehouse can't self-verify (e.g. no temp-table permission) but you trust the analysis. Rejected means the evidence contradicts the insight — include with caution. Insights whose validation didn't run stay eligible regardless. Clearing the selection reverts to the default."
+                data={RECOMMENDATION_VERDICT_OPTIONS}
+                value={recommendationVerdicts}
+                disabled={savingVerdicts}
+                onChange={saveRecommendationVerdicts}
+                clearable
               />
               <Divider my="xs" />
               <Text size="sm" fw={500}>Debugging</Text>

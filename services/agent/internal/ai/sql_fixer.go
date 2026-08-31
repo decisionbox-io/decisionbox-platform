@@ -12,6 +12,11 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
+// sqlFixMinOutputTokens is the floor the SQL-fix output budget never drops
+// below, so a large fix prompt against a tight window still gets room for a
+// corrected query. A fixed statement is small, so this is modest.
+const sqlFixMinOutputTokens = 512
+
 // SQLFixer uses LLM to fix SQL query errors.
 type SQLFixer struct {
 	client       *Client
@@ -19,6 +24,15 @@ type SQLFixer struct {
 	dataset      string
 	filter       string
 	schemaCtx    string
+
+	// window / outputCap are the model's resolved context window and output
+	// cap (#347 chain: operator override → live auto-detect → catalog →
+	// default). Used to budget the fix call's max_tokens so it can't exceed a
+	// small model's real limit — an uncatalogued model resolves to the 64K
+	// default cap otherwise, which a 32K/8K deployment rejects with a hard 400.
+	// 0 (tests / non-discovery callers) falls back to today's catalog lookup.
+	window    int
+	outputCap int
 }
 
 // SQLFixerOptions configures the SQL fixer.
@@ -27,6 +41,11 @@ type SQLFixerOptions struct {
 	SQLFixPrompt string // from warehouse.Provider.SQLFixPrompt()
 	Dataset      string
 	Filter       string
+
+	// Window / OutputCap are the resolved model context window and output cap
+	// (see SQLFixer). Optional — 0 preserves the pre-#347 catalog-cap behaviour.
+	Window    int
+	OutputCap int
 }
 
 // NewSQLFixer creates a new SQL fixer.
@@ -36,6 +55,8 @@ func NewSQLFixer(opts SQLFixerOptions) *SQLFixer {
 		sqlFixPrompt: opts.SQLFixPrompt,
 		dataset:      opts.Dataset,
 		filter:       opts.Filter,
+		window:       opts.Window,
+		outputCap:    opts.OutputCap,
 	}
 }
 
@@ -75,15 +96,15 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 	// call so the prompt is recorded even when the LLM call errors out.
 	renderedPrompt := renderFixPrompt(conversation.GetSystemPrompt(), userMessage)
 
-	// Cap output at whatever the active (provider, model) declares in
-	// the central catalog. Without this lookup every model was capped
-	// at the historical 4000, which left wider-window models leaving
-	// budget on the table and tighter-window models occasionally being
-	// asked for tokens they can't deliver. GetMaxOutputTokens falls back
-	// to the global default (8192) when neither the catalog nor the
-	// provider's DefaultMaxOutputTokens is set, so providers without a
-	// fixed catalog (Ollama) still get a sensible cap.
-	maxOutputTokens := gollm.GetMaxOutputTokens(f.client.ProviderName(), f.client.ModelName())
+	// Budget the fix output against the resolved window + output cap so the
+	// request stays inside a small model's real limit. Historically this used
+	// the raw catalog cap, which for an uncatalogued model resolves to the 64K
+	// global default — larger than a 32K/8K deployment can accept, so the
+	// provider rejected the fix with a hard 400 and the query (and its
+	// exploration step) failed (observed on qwen3.5-27b via a vLLM/LiteLLM
+	// gateway). budgetFixOutput reduces to today's catalog cap for large
+	// models with a known-wide window, so their behaviour is unchanged.
+	maxOutputTokens := f.budgetFixOutput(conversation)
 
 	start := time.Now()
 	response, err := f.client.CreateMessage(ctx, conversation.GetMessages(), conversation.GetSystemPrompt(), maxOutputTokens)
@@ -122,6 +143,34 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 		OutputTokens: outputTokens,
 		DurationMs:   durationMs,
 	}, nil
+}
+
+// budgetFixOutput returns the max_tokens the SQL-fix call should request so it
+// never exceeds the model's real output cap or window. It resolves the output
+// cap (falling back to the catalog lookup when the resolved cap is unset, which
+// preserves the pre-#347 behaviour for tests / non-discovery callers), then —
+// when a window is known — budgets it against the measured fix prompt so
+// input + output stays inside the window. For a large model with a wide window
+// this returns the full catalog cap unchanged (the fix prompt is tiny relative
+// to the window), so big models are unaffected; it only bites on a tight-window
+// model where the raw 64K default would 400.
+func (f *SQLFixer) budgetFixOutput(conv *Conversation) int {
+	outCap := f.outputCap
+	if outCap <= 0 {
+		outCap = gollm.GetMaxOutputTokens(f.client.ProviderName(), f.client.ModelName())
+	}
+	if f.window <= 0 {
+		// No known window (tests / non-discovery): today's behaviour.
+		return outCap
+	}
+	avail := gollm.NewBudget(f.window, 0, explorationReservedSystemTokens, false).Available() - conversationInputEst(conv)
+	if outCap > avail {
+		outCap = avail
+	}
+	if outCap < sqlFixMinOutputTokens {
+		outCap = sqlFixMinOutputTokens
+	}
+	return outCap
 }
 
 // renderFixPrompt formats the system+user pair into a single text blob
