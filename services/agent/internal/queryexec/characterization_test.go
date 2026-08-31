@@ -395,8 +395,7 @@ type failThenSucceedWarehouse struct {
 func (w *failThenSucceedWarehouse) Query(ctx context.Context, query string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
 	w.calls++
 	if w.calls <= w.failures {
-		w.MockWarehouseProvider.Calls = append(w.MockWarehouseProvider.Calls,
-			testutil.MockWarehouseCall{Method: "Query", Query: query})
+		w.Calls = append(w.Calls, testutil.MockWarehouseCall{Method: "Query", Query: query})
 		return nil, w.err
 	}
 	return w.MockWarehouseProvider.Query(ctx, query, params)
