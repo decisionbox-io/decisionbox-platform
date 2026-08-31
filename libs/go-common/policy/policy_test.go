@@ -98,7 +98,7 @@ func TestNoopChecker_FeatureEnabled_True(t *testing.T) {
 func TestNoopChecker_SyncCounters_IsNoOp(t *testing.T) {
 	resetRegistry()
 	c := GetChecker()
-	// Must not panic; must return immediately; must not block. 
+	// Must not panic; must return immediately; must not block.
 	c.SyncCounters(context.Background(), "dep1", CounterSnapshot{ProjectsCurrent: 5, DataSourcesCurrent: 3})
 }
 
@@ -109,11 +109,11 @@ func TestNoopChecker_ObserveLLMTokens_IsNoOp(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		c.ObserveLLMTokens(context.Background(), "dep1", LLMUsageEvent{
-			Provider:   "claude",
-			Model:      "claude-opus-4-7",
-			InputTokens: 100,
+			Provider:     "claude",
+			Model:        "claude-opus-4-7",
+			InputTokens:  100,
 			OutputTokens: 50,
-			OccurredAt: time.Now(),
+			OccurredAt:   time.Now(),
 		})
 		close(done)
 	}()
@@ -242,6 +242,7 @@ func TestAllFeatures_ContainsEveryConstant(t *testing.T) {
 		FeatureMultiWarehouse,
 		FeatureConnectors,
 		FeatureFileIngestion,
+		FeatureEmail,
 	}
 	if len(AllFeatures) != len(want) {
 		t.Fatalf("AllFeatures length = %d, want %d", len(AllFeatures), len(want))
@@ -274,6 +275,7 @@ func TestNewFeatureConstants_WireStrings(t *testing.T) {
 		FeaturePackGen:   "pack_gen_enabled",
 		FeatureDataQuery: "data_query_enabled",
 		FeatureAskCharts: "ask_charts_enabled",
+		FeatureEmail:     "email_enabled",
 	}
 	for got, want := range cases {
 		if got != want {
