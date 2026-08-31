@@ -75,22 +75,49 @@ func TestWarehouseProvidersDeclareShortDialect(t *testing.T) {
 			t.Errorf("GetProviderMeta(%q).Dialect = %q, want %q (matching RegisteredProvidersMeta)", m.ID, got.Dialect, m.Dialect)
 		}
 
+		// --- Capability descriptor -------------------------------------
+		//
+		// Split deliberately. The invariants below hold for ANY source,
+		// including a non-SQL one; the SQL-specific expectations that follow
+		// apply only to the providers this test knows to be SQL warehouses.
+		//
+		// Asserting the SQL defaults for every registered provider would
+		// forbid the thing the descriptor exists to express — a cube-shaped or
+		// non-anchoring source declaring itself as such — and would fail on the
+		// day such a provider is registered, looking like a broken test at
+		// exactly the moment someone is most likely to weaken it.
+		if strings.TrimSpace(m.Language()) == "" {
+			t.Errorf("provider %q resolves to an empty query language", m.ID)
+		}
+		switch m.EffectiveShape() {
+		case gowarehouse.ShapeEntities, gowarehouse.ShapeCube:
+			// known
+		default:
+			t.Errorf("provider %q EffectiveShape() = %q, which is not a known source shape",
+				m.ID, m.EffectiveShape())
+		}
+
+		want, known := expectedDialects[m.ID]
+		if !known {
+			continue
+		}
+
 		// Pin the exact value for the known community providers.
-		if want, known := expectedDialects[m.ID]; known && m.Dialect != want {
+		if m.Dialect != want {
 			t.Errorf("provider %q Dialect = %q, want %q", m.ID, m.Dialect, want)
 		}
 
-		// The capability descriptor must resolve correctly for every provider,
-		// declared or not. All three fields default, which is what lets a
-		// provider — including an enterprise-only driver this repo cannot see —
-		// work without declaring anything; it is equally what makes a wrong
-		// value invisible. Assert the resolved values rather than the raw
-		// fields, because the defaults are the contract.
+		// These are SQL warehouses, so their descriptor must resolve to the
+		// defaults. All three fields default, which is what lets a provider —
+		// including an enterprise-only driver this repo cannot see — work
+		// without declaring anything; it is equally what makes a wrong value
+		// invisible. Assert the resolved values rather than the raw fields,
+		// because the defaults are the contract.
 		if m.Language() != m.Dialect {
 			t.Errorf("provider %q Language() = %q, want its Dialect label %q", m.ID, m.Language(), m.Dialect)
 		}
 		if m.EffectiveShape() != gowarehouse.ShapeEntities {
-			t.Errorf("provider %q EffectiveShape() = %q, want %q — every SQL warehouse is tables of rows",
+			t.Errorf("provider %q EffectiveShape() = %q, want %q — a SQL warehouse is tables of rows",
 				m.ID, m.EffectiveShape(), gowarehouse.ShapeEntities)
 		}
 		if !m.Anchors() {
