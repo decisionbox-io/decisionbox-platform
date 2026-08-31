@@ -34,21 +34,12 @@ type ProviderMeta struct {
 	// Every registered provider sets it.
 	Dialect string `json:"dialect"`
 
-	// QueryLanguage names the language queries against this source are written
-	// in. Empty means "the Dialect label" — see ProviderMeta.Language() — so
-	// every SQL provider is already correct without declaring it. A non-SQL
-	// source declares its own ("SOQL", a report specification, ...).
-	QueryLanguage string `json:"query_language,omitempty"`
-
-	// Shape is how the source organises what can be queried: rows in named
-	// entities, or a cube of metrics and dimensions. Empty means
-	// ShapeEntities — see ProviderMeta.EffectiveShape().
-	Shape SourceShape `json:"shape,omitempty"`
-
-	// CanAnchor declares whether a source of this type can carry a project by
-	// itself. Nil means true — see ProviderMeta.Anchors() for why the default
-	// runs that way. Declare it only to say false, via warehouse.Anchoring(false).
-	CanAnchor *bool `json:"can_anchor,omitempty"`
+	// Capability is the source-capability descriptor — query language, shape,
+	// and whether the source can anchor a project. Embedded, so its fields are
+	// declared and serialised inline. Every field defaults to what was true
+	// before the descriptor existed; a provider that declares none is
+	// unaffected. ProviderMeta.Language() additionally falls back to Dialect.
+	Capability
 
 	ConfigFields   []ConfigField     `json:"config_fields"`
 	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`

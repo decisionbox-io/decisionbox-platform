@@ -141,7 +141,7 @@ func TestProviderMeta_LanguageFallsBackToDialect(t *testing.T) {
 		meta ProviderMeta
 		want string
 	}{
-		{"declared language wins", ProviderMeta{QueryLanguage: "SOQL", Dialect: "ignored"}, "SOQL"},
+		{"declared language wins", ProviderMeta{Capability: Capability{QueryLanguage: "SOQL"}, Dialect: "ignored"}, "SOQL"},
 		{"undeclared falls back to the dialect label", ProviderMeta{Dialect: "PostgreSQL"}, "PostgreSQL"},
 		{"neither declared falls back to SQL", ProviderMeta{}, "SQL"},
 	}
@@ -154,11 +154,30 @@ func TestProviderMeta_LanguageFallsBackToDialect(t *testing.T) {
 	}
 }
 
-func TestProviderMeta_ShapeDefaultsToEntities(t *testing.T) {
-	if got := (ProviderMeta{}).EffectiveShape(); got != ShapeEntities {
+// TestCapability_TravelsWithAProviderMeta pins that the embedded descriptor is
+// reachable through the meta, so a consumer holding a ProviderMeta does not
+// need to know the descriptor is a separate type.
+func TestCapability_TravelsWithAProviderMeta(t *testing.T) {
+	m := ProviderMeta{
+		Dialect:    "GA4",
+		Capability: Capability{Shape: ShapeCube, CanAnchor: Anchoring(false)},
+	}
+	if m.EffectiveShape() != ShapeCube {
+		t.Errorf("EffectiveShape() = %q, want %q through the embedded descriptor", m.EffectiveShape(), ShapeCube)
+	}
+	if m.Anchors() {
+		t.Error("a provider declaring CanAnchor(false) must not anchor")
+	}
+	if got := m.Language(); got != "GA4" {
+		t.Errorf("Language() = %q, want the Dialect fallback %q", got, "GA4")
+	}
+}
+
+func TestCapability_ShapeDefaultsToEntities(t *testing.T) {
+	if got := (Capability{}).EffectiveShape(); got != ShapeEntities {
 		t.Errorf("EffectiveShape() = %q, want %q for an undeclared provider", got, ShapeEntities)
 	}
-	if got := (ProviderMeta{Shape: ShapeCube}).EffectiveShape(); got != ShapeCube {
+	if got := (Capability{Shape: ShapeCube}).EffectiveShape(); got != ShapeCube {
 		t.Errorf("EffectiveShape() = %q, want %q", got, ShapeCube)
 	}
 }
@@ -167,14 +186,14 @@ func TestProviderMeta_ShapeDefaultsToEntities(t *testing.T) {
 // Getting this backwards would silently make every already-registered
 // datasource — including the enterprise-only drivers this repo cannot see —
 // ineligible to be a project's only source, with no error to trace it by.
-func TestProviderMeta_AnchorsDefaultsToTrue(t *testing.T) {
-	if !(ProviderMeta{}).Anchors() {
+func TestCapability_AnchorsDefaultsToTrue(t *testing.T) {
+	if !(Capability{}).Anchors() {
 		t.Error("an undeclared provider must anchor; a warehouse is the system of record by construction")
 	}
-	if !(ProviderMeta{CanAnchor: Anchoring(true)}).Anchors() {
+	if !(Capability{CanAnchor: Anchoring(true)}).Anchors() {
 		t.Error("an explicit true must anchor")
 	}
-	if (ProviderMeta{CanAnchor: Anchoring(false)}).Anchors() {
+	if (Capability{CanAnchor: Anchoring(false)}).Anchors() {
 		t.Error("an explicit false must not anchor")
 	}
 }

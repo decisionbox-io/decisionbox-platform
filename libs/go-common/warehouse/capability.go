@@ -126,30 +126,46 @@ func (r sqlRunner) Unwrap() Provider { return r.p }
 //	CanAnchor: warehouse.Anchoring(false)
 func Anchoring(v bool) *bool { return &v }
 
-// Language returns the query language for this provider: the declared
-// QueryLanguage, falling back to the display Dialect, and finally to "SQL".
+// Capability is the source-capability descriptor: what language a source's
+// queries are written in, how it is shaped, and whether it can carry a project
+// by itself. It is declared once at provider registration and travels from
+// there to everything that has to reason about a source without opening a
+// connection to it — prompt construction, routing, pack generation.
 //
-// The fallback is what lets every already-registered SQL provider — in this
-// repo and in the enterprise plugin repo — carry a correct language without
-// being edited.
-func (m ProviderMeta) Language() string {
-	if m.QueryLanguage != "" {
-		return m.QueryLanguage
-	}
-	if m.Dialect != "" {
-		return m.Dialect
+// Every field is optional and defaults to what was true before the descriptor
+// existed, so a provider registered before this type — including the
+// enterprise-only drivers this repo cannot see — stays correct unedited.
+type Capability struct {
+	// QueryLanguage names the language queries against this source are written
+	// in. Empty resolves via Language().
+	QueryLanguage string `json:"query_language,omitempty"`
+
+	// Shape is how the source organises what can be queried. Empty resolves to
+	// ShapeEntities via EffectiveShape().
+	Shape SourceShape `json:"shape,omitempty"`
+
+	// CanAnchor declares whether a source of this type can carry a project by
+	// itself. Nil resolves to true via Anchors(); declare it only to say false,
+	// using Anchoring(false).
+	CanAnchor *bool `json:"can_anchor,omitempty"`
+}
+
+// Language returns the declared query language, defaulting to "SQL".
+func (c Capability) Language() string {
+	if c.QueryLanguage != "" {
+		return c.QueryLanguage
 	}
 	return "SQL"
 }
 
 // EffectiveShape returns the declared source shape, defaulting to
-// ShapeEntities. The default is safe for an undeclared provider because every
+// ShapeEntities. The default is safe for an undeclared source because every
 // source that existed before shape did is table-shaped; a cube source cannot
 // be introduced without declaring itself one, since nothing else about it
 // would work.
-func (m ProviderMeta) EffectiveShape() SourceShape {
-	if m.Shape != "" {
-		return m.Shape
+func (c Capability) EffectiveShape() SourceShape {
+	if c.Shape != "" {
+		return c.Shape
 	}
 	return ShapeEntities
 }
@@ -159,12 +175,27 @@ func (m ProviderMeta) EffectiveShape() SourceShape {
 //
 // Undeclared means true. That direction is deliberate: a warehouse or CRM is
 // the system of record by construction, so the sources that existed before
-// this flag are all anchoring, and a provider that forgets to declare keeps
+// this flag are all anchoring, and a source that forgets to declare keeps
 // working. The failure mode of the opposite default would be silent — an
 // existing datasource quietly becoming ineligible to be a project's only
 // source, refused with no error anyone would connect to a missing field.
 //
 // Only a source whose value is purely correlative declares CanAnchor false.
-func (m ProviderMeta) Anchors() bool {
-	return m.CanAnchor == nil || *m.CanAnchor
+func (c Capability) Anchors() bool {
+	return c.CanAnchor == nil || *c.CanAnchor
+}
+
+// Language returns the query language for this provider: the declared
+// QueryLanguage, falling back to the display Dialect, and finally to "SQL".
+//
+// The Dialect fallback is what lets every already-registered SQL provider
+// carry a correct language without being edited.
+func (m ProviderMeta) Language() string {
+	if m.QueryLanguage != "" {
+		return m.QueryLanguage
+	}
+	if m.Dialect != "" {
+		return m.Dialect
+	}
+	return "SQL"
 }
