@@ -3,8 +3,6 @@ package askserve
 import (
 	"fmt"
 	"strings"
-
-	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // buildSystemPrompt renders the Q&A system prompt for one turn on the JSON-text
@@ -124,48 +122,25 @@ func writeDataSection(b *strings.Builder, routing turnRouting) {
 // (dialect, datasets, read-only rule, and the tenant-scope predicate when the
 // dataset is multi-tenant). Shared verbatim by both prompt builders on a
 // single-datasource / pinned turn.
+//
+// The block is SQL-shaped throughout, as is the prompt around it — the tool
+// contract offers a `query` string documented as "SELECT / CTE only", and the
+// grounding guidance points at INFORMATION_SCHEMA. A cube-shaped source has no
+// coherent rendering here until there is an adapter defining what its query
+// actually is, so generalising this section alone would hand the model a cube
+// description wrapped in SQL instructions: contradictory guidance it would
+// resolve by writing SQL anyway. The prompt and tool surface generalise
+// together with the first non-SQL adapter.
 func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
 	b.WriteString("WAREHOUSE\n")
-	if isCube(d) {
-		fmt.Fprintf(b, "- Query language: %s\n", d.Language())
-		b.WriteString(cubeShapeRule)
-	} else if d.Dialect != "" {
+	if d.Dialect != "" {
 		fmt.Fprintf(b, "- SQL dialect: %s\n", d.Dialect)
 	}
 	if len(d.Datasets) > 0 {
 		fmt.Fprintf(b, "- Datasets available: %s\n", strings.Join(d.Datasets, ", "))
 	}
-	if isCube(d) {
-		b.WriteString("- This source is READ-ONLY. It answers reports; it cannot be written to.\n")
-	} else {
-		b.WriteString("- The warehouse is READ-ONLY. Emit only SELECT/CTE queries. Never attempt INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
-	}
+	b.WriteString("- The warehouse is READ-ONLY. Emit only SELECT/CTE queries. Never attempt INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
 	writeTenantScope(b, "- ", d)
-}
-
-// cubeShapeRule tells the model what a cube-shaped source is, in the terms it
-// has to write queries in. It states the absence of tables explicitly because
-// the failure it prevents is not a syntax error: a model that assumes tables
-// writes a join the source cannot honour, and the source rejects it with an
-// error that reads as a bug rather than as "this source can't do that".
-const cubeShapeRule = "- This source is a metric/dimension cube, not tables of rows: there is nothing to SELECT from and nothing to join. A query names metrics, dimensions, a date range, and optional filters.\n"
-
-// isCube reports whether a datasource is cube-shaped. Sources that declare no
-// shape are entity-shaped, which is every SQL warehouse.
-func isCube(d DatasourceInfo) bool {
-	return d.EffectiveShape() == gowarehouse.ShapeCube
-}
-
-// anyCube reports whether a turn's routing includes a cube-shaped datasource.
-// Used to keep the multi-datasource preamble truthful on a mixed project
-// without changing a word of it on a SQL-only one.
-func anyCube(datasources []DatasourceInfo) bool {
-	for _, d := range datasources {
-		if isCube(d) {
-			return true
-		}
-	}
-	return false
 }
 
 // writeDatasourcesSection renders the DATASOURCES catalog for a multi-datasource
@@ -173,11 +148,7 @@ func anyCube(datasources []DatasourceInfo) bool {
 // card) plus the one-warehouse-per-statement + bounded multi-hop rules.
 func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 	b.WriteString("DATASOURCES\n")
-	if anyCube(routing.datasources) {
-		b.WriteString("This project has multiple datasources, and they are not all the same shape. Each query runs against exactly ONE datasource — pass its id as datasource_id — in that datasource's own query language. A single query cannot span datasources.\n")
-	} else {
-		b.WriteString("This project has multiple datasources. Each SQL query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
-	}
+	b.WriteString("This project has multiple datasources. Each SQL query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
 	for _, d := range routing.datasources {
 		primary := ""
 		if d.ID == routing.primary {
@@ -201,10 +172,7 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 				fmt.Fprintf(b, "  key metrics: %s\n", strings.Join(d.Card.KeyMetrics, ", "))
 			}
 		}
-		if isCube(d) {
-			fmt.Fprintf(b, "  query language: %s\n", d.Language())
-			b.WriteString("  shape: metric/dimension cube — no tables, no rows to select from, no joins\n")
-		} else if d.Dialect != "" {
+		if d.Dialect != "" {
 			fmt.Fprintf(b, "  SQL dialect: %s\n", d.Dialect)
 		}
 		if len(d.Datasets) > 0 {

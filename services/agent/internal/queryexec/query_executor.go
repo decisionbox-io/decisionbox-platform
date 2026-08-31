@@ -173,6 +173,19 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 
 	currentQuery := query
 
+	// A structured query cannot be scope-checked. verifyFilter inspects query
+	// text, but a structured query's meaning lives in its payload — the two are
+	// set independently, so text mentioning the scope field says nothing about
+	// what the payload asks for. Checking the text anyway would report a
+	// guarantee this code cannot keep, and the result would be a query that
+	// passed the security check and ran unscoped. Refuse instead: a source with
+	// structured queries must enforce scope by its own mechanism (a scoped
+	// credential, or a filter the adapter builds into the payload it submits).
+	if query.IsStructured() && e.filterField != "" {
+		return nil, fmt.Errorf("security violation: a structured query cannot be scope-checked against %s; "+
+			"the source must enforce scope through its own credential or payload", e.filterField)
+	}
+
 	if err := e.verifyFilter(currentQuery.String()); err != nil {
 		return nil, fmt.Errorf("security violation: %w", err)
 	}
