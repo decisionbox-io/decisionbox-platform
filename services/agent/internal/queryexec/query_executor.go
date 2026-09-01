@@ -129,6 +129,18 @@ type ExecuteResult struct {
 	// copy this onto ExplorationStep.FixHistory so the per-attempt trail
 	// is preserved in storage alongside the rest of the step's dialog.
 	FixHistory []models.FixAttempt
+
+	// Quality carries the source-reported caveats attached to the result that
+	// finally succeeded — rows withheld, values sampled, a tail truncated.
+	// Nil when the source declared none, which is every SQL warehouse.
+	//
+	// It is deliberately on the success path rather than folded into Errors:
+	// the query did not fail, and treating a caveat as a failure would discard
+	// a usable answer. The caller decides what a caveat means for the
+	// conclusion it is about to draw — which it can only do if the caveat
+	// survives the executor, so this field is what stops it being dropped at
+	// the provider boundary.
+	Quality []gowarehouse.QualityCaveat
 }
 
 // Execute executes a query with automatic self-healing. It forwards to
@@ -192,11 +204,11 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 
 	for attempt := 0; attempt <= e.maxRetries; attempt++ {
 		applog.WithFields(applog.Fields{
-			"attempt":  attempt,
-			"max":      e.maxRetries,
-			"purpose":  purpose,
-			"phase":    e.currentPhase,
-			"step":     e.currentStep,
+			"attempt":   attempt,
+			"max":       e.maxRetries,
+			"purpose":   purpose,
+			"phase":     e.currentPhase,
+			"step":      e.currentStep,
 			"query_len": len(currentQuery.String()),
 		}).Debug("Executing warehouse query")
 
@@ -209,13 +221,27 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			result.ExecutionTimeMs = executionTime
 			result.FinalQuery = currentQuery.String()
 			result.Fixed = attempt > 0
+			result.Quality = qr.Quality
+
+			if qr.Degraded() {
+				caveats := make([]string, 0, len(qr.Quality))
+				for _, c := range qr.Quality {
+					caveats = append(caveats, c.String())
+				}
+				applog.WithFields(applog.Fields{
+					"purpose": purpose,
+					"phase":   e.currentPhase,
+					"step":    e.currentStep,
+					"caveats": strings.Join(caveats, "; "),
+				}).Warn("Query succeeded but the source reported the result is degraded")
+			}
 
 			applog.WithFields(applog.Fields{
-				"rows":      result.RowCount,
-				"time_ms":   executionTime,
-				"fixed":     result.Fixed,
-				"attempts":  attempt + 1,
-				"purpose":   purpose,
+				"rows":     result.RowCount,
+				"time_ms":  executionTime,
+				"fixed":    result.Fixed,
+				"attempts": attempt + 1,
+				"purpose":  purpose,
 			}).Debug("Query executed successfully")
 
 			if e.debugLogger != nil {
@@ -384,11 +410,10 @@ func (e *QueryExecutor) verifyFilter(query string) error {
 	}
 	if !strings.Contains(strings.ToLower(query), strings.ToLower(e.filterField)) {
 		applog.WithFields(applog.Fields{
-			"filter_field": e.filterField,
+			"filter_field":  e.filterField,
 			"query_preview": query[:min(len(query), 80)],
 		}).Warn("Query missing required filter field")
 		return fmt.Errorf("query must filter by %s for security", e.filterField)
 	}
 	return nil
 }
-

@@ -173,6 +173,17 @@ type DryRunResult struct {
 type QueryResult struct {
 	Columns []string
 	Rows    []map[string]interface{}
+
+	// Quality carries any source-reported caveat about how faithful this
+	// result is to the query that produced it — rows withheld, values
+	// sampled, a tail truncated. Nil for a result the source reported no
+	// caveat on, which is every SQL warehouse today: they answer exactly what
+	// was asked or fail, so there is nothing to declare.
+	//
+	// A source that CAN silently degrade is expected to populate this rather
+	// than return the rows bare, because a degraded result is indistinguishable
+	// from a sound one by inspection. See QualityCaveat.
+	Quality []QualityCaveat
 }
 
 // TableSchema describes a table's structure in a warehouse-agnostic way.
