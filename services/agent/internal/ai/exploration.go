@@ -1356,6 +1356,10 @@ func (e *ExplorationEngine) executeQuery(
 	step.FixAttempts = result.FixAttempts
 	step.Fixed = result.Fixed
 	step.FixHistory = result.FixHistory
+	// What the source said about the fidelity of these rows. It is knowable
+	// only here — the query succeeded and the rows look complete, so nothing
+	// downstream could re-derive that some were withheld.
+	step.Quality = result.Quality
 
 	// Build the per-step compact digest exactly once. Storing it on
 	// the step means the analysis phase can render the digest into
@@ -1372,7 +1376,17 @@ func (e *ExplorationEngine) executeQuery(
 		"has_tail_rows": compact.TailRows != nil,
 	}).Debug("exploration: built compact digest for step")
 
-	// Format result for Claude
+	return e.formatQuerySuccess(result)
+}
+
+// formatQuerySuccess renders the message the exploring model reads after a
+// query succeeds.
+//
+// Its own function so the message can be asserted on directly. What it does
+// with a degraded result is the part worth pinning, and that was previously
+// reachable only through a full query execution — which is how a caveat could
+// be carried onto the step and still never reach the model.
+func (e *ExplorationEngine) formatQuerySuccess(result *queryexec.ExecuteResult) string {
 	resultMsg := "Query executed successfully.\n\n"
 	resultMsg += fmt.Sprintf("Rows returned: %d\n", result.RowCount)
 	resultMsg += fmt.Sprintf("Execution time: %dms\n", result.ExecutionTimeMs)
@@ -1380,6 +1394,11 @@ func (e *ExplorationEngine) executeQuery(
 	if result.Fixed {
 		resultMsg += fmt.Sprintf("Note: Query was automatically fixed (%d attempts)\n", result.FixAttempts)
 	}
+
+	// The source's own caveats go in FRONT of the rows, not after them. The
+	// rows look complete either way, so a model that reads them first has
+	// already formed its conclusion by the time it reaches a footnote.
+	resultMsg += formatQualityCaveats(result.Quality)
 
 	resultMsg += "\n**Results**:\n"
 
@@ -1578,6 +1597,27 @@ func (e *ExplorationEngine) formatResults(data []map[string]interface{}) string 
 		return fmt.Sprintf("Error formatting results: %v", err)
 	}
 	return string(jsonBytes)
+}
+
+// formatQualityCaveats renders what the source said about the fidelity of a
+// result, or "" when it said nothing.
+//
+// Worded as an instruction rather than a note because a caveat the model reads
+// and does not act on is worth nothing: the rows are well-formed, the numbers
+// add up, and every conclusion drawn from them looks sound. The point is to
+// stop a share being computed over a population the source declined to show.
+func formatQualityCaveats(caveats []gowarehouse.QualityCaveat) string {
+	if len(caveats) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n**The source reports this result is not a faithful answer to the query**:\n")
+	for _, c := range caveats {
+		fmt.Fprintf(&b, "- %s\n", c.String())
+	}
+	b.WriteString("Do not present a total, share or ranking from these rows as exact. " +
+		"If the question needs the part that is missing, say so rather than answering from what is here.\n")
+	return b.String()
 }
 
 // buildInitialMessage builds the first message to Claude.
