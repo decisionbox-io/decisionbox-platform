@@ -21,7 +21,7 @@ func TestSearch_KeepsCatalogHits(t *testing.T) {
 		{Blurb: schema_retrieve.TableBlurb{Table: "country", Kind: "dimension", Blurb: "Country.", WarehouseID: "ga"}, Score: 0.8},
 	}}
 	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
-	p.catalogRefs = refSet([]string{"sessions", "country"})
+	p.catalogRefs = refSet(map[string][]string{"ga": {"sessions", "country"}})
 
 	hits, err := p.Search(context.Background(), "how did traffic convert", 10)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestSearch_MixedSourcesInOneProject(t *testing.T) {
 		{Blurb: schema_retrieve.TableBlurb{Table: "sessions", Kind: "metric", Blurb: "Sessions.", WarehouseID: "ga"}, Score: 0.8},
 	}}
 	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
-	p.catalogRefs = refSet([]string{"sessions"})
+	p.catalogRefs = refSet(map[string][]string{"ga": {"sessions"}})
 
 	hits, err := p.Search(context.Background(), "users and sessions", 10)
 	if err != nil {
@@ -101,11 +101,11 @@ func TestSearch_MixedSourcesInOneProject(t *testing.T) {
 // config hash, are what says which of those are real.
 func TestSearch_DropsStaleCatalogHits(t *testing.T) {
 	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
-		{Blurb: schema_retrieve.TableBlurb{Table: "sessions", Kind: "metric", Blurb: "Sessions."}, Score: 0.9},
-		{Blurb: schema_retrieve.TableBlurb{Table: "retiredMetric", Kind: "metric", Blurb: "Left over from a removed datasource."}, Score: 0.95},
+		{Blurb: schema_retrieve.TableBlurb{Table: "sessions", Kind: "metric", Blurb: "Sessions.", WarehouseID: "ga"}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "retiredMetric", Kind: "metric", Blurb: "Left over from a removed datasource.", WarehouseID: "ga"}, Score: 0.95},
 	}}
 	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
-	p.catalogRefs = refSet([]string{"sessions"})
+	p.catalogRefs = refSet(map[string][]string{"ga": {"sessions"}})
 
 	hits, err := p.Search(context.Background(), "sessions", 10)
 	if err != nil {
@@ -142,17 +142,42 @@ func TestNewCacheSchemaProvider_AcceptsACatalogOnlySource(t *testing.T) {
 	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		ProjectID:   "p1",
 		WarehouseID: "ga",
-		CatalogRefs: []string{"sessions"},
+		CatalogRefs: map[string][]string{"ga": {"sessions"}},
 	})
 	if err != nil {
 		t.Fatalf("a catalog-only source must be representable: %v", err)
 	}
-	if !p.catalogRefs["sessions"] {
+	if !p.catalogOffers("ga", "sessions") {
 		t.Error("the catalog refs were not retained")
 	}
 
 	// With neither, it is still a wiring bug worth surfacing loudly.
 	if _, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{ProjectID: "p1"}); err == nil {
 		t.Error("a provider with neither schemas nor a catalog must be refused")
+	}
+}
+
+// TestSearch_CatalogRefsAreScopedToTheirDatasource is the ownership guard on a
+// cross-datasource search. A flat ref set would let a point left behind by a
+// removed datasource through on any name a live datasource happens to share —
+// and "sessions" is not a distinctive name — returning the removed
+// datasource's id to the model as somewhere it could query.
+func TestSearch_CatalogRefsAreScopedToTheirDatasource(t *testing.T) {
+	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
+		{Blurb: schema_retrieve.TableBlurb{Table: "sessions", Kind: "metric", Blurb: "Live.", WarehouseID: "ga"}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "sessions", Kind: "metric", Blurb: "Stale.", WarehouseID: "removed-ds"}, Score: 0.95},
+	}}
+	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
+	p.catalogRefs = refSet(map[string][]string{"ga": {"sessions"}})
+
+	hits, err := p.Search(context.Background(), "sessions", 10)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits, want 1 — only the datasource the cache says offers the ref", len(hits))
+	}
+	if hits[0].Datasource != "ga" {
+		t.Errorf("hits[0].Datasource = %q, want ga; a removed datasource was vouched for by a shared ref name", hits[0].Datasource)
 	}
 }

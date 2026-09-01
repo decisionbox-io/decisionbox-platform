@@ -139,7 +139,11 @@ func runAskServe(cfg *config.Config) error {
 				WarehouseID: whID,
 				Datasets:    wh.GetDatasets(),
 				Schemas:     schemas,
-				CatalogRefs: catalogRefs,
+				// Keyed by datasource: this provider searches only its own
+				// warehouse, but the authority is shaped the same either way so
+				// a shared ref name can never let one datasource vouch for
+				// another.
+				CatalogRefs: map[string][]string{whID: catalogRefs},
 			}
 			if sharedRetriever != nil && embedder != nil {
 				opts.Retriever = sharedRetriever

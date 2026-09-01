@@ -30,8 +30,14 @@ type datasourceContext struct {
 	executors      map[string]*queryexec.QueryExecutor // keyed by normalised datasource id
 	mergedSchemas  map[string]models.TableSchema       // union of every datasource's tables
 	tableWarehouse map[string]string                   // canonical table → owning datasource id
-	schemasByDS    map[string]map[string]models.TableSchema
-	descriptors    []datasourceDescriptor // ordered, primary first
+	// catalogRefs holds each catalog-shaped datasource's items, keyed by
+	// datasource id. A datasource with no tables contributes nothing to
+	// mergedSchemas, so without this it has no authority in the
+	// cross-datasource search and every one of its hits is dropped — it stays
+	// invisible to discovery even after indexing successfully.
+	catalogRefs map[string][]string
+	schemasByDS map[string]map[string]models.TableSchema
+	descriptors []datasourceDescriptor // ordered, primary first
 }
 
 // datasourceDescriptor is the prompt/catalog-facing view of one datasource.
@@ -70,6 +76,7 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		mergedSchemas:  make(map[string]models.TableSchema),
 		tableWarehouse: make(map[string]string),
 		schemasByDS:    make(map[string]map[string]models.TableSchema),
+		catalogRefs:    make(map[string][]string),
 	}
 
 	for _, wh := range orderWarehousesPrimaryFirst(o.warehouses, primaryID) {
@@ -97,6 +104,19 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 			// would be indistinguishable from an unindexed datasource further
 			// down; an empty map says "indexed, and it has none".
 			schemas = map[string]models.TableSchema{}
+		}
+		// Load whatever catalog this datasource has. Without it a catalog
+		// source contributes nothing to the merged tables AND has no entry in
+		// the search authority, so it is dropped from every cross-datasource
+		// result — indexed, present in the prompt, and permanently silent.
+		if cc, ok := o.schemaCache.(CatalogCache); ok {
+			refs, refErr := cc.FindCatalog(ctx, o.projectID, id, WarehouseConfigHash(wh))
+			if refErr != nil {
+				applog.WithError(refErr).WithField("datasource_id", id).
+					Warn("multi-warehouse discovery: catalog cache lookup failed; this datasource's catalog items will not be searchable")
+			} else if len(refs) > 0 {
+				dc.catalogRefs[id] = refs
+			}
 		}
 
 		// Per-datasource executor: its own dialect, datasets and filter, so

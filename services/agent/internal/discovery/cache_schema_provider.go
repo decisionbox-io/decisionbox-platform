@@ -60,14 +60,22 @@ type CacheSchemaProvider struct {
 	// every datasource.
 	schemas map[string]models.TableSchema
 
-	// catalogRefs is the set of items a catalog source currently offers, and
-	// is the staleness authority for its hits exactly as the schemas map is
-	// for tables. The vector collection is shared across datasources and is
-	// not self-cleaning — points for a removed datasource survive until
-	// something overwrites them — so a hit is trusted only when the cache
-	// still lists its ref. Empty means this datasource has no catalog, and
-	// catalog hits are then dropped rather than trusted blindly.
-	catalogRefs map[string]bool
+	// catalogRefs is the staleness authority for catalog hits, exactly as the
+	// schemas map is for tables — and it is keyed by OWNING DATASOURCE, not
+	// by ref alone.
+	//
+	// The ownership matters on a cross-datasource search. The vector
+	// collection is shared and is not self-cleaning, so points for a removed
+	// datasource survive until something overwrites them; a flat ref set would
+	// then let a stale point through on any ref a live datasource happens to
+	// share — "sessions" is not a distinctive name — and the hit would carry
+	// the removed datasource's id back to the model. Keying by datasource
+	// means a ref is trusted only from the datasource the cache says offers
+	// it.
+	//
+	// Empty means no catalog is known, and catalog hits are dropped rather
+	// than trusted blindly.
+	catalogRefs map[string]map[string]bool
 
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
@@ -115,10 +123,11 @@ type CacheSchemaProviderOptions struct {
 	WarehouseID string
 	Datasets    []string
 	Schemas     map[string]models.TableSchema
-	// CatalogRefs are the items a catalog source currently offers. Set for a
-	// source that has no tables; the provider treats them as the staleness
-	// authority for its hits, the way Schemas is for tables.
-	CatalogRefs []string
+	// CatalogRefs are the items each catalog source currently offers, keyed by
+	// datasource id. The provider treats them as the staleness authority for
+	// catalog hits, the way Schemas is for tables — and keys by datasource so
+	// a shared ref name cannot let a removed datasource's point through.
+	CatalogRefs map[string][]string
 	// TableWarehouse maps canonical "dataset.table" → owning datasource id.
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
@@ -292,7 +301,7 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 			if _, ok := p.schemas[h.Blurb.Table]; !ok {
 				continue
 			}
-		} else if !p.catalogRefs[h.Blurb.Table] {
+		} else if !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table) {
 			continue
 		}
 		out = append(out, ai.SearchHit{
@@ -438,15 +447,33 @@ func buildRefIndex(schemas map[string]models.TableSchema) map[string]string {
 	return idx
 }
 
-// refSet turns the cached catalog refs into a membership set. Nil for an
-// empty list, so a source with no catalog has no catalog hits trusted.
-func refSet(refs []string) map[string]bool {
-	if len(refs) == 0 {
+// refSet turns the per-datasource catalog refs into membership sets, keyed by
+// normalised datasource id. Nil for an empty input, so a source with no
+// catalog has no catalog hits trusted.
+func refSet(byDatasource map[string][]string) map[string]map[string]bool {
+	if len(byDatasource) == 0 {
 		return nil
 	}
-	set := make(map[string]bool, len(refs))
-	for _, r := range refs {
-		set[r] = true
+	out := make(map[string]map[string]bool, len(byDatasource))
+	for id, refs := range byDatasource {
+		if len(refs) == 0 {
+			continue
+		}
+		set := make(map[string]bool, len(refs))
+		for _, r := range refs {
+			set[r] = true
+		}
+		out[normDatasourceID(id)] = set
 	}
-	return set
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// catalogOffers reports whether the cache says this datasource currently
+// offers this ref. An unknown datasource offers nothing, which is what makes
+// a point left behind by a removed one untrusted.
+func (p *CacheSchemaProvider) catalogOffers(datasourceID, ref string) bool {
+	return p.catalogRefs[normDatasourceID(datasourceID)][ref]
 }

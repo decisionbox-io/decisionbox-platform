@@ -767,7 +767,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		WarehouseID:    schemaSearchWarehouseID,
 		Datasets:       o.datasets,
 		Schemas:        schemas,
-		CatalogRefs:    o.catalogRefs,
+		CatalogRefs:    o.catalogRefsByDatasource(dc),
 		TableWarehouse: tableWarehouse,
 		Retriever:      o.schemaRetriever,
 		Embedder:       o.embedder,
@@ -2303,6 +2303,23 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 // (warehouse config changed without a re-index, the indexer wrote
 // nothing, the cache was cleared) — surface it as a hard error so the
 // user reaches for /reindex rather than silently waiting an hour.
+// catalogRefsByDatasource assembles the catalog authority the schema provider
+// filters hits against, keyed by owning datasource.
+//
+// On a single-datasource run that is this datasource's own refs. On a
+// multi-datasource run the provider searches across every datasource, so it
+// needs every datasource's refs — keyed, so a ref name shared between them
+// cannot let one vouch for another.
+func (o *Orchestrator) catalogRefsByDatasource(dc *datasourceContext) map[string][]string {
+	if dc != nil && len(dc.catalogRefs) > 0 {
+		return dc.catalogRefs
+	}
+	if len(o.catalogRefs) == 0 {
+		return nil
+	}
+	return map[string][]string{normDatasourceID(o.warehouseID): o.catalogRefs}
+}
+
 // indexedCatalogRefs returns the items this datasource offers, or nil when it
 // has no indexed catalog — which is what distinguishes "has no tables, by
 // nature" from "was never indexed".
