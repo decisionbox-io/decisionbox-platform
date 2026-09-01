@@ -199,6 +199,32 @@ func TestToolsForPhase_WithholdsLookupSchemaWhenNothingHasTables(t *testing.T) {
 	}
 }
 
+// TestTextPrompt_AdvertisesNoLookupWhereNothingHasTables covers the JSON-text
+// fallback, which has no tool gate: the parser accepts any action this list
+// advertises and execLookup will run it. Advertising a lookup no reachable
+// datasource can answer spends a forced grounding step on a guaranteed
+// failure, so the action list is withheld on the same condition the tool is.
+func TestTextPrompt_AdvertisesNoLookupWhereNothingHasTables(t *testing.T) {
+	cfg := Config{PreviewRows: 20, MaxQueriesPerTurn: 8, MaxRounds: 12}
+	rt := &ProjectRuntime{}
+	render := func(ds []DatasourceInfo) string {
+		return buildSystemPrompt(rt, turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}, cfg, false)
+	}
+
+	sql, cube := sqlDatasource("wh_1"), cubeDatasource("ga_1")
+	const action = `"lookup_schema":["dataset.table_a"]`
+
+	if got := render([]DatasourceInfo{cube, cubeDatasource("ga_2")}); strings.Contains(got, action) {
+		t.Errorf("a project of only cubes still advertises lookup_schema:\n%s", got)
+	}
+	if got := render([]DatasourceInfo{sql, cube}); !strings.Contains(got, action) {
+		t.Errorf("a mixed project lost lookup_schema, which its SQL datasource still needs:\n%s", got)
+	}
+	if got := render([]DatasourceInfo{sql, sqlDatasource("wh_2")}); !strings.Contains(got, action) {
+		t.Errorf("an all-SQL project lost lookup_schema:\n%s", got)
+	}
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first

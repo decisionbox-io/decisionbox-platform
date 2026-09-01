@@ -37,7 +37,14 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 	switch {
 	case routing.multi && shapes.anyCube:
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"...","purpose":"what this answers"}` + "  — run one read-only query against one datasource, written in THAT datasource's query language\n")
-		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+		// Withheld on the same condition the tool path withholds the tool: the
+		// text parser accepts any action this list advertises and execLookup
+		// will run it, so advertising a lookup no datasource can answer spends
+		// a grounding step on a guaranteed failure. Kept whenever one of them
+		// still has tables.
+		if !shapes.allCube {
+			b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+		}
 	case routing.multi:
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query against one datasource\n")
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
