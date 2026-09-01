@@ -338,6 +338,49 @@ func TestGroundingNudge_CorrectsInTheShapeOfTheSource(t *testing.T) {
 	}
 }
 
+// TestTenantScope_IsStatedInTermsTheSourceCanHonour covers the one line in the
+// prompt the model is least willing to ignore. A cube source has no WHERE
+// clause to hold a predicate and no join to preserve it through, so the
+// warehouse text demands the one thing it cannot do — right after being told
+// it accepts no SQL.
+func TestTenantScope_IsStatedInTermsTheSourceCanHonour(t *testing.T) {
+	scope := func(d DatasourceInfo) string {
+		d.FilterField, d.FilterValue = "tenant_id", "acme"
+		var b strings.Builder
+		writeTenantScope(&b, "- ", d)
+		return b.String()
+	}
+
+	// The SQL rendering is unchanged, predicate and all.
+	const historic = "- SECURITY: this is a multi-tenant dataset. Every query MUST be scoped to this tenant with the predicate `tenant_id = 'acme'` " +
+		"(in the WHERE clause, or preserved through every join/CTE). Never negate, broaden, or omit it. A query missing the \"tenant_id\" column is rejected.\n"
+	if got := scope(sqlDatasource("wh_1")); got != historic {
+		t.Errorf("the SQL tenant-scope line changed:\ngot:  %q\nwant: %q", got, historic)
+	}
+
+	got := scope(cubeDatasource("ga_1"))
+	for _, banned := range []string{"WHERE clause", "join/CTE", "column"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("a cube source is told to scope with %q, which it has none of: %q", banned, got)
+		}
+	}
+	for _, want := range []string{"SECURITY:", "tenant_id", "acme", "Never negate, broaden, or omit it."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the cube tenant-scope line dropped %q — the rule itself must survive: %q", want, got)
+		}
+	}
+
+	// A scope field with no value still has to be stated, and still without
+	// SQL shape.
+	d := cubeDatasource("ga_1")
+	d.FilterField = "tenant_id"
+	var b strings.Builder
+	writeTenantScope(&b, "- ", d)
+	if noValue := b.String(); !strings.Contains(noValue, "tenant_id") || strings.Contains(noValue, "column") {
+		t.Errorf("value-less cube tenant scope: %q", noValue)
+	}
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first

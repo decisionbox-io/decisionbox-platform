@@ -246,6 +246,24 @@ func writeCubeSection(b *strings.Builder, d DatasourceInfo) {
 	writeTenantScope(b, "- ", d)
 }
 
+// writeCubeTenantScope states the tenant rule for a source with no tables.
+//
+// The requirement is identical — every request restricted to this tenant — but
+// its SQL rendering is not available: there is no WHERE clause to hold a
+// predicate and no join to preserve it through. Handing a cube source the
+// warehouse text would demand the one thing it cannot do, in the part of the
+// prompt the model is least willing to ignore.
+//
+// The closing sentence is literally what the executor checks: a request whose
+// text does not name the scope field is refused before it runs.
+func writeCubeTenantScope(b *strings.Builder, prefix string, d DatasourceInfo) {
+	if strings.TrimSpace(d.FilterValue) != "" {
+		fmt.Fprintf(b, "%sSECURITY: this is a multi-tenant source. Every request MUST be restricted to this tenant — %s = %q — using the source's own filtering, expressed in its query language. Never negate, broaden, or omit it. A request that does not name %q is rejected.\n", prefix, d.FilterField, d.FilterValue, d.FilterField)
+		return
+	}
+	fmt.Fprintf(b, "%sSECURITY: every request MUST be restricted by %q (the tenant scope), using the source's own filtering. A request that does not name it is rejected.\n", prefix, d.FilterField)
+}
+
 // writeDatasourcesSection renders the DATASOURCES catalog for a multi-datasource
 // turn: one block per datasource (id, label, dialect, datasets, tenant scope,
 // card) plus the one-warehouse-per-statement + bounded multi-hop rules.
@@ -392,6 +410,10 @@ func (r turnRouting) reachable() []DatasourceInfo {
 // ("  tenant scope: ") layouts.
 func writeTenantScope(b *strings.Builder, prefix string, d DatasourceInfo) {
 	if strings.TrimSpace(d.FilterField) == "" {
+		return
+	}
+	if isCube(d) {
+		writeCubeTenantScope(b, prefix, d)
 		return
 	}
 	if strings.TrimSpace(d.FilterValue) != "" {
