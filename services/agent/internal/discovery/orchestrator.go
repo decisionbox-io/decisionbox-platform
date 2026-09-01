@@ -1538,9 +1538,14 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 // one.
 func attachSourceQuality(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
 	for i := range insights {
+		// Taken as a pointer rather than indexed twice: the write has to reach
+		// the caller's slice, and one binding is clearer than repeating the
+		// subscript for the read and the write.
+		ins := &insights[i]
+
 		var caveats []gowarehouse.QualityCaveat
 		seen := make(map[gowarehouse.QualityCaveat]bool)
-		for _, id := range insights[i].SourceSteps {
+		for _, id := range ins.SourceSteps {
 			step, ok := stepByID[id]
 			if !ok || step == nil {
 				continue
@@ -1554,7 +1559,7 @@ func attachSourceQuality(insights []models.Insight, stepByID map[int]*models.Exp
 			}
 		}
 		if len(caveats) > 0 {
-			insights[i].Quality = caveats
+			ins.Quality = caveats
 		}
 	}
 }
