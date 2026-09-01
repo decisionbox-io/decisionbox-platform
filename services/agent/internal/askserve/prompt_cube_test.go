@@ -1,11 +1,13 @@
 package askserve
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
 // cubeDatasource is a source with no tables: a metric/dimension cube whose
@@ -51,18 +53,20 @@ func promptsFor(routing turnRouting) map[string]string {
 	cfg := Config{PreviewRows: 20, MaxQueriesPerTurn: 8, MaxRounds: 12}
 	rt := &ProjectRuntime{}
 	return map[string]string{
-		"text prompt":  buildSystemPrompt(rt, routing, cfg, false),
-		"tools prompt": buildSystemPromptForTools(rt, routing, cfg, false),
-		"query_data":   toolQueryData(routing.multi, routing.hasCube()).Description,
+		"text prompt":   buildSystemPrompt(rt, routing, cfg, false),
+		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false),
+		"query_data":    toolQueryData(routing.multi, routing.hasCube()).Description,
+		"search_tables": toolSearchTables(routing.hasCube()).Description,
 	}
 }
 
 func sqlRouting(multi bool) turnRouting {
 	a := sqlDatasource("wh_1")
 	if !multi {
-		return turnRouting{datasources: []DatasourceInfo{a}, pinned: "wh_1", primary: "wh_1"}
+		return turnRouting{datasources: []DatasourceInfo{a}, all: []DatasourceInfo{a}, pinned: "wh_1", primary: "wh_1"}
 	}
-	return turnRouting{datasources: []DatasourceInfo{a, sqlDatasource("wh_2")}, primary: "wh_1", multi: true}
+	all := []DatasourceInfo{a, sqlDatasource("wh_2")}
+	return turnRouting{datasources: all, all: all, primary: "wh_1", multi: true}
 }
 
 // TestSQLOnlyTurn_SaysExactlyWhatItAlwaysSaid is the regression guard for every
@@ -102,7 +106,8 @@ func TestSQLOnlyTurn_SaysExactlyWhatItAlwaysSaid(t *testing.T) {
 // concrete instruction, writes SQL, and spends the turn on a query the source
 // was always going to reject.
 func TestCubeTurn_DropsEverySQLAssertion(t *testing.T) {
-	routing := turnRouting{datasources: []DatasourceInfo{cubeDatasource("ga_1")}, pinned: "ga_1", primary: "ga_1"}
+	cube := []DatasourceInfo{cubeDatasource("ga_1")}
+	routing := turnRouting{datasources: cube, all: cube, pinned: "ga_1", primary: "ga_1"}
 
 	surfaces := promptsFor(routing)
 	for surface, got := range surfaces {
@@ -111,17 +116,17 @@ func TestCubeTurn_DropsEverySQLAssertion(t *testing.T) {
 				t.Errorf("%s still asserts SQL to a source with no tables (%q):\n%s", surface, sentence, got)
 			}
 		}
-		if !strings.Contains(got, "NO TABLES") {
-			t.Errorf("%s never tells the model this source has no tables:\n%s", surface, got)
-		}
 	}
 
-	// The language is named by the datasource block, not by the tool
-	// description — the tool serves every datasource in a turn and cannot name
-	// one language for all of them.
+	// The absence and the language are stated by the datasource block, not by a
+	// tool description — a tool serves every datasource in a turn and cannot
+	// name one language for all of them. What each tool says instead is pinned
+	// by its own test.
 	for _, surface := range []string{"text prompt", "tools prompt"} {
-		if !strings.Contains(surfaces[surface], "Report Request (JSON)") {
-			t.Errorf("%s never names the source's query language:\n%s", surface, surfaces[surface])
+		for _, want := range []string{"NO TABLES", "Report Request (JSON)"} {
+			if !strings.Contains(surfaces[surface], want) {
+				t.Errorf("%s never says %q:\n%s", surface, want, surfaces[surface])
+			}
 		}
 	}
 }
@@ -157,8 +162,10 @@ func TestCubeSection_StatesTheAbsenceBeforeTheLanguage(t *testing.T) {
 // than dropped — the SQL datasource still needs its SELECT-only rule.
 func TestDatasourcesSection_MixedShapes(t *testing.T) {
 	var b strings.Builder
+	mixed := []DatasourceInfo{sqlDatasource("wh_1"), cubeDatasource("ga_1")}
 	writeDatasourcesSection(&b, turnRouting{
-		datasources: []DatasourceInfo{sqlDatasource("wh_1"), cubeDatasource("ga_1")},
+		datasources: mixed,
+		all:         mixed,
 		primary:     "wh_1",
 		multi:       true,
 	})
@@ -167,7 +174,7 @@ func TestDatasourcesSection_MixedShapes(t *testing.T) {
 	for _, want := range []string{
 		"SQL dialect: postgres",
 		"NO TABLES — a metric/dimension cube. Query language: Report Request (JSON) (not SQL).",
-		"Datasources do not all speak the same query language.",
+		"Datasources do not all speak the same query language — write each query in the language of the datasource you are targeting.",
 		"Against a SQL datasource emit only SELECT/CTE queries",
 	} {
 		if !strings.Contains(got, want) {
@@ -179,14 +186,20 @@ func TestDatasourcesSection_MixedShapes(t *testing.T) {
 	}
 }
 
-// TestTurnRouting_HasCube_ReadsOnlyWhatTheTurnCanReach pins the set the
-// branches are computed over. A turn pinned to a SQL warehouse must be told
-// SQL even when a cube sits beside it in the same project, because the pin is
-// what the model can actually query — the non-multi routing carries the whole
-// project's datasource list, so reading the field instead of the reachable set
-// would silently de-SQL a pinned SQL turn.
-func TestTurnRouting_HasCube_ReadsOnlyWhatTheTurnCanReach(t *testing.T) {
-	sql, cube := sqlDatasource("wh_1"), cubeDatasource("ga_1")
+// TestTurnRouting_HasCube_ReadsWhatTheTurnCanReach pins the set the branches
+// are computed over, which is neither the visible list nor always the
+// project's.
+//
+// The two directions fail differently and both matter. A pinned turn reaches
+// only its pin, so a SQL pin must still be told SQL — warning it about a cube
+// it cannot query is noise. An unpinned turn reaches the whole project even
+// when the router narrowed what the prompt lists, because a model-chosen
+// datasource_id is validated against every datasource and search_tables spans
+// all of them: reading the narrowed list would promise SELECT-only to a turn
+// that can still target a source accepting no SQL.
+func TestTurnRouting_HasCube_ReadsWhatTheTurnCanReach(t *testing.T) {
+	sql, sql2, cube := sqlDatasource("wh_1"), sqlDatasource("wh_2"), cubeDatasource("ga_1")
+	project := []DatasourceInfo{sql, sql2, cube}
 
 	cases := []struct {
 		name    string
@@ -194,13 +207,19 @@ func TestTurnRouting_HasCube_ReadsOnlyWhatTheTurnCanReach(t *testing.T) {
 		want    bool
 	}{
 		{"pinned to the SQL source, cube unreachable beside it",
-			turnRouting{datasources: []DatasourceInfo{sql, cube}, pinned: "wh_1", primary: "wh_1"}, false},
+			turnRouting{datasources: []DatasourceInfo{sql}, all: project, pinned: "wh_1", primary: "wh_1"}, false},
 		{"pinned to the cube",
-			turnRouting{datasources: []DatasourceInfo{cube, sql}, pinned: "ga_1", primary: "ga_1"}, true},
-		{"model picks per query, one of them a cube",
-			turnRouting{datasources: []DatasourceInfo{sql, cube}, primary: "wh_1", multi: true}, true},
-		{"model picks per query, all SQL",
-			turnRouting{datasources: []DatasourceInfo{sql, sqlDatasource("wh_2")}, primary: "wh_1", multi: true}, false},
+			turnRouting{datasources: []DatasourceInfo{cube}, all: project, pinned: "ga_1", primary: "ga_1"}, true},
+		{"model picks per query across the whole project",
+			turnRouting{datasources: project, all: project, primary: "wh_1", multi: true}, true},
+		{"router narrowed the visible set to SQL, but the cube is still targetable",
+			turnRouting{datasources: []DatasourceInfo{sql, sql2}, all: project, primary: "wh_1", multi: true}, true},
+		{"model picks per query, the project is all SQL",
+			turnRouting{datasources: []DatasourceInfo{sql, sql2}, all: []DatasourceInfo{sql, sql2}, primary: "wh_1", multi: true}, false},
+		{"a pin naming no datasource in the project reaches nothing",
+			turnRouting{datasources: []DatasourceInfo{cube}, all: project, pinned: "gone", primary: "gone"}, false},
+		{"project list absent falls back to the visible set",
+			turnRouting{datasources: []DatasourceInfo{cube}, pinned: "ga_1", primary: "ga_1"}, true},
 		{"no datasources at all",
 			turnRouting{}, false},
 	}
@@ -211,6 +230,131 @@ func TestTurnRouting_HasCube_ReadsOnlyWhatTheTurnCanReach(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToolSearchTables_StopsSayingTablesWhenThereAreNone covers the one
+// discovery tool a cube turn is told to use. On a native tool-calling provider
+// the description drives tool selection, so a model told this searches tables
+// — and told by the prompt that its source has none — has been given a reason
+// not to call the only tool that would have worked.
+func TestToolSearchTables_StopsSayingTablesWhenThereAreNone(t *testing.T) {
+	sqlTool := toolSearchTables(false)
+	if sqlTool.Description != "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need." {
+		t.Errorf("the SQL search_tables description changed: %q", sqlTool.Description)
+	}
+	if got := topKDescription(t, sqlTool); got != "Max number of tables to return (optional)." {
+		t.Errorf("SQL top_k described as %q", got)
+	}
+
+	cubeTool := toolSearchTables(true)
+	for _, want := range []string{"metrics and dimensions", "each result says what it is"} {
+		if !strings.Contains(cubeTool.Description, want) {
+			t.Errorf("cube search_tables description is missing %q: %q", want, cubeTool.Description)
+		}
+	}
+	if got := topKDescription(t, cubeTool); strings.Contains(got, "tables") {
+		t.Errorf("cube top_k still counts tables: %q", got)
+	}
+}
+
+// TestLoop_OffersCubeShapedToolsToTheModel closes the wiring at its outermost
+// point: the shape flag is computed in the loop, and everything below it can be
+// correct while the loop hands the model SQL-only tools. It asserts what the
+// provider actually received, not what a builder would have produced.
+func TestLoop_OffersCubeShapedToolsToTheModel(t *testing.T) {
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actDecline), map[string]any{"reason": "done"}),
+	}}
+	wh := testutil.NewMockWarehouseProvider("ds")
+	rt := toolRuntime(p, wh, &fakeSchema{}, "")
+	// One cube datasource, under the id the runtime is primed with.
+	cube := cubeDatasource("default")
+	cube.Label, cube.Dialect, cube.Datasets = "Default", "", nil
+	rt.Datasources = []DatasourceInfo{cube}
+
+	r := &runner{cfg: Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}, store: &fakeStore{}}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "how many?"})
+
+	if len(p.reqs) == 0 {
+		t.Fatal("the model was never called")
+	}
+	req := p.reqs[0]
+	if !strings.Contains(req.SystemPrompt, "NO TABLES") {
+		t.Errorf("the system prompt sent to the model never says the source has no tables:\n%s", req.SystemPrompt)
+	}
+	for _, name := range []string{string(actQuery), string(actSearch)} {
+		var got string
+		for _, td := range req.Tools {
+			if td.Name == name {
+				got = td.Description
+			}
+		}
+		if got == "" {
+			t.Fatalf("%s was not offered to the model", name)
+		}
+		if want := toolFor(t, name, false, true).Description; got != want {
+			t.Errorf("the model was offered a SQL-shaped %s on a cube turn:\ngot:  %q\nwant: %q", name, got, want)
+		}
+	}
+}
+
+// TestToolsForPhase_HandsShapeToEveryToolThatNeedsIt covers the wiring rather
+// than the text. Both query_data and search_tables branch on shape, and both
+// are constructed here — a tool built with the flag dropped is described
+// correctly by its own unit test and still ships SQL-only text to a cube turn.
+func TestToolsForPhase_HandsShapeToEveryToolThatNeedsIt(t *testing.T) {
+	byName := func(hasCube bool) map[string]gollm.ToolDefinition {
+		out := map[string]gollm.ToolDefinition{}
+		for _, td := range toolsForPhase(true, true, false, true, hasCube, false, false) {
+			out[td.Name] = td
+		}
+		return out
+	}
+
+	sqlTools, cubeTools := byName(false), byName(true)
+	for _, name := range []string{string(actQuery), string(actSearch)} {
+		sqlTool, ok := sqlTools[name]
+		if !ok {
+			t.Fatalf("%s was not offered", name)
+		}
+		cubeTool, ok := cubeTools[name]
+		if !ok {
+			t.Fatalf("%s was not offered on a cube turn", name)
+		}
+		if sqlTool.Description == cubeTool.Description {
+			t.Errorf("%s is built without the shape flag — it describes a cube turn as SQL: %q", name, cubeTool.Description)
+		}
+		if want := toolFor(t, name, true, false).Description; sqlTool.Description != want {
+			t.Errorf("%s on a SQL turn: got %q, want %q", name, sqlTool.Description, want)
+		}
+		if want := toolFor(t, name, true, true).Description; cubeTool.Description != want {
+			t.Errorf("%s on a cube turn: got %q, want %q", name, cubeTool.Description, want)
+		}
+	}
+}
+
+// toolFor builds one tool directly, as the definition of what the caller
+// should have produced for the same routing.
+func toolFor(t *testing.T, name string, multi, hasCube bool) gollm.ToolDefinition {
+	t.Helper()
+	switch name {
+	case string(actQuery):
+		return toolQueryData(multi, hasCube)
+	case string(actSearch):
+		return toolSearchTables(hasCube)
+	}
+	t.Fatalf("no builder for tool %s", name)
+	return gollm.ToolDefinition{}
+}
+
+func topKDescription(t *testing.T, td gollm.ToolDefinition) string {
+	t.Helper()
+	k, ok := toolProps(t, td)["top_k"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool %s declares no top_k argument", td.Name)
+	}
+	desc, _ := k["description"].(string)
+	return desc
 }
 
 // TestToolQueryData_DescribesWhatTheSourceAccepts pins the tool description,

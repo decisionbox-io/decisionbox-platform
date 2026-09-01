@@ -133,6 +133,12 @@ type turnRouting struct {
 	// one visible, not pinned). When false the turn behaves exactly like the
 	// single-warehouse path — same prompt, same tools, same telemetry.
 	multi bool
+	// all is every datasource in the project. It is kept alongside the visible
+	// set because the two can differ: the router narrows `datasources` to what
+	// it chose, while resolveQueryDatasource validates a model-chosen
+	// datasource_id against the whole project on purpose. What the turn can
+	// REACH is this list; what it SHOWS is `datasources`.
+	all []DatasourceInfo
 	// routed reports that the evidence-grounded router made a real (non-clarify)
 	// decision for this turn. It stays true even when the router confidently
 	// pinned a single datasource (multi=false), so that datasource is still
@@ -159,13 +165,13 @@ func (rt *ProjectRuntime) resolveTurnRouting(explicit string) (turnRouting, erro
 		if !ok {
 			return turnRouting{}, fmt.Errorf("unknown datasource %q", explicit)
 		}
-		return turnRouting{datasources: []DatasourceInfo{d}, pinned: explicit, primary: explicit}, nil
+		return turnRouting{datasources: []DatasourceInfo{d}, all: rt.Datasources, pinned: explicit, primary: explicit}, nil
 	}
 	if len(rt.Datasources) == 1 {
 		only := rt.Datasources[0].ID
-		return turnRouting{datasources: rt.Datasources, pinned: only, primary: only}, nil
+		return turnRouting{datasources: rt.Datasources, all: rt.Datasources, pinned: only, primary: only}, nil
 	}
-	return turnRouting{datasources: rt.Datasources, primary: primary, multi: true}, nil
+	return turnRouting{datasources: rt.Datasources, all: rt.Datasources, primary: primary, multi: true}, nil
 }
 
 // trackDatasource records a queried datasource for routing telemetry (deduped,

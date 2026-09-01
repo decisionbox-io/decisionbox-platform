@@ -220,7 +220,11 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 		// not SQL, but told globally that queries are SQL, resolves the
 		// conflict in favour of the global rule — and writes SQL at the source
 		// that cannot run it.
-		b.WriteString("Datasources do not all speak the same query language. Each one below states its own; write a query in the language of the datasource you are targeting.\n")
+		// Phrased so it stays true when the visible list is a narrowed subset:
+		// the rule is per-datasource, and the listing is where the ones shown
+		// state theirs. Claiming every reachable datasource is listed would be
+		// false on a routed turn.
+		b.WriteString("Datasources do not all speak the same query language — write each query in the language of the datasource you are targeting. Each datasource listed below states its own.\n")
 	} else {
 		b.WriteString("This project has multiple datasources. Each SQL query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
 	}
@@ -275,14 +279,9 @@ func isCube(d DatasourceInfo) bool { return d.EffectiveShape() == gowarehouse.Sh
 
 // hasCube reports whether any datasource this turn can actually reach has no
 // tables — the single condition every "SQL" statement in the prompt and in the
-// query_data tool description is branched on.
-//
-// It reads the reachable set, not the project's: a turn pinned to one SQL
-// warehouse must be told SQL even when a cube datasource sits unreachable
-// beside it in the same project, or it is being warned about a source it
-// cannot query.
+// query_data and search_tables tool descriptions is branched on.
 func (r turnRouting) hasCube() bool {
-	for _, d := range r.queryable() {
+	for _, d := range r.reachable() {
 		if isCube(d) {
 			return true
 		}
@@ -290,15 +289,41 @@ func (r turnRouting) hasCube() bool {
 	return false
 }
 
-// queryable returns the datasources the model may target this turn: all of the
-// visible ones when it picks per query, otherwise just the pinned one. The
-// non-multi path carries the whole project's list for a single-datasource
-// project, so slicing — not the field — is what makes the sets agree.
-func (r turnRouting) queryable() []DatasourceInfo {
-	if r.multi || len(r.datasources) == 0 {
-		return r.datasources
+// reachable returns the datasources a query this turn can actually run
+// against, which is neither the visible list nor always the project's.
+//
+// A pinned turn reaches its pin and nothing else: resolveQueryDatasource
+// returns the pin and ignores any id the model names. So a turn pinned to a
+// SQL warehouse is told SQL even when a cube sits beside it in the project —
+// warning it about a source it cannot query is noise at best.
+//
+// An unpinned turn reaches the WHOLE PROJECT, which is deliberately wider than
+// what the prompt lists. The router narrows the visible set, but
+// resolveQueryDatasource validates a model-chosen datasource_id against every
+// datasource on purpose (the router is a soft prior, not a hard gate), and
+// search_tables spans all of them — so a model can discover a cube the router
+// did not select and then target it. Reading the narrowed list here would
+// promise SELECT-only to a turn that can still reach a source accepting no SQL
+// at all.
+func (r turnRouting) reachable() []DatasourceInfo {
+	// Fall back to the visible set when the project list was not carried, so a
+	// routing value assembled without it still resolves to something real.
+	pool := r.all
+	if len(pool) == 0 {
+		pool = r.datasources
 	}
-	return r.datasources[:1]
+	if r.pinned == "" {
+		return pool
+	}
+	for _, d := range pool {
+		if d.ID == r.pinned {
+			return []DatasourceInfo{d}
+		}
+	}
+	// A pin naming no known datasource cannot run a query at all. Describing
+	// the project's other sources would be describing what it will never
+	// touch.
+	return nil
 }
 
 // writeTenantScope renders the multi-tenant predicate line for a datasource, or

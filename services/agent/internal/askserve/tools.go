@@ -88,15 +88,29 @@ func toolLookupSchema(multi bool) gollm.ToolDefinition {
 	}
 }
 
-func toolSearchTables() gollm.ToolDefinition {
+// toolSearchTables defines search_tables. It is the only discovery tool that
+// works against a source with no tables, and the prompt sends a cube turn
+// straight to it — so when one is reachable its description must stop saying
+// "tables". A tool description is part of tool selection on a native
+// tool-calling provider: a model told this searches tables, and told by the
+// prompt that its source has none, has been given a reason not to call the one
+// tool that would have worked.
+func toolSearchTables(hasCube bool) gollm.ToolDefinition {
+	desc := "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need."
+	topK := "Max number of tables to return (optional)."
+	if hasCube {
+		desc = "Semantically search what the datasources offer — tables, and for a datasource with no tables its metrics and dimensions. " +
+			"Use this first when you don't know which datasource holds what you need; each result says what it is."
+		topK = "Max number of results to return (optional)."
+	}
 	return gollm.ToolDefinition{
 		Name:        string(actSearch),
-		Description: "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need.",
+		Description: desc,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"query": map[string]interface{}{"type": "string", "description": "Keywords describing the data you're looking for."},
-				"top_k": map[string]interface{}{"type": "integer", "description": "Max number of tables to return (optional)."},
+				"top_k": map[string]interface{}{"type": "integer", "description": topK},
 			},
 			"required": []string{"query"},
 		},
@@ -238,11 +252,12 @@ func toolDecline() gollm.ToolDefinition {
 // provider is wired. render_chart is offered only when charting is enabled for
 // the turn AND a non-truncated query result exists to ground a chart against.
 // multi widens the query/schema tools for a project with several warehouses;
-// hasCube tells query_data that not every reachable datasource takes SQL.
+// hasCube tells query_data and search_tables that not every reachable
+// datasource takes SQL or has tables.
 func toolsForPhase(grounded, hasSchema, hasInsights, multi, hasCube, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
 	tools := []gollm.ToolDefinition{toolQueryData(multi, hasCube)}
 	if hasSchema {
-		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
+		tools = append(tools, toolLookupSchema(multi), toolSearchTables(hasCube))
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
