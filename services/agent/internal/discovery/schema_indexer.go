@@ -517,6 +517,18 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 		}
 	}
 
+	// Close out progress. The catalog path has no per-item leg to report
+	// against — one metadata read, one embedding batch, one upsert — so the
+	// counter completes in a single step rather than climbing. Leaving it
+	// unset is the one thing that would be wrong: the run finishes and the
+	// progress UI keeps showing 0 of N, which reads as a stalled index rather
+	// than a finished one.
+	if si.Progress != nil {
+		if err := si.Progress.SetCounters(ctx, opts.ProjectID, len(points), len(points)); err != nil {
+			applog.WithError(err).Warn("schema_indexer: completing catalog progress counters failed (non-fatal)")
+		}
+	}
+
 	applog.WithFields(applog.Fields{
 		"items":         len(points),
 		"dropped":       dropped,

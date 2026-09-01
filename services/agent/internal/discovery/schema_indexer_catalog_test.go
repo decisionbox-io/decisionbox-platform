@@ -111,3 +111,55 @@ func TestBuildCatalogIndex_SurfacesAReadFailure(t *testing.T) {
 		t.Errorf("error = %q, want the source's own message preserved", err.Error())
 	}
 }
+
+// countingProgress records what the indexer reports, so a run that finishes
+// can be distinguished from one that merely stops.
+type countingProgress struct {
+	total, done int
+	phases      []string
+}
+
+func (p *countingProgress) Reset(context.Context, string, string) error { return nil }
+func (p *countingProgress) SetPhase(_ context.Context, _, phase string) error {
+	p.phases = append(p.phases, phase)
+	return nil
+}
+func (p *countingProgress) SetTotals(_ context.Context, _ string, total int) error {
+	p.total = total
+	return nil
+}
+func (p *countingProgress) SetCounters(_ context.Context, _ string, total, done int) error {
+	p.total, p.done = total, done
+	return nil
+}
+func (p *countingProgress) IncrementDone(_ context.Context, _ string, delta int) error {
+	p.done += delta
+	return nil
+}
+func (p *countingProgress) IncrementTokens(context.Context, string, int, int) error { return nil }
+func (p *countingProgress) RecordError(context.Context, string, string) error       { return nil }
+
+// TestBuildCatalogIndex_CompletesItsProgressCounters guards a wrongness the
+// user sees rather than the data does. The catalog path has no per-item leg to
+// report against, so its counter completes in one step instead of climbing —
+// but leaving it unset means the run finishes while the progress display still
+// reads 0 of N, which looks like a stalled index rather than a finished one.
+//
+// Asserted on the failure path too: a run that did NOT finish must not report
+// completion.
+func TestBuildCatalogIndex_CompletesItsProgressCounters(t *testing.T) {
+	t.Run("a failed run reports no completion", func(t *testing.T) {
+		prog := &countingProgress{}
+		si := &SchemaIndexer{
+			Catalog:  &stubCatalog{err: errors.New("catalog unreachable")},
+			Embedder: &stubEmbedder{dim: 3},
+			Progress: prog,
+		}
+		if _, err := si.buildCatalogIndex(context.Background(), IndexOptions{ProjectID: "p1"}, time.Now()); err == nil {
+			t.Fatal("expected the catalog read to fail")
+		}
+		if prog.done != 0 {
+			t.Errorf("done = %d, want 0 — a run that never indexed anything must not report progress", prog.done)
+		}
+	})
+}
