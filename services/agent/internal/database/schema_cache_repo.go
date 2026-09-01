@@ -78,6 +78,12 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseID
 		"project_id":     projectID,
 		"warehouse_id":   warehouseIDCond(warehouseID),
 		"warehouse_hash": warehouseHash,
+		// Catalog entries share this collection and are NOT table schemas.
+		// Decoded as one, a catalog doc yields an entry under the empty key
+		// and turns this map non-empty — which every consumer reads as
+		// "tables are cached", so a source with no tables would be reported
+		// as having one, blank, table. Table entries carry no entry_kind.
+		"entry_kind": notCatalogCond(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("schema cache find: %w", err)
@@ -134,9 +140,13 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseID
 	if warehouseID == "" {
 		warehouseID = models.DefaultWarehouseID
 	}
+	// Clear only the table entries. A blanket delete would take this
+	// warehouse's catalog entry with them, and a source that has both would
+	// silently lose half its index on the next table save.
 	if _, err := r.col().DeleteMany(ctx, bson.M{
 		"project_id":   projectID,
 		"warehouse_id": warehouseIDCond(warehouseID),
+		"entry_kind":   notCatalogCond(),
 	}); err != nil {
 		return fmt.Errorf("schema cache clear prior: %w", err)
 	}
@@ -310,6 +320,13 @@ type CatalogCacheEntry struct {
 	EntryKind     string    `bson:"entry_kind"`
 	Refs          []string  `bson:"refs"`
 	CachedAt      time.Time `bson:"cached_at"`
+}
+
+// notCatalogCond matches a table entry: one written without an entry_kind.
+// Every doc predating catalog entries is in that set, so the condition costs
+// existing caches nothing.
+func notCatalogCond() bson.M {
+	return bson.M{"$ne": catalogEntryKind}
 }
 
 // catalogEntryKind marks a doc as a catalog ref list. Table entries carry no

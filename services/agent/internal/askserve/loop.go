@@ -1052,19 +1052,28 @@ func formatSearch(query string, hits []TaggedHit, multi bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 	if len(hits) == 0 {
-		b.WriteString("(no matching tables)")
+		b.WriteString("(no matches)")
 	}
 	for i, h := range hits {
+		// A hit that is not a table must not read as one. Rendered bare, a
+		// metric looks exactly like a table name, and the model reaches for
+		// lookup_schema or writes a FROM clause against it — so surfacing
+		// these without saying what they are would be worse than leaving them
+		// out, which is what happened before they were indexed at all.
+		ref := h.Table
+		if h.Kind != "" {
+			ref = fmt.Sprintf("%s [%s]", h.Table, h.Kind)
+		}
 		if multi {
 			// Lead with the datasource id so the model knows which datasource_id
-			// to pass to query_data / lookup_schema for this table.
+			// to pass to query_data / lookup_schema for this hit.
 			tag := h.DatasourceID
 			if h.DatasourceLabel != "" {
 				tag = fmt.Sprintf("%s (%s)", h.DatasourceID, h.DatasourceLabel)
 			}
-			fmt.Fprintf(&b, "%d. [datasource: %s] %s — %s\n", i+1, tag, h.Table, h.Blurb)
+			fmt.Fprintf(&b, "%d. [datasource: %s] %s — %s\n", i+1, tag, ref, h.Blurb)
 		} else {
-			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, h.Table, h.Blurb)
+			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, ref, h.Blurb)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1094,13 +1103,19 @@ func lookupSummary(res ai.LookupResult) map[string]any {
 func searchSummary(hits []TaggedHit) []map[string]any {
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, map[string]any{
+		rec := map[string]any{
 			"table":         h.Table,
 			"blurb":         h.Blurb,
 			"row_count":     h.RowCount,
 			"score":         h.Score,
 			"datasource_id": h.DatasourceID,
-		})
+		}
+		// Recorded only when the hit is not a table, so a stored transcript
+		// from a table-only turn is byte-identical to before.
+		if h.Kind != "" {
+			rec["kind"] = h.Kind
+		}
+		out = append(out, rec)
 	}
 	return out
 }
