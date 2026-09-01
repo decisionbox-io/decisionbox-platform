@@ -36,11 +36,11 @@ func TestWarehouseSection_SQLRenderingIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestWarehouseSection_DescriptorDoesNotLeakIntoThePrompt pins that carrying a
-// capability descriptor on a datasource changes nothing about what is
-// rendered. The prompt and tool surface are SQL-shaped throughout and
-// generalise together with the first non-SQL adapter; until then a declared
-// shape must not produce a partly-generalised prompt.
+// TestWarehouseSection_DescriptorDoesNotLeakIntoThePrompt pins that declaring
+// an entity-shaped descriptor renders exactly as declaring nothing at all.
+// Shape is the only part of the descriptor the prompt branches on; the rest —
+// the language name, the anchoring flag — is read elsewhere and must not reach
+// the prompt through the back door.
 func TestWarehouseSection_DescriptorDoesNotLeakIntoThePrompt(t *testing.T) {
 	plain := sqlDatasource("wh_1")
 	declared := sqlDatasource("wh_1")

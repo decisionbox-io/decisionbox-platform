@@ -21,13 +21,31 @@ import (
 // runs against — one warehouse per statement, chained across a turn. On a
 // single-datasource / pinned turn the argument is omitted so behaviour is
 // identical to the single-warehouse path.
-func toolQueryData(multi bool) gollm.ToolDefinition {
+//
+// hasCube says whether any datasource the turn can reach has no tables. The
+// tool description is the most concrete instruction the model gets — more
+// concrete than the system prompt, and it arrives attached to the argument it
+// governs — so a description that says "SELECT / CTE only" is not softened by
+// prose elsewhere saying otherwise. It is branched rather than generalised so a
+// turn of only SQL datasources sends a byte-identical definition.
+func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
 	desc := "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
 		"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
 		"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
 		"query against INFORMATION_SCHEMA."
+	queryDesc := "The read-only SQL to execute."
+	if hasCube {
+		desc = "Run one read-only query against a datasource and observe a summary of the result " +
+			"(row count, columns, and a small row preview). This is how you gather evidence. Write it in that datasource's own query " +
+			"language — not every datasource here is SQL, and the datasource block in the system prompt states which language each one " +
+			"takes. Against a SQL datasource: SELECT / CTE only, and for totals, counts, or distributions write aggregate SQL " +
+			"(COUNT/SUM/AVG/GROUP BY) rather than paging raw rows; if you don't yet know its tables, start with a discovery query " +
+			"against INFORMATION_SCHEMA. A datasource marked NO TABLES accepts no SQL at all — use search_tables to see the metrics " +
+			"and dimensions it offers."
+		queryDesc = "The read-only query to execute, written in the target datasource's query language."
+	}
 	props := map[string]interface{}{
-		"query":   map[string]interface{}{"type": "string", "description": "The read-only SQL to execute."},
+		"query":   map[string]interface{}{"type": "string", "description": queryDesc},
 		"purpose": map[string]interface{}{"type": "string", "description": "Short note on what this query answers (optional)."},
 	}
 	if multi {
@@ -219,9 +237,10 @@ func toolDecline() gollm.ToolDefinition {
 // only when a schema provider is wired; search_insights only when an insights
 // provider is wired. render_chart is offered only when charting is enabled for
 // the turn AND a non-truncated query result exists to ground a chart against.
-// multi widens the query/schema tools for a project with several warehouses.
-func toolsForPhase(grounded, hasSchema, hasInsights, multi, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData(multi)}
+// multi widens the query/schema tools for a project with several warehouses;
+// hasCube tells query_data that not every reachable datasource takes SQL.
+func toolsForPhase(grounded, hasSchema, hasInsights, multi, hasCube, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
+	tools := []gollm.ToolDefinition{toolQueryData(multi, hasCube)}
 	if hasSchema {
 		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
 	}

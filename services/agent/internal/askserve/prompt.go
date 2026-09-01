@@ -3,6 +3,8 @@ package askserve
 import (
 	"fmt"
 	"strings"
+
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // buildSystemPrompt renders the Q&A system prompt for one turn on the JSON-text
@@ -14,16 +16,34 @@ import (
 func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, chartsEnabled bool) string {
 	var b strings.Builder
 
-	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and running read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers.\n\n")
+	// Every "SQL" in this prompt is branched on whether the turn can actually
+	// reach a source that has no tables. A turn of only SQL datasources — every
+	// project that exists today — renders byte-for-byte as it always has.
+	hasCube := routing.hasCube()
+
+	if hasCube {
+		b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and running read-only queries against their data sources. Not every source is SQL — write each query in the language the source below states. Ground every claim in query results — never invent numbers.\n\n")
+	} else {
+		b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and running read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers.\n\n")
+	}
 
 	writeDataSection(&b, routing)
 
 	b.WriteString("\nHOW TO RESPOND\n")
 	b.WriteString("Respond with EXACTLY ONE JSON object and nothing else — no prose, no markdown fences. Pick one action per step:\n")
-	if routing.multi {
+	// The `query` placeholder is a SELECT stub only while every reachable source
+	// takes SQL. Left in place for a cube turn it would be the most concrete
+	// instruction in the prompt, and concrete beats prose.
+	switch {
+	case routing.multi && hasCube:
+		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"...","purpose":"what this answers"}` + "  — run one read-only query against one datasource, written in THAT datasource's query language\n")
+		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+	case routing.multi:
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query against one datasource\n")
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
-	} else {
+	case hasCube:
+		b.WriteString(`  {"thinking":"...","query":"...","purpose":"what this answers"}` + "  — run a read-only query, written in this source's query language\n")
+	default:
 		b.WriteString(`  {"thinking":"...","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query\n")
 		b.WriteString(`  {"thinking":"...","lookup_schema":["dataset.table_a","dataset.table_b"]}` + "  — get columns + sample rows for tables\n")
 	}
@@ -38,12 +58,16 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer\n")
 	b.WriteString(`  {"thinking":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
 
-	writeResultHandling(&b, cfg)
+	writeResultHandling(&b, cfg, hasCube)
 	if chartsEnabled {
 		writeChartsSection(&b, cfg)
 	}
 
-	b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
+	if hasCube {
+		b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table, metric, dimension, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know what a datasource offers, your FIRST action must be a search_tables call — it also covers the metrics and dimensions of a source that has no tables. A discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
+	} else {
+		b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
+	}
 	if rt.InsightsProvider != nil {
 		b.WriteString("For questions about what prior analysis found or recommended, a search_insights result is sufficient grounding on its own — you do not need to run SQL.\n")
 	}
@@ -62,15 +86,28 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Config, chartsEnabled bool) string {
 	var b strings.Builder
 
-	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and using the provided tools to run read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers, table names, or column names.\n\n")
+	hasCube := routing.hasCube()
+
+	if hasCube {
+		b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and using the provided tools to run read-only queries against their data sources. Not every source is SQL — write each query in the language the source below states. Ground every claim in query results — never invent numbers, table names, or column names.\n\n")
+	} else {
+		b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and using the provided tools to run read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers, table names, or column names.\n\n")
+	}
 
 	writeDataSection(&b, routing)
 
 	b.WriteString("\nTOOLS\n")
-	if routing.multi {
+	switch {
+	case routing.multi && hasCube:
+		b.WriteString("- query_data: run one read-only query against ONE datasource (set datasource_id), written in that datasource's query language, and observe a summary of the result.\n")
+		b.WriteString("- search_tables / lookup_schema: discover what each datasource offers (search_tables spans all datasources — tables, and the metrics and dimensions of a source that has no tables — and tags each hit with its datasource; lookup_schema returns columns, so it applies to tables only).\n")
+	case routing.multi:
 		b.WriteString("- query_data: run one read-only SQL query against ONE datasource (set datasource_id) and observe a summary of the result.\n")
 		b.WriteString("- search_tables / lookup_schema: discover which datasource holds which tables and what columns they have (search_tables spans all datasources and tags each hit with its datasource).\n")
-	} else {
+	case hasCube:
+		b.WriteString("- query_data: run one read-only query, written in this source's query language, and observe a summary of the result.\n")
+		b.WriteString("- search_tables: discover the metrics and dimensions this source offers. lookup_schema does not apply — this source has no tables.\n")
+	default:
 		b.WriteString("- query_data: run one read-only SQL query and observe a summary of the result.\n")
 		b.WriteString("- search_tables / lookup_schema: discover which tables exist and what columns they have.\n")
 	}
@@ -82,7 +119,7 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	}
 	b.WriteString("- answer / clarify / decline: finish the turn.\n")
 
-	writeResultHandling(&b, cfg)
+	writeResultHandling(&b, cfg, hasCube)
 	if chartsEnabled {
 		writeChartsSection(&b, cfg)
 	}
@@ -91,7 +128,11 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	if rt.InsightsProvider != nil {
 		evidence = "query_data, search_tables, lookup_schema, or search_insights"
 	}
-	fmt.Fprintf(&b, "\nGROUNDING (required): you MUST run at least one %s call and observe its result before you answer. Never state a table name, count, total, or value you have not seen in a result this turn — do not answer from prior knowledge or guesses. If you don't know the tables or columns, start with search_tables or a discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`); do not invent names. Only clarify when the request is genuinely too ambiguous to query, and prefer gathering evidence before you decline.\n", evidence)
+	discovery := "If you don't know the tables or columns, start with search_tables or a discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`); do not invent names."
+	if hasCube {
+		discovery = "If you don't know what a datasource offers, start with search_tables — it also covers the metrics and dimensions of a source that has no tables. A discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. Do not invent names."
+	}
+	fmt.Fprintf(&b, "\nGROUNDING (required): you MUST run at least one %s call and observe its result before you answer. Never state a table name, count, total, or value you have not seen in a result this turn — do not answer from prior knowledge or guesses. %s Only clarify when the request is genuinely too ambiguous to query, and prefer gathering evidence before you decline.\n", evidence, discovery)
 	if rt.InsightsProvider != nil {
 		b.WriteString("For questions about what prior analysis found or recommended, a search_insights result is sufficient grounding on its own — you do not need to run SQL.\n")
 	}
@@ -118,20 +159,20 @@ func writeDataSection(b *strings.Builder, routing turnRouting) {
 	writeWarehouseSection(b, d)
 }
 
-// writeWarehouseSection renders the shared WAREHOUSE block for one datasource
-// (dialect, datasets, read-only rule, and the tenant-scope predicate when the
-// dataset is multi-tenant). Shared verbatim by both prompt builders on a
-// single-datasource / pinned turn.
+// writeWarehouseSection renders the shared datasource block for one datasource
+// on a single-datasource / pinned turn.
 //
-// The block is SQL-shaped throughout, as is the prompt around it — the tool
-// contract offers a `query` string documented as "SELECT / CTE only", and the
-// grounding guidance points at INFORMATION_SCHEMA. A cube-shaped source has no
-// coherent rendering here until there is an adapter defining what its query
-// actually is, so generalising this section alone would hand the model a cube
-// description wrapped in SQL instructions: contradictory guidance it would
-// resolve by writing SQL anyway. The prompt and tool surface generalise
-// together with the first non-SQL adapter.
+// It branches on the source's declared shape, because the two shapes need
+// contradictory instructions. Telling a model "emit only SELECT/CTE queries"
+// about a source that has no tables does not merely fail to help — the model
+// resolves the contradiction by writing SQL, which the source then rejects,
+// and the turn is spent on a query that could never have run.
 func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
+	if isCube(d) {
+		writeCubeSection(b, d)
+		return
+	}
+
 	b.WriteString("WAREHOUSE\n")
 	if d.Dialect != "" {
 		fmt.Fprintf(b, "- SQL dialect: %s\n", d.Dialect)
@@ -143,12 +184,46 @@ func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
 	writeTenantScope(b, "- ", d)
 }
 
+// writeCubeSection renders the block for a source that has no tables.
+//
+// It states the absence first and the query language second, in that order on
+// purpose: a model that has read "no tables" cannot then write a FROM clause
+// by reflex, whereas one that reads a language name first tends to fill the
+// gaps with SQL habits. It also names the tools that do NOT apply — a metric
+// looks enough like a table name that lookup_schema is the natural next move,
+// and it would fail every time.
+func writeCubeSection(b *strings.Builder, d DatasourceInfo) {
+	b.WriteString("DATASOURCE\n")
+	b.WriteString("- This source has NO TABLES. There is nothing to SELECT from and no schema to look up.\n")
+	b.WriteString("- It is a metric/dimension cube: you choose what to measure and what to break it down by, and the source computes the result.\n")
+	// Only the language is named. Nothing here specifies the request format,
+	// because nothing in the turn supplies one yet — search_tables returns the
+	// source's metrics and dimensions, not its request envelope. Describing a
+	// format the prompt cannot show would be worse than naming the language and
+	// letting the model use what it knows about it.
+	fmt.Fprintf(b, "- Queries are written as: %s — not SQL, which this source rejects.\n", d.Language())
+	b.WriteString("- Use search_tables to find the metrics and dimensions this source offers — each result says whether it is a metric or a dimension. Do not call lookup_schema against this source; it has no columns.\n")
+	b.WriteString("- The source is READ-ONLY.\n")
+	writeTenantScope(b, "- ", d)
+}
+
 // writeDatasourcesSection renders the DATASOURCES catalog for a multi-datasource
 // turn: one block per datasource (id, label, dialect, datasets, tenant scope,
 // card) plus the one-warehouse-per-statement + bounded multi-hop rules.
 func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
+	hasCube := routing.hasCube()
+
 	b.WriteString("DATASOURCES\n")
-	b.WriteString("This project has multiple datasources. Each SQL query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
+	if hasCube {
+		b.WriteString("This project has multiple datasources. Each query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
+		// Said once, up front. A model told per-datasource that one of them is
+		// not SQL, but told globally that queries are SQL, resolves the
+		// conflict in favour of the global rule — and writes SQL at the source
+		// that cannot run it.
+		b.WriteString("Datasources do not all speak the same query language. Each one below states its own; write a query in the language of the datasource you are targeting.\n")
+	} else {
+		b.WriteString("This project has multiple datasources. Each SQL query runs against exactly ONE datasource — pass its id as datasource_id. A single query cannot join across datasources.\n")
+	}
 	for _, d := range routing.datasources {
 		primary := ""
 		if d.ID == routing.primary {
@@ -172,7 +247,12 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 				fmt.Fprintf(b, "  key metrics: %s\n", strings.Join(d.Card.KeyMetrics, ", "))
 			}
 		}
-		if d.Dialect != "" {
+		if isCube(d) {
+			// Stated as an absence, not just a different language: "no tables"
+			// is what stops a FROM clause being written, and it is the fact a
+			// language name alone does not convey.
+			fmt.Fprintf(b, "  NO TABLES — a metric/dimension cube. Query language: %s (not SQL). lookup_schema does not apply; search_tables lists its metrics and dimensions.\n", d.Language())
+		} else if d.Dialect != "" {
 			fmt.Fprintf(b, "  SQL dialect: %s\n", d.Dialect)
 		}
 		if len(d.Datasets) > 0 {
@@ -180,9 +260,45 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 		}
 		writeTenantScope(b, "  tenant scope: ", d)
 	}
-	b.WriteString("\n- Every datasource is READ-ONLY. Emit only SELECT/CTE queries; never INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
-	b.WriteString("- Pick the datasource whose contents match the question. Use search_tables (it spans all datasources and tags each table with its datasource) when you're unsure which one holds what.\n")
+	if hasCube {
+		b.WriteString("\n- Every datasource is READ-ONLY. Against a SQL datasource emit only SELECT/CTE queries; never INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
+		b.WriteString("- Pick the datasource whose contents match the question. Use search_tables (it spans all datasources and tags each result with its datasource) when you're unsure which one holds what.\n")
+	} else {
+		b.WriteString("\n- Every datasource is READ-ONLY. Emit only SELECT/CTE queries; never INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
+		b.WriteString("- Pick the datasource whose contents match the question. Use search_tables (it spans all datasources and tags each table with its datasource) when you're unsure which one holds what.\n")
+	}
 	b.WriteString("- To combine datasources, do it in HOPS: query one datasource, then use a SMALL set of the result values (e.g. the top-N ids you observed) as literal filters in a follow-up query on another datasource. Keep the crossed set small — only values you have actually observed in a result this turn. Do not attempt a cross-datasource join in a single query.\n")
+}
+
+// isCube reports whether a datasource has no tables to select from.
+func isCube(d DatasourceInfo) bool { return d.EffectiveShape() == gowarehouse.ShapeCube }
+
+// hasCube reports whether any datasource this turn can actually reach has no
+// tables — the single condition every "SQL" statement in the prompt and in the
+// query_data tool description is branched on.
+//
+// It reads the reachable set, not the project's: a turn pinned to one SQL
+// warehouse must be told SQL even when a cube datasource sits unreachable
+// beside it in the same project, or it is being warned about a source it
+// cannot query.
+func (r turnRouting) hasCube() bool {
+	for _, d := range r.queryable() {
+		if isCube(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryable returns the datasources the model may target this turn: all of the
+// visible ones when it picks per query, otherwise just the pinned one. The
+// non-multi path carries the whole project's list for a single-datasource
+// project, so slicing — not the field — is what makes the sets agree.
+func (r turnRouting) queryable() []DatasourceInfo {
+	if r.multi || len(r.datasources) == 0 {
+		return r.datasources
+	}
+	return r.datasources[:1]
 }
 
 // writeTenantScope renders the multi-tenant predicate line for a datasource, or
@@ -221,9 +337,13 @@ func writeChartsSection(b *strings.Builder, cfg Config) {
 
 // writeResultHandling renders the shared RESULT HANDLING block. Shared verbatim
 // by both prompt builders.
-func writeResultHandling(b *strings.Builder, cfg Config) {
+func writeResultHandling(b *strings.Builder, cfg Config, hasCube bool) {
 	b.WriteString("\nRESULT HANDLING\n")
 	fmt.Fprintf(b, "- Query results are returned summary-only: row count, columns, and a preview of up to %d rows. Large result sets are truncated.\n", cfg.PreviewRows)
-	b.WriteString("- For totals, counts, distributions, or \"how many\" questions, write aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows.\n")
+	if hasCube {
+		b.WriteString("- For totals, counts, distributions, or \"how many\" questions, make the datasource aggregate — on a SQL datasource that means aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows.\n")
+	} else {
+		b.WriteString("- For totals, counts, distributions, or \"how many\" questions, write aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows.\n")
+	}
 	fmt.Fprintf(b, "- You may run at most %d queries and take at most %d steps this turn. Be economical; reuse results already in this conversation instead of re-querying.\n", cfg.MaxQueriesPerTurn, cfg.MaxRounds)
 }
