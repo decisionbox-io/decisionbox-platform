@@ -292,3 +292,99 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 	}
 	return nil
 }
+
+// CatalogCacheEntry is the on-disk shape for a catalog source's item refs.
+//
+// One doc per (project, warehouse, hash) rather than one per item: a catalog
+// is a few hundred short strings, nowhere near the BSON cap that made the
+// table cache one-doc-per-table, and reading it back as a single document
+// keeps the "is this datasource indexed?" question a single lookup.
+//
+// It lives in the same collection as the table entries, distinguished by
+// EntryKind, so it inherits the same TTL and the same invalidation-by-hash
+// behaviour without a second collection to provision.
+type CatalogCacheEntry struct {
+	ProjectID     string    `bson:"project_id"`
+	WarehouseID   string    `bson:"warehouse_id"`
+	WarehouseHash string    `bson:"warehouse_hash"`
+	EntryKind     string    `bson:"entry_kind"`
+	Refs          []string  `bson:"refs"`
+	CachedAt      time.Time `bson:"cached_at"`
+}
+
+// catalogEntryKind marks a doc as a catalog ref list. Table entries carry no
+// entry_kind, so they are matched by its absence and are unaffected.
+const catalogEntryKind = "catalog"
+
+// SaveCatalog records the refs a catalog source currently offers.
+//
+// The refs are what makes a catalog datasource usable downstream: they are
+// the authority for "this datasource, at this config, offers exactly these
+// items". Without them a consumer cannot tell a live catalog point from one
+// left in the shared vector collection by a datasource that has since been
+// removed — the index is not self-cleaning, and only a cache entry keyed by
+// the current config hash can say what is current.
+func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs []string) error {
+	if projectID == "" {
+		return errors.New("projectID is required")
+	}
+	if warehouseHash == "" {
+		return errors.New("warehouseHash is required")
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+
+	filter := bson.M{
+		"project_id":   projectID,
+		"warehouse_id": warehouseIDCond(warehouseID),
+		"entry_kind":   catalogEntryKind,
+	}
+	if _, err := r.col().DeleteMany(ctx, filter); err != nil {
+		return fmt.Errorf("catalog cache clear prior: %w", err)
+	}
+
+	_, err := r.col().InsertOne(ctx, CatalogCacheEntry{
+		ProjectID:     projectID,
+		WarehouseID:   warehouseID,
+		WarehouseHash: warehouseHash,
+		EntryKind:     catalogEntryKind,
+		Refs:          refs,
+		CachedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("catalog cache save: %w", err)
+	}
+	return nil
+}
+
+// FindCatalog returns the refs a catalog source offered at this config hash,
+// or nil when there is no entry — a cold cache, a config change that moved the
+// hash, or a source that is not catalog-shaped. All three are the same answer
+// to the caller: nothing is known, so treat the datasource as unindexed.
+func (r *SchemaCacheRepository) FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error) {
+	if projectID == "" || warehouseHash == "" {
+		return nil, nil
+	}
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+
+	var entry CatalogCacheEntry
+	err := r.col().FindOne(ctx, bson.M{
+		"project_id":     projectID,
+		"warehouse_id":   warehouseIDCond(warehouseID),
+		"warehouse_hash": warehouseHash,
+		"entry_kind":     catalogEntryKind,
+	}).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("catalog cache find: %w", err)
+	}
+	return entry.Refs, nil
+}

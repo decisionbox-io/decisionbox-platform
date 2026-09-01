@@ -119,7 +119,18 @@ func runAskServe(cfg *config.Config) error {
 					Warn("ask-serve: schema cache lookup failed — schema tools disabled for this datasource")
 				continue
 			}
-			if len(schemas) == 0 {
+			// A catalog source has no tables, so an empty schemas map does not
+			// mean "not indexed" for it — its index is a list of item refs
+			// held separately. Skipping on the table cache alone is what made
+			// such a datasource invisible to schema search even after a
+			// successful index run.
+			catalogRefs, ccErr := schemaCache.FindCatalog(buildCtx, projectID, whID, discovery.WarehouseConfigHash(wh))
+			if ccErr != nil {
+				applog.WithError(ccErr).WithField("project_id", projectID).WithField("datasource_id", whID).
+					Warn("ask-serve: catalog cache lookup failed — this datasource's catalog is treated as unindexed")
+				catalogRefs = nil
+			}
+			if len(schemas) == 0 && len(catalogRefs) == 0 {
 				// Not indexed yet — query_data still works against it.
 				continue
 			}
@@ -128,6 +139,7 @@ func runAskServe(cfg *config.Config) error {
 				WarehouseID: whID,
 				Datasets:    wh.GetDatasets(),
 				Schemas:     schemas,
+				CatalogRefs: catalogRefs,
 			}
 			if sharedRetriever != nil && embedder != nil {
 				opts.Retriever = sharedRetriever
@@ -140,9 +152,17 @@ func runAskServe(cfg *config.Config) error {
 				continue
 			}
 			lookups[whID] = sp
-			tset := make(map[string]bool, len(schemas))
+			// The span search validates every hit against this set, so it must
+			// name everything the datasource legitimately offers — its tables
+			// AND, for a catalog source, its item refs. Omitting the refs
+			// silently drops every catalog hit from the cross-datasource view,
+			// which is the one the router reads.
+			tset := make(map[string]bool, len(schemas)+len(catalogRefs))
 			for tbl := range schemas {
 				tset[tbl] = true
+			}
+			for _, ref := range catalogRefs {
+				tset[ref] = true
 			}
 			whTables[whID] = tset
 		}
@@ -194,6 +214,7 @@ func runAskServe(cfg *config.Config) error {
 					}
 					out = append(out, askserve.TaggedHit{
 						DatasourceID:    wid,
+						Kind:            h.Blurb.Kind,
 						DatasourceLabel: labels[wid],
 						Table:           h.Blurb.Table,
 						Blurb:           h.Blurb.Blurb,

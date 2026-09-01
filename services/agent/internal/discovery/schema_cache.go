@@ -19,6 +19,19 @@ type SchemaCache interface {
 	Save(ctx context.Context, projectID, warehouseID, warehouseHash string, schemas map[string]models.TableSchema) error
 }
 
+// CatalogCache is optionally implemented by a SchemaCache that can also
+// persist the refs a catalog source offers.
+//
+// Separate from SchemaCache rather than added to it so every existing
+// implementation — including the fakes in tests — keeps compiling and keeps
+// working unchanged. A cache that does not implement this simply means a
+// catalog source is not remembered between the index run and the processes
+// that consume it.
+type CatalogCache interface {
+	FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error)
+	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs []string) error
+}
+
 // WarehouseConfigHash produces a stable SHA-256 over everything the
 // warehouse needs to list tables and describe them — provider,
 // project_id / catalog / location, dataset list, filter column+value,

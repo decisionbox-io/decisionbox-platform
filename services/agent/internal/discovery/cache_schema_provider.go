@@ -60,6 +60,15 @@ type CacheSchemaProvider struct {
 	// every datasource.
 	schemas map[string]models.TableSchema
 
+	// catalogRefs is the set of items a catalog source currently offers, and
+	// is the staleness authority for its hits exactly as the schemas map is
+	// for tables. The vector collection is shared across datasources and is
+	// not self-cleaning — points for a removed datasource survive until
+	// something overwrites them — so a hit is trusted only when the cache
+	// still lists its ref. Empty means this datasource has no catalog, and
+	// catalog hits are then dropped rather than trusted blindly.
+	catalogRefs map[string]bool
+
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
 	// warehouse run so Lookup can tell the model which datasource_id to
@@ -106,6 +115,10 @@ type CacheSchemaProviderOptions struct {
 	WarehouseID string
 	Datasets    []string
 	Schemas     map[string]models.TableSchema
+	// CatalogRefs are the items a catalog source currently offers. Set for a
+	// source that has no tables; the provider treats them as the staleness
+	// authority for its hits, the way Schemas is for tables.
+	CatalogRefs []string
 	// TableWarehouse maps canonical "dataset.table" → owning datasource id.
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
@@ -126,8 +139,15 @@ const (
 // is nil — that's an upstream wiring bug we want to surface immediately
 // rather than have it manifest as "no tables found" at run time.
 func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvider, error) {
+	// A catalog source legitimately has no tables, so an empty schemas map
+	// is only a wiring bug when there is no catalog either. Requiring a
+	// non-nil map unconditionally would make such a source unrepresentable
+	// here, which is what kept it from being searchable at all.
+	if opts.Schemas == nil && len(opts.CatalogRefs) == 0 {
+		return nil, fmt.Errorf("cache_schema_provider: Schemas map is required (or CatalogRefs for a catalog source)")
+	}
 	if opts.Schemas == nil {
-		return nil, fmt.Errorf("cache_schema_provider: Schemas map is required")
+		opts.Schemas = map[string]models.TableSchema{}
 	}
 	if opts.Retriever != nil && opts.Embedder == nil {
 		return nil, fmt.Errorf("cache_schema_provider: Embedder is required when Retriever is set")
@@ -138,6 +158,7 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 		warehouseID:    opts.WarehouseID,
 		datasets:       append([]string(nil), opts.Datasets...),
 		schemas:        opts.Schemas,
+		catalogRefs:    refSet(opts.CatalogRefs),
 		tableWarehouse: opts.TableWarehouse,
 		embedder:       opts.Embedder,
 		sampleLimit:    opts.SampleLimit,
@@ -257,10 +278,22 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 		//
 		// The filter still applies in full to tables, so the scope and
 		// governance guarantees it exists for are unchanged.
+		// Each kind is checked against its own authority. Tables against the
+		// cached schemas map — which plugin filters (discovery scope,
+		// governance) further constrain, so surfacing a table absent from it
+		// would leak scope. Catalog items against the cached catalog refs,
+		// which serve the same purpose for a source that has no tables.
+		//
+		// Neither is skipped. Passing catalog hits through unchecked would
+		// return items from a datasource that has since been removed, because
+		// the shared vector collection keeps points until something overwrites
+		// them.
 		if h.Blurb.Kind == gowarehouse.ItemKindTable {
 			if _, ok := p.schemas[h.Blurb.Table]; !ok {
 				continue
 			}
+		} else if !p.catalogRefs[h.Blurb.Table] {
+			continue
 		}
 		out = append(out, ai.SearchHit{
 			Table: h.Blurb.Table,
@@ -403,4 +436,17 @@ func buildRefIndex(schemas map[string]models.TableSchema) map[string]string {
 		}
 	}
 	return idx
+}
+
+// refSet turns the cached catalog refs into a membership set. Nil for an
+// empty list, so a source with no catalog has no catalog hits trusted.
+func refSet(refs []string) map[string]bool {
+	if len(refs) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		set[r] = true
+	}
+	return set
 }

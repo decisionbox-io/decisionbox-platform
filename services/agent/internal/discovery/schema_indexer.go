@@ -497,6 +497,26 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
+	// Record what this source currently offers. The vector index alone
+	// cannot answer "is this datasource indexed, and with what?" — a
+	// consumer reading it has no way to tell a live point from one left
+	// behind by a datasource that was since removed, because re-indexing
+	// only clears the warehouses it still indexes. The cache entry, keyed by
+	// the current config hash, is that authority.
+	//
+	// Best-effort, and deliberately after the upsert: a failure here leaves a
+	// usable index that consumers will treat as unindexed until the next run,
+	// which is the safe direction. Losing the points would not be.
+	if cc, ok := si.Cache.(CatalogCache); ok && si.WarehouseHash != "" {
+		refs := make([]string, 0, len(indexable))
+		for _, it := range indexable {
+			refs = append(refs, it.Ref)
+		}
+		if err := cc.SaveCatalog(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash, refs); err != nil {
+			applog.WithError(err).Warn("schema_indexer: catalog cache save failed; consumers will treat this datasource as unindexed until the next run")
+		}
+	}
+
 	applog.WithFields(applog.Fields{
 		"items":         len(points),
 		"dropped":       dropped,
