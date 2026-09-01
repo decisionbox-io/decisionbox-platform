@@ -1,8 +1,11 @@
 package askserve
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 )
 
 // TestFormatSearch_LabelsNonTableHits is the guard on a hit being mistaken for
@@ -79,5 +82,53 @@ func TestFormatSearch_EmptyResultDoesNotClaimTables(t *testing.T) {
 	out := formatSearch("anything", nil, false)
 	if strings.Contains(out, "tables") {
 		t.Errorf("output = %q, want no claim that tables were what was searched", out)
+	}
+}
+
+// stubSchemaProvider is a per-datasource lookup provider returning fixed hits.
+type stubSchemaProvider struct{ hits []ai.SearchHit }
+
+func (s *stubSchemaProvider) Search(context.Context, string, int) ([]ai.SearchHit, error) {
+	return s.hits, nil
+}
+
+func (s *stubSchemaProvider) Lookup(context.Context, []string) (ai.LookupResult, error) {
+	return ai.LookupResult{}, nil
+}
+
+// TestSearchOne_CarriesTheKind covers the single-datasource and pinned path.
+// It renders through the same formatter as a spanning turn, so dropping the
+// kind here shows metrics and dimensions to the model as bare table names —
+// and it does so on exactly the turns where a catalog source is most likely to
+// be the one under discussion, because it was pinned.
+func TestSearchOne_CarriesTheKind(t *testing.T) {
+	router := NewSchemaRouter(SchemaRouterOptions{
+		Lookups: map[string]ai.SchemaProvider{
+			"ga": &stubSchemaProvider{hits: []ai.SearchHit{
+				{Table: "sessions", Kind: "metric", Blurb: "Sessions."},
+				{Table: "events.users", Blurb: "Users."},
+			}},
+		},
+		Primary: "ga",
+	})
+
+	hits, err := router.SearchOne(context.Background(), "ga", "traffic", 10)
+	if err != nil {
+		t.Fatalf("SearchOne() error = %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("got %d hits, want 2", len(hits))
+	}
+	if hits[0].Kind != "metric" {
+		t.Errorf("hits[0].Kind = %q, want metric — the kind was dropped on the pinned path", hits[0].Kind)
+	}
+	if hits[1].Kind != "" {
+		t.Errorf("hits[1].Kind = %q, want empty for a table", hits[1].Kind)
+	}
+
+	// And it must survive all the way to what the model reads.
+	out := formatSearch("traffic", hits, false)
+	if !strings.Contains(out, "sessions [metric]") {
+		t.Errorf("rendered output = %q, want the metric labelled", out)
 	}
 }
