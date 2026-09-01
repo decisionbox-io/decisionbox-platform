@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // catalogStubCache is a schema cache that also answers catalog lookups.
@@ -155,4 +157,33 @@ func TestCatalogRefsByDatasource(t *testing.T) {
 			t.Errorf("got %v, want nil so no catalog hit is trusted", got)
 		}
 	})
+}
+
+// TestDatasourceIsIndexed separates the two states that both present as "no
+// tables". Getting it wrong in the permissive direction wires an unindexed
+// datasource into the run, where it is described to the model and then answers
+// nothing — far harder to diagnose than being told to re-index. Getting it
+// wrong the other way rejects a legitimate catalog source outright.
+func TestDatasourceIsIndexed(t *testing.T) {
+	tables := map[string]models.TableSchema{"sales.orders": {}}
+
+	tests := []struct {
+		name    string
+		schemas map[string]models.TableSchema
+		refs    []string
+		want    bool
+	}{
+		{name: "tables only", schemas: tables, want: true},
+		{name: "catalog only, which is a whole legitimate source", refs: []string{"sessions"}, want: true},
+		{name: "both", schemas: tables, refs: []string{"sessions"}, want: true},
+		{name: "neither means never indexed", want: false},
+		{name: "explicitly empty is still neither", schemas: map[string]models.TableSchema{}, refs: []string{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := datasourceIsIndexed(tt.schemas, tt.refs); got != tt.want {
+				t.Errorf("datasourceIsIndexed() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
