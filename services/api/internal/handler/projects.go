@@ -16,6 +16,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/managedai"
@@ -285,6 +286,10 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !rejectAnchoringPromotion(w, p.EffectiveWarehouses()) {
+		return
+	}
+
 	// Multi-warehouse projects cannot be configured through this create path:
 	// it neither enforces the multi_warehouse_enabled feature gate nor reserves
 	// data-source quota per warehouse (each warehouse bills as one data source,
@@ -544,6 +549,9 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// the value above was an unchanged echo, and EffectiveWarehouses() ignores
 	// the legacy field anyway.
 	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) == 0 {
+		if !rejectAnchoringPromotion(w, []models.WarehouseConfig{incoming.Warehouse}) {
+			return
+		}
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {
@@ -711,4 +719,27 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"deleted":         id,
 		"secrets_skipped": secretsSkipped,
 	})
+}
+
+// rejectAnchoringPromotion refuses a request that tries to promote a datasource
+// whose provider declares it cannot anchor, writing a 400 and returning false.
+//
+// The override may only DEMOTE. Storing a promotion instead of refusing it
+// would be the worse failure: EffectiveAnchoring applies the provider as a
+// ceiling and would ignore the stored value, so the setting would read back as
+// applied while changing nothing — and the user would believe their
+// enrichment-only source had been made able to carry the project.
+func rejectAnchoringPromotion(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
+	for _, wh := range whs {
+		if wh.Anchoring == nil || wh.Provider == "" {
+			continue
+		}
+		if !gowarehouse.AnchoringOverrideAllowed(wh.Provider, *wh.Anchoring) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"data source %q uses provider %q, which cannot anchor a project; `anchoring` may be turned off for a source but never on",
+				wh.ID, wh.Provider))
+			return false
+		}
+	}
+	return true
 }
