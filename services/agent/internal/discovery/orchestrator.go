@@ -1110,6 +1110,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			step.ValidationResults = areaResults
 		}
 
+		// Label every insight with what its evidence was worth. Derived from
+		// the steps it cites rather than taken from the model: an insight
+		// computed over withheld rows reads exactly like one computed over
+		// complete rows, so a model that simply did not mention the caveat
+		// would produce a finding indistinguishable from a sound one. Deriving
+		// it means the label survives whatever the model wrote.
+		attachSourceQuality(insights, stepByID)
+
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
 
@@ -1510,6 +1518,39 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 	}
 
 	return insights, dropped, nil
+}
+
+// attachSourceQuality stamps each insight with the union of the quality
+// caveats carried by the steps it was drawn from.
+//
+// Deduplicated by kind and detail, because several steps hitting the same
+// threshold is one fact about the evidence, not three. Order follows the
+// insight's own source steps so the output is stable across runs.
+//
+// An insight citing no steps, or citing steps that carried no caveats, is left
+// untouched — the overwhelming majority, since a SQL warehouse never reports
+// one.
+func attachSourceQuality(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
+	for i := range insights {
+		var caveats []gowarehouse.QualityCaveat
+		seen := make(map[gowarehouse.QualityCaveat]bool)
+		for _, id := range insights[i].SourceSteps {
+			step, ok := stepByID[id]
+			if !ok || step == nil {
+				continue
+			}
+			for _, c := range step.Quality {
+				if seen[c] {
+					continue
+				}
+				seen[c] = true
+				caveats = append(caveats, c)
+			}
+		}
+		if len(caveats) > 0 {
+			insights[i].Quality = caveats
+		}
+	}
 }
 
 // analysisParseOutcome carries the result of one analysis area's chat +

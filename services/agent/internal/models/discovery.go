@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
@@ -110,6 +112,18 @@ type Insight struct {
 	// Source exploration steps that this insight is based on.
 	// Set by the LLM during analysis — cites which exploration queries it used.
 	SourceSteps []int `bson:"source_steps,omitempty" json:"source_steps,omitempty"`
+
+	// Quality is the union of the caveats carried by the steps this insight
+	// was drawn from — what the sources said about how faithful that evidence
+	// was.
+	//
+	// Derived from SourceSteps rather than authored, because the model cannot
+	// be relied on to carry it: an insight computed from withheld rows reads
+	// exactly like one computed from complete rows, and a model that failed to
+	// mention the caveat would produce a finding indistinguishable from a
+	// sound one. Deriving it means the label survives regardless of what the
+	// model wrote.
+	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"quality,omitempty"`
 
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
@@ -490,6 +504,20 @@ type ExplorationStep struct {
 	// step that didn't run a query (lookup_schema, complete_rejected)
 	// serializes without an empty digest field.
 	CompactResult *gomodels.CompactResult `bson:"compact_result,omitempty" json:"compact_result,omitempty"`
+
+	// Quality carries what the source said about how faithful this step's
+	// result is to the query that produced it — rows withheld, values
+	// sampled, a tail truncated, fields restricted.
+	//
+	// Stored on the step because that is the only place it is knowable. The
+	// query succeeded and the rows look complete; nothing later in the
+	// pipeline can re-derive that some of them were withheld. An analysis
+	// reading these rows without this would compute a share of a population
+	// it cannot see, and report it as a finding.
+	//
+	// Empty for every SQL warehouse, which answers exactly what was asked or
+	// fails.
+	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"quality,omitempty"`
 
 	// Error handling
 	Error       string `bson:"error,omitempty" json:"error,omitempty"`
