@@ -65,15 +65,23 @@ func TestBuildCatalogIndex_RefusesAnEmptyCatalog(t *testing.T) {
 		{name: "no items at all", items: nil},
 		{
 			name:  "every item unreadable by this credential",
-			items: []gowarehouse.CatalogItem{{Ref: "totalRevenue", Text: "Revenue.", Unavailable: "NO_REVENUE_METRICS"}},
+			items: []gowarehouse.CatalogItem{{Ref: "totalRevenue", Kind: gowarehouse.ItemKindMetric, Text: "Revenue.", Unavailable: "NO_REVENUE_METRICS"}},
 		},
 		{
 			name:  "every item unnameable",
-			items: []gowarehouse.CatalogItem{{Ref: "", Text: "Something."}},
+			items: []gowarehouse.CatalogItem{{Ref: "", Kind: gowarehouse.ItemKindMetric, Text: "Something."}},
 		},
 		{
 			name:  "every item undescribed",
-			items: []gowarehouse.CatalogItem{{Ref: "sessions", Text: ""}},
+			items: []gowarehouse.CatalogItem{{Ref: "sessions", Kind: gowarehouse.ItemKindMetric, Text: ""}},
+		},
+		{
+			// The nastiest of the four. An empty kind is reserved for tables,
+			// so such an item indexes fine and is then filtered against the
+			// table schema map a catalog source has none of — the datasource
+			// finishes ready and returns nothing, with no error anywhere.
+			name:  "every item has no kind",
+			items: []gowarehouse.CatalogItem{{Ref: "sessions", Text: "Sessions."}},
 		},
 	}
 	for _, tt := range tests {
@@ -162,4 +170,53 @@ func TestBuildCatalogIndex_CompletesItsProgressCounters(t *testing.T) {
 			t.Errorf("done = %d, want 0 — a run that never indexed anything must not report progress", prog.done)
 		}
 	})
+}
+
+// TestIndexableCatalogItems covers the filter directly: what survives, what is
+// dropped, and that each drop is counted rather than vanishing quietly.
+func TestIndexableCatalogItems(t *testing.T) {
+	items := []gowarehouse.CatalogItem{
+		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric, Text: "Sessions."},
+		// Reserved kind: would index, then be filtered as a table and never
+		// appear in any result.
+		{Ref: "mystery", Text: "No kind."},
+		{Ref: "country", Kind: gowarehouse.ItemKindDimension, Text: "Country."},
+		// The credential cannot read it, so indexing it only yields failures.
+		{Ref: "totalRevenue", Kind: gowarehouse.ItemKindMetric, Text: "Revenue.", Unavailable: "NO_REVENUE_METRICS"},
+		{Ref: "", Kind: gowarehouse.ItemKindMetric, Text: "Unnameable."},
+		{Ref: "undescribed", Kind: gowarehouse.ItemKindMetric},
+		// First description of a ref wins, deterministically.
+		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric, Text: "Duplicate."},
+	}
+
+	kept, dropped := indexableCatalogItems(items)
+
+	if len(kept) != 2 {
+		t.Fatalf("kept %d items, want 2 (sessions, country): %+v", len(kept), kept)
+	}
+	if kept[0].Ref != "sessions" || kept[0].Text != "Sessions." {
+		t.Errorf("kept[0] = %+v, want the first description of sessions", kept[0])
+	}
+	if kept[1].Ref != "country" {
+		t.Errorf("kept[1] = %+v, want country", kept[1])
+	}
+	if dropped != 5 {
+		t.Errorf("dropped = %d, want 5 — every exclusion must be counted, not silent", dropped)
+	}
+}
+
+// TestIndexableCatalogItems_KindlessDoesNotTakeTheRestWithIt: one malformed
+// item must not cost the usable ones, or a single bad entry from a source
+// silently empties its whole index.
+func TestIndexableCatalogItems_KindlessDoesNotTakeTheRestWithIt(t *testing.T) {
+	kept, dropped := indexableCatalogItems([]gowarehouse.CatalogItem{
+		{Ref: "mystery", Text: "No kind."},
+		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric, Text: "Sessions."},
+	})
+	if len(kept) != 1 || kept[0].Ref != "sessions" {
+		t.Fatalf("kept = %+v, want just sessions", kept)
+	}
+	if dropped != 1 {
+		t.Errorf("dropped = %d, want 1", dropped)
+	}
 }

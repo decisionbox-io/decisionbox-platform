@@ -375,6 +375,37 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}, nil
 }
 
+// indexableCatalogItems keeps what is worth indexing and counts what is not.
+//
+// Each exclusion has its own reason. An item the credential cannot query is
+// real and catalogued at the source, but indexing it would only produce
+// queries that fail. An item with no ref could never be written into a query.
+// An item with no text has nothing to embed, so it would match everything or
+// nothing.
+//
+// An item with no KIND is the subtle one, and the most damaging. The empty
+// kind is reserved for tables, so such an item indexes happily and is then
+// filtered against the table schema map — which a catalog source has none of
+// — and every hit for it is discarded. The datasource finishes indexing as
+// ready and returns nothing, with no error at any layer. Dropping it here
+// turns that into a count, and into a failed run when it is all of them.
+//
+// A duplicate ref is dropped rather than overwriting, so the first
+// description of an item wins deterministically.
+func indexableCatalogItems(items []gowarehouse.CatalogItem) (kept []gowarehouse.CatalogItem, dropped int) {
+	seen := make(map[string]bool, len(items))
+	kept = make([]gowarehouse.CatalogItem, 0, len(items))
+	for _, it := range items {
+		if it.Kind == gowarehouse.ItemKindTable ||
+			it.Ref == "" || it.Text == "" || !it.Queryable() || seen[it.Ref] {
+			continue
+		}
+		seen[it.Ref] = true
+		kept = append(kept, it)
+	}
+	return kept, len(items) - len(kept)
+}
+
 // buildCatalogIndex is BuildIndex for a source that describes itself with a
 // catalog of items instead of a set of tables.
 //
@@ -402,22 +433,7 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 		return nil, fmt.Errorf("schema_indexer: read catalog: %w", err)
 	}
 
-	// Keep only what is worth indexing, and count what was not. An item the
-	// credential cannot query is real and catalogued at the source, but
-	// surfacing it for retrieval would only produce queries that fail; an
-	// item with no ref could never be written into a query at all; an item
-	// with no text has nothing to embed and would match everything or
-	// nothing. Each is dropped for its own reason and the total is reported.
-	seen := make(map[string]bool, len(items))
-	indexable := make([]gowarehouse.CatalogItem, 0, len(items))
-	for _, it := range items {
-		if it.Ref == "" || it.Text == "" || !it.Queryable() || seen[it.Ref] {
-			continue
-		}
-		seen[it.Ref] = true
-		indexable = append(indexable, it)
-	}
-	dropped := len(items) - len(indexable)
+	indexable, dropped := indexableCatalogItems(items)
 
 	applog.WithFields(applog.Fields{
 		"catalog_items": len(items),
