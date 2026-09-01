@@ -252,12 +252,22 @@ func toolDecline() gollm.ToolDefinition {
 // provider is wired. render_chart is offered only when charting is enabled for
 // the turn AND a non-truncated query result exists to ground a chart against.
 // multi widens the query/schema tools for a project with several warehouses;
-// hasCube tells query_data and search_tables that not every reachable
-// datasource takes SQL or has tables.
-func toolsForPhase(grounded, hasSchema, hasInsights, multi, hasCube, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData(multi, hasCube)}
+// shapes tells query_data and search_tables that not every reachable datasource
+// takes SQL, and withholds lookup_schema entirely when none of them has tables
+// for it to look up.
+func toolsForPhase(grounded, hasSchema, hasInsights, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
+	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes.anyCube)}
 	if hasSchema {
-		tools = append(tools, toolLookupSchema(multi), toolSearchTables(hasCube))
+		// lookup_schema returns columns, so it can only fail when nothing
+		// reachable has any. Leaving it advertised is not merely untidy: while
+		// the turn is ungrounded the model is FORCED to call some tool, so an
+		// advertised-but-impossible tool can consume the very step that was
+		// meant to gather evidence. It stays offered on a mixed turn, where it
+		// is still the right tool for the SQL datasource.
+		if !shapes.allCube {
+			tools = append(tools, toolLookupSchema(multi))
+		}
+		tools = append(tools, toolSearchTables(shapes.anyCube))
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())

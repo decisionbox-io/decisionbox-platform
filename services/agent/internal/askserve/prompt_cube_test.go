@@ -2,6 +2,7 @@ package askserve
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +35,7 @@ var sqlSentences = []string{
 	"write aggregate SQL (COUNT, SUM, AVG, GROUP BY) — do NOT page through raw rows",
 	"your FIRST action must be a discovery query",
 	"start with search_tables or a discovery query",
+	"— find relevant tables semantically",
 }
 
 // cubePhrases are the statements a cube turn adds. None may appear on a turn
@@ -55,8 +57,8 @@ func promptsFor(routing turnRouting) map[string]string {
 	return map[string]string{
 		"text prompt":   buildSystemPrompt(rt, routing, cfg, false),
 		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false),
-		"query_data":    toolQueryData(routing.multi, routing.hasCube()).Description,
-		"search_tables": toolSearchTables(routing.hasCube()).Description,
+		"query_data":    toolQueryData(routing.multi, routing.shapes().anyCube).Description,
+		"search_tables": toolSearchTables(routing.shapes().anyCube).Description,
 	}
 }
 
@@ -131,6 +133,72 @@ func TestCubeTurn_DropsEverySQLAssertion(t *testing.T) {
 	}
 }
 
+// TestTurnRouting_Shapes_DistinguishAnyFromAll pins the two facts apart. They
+// are not interchangeable: anyCube decides whether a blanket SQL statement is
+// still true, while allCube decides whether a table-shaped tool can work at
+// all. Collapsing them would either describe a mixed turn as SQL or strip the
+// SQL datasource beside a cube of the tool it needs.
+func TestTurnRouting_Shapes_DistinguishAnyFromAll(t *testing.T) {
+	sql, cube := sqlDatasource("wh_1"), cubeDatasource("ga_1")
+
+	cases := []struct {
+		name             string
+		reach            []DatasourceInfo
+		anyCube, allCube bool
+	}{
+		{"all SQL", []DatasourceInfo{sql, sqlDatasource("wh_2")}, false, false},
+		{"mixed", []DatasourceInfo{sql, cube}, true, false},
+		{"all cube", []DatasourceInfo{cube, cubeDatasource("ga_2")}, true, true},
+		{"nothing reachable", nil, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := turnRouting{datasources: tc.reach, all: tc.reach, primary: "wh_1", multi: true}.shapes()
+			if got.anyCube != tc.anyCube || got.allCube != tc.allCube {
+				t.Errorf("shapes() = %+v, want {anyCube:%v allCube:%v}", got, tc.anyCube, tc.allCube)
+			}
+		})
+	}
+}
+
+// TestToolsForPhase_WithholdsLookupSchemaWhenNothingHasTables covers the one
+// place shape removes a tool rather than rewording it. lookup_schema returns
+// columns, so against a turn where nothing has any it can only fail — and
+// while the turn is ungrounded the model is FORCED to call some tool, so an
+// advertised-but-impossible tool can consume the very step meant to gather
+// evidence. On a mixed turn it must survive: it is still right for the SQL
+// datasource.
+func TestToolsForPhase_WithholdsLookupSchemaWhenNothingHasTables(t *testing.T) {
+	offered := func(shapes sourceShapes) bool {
+		for _, td := range toolsForPhase(true, true, false, true, shapes, false, false) {
+			if td.Name == string(actLookup) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !offered(sourceShapes{}) {
+		t.Error("lookup_schema was withheld from an all-SQL turn")
+	}
+	if !offered(sourceShapes{anyCube: true}) {
+		t.Error("lookup_schema was withheld from a mixed turn, where the SQL datasource still needs it")
+	}
+	if offered(sourceShapes{anyCube: true, allCube: true}) {
+		t.Error("lookup_schema was offered to a turn where nothing has columns to look up")
+	}
+
+	// Withholding it must not take search_tables with it — that is the only
+	// discovery tool such a turn has.
+	var names []string
+	for _, td := range toolsForPhase(true, true, false, true, sourceShapes{anyCube: true, allCube: true}, false, false) {
+		names = append(names, td.Name)
+	}
+	if !slices.Contains(names, string(actSearch)) {
+		t.Errorf("search_tables was not offered to a cube-only turn: %v", names)
+	}
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first
@@ -186,7 +254,7 @@ func TestDatasourcesSection_MixedShapes(t *testing.T) {
 	}
 }
 
-// TestTurnRouting_HasCube_ReadsWhatTheTurnCanReach pins the set the branches
+// TestTurnRouting_Shapes_ReadWhatTheTurnCanReach pins the set the branches
 // are computed over, which is neither the visible list nor always the
 // project's.
 //
@@ -197,7 +265,7 @@ func TestDatasourcesSection_MixedShapes(t *testing.T) {
 // datasource_id is validated against every datasource and search_tables spans
 // all of them: reading the narrowed list would promise SELECT-only to a turn
 // that can still target a source accepting no SQL.
-func TestTurnRouting_HasCube_ReadsWhatTheTurnCanReach(t *testing.T) {
+func TestTurnRouting_Shapes_ReadWhatTheTurnCanReach(t *testing.T) {
 	sql, sql2, cube := sqlDatasource("wh_1"), sqlDatasource("wh_2"), cubeDatasource("ga_1")
 	project := []DatasourceInfo{sql, sql2, cube}
 
@@ -225,7 +293,7 @@ func TestTurnRouting_HasCube_ReadsWhatTheTurnCanReach(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.routing.hasCube(); got != tc.want {
+			if got := tc.routing.shapes().anyCube; got != tc.want {
 				t.Errorf("hasCube() = %v, want %v", got, tc.want)
 			}
 		})
@@ -296,6 +364,11 @@ func TestLoop_OffersCubeShapedToolsToTheModel(t *testing.T) {
 			t.Errorf("the model was offered a SQL-shaped %s on a cube turn:\ngot:  %q\nwant: %q", name, got, want)
 		}
 	}
+	for _, td := range req.Tools {
+		if td.Name == string(actLookup) {
+			t.Errorf("lookup_schema was offered on a turn whose only source has no columns: %q", td.Description)
+		}
+	}
 }
 
 // TestToolsForPhase_HandsShapeToEveryToolThatNeedsIt covers the wiring rather
@@ -305,7 +378,8 @@ func TestLoop_OffersCubeShapedToolsToTheModel(t *testing.T) {
 func TestToolsForPhase_HandsShapeToEveryToolThatNeedsIt(t *testing.T) {
 	byName := func(hasCube bool) map[string]gollm.ToolDefinition {
 		out := map[string]gollm.ToolDefinition{}
-		for _, td := range toolsForPhase(true, true, false, true, hasCube, false, false) {
+		shapes := sourceShapes{anyCube: hasCube, allCube: false}
+		for _, td := range toolsForPhase(true, true, false, true, shapes, false, false) {
 			out[td.Name] = td
 		}
 		return out

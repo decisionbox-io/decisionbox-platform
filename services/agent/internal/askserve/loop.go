@@ -410,7 +410,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.routing.hasCube(), st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.routing.shapes(), st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
