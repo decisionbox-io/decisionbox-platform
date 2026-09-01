@@ -63,6 +63,12 @@ type turnState struct {
 	routeReason     string
 	routeConfidence float64
 	routeClarify    bool
+	// routeCandidates / routeChosen are the ballot and the verdict: what the
+	// router was offered, and what it picked. Recorded separately from
+	// st.touched (what the turn actually queried) because only the ballot can
+	// tell a datasource that lost from one that was never in the running.
+	routeCandidates []string
+	routeChosen     []string
 	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
 	// native-tools loop grounds on this, not on len(events): a failed query /
 	// rejected tenant filter / unavailable schema search records an event but
@@ -955,6 +961,8 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.RoutingReason = st.routeReason
 	fin.RoutingConfidence = st.routeConfidence
 	fin.RoutingClarify = st.routeClarify
+	fin.RoutingCandidateIDs = st.routeCandidates
+	fin.RoutingChosenIDs = st.routeChosen
 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
