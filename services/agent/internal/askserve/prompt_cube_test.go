@@ -304,6 +304,40 @@ func section(t *testing.T, prompt, start, end string) string {
 	return rest
 }
 
+// TestGroundingNudge_CorrectsInTheShapeOfTheSource covers the message that
+// arrives after the model has already gone wrong. It is the most recent thing
+// in the conversation at that point — on the tool path it arrives as an error
+// on the call it is correcting — so a nudge pointing at INFORMATION_SCHEMA
+// outranks everything the system prompt said about a source with no tables.
+func TestGroundingNudge_CorrectsInTheShapeOfTheSource(t *testing.T) {
+	const historic = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
+		"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
+		"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
+		"Only use clarify or decline if the question genuinely cannot be turned into any query."
+
+	if got := groundingNudge(sourceShapes{}); got != historic {
+		t.Errorf("the all-SQL nudge changed:\ngot:  %q\nwant: %q", got, historic)
+	}
+
+	mixed := groundingNudge(sourceShapes{anyCube: true})
+	if !strings.Contains(mixed, "apply only to a SQL datasource") {
+		t.Errorf("a mixed turn's nudge does not qualify its SQL discovery advice: %q", mixed)
+	}
+	if !strings.Contains(mixed, "INFORMATION_SCHEMA") {
+		t.Errorf("a mixed turn's nudge dropped SQL discovery, which its SQL datasource still needs: %q", mixed)
+	}
+
+	cube := groundingNudge(sourceShapes{anyCube: true, allCube: true})
+	for _, banned := range []string{"INFORMATION_SCHEMA", "lookup_schema", "tables or columns"} {
+		if strings.Contains(cube, banned) {
+			t.Errorf("a cube-only turn is nudged back toward %q: %q", banned, cube)
+		}
+	}
+	if !strings.Contains(cube, "search_tables") {
+		t.Errorf("a cube-only turn's nudge names no way to discover anything: %q", cube)
+	}
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first
