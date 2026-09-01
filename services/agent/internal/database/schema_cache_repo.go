@@ -140,15 +140,8 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseID
 	if warehouseID == "" {
 		warehouseID = models.DefaultWarehouseID
 	}
-	// Clear only the table entries. A blanket delete would take this
-	// warehouse's catalog entry with them, and a source that has both would
-	// silently lose half its index on the next table save.
-	if _, err := r.col().DeleteMany(ctx, bson.M{
-		"project_id":   projectID,
-		"warehouse_id": warehouseIDCond(warehouseID),
-		"entry_kind":   notCatalogCond(),
-	}); err != nil {
-		return fmt.Errorf("schema cache clear prior: %w", err)
+	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
+		return err
 	}
 
 	now := time.Now().UTC()
@@ -329,6 +322,29 @@ func notCatalogCond() bson.M {
 	return bson.M{"$ne": catalogEntryKind}
 }
 
+// clearDatasourceCache removes everything cached for one datasource, of either
+// kind, before a save writes the current state.
+//
+// Both kinds go, because a datasource has one or the other and never both: an
+// index run either lists tables or reads a catalog, decided by whether the
+// provider offers a catalog at all. So a save of either kind is the datasource
+// saying what it now is, and leaving the other kind behind would leave the
+// cache describing what it used to be.
+//
+// That is not hypothetical. A provider gaining a catalog — the source itself
+// unchanged, so its config hash unchanged — would otherwise keep answering
+// with the tables it no longer has, and every consumer would go on rendering
+// and authorising them.
+func (r *SchemaCacheRepository) clearDatasourceCache(ctx context.Context, projectID, warehouseID string) error {
+	if _, err := r.col().DeleteMany(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": warehouseIDCond(warehouseID),
+	}); err != nil {
+		return fmt.Errorf("schema cache clear prior: %w", err)
+	}
+	return nil
+}
+
 // catalogEntryKind marks a doc as a catalog ref list. Table entries carry no
 // entry_kind, so they are matched by its absence and are unaffected.
 const catalogEntryKind = "catalog"
@@ -352,18 +368,13 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 		warehouseID = models.DefaultWarehouseID
 	}
 
-	// Clear the prior entry first, and do it even when there is nothing to
-	// write. An empty save means this datasource now offers nothing, and
-	// returning early would leave the previous list in place as the authority
-	// — so search would keep trusting vector points for items the source has
-	// dropped. Replacing with nothing is a real statement, not a no-op.
-	filter := bson.M{
-		"project_id":   projectID,
-		"warehouse_id": warehouseIDCond(warehouseID),
-		"entry_kind":   catalogEntryKind,
-	}
-	if _, err := r.col().DeleteMany(ctx, filter); err != nil {
-		return fmt.Errorf("catalog cache clear prior: %w", err)
+	// Clear everything this datasource had, and do it even when there is
+	// nothing to write. An empty save means the datasource now offers nothing,
+	// and returning early would leave the previous list standing as the
+	// authority — so search would keep trusting points for items the source
+	// has dropped. Replacing with nothing is a statement, not a no-op.
+	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
+		return err
 	}
 	if len(refs) == 0 {
 		return nil

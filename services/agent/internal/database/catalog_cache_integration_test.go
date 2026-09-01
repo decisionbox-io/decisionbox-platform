@@ -71,39 +71,68 @@ func TestAgentInteg_CatalogCache_NotReadAsTableSchemas(t *testing.T) {
 	}
 }
 
-// TestAgentInteg_CatalogCache_SurvivesATableSave covers the other direction of
-// the same collision: saving tables must not delete the catalog entry beside
-// them, or a source with both silently loses half its index.
-func TestAgentInteg_CatalogCache_SurvivesATableSave(t *testing.T) {
+// TestAgentInteg_CatalogCache_SaveOfEitherKindReplacesTheOther pins the model
+// the cache actually has: a datasource holds tables OR a catalog, never both.
+// An index run lists tables or reads a catalog, decided by whether the
+// provider offers one — so a save of either kind is the datasource saying what
+// it now is, and anything of the other kind left behind describes what it used
+// to be.
+//
+// The concrete failure: a provider gains a catalog, the source itself
+// unchanged so its config hash unchanged. Without this, Find keeps returning
+// the tables it no longer has and every consumer goes on rendering and
+// authorising them.
+func TestAgentInteg_CatalogCache_SaveOfEitherKindReplacesTheOther(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.SaveCatalog(ctx, catalogTestProject, "mixed", "hash-a", []string{"sessions"}); err != nil {
-		t.Fatalf("SaveCatalog: %v", err)
-	}
-	if err := r.Save(ctx, catalogTestProject, "mixed", "hash-a", map[string]models.TableSchema{
-		"sales.orders": {TableName: "sales.orders", RowCount: 10},
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	t.Run("a catalog save retracts the tables", func(t *testing.T) {
+		if err := r.Save(ctx, catalogTestProject, "moved", "hash-a", map[string]models.TableSchema{
+			"sales.orders": {TableName: "sales.orders", RowCount: 10},
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if err := r.SaveCatalog(ctx, catalogTestProject, "moved", "hash-a", []string{"sessions"}); err != nil {
+			t.Fatalf("SaveCatalog: %v", err)
+		}
 
-	refs, err := r.FindCatalog(ctx, catalogTestProject, "mixed", "hash-a")
-	if err != nil {
-		t.Fatalf("FindCatalog: %v", err)
-	}
-	if len(refs) != 1 || refs[0] != "sessions" {
-		t.Errorf("catalog refs = %v, want them to survive a table save", refs)
-	}
+		tables, err := r.Find(ctx, catalogTestProject, "moved", "hash-a")
+		if err != nil {
+			t.Fatalf("Find: %v", err)
+		}
+		if len(tables) != 0 {
+			t.Errorf("tables = %+v, want none — this datasource is a catalog source now", tables)
+		}
+		refs, err := r.FindCatalog(ctx, catalogTestProject, "moved", "hash-a")
+		if err != nil || len(refs) != 1 {
+			t.Errorf("refs = %v, err = %v; want the new catalog", refs, err)
+		}
+	})
 
-	tables, err := r.Find(ctx, catalogTestProject, "mixed", "hash-a")
-	if err != nil {
-		t.Fatalf("Find: %v", err)
-	}
-	if len(tables) != 1 {
-		t.Errorf("table schemas = %+v, want exactly the one saved (no catalog doc leaking in)", tables)
-	}
+	t.Run("a table save retracts the catalog", func(t *testing.T) {
+		if err := r.SaveCatalog(ctx, catalogTestProject, "moved-back", "hash-b", []string{"sessions"}); err != nil {
+			t.Fatalf("SaveCatalog: %v", err)
+		}
+		if err := r.Save(ctx, catalogTestProject, "moved-back", "hash-b", map[string]models.TableSchema{
+			"sales.orders": {TableName: "sales.orders", RowCount: 10},
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		refs, err := r.FindCatalog(ctx, catalogTestProject, "moved-back", "hash-b")
+		if err != nil {
+			t.Fatalf("FindCatalog: %v", err)
+		}
+		if len(refs) != 0 {
+			t.Errorf("refs = %v, want none — this datasource has tables now", refs)
+		}
+		tables, err := r.Find(ctx, catalogTestProject, "moved-back", "hash-b")
+		if err != nil || len(tables) != 1 {
+			t.Errorf("tables = %+v, err = %v; want the new tables", tables, err)
+		}
+	})
 }
 
 // TestAgentInteg_CatalogCache_ResaveReplaces: re-indexing replaces the catalog
