@@ -113,3 +113,46 @@ func TestDiscoverSchemas_CacheWithoutCatalogSupportIsUnchanged(t *testing.T) {
 		t.Fatalf("error = %v, want the original re-index error for a cache that knows nothing of catalogs", err)
 	}
 }
+
+// TestCatalogRefsByDatasource covers how the search authority is assembled for
+// the schema provider, which filters every catalog hit against it. An empty or
+// mis-keyed result here is not an error anywhere — it is a source that returns
+// nothing from every search, forever.
+func TestCatalogRefsByDatasource(t *testing.T) {
+	t.Run("single-datasource run keys the run's own refs", func(t *testing.T) {
+		o := &Orchestrator{warehouseID: "ga", catalogRefs: []string{"sessions"}}
+		got := o.catalogRefsByDatasource(nil)
+		if len(got) != 1 || len(got["ga"]) != 1 || got["ga"][0] != "sessions" {
+			t.Errorf("got %v, want the refs keyed under this run's datasource", got)
+		}
+	})
+
+	t.Run("an unnamed datasource normalises rather than keying on empty", func(t *testing.T) {
+		o := &Orchestrator{warehouseID: "", catalogRefs: []string{"sessions"}}
+		got := o.catalogRefsByDatasource(nil)
+		// Points carry the normalised id, so keying on "" would authorise
+		// nothing and silently drop every hit.
+		if len(got[normDatasourceID("")]) != 1 {
+			t.Errorf("got %v, want the refs under the normalised default id", got)
+		}
+	})
+
+	t.Run("a multi-datasource run uses every datasource's refs", func(t *testing.T) {
+		o := &Orchestrator{warehouseID: "wh", catalogRefs: []string{"ignored"}}
+		dc := &datasourceContext{catalogRefs: map[string][]string{
+			"ga":  {"sessions"},
+			"crm": {"opportunities"},
+		}}
+		got := o.catalogRefsByDatasource(dc)
+		if len(got) != 2 || len(got["ga"]) != 1 || len(got["crm"]) != 1 {
+			t.Errorf("got %v, want every datasource's own refs", got)
+		}
+	})
+
+	t.Run("no catalog anywhere authorises nothing", func(t *testing.T) {
+		o := &Orchestrator{warehouseID: "wh"}
+		if got := o.catalogRefsByDatasource(&datasourceContext{}); got != nil {
+			t.Errorf("got %v, want nil so no catalog hit is trusted", got)
+		}
+	})
+}

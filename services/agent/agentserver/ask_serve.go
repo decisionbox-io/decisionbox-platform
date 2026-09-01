@@ -124,7 +124,7 @@ func runAskServe(cfg *config.Config) error {
 			// held separately. Skipping on the table cache alone is what made
 			// such a datasource invisible to schema search even after a
 			// successful index run.
-			catalogRefs, ccErr := schemaCache.FindCatalog(buildCtx, projectID, whID, discovery.WarehouseConfigHash(wh))
+			catalogRefs, ccErr := discovery.CatalogRefsFor(buildCtx, schemaCache, projectID, whID, discovery.WarehouseConfigHash(wh))
 			if ccErr != nil {
 				applog.WithError(ccErr).WithField("project_id", projectID).WithField("datasource_id", whID).
 					Warn("ask-serve: catalog cache lookup failed — this datasource's catalog is treated as unindexed")
@@ -161,14 +161,7 @@ func runAskServe(cfg *config.Config) error {
 			// AND, for a catalog source, its item refs. Omitting the refs
 			// silently drops every catalog hit from the cross-datasource view,
 			// which is the one the router reads.
-			tset := make(map[string]bool, len(schemas)+len(catalogRefs))
-			for tbl := range schemas {
-				tset[tbl] = true
-			}
-			for _, ref := range catalogRefs {
-				tset[ref] = true
-			}
-			whTables[whID] = tset
+			whTables[whID] = discovery.SearchAuthority(schemas, catalogRefs)
 		}
 
 		// Cross-datasource span searcher: one unfiltered Qdrant search over the

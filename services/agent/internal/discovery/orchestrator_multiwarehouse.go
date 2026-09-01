@@ -109,14 +109,12 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		// source contributes nothing to the merged tables AND has no entry in
 		// the search authority, so it is dropped from every cross-datasource
 		// result — indexed, present in the prompt, and permanently silent.
-		if cc, ok := o.schemaCache.(CatalogCache); ok {
-			refs, refErr := cc.FindCatalog(ctx, o.projectID, id, WarehouseConfigHash(wh))
-			if refErr != nil {
-				applog.WithError(refErr).WithField("datasource_id", id).
-					Warn("multi-warehouse discovery: catalog cache lookup failed; this datasource's catalog items will not be searchable")
-			} else if len(refs) > 0 {
-				dc.catalogRefs[id] = refs
-			}
+		refs, refErr := CatalogRefsFor(ctx, o.schemaCache, o.projectID, id, WarehouseConfigHash(wh))
+		if refErr != nil {
+			applog.WithError(refErr).WithField("datasource_id", id).
+				Warn("multi-warehouse discovery: catalog cache lookup failed; this datasource's catalog items will not be searchable")
+		} else if len(refs) > 0 {
+			dc.catalogRefs[id] = refs
 		}
 
 		// Per-datasource executor: its own dialect, datasets and filter, so
