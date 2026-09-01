@@ -225,6 +225,85 @@ func TestTextPrompt_AdvertisesNoLookupWhereNothingHasTables(t *testing.T) {
 	}
 }
 
+// TestToolsPrompt_OffersOnlyToolsTheTurnWasGiven pins the prompt against the
+// tool set it describes. toolsForPhase withholds lookup_schema when nothing
+// reachable has columns, so a prompt that still OFFERS it — in the TOOLS
+// listing or in the grounding rule naming what may be called — sends the model
+// after a tool it was never handed. That is the mirror of the bug this file
+// exists to fix.
+//
+// Only those two places count. The per-datasource block also names
+// lookup_schema, to say it does not apply, and that stays: it cannot misdirect
+// a model into calling a tool, and on the JSON-text path — which advertises
+// actions, not tools, and whose parser accepts any action the model invents —
+// the prohibition is what stops the call.
+func TestToolsPrompt_OffersOnlyToolsTheTurnWasGiven(t *testing.T) {
+	cfg := Config{PreviewRows: 20, MaxQueriesPerTurn: 8, MaxRounds: 12}
+	sql, cube := sqlDatasource("wh_1"), cubeDatasource("ga_1")
+
+	render := func(rt *ProjectRuntime, routing turnRouting) (string, bool) {
+		offered := false
+		for _, td := range toolsForPhase(true, true, rt.InsightsProvider != nil, routing.multi, routing.shapes(), false, false) {
+			if td.Name == string(actLookup) {
+				offered = true
+			}
+		}
+		return buildSystemPromptForTools(rt, routing, cfg, false), offered
+	}
+	multi := func(ds ...DatasourceInfo) turnRouting {
+		return turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}
+	}
+	pinned := func(d DatasourceInfo) turnRouting {
+		ds := []DatasourceInfo{d}
+		return turnRouting{datasources: ds, all: ds, pinned: d.ID, primary: d.ID}
+	}
+
+	// The two places a tool is offered rather than merely mentioned.
+	offerSites := func(prompt string) string {
+		tools := section(t, prompt, "\nTOOLS\n", "\nRESULT HANDLING\n")
+		grounding := section(t, prompt, "\nGROUNDING (required):", "\n")
+		return tools + grounding
+	}
+
+	cases := []struct {
+		name    string
+		rt      *ProjectRuntime
+		routing turnRouting
+	}{
+		{"cubes only", &ProjectRuntime{}, multi(cube, cubeDatasource("ga_2"))},
+		{"cubes only, with insights", &ProjectRuntime{InsightsProvider: &fakeInsights{}}, multi(cube, cubeDatasource("ga_2"))},
+		{"pinned to a cube", &ProjectRuntime{}, pinned(cube)},
+		{"mixed", &ProjectRuntime{}, multi(sql, cube)},
+		{"pinned to the SQL source", &ProjectRuntime{}, pinned(sql)},
+		{"all SQL", &ProjectRuntime{}, multi(sql, sqlDatasource("wh_2"))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, offered := render(tc.rt, tc.routing)
+			sites := offerSites(got)
+			if o := strings.Contains(sites, "lookup_schema"); o != offered {
+				t.Errorf("prompt offers lookup_schema = %v but the turn was given it = %v:\n%s", o, offered, sites)
+			}
+		})
+	}
+}
+
+// section returns the prompt text from the start marker up to the next end
+// marker, so an assertion can be aimed at one block instead of the whole
+// prompt.
+func section(t *testing.T, prompt, start, end string) string {
+	t.Helper()
+	i := strings.Index(prompt, start)
+	if i < 0 {
+		t.Fatalf("prompt has no %q section:\n%s", strings.TrimSpace(start), prompt)
+	}
+	rest := prompt[i+len(start):]
+	if j := strings.Index(rest, end); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first

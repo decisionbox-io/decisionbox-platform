@@ -112,7 +112,18 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	writeDataSection(&b, routing)
 
 	b.WriteString("\nTOOLS\n")
+	// The order matters: the all-cube case must be tested before the any-cube
+	// one, because it is the narrower of the two and toolsForPhase withholds
+	// lookup_schema on exactly this condition. Listing a tool the model was
+	// never given is the mirror of the bug this file exists to fix.
 	switch {
+	case routing.multi && shapes.allCube:
+		b.WriteString("- query_data: run one read-only query against ONE datasource (set datasource_id), written in that datasource's query language, and observe a summary of the result.\n")
+		// lookup_schema is not named at all, not even to deny it. This section
+		// is the offered tool set, and the turn was not given that tool; a
+		// denial here would only put a tool name in front of a model that had
+		// no other reason to think of it.
+		b.WriteString("- search_tables: discover what the datasources offer — their metrics and dimensions, each hit tagged with its datasource.\n")
 	case routing.multi && shapes.anyCube:
 		b.WriteString("- query_data: run one read-only query against ONE datasource (set datasource_id), written in that datasource's query language, and observe a summary of the result.\n")
 		b.WriteString("- search_tables / lookup_schema: discover what each datasource offers (search_tables spans all datasources — tables, and the metrics and dimensions of a source that has no tables — and tags each hit with its datasource; lookup_schema returns columns, so it applies to tables only).\n")
@@ -121,7 +132,7 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 		b.WriteString("- search_tables / lookup_schema: discover which datasource holds which tables and what columns they have (search_tables spans all datasources and tags each hit with its datasource).\n")
 	case shapes.anyCube:
 		b.WriteString("- query_data: run one read-only query, written in this source's query language, and observe a summary of the result.\n")
-		b.WriteString("- search_tables: discover the metrics and dimensions this source offers. lookup_schema does not apply — this source has no tables.\n")
+		b.WriteString("- search_tables: discover the metrics and dimensions this source offers.\n")
 	default:
 		b.WriteString("- query_data: run one read-only SQL query and observe a summary of the result.\n")
 		b.WriteString("- search_tables / lookup_schema: discover which tables exist and what columns they have.\n")
@@ -139,12 +150,25 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 		writeChartsSection(&b, cfg)
 	}
 
+	// Names only tools the turn was actually offered — lookup_schema is
+	// withheld when nothing reachable has columns, and naming it in the
+	// grounding rule would send the model looking for a tool that isn't there.
 	evidence := "query_data, search_tables, or lookup_schema"
-	if rt.InsightsProvider != nil {
+	switch {
+	case shapes.allCube && rt.InsightsProvider != nil:
+		evidence = "query_data, search_tables, or search_insights"
+	case shapes.allCube:
+		evidence = "query_data or search_tables"
+	case rt.InsightsProvider != nil:
 		evidence = "query_data, search_tables, lookup_schema, or search_insights"
 	}
 	discovery := "If you don't know the tables or columns, start with search_tables or a discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`); do not invent names."
-	if shapes.anyCube {
+	switch {
+	case shapes.allCube:
+		// No SQL datasource to qualify anything against, and no lookup_schema
+		// to rule out — mentioning either would name a path that is not there.
+		discovery = "If you don't know what a datasource offers, start with search_tables — it lists the metrics and dimensions each one has. Do not invent names."
+	case shapes.anyCube:
 		discovery = "If you don't know what a datasource offers, start with search_tables — it also covers the metrics and dimensions of a source that has no tables. A discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. Do not invent names."
 	}
 	fmt.Fprintf(&b, "\nGROUNDING (required): you MUST run at least one %s call and observe its result before you answer. Never state a table name, count, total, or value you have not seen in a result this turn — do not answer from prior knowledge or guesses. %s Only clarify when the request is genuinely too ambiguous to query, and prefer gathering evidence before you decline.\n", evidence, discovery)
