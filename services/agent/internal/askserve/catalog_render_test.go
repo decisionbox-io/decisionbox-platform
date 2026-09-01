@@ -132,3 +132,21 @@ func TestSearchOne_CarriesTheKind(t *testing.T) {
 		t.Errorf("rendered output = %q, want the metric labelled", out)
 	}
 }
+
+// TestFormatRouteEvidence_SaysWhatEachRefIs covers the evidence the router
+// reads to pick a datasource. A metric listed as a bare ref reads as a table,
+// which biases the choice toward whatever looks table-shaped and hides why the
+// other source matched at all.
+func TestFormatRouteEvidence_SaysWhatEachRefIs(t *testing.T) {
+	out := formatRouteEvidence([]TaggedHit{
+		{DatasourceID: "wh", Table: "sales.orders"},
+		{DatasourceID: "ga", Table: "sessions", Kind: "metric"},
+	})
+
+	if !strings.Contains(out, "- [wh] sales.orders\n") {
+		t.Errorf("output = %q, want the table listed unchanged", out)
+	}
+	if !strings.Contains(out, "- [ga] sessions (metric)") {
+		t.Errorf("output = %q, want the metric identified as one", out)
+	}
+}

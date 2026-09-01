@@ -92,6 +92,12 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 			applog.WithError(err).WithField("datasource_id", id).Warn("multi-warehouse discovery: schema cache miss for secondary datasource; skipping it")
 			continue
 		}
+		if schemas == nil {
+			// A catalog source legitimately has no tables. Leaving the map nil
+			// would be indistinguishable from an unindexed datasource further
+			// down; an empty map says "indexed, and it has none".
+			schemas = map[string]models.TableSchema{}
+		}
 
 		// Per-datasource executor: its own dialect, datasets and filter, so
 		// each statement is dialect-correct and governed by that datasource.
