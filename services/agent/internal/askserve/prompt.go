@@ -309,16 +309,24 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 			}
 		}
 		if isCube(d) {
-			// Stated as an absence, not just a different language: "no tables"
-			// is what stops a FROM clause being written, and it is the fact a
-			// language name alone does not convey.
-			fmt.Fprintf(b, "  NO TABLES — a metric/dimension cube. Query language: %s (not SQL). lookup_schema does not apply; search_tables lists its metrics and dimensions.\n", d.Language())
+			writeCubeCatalogLine(b, d)
 		} else if d.Dialect != "" {
 			fmt.Fprintf(b, "  SQL dialect: %s\n", d.Dialect)
 		}
 		if len(d.Datasets) > 0 {
 			fmt.Fprintf(b, "  datasets: %s\n", strings.Join(d.Datasets, ", "))
 		}
+		writeTenantScope(b, "  tenant scope: ", d)
+	}
+	for _, d := range hiddenCubes(routing) {
+		fmt.Fprintf(b, "\n• datasource_id: %s (not selected for this question — target it only if the ones above cannot answer)\n", d.ID)
+		if d.Label != "" {
+			fmt.Fprintf(b, "  name: %s\n", d.Label)
+		}
+		if d.Description != "" {
+			fmt.Fprintf(b, "  holds: %s\n", d.Description)
+		}
+		writeCubeCatalogLine(b, d)
 		writeTenantScope(b, "  tenant scope: ", d)
 	}
 	if hasCube {
@@ -329,6 +337,39 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 		b.WriteString("- Pick the datasource whose contents match the question. Use search_tables (it spans all datasources and tags each table with its datasource) when you're unsure which one holds what.\n")
 	}
 	b.WriteString("- To combine datasources, do it in HOPS: query one datasource, then use a SMALL set of the result values (e.g. the top-N ids you observed) as literal filters in a follow-up query on another datasource. Keep the crossed set small — only values you have actually observed in a result this turn. Do not attempt a cross-datasource join in a single query.\n")
+}
+
+// writeCubeCatalogLine renders one catalog entry's shape and language.
+//
+// Stated as an absence, not merely a different language: "no tables" is what
+// stops a FROM clause being written, and it is the fact a language name alone
+// does not convey.
+func writeCubeCatalogLine(b *strings.Builder, d DatasourceInfo) {
+	fmt.Fprintf(b, "  NO TABLES — a metric/dimension cube. Query language: %s (not SQL). lookup_schema does not apply; search_tables lists its metrics and dimensions.\n", d.Language())
+}
+
+// hiddenCubes returns the datasources this turn can reach that the catalog does
+// not list and that have no tables.
+//
+// The router narrows what is SHOWN, not what can be TARGETED: query_data
+// validates a model-chosen id against the whole project and search_tables spans
+// every datasource, so an unlisted one is a single search result away. For a
+// SQL datasource that costs nothing — the blanket guidance already describes it
+// correctly. A source whose language was never shown can only be queried by
+// guessing, so it is named here even though the router passed over it, marked
+// as the fallback it is rather than promoted into the router's choice.
+func hiddenCubes(r turnRouting) []DatasourceInfo {
+	shown := make(map[string]bool, len(r.datasources))
+	for _, d := range r.datasources {
+		shown[d.ID] = true
+	}
+	var out []DatasourceInfo
+	for _, d := range r.reachable() {
+		if !shown[d.ID] && isCube(d) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // isCube reports whether a datasource has no tables to select from.

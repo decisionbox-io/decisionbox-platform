@@ -381,6 +381,71 @@ func TestTenantScope_IsStatedInTermsTheSourceCanHonour(t *testing.T) {
 	}
 }
 
+// TestDatasourcesSection_NamesAReachableCubeTheRouterPassedOver covers the
+// recovery path the router leaves open. It narrows what is SHOWN, not what can
+// be TARGETED — query_data validates an id against the whole project and
+// search_tables spans every datasource — so a cube it passed over is one search
+// result away. Told that languages differ but shown only SQL datasources, the
+// model can be sent to a source whose language it was never given.
+func TestDatasourcesSection_NamesAReachableCubeTheRouterPassedOver(t *testing.T) {
+	sql, sql2, cube := sqlDatasource("wh_1"), sqlDatasource("wh_2"), cubeDatasource("ga_1")
+
+	var b strings.Builder
+	writeDatasourcesSection(&b, turnRouting{
+		datasources: []DatasourceInfo{sql, sql2}, // the router's choice
+		all:         []DatasourceInfo{sql, sql2, cube},
+		primary:     "wh_1",
+		multi:       true,
+	})
+	got := b.String()
+
+	for _, want := range []string{
+		"datasource_id: ga_1 (not selected for this question",
+		"Query language: Report Request (JSON) (not SQL)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a reachable cube the router passed over is missing %q:\n%s", want, got)
+		}
+	}
+
+	// The router's narrowing still holds for everything it can describe: a SQL
+	// datasource it passed over stays hidden, because the blanket guidance
+	// already covers it and surfacing it would undo the routing decision.
+	var h strings.Builder
+	writeDatasourcesSection(&h, turnRouting{
+		datasources: []DatasourceInfo{sql},
+		all:         []DatasourceInfo{sql, sql2, cube},
+		primary:     "wh_1",
+		multi:       true,
+	})
+	if strings.Contains(h.String(), "wh_2") {
+		t.Errorf("a SQL datasource the router passed over was surfaced anyway, undoing the routing decision:\n%s", h.String())
+	}
+	if !strings.Contains(h.String(), "datasource_id: ga_1") {
+		t.Errorf("the hidden cube was not named:\n%s", h.String())
+	}
+
+	// A project with nothing hidden renders no fallback entry at all.
+	var c strings.Builder
+	writeDatasourcesSection(&c, turnRouting{
+		datasources: []DatasourceInfo{sql, sql2},
+		all:         []DatasourceInfo{sql, sql2},
+		primary:     "wh_1",
+		multi:       true,
+	})
+	if strings.Contains(c.String(), "not selected for this question") {
+		t.Errorf("an all-SQL project grew a fallback entry:\n%s", c.String())
+	}
+
+	// A cube the router DID select is listed once, in the catalog proper.
+	var d strings.Builder
+	shown := []DatasourceInfo{sql, cube}
+	writeDatasourcesSection(&d, turnRouting{datasources: shown, all: shown, primary: "wh_1", multi: true})
+	if n := strings.Count(d.String(), "datasource_id: ga_1"); n != 1 {
+		t.Errorf("a selected cube appears %d times, want 1:\n%s", n, d.String())
+	}
+}
+
 // TestCubeSection_StatesTheAbsenceBeforeTheLanguage pins the ordering, which is
 // the whole design of the block. A model that reads "no tables" first cannot
 // then write a FROM clause by reflex; one that reads a language name first
