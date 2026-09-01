@@ -143,3 +143,75 @@ func TestRenderCompactedSteps_UnchangedForCleanSteps(t *testing.T) {
 		t.Error("quality_caveats key present on a clean step")
 	}
 }
+
+// TestInsightQualityIsNotDecodableFromModelOutput covers the invariant this
+// whole design rests on: the caveat is DERIVED, so the model must not be able
+// to author it.
+//
+// Two failures, and the second is the dangerous one. A model emitting a
+// caveat could hang a fabricated one on a clean insight. But "quality" is also
+// an obvious key for a model to invent while describing a finding — and a
+// scalar under a field typed as a list would fail the decode and drop the
+// insight entirely, losing a real finding to a stray word.
+func TestInsightQualityIsNotDecodableFromModelOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "a fabricated caveat list",
+			raw:  `{"name":"x","quality":[{"kind":"withheld","detail":"invented"}]}`,
+		},
+		{
+			// The realistic one: a model describing its own confidence.
+			name: "a scalar, which must not fail the decode",
+			raw:  `{"name":"x","quality":"high"}`,
+		},
+		{
+			name: "an object",
+			raw:  `{"name":"x","quality":{"rating":"good"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ins models.Insight
+			if err := json.Unmarshal([]byte(tt.raw), &ins); err != nil {
+				t.Fatalf("model output must still decode; a stray key cannot cost a real insight: %v", err)
+			}
+			if ins.Name != "x" {
+				t.Errorf("Name = %q, want the insight to decode normally", ins.Name)
+			}
+			if ins.Quality != nil {
+				t.Errorf("Quality = %+v, want nothing authored by the model to reach the field", ins.Quality)
+			}
+		})
+	}
+}
+
+// TestInsightQualityStillSerialisesOutward pins the other half: derived
+// caveats must reach storage and clients. Ignoring the model's input is not
+// the same as suppressing our own output.
+func TestInsightQualityStillSerialisesOutward(t *testing.T) {
+	ins := models.Insight{
+		Name:    "x",
+		Quality: []gowarehouse.QualityCaveat{withheld("small cohorts omitted")},
+	}
+	out, err := json.Marshal(ins)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "small cohorts omitted") {
+		t.Errorf("serialised insight lost its derived caveat: %s", out)
+	}
+
+	// And a clean insight emits no field at all, so existing consumers see an
+	// unchanged shape.
+	clean, err := json.Marshal(models.Insight{Name: "x"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(clean), "quality") {
+		t.Errorf("a clean insight gained a quality key: %s", clean)
+	}
+}

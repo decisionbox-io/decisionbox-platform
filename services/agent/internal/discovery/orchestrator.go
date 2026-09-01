@@ -1494,6 +1494,12 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 			continue
 		}
 
+		// Whatever the model may have put here, it is not evidence about the
+		// evidence. This field is derived from the cited steps further down;
+		// clearing it means an authored value cannot survive even if the
+		// output happened to use the field's own name.
+		insight.Quality = nil
+
 		insight.AnalysisArea = areaID
 		if insight.DiscoveredAt.IsZero() {
 			insight.DiscoveredAt = time.Now()

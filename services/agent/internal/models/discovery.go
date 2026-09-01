@@ -123,7 +123,15 @@ type Insight struct {
 	// mention the caveat would produce a finding indistinguishable from a
 	// sound one. Deriving it means the label survives regardless of what the
 	// model wrote.
-	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"quality,omitempty"`
+	// The JSON name is deliberately not "quality". Insights are decoded from
+	// model output with the standard decoder, so a key matching this tag would
+	// be read straight into the field — letting the model author the very
+	// label whose point is that it is derived. Worse, "quality" is an obvious
+	// thing for a model to emit unprompted, and a scalar such as
+	// "quality": "high" would fail the decode and drop the whole insight.
+	// Under a name the prompt never mentions, such a key is an unknown field
+	// and is ignored.
+	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
 
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
