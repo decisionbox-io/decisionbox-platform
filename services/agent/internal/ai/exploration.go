@@ -1716,10 +1716,20 @@ func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearche
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 
 	if len(hits) == 0 {
-		b.WriteString("(no matching tables; try different terms or pick from the catalog in the system prompt)")
+		b.WriteString("(no matches; try different terms or pick from the catalog in the system prompt)")
 	} else {
+		anyTable := false
 		for i, h := range hits {
-			fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			// A hit that is not a table must not be rendered as one. Backticked
+			// and followed by "issue lookup_schema with the table refs", a
+			// metric reads as a SQL table — and the model then looks up a
+			// schema that does not exist, or writes a FROM clause against it.
+			if h.Kind != "" {
+				fmt.Fprintf(&b, "%d. `%s` (%s) — score=%.3f", i+1, h.Table, h.Kind, h.Score)
+			} else {
+				anyTable = true
+				fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			}
 			// On a multi-warehouse run, tag each hit with its datasource so
 			// the model knows which datasource_id to target on a follow-up.
 			if showDatasource && h.Datasource != "" {
@@ -1731,7 +1741,13 @@ func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearche
 			}
 			b.WriteByte('\n')
 		}
-		b.WriteString("\nIssue lookup_schema with the table refs you want full column detail for before querying them.")
+		// Only advise lookup_schema when something in the result actually has
+		// a schema to look up. Telling the model to do it for a result made
+		// only of metrics and dimensions sends it after a table that does not
+		// exist.
+		if anyTable {
+			b.WriteString("\nIssue lookup_schema with the table refs you want full column detail for before querying them.")
+		}
 	}
 
 	if maxSearches > 0 {

@@ -83,30 +83,12 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// Blurb LLM — independent of the analysis LLM. Falls back to
 	// project.LLM if blurb_llm is not set (e.g. a legacy project), on
 	// the assumption the user already has credentials for that provider.
-	blurbProvider, blurbModel, blurbAPIKey, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
-	if err != nil {
-		return fmt.Errorf("blurb llm: %w", err)
-	}
-	if blurb.IsReasoningClassModel(blurbModel) {
-		return fmt.Errorf("blurb model %q is reasoning-class and cannot be used — pick gpt-4.1-nano, claude-haiku-4-5, or qwen.qwen3-32b-v1:0", blurbModel)
-	}
-
-	// Pick the right config source for the blurb provider — when blurb
-	// is configured separately, its own Config holds the auth_method +
-	// per-method fields. Falling through to project.LLM.Config here was
-	// the legacy behaviour that worked only by accident when blurb and
-	// analysis used the same provider (e.g. Gemini + Gemini); a mixed
-	// setup like Vertex analysis + Bedrock blurb fed GCP auth_method
-	// values into the AWS factory and tripped "unsupported auth method".
-	blurbConfig := project.LLM.Config
-	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-		blurbConfig = project.BlurbLLM.Config
-	}
-	llmCfg := buildLLMProviderConfig(cfg, blurbConfig, blurbAPIKey, blurbModel)
-	llm, err := gollm.NewProvider(blurbProvider, llmCfg)
-	if err != nil {
-		return fmt.Errorf("build blurb LLM (%s): %w", blurbProvider, err)
-	}
+	//
+	// Built only when some datasource in this project is actually described
+	// by generated blurbs. A catalog source describes itself, so a project
+	// made only of those never calls the generator — and resolving a blurb
+	// LLM regardless would fail such a project's index run on a model it
+	// would never have used.
 
 	// Retriever: connect to Qdrant. Unlike discovery this is mandatory,
 	// not optional — without Qdrant there is nothing to index into.
@@ -125,26 +107,16 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	progressRepo := database.NewSchemaIndexProgressRepository(db)
 	schemaCache := database.NewSchemaCacheRepository(db)
 
-	workers := envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers)
-	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
-	// budget without code changes. Defaults to blurb.DefaultMaxTokens
-	// (8192) which fits a thinking-model preamble + a 2-4-sentence
-	// answer across the full range of warehouse shapes we've seen
-	// in practice. Bump further for outsized custom prompts; drop
-	// it for cost control on a cheap non-reasoning blurb model.
-	maxTokens := envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens)
-	gen, err := blurb.New(blurb.Config{
-		LLM:          llm,
-		Model:        blurbModel,
-		ProviderName: blurbProvider,
-		Workers:      workers,
-		MaxTokens:    maxTokens,
-		// A user-deployed endpoint serves its own model, so blurbModel is
-		// empty — let the generator accept that instead of demanding an ID.
-		AllowEmptyModel: strings.TrimSpace(blurbConfig["endpoint_id"]) != "",
-	})
-	if err != nil {
-		return fmt.Errorf("blurb generator: %w", err)
+	var (
+		gen        *blurb.Generator
+		blurbLabel string
+	)
+	if projectNeedsBlurbs(project) {
+		var err error
+		gen, blurbLabel, err = newBlurbGenerator(ctx, cfg, project, secretProvider, projectID)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Per-dataset totals accumulate into the (project-level) progress doc so the
@@ -216,12 +188,20 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 			WarehouseHash: discovery.WarehouseConfigHash(wh),
 			WarehouseID:   whID,
 		}
+		// A source that describes itself with a catalog is indexed from it.
+		// Without this the run begins by listing tables, which such a source
+		// refuses, and the whole index fails rather than degrading — so the
+		// datasource can never become ready.
+		if catalog, ok := gowarehouse.AsCatalogSource(provider); ok {
+			indexer.Catalog = catalog
+			applog.WithField("warehouse_id", whID).Info("index_schema: source is catalog-shaped; indexing its catalog instead of tables")
+		}
 
 		start := time.Now()
 		stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{
 			ProjectID:       projectID,
 			RunID:           runID,
-			BlurbModelLabel: blurbProvider + "/" + blurbModel,
+			BlurbModelLabel: blurbLabel,
 			DomainBlurb:     firstNonEmpty(project.Description, ""),
 		})
 		if err != nil {
@@ -282,6 +262,72 @@ func warehousesToIndex(project *models.Project) []models.WarehouseConfig {
 		out = append(out, wh)
 	}
 	return out
+}
+
+// projectNeedsBlurbs reports whether any datasource in the project is
+// described by generated blurbs. A catalog source is not — it supplies its own
+// descriptions — so a project made only of those needs no blurb LLM, and
+// demanding one would fail its index run on a model it would never call.
+//
+// An unregistered provider slug counts as needing blurbs, which is what every
+// provider needed before catalog sources existed.
+func projectNeedsBlurbs(project *models.Project) bool {
+	for _, wh := range project.EffectiveWarehouses() {
+		meta, ok := gowarehouse.GetProviderMeta(wh.Provider)
+		if !ok || meta.EffectiveShape() != gowarehouse.ShapeCube {
+			return true
+		}
+	}
+	return false
+}
+
+// newBlurbGenerator resolves the blurb LLM and builds the generator, returning
+// it with the "provider/model" label recorded on every indexed point.
+func newBlurbGenerator(ctx context.Context, cfg *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (*blurb.Generator, string, error) {
+	blurbProvider, blurbModel, blurbAPIKey, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
+	if err != nil {
+		return nil, "", fmt.Errorf("blurb llm: %w", err)
+	}
+	if blurb.IsReasoningClassModel(blurbModel) {
+		return nil, "", fmt.Errorf("blurb model %q is reasoning-class and cannot be used — pick gpt-4.1-nano, claude-haiku-4-5, or qwen.qwen3-32b-v1:0", blurbModel)
+	}
+
+	// Pick the right config source for the blurb provider — when blurb
+	// is configured separately, its own Config holds the auth_method +
+	// per-method fields. Falling through to project.LLM.Config here was
+	// the legacy behaviour that worked only by accident when blurb and
+	// analysis used the same provider (e.g. Gemini + Gemini); a mixed
+	// setup like Vertex analysis + Bedrock blurb fed GCP auth_method
+	// values into the AWS factory and tripped "unsupported auth method".
+	blurbConfig := project.LLM.Config
+	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
+		blurbConfig = project.BlurbLLM.Config
+	}
+	llmCfg := buildLLMProviderConfig(cfg, blurbConfig, blurbAPIKey, blurbModel)
+	llm, err := gollm.NewProvider(blurbProvider, llmCfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("build blurb LLM (%s): %w", blurbProvider, err)
+	}
+
+	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
+	// budget without code changes. Defaults to blurb.DefaultMaxTokens
+	// (8192) which fits a thinking-model preamble + a 2-4-sentence
+	// answer across the full range of warehouse shapes we've seen
+	// in practice.
+	gen, err := blurb.New(blurb.Config{
+		LLM:          llm,
+		Model:        blurbModel,
+		ProviderName: blurbProvider,
+		Workers:      envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers),
+		MaxTokens:    envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens),
+		// A user-deployed endpoint serves its own model, so blurbModel is
+		// empty — let the generator accept that instead of demanding an ID.
+		AllowEmptyModel: strings.TrimSpace(blurbConfig["endpoint_id"]) != "",
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("blurb generator: %w", err)
+	}
+	return gen, blurbProvider + "/" + blurbModel, nil
 }
 
 // resolveBlurbLLM picks the provider + model + credential for blurb

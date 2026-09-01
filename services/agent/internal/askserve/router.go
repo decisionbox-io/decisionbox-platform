@@ -216,6 +216,14 @@ func datasourceInfosFor(rt *ProjectRuntime, ids []string) []DatasourceInfo {
 func formatRouteEvidence(hits []TaggedHit) string {
 	var b strings.Builder
 	for _, h := range hits {
+		// Say what each ref is. Routing evidence is what the model reads to
+		// pick a datasource, and a metric listed as a bare ref reads as a
+		// table — which biases it toward whichever source looks table-shaped
+		// and hides why the other one matched.
+		if h.Kind != "" {
+			fmt.Fprintf(&b, "- [%s] %s (%s)\n", h.DatasourceID, h.Table, h.Kind)
+			continue
+		}
 		fmt.Fprintf(&b, "- [%s] %s\n", h.DatasourceID, h.Table)
 	}
 	return strings.TrimRight(b.String(), "\n")

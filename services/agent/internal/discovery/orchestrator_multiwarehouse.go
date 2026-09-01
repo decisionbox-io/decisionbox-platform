@@ -30,8 +30,14 @@ type datasourceContext struct {
 	executors      map[string]*queryexec.QueryExecutor // keyed by normalised datasource id
 	mergedSchemas  map[string]models.TableSchema       // union of every datasource's tables
 	tableWarehouse map[string]string                   // canonical table → owning datasource id
-	schemasByDS    map[string]map[string]models.TableSchema
-	descriptors    []datasourceDescriptor // ordered, primary first
+	// catalogRefs holds each catalog-shaped datasource's items, keyed by
+	// datasource id. A datasource with no tables contributes nothing to
+	// mergedSchemas, so without this it has no authority in the
+	// cross-datasource search and every one of its hits is dropped — it stays
+	// invisible to discovery even after indexing successfully.
+	catalogRefs map[string][]string
+	schemasByDS map[string]map[string]models.TableSchema
+	descriptors []datasourceDescriptor // ordered, primary first
 }
 
 // datasourceDescriptor is the prompt/catalog-facing view of one datasource.
@@ -70,6 +76,7 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		mergedSchemas:  make(map[string]models.TableSchema),
 		tableWarehouse: make(map[string]string),
 		schemasByDS:    make(map[string]map[string]models.TableSchema),
+		catalogRefs:    make(map[string][]string),
 	}
 
 	for _, wh := range orderWarehousesPrimaryFirst(o.warehouses, primaryID) {
@@ -91,6 +98,41 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 			}
 			applog.WithError(err).WithField("datasource_id", id).Warn("multi-warehouse discovery: schema cache miss for secondary datasource; skipping it")
 			continue
+		}
+		// Load whatever catalog this datasource has. Without it a catalog
+		// source contributes nothing to the merged tables AND has no entry in
+		// the search authority, so it is dropped from every cross-datasource
+		// result — indexed, present in the prompt, and permanently silent.
+		refs, refErr := CatalogRefsFor(ctx, o.schemaCache, o.projectID, id, WarehouseConfigHash(wh))
+		if refErr != nil {
+			applog.WithError(refErr).WithField("datasource_id", id).
+				Warn("multi-warehouse discovery: catalog cache lookup failed; this datasource's catalog items will not be searchable")
+		}
+
+		// Distinguish "indexed, and it legitimately has no tables" from "not
+		// indexed at all". Only the catalog tells them apart, and conflating
+		// them is the worse direction: the datasource would be wired in and
+		// described to the model while every hit it produced was filtered
+		// away, so it would look available and answer nothing. A datasource
+		// with neither tables nor catalog has simply never been indexed, and
+		// is treated exactly as any other cache miss here.
+		if !datasourceIsIndexed(schemas, refs) {
+			if id == primaryID {
+				return nil, fmt.Errorf("multi-warehouse discovery: primary datasource %q is not indexed — re-index required (POST /api/v1/projects/%s/reindex)", id, o.projectID)
+			}
+			applog.WithField("datasource_id", id).
+				Warn("multi-warehouse discovery: secondary datasource is not indexed (no tables and no catalog); skipping it")
+			continue
+		}
+
+		if schemas == nil {
+			// A catalog source legitimately has no tables, and by here we know
+			// it is indexed. An empty map says "indexed, and it has none";
+			// leaving it nil would read as unindexed further down.
+			schemas = map[string]models.TableSchema{}
+		}
+		if len(refs) > 0 {
+			dc.catalogRefs[id] = refs
 		}
 
 		// Per-datasource executor: its own dialect, datasets and filter, so
@@ -279,6 +321,20 @@ func (o *Orchestrator) buildValidationRouting(dc *datasourceContext, schemaProvi
 // all resolve to the same executor / catalog section. Mirrors the ai
 // package's helper of the same name (kept local to avoid coupling the
 // discovery orchestrator to the exploration engine's internals).
+// datasourceIsIndexed reports whether a datasource has anything indexed at
+// all — tables, or a catalog.
+//
+// It exists because "no tables" is ambiguous on its own: a catalog source has
+// none by nature, and an unindexed source has none because nothing ran. Only
+// the catalog separates them, and conflating them is the worse direction. An
+// unindexed datasource accepted as "indexed and empty" is wired in and
+// described to the model while every hit it produces is filtered away — it
+// looks available and answers nothing, which is far harder to diagnose than
+// being told to re-index.
+func datasourceIsIndexed(schemas map[string]models.TableSchema, catalogRefs []string) bool {
+	return len(schemas) > 0 || len(catalogRefs) > 0
+}
+
 func normDatasourceID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {

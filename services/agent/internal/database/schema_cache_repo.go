@@ -78,6 +78,12 @@ func (r *SchemaCacheRepository) Find(ctx context.Context, projectID, warehouseID
 		"project_id":     projectID,
 		"warehouse_id":   warehouseIDCond(warehouseID),
 		"warehouse_hash": warehouseHash,
+		// Catalog entries share this collection and are NOT table schemas.
+		// Decoded as one, a catalog doc yields an entry under the empty key
+		// and turns this map non-empty — which every consumer reads as
+		// "tables are cached", so a source with no tables would be reported
+		// as having one, blank, table. Table entries carry no entry_kind.
+		"entry_kind": notCatalogCond(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("schema cache find: %w", err)
@@ -134,11 +140,8 @@ func (r *SchemaCacheRepository) Save(ctx context.Context, projectID, warehouseID
 	if warehouseID == "" {
 		warehouseID = models.DefaultWarehouseID
 	}
-	if _, err := r.col().DeleteMany(ctx, bson.M{
-		"project_id":   projectID,
-		"warehouse_id": warehouseIDCond(warehouseID),
-	}); err != nil {
-		return fmt.Errorf("schema cache clear prior: %w", err)
+	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
+		return err
 	}
 
 	now := time.Now().UTC()
@@ -291,4 +294,130 @@ func (r *SchemaCacheRepository) Invalidate(ctx context.Context, projectID string
 		return fmt.Errorf("schema cache invalidate: %w", err)
 	}
 	return nil
+}
+
+// CatalogCacheEntry is the on-disk shape for a catalog source's item refs.
+//
+// One doc per (project, warehouse, hash) rather than one per item: a catalog
+// is a few hundred short strings, nowhere near the BSON cap that made the
+// table cache one-doc-per-table, and reading it back as a single document
+// keeps the "is this datasource indexed?" question a single lookup.
+//
+// It lives in the same collection as the table entries, distinguished by
+// EntryKind, so it inherits the same TTL and the same invalidation-by-hash
+// behaviour without a second collection to provision.
+type CatalogCacheEntry struct {
+	ProjectID     string    `bson:"project_id"`
+	WarehouseID   string    `bson:"warehouse_id"`
+	WarehouseHash string    `bson:"warehouse_hash"`
+	EntryKind     string    `bson:"entry_kind"`
+	Refs          []string  `bson:"refs"`
+	CachedAt      time.Time `bson:"cached_at"`
+}
+
+// notCatalogCond matches a table entry: one written without an entry_kind.
+// Every doc predating catalog entries is in that set, so the condition costs
+// existing caches nothing.
+func notCatalogCond() bson.M {
+	return bson.M{"$ne": catalogEntryKind}
+}
+
+// clearDatasourceCache removes everything cached for one datasource, of either
+// kind, before a save writes the current state.
+//
+// Both kinds go, because a datasource has one or the other and never both: an
+// index run either lists tables or reads a catalog, decided by whether the
+// provider offers a catalog at all. So a save of either kind is the datasource
+// saying what it now is, and leaving the other kind behind would leave the
+// cache describing what it used to be.
+//
+// That is not hypothetical. A provider gaining a catalog — the source itself
+// unchanged, so its config hash unchanged — would otherwise keep answering
+// with the tables it no longer has, and every consumer would go on rendering
+// and authorising them.
+func (r *SchemaCacheRepository) clearDatasourceCache(ctx context.Context, projectID, warehouseID string) error {
+	if _, err := r.col().DeleteMany(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": warehouseIDCond(warehouseID),
+	}); err != nil {
+		return fmt.Errorf("schema cache clear prior: %w", err)
+	}
+	return nil
+}
+
+// catalogEntryKind marks a doc as a catalog ref list. Table entries carry no
+// entry_kind, so they are matched by its absence and are unaffected.
+const catalogEntryKind = "catalog"
+
+// SaveCatalog records the refs a catalog source currently offers.
+//
+// The refs are what makes a catalog datasource usable downstream: they are
+// the authority for "this datasource, at this config, offers exactly these
+// items". Without them a consumer cannot tell a live catalog point from one
+// left in the shared vector collection by a datasource that has since been
+// removed — the index is not self-cleaning, and only a cache entry keyed by
+// the current config hash can say what is current.
+func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs []string) error {
+	if projectID == "" {
+		return errors.New("projectID is required")
+	}
+	if warehouseHash == "" {
+		return errors.New("warehouseHash is required")
+	}
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+
+	// Clear everything this datasource had, and do it even when there is
+	// nothing to write. An empty save means the datasource now offers nothing,
+	// and returning early would leave the previous list standing as the
+	// authority — so search would keep trusting points for items the source
+	// has dropped. Replacing with nothing is a statement, not a no-op.
+	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
+		return err
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+
+	_, err := r.col().InsertOne(ctx, CatalogCacheEntry{
+		ProjectID:     projectID,
+		WarehouseID:   warehouseID,
+		WarehouseHash: warehouseHash,
+		EntryKind:     catalogEntryKind,
+		Refs:          refs,
+		CachedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("catalog cache save: %w", err)
+	}
+	return nil
+}
+
+// FindCatalog returns the refs a catalog source offered at this config hash,
+// or nil when there is no entry — a cold cache, a config change that moved the
+// hash, or a source that is not catalog-shaped. All three are the same answer
+// to the caller: nothing is known, so treat the datasource as unindexed.
+func (r *SchemaCacheRepository) FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error) {
+	if projectID == "" || warehouseHash == "" {
+		return nil, nil
+	}
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+
+	var entry CatalogCacheEntry
+	err := r.col().FindOne(ctx, bson.M{
+		"project_id":     projectID,
+		"warehouse_id":   warehouseIDCond(warehouseID),
+		"warehouse_hash": warehouseHash,
+		"entry_kind":     catalogEntryKind,
+	}).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("catalog cache find: %w", err)
+	}
+	return entry.Refs, nil
 }

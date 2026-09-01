@@ -93,12 +93,12 @@ func TestParseAction_LookupSchemaShape(t *testing.T) {
 func TestParseAction_SearchTablesShape(t *testing.T) {
 	engine := &ExplorationEngine{}
 	cases := []struct {
-		name        string
-		input       string
-		wantQuery   string
-		wantTopK    int
-		wantErr     bool
-		wantActErr  bool // true if Action shouldn't be search_tables
+		name       string
+		input      string
+		wantQuery  string
+		wantTopK   int
+		wantErr    bool
+		wantActErr bool // true if Action shouldn't be search_tables
 	}{
 		{
 			name:      "minimal",
@@ -407,8 +407,15 @@ func TestFormatSearchResult_RendersHits(t *testing.T) {
 
 func TestFormatSearchResult_EmptyHits(t *testing.T) {
 	got := formatSearchResult("nope", nil, 1, 5, false)
-	if !strings.Contains(got, "no matching tables") {
+	// "no matches" rather than "no matching tables": the index may hold
+	// catalog items, and a source made only of those has no tables at all —
+	// so the older wording asserted something false about what was searched,
+	// and would tell a model that tables exist but did not match.
+	if !strings.Contains(got, "no matches") {
 		t.Errorf("expected empty-hits message: %s", got)
+	}
+	if !strings.Contains(got, "try different terms") {
+		t.Errorf("expected the empty-hits guidance to survive: %s", got)
 	}
 }
 
