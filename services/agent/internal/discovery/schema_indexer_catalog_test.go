@@ -18,6 +18,23 @@ type stubCatalog struct {
 	calls int
 }
 
+// retractingCache records catalog saves so a retraction can be observed.
+type retractingCache struct {
+	stubCache
+	saved     [][]string
+	savedOnce bool
+}
+
+func (c *retractingCache) FindCatalog(context.Context, string, string, string) ([]string, error) {
+	return nil, nil
+}
+
+func (c *retractingCache) SaveCatalog(_ context.Context, _, _, _ string, refs []string) error {
+	c.saved = append(c.saved, refs)
+	c.savedOnce = true
+	return nil
+}
+
 func (c *stubCatalog) Catalog(context.Context) ([]gowarehouse.CatalogItem, error) {
 	c.calls++
 	return c.items, c.err
@@ -218,5 +235,59 @@ func TestIndexableCatalogItems_KindlessDoesNotTakeTheRestWithIt(t *testing.T) {
 	}
 	if dropped != 1 {
 		t.Errorf("dropped = %d, want 1", dropped)
+	}
+}
+
+// TestBuildCatalogIndex_RetractsStaleStateBeforeFailing covers what a failing
+// re-index must still do.
+//
+// The run correctly concludes the source offers nothing usable — but a
+// previous run indexed something, and that something is now false. Failing
+// without withdrawing it leaves every consumer treating removed or
+// now-inaccessible items as current, while the error the operator reads says
+// only that the index failed. The system would keep answering from data the
+// run just determined was wrong.
+func TestBuildCatalogIndex_RetractsStaleStateBeforeFailing(t *testing.T) {
+	cache := &retractingCache{}
+	si := &SchemaIndexer{
+		Catalog:       &stubCatalog{items: []gowarehouse.CatalogItem{{Ref: "gone", Kind: gowarehouse.ItemKindMetric, Text: "No longer readable.", Unavailable: "NO_ACCESS"}}},
+		Embedder:      &stubEmbedder{dim: 3},
+		Cache:         cache,
+		WarehouseHash: "hash-a",
+	}
+
+	_, err := si.buildCatalogIndex(context.Background(), IndexOptions{ProjectID: "p1"}, time.Now())
+	if err == nil {
+		t.Fatal("a catalog with nothing usable must fail the run")
+	}
+	if !strings.Contains(err.Error(), "no indexable items") {
+		t.Errorf("error = %q, want the reason the run failed, not the reason a cleanup failed", err.Error())
+	}
+	if !cache.savedOnce {
+		t.Fatal("the stale catalog was never retracted; removed items stay authorised")
+	}
+	if len(cache.saved) != 1 || len(cache.saved[0]) != 0 {
+		t.Errorf("saved = %v, want a single empty retraction", cache.saved)
+	}
+}
+
+// TestBuildCatalogIndex_DoesNotRetractWhenTheCatalogCouldNotBeRead is the
+// other half. A failed read says nothing about what the source offers, so
+// withdrawing the previous index on it would destroy a good index because of a
+// transient outage.
+func TestBuildCatalogIndex_DoesNotRetractWhenTheCatalogCouldNotBeRead(t *testing.T) {
+	cache := &retractingCache{}
+	si := &SchemaIndexer{
+		Catalog:       &stubCatalog{err: errors.New("network unreachable")},
+		Embedder:      &stubEmbedder{dim: 3},
+		Cache:         cache,
+		WarehouseHash: "hash-a",
+	}
+
+	if _, err := si.buildCatalogIndex(context.Background(), IndexOptions{ProjectID: "p1"}, time.Now()); err == nil {
+		t.Fatal("expected the read failure")
+	}
+	if cache.savedOnce {
+		t.Error("a failed read must not retract the previous catalog — it is not evidence the source changed")
 	}
 }

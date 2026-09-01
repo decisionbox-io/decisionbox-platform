@@ -375,6 +375,28 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}, nil
 }
 
+// retractCatalog withdraws whatever a previous run indexed for this
+// datasource, for use when the current run has established there is nothing
+// usable to replace it with.
+//
+// Best-effort by design. It runs on a failing path, so an error here is logged
+// rather than returned: replacing the reason the run failed with the reason
+// the cleanup failed would hide the problem the operator needs to see. What it
+// must not do is nothing at all — stale points and stale refs together are
+// exactly what makes a removed item keep answering.
+func (si *SchemaIndexer) retractCatalog(ctx context.Context, projectID string) {
+	if si.Retriever != nil {
+		if err := si.Retriever.DeleteWarehousePoints(ctx, projectID, si.WarehouseID); err != nil {
+			applog.WithError(err).Warn("schema_indexer: could not clear this datasource's prior vector points; removed items may stay searchable until the next successful index")
+		}
+	}
+	if cc, ok := si.Cache.(CatalogCache); ok && si.WarehouseHash != "" {
+		if err := cc.SaveCatalog(ctx, projectID, si.WarehouseID, si.WarehouseHash, nil); err != nil {
+			applog.WithError(err).Warn("schema_indexer: could not retract this datasource's cached catalog; removed items may stay authorised until the next successful index")
+		}
+	}
+}
+
 // indexableCatalogItems keeps what is worth indexing and counts what is not.
 //
 // Each exclusion has its own reason. An item the credential cannot query is
@@ -446,6 +468,13 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 		// would leave the datasource reporting "ready" with nothing in it —
 		// the model would then never retrieve anything from it and no error
 		// would say why.
+		// Failing is not enough on its own. This run has established that the
+		// source currently offers nothing usable, so whatever a previous run
+		// indexed is no longer true. Leaving it would keep every consumer
+		// treating removed or now-inaccessible items as current, and the
+		// failure the operator sees would not describe what the system is
+		// still doing. Retract first, then fail.
+		si.retractCatalog(ctx, opts.ProjectID)
 		si.recordErr(ctx, opts.ProjectID, "catalog contained no indexable items")
 		return nil, fmt.Errorf("schema_indexer: catalog contained no indexable items (%d returned, all unusable) — check the credential's access to this source", len(items))
 	}
