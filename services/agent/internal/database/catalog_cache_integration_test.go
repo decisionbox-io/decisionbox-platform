@@ -130,3 +130,30 @@ func TestAgentInteg_CatalogCache_ResaveReplaces(t *testing.T) {
 		t.Errorf("refs = %v, want only the current catalog; a dropped item must not linger", refs)
 	}
 }
+
+// TestAgentInteg_CatalogCache_EmptySaveClearsPriorRefs is the stale-authority
+// case. "This datasource now offers nothing" is a real statement, and treating
+// it as a no-op leaves the previous list standing as the authority — so search
+// keeps trusting vector points for items the source has since dropped, and the
+// only thing that would ever correct it is a future non-empty save.
+func TestAgentInteg_CatalogCache_EmptySaveClearsPriorRefs(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(db)
+
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", []string{"sessions", "retiredMetric"}); err != nil {
+		t.Fatalf("SaveCatalog: %v", err)
+	}
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", nil); err != nil {
+		t.Fatalf("SaveCatalog(empty): %v", err)
+	}
+
+	refs, err := r.FindCatalog(ctx, catalogTestProject, "ga", "hash-a")
+	if err != nil {
+		t.Fatalf("FindCatalog: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("refs = %v, want none — an empty save must retract the previous catalog, not be ignored", refs)
+	}
+}

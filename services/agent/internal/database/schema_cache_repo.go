@@ -348,13 +348,15 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 	if warehouseHash == "" {
 		return errors.New("warehouseHash is required")
 	}
-	if len(refs) == 0 {
-		return nil
-	}
 	if warehouseID == "" {
 		warehouseID = models.DefaultWarehouseID
 	}
 
+	// Clear the prior entry first, and do it even when there is nothing to
+	// write. An empty save means this datasource now offers nothing, and
+	// returning early would leave the previous list in place as the authority
+	// — so search would keep trusting vector points for items the source has
+	// dropped. Replacing with nothing is a real statement, not a no-op.
 	filter := bson.M{
 		"project_id":   projectID,
 		"warehouse_id": warehouseIDCond(warehouseID),
@@ -362,6 +364,9 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 	}
 	if _, err := r.col().DeleteMany(ctx, filter); err != nil {
 		return fmt.Errorf("catalog cache clear prior: %w", err)
+	}
+	if len(refs) == 0 {
+		return nil
 	}
 
 	_, err := r.col().InsertOne(ctx, CatalogCacheEntry{
