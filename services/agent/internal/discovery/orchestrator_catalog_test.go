@@ -48,6 +48,29 @@ func TestDiscoverSchemas_CatalogSourceIsNotAReindexError(t *testing.T) {
 	if cache.catalogGets == 0 {
 		t.Error("the catalog was never consulted, so the empty table map was not actually explained")
 	}
+	// The refs must be RETAINED, not merely counted. The schema provider built
+	// later filters catalog hits against exactly this list, so discarding them
+	// here lets discovery start and then return nothing from every search —
+	// the source is reachable and permanently empty, with no error anywhere.
+	if len(o.catalogRefs) != 2 {
+		t.Errorf("orchestrator kept %d catalog refs, want 2 — the schema provider filters hits against these", len(o.catalogRefs))
+	}
+}
+
+// TestDiscoverSchemas_NoCatalogRefsRetainedForATableSource pins that a
+// table-shaped source picks none up, so its provider keeps rejecting catalog
+// hits it should never see.
+func TestDiscoverSchemas_NoCatalogRefsRetainedForATableSource(t *testing.T) {
+	cache := &catalogStubCache{}
+	cache.hit = fakeSchemas()
+	o := &Orchestrator{projectID: "proj-1", schemaCache: cache, warehouseHash: "hash-abc"}
+
+	if _, err := o.discoverSchemas(context.Background()); err != nil {
+		t.Fatalf("discoverSchemas: %v", err)
+	}
+	if len(o.catalogRefs) != 0 {
+		t.Errorf("catalogRefs = %v, want none for a source that has tables", o.catalogRefs)
+	}
 }
 
 // TestDiscoverSchemas_StillErrorsWithNoIndexAtAll is the guard on the guard.

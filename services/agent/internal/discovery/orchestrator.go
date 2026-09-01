@@ -232,7 +232,13 @@ type Orchestrator struct {
 	// The cache is populated by the schema indexer (see
 	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
 	// any warehouse-config change self-invalidates the cache.
-	schemaCache   SchemaCache
+	schemaCache SchemaCache
+	// catalogRefs holds the items a catalog-shaped datasource offers, loaded
+	// alongside the schemas map. Nil for a table-shaped source. The schema
+	// provider needs them: without them its staleness filter rejects every
+	// catalog hit, so search returns nothing for exactly the sources that
+	// have nothing but catalog items.
+	catalogRefs   []string
 	warehouseHash string
 	warehouseID   string
 
@@ -761,6 +767,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		WarehouseID:    schemaSearchWarehouseID,
 		Datasets:       o.datasets,
 		Schemas:        schemas,
+		CatalogRefs:    o.catalogRefs,
 		TableWarehouse: tableWarehouse,
 		Retriever:      o.schemaRetriever,
 		Embedder:       o.embedder,
@@ -2296,22 +2303,25 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 // (warehouse config changed without a re-index, the indexer wrote
 // nothing, the cache was cleared) — surface it as a hard error so the
 // user reaches for /reindex rather than silently waiting an hour.
-// hasIndexedCatalog reports whether this datasource has an indexed catalog —
-// the thing that distinguishes "has no tables, by nature" from "was never
-// indexed". Best-effort: a cache that cannot answer, or one that does not
-// support catalogs at all, means no, which preserves the pre-existing
-// re-index error for every source that had it before.
-func (o *Orchestrator) hasIndexedCatalog(ctx context.Context) bool {
+// indexedCatalogRefs returns the items this datasource offers, or nil when it
+// has no indexed catalog — which is what distinguishes "has no tables, by
+// nature" from "was never indexed".
+//
+// Best-effort: a cache that cannot answer, or one that does not support
+// catalogs at all, returns nil, which preserves the pre-existing re-index
+// error for every source that had it before. Guessing "catalog" on a failed
+// lookup would silently swallow a genuinely missing index.
+func (o *Orchestrator) indexedCatalogRefs(ctx context.Context) []string {
 	cc, ok := o.schemaCache.(CatalogCache)
 	if !ok {
-		return false
+		return nil
 	}
 	refs, err := cc.FindCatalog(ctx, o.projectID, o.warehouseID, o.warehouseHash)
 	if err != nil {
 		applog.WithError(err).Debug("catalog cache lookup failed while checking for an indexed catalog")
-		return false
+		return nil
 	}
-	return len(refs) > 0
+	return refs
 }
 
 func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.TableSchema, error) {
@@ -2330,9 +2340,15 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 		// normal state rather than evidence of a missing index. Reporting
 		// "re-index required" for one would send the operator to re-run an
 		// index that already succeeded, and would do it every time.
-		if o.hasIndexedCatalog(ctx) {
-			applog.WithField("warehouse_id", o.warehouseID).
-				Info("Datasource has no tables but an indexed catalog; continuing with an empty table map")
+		if refs := o.indexedCatalogRefs(ctx); len(refs) > 0 {
+			// Keep them: the schema provider built later filters catalog hits
+			// against exactly this list, so discarding them here would let
+			// discovery start and then return nothing from every search.
+			o.catalogRefs = refs
+			applog.WithFields(applog.Fields{
+				"warehouse_id":  o.warehouseID,
+				"catalog_items": len(refs),
+			}).Info("Datasource has no tables but an indexed catalog; continuing with an empty table map")
 			return map[string]models.TableSchema{}, nil
 		}
 		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
