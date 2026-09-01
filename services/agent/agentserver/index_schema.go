@@ -216,6 +216,14 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 			WarehouseHash: discovery.WarehouseConfigHash(wh),
 			WarehouseID:   whID,
 		}
+		// A source that describes itself with a catalog is indexed from it.
+		// Without this the run begins by listing tables, which such a source
+		// refuses, and the whole index fails rather than degrading — so the
+		// datasource can never become ready.
+		if catalog, ok := gowarehouse.AsCatalogSource(provider); ok {
+			indexer.Catalog = catalog
+			applog.WithField("warehouse_id", whID).Info("index_schema: source is catalog-shaped; indexing its catalog instead of tables")
+		}
 
 		start := time.Now()
 		stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{

@@ -144,7 +144,16 @@ type LookupColumn struct {
 // description the schema indexer wrote for this table — typically
 // 2–4 sentences.
 type SearchHit struct {
+	// Table is the reference a query must use to name this hit: a qualified
+	// table name for a table-shaped source, or the item's own name for a
+	// catalog-shaped one. Kind says which, and a consumer that renders this
+	// to a model must not present a catalog item as a table.
 	Table string
+
+	// Kind is the sort of thing the hit describes. Empty means a table —
+	// which is what every hit was before catalog sources existed, so the
+	// zero value stays correct. See warehouse.ItemKind*.
+	Kind string
 	// Datasource is the warehouse (datasource) id that owns this table.
 	// Empty on a single-warehouse project; set on multi-warehouse so a
 	// cross-datasource search tells the model which datasource_id to

@@ -6,11 +6,20 @@ import (
 	"fmt"
 	"time"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
+
+// CatalogSource supplies a source's queryable items when that source has no
+// tables. Narrowed to what the indexer needs so a test can supply one without
+// a warehouse; production wires warehouse.CatalogSource through.
+type CatalogSource interface {
+	Catalog(ctx context.Context) ([]gowarehouse.CatalogItem, error)
+}
 
 // SchemaIndexer runs a single "index this project's schema" pass:
 //
@@ -42,6 +51,13 @@ type SchemaIndexer struct {
 	Embedder  Embedder
 	Retriever *schema_retrieve.Retriever
 	Progress  ProgressReporter
+
+	// Catalog is optional. When non-nil the source describes itself with a
+	// catalog of items rather than a set of tables, and BuildIndex takes the
+	// catalog path: no table discovery (this source has none, and asking
+	// would fail the run), and no blurb generation (the source supplies its
+	// own descriptions, so the LLM pass is both unnecessary and a cost).
+	Catalog CatalogSource
 
 	// Cache is optional. When non-nil and a hit is present for the
 	// current (ProjectID, WarehouseHash), BuildIndex skips the catalog
@@ -116,11 +132,16 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	if opts.ProjectID == "" {
 		return nil, errors.New("schema_indexer: ProjectID is required")
 	}
-	if si.Discovery == nil {
-		return nil, errors.New("schema_indexer: Discovery is required")
-	}
-	if si.Blurber == nil {
-		return nil, errors.New("schema_indexer: Blurber is required")
+	// Discovery and Blurber belong to the table path. A catalog source has no
+	// tables to discover and brings its own descriptions, so requiring them
+	// would demand two collaborators that would never be called.
+	if si.Catalog == nil {
+		if si.Discovery == nil {
+			return nil, errors.New("schema_indexer: Discovery is required")
+		}
+		if si.Blurber == nil {
+			return nil, errors.New("schema_indexer: Blurber is required")
+		}
 	}
 	if si.Embedder == nil {
 		return nil, errors.New("schema_indexer: Embedder is required")
@@ -143,6 +164,10 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		if err := si.Progress.Reset(ctx, opts.ProjectID, opts.RunID); err != nil {
 			return nil, fmt.Errorf("schema_indexer: progress reset: %w", err)
 		}
+	}
+
+	if si.Catalog != nil {
+		return si.buildCatalogIndex(ctx, opts, start)
 	}
 
 	// 1. (Point clearing is per-warehouse and deferred to just before the
@@ -347,6 +372,141 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		BlurbTokensIn:  blurbIn,
 		BlurbTokensOut: blurbOut,
 		Duration:       time.Since(start),
+	}, nil
+}
+
+// buildCatalogIndex is BuildIndex for a source that describes itself with a
+// catalog of items instead of a set of tables.
+//
+// It is a separate path rather than a branch threaded through the table path
+// because the two share only their last step. There is no discovery leg (the
+// source has none, and asking it to list tables fails), and no blurb leg (the
+// source ships its own descriptions, so an LLM pass would spend tokens
+// rewriting text that is already better than what it would produce, and make
+// indexing non-idempotent for no gain).
+//
+// Everything from embedding onwards is deliberately the same as the table
+// path, including clearing only this warehouse's points, so a catalog source
+// coexists with warehouses in one project collection.
+func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOptions, start time.Time) (*Stats, error) {
+	if si.Progress != nil {
+		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseSchemaDiscovery); err != nil {
+			applog.WithError(err).Warn("schema_indexer: SetPhase schema_discovery failed")
+		}
+	}
+	applog.Info("schema_indexer: phase=read_catalog")
+
+	items, err := si.Catalog.Catalog(ctx)
+	if err != nil {
+		si.recordErr(ctx, opts.ProjectID, "read catalog: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: read catalog: %w", err)
+	}
+
+	// Keep only what is worth indexing, and count what was not. An item the
+	// credential cannot query is real and catalogued at the source, but
+	// surfacing it for retrieval would only produce queries that fail; an
+	// item with no ref could never be written into a query at all; an item
+	// with no text has nothing to embed and would match everything or
+	// nothing. Each is dropped for its own reason and the total is reported.
+	seen := make(map[string]bool, len(items))
+	indexable := make([]gowarehouse.CatalogItem, 0, len(items))
+	for _, it := range items {
+		if it.Ref == "" || it.Text == "" || !it.Queryable() || seen[it.Ref] {
+			continue
+		}
+		seen[it.Ref] = true
+		indexable = append(indexable, it)
+	}
+	dropped := len(items) - len(indexable)
+
+	applog.WithFields(applog.Fields{
+		"catalog_items": len(items),
+		"indexable":     len(indexable),
+		"dropped":       dropped,
+	}).Info("schema_indexer: catalog read")
+
+	if len(indexable) == 0 {
+		// An empty index is not a usable source, and returning success here
+		// would leave the datasource reporting "ready" with nothing in it —
+		// the model would then never retrieve anything from it and no error
+		// would say why.
+		si.recordErr(ctx, opts.ProjectID, "catalog contained no indexable items")
+		return nil, fmt.Errorf("schema_indexer: catalog contained no indexable items (%d returned, all unusable) — check the credential's access to this source", len(items))
+	}
+
+	if si.Progress != nil {
+		if err := si.Progress.SetTotals(ctx, opts.ProjectID, len(indexable)); err != nil {
+			applog.WithError(err).Warn("schema_indexer: SetTotals failed")
+		}
+	}
+
+	dims, err := resolveEmbeddingDimensions(ctx, si.Embedder)
+	if err != nil {
+		si.recordErr(ctx, opts.ProjectID, "resolve dimensions: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: resolve dimensions: %w", err)
+	}
+	applog.WithField("dimensions", dims).Info("schema_indexer: phase=ensure_collection")
+	if err := si.Retriever.EnsureCollection(ctx, opts.ProjectID, dims); err != nil {
+		si.recordErr(ctx, opts.ProjectID, "ensure collection: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: ensure collection: %w", err)
+	}
+	if err := si.Retriever.DeleteWarehousePoints(ctx, opts.ProjectID, si.WarehouseID); err != nil {
+		si.recordErr(ctx, opts.ProjectID, "clear warehouse points: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: clear warehouse points: %w", err)
+	}
+
+	if si.Progress != nil {
+		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseEmbedding); err != nil {
+			applog.WithError(err).Warn("schema_indexer: SetPhase embedding failed")
+		}
+	}
+	applog.Info("schema_indexer: phase=embedding")
+
+	texts := make([]string, 0, len(indexable))
+	for _, it := range indexable {
+		texts = append(texts, it.Text)
+	}
+	vectors, err := si.Embedder.Embed(ctx, texts)
+	if err != nil {
+		si.recordErr(ctx, opts.ProjectID, "embed: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: embed: %w", err)
+	}
+	if len(vectors) != len(texts) {
+		return nil, fmt.Errorf("schema_indexer: embedder returned %d vectors for %d catalog items", len(vectors), len(texts))
+	}
+
+	points := make([]schema_retrieve.UpsertItem, 0, len(indexable))
+	for i, it := range indexable {
+		points = append(points, schema_retrieve.UpsertItem{
+			Blurb: schema_retrieve.TableBlurb{
+				// The ref is what a query must name, stored verbatim. No
+				// dataset qualification: this source has none, and prefixing
+				// one would store a name it does not have.
+				Table:          it.Ref,
+				Kind:           it.Kind,
+				Blurb:          it.Text,
+				Keywords:       opts.Keywords,
+				EmbeddingModel: si.Embedder.ModelName(),
+			},
+			Vector: vectors[i],
+		})
+	}
+
+	applog.WithField("points", len(points)).Info("schema_indexer: phase=qdrant_upsert")
+	if err := si.Retriever.Upsert(ctx, opts.ProjectID, si.WarehouseID, points); err != nil {
+		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
+		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
+	}
+	applog.WithFields(applog.Fields{
+		"items":         len(points),
+		"dropped":       dropped,
+		"total_elapsed": time.Since(start).String(),
+	}).Info("schema_indexer: BuildIndex complete (catalog)")
+
+	return &Stats{
+		Tables:   len(points),
+		Dropped:  dropped,
+		Duration: time.Since(start),
 	}, nil
 }
 

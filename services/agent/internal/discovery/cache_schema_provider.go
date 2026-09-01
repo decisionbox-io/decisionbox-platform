@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -247,11 +249,22 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 		// reports as "not found" leaks scope and confuses the model.
 		// Treating the schemas map as the authority keeps the two
 		// surfaces consistent.
-		if _, ok := p.schemas[h.Blurb.Table]; !ok {
-			continue
+		// A catalog item is not in the schemas map and never will be — that
+		// map holds tables, and a catalog source has none. Applying the
+		// table filter to it would drop every hit from such a source, which
+		// is indistinguishable from the source having nothing to say and is
+		// exactly how a datasource silently stops being routable.
+		//
+		// The filter still applies in full to tables, so the scope and
+		// governance guarantees it exists for are unchanged.
+		if h.Blurb.Kind == gowarehouse.ItemKindTable {
+			if _, ok := p.schemas[h.Blurb.Table]; !ok {
+				continue
+			}
 		}
 		out = append(out, ai.SearchHit{
 			Table: h.Blurb.Table,
+			Kind:  h.Blurb.Kind,
 			// Datasource is the owning warehouse id from the index payload,
 			// so a cross-warehouse search (WarehouseID=="") tells the model
 			// which datasource_id to target on a follow-up query.
