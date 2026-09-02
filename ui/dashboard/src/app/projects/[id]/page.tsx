@@ -17,7 +17,7 @@ import Shell from '@/components/layout/AppShell';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import {
-  api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
+  api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY,
 } from '@/lib/api';
 
@@ -32,7 +32,7 @@ const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
 // (bounded by DISCOVERY_QUESTIONS_TIMEOUT), so a single immediate check usually
 // races ahead of the insert; poll across the window and stop on the first hit.
 async function pollQuestionsNudge(projectId: string) {
-  const MAX_ATTEMPTS = 12;
+  const MAX_ATTEMPTS = 20;
   const DELAY_MS = 10000;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
     try {
@@ -46,7 +46,11 @@ async function pollQuestionsNudge(projectId: string) {
         });
         return;
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      // Community builds have no questions endpoint — a 404 is permanent, so
+      // stop rather than retrying for the whole window.
+      if (e instanceof ApiError && e.status === 404) return;
+    }
     await new Promise((r) => setTimeout(r, DELAY_MS));
   }
 }

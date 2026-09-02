@@ -21,7 +21,7 @@ import { InsightValidationBadge } from '@/components/validation/InsightValidatio
 import UnreadDot from '@/components/common/UnreadDot';
 import QuestionsPanel from '@/components/common/QuestionsPanel';
 import { useReadSet } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
+import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -102,16 +102,28 @@ export default function DiscoveryDetailPage() {
             });
           }
         })
-        .catch(() => {})
+        .catch((e) => {
+          // Community builds have no questions endpoint — a 404 is permanent, so
+          // stop rather than retry for the whole window.
+          if (e instanceof ApiError && e.status === 404) clearInterval(timer);
+        })
         .finally(() => { if (attempts >= POLL_MAX_ATTEMPTS) clearInterval(timer); });
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [loading, discovery, id]);
 
-  // Best-effort jump to the insight / recommendation a question is about.
+  // Jump to the insight / recommendation a question is about. Reveal collapsed /
+  // filtered sections first so an on-page target can always be reached (recs past
+  // the first few are hidden until showAllRecs; insights can be severity-filtered
+  // out). A target from an earlier run isn't on this page and simply won't scroll.
   const scrollToTarget = (target: DiscoveryQuestion['linked_target']) => {
-    const el = document.getElementById(`${target.type}-${target.id}`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setShowAllRecs(true);
+    setSeverityFilter('All');
+    // Wait for the re-render that reveals the target, then scroll to it.
+    setTimeout(() => {
+      const el = document.getElementById(`${target.type}-${target.id}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
   };
 
   const handleFeedbackUpdate = (targetType: string, targetId: string, fb: Feedback | null) => {
