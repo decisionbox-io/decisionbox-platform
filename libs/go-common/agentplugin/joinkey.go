@@ -121,7 +121,9 @@ func ValidateJoinKey(ctx context.Context, req JoinKeyRequest) (JoinKeyVerdict, e
 func callValidator(ctx context.Context, fn JoinKeyValidatorFunc, req JoinKeyRequest) (v JoinKeyVerdict, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			v = JoinKeyVerdict{}
+			// v needs no clearing: a panicking call never returned, so the
+			// named result still holds its zero value. Assigning it again
+			// would be a line that cannot change what this function does.
 			err = fmt.Errorf("panicked: %v", r)
 		}
 	}()
