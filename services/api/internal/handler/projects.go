@@ -289,6 +289,9 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !rejectAnchoringPromotion(w, p.EffectiveWarehouses()) {
 		return
 	}
+	if !rejectUnanchoredProject(w, p.EffectiveWarehouses()) {
+		return
+	}
 
 	// Multi-warehouse projects cannot be configured through this create path:
 	// it neither enforces the multi_warehouse_enabled feature gate nor reserves
@@ -552,6 +555,13 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if !rejectAnchoringPromotion(w, []models.WarehouseConfig{incoming.Warehouse}) {
 			return
 		}
+		// A single-warehouse project's only datasource IS the project's
+		// anchor, so swapping it for a non-anchoring source leaves nothing to
+		// carry the project — the same end state the create path refuses, one
+		// edit later.
+		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}) {
+			return
+		}
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {
@@ -719,6 +729,29 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"deleted":         id,
 		"secrets_skipped": secretsSkipped,
 	})
+}
+
+// rejectUnanchoredProject refuses a datasource set in which nothing can carry
+// the project, writing a 400 and returning false.
+//
+// An EMPTY set passes. A project with no datasources yet is how every project
+// starts, and refusing it here would make the product unusable to say
+// something true; the run paths refuse an empty set on their own terms.
+//
+// What is refused is a set that HAS datasources, none of which is a system of
+// record. Such a project reaches the agent looking perfectly healthy and
+// produces analysis that restates what the source's own reporting already
+// shows — confidently, and with no error anyone would connect to the cause.
+// Refusing at configuration time is the only point where the message can name
+// the fix.
+func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
+	if len(whs) == 0 || models.AnyAnchors(whs) {
+		return true
+	}
+	writeError(w, http.StatusBadRequest,
+		"this project has no data source that can carry an analysis on its own; "+
+			"add one that is a system of record, or turn `anchoring` back on for a source you demoted")
+	return false
 }
 
 // rejectAnchoringPromotion refuses a request that tries to promote a datasource
