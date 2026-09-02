@@ -26,13 +26,13 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo            database.DiscoveryRepo
-	projectRepo     database.ProjectRepo
-	runRepo         database.RunRepo
-	debugLogRepo    database.DebugLogRepo
+	repo             database.DiscoveryRepo
+	projectRepo      database.ProjectRepo
+	runRepo          database.RunRepo
+	debugLogRepo     database.DebugLogRepo
 	discoveryLogRepo database.DiscoveryLogRepo
-	runStepRepo     database.RunStepRepo
-	agentRunner     runner.Runner
+	runStepRepo      database.RunStepRepo
+	agentRunner      runner.Runner
 }
 
 // NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
@@ -228,6 +228,19 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	}
 	if p == nil {
 		return discoverytrigger.Result{}, discoverytrigger.ErrProjectNotFound
+	}
+
+	// Gate on the datasource set: discovery over sources that can only be
+	// correlated against something else, with nothing to correlate against,
+	// produces a confident restatement of what those sources' own reporting
+	// already shows. That is worse than no run — it looks like analysis.
+	//
+	// Checked here as well as at configuration time because a project can
+	// reach this state without passing through a route that refuses it: an
+	// existing project predates the rule, and a datasource's provider can
+	// change what it declares between one release and the next.
+	if whs := p.EffectiveWarehouses(); len(whs) > 0 && !models.AnyAnchors(whs) {
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "this project has no data source that can carry an analysis on its own — discovery would only restate what those sources already report; add a system-of-record data source first"}
 	}
 
 	// Gate on lifecycle state. Discovery is only valid for projects
@@ -468,9 +481,9 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	latest, _ := h.repo.GetLatest(r.Context(), projectID)
 	if latest != nil {
 		status["last_discovery"] = map[string]interface{}{
-			"date":            latest.DiscoveryDate,
-			"insights_count":  len(latest.Insights),
-			"total_steps":     latest.TotalSteps,
+			"date":           latest.DiscoveryDate,
+			"insights_count": len(latest.Insights),
+			"total_steps":    latest.TotalSteps,
 		}
 	}
 
