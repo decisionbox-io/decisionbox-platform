@@ -84,6 +84,15 @@ func insightWith(id, name string, combined valmodels.Status, conf float64) model
 
 // --- buildUncertaintyDigest ---
 
+// A 0-confidence finding (least-confident, or one the model gave no confidence
+// for) is below any positive threshold and must count as uncertain.
+func TestBuildUncertaintyDigest_ZeroConfidenceIsUncertain(t *testing.T) {
+	insights := []models.Insight{insightWith("z", "no confidence", valmodels.StatusSupported, 0)}
+	if items := buildUncertaintyDigest(insights, nil, nil, 0.5); len(items) != 1 {
+		t.Fatalf("zero-confidence digest = %d items, want 1", len(items))
+	}
+}
+
 func TestBuildUncertaintyDigest_CleanRunIsEmpty(t *testing.T) {
 	insights := []models.Insight{
 		insightWith("a", "clean", valmodels.StatusSupported, 0.9),

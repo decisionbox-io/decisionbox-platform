@@ -27,6 +27,30 @@ import {
 // dollar estimate.
 const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
 
+// pollQuestionsNudge polls for clarifying questions after a run completes and
+// toasts once when some appear. Question generation runs after the status flip
+// (bounded by DISCOVERY_QUESTIONS_TIMEOUT), so a single immediate check usually
+// races ahead of the insert; poll across the window and stop on the first hit.
+async function pollQuestionsNudge(projectId: string) {
+  const MAX_ATTEMPTS = 12;
+  const DELAY_MS = 10000;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    try {
+      const qs = await api.listProjectQuestions(projectId, { status: 'pending' });
+      const n = qs?.length || 0;
+      if (n > 0) {
+        notifications.show({
+          title: `${n} question${n > 1 ? 's' : ''} await you`,
+          message: 'Answer them to sharpen the next discovery run.',
+          color: 'blue',
+        });
+        return;
+      }
+    } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, DELAY_MS));
+  }
+}
+
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
@@ -88,21 +112,11 @@ export default function ProjectPage() {
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.
-          // Generation is a best-effort post-run step, so questions may land a
-          // beat after the status flip; the run-detail panel + card badge are
-          // the durable surface, this toast is the prompt.
-          if (newRun.status === 'completed') {
-            api.listProjectQuestions(id, { status: 'pending' }).then((qs) => {
-              const n = qs?.length || 0;
-              if (n > 0) {
-                notifications.show({
-                  title: `${n} question${n > 1 ? 's' : ''} await you`,
-                  message: 'Answer them to sharpen the next discovery run.',
-                  color: 'blue',
-                });
-              }
-            }).catch(() => {});
-          }
+          // Generation is a best-effort step that runs AFTER completion (bounded
+          // by DISCOVERY_QUESTIONS_TIMEOUT), so poll for a while rather than
+          // firing one immediate query that would usually race ahead of the
+          // insert and silently show nothing.
+          if (newRun.status === 'completed') void pollQuestionsNudge(id);
         }
       }
     } catch { /* ignore */ }

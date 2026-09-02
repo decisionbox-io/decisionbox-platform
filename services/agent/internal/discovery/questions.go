@@ -276,7 +276,11 @@ func uncertaintyReason(v *models.InsightValidation, confidence, confMax float64)
 			return "validation was skipped for this item (run budget cap)", true
 		}
 	}
-	if confidence > 0 && confidence < confMax {
+	// Confidence below the threshold (including 0 — the least-confident, or a
+	// finding the model gave no confidence for) is an uncertainty signal per the
+	// DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT contract. Grounding + the hard cap +
+	// the "ask only genuine uncertainty" prompt keep this from over-generating.
+	if confidence < confMax {
 		return fmt.Sprintf("low confidence (%.0f%%)", confidence*100), true
 	}
 	return "", false
