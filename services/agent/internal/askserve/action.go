@@ -39,6 +39,10 @@ type turnAction struct {
 	// lookup_schema on a multi-datasource project. Empty = the primary. Ignored
 	// on a single-datasource project or a turn pinned to one datasource.
 	Datasource string
+	// JoinsOn is the model's optional declaration, on a query_data action, that
+	// this query filters on values observed in an earlier query against a
+	// different datasource. nil when it declared none.
+	JoinsOn *joinDeclaration
 
 	LookupSchema []string // lookup_schema
 	SearchTables string   // search_tables
@@ -59,9 +63,10 @@ type turnAction struct {
 type rawAction struct {
 	Thinking string `json:"thinking"`
 
-	Query      string `json:"query"`
-	Purpose    string `json:"purpose"`
-	Datasource string `json:"datasource_id"`
+	Query      string      `json:"query"`
+	Purpose    string      `json:"purpose"`
+	Datasource string      `json:"datasource_id"`
+	JoinsOn    *rawJoinsOn `json:"joins_on"`
 
 	LookupSchema []string `json:"lookup_schema"`
 	SearchTables string   `json:"search_tables"`
@@ -126,6 +131,11 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.Query = raw.Query
 		act.Purpose = strings.TrimSpace(raw.Purpose)
 		act.Datasource = strings.TrimSpace(raw.Datasource)
+		joins, err := raw.joinDeclaration()
+		if err != nil {
+			return nil, err
+		}
+		act.JoinsOn = joins
 	case len(raw.LookupSchema) > 0:
 		act.Kind = actLookup
 		act.LookupSchema = raw.LookupSchema
@@ -182,9 +192,10 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			return
 		}
 		var in struct {
-			Query        string `json:"query"`
-			Purpose      string `json:"purpose"`
-			DatasourceID string `json:"datasource_id"`
+			Query        string      `json:"query"`
+			Purpose      string      `json:"purpose"`
+			DatasourceID string      `json:"datasource_id"`
+			JoinsOn      *rawJoinsOn `json:"joins_on"`
 		}
 		if json.Unmarshal(env.Input, &in) == nil {
 			raw.Query = in.Query
@@ -193,6 +204,9 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			}
 			if raw.Datasource == "" {
 				raw.Datasource = in.DatasourceID
+			}
+			if raw.JoinsOn == nil {
+				raw.JoinsOn = in.JoinsOn
 			}
 		}
 	case actLookup:
@@ -373,4 +387,30 @@ func jsonHasActionKey(s string) bool {
 		}
 	}
 	return false
+}
+
+// rawJoinsOn is the wire shape of the joins_on key, shared by the plain payload
+// and the tool-envelope form so the two cannot drift apart.
+type rawJoinsOn struct {
+	SourceStep string `json:"source_step"`
+	Field      string `json:"field"`
+}
+
+// joinDeclaration reads the optional joins_on key of a JSON-text query action.
+// It mirrors joinsFromToolInput: absent is fine, half-present is not — a
+// declaration missing either half claims values were carried across without
+// saying from where, which cannot be checked but reads as though it could.
+func (raw *rawAction) joinDeclaration() (*joinDeclaration, error) {
+	if raw.JoinsOn == nil {
+		return nil, nil
+	}
+	step := strings.TrimSpace(raw.JoinsOn.SourceStep)
+	field := strings.TrimSpace(raw.JoinsOn.Field)
+	if step == "" && field == "" {
+		return nil, nil
+	}
+	if step == "" || field == "" {
+		return nil, fmt.Errorf("joins_on requires both %q (the q<N> id of the earlier query) and %q (the column in that result the values came from); omit joins_on entirely if this query stands on its own", "source_step", "field")
+	}
+	return &joinDeclaration{SourceStep: step, Field: field}, nil
 }

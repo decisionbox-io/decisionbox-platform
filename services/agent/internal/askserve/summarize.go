@@ -40,6 +40,18 @@ type QuerySummary struct {
 	// Persisted with the tool event, so a turn answered from a degraded result
 	// is identifiable afterwards rather than only in the moment.
 	Quality []gowarehouse.QualityCaveat `json:"quality,omitempty" bson:"quality,omitempty"`
+	// Scoped says whether this result was verified as restricted to the rows
+	// the turn observed on ANOTHER datasource. It is set only on a query made
+	// after a different datasource was queried in the same turn; nil — the
+	// normal case, and every single-datasource turn — means the question never
+	// arose, so an existing turn's persisted summary is unchanged.
+	//
+	// True requires a positive answer from a join-key report. False is not an
+	// accusation: it covers an undeclared hop, a report that does not list the
+	// declared field, and a report that could not be reached. ScopeNote says
+	// which, and is what the model is shown.
+	Scoped    *bool  `json:"scoped,omitempty" bson:"scoped,omitempty"`
+	ScopeNote string `json:"scope_note,omitempty" bson:"scope_note,omitempty"`
 }
 
 // summarizeResult turns an executor result into a bounded QuerySummary,
@@ -117,6 +129,13 @@ func (s QuerySummary) observation() string {
 	if s.Note != "" {
 		b.WriteString(s.Note)
 		b.WriteByte('\n')
+	}
+	// Before the source's own caveats, so that when a result carries both, the
+	// stronger statement — the source saying these rows are not the answer —
+	// is the one left in the tail position the loop reserves for corrections.
+	// With no caveats to follow it this note holds that position itself.
+	if s.ScopeNote != "" {
+		b.WriteString("\n" + s.ScopeNote + "\n")
 	}
 	// Last, and as an instruction. A model that has already read the rows and
 	// the preview needs to be told what they are NOT before it starts

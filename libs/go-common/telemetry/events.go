@@ -2,12 +2,13 @@ package telemetry
 
 // Event names — every event sent by DecisionBox is defined here.
 const (
-	EventServerStarted      = "server_started"
-	EventServerStopped      = "server_stopped"
-	EventProjectCreated     = "project_created"
-	EventDiscoveryCompleted = "discovery_completed"
-	EventDiscoveryFailed    = "discovery_failed"
-	EventAnchoringRefused   = "anchoring_refused"
+	EventServerStarted        = "server_started"
+	EventServerStopped        = "server_stopped"
+	EventProjectCreated       = "project_created"
+	EventDiscoveryCompleted   = "discovery_completed"
+	EventDiscoveryFailed      = "discovery_failed"
+	EventAnchoringRefused     = "anchoring_refused"
+	EventCrossDatasourceQuery = "cross_datasource_query"
 )
 
 // DurationBucket returns a human-readable duration bucket for telemetry.
@@ -113,5 +114,21 @@ func TrackAnchoringRefused(at, providerSlug string) {
 	Track(EventAnchoringRefused, map[string]any{
 		"at":       at,
 		"provider": providerSlug,
+	})
+}
+
+// TrackCrossDatasourceQuery records how one query in a multi-datasource turn
+// positioned itself: whether the model declared which field it carried across
+// from an earlier datasource, and what came of that declaration.
+//
+// This is the evidence for a decision already scheduled — whether an undeclared
+// cross-datasource filter should become a refusal rather than a caveat. It
+// therefore carries no field name, datasource id, or project: the only question
+// it has to answer is how often the declaration is present and how often it
+// holds up.
+func TrackCrossDatasourceQuery(declared bool, outcome string) {
+	Track(EventCrossDatasourceQuery, map[string]any{
+		"declared": declared,
+		"outcome":  outcome,
 	})
 }

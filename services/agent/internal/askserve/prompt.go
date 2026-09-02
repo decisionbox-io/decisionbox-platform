@@ -337,6 +337,7 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 		b.WriteString("- Pick the datasource whose contents match the question. Use search_tables (it spans all datasources and tags each table with its datasource) when you're unsure which one holds what.\n")
 	}
 	b.WriteString("- To combine datasources, do it in HOPS: query one datasource, then use a SMALL set of the result values (e.g. the top-N ids you observed) as literal filters in a follow-up query on another datasource. Keep the crossed set small — only values you have actually observed in a result this turn. Do not attempt a cross-datasource join in a single query.\n")
+	b.WriteString("- On that follow-up query, set joins_on to the step you took the values from and the column they came from. The same-looking id in two datasources is not always the same thing; declaring it is what gets the join key checked, and a result whose hop was never declared comes back marked as not verified.\n")
 }
 
 // writeCubeCatalogLine renders one catalog entry's shape and language.
