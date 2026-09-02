@@ -26,4 +26,10 @@ const (
 	CollectionDiscoveryValidationResults = "discovery_validation_results"
 	CollectionDiscoveryRecommendationLog = "discovery_recommendation_log"
 	CollectionDiscoveryRunSteps          = "discovery_run_steps"
+
+	// CollectionDiscoveryQuestions holds the clarifying questions the agent
+	// generates at the end of a run when it was uncertain about something a
+	// business analyst could resolve. The agent (writer) inserts rows; the
+	// enterprise API (reader) lists them and records answers / dismissals.
+	CollectionDiscoveryQuestions = "discovery_questions"
 )

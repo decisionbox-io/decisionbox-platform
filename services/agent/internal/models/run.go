@@ -120,6 +120,7 @@ const (
 	PhaseRecommendations = "recommendations"
 	PhaseSaving          = "saving"
 	PhaseEmbedIndex      = "embed_index"
+	PhaseQuestions       = "questions"
 	PhaseComplete        = "complete"
 
 	RunStatusPending   = "pending"

@@ -323,6 +323,21 @@ func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
 	}
 }
 
+// Default-on contract for the clarifying-questions toggle: nil → true, and the
+// stored value (including an explicit opt-out false) passes through.
+func TestProject_EffectiveClarifyingQuestionsEnabled(t *testing.T) {
+	if !(&Project{}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with nil pointer = false, want true")
+	}
+	yes, no := true, false
+	if !(&Project{ClarifyingQuestionsEnabled: &yes}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with *true = false")
+	}
+	if (&Project{ClarifyingQuestionsEnabled: &no}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with *false = true")
+	}
+}
+
 func TestProject_EffectiveSmartOverflowEnabled_NilIsTrue(t *testing.T) {
 	if !(&Project{}).EffectiveSmartOverflowEnabled() {
 		t.Errorf("EffectiveSmartOverflowEnabled() with nil pointer = false, want true (default on)")

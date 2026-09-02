@@ -1,0 +1,526 @@
+package discovery
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/google/uuid"
+)
+
+//go:embed prompts/questions.md
+var questionsPromptTemplate string
+
+// Env knobs for the clarifying-questions phase (Rule 2 — all parametric).
+const (
+	// discoveryQuestionsEnabledEnv is the deployment-availability gate. Default
+	// off: the loop is only useful where the answers can be captured (enterprise
+	// + sources), so the enterprise agent Helm overlay turns it on. This is
+	// independent of the per-project Settings toggle (default on), which is the
+	// user-facing control — both must be on for questions to generate.
+	discoveryQuestionsEnabledEnv    = "DISCOVERY_QUESTIONS_ENABLED"
+	discoveryQuestionsMaxEnv        = "DISCOVERY_QUESTIONS_MAX"
+	discoveryQuestionsMaxOutputEnv  = "DISCOVERY_QUESTIONS_MAX_OUTPUT"
+	discoveryQuestionsConfPctEnv    = "DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT"
+	discoveryQuestionsParseRetryEnv = "DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES"
+	discoveryQuestionsTimeoutEnv    = "DISCOVERY_QUESTIONS_TIMEOUT"
+)
+
+const (
+	defaultDiscoveryQuestionsMax        = 5
+	defaultDiscoveryQuestionsMaxOutput  = 2000
+	defaultDiscoveryQuestionsConfPct    = 50 // confidence below 50% is treated as "low"
+	defaultDiscoveryQuestionsParseRetry = 1
+	defaultDiscoveryQuestionsTimeout    = 3 * time.Minute
+)
+
+// questionPersister is the write/read surface the questions phase needs. Held as
+// an interface so unit tests can inject a fake without MongoDB; the concrete
+// writer is *database.DiscoveryQuestionRepository, wired by agentserver.go.
+type questionPersister interface {
+	Insert(ctx context.Context, questions []commonmodels.DiscoveryQuestion) error
+	ListForProject(ctx context.Context, projectID string, statuses ...string) ([]commonmodels.DiscoveryQuestion, error)
+}
+
+// questionsContext derives the dedicated write/LLM ctx for the questions phase.
+// Like persistContext it uses WithoutCancel so the phase — which runs after the
+// discovery is already finalized — gets its own budget independent of the
+// (possibly already-expired) compute-phase deadline. This is what keeps question
+// generation a separate hop that neither extends nor is starved by the
+// discovery's wall-clock budget.
+func questionsContext(parent context.Context) (context.Context, context.CancelFunc) {
+	timeout := goconfig.GetEnvAsDuration(discoveryQuestionsTimeoutEnv, defaultDiscoveryQuestionsTimeout)
+	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+}
+
+// uncertaintyItem is one signal the generator is grounded in: a finding the run
+// was genuinely unsure about, tied to the target the resulting question links to.
+type uncertaintyItem struct {
+	TargetType string
+	TargetID   string
+	Label      string
+	Reason     string
+	Detail     string
+}
+
+// runPhaseQuestions is the best-effort clarifying-questions hop. It runs AFTER
+// the discovery is finalized (placement A1), so it can neither delay run
+// completion nor consume the exploration step budget. Any failure is logged and
+// swallowed — the run has already succeeded. Gated by the deployment flag
+// (Layer A) and the per-project toggle (Layer B); short-circuits with no LLM
+// call when nothing was genuinely uncertain.
+func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.DiscoveryResult, insights []models.Insight, recommendations []models.Recommendation, analysisLog []models.AnalysisStep) {
+	if !o.clarifyingQuestionsEnabled {
+		return // Layer B: per-project Settings toggle is off.
+	}
+	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, false) {
+		return // Layer A: feature not available on this deployment.
+	}
+	if o.aiClient == nil || o.questionRepo == nil || result == nil {
+		return // Missing deps (unit/single-binary builds) — nothing to do.
+	}
+
+	confMax := float64(clampInt(goconfig.GetEnvAsInt(discoveryQuestionsConfPctEnv, defaultDiscoveryQuestionsConfPct), 0, 100)) / 100
+	items := buildUncertaintyDigest(insights, recommendations, analysisLog, confMax)
+	if len(items) == 0 {
+		applog.WithField("project_id", o.projectID).Info("Discovery had no uncertainty signals; skipping clarifying-question generation")
+		return
+	}
+
+	qctx, cancel := questionsContext(ctx)
+	defer cancel()
+
+	// Load already-asked / already-answered questions so we neither re-ask them
+	// (dedup) nor waste the model's attention on them (fed into the prompt).
+	existing, err := o.questionRepo.ListForProject(qctx, o.projectID,
+		commonmodels.DiscoveryQuestionStatusPending, commonmodels.DiscoveryQuestionStatusAnswered)
+	if err != nil {
+		applog.WithError(err).Warn("Failed to load existing discovery questions; proceeding without dedup context")
+		existing = nil
+	}
+
+	maxN := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxEnv, defaultDiscoveryQuestionsMax), 1, 50)
+	parsed, err := o.generateQuestions(qctx, items, existing, maxN)
+	if err != nil {
+		applog.WithError(err).Warn("Clarifying-question generation failed; discovery run is unaffected")
+		return
+	}
+
+	final := postProcessQuestions(parsed, validTargetSet(insights, recommendations, analysisLog), normalizedKeySet(existing), maxN)
+	if len(final) == 0 {
+		return
+	}
+
+	now := time.Now()
+	for i := range final {
+		final[i].ID = uuid.New().String()
+		final[i].ProjectID = o.projectID
+		final[i].RunID = o.runID
+		final[i].DiscoveryID = result.ID
+		final[i].Status = commonmodels.DiscoveryQuestionStatusPending
+		final[i].CreatedAt = now
+		final[i].UpdatedAt = now
+	}
+
+	if err := o.questionRepo.Insert(qctx, final); err != nil {
+		applog.WithError(err).Warn("Failed to persist discovery clarifying questions")
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"project_id": o.projectID,
+		"run_id":     o.runID,
+		"count":      len(final),
+	}).Info("Generated discovery clarifying questions")
+}
+
+// generateQuestions runs the bounded, schema-constrained LLM call (mirrors
+// generateRecommendations): budget the output against the model window, attach
+// the structured-output format where the provider supports it, and self-heal a
+// bounded number of times on a parse failure. Returns the raw parsed questions
+// (post-processing happens in the caller so it is unit-testable in isolation).
+func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaintyItem, existing []commonmodels.DiscoveryQuestion, maxN int) ([]parsedQuestion, error) {
+	prompt := o.buildQuestionsPrompt(items, existing, maxN)
+	// Let already-answered notes surface so the model doesn't re-raise resolved
+	// ambiguities (the answer is now in the KB).
+	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
+
+	window, _ := o.resolveModelBudget()
+	outputCap := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxOutputEnv, defaultDiscoveryQuestionsMaxOutput), 256, 32000)
+	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
+
+	format := questionsResponseFormat()
+	if o.aiClient.SupportsStructuredOutput() {
+		applog.Info("Clarifying-question generation using schema-constrained output")
+	}
+
+	maxRetries := goconfig.GetEnvAsInt(discoveryQuestionsParseRetryEnv, defaultDiscoveryQuestionsParseRetry)
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+
+	var lastParseErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptPrompt := prompt
+		if attempt > 0 {
+			attemptPrompt = prompt + questionsRepairSuffix(lastParseErr)
+			applog.WithField("attempt", attempt).Warn("Re-prompting for clarifying questions after unparseable response")
+		}
+		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		if err != nil {
+			return nil, fmt.Errorf("questions llm call: %w", err)
+		}
+		parsed, perr := parseQuestions(chatResult.Content)
+		if perr == nil {
+			return parsed, nil // includes a legitimately empty list
+		}
+		lastParseErr = perr
+	}
+	return nil, fmt.Errorf("clarifying questions unparseable after %d attempt(s): %w", maxRetries+1, lastParseErr)
+}
+
+// buildQuestionsPrompt renders the embedded template with the run's uncertainty
+// digest, the already-asked questions, the cap, and the output language.
+func (o *Orchestrator) buildQuestionsPrompt(items []uncertaintyItem, existing []commonmodels.DiscoveryQuestion, maxN int) string {
+	lang := o.language
+	if strings.TrimSpace(lang) == "" {
+		lang = "English"
+	}
+	p := questionsPromptTemplate
+	p = strings.ReplaceAll(p, "{{LANGUAGE}}", lang)
+	p = strings.ReplaceAll(p, "{{MAX_QUESTIONS}}", fmt.Sprintf("%d", maxN))
+	p = strings.ReplaceAll(p, "{{UNCERTAINTY_DIGEST}}", renderDigest(items))
+	p = strings.ReplaceAll(p, "{{EXISTING_QUESTIONS}}", renderExistingQuestions(existing))
+	return p
+}
+
+// buildUncertaintyDigest collects the run's genuine uncertainty signals: insights
+// / recommendations the verifier could not confirm (unverifiable / partial /
+// skipped) or that carry low confidence, plus analysis areas that failed. An
+// empty result means "nothing to ask about" and the caller skips the LLM call.
+func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendation, analysisLog []models.AnalysisStep, confMax float64) []uncertaintyItem {
+	var items []uncertaintyItem
+	for i := range insights {
+		in := insights[i]
+		if reason, ok := uncertaintyReason(in.Validation, in.Confidence, confMax); ok {
+			items = append(items, uncertaintyItem{
+				TargetType: commonmodels.QuestionTargetInsight,
+				TargetID:   in.ID,
+				Label:      in.Name,
+				Reason:     reason,
+				Detail:     truncate(in.Description, 240),
+			})
+		}
+	}
+	for i := range recs {
+		rec := recs[i]
+		if reason, ok := uncertaintyReason(rec.Validation, rec.Confidence, confMax); ok {
+			items = append(items, uncertaintyItem{
+				TargetType: commonmodels.QuestionTargetRecommendation,
+				TargetID:   rec.ID,
+				Label:      rec.Title,
+				Reason:     reason,
+				Detail:     truncate(rec.Description, 240),
+			})
+		}
+	}
+	for i := range analysisLog {
+		step := analysisLog[i]
+		if strings.TrimSpace(step.Error) != "" {
+			items = append(items, uncertaintyItem{
+				TargetType: commonmodels.QuestionTargetArea,
+				TargetID:   step.AreaID,
+				Label:      step.AreaName,
+				Reason:     "analysis of this area failed, so it may hide findings",
+				Detail:     truncate(step.Error, 160),
+			})
+		}
+	}
+	return items
+}
+
+// uncertaintyReason maps a validation verdict / confidence to a human reason,
+// and whether the item counts as genuinely uncertain.
+func uncertaintyReason(v *models.InsightValidation, confidence, confMax float64) (string, bool) {
+	if v != nil {
+		switch v.Combined {
+		case valmodels.StatusUnverifiable:
+			return "the verifier could not find evidence to confirm this claim", true
+		case valmodels.StatusPartial:
+			return "the claim was only partially verified", true
+		case valmodels.StatusSkippedBudgetCap:
+			return "validation was skipped for this item (run budget cap)", true
+		}
+	}
+	if confidence > 0 && confidence < confMax {
+		return fmt.Sprintf("low confidence (%.0f%%)", confidence*100), true
+	}
+	return "", false
+}
+
+func renderDigest(items []uncertaintyItem) string {
+	if len(items) == 0 {
+		return "(none)"
+	}
+	var b strings.Builder
+	for _, it := range items {
+		fmt.Fprintf(&b, "- [%s %s] %q — %s.", it.TargetType, it.TargetID, it.Label, it.Reason)
+		if it.Detail != "" {
+			fmt.Fprintf(&b, " Detail: %s", it.Detail)
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderExistingQuestions(existing []commonmodels.DiscoveryQuestion) string {
+	if len(existing) == 0 {
+		return "(none)"
+	}
+	var b strings.Builder
+	for _, q := range existing {
+		status := q.Status
+		if status == commonmodels.DiscoveryQuestionStatusAnswered {
+			status = "answered"
+		} else {
+			status = "still pending"
+		}
+		fmt.Fprintf(&b, "- (%s) %s\n", status, q.Question)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// validTargetSet returns a lookup used by post-processing to reject a question
+// whose linked_target does not resolve to a real thing in this run (grounding
+// guard). Insight/recommendation targets must match a run item by id; area
+// targets must be a known area; table targets are accepted when non-empty (the
+// warehouse catalog is not re-validated here).
+func validTargetSet(insights []models.Insight, recs []models.Recommendation, analysisLog []models.AnalysisStep) map[string]bool {
+	valid := map[string]bool{}
+	for _, in := range insights {
+		if in.ID != "" {
+			valid[commonmodels.QuestionTargetInsight+":"+in.ID] = true
+		}
+		if in.AnalysisArea != "" {
+			valid[commonmodels.QuestionTargetArea+":"+in.AnalysisArea] = true
+		}
+	}
+	for _, rec := range recs {
+		if rec.ID != "" {
+			valid[commonmodels.QuestionTargetRecommendation+":"+rec.ID] = true
+		}
+	}
+	for _, step := range analysisLog {
+		if step.AreaID != "" {
+			valid[commonmodels.QuestionTargetArea+":"+step.AreaID] = true
+		}
+	}
+	return valid
+}
+
+func normalizedKeySet(existing []commonmodels.DiscoveryQuestion) map[string]bool {
+	set := map[string]bool{}
+	for _, q := range existing {
+		key := q.NormalizedKey
+		if key == "" {
+			key = commonmodels.NormalizedQuestionKey(q.Question, q.LinkedTarget)
+		}
+		set[key] = true
+	}
+	return set
+}
+
+// parsedQuestion is the wire shape the model emits (see questions_schema.go).
+type parsedQuestion struct {
+	Question     string `json:"question"`
+	Rationale    string `json:"rationale"`
+	LinkedTarget struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	} `json:"linked_target"`
+	AnswerType string `json:"answer_type"`
+	Options    []struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	} `json:"options"`
+}
+
+// parseQuestions decodes the model's response tolerantly and per-item, mirroring
+// parseRecommendations. Accepts the {"questions": [...]} envelope or a bare
+// top-level array; a malformed item is skipped rather than failing the batch. A
+// well-formed but empty result returns (empty, nil) so the caller does not
+// re-prompt. Returns a non-nil error only when the response is not recognizable
+// as questions at all.
+func parseQuestions(response string) ([]parsedQuestion, error) {
+	cleaned := cleanJSONResponse(response)
+
+	var raws []json.RawMessage
+	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
+		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+			return nil, err
+		}
+	} else {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+			return nil, err
+		}
+		var qRaw json.RawMessage
+		found := false
+		for k, v := range envelope {
+			if strings.EqualFold(k, "questions") {
+				qRaw, found = v, true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf(`response is missing the "questions" key`)
+		}
+		if strings.TrimSpace(string(qRaw)) == "null" {
+			return nil, fmt.Errorf(`"questions" is null`)
+		}
+		if err := json.Unmarshal(qRaw, &raws); err != nil {
+			return nil, fmt.Errorf(`"questions" is not an array: %w`, err)
+		}
+	}
+
+	out := make([]parsedQuestion, 0, len(raws))
+	for i, raw := range raws {
+		var q parsedQuestion
+		if err := json.Unmarshal(raw, &q); err != nil {
+			applog.WithFields(applog.Fields{"index": i, "reason": err.Error()}).
+				Warn("Dropping unparseable clarifying question; keeping the rest of the batch")
+			continue
+		}
+		out = append(out, q)
+	}
+	return out, nil
+}
+
+// postProcessQuestions turns raw parsed questions into persistable ones,
+// enforcing every guardrail: mandatory rationale, a linked_target that resolves
+// to a real run item (grounding), a valid answer type, an always-present
+// "Other" escape on choice questions, dedup vs already-asked and within the
+// batch, and the hard cap N. IDs / timestamps are stamped by the caller.
+func postProcessQuestions(parsed []parsedQuestion, validTargets, existingKeys map[string]bool, maxN int) []commonmodels.DiscoveryQuestion {
+	seen := map[string]bool{}
+	for k := range existingKeys {
+		seen[k] = true
+	}
+	out := make([]commonmodels.DiscoveryQuestion, 0, len(parsed))
+	for _, pq := range parsed {
+		q := strings.TrimSpace(pq.Question)
+		rationale := strings.TrimSpace(pq.Rationale)
+		if q == "" || rationale == "" {
+			continue // grounding: both are mandatory
+		}
+		target := commonmodels.QuestionTarget{
+			Type: strings.TrimSpace(pq.LinkedTarget.Type),
+			ID:   strings.TrimSpace(pq.LinkedTarget.ID),
+		}
+		if !commonmodels.ValidQuestionTargetType(target.Type) || target.ID == "" {
+			continue
+		}
+		// Grounding: insight/recommendation/area targets must resolve to a real
+		// run item; table targets are accepted as-is (non-empty).
+		if target.Type != commonmodels.QuestionTargetTable && !validTargets[target.Type+":"+target.ID] {
+			continue
+		}
+		answerType := strings.TrimSpace(pq.AnswerType)
+		if !commonmodels.ValidAnswerType(answerType) {
+			continue // malformed shape; the self-heal retry is the net
+		}
+		options := cleanOptions(pq.Options)
+		switch answerType {
+		case commonmodels.AnswerTypeSingleChoice, commonmodels.AnswerTypeMultiChoice:
+			if len(options) == 0 {
+				// A choice with no real options is useless — degrade to free text
+				// rather than trap the analyst with an empty picker.
+				answerType = commonmodels.AnswerTypeFreeText
+				options = nil
+			} else {
+				options = append(options, commonmodels.QuestionOption{ID: commonmodels.OtherOptionID, Label: "Other / add a note"})
+			}
+		default:
+			options = nil // boolean / free_text carry no options
+		}
+
+		key := commonmodels.NormalizedQuestionKey(q, target)
+		if seen[key] {
+			continue // dedup vs already-asked and earlier in this batch
+		}
+		seen[key] = true
+
+		out = append(out, commonmodels.DiscoveryQuestion{
+			Question:      q,
+			Rationale:     rationale,
+			LinkedTarget:  target,
+			AnswerType:    answerType,
+			Options:       options,
+			NormalizedKey: key,
+		})
+		if len(out) >= maxN {
+			break // hard cap
+		}
+	}
+	return out
+}
+
+// cleanOptions trims option ids/labels, drops empties, dedups by id, and drops
+// any reserved "__other" id the model may have added itself (the server owns it).
+func cleanOptions(in []struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}) []commonmodels.QuestionOption {
+	seen := map[string]bool{}
+	out := make([]commonmodels.QuestionOption, 0, len(in))
+	for _, o := range in {
+		id := strings.TrimSpace(o.ID)
+		label := strings.TrimSpace(o.Label)
+		if id == "" || label == "" || id == commonmodels.OtherOptionID {
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, commonmodels.QuestionOption{ID: id, Label: label})
+	}
+	return out
+}
+
+func questionsRepairSuffix(err error) string {
+	reason := "it could not be parsed as JSON"
+	if err != nil {
+		reason = err.Error()
+	}
+	return "\n\nYour previous response could not be used: " + reason + ".\n" +
+		`Respond with ONLY a single JSON object of the form {"questions": [ ... ]} ` +
+		"— no prose, no markdown fences, and not a bare top-level array. Each question " +
+		"MUST have `question`, `rationale`, a `linked_target` object, and an `answer_type` " +
+		"of boolean / single_choice / multi_choice / free_text."
+}
+
+func truncate(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max]) + "…"
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}

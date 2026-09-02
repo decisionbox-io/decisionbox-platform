@@ -140,8 +140,12 @@ type Orchestrator struct {
 	// *database.DiscoveryLogRepository, wired in production by
 	// agentserver.go.
 	discoveryLogRepo discoveryLogPersister
-	feedbackRepo     *database.FeedbackRepository
-	debugLogRepo     *database.DebugLogRepository
+	// questionRepo persists the clarifying questions generated at the end of a
+	// run. Held as an interface so unit tests can inject a fake without MongoDB;
+	// nil disables the questions phase (single-binary / test builds).
+	questionRepo questionPersister
+	feedbackRepo *database.FeedbackRepository
+	debugLogRepo *database.DebugLogRepository
 
 	explorationEngine *ai.ExplorationEngine
 
@@ -200,6 +204,11 @@ type Orchestrator struct {
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
 	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
 	reasoningEnabled bool
+
+	// clarifyingQuestionsEnabled is the resolved per-project toggle for the
+	// clarifying-questions phase (from DiscoveryOptions.ClarifyingQuestionsEnabled,
+	// default-on). Layer B of the gate; the deployment flag is Layer A.
+	clarifyingQuestionsEnabled bool
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -261,8 +270,12 @@ type OrchestratorOptions struct {
 	// in Mongo. Production builds always wire this; the nil branch exists
 	// for unit tests that don't bring up MongoDB.
 	DiscoveryLogRepo *database.DiscoveryLogRepository
-	FeedbackRepo     *database.FeedbackRepository
-	DebugLogRepo     *database.DebugLogRepository
+	// DiscoveryQuestionRepo persists clarifying questions generated at the end
+	// of a run. Optional — nil disables the questions phase (unit / single-binary
+	// builds without MongoDB).
+	DiscoveryQuestionRepo *database.DiscoveryQuestionRepository
+	FeedbackRepo          *database.FeedbackRepository
+	DebugLogRepo          *database.DebugLogRepository
 
 	RunRepo *database.RunRepository
 	// RunStepRepo persists the per-step rows that used to live as an
@@ -279,14 +292,14 @@ type OrchestratorOptions struct {
 	// fields (insight names/descriptions, recommendation titles, etc).
 	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
 	// "English" so legacy projects keep their pre-feature behavior.
-	Language          string
-	Profile           map[string]interface{}
-	ProjectPrompts    *models.ProjectPrompts
-	Datasets          []string
-	FilterField       string
-	FilterValue       string
-	LLMProvider       string
-	LLMModel          string
+	Language       string
+	Profile        map[string]interface{}
+	ProjectPrompts *models.ProjectPrompts
+	Datasets       []string
+	FilterField    string
+	FilterValue    string
+	LLMProvider    string
+	LLMModel       string
 	// LLMConfig is the project's LLM provider config (project.LLM.Config),
 	// carrying the max_input_tokens / max_output_tokens operator overrides used
 	// when budgeting output against the model window. Optional.
@@ -396,12 +409,21 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryLogRepo = opts.DiscoveryLogRepo
 	}
 
+	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
+	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
+	// concrete pointer boxed into a non-nil interface.
+	var questionRepo questionPersister
+	if opts.DiscoveryQuestionRepo != nil {
+		questionRepo = opts.DiscoveryQuestionRepo
+	}
+
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
 		discoveryLogRepo:   discoveryLogRepo,
+		questionRepo:       questionRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
@@ -475,6 +497,13 @@ type DiscoveryOptions struct {
 	// ({confirmed, supported} — today's IsTerminalPositive filter), so an
 	// unset/legacy project produces the identical recommender input.
 	RecommendationVerdicts []valmodels.Status
+
+	// ClarifyingQuestionsEnabled is the resolved per-project toggle for the
+	// clarifying-questions phase (project.EffectiveClarifyingQuestionsEnabled(),
+	// default-on). When false the orchestrator skips question generation. The
+	// deployment-availability flag (DISCOVERY_QUESTIONS_ENABLED, default off) is
+	// the other gate — both must be on.
+	ClarifyingQuestionsEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -509,6 +538,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.aiClient != nil {
 		o.aiClient.SetReasoning(o.reasoningEnabled || gollm.ReasoningEnabled(o.llmConfig))
 	}
+
+	// Clarifying-questions opt-out: the per-project Settings toggle (default on).
+	// The post-run questions hop also checks the deployment-availability flag.
+	o.clarifyingQuestionsEnabled = opts.ClarifyingQuestionsEnabled
 
 	// Recommendation eligibility: the per-project set of validation verdicts an
 	// insight must carry to flow to the recommender (Settings → Advanced). Empty
@@ -1324,6 +1357,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Final step: update run status (success or failure) based on execution result
 	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
 		return result, err
+	}
+
+	// Clarifying-questions hop. Runs AFTER the run is finalized so it can neither
+	// delay completion nor consume the exploration step budget — a separate hop
+	// with its own token + timeout budget (questionsContext). Best-effort: any
+	// failure is logged and swallowed, and it does not call SetPhase (which would
+	// downgrade the just-completed run back to "running"). Only on the happy path.
+	if computeErr == nil {
+		o.runPhaseQuestions(ctx, result, allInsights, recommendations, analysisLog)
 	}
 
 	applog.WithFields(applog.Fields{
