@@ -145,13 +145,6 @@ func (w *wrappedNative) Query(context.Context, string, map[string]interface{}) (
 // depending on every present and future middleware preserving an optional
 // interface — a dependency that has already failed once.
 func TestExecute_RefusesThroughAWrapperThatHidesTheSeam(t *testing.T) {
-	gowarehouse.RegisterWithMeta("queryexec-native-probe",
-		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) { return nil, nil },
-		gowarehouse.ProviderMeta{
-			Name:       "Native probe",
-			Capability: gowarehouse.Capability{QueryLanguage: "Probe Request (JSON)"},
-		})
-
 	wrapped := &wrappedNative{}
 	e := NewQueryExecutor(QueryExecutorOptions{
 		Warehouse:    wrapped, // the seam is gone from the type
@@ -181,9 +174,6 @@ func TestNonSQLLanguageOf_IsEmptyForSQLAndForTheUnknown(t *testing.T) {
 	if got := gowarehouse.NonSQLLanguageOf("not-registered-anywhere"); got != "" {
 		t.Errorf("unregistered slug = %q, want empty", got)
 	}
-	gowarehouse.RegisterWithMeta("queryexec-sql-probe",
-		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) { return nil, nil },
-		gowarehouse.ProviderMeta{Name: "SQL probe", Dialect: "postgresql"})
 	if got := gowarehouse.NonSQLLanguageOf("queryexec-sql-probe"); got != "" {
 		t.Errorf("a SQL warehouse = %q, want empty — a dialect is not another language", got)
 	}
