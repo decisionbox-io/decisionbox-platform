@@ -91,7 +91,7 @@ func ValidateJoinKey(ctx context.Context, req JoinKeyRequest) (JoinKeyVerdict, e
 	if fn == nil {
 		return JoinKeyVerdict{Detail: "this deployment has no join-key report to check it against"}, nil
 	}
-	v, err := fn(ctx, req)
+	v, err := callValidator(ctx, fn, req)
 	if err != nil {
 		return JoinKeyVerdict{}, fmt.Errorf("join-key validator %q: %w", name, err)
 	}
@@ -106,6 +106,26 @@ func ValidateJoinKey(ctx context.Context, req JoinKeyRequest) (JoinKeyVerdict, e
 		}
 	}
 	return v, nil
+}
+
+// callValidator invokes fn, converting a panic into an error.
+//
+// A validator is another module's code, reached through a blank import: a nil
+// map or a bad index inside it would otherwise escape into whatever goroutine
+// asked. An ask turn runs in one with no recover of its own, so a single
+// declared join could take the agent process down — and with it every other
+// turn running on it — over a question whose honest answer is "cannot tell".
+//
+// This seam promises exactly three outcomes: verified, not verified, or could
+// not tell. A panic must land on the third rather than outside all of them.
+func callValidator(ctx context.Context, fn JoinKeyValidatorFunc, req JoinKeyRequest) (v JoinKeyVerdict, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			v = JoinKeyVerdict{}
+			err = fmt.Errorf("panicked: %v", r)
+		}
+	}()
+	return fn(ctx, req)
 }
 
 // ResetJoinKeyValidatorForTest drops the registered validator. Test-only.

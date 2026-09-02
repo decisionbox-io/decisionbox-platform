@@ -145,3 +145,54 @@ func TestResetJoinKeyValidatorForTest_AllowsReRegistration(t *testing.T) {
 		t.Fatalf("Detail = %q, want the re-registered validator's answer", v.Detail)
 	}
 }
+
+func TestValidateJoinKey_ValidatorPanicBecomesAnError(t *testing.T) {
+	defer ResetJoinKeyValidatorForTest()
+	ResetJoinKeyValidatorForTest()
+
+	RegisterJoinKeyValidator("exploding", func(context.Context, JoinKeyRequest) (JoinKeyVerdict, error) {
+		var m map[string]string
+		m["boom"] = "" // assignment to entry in nil map
+		return JoinKeyVerdict{Verified: true}, nil
+	})
+
+	// The point of the test is that this call RETURNS at all: an ask turn runs
+	// in a goroutine with no recover, so an escaping panic takes the whole
+	// agent process down over a question whose honest answer is "cannot tell".
+	v, err := ValidateJoinKey(context.Background(), JoinKeyRequest{Field: "order_id"})
+	if err == nil {
+		t.Fatal("a panicking validator must surface as an error")
+	}
+	if !strings.Contains(err.Error(), "panicked") || !strings.Contains(err.Error(), "exploding") {
+		t.Fatalf("error = %q, want it to name the validator and say it panicked", err.Error())
+	}
+	if v.Verified {
+		t.Fatal("a validator that panicked answered nothing; it must never yield a verified verdict")
+	}
+}
+
+func TestValidateJoinKey_SurvivesAPanicAndKeepsWorking(t *testing.T) {
+	defer ResetJoinKeyValidatorForTest()
+	ResetJoinKeyValidatorForTest()
+
+	calls := 0
+	RegisterJoinKeyValidator("flaky", func(_ context.Context, req JoinKeyRequest) (JoinKeyVerdict, error) {
+		calls++
+		if req.Field == "bad" {
+			panic("boom")
+		}
+		return JoinKeyVerdict{Verified: true, Detail: "fine"}, nil
+	})
+
+	if _, err := ValidateJoinKey(context.Background(), JoinKeyRequest{Field: "bad"}); err == nil {
+		t.Fatal("want an error for the panicking call")
+	}
+	// The registry must not be left in a broken state by the recover.
+	v, err := ValidateJoinKey(context.Background(), JoinKeyRequest{Field: "good"})
+	if err != nil || !v.Verified {
+		t.Fatalf("v=%+v err=%v; a later call must still be answered", v, err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}

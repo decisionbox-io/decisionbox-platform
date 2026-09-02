@@ -779,3 +779,28 @@ func TestExecQuery_BatchInALaterRoundIsStillNotObserved(t *testing.T) {
 		t.Fatalf("the rejected query must not reach the warehouse, got %d calls", len(whB.Calls))
 	}
 }
+
+func TestExecQuery_APanickingValidatorDegradesTheTurnInsteadOfKillingIt(t *testing.T) {
+	wireValidator(t, func(context.Context, agentplugin.JoinKeyRequest) (agentplugin.JoinKeyVerdict, error) {
+		panic("the report blew up")
+	})
+	tracked := captureJoinTelemetry(t)
+
+	store, whB := hopTurn(t, `,"joins_on":{"source_step":"q1","field":"user_id"}`)
+
+	// The user asked a question; a broken report is not a reason not to answer
+	// it, only a reason not to certify the join.
+	if len(whB.Calls) != 1 {
+		t.Fatalf("the query should still have run, got %d calls", len(whB.Calls))
+	}
+	second := summaryOf(t, store, 1)
+	if second.Scoped == nil || *second.Scoped {
+		t.Fatalf("Scoped = %v, want false", second.Scoped)
+	}
+	if !strings.Contains(second.ScopeNote, "panicked") {
+		t.Fatalf("ScopeNote = %q, want it to say the check failed", second.ScopeNote)
+	}
+	if len(*tracked) != 1 || (*tracked)[0] != "declared/"+joinOutcomeValidatorError {
+		t.Fatalf("tracked %v", *tracked)
+	}
+}
