@@ -45,9 +45,11 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 		if !shapes.allCube {
 			b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
 		}
+		writeJoinsOnForm(&b)
 	case routing.multi:
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query against one datasource\n")
 		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+		writeJoinsOnForm(&b)
 	case shapes.anyCube:
 		b.WriteString(`  {"thinking":"...","query":"...","purpose":"what this answers"}` + "  — run a read-only query, written in this source's query language\n")
 	default:
@@ -338,6 +340,19 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 	}
 	b.WriteString("- To combine datasources, do it in HOPS: query one datasource, then use a SMALL set of the result values (e.g. the top-N ids you observed) as literal filters in a follow-up query on another datasource. Keep the crossed set small — only values you have actually observed in a result this turn. Do not attempt a cross-datasource join in a single query.\n")
 	b.WriteString("- On that follow-up query, set joins_on to the step you took the values from and the column they came from. The same-looking id in two datasources is not always the same thing; declaring it is what gets the join key checked, and a result whose hop was never declared comes back marked as not verified.\n")
+}
+
+// writeJoinsOnForm shows the exact JSON a joins_on declaration must take.
+//
+// Only on the text path, and only for a turn that can hop. The native path
+// carries the same contract in the tool schema, where the model cannot get the
+// key names wrong; here the shape exists nowhere else, and prose alone invites
+// `"joins_on":"q1.user_id"` or `{"step":..,"column":..}` — both of which the
+// parser now refuses. Describing a required form without showing it is how a
+// refusal becomes a dead end rather than a correction.
+func writeJoinsOnForm(b *strings.Builder) {
+	b.WriteString(`  …plus "joins_on":{"source_step":"q1","field":"user_id"} on a query that filters on values from an earlier step against ANOTHER datasource` +
+		" — exactly those two keys: the q<N> id of that step, and the column IN ITS RESULT the values came from. Omit joins_on entirely otherwise.\n")
 }
 
 // writeCubeCatalogLine renders one catalog entry's shape and language.

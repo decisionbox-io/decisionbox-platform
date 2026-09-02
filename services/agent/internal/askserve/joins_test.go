@@ -481,6 +481,40 @@ func TestParseTurnAction_JoinsOn(t *testing.T) {
 
 // --- the prompt --------------------------------------------------------
 
+// TestPrompt_TextPathShowsTheExactJoinsOnJSON pins that the shape appears where
+// the model must reproduce it from prose alone. The parser refuses a wrong
+// shape; a refusal the prompt gives no way to satisfy is a dead end.
+func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
+	rt := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}, {ID: "wh_b"}}, PrimaryID: "wh_a"}
+	multi, _ := rt.resolveTurnRouting("")
+
+	text := buildSystemPrompt(rt, multi, Config{}, false)
+	for _, want := range []string{`"joins_on":{"source_step":"q1","field":"user_id"}`, "source_step", "field"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the text prompt must show %q, since nothing else tells it the key names:\n%s", want, text)
+		}
+	}
+	// A declaration the parser accepts must be constructible from the prompt.
+	act, err := parseTurnAction(`{"query":"SELECT 1","datasource_id":"wh_b","joins_on":{"source_step":"q1","field":"user_id"}}`)
+	if err != nil || act.JoinsOn == nil {
+		t.Fatalf("the documented form must parse: act=%+v err=%v", act, err)
+	}
+
+	// The native path carries the contract in the tool schema instead, so its
+	// prompt is not widened with a form the model cannot get wrong there.
+	tools := buildSystemPromptForTools(rt, multi, Config{}, false)
+	if strings.Contains(tools, `"joins_on":{"source_step"`) {
+		t.Fatalf("the tools prompt should not repeat the JSON form:\n%s", tools)
+	}
+
+	// A turn that cannot hop gains nothing at all.
+	single := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}}, PrimaryID: "wh_a"}
+	pinned, _ := single.resolveTurnRouting("")
+	if strings.Contains(buildSystemPrompt(single, pinned, Config{}, false), "joins_on") {
+		t.Fatal("a single-datasource prompt must be unchanged")
+	}
+}
+
 func TestPrompt_TellsAMultiDatasourceTurnToDeclareItsHop(t *testing.T) {
 	rt := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}, {ID: "wh_b"}}, PrimaryID: "wh_a"}
 	multi, _ := rt.resolveTurnRouting("")
