@@ -87,16 +87,6 @@ func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.Dis
 	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, false) {
 		return // Layer A: feature not available on this deployment.
 	}
-	// License entitlement: answering questions writes knowledge-base notes, so
-	// generation follows the same `sources_enabled` entitlement the enterprise
-	// answer API is gated on — otherwise an entitlement-less enterprise deployment
-	// would spend LLM tokens generating questions the API hides. On the enterprise
-	// agent the license plugin registers a license-backed checker; on community /
-	// self-hosted the Noop checker returns true, so the env flag + per-project
-	// toggle remain the effective gates.
-	if enabled, _ := policy.GetChecker().FeatureEnabled(ctx, "", policy.FeatureSources); !enabled {
-		return
-	}
 	if o.aiClient == nil || o.questionRepo == nil || result == nil {
 		return // Missing deps (unit/single-binary builds) — nothing to do.
 	}
@@ -106,14 +96,30 @@ func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.Dis
 	confMax := float64(clampInt(goconfig.GetEnvAsInt(discoveryQuestionsConfPctEnv, defaultDiscoveryQuestionsConfPct), 0, 100)) / 100
 	// Failed-area signals aren't reconstructed from the result (a weak signal vs.
 	// validation verdicts + low confidence); pass nil for the analysis log.
+	// Built from in-memory result data (no I/O), so short-circuit a clean run
+	// before setting up the timeout context or touching the policy checker.
 	items := buildUncertaintyDigest(insights, recommendations, nil, confMax)
 	if len(items) == 0 {
 		applog.WithField("project_id", o.projectID).Info("Discovery had no uncertainty signals; skipping clarifying-question generation")
 		return
 	}
 
+	// Everything below (the possibly-slow entitlement check, the Mongo reads, and
+	// the LLM call) runs under the dedicated questions timeout so nothing can keep
+	// the agent process alive after the run was marked complete.
 	qctx, cancel := questionsContext(ctx)
 	defer cancel()
+
+	// License entitlement: answering questions writes knowledge-base notes, so
+	// generation follows the same `sources_enabled` entitlement the enterprise
+	// answer API is gated on — otherwise an entitlement-less enterprise deployment
+	// would spend LLM tokens generating questions the API hides. On the enterprise
+	// agent the license plugin registers a license-backed checker; on community /
+	// self-hosted the Noop checker returns true, so the env flag + per-project
+	// toggle remain the effective gates.
+	if enabled, _ := policy.GetChecker().FeatureEnabled(qctx, "", policy.FeatureSources); !enabled {
+		return
+	}
 
 	// Load already-asked questions in every terminal state — pending, answered,
 	// AND dismissed — so none is re-generated. Dismissed questions must stay
@@ -325,9 +331,19 @@ func renderDigest(items []uncertaintyItem) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// maxExistingQuestionsInPrompt caps how many prior questions are rendered into
+// the generation prompt. The FULL set is still used for exact-key dedup (a cheap
+// Set), but a long-lived project can accumulate hundreds of terminal questions,
+// and rendering all of them would eventually overflow the model window. The list
+// is newest-first, so the cap keeps the most recent context.
+const maxExistingQuestionsInPrompt = 50
+
 func renderExistingQuestions(existing []commonmodels.DiscoveryQuestion) string {
 	if len(existing) == 0 {
 		return "(none)"
+	}
+	if len(existing) > maxExistingQuestionsInPrompt {
+		existing = existing[:maxExistingQuestionsInPrompt]
 	}
 	var b strings.Builder
 	for _, q := range existing {
