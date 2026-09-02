@@ -71,13 +71,15 @@ type uncertaintyItem struct {
 	Detail     string
 }
 
-// runPhaseQuestions is the best-effort clarifying-questions hop. It runs AFTER
-// the discovery is finalized (placement A1), so it can neither delay run
-// completion nor consume the exploration step budget. Any failure is logged and
-// swallowed — the run has already succeeded. Gated by the deployment flag
-// (Layer A) and the per-project toggle (Layer B); short-circuits with no LLM
-// call when nothing was genuinely uncertain.
-func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.DiscoveryResult, insights []models.Insight, recommendations []models.Recommendation, analysisLog []models.AnalysisStep) {
+// RunPhaseQuestions is the best-effort clarifying-questions hop. It is invoked
+// by agentserver AFTER RunDiscovery has returned and the completion event +
+// telemetry have already fired, so a slow (or timed-out) generation call can
+// neither delay the user-facing completion notification nor consume the
+// exploration step budget. Findings come from the persisted result. Any failure
+// is logged and swallowed — the run has already succeeded. Gated by the
+// deployment flag (Layer A) and the per-project toggle (Layer B); short-circuits
+// with no LLM call when nothing was genuinely uncertain.
+func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.DiscoveryResult) {
 	if !o.clarifyingQuestionsEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}
@@ -88,8 +90,12 @@ func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.Dis
 		return // Missing deps (unit/single-binary builds) — nothing to do.
 	}
 
+	insights := result.Insights
+	recommendations := result.Recommendations
 	confMax := float64(clampInt(goconfig.GetEnvAsInt(discoveryQuestionsConfPctEnv, defaultDiscoveryQuestionsConfPct), 0, 100)) / 100
-	items := buildUncertaintyDigest(insights, recommendations, analysisLog, confMax)
+	// Failed-area signals aren't reconstructed from the result (a weak signal vs.
+	// validation verdicts + low confidence); pass nil for the analysis log.
+	items := buildUncertaintyDigest(insights, recommendations, nil, confMax)
 	if len(items) == 0 {
 		applog.WithField("project_id", o.projectID).Info("Discovery had no uncertainty signals; skipping clarifying-question generation")
 		return
@@ -111,7 +117,7 @@ func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.Dis
 	}
 
 	maxN := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxEnv, defaultDiscoveryQuestionsMax), 1, 50)
-	validTargets := validTargetSet(insights, recommendations, analysisLog)
+	validTargets := validTargetSet(insights, recommendations, nil)
 	final, err := o.generateQuestions(qctx, items, existing, validTargets, maxN)
 	if err != nil {
 		applog.WithError(err).Warn("Clarifying-question generation failed; discovery run is unaffected")
@@ -157,8 +163,15 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	// ambiguities (the answer is now in the KB).
 	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
 
-	window, _ := o.resolveModelBudget()
+	window, modelOutputCap := o.resolveModelBudget()
 	outputCap := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxOutputEnv, defaultDiscoveryQuestionsMaxOutput), 256, 32000)
+	// Never request more output than the model/operator allows — mirror the
+	// analysis/recommendation paths, which budget against resolveModelBudget's
+	// output cap. Without this, a high DISCOVERY_QUESTIONS_MAX_OUTPUT (or a model
+	// whose real cap is lower) could send a max_tokens the provider 4xx-rejects.
+	if modelOutputCap > 0 && outputCap > modelOutputCap {
+		outputCap = modelOutputCap
+	}
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := questionsResponseFormat()

@@ -66,7 +66,11 @@ export default function DiscoveryDetailPage() {
       api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
       api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
       api.getRecommendationLog(runId).then(setRecLog).catch(() => setRecLog(null)),
-      api.listProjectQuestions(id, { status: 'pending', discovery_id: runId })
+      // Project-wide pending questions (not just this run's): generation dedupes
+      // pending questions across runs, so a still-open question from an earlier
+      // run must stay visible here rather than being hidden by a discovery_id
+      // filter it no longer matches.
+      api.listProjectQuestions(id, { status: 'pending' })
         .then((q) => setQuestions(q || [])).catch(() => {}),
     ])
       .catch(() => null)
@@ -74,30 +78,35 @@ export default function DiscoveryDetailPage() {
   }, [id, runId]);
 
   // Question generation is a best-effort hop that runs AFTER the run is
-  // finalized, so on a page opened right after completion the first fetch can
-  // return an empty list before the agent has written them. The generation call
-  // is bounded by DISCOVERY_QUESTIONS_TIMEOUT (default 3m), so poll (stopping on
-  // the first hit) across that window rather than giving up after a few tries —
-  // otherwise a slow LLM leaves the panel empty until a manual refresh.
+  // finalized (bounded by DISCOVERY_QUESTIONS_TIMEOUT, default 3m), so on a page
+  // opened right after completion the questions for THIS run may land a few
+  // seconds later. Poll across that window and MERGE new questions in — polling
+  // must not be skipped just because older pending questions from a prior run
+  // are already shown. Only poll for a recent run, so old runs don't poll
+  // needlessly. Merge-by-id (never remove) preserves optimistic answer/dismiss.
   useEffect(() => {
-    if (loading || questions.length > 0) return;
+    if (loading || !discovery) return;
+    const recent = Date.now() - new Date(discovery.discovery_date).getTime() < 6 * 60 * 1000;
+    if (!recent) return;
     const POLL_INTERVAL_MS = 10000;
     const POLL_MAX_ATTEMPTS = 20; // ~3.3 min, covering the default generation timeout
     let attempts = 0;
     const timer = setInterval(() => {
       attempts += 1;
-      api.listProjectQuestions(id, { status: 'pending', discovery_id: runId })
+      api.listProjectQuestions(id, { status: 'pending' })
         .then((q) => {
           if (q && q.length > 0) {
-            setQuestions(q);
-            clearInterval(timer);
+            setQuestions((prev) => {
+              const seen = new Set(prev.map((x) => x.id));
+              return [...prev, ...q.filter((nq) => !seen.has(nq.id))];
+            });
           }
         })
         .catch(() => {})
         .finally(() => { if (attempts >= POLL_MAX_ATTEMPTS) clearInterval(timer); });
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [loading, questions.length, id, runId]);
+  }, [loading, discovery, id]);
 
   // Best-effort jump to the insight / recommendation a question is about.
   const scrollToTarget = (target: DiscoveryQuestion['linked_target']) => {

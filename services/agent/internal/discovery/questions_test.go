@@ -335,8 +335,8 @@ func TestRunPhaseQuestions_ToggleOff_NoWork(t *testing.T) {
 	o := newTestOrchestrator(client, repo)
 	o.clarifyingQuestionsEnabled = false // Layer B off
 
-	o.runPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1"},
-		[]models.Insight{insightWith("a", "x", valmodels.StatusUnverifiable, 0.9)}, nil, nil)
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{insightWith("a", "x", valmodels.StatusUnverifiable, 0.9)}})
 
 	if prov.calls != 0 || len(repo.inserted) != 0 {
 		t.Fatalf("toggle off must do no work: calls=%d inserted=%d", prov.calls, len(repo.inserted))
@@ -350,8 +350,8 @@ func TestRunPhaseQuestions_NoUncertainty_ShortCircuits(t *testing.T) {
 	o := newTestOrchestrator(client, repo)
 
 	// clean, confident insight → empty digest → no LLM call.
-	o.runPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1"},
-		[]models.Insight{insightWith("a", "clean", valmodels.StatusSupported, 0.95)}, nil, nil)
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{insightWith("a", "clean", valmodels.StatusSupported, 0.95)}})
 
 	if prov.calls != 0 {
 		t.Fatalf("clean run must not call the LLM, got %d calls", prov.calls)
@@ -365,8 +365,8 @@ func TestRunPhaseQuestions_HappyPath_Inserts(t *testing.T) {
 	repo := &fakeQuestionRepo{}
 	o := newTestOrchestrator(client, repo)
 
-	o.runPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "disc-1"},
-		[]models.Insight{insightWith("a", "opaque", valmodels.StatusUnverifiable, 0.9)}, nil, nil)
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "disc-1",
+		Insights: []models.Insight{insightWith("a", "opaque", valmodels.StatusUnverifiable, 0.9)}})
 
 	if len(repo.inserted) != 1 {
 		t.Fatalf("want 1 inserted question, got %d", len(repo.inserted))
@@ -388,8 +388,8 @@ func TestRunPhaseQuestions_InsertError_Swallowed(t *testing.T) {
 	o := newTestOrchestrator(client, repo)
 
 	// Must not panic / propagate — best-effort.
-	o.runPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1"},
-		[]models.Insight{insightWith("a", "opaque", valmodels.StatusUnverifiable, 0.9)}, nil, nil)
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{insightWith("a", "opaque", valmodels.StatusUnverifiable, 0.9)}})
 }
 
 // --- schema shape ---

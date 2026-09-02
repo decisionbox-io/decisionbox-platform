@@ -1359,14 +1359,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return result, err
 	}
 
-	// Clarifying-questions hop. Runs AFTER the run is finalized so it can neither
-	// delay completion nor consume the exploration step budget — a separate hop
-	// with its own token + timeout budget (questionsContext). Best-effort: any
-	// failure is logged and swallowed, and it does not call SetPhase (which would
-	// downgrade the just-completed run back to "running"). Only on the happy path.
-	if computeErr == nil {
-		o.runPhaseQuestions(ctx, result, allInsights, recommendations, analysisLog)
-	}
+	// The clarifying-questions hop (RunPhaseQuestions) is deliberately NOT invoked
+	// here: agentserver calls it AFTER RunDiscovery returns and the completion
+	// event + telemetry have fired, so a slow (or timed-out) generation call never
+	// delays the user-facing "discovery completed" notification. It reads findings
+	// from the persisted result, so it needs nothing from this function's locals.
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,

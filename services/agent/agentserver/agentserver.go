@@ -1034,6 +1034,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		result.TotalSteps,
 	)
 
+	// Clarifying-questions hop — runs here, AFTER the completion event +
+	// telemetry, so a slow (or timed-out) best-effort generation call never
+	// delays the user-facing "discovery completed" notification. It reads
+	// findings from the persisted result and self-gates on the deployment flag +
+	// per-project toggle; a no-op when either is off or nothing was uncertain.
+	orchestrator.RunPhaseQuestions(ctx, result)
+
 	applog.WithFields(applog.Fields{
 		"project_id":      projectID,
 		"total_steps":     result.TotalSteps,
