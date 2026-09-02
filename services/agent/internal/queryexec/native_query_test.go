@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
 // stubRunner is a QueryRunner that records what it was asked to execute — the
@@ -153,10 +154,17 @@ func TestExecuteNative_StructuredFailureIsClassifiedBeforeTheFixerCheck(t *testi
 // TestExecute_StringPathIsUnaffectedByTheRefusal pins that a plain SQL query
 // under tenant scope still behaves exactly as before: the text check runs and
 // a scoped query passes it.
+//
+// Wired through a SQL PROVIDER rather than a runner. It used to use
+// stubRunner, whose QueryLanguage says "Report Request" — a source declaring
+// its queries are not SQL — which made the fixture contradict the property:
+// such a source's tenant filter cannot be verified by reading query text at
+// all, so it is refused now whatever the query looks like. The subject here is
+// the SQL path, and a SQL source is one that does not implement the seam.
 func TestExecute_StringPathIsUnaffectedByTheRefusal(t *testing.T) {
-	runner := &stubRunner{}
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
 	e := NewQueryExecutor(QueryExecutorOptions{
-		Runner:      runner,
+		Warehouse:   wh,
 		FilterField: "app_id",
 		FilterValue: "acme",
 	})
@@ -164,10 +172,11 @@ func TestExecute_StringPathIsUnaffectedByTheRefusal(t *testing.T) {
 	if _, err := e.Execute(context.Background(), "SELECT 1 WHERE app_id = 'acme'", "test"); err != nil {
 		t.Fatalf("a scoped SQL query must still run: %v", err)
 	}
-	if runner.calls != 1 {
-		t.Errorf("runner called %d times, want 1", runner.calls)
-	}
-	if runner.got[0].IsStructured() {
-		t.Error("the string path must produce an unstructured NativeQuery")
+	// And the unscoped one is still refused by the text check, not by the new
+	// rule — the SQL path keeps the behaviour it had.
+	if _, err := e.Execute(context.Background(), "SELECT 1", "test"); err == nil {
+		t.Error("an unscoped SQL query must still be refused")
+	} else if !strings.Contains(err.Error(), "must filter by app_id") {
+		t.Errorf("error = %q, want the text check's own refusal", err.Error())
 	}
 }

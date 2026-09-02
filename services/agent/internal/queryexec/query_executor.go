@@ -95,14 +95,25 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	if runner == nil && opts.Warehouse != nil {
 		runner = gowarehouse.AsQueryRunner(opts.Warehouse)
 	}
-	// Read from the provider, not the runner: AsQueryRunner adapts anything, so
-	// by the time a SQL warehouse is a runner the distinction is gone. A caller
-	// that supplies Runner directly is supplying a native one by definition.
+	// Which language this source's queries are written in, decided from what
+	// the caller supplied rather than from the runner it becomes.
+	//
+	// Runner first, and unconditionally: it exists to supply the seam for a
+	// source that is NOT a SQL provider, so a caller reaching for it has
+	// already said what this is. Asking whether that runner also happens to
+	// implement Provider would leave a pure one looking like SQL, and a pure
+	// one is the ordinary case — which would reopen the unscoped-query bypass
+	// on the exact path built for the sources that have it.
+	//
+	// Warehouse otherwise, read from the PROVIDER: AsQueryRunner adapts
+	// anything, so by the time a SQL warehouse is a runner the distinction is
+	// gone and every warehouse would look native.
 	nonSQL := ""
-	if opts.Warehouse != nil {
+	switch {
+	case opts.Runner != nil:
+		nonSQL = opts.Runner.QueryLanguage()
+	case opts.Warehouse != nil:
 		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
-	} else if r, ok := opts.Runner.(gowarehouse.Provider); ok {
-		nonSQL = gowarehouse.NonSQLLanguage(r)
 	}
 	return &QueryExecutor{
 		runner:         runner,
