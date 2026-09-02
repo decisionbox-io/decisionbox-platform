@@ -1,6 +1,9 @@
 package warehouse
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // QualityKind names a way in which a source can return a result that is not a
 // faithful answer to the query that produced it.
@@ -73,4 +76,29 @@ func (c QualityCaveat) String() string {
 // produced.
 func (r *QueryResult) Degraded() bool {
 	return r != nil && len(r.Quality) > 0
+}
+
+// CaveatInstruction renders what the source said about a result's fidelity as
+// an instruction to the model, or "" when it said nothing.
+//
+// Worded as an instruction rather than a note because a caveat the model reads
+// and does not act on is worth nothing: the rows are well-formed, the numbers
+// add up, and every conclusion drawn from them looks sound. The point is to
+// stop a share being computed over a population the source declined to show.
+//
+// One wording, used on every path a result can reach a model by. A second
+// phrasing somewhere else would be a second answer to "how bad is this",
+// drifting from this one, for the same caveat on the same data.
+func CaveatInstruction(caveats []QualityCaveat) string {
+	if len(caveats) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n**The source reports this result is not a faithful answer to the query**:\n")
+	for _, c := range caveats {
+		fmt.Fprintf(&b, "- %s\n", c.String())
+	}
+	b.WriteString("Do not present a total, share or ranking from these rows as exact. " +
+		"If the question needs the part that is missing, say so rather than answering from what is here.\n")
+	return b.String()
 }

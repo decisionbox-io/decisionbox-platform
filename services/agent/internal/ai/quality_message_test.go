@@ -8,46 +8,11 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
-// TestFormatQualityCaveats covers what the exploring model is told when a
-// result is not a faithful answer to its query.
-//
-// It is worded as an instruction rather than a note on purpose: a caveat the
-// model reads and does not act on is worth nothing, because the rows are
-// well-formed, the numbers add up, and every conclusion drawn from them looks
-// sound.
-func TestFormatQualityCaveats(t *testing.T) {
-	out := formatQualityCaveats([]gowarehouse.QualityCaveat{
-		{Kind: gowarehouse.QualityWithheld, Detail: "small cohorts omitted"},
-		{Kind: gowarehouse.QualityTruncated, Detail: "tail collapsed"},
-	})
-
-	if !strings.Contains(out, "not a faithful answer") {
-		t.Errorf("output = %q, want it to state plainly that the result is not faithful", out)
-	}
-	for _, want := range []string{"small cohorts omitted", "tail collapsed"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output = %q, want it to carry %q", out, want)
-		}
-	}
-	// The consequence, not just the fact.
-	if !strings.Contains(out, "Do not present a total, share or ranking") {
-		t.Errorf("output = %q, want it to say what not to do with these rows", out)
-	}
-}
-
-// TestFormatQualityCaveats_SilentWhenThereIsNothingToSay pins that a clean
-// result's message is unchanged. Every SQL warehouse declares no caveats, so
-// emitting an empty section would add noise to every step of every run the
-// product has ever done — and would train the model to skip the section on the
-// rare occasion it matters.
-func TestFormatQualityCaveats_SilentWhenThereIsNothingToSay(t *testing.T) {
-	if got := formatQualityCaveats(nil); got != "" {
-		t.Errorf("formatQualityCaveats(nil) = %q, want empty", got)
-	}
-	if got := formatQualityCaveats([]gowarehouse.QualityCaveat{}); got != "" {
-		t.Errorf("formatQualityCaveats(empty) = %q, want empty", got)
-	}
-}
+// The renderer these tests used to cover moved to warehouse.CaveatInstruction,
+// where it is tested directly — Ask needs the same wording, and two phrasings
+// of the same caveat would be two answers to "how bad is this". What is still
+// this package's own is that the exploration message CARRIES it, which is what
+// the remaining tests here cover.
 
 // TestFormatQuerySuccess_ShowsCaveatsBeforeTheRows covers the wiring, not just
 // the helper. A caveat can be carried onto the step and still never reach the

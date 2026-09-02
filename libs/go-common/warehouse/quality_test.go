@@ -1,6 +1,9 @@
 package warehouse
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestQueryResultDegraded_DefaultsToSound pins the property every existing SQL
 // provider depends on: a result built the way they build one — columns and rows,
@@ -111,5 +114,37 @@ func TestQualityKindsAreDistinct(t *testing.T) {
 	}
 	if len(seen) != len(kinds) {
 		t.Errorf("got %d distinct kinds, want %d", len(seen), len(kinds))
+	}
+}
+
+// The instruction is what a model acts on, so it has to carry the source's own
+// words: "withheld" alone is a category, "37 of 412 rows withheld" is a fact
+// someone can decide against.
+func TestCaveatInstruction_CarriesTheDetailAndTellsTheModelWhatToDo(t *testing.T) {
+	got := CaveatInstruction([]QualityCaveat{
+		{Kind: QualityWithheld, Detail: "37 of 412 rows withheld"},
+		{Kind: QualitySampled},
+	})
+	for _, want := range []string{
+		"not a faithful answer",
+		"withheld: 37 of 412 rows withheld",
+		"sampled",
+		"Do not present a total, share or ranking from these rows as exact",
+		"say so rather than answering from what is here",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instruction is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// Nothing said means nothing added. A result with no caveat must render
+// character-identically to how it did before caveats existed.
+func TestCaveatInstruction_IsEmptyWhenTheSourceSaidNothing(t *testing.T) {
+	if got := CaveatInstruction(nil); got != "" {
+		t.Errorf("CaveatInstruction(nil) = %q, want empty", got)
+	}
+	if got := CaveatInstruction([]QualityCaveat{}); got != "" {
+		t.Errorf("CaveatInstruction([]) = %q, want empty", got)
 	}
 }

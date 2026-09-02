@@ -703,7 +703,7 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		st.querySummariesByID = make(map[string]QuerySummary)
 	}
 	st.querySummariesByID[sum.Step] = sum
-	if !sum.Truncated {
+	if sum.chartable() {
 		st.queriesChartable++
 	}
 	r.emit(ctx, st, ev)
@@ -749,6 +749,19 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 		return fmt.Sprintf("Chart rejected: no query step %q in this turn. Set source_step_id to the q<N> id of a query you ran (shown in its result), then try again.", spec.SourceStepID)
 	}
 
+	// Refused here rather than in the chart validator: that validator's subject
+	// is whether the spec is an exact projection of what was observed, which
+	// this spec may well be. The problem is what was observed — and the chart
+	// package has no business knowing what a warehouse quality caveat is.
+	if len(src.Quality) > 0 {
+		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
+		ev.Error = "source reported the result is degraded: " + qualityReasons(src.Quality)
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Chart rejected: the source reported that step %q is not a faithful answer (%s). "+
+			"A chart would present the rows that came back as the whole picture. State the caveat in prose instead, "+
+			"or query something the source can answer completely.", src.Step, qualityReasons(src.Quality))
+	}
+
 	gsrc := charts.GroundingSource{StepID: src.Step, Columns: src.Columns, Preview: src.Preview, Truncated: src.Truncated}
 	if err := charts.ValidateGrounded(spec, gsrc, r.cfg.ChartCaps); err != nil {
 		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
@@ -770,6 +783,16 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 	st.chartsRendered++
 	r.emit(ctx, st, ev)
 	return fmt.Sprintf("Chart accepted (%s from %s). Render another chart if useful, then answer.", spec.Type, spec.SourceStepID)
+}
+
+// qualityReasons lists a result's caveats on one line, for an error the model
+// reads and a record a human reads afterwards.
+func qualityReasons(caveats []gowarehouse.QualityCaveat) string {
+	out := make([]string, 0, len(caveats))
+	for _, c := range caveats {
+		out = append(out, c.String())
+	}
+	return strings.Join(out, "; ")
 }
 
 // resolveQueryDatasource picks the datasource a query_data statement runs

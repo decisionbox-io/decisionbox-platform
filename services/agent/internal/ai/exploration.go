@@ -1398,7 +1398,7 @@ func (e *ExplorationEngine) formatQuerySuccess(result *queryexec.ExecuteResult) 
 	// The source's own caveats go in FRONT of the rows, not after them. The
 	// rows look complete either way, so a model that reads them first has
 	// already formed its conclusion by the time it reaches a footnote.
-	resultMsg += formatQualityCaveats(result.Quality)
+	resultMsg += gowarehouse.CaveatInstruction(result.Quality)
 
 	resultMsg += "\n**Results**:\n"
 
@@ -1597,27 +1597,6 @@ func (e *ExplorationEngine) formatResults(data []map[string]interface{}) string 
 		return fmt.Sprintf("Error formatting results: %v", err)
 	}
 	return string(jsonBytes)
-}
-
-// formatQualityCaveats renders what the source said about the fidelity of a
-// result, or "" when it said nothing.
-//
-// Worded as an instruction rather than a note because a caveat the model reads
-// and does not act on is worth nothing: the rows are well-formed, the numbers
-// add up, and every conclusion drawn from them looks sound. The point is to
-// stop a share being computed over a population the source declined to show.
-func formatQualityCaveats(caveats []gowarehouse.QualityCaveat) string {
-	if len(caveats) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("\n**The source reports this result is not a faithful answer to the query**:\n")
-	for _, c := range caveats {
-		fmt.Fprintf(&b, "- %s\n", c.String())
-	}
-	b.WriteString("Do not present a total, share or ranking from these rows as exact. " +
-		"If the question needs the part that is missing, say so rather than answering from what is here.\n")
-	return b.String()
 }
 
 // buildInitialMessage builds the first message to Claude.
