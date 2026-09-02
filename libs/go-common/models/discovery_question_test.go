@@ -3,7 +3,6 @@ package models
 import "testing"
 
 func TestNormalizedQuestionKey(t *testing.T) {
-	tgt := QuestionTarget{Type: QuestionTargetInsight, ID: "abc"}
 	cases := []struct {
 		name string
 		a, b string
@@ -15,8 +14,8 @@ func TestNormalizedQuestionKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ka := NormalizedQuestionKey(c.a, tgt)
-			kb := NormalizedQuestionKey(c.b, tgt)
+			ka := NormalizedQuestionKey(c.a)
+			kb := NormalizedQuestionKey(c.b)
 			if (ka == kb) != c.same {
 				t.Fatalf("NormalizedQuestionKey(%q)=%q vs (%q)=%q: same=%v want %v", c.a, ka, c.b, kb, ka == kb, c.same)
 			}
@@ -24,12 +23,17 @@ func TestNormalizedQuestionKey(t *testing.T) {
 	}
 }
 
-func TestNormalizedQuestionKey_TargetDistinguishes(t *testing.T) {
+// The same business question must produce the SAME key across runs even though
+// the insight/recommendation it links to gets a fresh UUID each run — that is
+// what lets an answered/dismissed question stay suppressed. The key is text-only.
+func TestNormalizedQuestionKey_StableAcrossRunScopedTargets(t *testing.T) {
 	q := "does code 4 mean closed"
-	k1 := NormalizedQuestionKey(q, QuestionTarget{Type: QuestionTargetInsight, ID: "a"})
-	k2 := NormalizedQuestionKey(q, QuestionTarget{Type: QuestionTargetInsight, ID: "b"})
-	if k1 == k2 {
-		t.Fatalf("same question against different targets must not collide: %q", k1)
+	if NormalizedQuestionKey(q) != NormalizedQuestionKey(q) {
+		t.Fatalf("key must be deterministic for the same text")
+	}
+	// (The dedup set keys on text only, so a re-linked question still matches.)
+	if NormalizedQuestionKey("Does code 4 mean closed?") != NormalizedQuestionKey(q) {
+		t.Fatalf("normalization must ignore punctuation/case so the same question matches across runs")
 	}
 }
 

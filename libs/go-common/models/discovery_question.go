@@ -48,10 +48,15 @@ type DiscoveryQuestion struct {
 	// from it, for traceability and cleanup on dismiss/edit.
 	AnswerSourceID string `bson:"answer_source_id,omitempty" json:"answer_source_id,omitempty"`
 
-	// NormalizedKey is a stable fingerprint of (question text + linked target)
-	// used to dedup across runs so an already-asked or already-answered
-	// question is not raised again. Written by the agent; not part of the API
-	// contract. Compute it with NormalizedQuestionKey.
+	// NormalizedKey is a stable fingerprint of the question TEXT used to dedup
+	// across runs so an already-asked / answered / dismissed question is not
+	// raised again. It deliberately excludes the linked target: insight and
+	// recommendation ids are run-scoped UUIDs regenerated every discovery, so a
+	// target-inclusive key would never match the same business question on a
+	// later run. Grounded questions carry their specifics in the text (the exact
+	// column / code / value), so the text alone is a reliable cross-run key.
+	// Written by the agent; not part of the API contract. Compute it with
+	// NormalizedQuestionKey.
 	NormalizedKey string `bson:"normalized_key" json:"-"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
@@ -119,11 +124,13 @@ func ValidQuestionTargetType(s string) bool {
 	return false
 }
 
-// NormalizedQuestionKey builds the dedup fingerprint for a question: the
-// normalized question text joined with the linked target. Normalization
-// lower-cases, collapses runs of whitespace, and drops punctuation so trivial
-// rewordings ("closed?" vs "closed") collide. Deterministic and allocation-light.
-func NormalizedQuestionKey(question string, target QuestionTarget) string {
+// NormalizedQuestionKey builds the cross-run dedup fingerprint for a question
+// from its TEXT alone. Normalization lower-cases, collapses runs of whitespace,
+// and drops punctuation so trivial rewordings ("closed?" vs "closed") collide.
+// The linked target is intentionally NOT part of the key: insight/recommendation
+// ids are run-scoped UUIDs, so a target-inclusive key would fail to match the
+// same question on a later run and re-ask it. Deterministic and allocation-light.
+func NormalizedQuestionKey(question string) string {
 	var b strings.Builder
 	b.Grow(len(question))
 	prevSpace := false
@@ -141,6 +148,5 @@ func NormalizedQuestionKey(question string, target QuestionTarget) string {
 			// drop punctuation
 		}
 	}
-	norm := strings.TrimRight(b.String(), " ")
-	return norm + "|" + target.Type + ":" + target.ID
+	return strings.TrimRight(b.String(), " ")
 }

@@ -121,34 +121,60 @@ func TestBuildUncertaintyDigest_CapturesUncertainty(t *testing.T) {
 
 func TestParseQuestions_Shapes(t *testing.T) {
 	envelope := `{"questions":[{"question":"q1","rationale":"r","linked_target":{"type":"insight","id":"a"},"answer_type":"boolean"}]}`
-	if got, err := parseQuestions(envelope); err != nil || len(got) != 1 {
-		t.Fatalf("envelope: got %d err %v", len(got), err)
+	if got, raw, err := parseQuestions(envelope); err != nil || len(got) != 1 || raw != 1 {
+		t.Fatalf("envelope: got %d raw %d err %v", len(got), raw, err)
 	}
 	bare := `[{"question":"q","rationale":"r","linked_target":{"type":"table","id":"d.t"},"answer_type":"free_text"}]`
-	if got, err := parseQuestions(bare); err != nil || len(got) != 1 {
-		t.Fatalf("bare array: got %d err %v", len(got), err)
+	if got, raw, err := parseQuestions(bare); err != nil || len(got) != 1 || raw != 1 {
+		t.Fatalf("bare array: got %d raw %d err %v", len(got), raw, err)
 	}
-	if got, err := parseQuestions(`{"questions":[]}`); err != nil || len(got) != 0 {
-		t.Fatalf("empty: got %d err %v (want 0, nil)", len(got), err)
+	if got, raw, err := parseQuestions(`{"questions":[]}`); err != nil || len(got) != 0 || raw != 0 {
+		t.Fatalf("empty: got %d raw %d err %v (want 0,0,nil)", len(got), raw, err)
 	}
 	fenced := "```json\n{\"questions\":[]}\n```"
-	if _, err := parseQuestions(fenced); err != nil {
+	if _, _, err := parseQuestions(fenced); err != nil {
 		t.Fatalf("fenced empty should parse: %v", err)
 	}
-	if _, err := parseQuestions(`{"items":[]}`); err == nil {
+	if _, _, err := parseQuestions(`{"items":[]}`); err == nil {
 		t.Fatalf("missing questions key should error")
 	}
 }
 
 func TestParseQuestions_SkipsMalformedItem(t *testing.T) {
-	// second item is a bare string, not an object — dropped, rest kept.
+	// second item is a bare string, not an object — dropped, rest kept, raw=2.
 	resp := `{"questions":[{"question":"q","rationale":"r","linked_target":{"type":"insight","id":"a"},"answer_type":"boolean"},"nope"]}`
-	got, err := parseQuestions(resp)
+	got, raw, err := parseQuestions(resp)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("got %d kept, want 1", len(got))
+	if len(got) != 1 || raw != 2 {
+		t.Fatalf("got %d kept, raw %d (want 1, 2)", len(got), raw)
+	}
+}
+
+// A non-empty array of non-object items → kept empty but rawCount>0, so the
+// caller must NOT treat it as a legitimately empty result.
+func TestParseQuestions_NonObjectItemsReportRawCount(t *testing.T) {
+	got, raw, err := parseQuestions(`{"questions":["Does code 4 mean closed?"]}`)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 0 || raw != 1 {
+		t.Fatalf("got %d kept, raw %d (want 0, 1)", len(got), raw)
+	}
+}
+
+// generateQuestions must retry (not silently return empty) when the model emits
+// a non-empty array whose items are all non-objects.
+func TestGenerateQuestions_RetriesOnNonObjectItems(t *testing.T) {
+	client, prov := stubClient(t, `{"questions":["a string, not an object"]}`, nil)
+	o := newTestOrchestrator(client, &fakeQuestionRepo{})
+	items := []uncertaintyItem{{TargetType: "insight", TargetID: "a", Reason: "x"}}
+	if _, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"insight:a": true}, 5); err == nil {
+		t.Fatalf("expected error after non-object items across retries")
+	}
+	if prov.calls < 2 {
+		t.Fatalf("expected the repair prompt to fire (>=2 calls), got %d", prov.calls)
 	}
 }
 
@@ -220,7 +246,7 @@ func TestPostProcess_BooleanCarriesNoOptions(t *testing.T) {
 
 func TestPostProcess_DedupAndCap(t *testing.T) {
 	valid := map[string]bool{"insight:a": true, "insight:b": true, "insight:c": true}
-	existingKey := commonmodels.NormalizedQuestionKey("already asked", commonmodels.QuestionTarget{Type: "insight", ID: "a"})
+	existingKey := commonmodels.NormalizedQuestionKey("already asked")
 	parsed := []parsedQuestion{
 		mkParsed("already asked", "why", "insight", "a", "boolean"), // dropped: dup vs existing
 		mkParsed("fresh one", "why", "insight", "b", "boolean"),

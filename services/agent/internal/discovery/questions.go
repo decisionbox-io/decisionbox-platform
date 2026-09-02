@@ -183,19 +183,22 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 		if err != nil {
 			return nil, fmt.Errorf("questions llm call: %w", err)
 		}
-		parsed, perr := parseQuestions(chatResult.Content)
+		parsed, rawCount, perr := parseQuestions(chatResult.Content)
 		if perr != nil {
 			lastErr = perr
 			continue
 		}
 		final := postProcessQuestions(parsed, validTargets, existingKeys, maxN)
-		if len(final) > 0 || len(parsed) == 0 {
-			// Usable questions, or the model legitimately returned none — done.
+		if len(final) > 0 || rawCount == 0 {
+			// Usable questions, or the model legitimately returned an empty array
+			// — done. rawCount (not len(parsed)) is the "was it empty" signal, so
+			// a batch of non-object / malformed items that parseQuestions dropped
+			// still triggers the repair below instead of looking legitimately empty.
 			return final, nil
 		}
-		// The model produced items but every one was ungrounded / malformed /
-		// already-asked. Re-prompt with the specific reason.
-		lastErr = fmt.Errorf("all %d generated question(s) were ungrounded or malformed", len(parsed))
+		// The model produced items but every one was unparseable / ungrounded /
+		// malformed / already-asked. Re-prompt with the specific reason.
+		lastErr = fmt.Errorf("all %d generated question item(s) were unusable", rawCount)
 	}
 	return nil, fmt.Errorf("clarifying questions unusable after %d attempt(s): %w", maxRetries+1, lastErr)
 }
@@ -347,7 +350,7 @@ func normalizedKeySet(existing []commonmodels.DiscoveryQuestion) map[string]bool
 	for _, q := range existing {
 		key := q.NormalizedKey
 		if key == "" {
-			key = commonmodels.NormalizedQuestionKey(q.Question, q.LinkedTarget)
+			key = commonmodels.NormalizedQuestionKey(q.Question)
 		}
 		set[key] = true
 	}
@@ -371,22 +374,25 @@ type parsedQuestion struct {
 
 // parseQuestions decodes the model's response tolerantly and per-item, mirroring
 // parseRecommendations. Accepts the {"questions": [...]} envelope or a bare
-// top-level array; a malformed item is skipped rather than failing the batch. A
-// well-formed but empty result returns (empty, nil) so the caller does not
-// re-prompt. Returns a non-nil error only when the response is not recognizable
-// as questions at all.
-func parseQuestions(response string) ([]parsedQuestion, error) {
+// top-level array; a malformed item is skipped rather than failing the batch.
+//
+// Returns (kept, rawCount, err): rawCount is the number of items the model
+// actually emitted (before per-item drops), so the caller can tell a legitimately
+// empty array (rawCount 0 → no retry) from a non-empty array whose items were all
+// unparseable (rawCount > 0, kept empty → retry). A non-nil error is returned
+// only when the response is not recognizable as questions at all.
+func parseQuestions(response string) ([]parsedQuestion, int, error) {
 	cleaned := cleanJSONResponse(response)
 
 	var raws []json.RawMessage
 	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
 		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	} else {
 		var envelope map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		var qRaw json.RawMessage
 		found := false
@@ -397,13 +403,13 @@ func parseQuestions(response string) ([]parsedQuestion, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf(`response is missing the "questions" key`)
+			return nil, 0, fmt.Errorf(`response is missing the "questions" key`)
 		}
 		if strings.TrimSpace(string(qRaw)) == "null" {
-			return nil, fmt.Errorf(`"questions" is null`)
+			return nil, 0, fmt.Errorf(`"questions" is null`)
 		}
 		if err := json.Unmarshal(qRaw, &raws); err != nil {
-			return nil, fmt.Errorf(`"questions" is not an array: %w`, err)
+			return nil, 0, fmt.Errorf(`"questions" is not an array: %w`, err)
 		}
 	}
 
@@ -417,7 +423,7 @@ func parseQuestions(response string) ([]parsedQuestion, error) {
 		}
 		out = append(out, q)
 	}
-	return out, nil
+	return out, len(raws), nil
 }
 
 // postProcessQuestions turns raw parsed questions into persistable ones,
@@ -468,7 +474,7 @@ func postProcessQuestions(parsed []parsedQuestion, validTargets, existingKeys ma
 			options = nil // boolean / free_text carry no options
 		}
 
-		key := commonmodels.NormalizedQuestionKey(q, target)
+		key := commonmodels.NormalizedQuestionKey(q)
 		if seen[key] {
 			continue // dedup vs already-asked and earlier in this batch
 		}
