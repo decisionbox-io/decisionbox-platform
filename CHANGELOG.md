@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tenant filter that cannot be verified is now refused, not assumed.** The filter is checked by looking for its field name in the query TEXT. That is weak evidence in SQL, where the name appearing at least means a predicate probably mentions it — and it is no evidence at all in any other query language. A report request naming `country` among its *dimensions* contains the string and filters by nothing, so the check passed and the query ran across the whole source while reporting as scoped: an unscoped result presented as a scoped one, which is precisely what the check exists to prevent. A source whose queries are not SQL now fails the query outright and says why, because scope for such a source rests on its credential and a filter configured on the datasource is a guarantee this code cannot keep. SQL behaviour is unchanged, character for character.
+
 ### Added
 
 - **Anchoring refusals are now visible after the fact.** Refusing a project with no data source that can carry it is the only feature in the product whose job is to say no, and how often it says no — and at which site — is the only measure of whether it is calibrated. A rule that fires constantly is blocking setups customers legitimately want; one that never fires anywhere but project creation is not earning the checks at the other sites. Neither was visible.
