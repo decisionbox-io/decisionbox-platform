@@ -75,12 +75,15 @@ export default function DiscoveryDetailPage() {
 
   // Question generation is a best-effort hop that runs AFTER the run is
   // finalized, so on a page opened right after completion the first fetch can
-  // return an empty list before the agent has written them. Poll a few times
-  // (bounded) until some arrive, so the panel populates without a manual refresh.
+  // return an empty list before the agent has written them. The generation call
+  // is bounded by DISCOVERY_QUESTIONS_TIMEOUT (default 3m), so poll (stopping on
+  // the first hit) across that window rather than giving up after a few tries —
+  // otherwise a slow LLM leaves the panel empty until a manual refresh.
   useEffect(() => {
     if (loading || questions.length > 0) return;
+    const POLL_INTERVAL_MS = 10000;
+    const POLL_MAX_ATTEMPTS = 20; // ~3.3 min, covering the default generation timeout
     let attempts = 0;
-    const maxAttempts = 6;
     const timer = setInterval(() => {
       attempts += 1;
       api.listProjectQuestions(id, { status: 'pending', discovery_id: runId })
@@ -91,8 +94,8 @@ export default function DiscoveryDetailPage() {
           }
         })
         .catch(() => {})
-        .finally(() => { if (attempts >= maxAttempts) clearInterval(timer); });
-    }, 5000);
+        .finally(() => { if (attempts >= POLL_MAX_ATTEMPTS) clearInterval(timer); });
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [loading, questions.length, id, runId]);
 
