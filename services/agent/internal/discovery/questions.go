@@ -11,6 +11,7 @@ import (
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/google/uuid"
@@ -85,6 +86,16 @@ func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.Dis
 	}
 	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, false) {
 		return // Layer A: feature not available on this deployment.
+	}
+	// License entitlement: answering questions writes knowledge-base notes, so
+	// generation follows the same `sources_enabled` entitlement the enterprise
+	// answer API is gated on — otherwise an entitlement-less enterprise deployment
+	// would spend LLM tokens generating questions the API hides. On the enterprise
+	// agent the license plugin registers a license-backed checker; on community /
+	// self-hosted the Noop checker returns true, so the env flag + per-project
+	// toggle remain the effective gates.
+	if enabled, _ := policy.GetChecker().FeatureEnabled(ctx, "", policy.FeatureSources); !enabled {
+		return
 	}
 	if o.aiClient == nil || o.questionRepo == nil || result == nil {
 		return // Missing deps (unit/single-binary builds) — nothing to do.

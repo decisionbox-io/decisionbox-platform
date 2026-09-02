@@ -8,6 +8,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -340,6 +341,29 @@ func TestRunPhaseQuestions_ToggleOff_NoWork(t *testing.T) {
 
 	if prov.calls != 0 || len(repo.inserted) != 0 {
 		t.Fatalf("toggle off must do no work: calls=%d inserted=%d", prov.calls, len(repo.inserted))
+	}
+}
+
+// denyChecker entitles nothing — mirrors an enterprise deployment whose license
+// lacks sources_enabled.
+type denyChecker struct{ policy.Checker }
+
+func (denyChecker) FeatureEnabled(context.Context, string, string) (bool, error) { return false, nil }
+
+func TestRunPhaseQuestions_LicenseGate_NoWork(t *testing.T) {
+	t.Setenv("DISCOVERY_QUESTIONS_ENABLED", "true")
+	policy.RegisterChecker(denyChecker{policy.NewNoopChecker()})
+	t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+
+	client, prov := stubClient(t, `{"questions":[]}`, nil)
+	repo := &fakeQuestionRepo{}
+	o := newTestOrchestrator(client, repo)
+
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{insightWith("a", "x", valmodels.StatusUnverifiable, 0.9)}})
+
+	if prov.calls != 0 || len(repo.inserted) != 0 {
+		t.Fatalf("no sources entitlement must do no work: calls=%d inserted=%d", prov.calls, len(repo.inserted))
 	}
 }
 
