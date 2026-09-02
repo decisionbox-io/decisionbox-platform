@@ -1,49 +1,40 @@
 package agentserver
 
 import (
+	"context"
+	"strings"
 	"testing"
 
-	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// stubProvider satisfies the registry's factory signature without doing
-// anything — registration only needs a non-nil factory.
-func stubFactory(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) { return nil, nil }
-
-func init() {
-	gowarehouse.RegisterWithMeta("test-tabular-source", stubFactory, gowarehouse.ProviderMeta{
-		Name: "Tabular test source",
-	})
-	gowarehouse.RegisterWithMeta("test-cube-source", stubFactory, gowarehouse.ProviderMeta{
-		Name:       "Cube test source",
-		Capability: gowarehouse.Capability{Shape: gowarehouse.ShapeCube},
-	})
-}
-
-// TestRequiresDataset decides whether a datasource can be configured at all.
-// A cube-shaped source has no datasets, so demanding one makes it
-// unconfigurable — or forces an operator to invent a value that means nothing
-// and then wonder why it is ignored.
-//
-// The default matters as much as the cube case: an unregistered slug must
-// still require a dataset, because that is what every provider needed before
-// shape existed and a wrong default here would silently drop the check for
-// real warehouses.
-func TestRequiresDataset(t *testing.T) {
-	tests := []struct {
-		name, provider string
-		want           bool
-	}{
-		{name: "tabular source needs a dataset", provider: "test-tabular-source", want: true},
-		{name: "cube source does not", provider: "test-cube-source", want: false},
-		{name: "unregistered slug still needs one", provider: "not-registered", want: true},
-		{name: "empty slug still needs one", provider: "", want: true},
+// initWarehouseProvider is where the dataset requirement actually bites: a
+// source configured without one is refused before a provider is constructed.
+// The shared helper can be correct and this call site still let a
+// dataset-less warehouse through, or refuse a cube source that legitimately
+// has none — which is the failure that made a cube source unconfigurable in
+// the first place.
+func TestInitWarehouseProvider_DatasetRequirementFollowsShape(t *testing.T) {
+	project := func(provider string, datasets []string) *models.Project {
+		return &models.Project{
+			ID:         "p1",
+			Warehouses: []models.WarehouseConfig{{ID: "wh_1", Provider: provider, Datasets: datasets}},
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := requiresDataset(tt.provider); got != tt.want {
-				t.Errorf("requiresDataset(%q) = %v, want %v", tt.provider, got, tt.want)
-			}
-		})
-	}
+
+	t.Run("a table-shaped source without a dataset is refused", func(t *testing.T) {
+		_, err := initWarehouseProvider(context.Background(), project("test-tabular-source", nil), "wh_1", &fakeSecretProvider{}, "p1")
+		if err == nil || !strings.Contains(err.Error(), "no datasets configured") {
+			t.Fatalf("err = %v, want a missing-dataset refusal", err)
+		}
+	})
+
+	t.Run("a cube source without a dataset gets past the requirement", func(t *testing.T) {
+		// Whatever construction then does, the assertion is that the dataset
+		// check did not refuse it: a cube source has no datasets to give.
+		_, err := initWarehouseProvider(context.Background(), project("test-cube-source", nil), "wh_1", &fakeSecretProvider{}, "p1")
+		if err != nil && strings.Contains(err.Error(), "no datasets configured") {
+			t.Fatalf("a source with no datasets was asked for one: %v", err)
+		}
+	})
 }
