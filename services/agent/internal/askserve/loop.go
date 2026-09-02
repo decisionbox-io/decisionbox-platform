@@ -94,12 +94,12 @@ type turnState struct {
 	// querySummariesByID maps a step id to the query summary the chart validator
 	// grounds against, for O(1) lookup of a chart's referenced source.
 	querySummariesByID map[string]QuerySummary
-	// queryStepDatasource maps a step id to the datasource that step ran
-	// against, so a joins_on declaration can be checked against where its
-	// values actually came from. Kept beside the summaries rather than on them
+	// queryStepsByID maps a step id to where and when that query ran, so a
+	// joins_on declaration can be checked against what the model could
+	// actually have observed. Kept beside the summaries rather than on them
 	// because it is turn bookkeeping, not part of the persisted result — the
-	// tool event already records each query's datasource.
-	queryStepDatasource map[string]string
+	// tool event already records each query's datasource and round.
+	queryStepsByID map[string]queryStep
 	// chartsEnabled is the per-turn entitlement (caller EnableCharts AND the ops
 	// kill-switch). It gates EXECUTION, not just tool offering: the text-fallback
 	// parser accepts render_chart regardless, and a provider can return an
@@ -729,10 +729,10 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		st.querySummariesByID = make(map[string]QuerySummary)
 	}
 	st.querySummariesByID[sum.Step] = sum
-	if st.queryStepDatasource == nil {
-		st.queryStepDatasource = make(map[string]string)
+	if st.queryStepsByID == nil {
+		st.queryStepsByID = make(map[string]queryStep)
 	}
-	st.queryStepDatasource[sum.Step] = dsID
+	st.queryStepsByID[sum.Step] = queryStep{datasource: dsID, round: st.round}
 	if sum.chartable() {
 		st.queriesChartable++
 	}

@@ -19,12 +19,21 @@ import (
 // columns a later hop could carry across.
 func twoHopState() *turnState {
 	return &turnState{
-		req: TurnRequest{ProjectID: "p1"},
+		req:   TurnRequest{ProjectID: "p1"},
+		round: 2,
 		querySummariesByID: map[string]QuerySummary{
 			"q1": {Step: "q1", Columns: []string{"user_id", "spend"}},
 		},
-		queryStepDatasource: map[string]string{"q1": "wh_a"},
+		queryStepsByID: map[string]queryStep{"q1": {datasource: "wh_a", round: 1}},
 	}
+}
+
+// sameBatchState is a turn whose q1 was issued in the round now executing — the
+// model wrote both queries before seeing either result.
+func sameBatchState() *turnState {
+	st := twoHopState()
+	st.queryStepsByID["q1"] = queryStep{datasource: "wh_a", round: st.round}
+	return st
 }
 
 func wireValidator(t *testing.T, fn agentplugin.JoinKeyValidatorFunc) {
@@ -68,7 +77,7 @@ func TestResolveJoinScope_SingleDatasourceTurnStampsNothing(t *testing.T) {
 }
 
 func TestResolveJoinScope_FirstQueryOfATurnStampsNothing(t *testing.T) {
-	st := &turnState{req: TurnRequest{ProjectID: "p1"}}
+	st := &turnState{req: TurnRequest{ProjectID: "p1"}, round: 1}
 	js := st.resolveJoinScope(context.Background(), "wh_a", nil)
 	if js.scoped != nil || js.outcome != "" {
 		t.Fatalf("the first query of a turn has nothing to have joined to: %+v", js)
@@ -153,12 +162,12 @@ func TestResolveJoinScope_RejectsADeclarationThatContradictsTheTurn(t *testing.T
 
 func TestResolveJoinScope_UnknownStepIsRejectedEvenWhenTheTurnHasNoStepsYet(t *testing.T) {
 	agentplugin.ResetJoinKeyValidatorForTest()
-	st := &turnState{req: TurnRequest{ProjectID: "p1"}}
+	st := &turnState{req: TurnRequest{ProjectID: "p1"}, round: 1}
 	js := st.resolveJoinScope(context.Background(), "wh_b", &joinDeclaration{SourceStep: "q1", Field: "user_id"})
 	if js.reject == "" {
 		t.Fatal("a declaration citing a step that cannot exist must be rejected")
 	}
-	if !strings.Contains(js.reject, "no query has produced a result yet") {
+	if !strings.Contains(js.reject, "no query result is available to join on yet") {
 		t.Fatalf("rejection should say the turn has no steps, got %q", js.reject)
 	}
 }
@@ -607,5 +616,108 @@ func TestExecQuery_RejectedDeclarationDoesNotGroundTheTurn(t *testing.T) {
 	// A rejected call observed no data, so it must not unlock the answer.
 	if store.final.Status != "declined" {
 		t.Fatalf("status = %q; an ungrounded turn must not answer", store.final.Status)
+	}
+}
+
+// --- same-batch tool calls ---------------------------------------------
+
+func TestResolveJoinScope_RejectsAJoinOnAStepIssuedInTheSameBatch(t *testing.T) {
+	wireValidator(t, func(context.Context, agentplugin.JoinKeyRequest) (agentplugin.JoinKeyVerdict, error) {
+		t.Fatal("a step the model has not seen must be rejected without consulting the report")
+		return agentplugin.JoinKeyVerdict{}, nil
+	})
+	st := sameBatchState()
+
+	js := st.resolveJoinScope(context.Background(), "wh_b", &joinDeclaration{SourceStep: "q1", Field: "user_id"})
+	if js.reject == "" {
+		t.Fatalf("want a rejection, got %+v", js)
+	}
+	if js.scoped != nil {
+		t.Fatalf("a rejected query stamps no verdict, got %v", *js.scoped)
+	}
+	if js.outcome != joinOutcomeRejectedBatch {
+		t.Fatalf("outcome = %q, want %q", js.outcome, joinOutcomeRejectedBatch)
+	}
+	if !strings.Contains(js.reject, "same step") {
+		t.Fatalf("the rejection must say why the values could not have come from it, got %q", js.reject)
+	}
+}
+
+func TestResolveJoinScope_SameBatchQueriesAreNotACrossDatasourceHop(t *testing.T) {
+	agentplugin.ResetJoinKeyValidatorForTest()
+	st := sameBatchState()
+
+	// Two independent queries issued together against different datasources.
+	// Neither could have filtered on the other, so neither is caveated.
+	js := st.resolveJoinScope(context.Background(), "wh_b", nil)
+	if js.scoped != nil {
+		t.Fatalf("scoped = %v, want nil — these queries never touched each other", *js.scoped)
+	}
+	if js.note != "" || js.outcome != "" {
+		t.Fatalf("want an entirely empty verdict, got %+v", js)
+	}
+}
+
+func TestDescribeQuerySteps_OmitsStepsTheModelHasNotSeen(t *testing.T) {
+	st := sameBatchState()
+	if got := st.describeQuerySteps(); strings.Contains(got, "q1") {
+		t.Fatalf("a repair message must not point at a step the next check rejects: %q", got)
+	}
+	st = twoHopState()
+	if got := st.describeQuerySteps(); !strings.Contains(got, "q1") {
+		t.Fatalf("an observed step must be offered: %q", got)
+	}
+}
+
+// TestExecQuery_BatchedHopIsNeitherCertifiedNorCaveated drives the NATIVE tools
+// path with two query_data calls in ONE assistant response — the shape that
+// makes the round rule matter, and the one the JSON-text path cannot produce.
+func TestExecQuery_BatchedHopIsNeitherCertifiedNorCaveated(t *testing.T) {
+	wireValidator(t, func(context.Context, agentplugin.JoinKeyRequest) (agentplugin.JoinKeyVerdict, error) {
+		t.Fatal("a batched declaration must be rejected before the report is consulted")
+		return agentplugin.JoinKeyVerdict{}, nil
+	})
+	tracked := captureJoinTelemetry(t)
+
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "a", Name: string(actQuery), Input: map[string]any{"query": "SELECT user_id FROM sales.orders", "datasource_id": "wh_a"}},
+				{ID: "b", Name: string(actQuery), Input: map[string]any{"query": "SELECT flagged FROM crm.users", "datasource_id": "wh_b",
+					"joins_on": map[string]any{"source_step": "q1", "field": "user_id"}}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "done"}),
+	}}
+	rt := twoDatasourceRuntime(p, whA, whB, nil, nil)
+	ensureToolProvider()
+	rt.AIClient.SetProvenance("p1", "", "test-tools")
+
+	store := &fakeStore{}
+	(&runner{cfg: mwConfig(), store: store}).run(context.Background(),
+		rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "q"})
+
+	if len(store.events) != 2 {
+		t.Fatalf("want two query events, got %d: %+v", len(store.events), store.events)
+	}
+	// The first ran; the second declared a join on a result that did not exist
+	// when the model wrote it, so it is rejected rather than certified.
+	if store.events[1].Error == "" {
+		t.Fatalf("the batched declaration should have been rejected, got %+v", store.events[1])
+	}
+	if len(whB.Calls) != 0 {
+		t.Fatalf("the rejected query must not reach the warehouse, got %d calls", len(whB.Calls))
+	}
+	if len(*tracked) != 1 || (*tracked)[0] != "declared/"+joinOutcomeRejectedBatch {
+		t.Fatalf("tracked %v", *tracked)
+	}
+	// And the first query, whose only company was issued alongside it, carries
+	// no cross-datasource caveat.
+	if sum := summaryOf(t, store, 0); sum.Scoped != nil {
+		t.Fatalf("the first query of a batch has nothing before it: scoped = %v", *sum.Scoped)
 	}
 }

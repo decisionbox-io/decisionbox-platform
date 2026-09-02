@@ -38,6 +38,22 @@ type joinDeclaration struct {
 	Field string
 }
 
+// queryStep is what a completed query contributes to a later hop's check.
+type queryStep struct {
+	// datasource is the datasource the query ran against.
+	datasource string
+	// round is the loop round whose results the model saw it in.
+	//
+	// A join may cite a step only from an EARLIER round. A native provider can
+	// return several query_data calls in one response; the loop runs them in
+	// sequence, so an earlier one's result is recorded before a later one
+	// executes — but the model wrote them all before seeing any of them. A
+	// value from one therefore cannot have reached another's filter, and
+	// treating it as though it had would certify a hop that did not happen and
+	// caveat two independent queries that never touched each other.
+	round int
+}
+
 // joinScope is what examining a query's cross-datasource position concluded.
 type joinScope struct {
 	// reject, when non-empty, is the repair message for a declaration that
@@ -62,6 +78,7 @@ const (
 	joinOutcomeUnverified     = "unverified"
 	joinOutcomeValidatorError = "validator_error"
 	joinOutcomeRejectedStep   = "rejected_unknown_step"
+	joinOutcomeRejectedBatch  = "rejected_same_batch"
 	joinOutcomeRejectedSameDS = "rejected_same_datasource"
 	joinOutcomeRejectedField  = "rejected_unobserved_field"
 )
@@ -93,18 +110,27 @@ func (st *turnState) resolveJoinScope(ctx context.Context, targetDS string, decl
 		}
 	}
 
-	// A step's summary and its datasource are recorded together when a query
+	// A step's summary and its bookkeeping are recorded together when a query
 	// succeeds, so the summary is the test for whether the step exists at all.
 	sum, known := st.querySummariesByID[decl.SourceStep]
-	sourceDS := st.queryStepDatasource[decl.SourceStep]
+	step := st.queryStepsByID[decl.SourceStep]
 	if !known {
 		return joinScope{
 			outcome: joinOutcomeRejectedStep,
-			reject: fmt.Sprintf("joins_on names step %q, which is not a query result from this turn (%s). "+
+			reject: fmt.Sprintf("joins_on names step %q, which is not a query result you have seen this turn (%s). "+
 				"Use the q<N> id shown on the result you took the values from.",
 				decl.SourceStep, st.describeQuerySteps()),
 		}
 	}
+	if !st.observed(step) {
+		return joinScope{
+			outcome: joinOutcomeRejectedBatch,
+			reject: fmt.Sprintf("joins_on names step %s, which you issued in this same step — its result did not exist when this query was written, "+
+				"so no value from it can be in this filter. Run the query that gathers the values on its own, read the result, then filter on it in a later step.",
+				decl.SourceStep),
+		}
+	}
+	sourceDS := step.datasource
 	if sourceDS == targetDS {
 		return joinScope{
 			outcome: joinOutcomeRejectedSameDS,
@@ -167,26 +193,37 @@ func (js joinScope) track(declared bool) {
 // Only successful queries count, because only they returned rows: a failed
 // query against another datasource gave the model nothing to filter by.
 func (st *turnState) hasQueriedAnotherDatasource(target string) bool {
-	for _, ds := range st.queryStepDatasource {
-		if ds != target {
+	for _, step := range st.queryStepsByID {
+		if step.datasource != target && st.observed(step) {
 			return true
 		}
 	}
 	return false
 }
 
-// describeQuerySteps lists this turn's query step ids for a repair message, or
-// says there are none.
+// observed reports whether the model has actually SEEN a step's result — i.e.
+// the step completed in an earlier round. A step from this same round was
+// issued in the same breath as the query now being checked, so its result was
+// not in front of the model when that query was written.
+func (st *turnState) observed(step queryStep) bool {
+	return step.round > 0 && step.round < st.round
+}
+
+// describeQuerySteps lists the step ids this turn could legitimately be cited,
+// or says there are none. Steps from the current round are left out: naming one
+// would point the model at a step that the very next check rejects.
 func (st *turnState) describeQuerySteps() string {
-	if len(st.querySummariesByID) == 0 {
-		return "no query has produced a result yet this turn"
+	steps := make([]string, 0, len(st.queryStepsByID))
+	for id, step := range st.queryStepsByID {
+		if st.observed(step) {
+			steps = append(steps, id)
+		}
 	}
-	steps := make([]string, 0, len(st.querySummariesByID))
-	for id := range st.querySummariesByID {
-		steps = append(steps, id)
+	if len(steps) == 0 {
+		return "no query result is available to join on yet this turn"
 	}
 	sort.Strings(steps)
-	return "steps so far: " + strings.Join(steps, ", ")
+	return "results so far: " + strings.Join(steps, ", ")
 }
 
 // hasColumn reports whether cols contains name, ignoring case — column casing
