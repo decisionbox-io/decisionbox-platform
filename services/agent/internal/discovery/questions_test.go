@@ -243,7 +243,7 @@ func TestGenerateQuestions_StubProvider(t *testing.T) {
 	client, prov := stubClient(t, resp, nil)
 	o := newTestOrchestrator(client, &fakeQuestionRepo{})
 	items := []uncertaintyItem{{TargetType: "insight", TargetID: "a", Label: "x", Reason: "unverifiable"}}
-	got, err := o.generateQuestions(context.Background(), items, nil, 5)
+	got, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"insight:a": true}, 5)
 	if err != nil {
 		t.Fatalf("generateQuestions: %v", err)
 	}
@@ -256,8 +256,38 @@ func TestGenerateQuestions_LLMError(t *testing.T) {
 	client, _ := stubClient(t, "", context.DeadlineExceeded)
 	o := newTestOrchestrator(client, &fakeQuestionRepo{})
 	items := []uncertaintyItem{{TargetType: "insight", TargetID: "a", Reason: "x"}}
-	if _, err := o.generateQuestions(context.Background(), items, nil, 5); err == nil {
+	if _, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"insight:a": true}, 5); err == nil {
 		t.Fatalf("expected error from LLM failure")
+	}
+}
+
+// A parseable response whose items all fail grounding must trigger the repair
+// prompt (a second call), not silently yield zero questions.
+func TestGenerateQuestions_RetriesOnAllDropped(t *testing.T) {
+	resp := `{"questions":[{"question":"q","rationale":"","linked_target":{"type":"insight","id":"ghost"},"answer_type":"boolean"}]}`
+	client, prov := stubClient(t, resp, nil)
+	o := newTestOrchestrator(client, &fakeQuestionRepo{})
+	items := []uncertaintyItem{{TargetType: "insight", TargetID: "a", Reason: "x"}}
+	_, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"insight:a": true}, 5)
+	if err == nil {
+		t.Fatalf("expected an error after all items dropped across retries")
+	}
+	if prov.calls < 2 {
+		t.Fatalf("expected the repair prompt to fire (>=2 calls), got %d", prov.calls)
+	}
+}
+
+// A legitimately empty response returns zero WITHOUT retrying.
+func TestGenerateQuestions_EmptyNoRetry(t *testing.T) {
+	client, prov := stubClient(t, `{"questions":[]}`, nil)
+	o := newTestOrchestrator(client, &fakeQuestionRepo{})
+	items := []uncertaintyItem{{TargetType: "insight", TargetID: "a", Reason: "x"}}
+	got, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"insight:a": true}, 5)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty response: got %d err %v (want 0, nil)", len(got), err)
+	}
+	if prov.calls != 1 {
+		t.Fatalf("empty response must not retry, got %d calls", prov.calls)
 	}
 }
 

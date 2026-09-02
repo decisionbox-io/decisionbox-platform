@@ -73,6 +73,29 @@ export default function DiscoveryDetailPage() {
       .finally(() => setLoading(false));
   }, [id, runId]);
 
+  // Question generation is a best-effort hop that runs AFTER the run is
+  // finalized, so on a page opened right after completion the first fetch can
+  // return an empty list before the agent has written them. Poll a few times
+  // (bounded) until some arrive, so the panel populates without a manual refresh.
+  useEffect(() => {
+    if (loading || questions.length > 0) return;
+    let attempts = 0;
+    const maxAttempts = 6;
+    const timer = setInterval(() => {
+      attempts += 1;
+      api.listProjectQuestions(id, { status: 'pending', discovery_id: runId })
+        .then((q) => {
+          if (q && q.length > 0) {
+            setQuestions(q);
+            clearInterval(timer);
+          }
+        })
+        .catch(() => {})
+        .finally(() => { if (attempts >= maxAttempts) clearInterval(timer); });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [loading, questions.length, id, runId]);
+
   // Best-effort jump to the insight / recommendation a question is about.
   const scrollToTarget = (target: DiscoveryQuestion['linked_target']) => {
     const el = document.getElementById(`${target.type}-${target.id}`);

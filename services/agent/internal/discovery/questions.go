@@ -98,23 +98,25 @@ func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.Dis
 	qctx, cancel := questionsContext(ctx)
 	defer cancel()
 
-	// Load already-asked / already-answered questions so we neither re-ask them
-	// (dedup) nor waste the model's attention on them (fed into the prompt).
+	// Load already-asked questions in every terminal state — pending, answered,
+	// AND dismissed — so none is re-generated. Dismissed questions must stay
+	// suppressed (the analyst rejected them), and answered ones are resolved.
 	existing, err := o.questionRepo.ListForProject(qctx, o.projectID,
-		commonmodels.DiscoveryQuestionStatusPending, commonmodels.DiscoveryQuestionStatusAnswered)
+		commonmodels.DiscoveryQuestionStatusPending,
+		commonmodels.DiscoveryQuestionStatusAnswered,
+		commonmodels.DiscoveryQuestionStatusDismissed)
 	if err != nil {
 		applog.WithError(err).Warn("Failed to load existing discovery questions; proceeding without dedup context")
 		existing = nil
 	}
 
 	maxN := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxEnv, defaultDiscoveryQuestionsMax), 1, 50)
-	parsed, err := o.generateQuestions(qctx, items, existing, maxN)
+	validTargets := validTargetSet(insights, recommendations, analysisLog)
+	final, err := o.generateQuestions(qctx, items, existing, validTargets, maxN)
 	if err != nil {
 		applog.WithError(err).Warn("Clarifying-question generation failed; discovery run is unaffected")
 		return
 	}
-
-	final := postProcessQuestions(parsed, validTargetSet(insights, recommendations, analysisLog), normalizedKeySet(existing), maxN)
 	if len(final) == 0 {
 		return
 	}
@@ -144,9 +146,12 @@ func (o *Orchestrator) runPhaseQuestions(ctx context.Context, result *models.Dis
 // generateQuestions runs the bounded, schema-constrained LLM call (mirrors
 // generateRecommendations): budget the output against the model window, attach
 // the structured-output format where the provider supports it, and self-heal a
-// bounded number of times on a parse failure. Returns the raw parsed questions
-// (post-processing happens in the caller so it is unit-testable in isolation).
-func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaintyItem, existing []commonmodels.DiscoveryQuestion, maxN int) ([]parsedQuestion, error) {
+// bounded number of times. Post-processing (grounding / dedup / cap / answer-type
+// normalization) runs INSIDE the loop so a response that parses but whose items
+// all fail validation triggers the repair prompt — exactly the malformed output
+// the retry is meant to fix — instead of silently yielding zero questions. A
+// legitimately empty response (`{"questions": []}`) returns zero without retry.
+func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaintyItem, existing []commonmodels.DiscoveryQuestion, validTargets map[string]bool, maxN int) ([]commonmodels.DiscoveryQuestion, error) {
 	prompt := o.buildQuestionsPrompt(items, existing, maxN)
 	// Let already-answered notes surface so the model doesn't re-raise resolved
 	// ambiguities (the answer is now in the KB).
@@ -166,24 +171,33 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 		maxRetries = 0
 	}
 
-	var lastParseErr error
+	existingKeys := normalizedKeySet(existing)
+	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptPrompt := prompt
 		if attempt > 0 {
-			attemptPrompt = prompt + questionsRepairSuffix(lastParseErr)
-			applog.WithField("attempt", attempt).Warn("Re-prompting for clarifying questions after unparseable response")
+			attemptPrompt = prompt + questionsRepairSuffix(lastErr)
+			applog.WithField("attempt", attempt).Warn("Re-prompting for clarifying questions after an unusable response")
 		}
 		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			return nil, fmt.Errorf("questions llm call: %w", err)
 		}
 		parsed, perr := parseQuestions(chatResult.Content)
-		if perr == nil {
-			return parsed, nil // includes a legitimately empty list
+		if perr != nil {
+			lastErr = perr
+			continue
 		}
-		lastParseErr = perr
+		final := postProcessQuestions(parsed, validTargets, existingKeys, maxN)
+		if len(final) > 0 || len(parsed) == 0 {
+			// Usable questions, or the model legitimately returned none — done.
+			return final, nil
+		}
+		// The model produced items but every one was ungrounded / malformed /
+		// already-asked. Re-prompt with the specific reason.
+		lastErr = fmt.Errorf("all %d generated question(s) were ungrounded or malformed", len(parsed))
 	}
-	return nil, fmt.Errorf("clarifying questions unparseable after %d attempt(s): %w", maxRetries+1, lastParseErr)
+	return nil, fmt.Errorf("clarifying questions unusable after %d attempt(s): %w", maxRetries+1, lastErr)
 }
 
 // buildQuestionsPrompt renders the embedded template with the run's uncertainty
@@ -286,10 +300,13 @@ func renderExistingQuestions(existing []commonmodels.DiscoveryQuestion) string {
 	}
 	var b strings.Builder
 	for _, q := range existing {
-		status := q.Status
-		if status == commonmodels.DiscoveryQuestionStatusAnswered {
+		var status string
+		switch q.Status {
+		case commonmodels.DiscoveryQuestionStatusAnswered:
 			status = "answered"
-		} else {
+		case commonmodels.DiscoveryQuestionStatusDismissed:
+			status = "dismissed by the analyst"
+		default:
 			status = "still pending"
 		}
 		fmt.Fprintf(&b, "- (%s) %s\n", status, q.Question)

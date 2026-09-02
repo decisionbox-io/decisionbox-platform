@@ -53,11 +53,13 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
       case 'single_choice':
         if (!single) return 'Pick an option.';
         if (single === OTHER_ID && !note.trim()) return 'Add a note for "Other".';
-        return { answer_option_ids: [single], answer_note: note.trim() || undefined };
+        // Only attach the note when "Other" is selected, so a note typed and then
+        // abandoned (by switching to a normal option) is never saved.
+        return { answer_option_ids: [single], answer_note: single === OTHER_ID ? note.trim() : undefined };
       case 'multi_choice':
         if (multi.length === 0) return 'Pick at least one option.';
         if (multi.includes(OTHER_ID) && !note.trim()) return 'Add a note for "Other".';
-        return { answer_option_ids: multi, answer_note: note.trim() || undefined };
+        return { answer_option_ids: multi, answer_note: multi.includes(OTHER_ID) ? note.trim() : undefined };
       default:
         if (!text.trim()) return 'Type an answer.';
         return { answer: text.trim() };
