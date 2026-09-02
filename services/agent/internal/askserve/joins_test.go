@@ -515,6 +515,29 @@ func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
 	}
 }
 
+// TestPrompt_TextPathShowsTheFormOnAMixedShapeTurn covers the branch this epic
+// actually exists for: a SQL datasource alongside a cube. The vocabulary block
+// forks on shape, so the form has to be on both forks — and a mixed turn is the
+// one most likely to hop, since a cube is enrichment and cannot answer alone.
+func TestPrompt_TextPathShowsTheFormOnAMixedShapeTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		datasources []DatasourceInfo
+	}{
+		{"sql beside a cube", []DatasourceInfo{{ID: "wh_a"}, cubeDatasource("wh_b")}},
+		{"every datasource a cube", []DatasourceInfo{cubeDatasource("wh_a"), cubeDatasource("wh_b")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &ProjectRuntime{Datasources: tc.datasources, PrimaryID: tc.datasources[0].ID}
+			routing, _ := rt.resolveTurnRouting("")
+			got := buildSystemPrompt(rt, routing, Config{}, false)
+			if !strings.Contains(got, `"joins_on":{"source_step":"q1","field":"user_id"}`) {
+				t.Fatalf("the form must appear on this branch too:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestPrompt_TellsAMultiDatasourceTurnToDeclareItsHop(t *testing.T) {
 	rt := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}, {ID: "wh_b"}}, PrimaryID: "wh_a"}
 	multi, _ := rt.resolveTurnRouting("")

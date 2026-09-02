@@ -197,3 +197,24 @@ func TestValidateJoinKey_SurvivesAPanicAndKeepsWorking(t *testing.T) {
 		t.Fatalf("calls = %d, want 2", calls)
 	}
 }
+
+// TestCallValidator_PanicYieldsNoVerdict pins the invariant at the layer that
+// catches the panic, not only at the exported one.
+//
+// ValidateJoinKey discards the verdict whenever an error comes back, so a test
+// there cannot tell whether the recover also cleared it. It has to: a validator
+// that panicked answered nothing, and a verdict surviving out of a recover is a
+// value no one computed.
+func TestCallValidator_PanicYieldsNoVerdict(t *testing.T) {
+	v, err := callValidator(context.Background(),
+		func(context.Context, JoinKeyRequest) (JoinKeyVerdict, error) {
+			panic("boom")
+		}, JoinKeyRequest{Field: "order_id"})
+
+	if err == nil {
+		t.Fatal("a panic must become an error")
+	}
+	if v != (JoinKeyVerdict{}) {
+		t.Fatalf("verdict = %+v, want the zero verdict — nothing was computed", v)
+	}
+}
