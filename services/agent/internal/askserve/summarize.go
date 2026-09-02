@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
@@ -30,6 +31,15 @@ type QuerySummary struct {
 	Fixed     bool                     `json:"fixed,omitempty" bson:"fixed,omitempty"`
 	// ExecutionTimeMs is wall-clock for the query execution (incl. any repair).
 	ExecutionTimeMs int64 `json:"execution_time_ms,omitempty" bson:"execution_time_ms,omitempty"`
+	// Quality is what the SOURCE said about this result's fidelity — rows it
+	// withheld, values it sampled, a tail it collapsed. Distinct from
+	// Truncated, which is our own preview cap: Truncated says the model was
+	// shown part of what came back, Quality says what came back was not the
+	// whole answer, and no amount of paging fixes the second.
+	//
+	// Persisted with the tool event, so a turn answered from a degraded result
+	// is identifiable afterwards rather than only in the moment.
+	Quality []gowarehouse.QualityCaveat `json:"quality,omitempty" bson:"quality,omitempty"`
 }
 
 // summarizeResult turns an executor result into a bounded QuerySummary,
@@ -62,6 +72,9 @@ func summarizeResult(res *queryexec.ExecuteResult, purpose string, cfg Config) Q
 		ExecutionTimeMs: res.ExecutionTimeMs,
 	}
 	sum.Truncated = total > len(preview)
+	// Carried, never summarised: a caveat's own words name what was degraded
+	// and by how much, and the source is the only thing that knows.
+	sum.Quality = res.Quality
 
 	switch {
 	case overFetchCap:
@@ -105,7 +118,23 @@ func (s QuerySummary) observation() string {
 		b.WriteString(s.Note)
 		b.WriteByte('\n')
 	}
+	// Last, and as an instruction. A model that has already read the rows and
+	// the preview needs to be told what they are NOT before it starts
+	// computing over them — and the same wording discovery uses, because the
+	// same caveat on the same data must not read as two different severities
+	// depending on which path asked.
+	b.WriteString(gowarehouse.CaveatInstruction(s.Quality))
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// chartable reports whether a chart of this result would be true.
+//
+// Two ways it would not be. Truncated means the preview omits rows, so a chart
+// — which must be an exact projection of the preview — cannot show what was
+// returned. A source-reported caveat means what was RETURNED is not the whole
+// population, which no re-query fixes and which a chart has nowhere to say.
+func (s QuerySummary) chartable() bool {
+	return !s.Truncated && len(s.Quality) == 0
 }
 
 // columnsOf returns the sorted union of keys across the given rows, so a
