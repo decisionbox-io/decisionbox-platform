@@ -5,6 +5,7 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 type Project struct {
@@ -185,12 +186,12 @@ type WarehouseConfig struct {
 	// to Project.Profile for the primary / legacy warehouse.
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
-	Provider    string            `bson:"provider" json:"provider"`
-	ProjectID   string            `bson:"project_id,omitempty" json:"project_id,omitempty"`
-	Datasets    []string          `bson:"datasets" json:"datasets"`
-	Location    string            `bson:"location,omitempty" json:"location,omitempty"`
-	FilterField string            `bson:"filter_field,omitempty" json:"filter_field,omitempty"`
-	FilterValue string            `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
+	Provider    string   `bson:"provider" json:"provider"`
+	ProjectID   string   `bson:"project_id,omitempty" json:"project_id,omitempty"`
+	Datasets    []string `bson:"datasets" json:"datasets"`
+	Location    string   `bson:"location,omitempty" json:"location,omitempty"`
+	FilterField string   `bson:"filter_field,omitempty" json:"filter_field,omitempty"`
+	FilterValue string   `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
 	// Anchoring is the per-datasource override of whether this source may
 	// carry the project by itself. Nil means "not set" — the provider's own
 	// capability decides. It may only DEMOTE: a provider that declares it
@@ -201,8 +202,8 @@ type WarehouseConfig struct {
 	// Deliberately not called "primary": a project's primary datasource is a
 	// selection among the ones connected, which is a different concept already
 	// in use here.
-	Anchoring *bool `bson:"anchoring,omitempty" json:"anchoring,omitempty"`
-	Config      map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
+	Anchoring *bool             `bson:"anchoring,omitempty" json:"anchoring,omitempty"`
+	Config    map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
 }
 
 // WarehouseCard is the structured "what this warehouse holds" summary
@@ -370,4 +371,23 @@ func (p *Project) WarehouseByID(id string) (WarehouseConfig, bool) {
 		}
 	}
 	return WarehouseConfig{}, false
+}
+
+// CacheHash identifies this datasource's CONFIGURATION — everything that
+// decides what discovery would find in it.
+//
+// It is the key the schema cache is written under, and the only thing telling
+// a cached row that describes this datasource as it is now from one describing
+// it as it used to be. Anything reading that cache has to filter by it, or it
+// reads a previous configuration's answer and presents it as current.
+//
+// The status on the project is not a substitute. An index run can finish ready
+// while one datasource failed to re-index — the primary is mandatory and the
+// rest are best-effort — and that datasource's rows then still describe the
+// configuration it had before the edit.
+func (w WarehouseConfig) CacheHash() string {
+	return warehouse.ConfigHash(
+		w.Provider, w.ProjectID, w.Location,
+		w.Datasets, w.FilterField, w.FilterValue, w.Config,
+	)
 }
