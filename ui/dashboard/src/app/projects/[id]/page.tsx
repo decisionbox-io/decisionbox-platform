@@ -87,6 +87,22 @@ export default function ProjectPage() {
         setRun(newRun);
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
+          // Nudge the analyst if the run left clarifying questions to answer.
+          // Generation is a best-effort post-run step, so questions may land a
+          // beat after the status flip; the run-detail panel + card badge are
+          // the durable surface, this toast is the prompt.
+          if (newRun.status === 'completed') {
+            api.listProjectQuestions(id, { status: 'pending' }).then((qs) => {
+              const n = qs?.length || 0;
+              if (n > 0) {
+                notifications.show({
+                  title: `${n} question${n > 1 ? 's' : ''} await you`,
+                  message: 'Answer them to sharpen the next discovery run.',
+                  color: 'blue',
+                });
+              }
+            }).catch(() => {});
+          }
         }
       }
     } catch { /* ignore */ }

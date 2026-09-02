@@ -19,8 +19,9 @@ import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import UnreadDot from '@/components/common/UnreadDot';
+import QuestionsPanel from '@/components/common/QuestionsPanel';
 import { useReadSet } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
+import { api, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -41,6 +42,10 @@ export default function DiscoveryDetailPage() {
   // Recommendation-phase log: used only to explain an empty recommendations
   // section (parse error / skipped), so an empty section is never silent.
   const [recLog, setRecLog] = useState<{ status?: string; recommendations_dropped_parse?: number; error?: string } | null>(null);
+  // Pending clarifying questions the agent raised for this run (enterprise-
+  // backed; empty on community builds or clean runs). Answered/dismissed cards
+  // drop out via onResolved.
+  const [questions, setQuestions] = useState<DiscoveryQuestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('Severity');
@@ -61,10 +66,18 @@ export default function DiscoveryDetailPage() {
       api.listAnalysisSteps(runId).then((s) => setAnalysisLog(s || [])).catch(() => {}),
       api.listValidationResults(runId).then((s) => setValidationLog(s || [])).catch(() => {}),
       api.getRecommendationLog(runId).then(setRecLog).catch(() => setRecLog(null)),
+      api.listProjectQuestions(id, { status: 'pending', discovery_id: runId })
+        .then((q) => setQuestions(q || [])).catch(() => {}),
     ])
       .catch(() => null)
       .finally(() => setLoading(false));
   }, [id, runId]);
+
+  // Best-effort jump to the insight / recommendation a question is about.
+  const scrollToTarget = (target: DiscoveryQuestion['linked_target']) => {
+    const el = document.getElementById(`${target.type}-${target.id}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const handleFeedbackUpdate = (targetType: string, targetId: string, fb: Feedback | null) => {
     const key = `${targetType}:${targetId}`;
@@ -168,6 +181,14 @@ export default function DiscoveryDetailPage() {
           </span>
         </div>
       </div>
+
+      {/* Questions the agent raised for this run — answer to sharpen the next one. */}
+      <QuestionsPanel
+        projectId={id}
+        questions={questions}
+        onResolved={(qid) => setQuestions((prev) => prev.filter((q) => q.id !== qid))}
+        onLinkClick={scrollToTarget}
+      />
 
       {/* Hero KPI Cards */}
       <div style={{
@@ -404,7 +425,8 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
   feedback?: Feedback; onFeedbackUpdate: (fb: Feedback | null) => void;
 }) {
   return (
-    <tr style={{ borderBottom: '1px solid var(--db-border-default)' }}
+    <tr id={insight.id ? `insight-${insight.id}` : undefined}
+      style={{ borderBottom: '1px solid var(--db-border-default)' }}
       onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
     >
@@ -465,7 +487,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
   const effortStyle = effortColors[effort] || effortColors.medium;
 
   return (
-    <div style={{
+    <div id={rec.id ? `recommendation-${rec.id}` : undefined} style={{
       background: 'var(--db-bg-white)',
       border: '1px solid var(--db-border-default)',
       borderRadius: 'var(--db-radius-lg)',

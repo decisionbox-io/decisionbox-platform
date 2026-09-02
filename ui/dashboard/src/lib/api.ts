@@ -285,6 +285,11 @@ export interface Project {
   // chain-of-thought doesn't truncate the action, plus a reasoning hint on the
   // request (providers that wire native thinking act on it; others ignore it).
   reasoning_enabled?: boolean;
+  // Undefined → default (true). Controls the discovery clarifying-questions
+  // loop: after a run, the agent asks the analyst about anything it was
+  // uncertain about, and the answers feed the next run. False opts the project
+  // out (no questions generated).
+  clarifying_questions_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,
@@ -817,6 +822,41 @@ export interface Feedback {
   created_at: string;
 }
 
+// Discovery clarifying questions — the agent's post-run questions to the analyst.
+export type QuestionAnswerType = 'boolean' | 'single_choice' | 'multi_choice' | 'free_text';
+export type QuestionTargetType = 'insight' | 'recommendation' | 'table' | 'area';
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+}
+
+export interface DiscoveryQuestion {
+  id: string;
+  project_id: string;
+  run_id: string;
+  discovery_id: string;
+  question: string;
+  rationale: string;
+  linked_target: { type: QuestionTargetType; id: string };
+  answer_type: QuestionAnswerType;
+  options?: QuestionOption[];
+  status: 'pending' | 'answered' | 'dismissed';
+  answer?: string;
+  answer_option_ids?: string[];
+  answer_note?: string;
+  created_at: string;
+}
+
+// Payload for answering: send only the fields the answer_type needs; the server
+// derives the canonical answer text and materializes the KB note.
+export interface QuestionAnswerPayload {
+  answer_bool?: boolean;
+  answer_option_ids?: string[];
+  answer?: string;
+  answer_note?: string;
+}
+
 export interface CostEstimate {
   llm: { provider: string; model: string; estimated_input_tokens: number; estimated_output_tokens: number; cost_usd: number };
   warehouse: { provider: string; estimated_queries: number; estimated_bytes_scanned: number; cost_usd: number };
@@ -1305,6 +1345,24 @@ export const api = {
     request<Feedback[]>(`/api/v1/discoveries/${discoveryId}/feedback`),
   deleteFeedback: (feedbackId: string) =>
     request<{ status: string }>(`/api/v1/feedback/${feedbackId}`, { method: 'DELETE' }),
+
+  // Discovery clarifying questions (enterprise-backed; empty on community builds
+  // where the routes 404 — callers .catch(() => []) so the panel just hides).
+  listProjectQuestions: (projectId: string, opts?: { status?: string; discovery_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.status) qs.set('status', opts.status);
+    if (opts?.discovery_id) qs.set('discovery_id', opts.discovery_id);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<DiscoveryQuestion[]>(`/api/v1/projects/${projectId}/discovery-questions${suffix}`);
+  },
+  answerQuestion: (projectId: string, questionId: string, data: QuestionAnswerPayload) =>
+    request<DiscoveryQuestion>(`/api/v1/projects/${projectId}/discovery-questions/${questionId}/answer`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  dismissQuestion: (projectId: string, questionId: string) =>
+    request<DiscoveryQuestion>(`/api/v1/projects/${projectId}/discovery-questions/${questionId}/dismiss`, {
+      method: 'POST',
+    }),
 
   // Cost estimation
   estimateCost: (projectId: string, opts?: { areas?: string[]; max_steps?: number }) =>

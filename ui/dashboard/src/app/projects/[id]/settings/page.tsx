@@ -101,6 +101,11 @@ export default function ProjectSettingsPage() {
   const [smartOverflowEnabled, setSmartOverflowEnabled] = useState(true);
   const [savingSmartOverflow, setSavingSmartOverflow] = useState(false);
 
+  // Advanced — Clarifying questions toggle (lives on the project document).
+  // Defaults to true (clarifying_questions_enabled === undefined) — opt-out.
+  const [clarifyingQuestionsEnabled, setClarifyingQuestionsEnabled] = useState(true);
+  const [savingClarifyingQuestions, setSavingClarifyingQuestions] = useState(false);
+
   // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
   // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
@@ -159,6 +164,7 @@ export default function ProjectSettingsPage() {
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
+        setClarifyingQuestionsEnabled(proj.clarifying_questions_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
         setRecommendationVerdicts(
           proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
@@ -275,6 +281,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingSmartOverflow(false);
+    }
+  };
+
+  // Save the clarifying-questions toggle. Optimistic update + rollback on failure.
+  const saveClarifyingQuestionsEnabled = async (next: boolean) => {
+    const prev = clarifyingQuestionsEnabled;
+    setClarifyingQuestionsEnabled(next);
+    setSavingClarifyingQuestions(true);
+    try {
+      const saved = await api.updateProject(id, { clarifying_questions_enabled: next });
+      setProject(saved);
+      setClarifyingQuestionsEnabled(saved.clarifying_questions_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Clarifying questions enabled' : 'Clarifying questions disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setClarifyingQuestionsEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingClarifyingQuestions(false);
     }
   };
 
@@ -475,6 +503,13 @@ export default function ProjectSettingsPage() {
                 checked={smartOverflowEnabled}
                 disabled={savingSmartOverflow}
                 onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Clarifying questions"
+                description="When on, after a discovery run the agent asks you a short list of questions about anything it was uncertain about (opaque codes, ambiguous columns, findings it couldn't verify). Your answers are saved as notes and fed into the next run, so the analysis keeps improving. Grounded questions only — a clean, confident run asks nothing. On by default."
+                checked={clarifyingQuestionsEnabled}
+                disabled={savingClarifyingQuestions}
+                onChange={(e) => saveClarifyingQuestionsEnabled(e.currentTarget.checked)}
               />
               <Switch
                 label="Enable reasoning"
