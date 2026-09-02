@@ -50,6 +50,12 @@ type QuerySummary struct {
 	// accusation: it covers an undeclared hop, a report that does not list the
 	// declared field, and a report that could not be reached. ScopeNote says
 	// which, and is what the model is shown.
+	//
+	// It deliberately does not affect chartability, unlike Quality. These rows
+	// are a faithful result of the query that ran; what is unverified is what
+	// the filter values MEAN across two sources. Withholding the chart would
+	// also stop charts working on the second hop of every existing SQL turn,
+	// which is the behaviour this was required not to change.
 	Scoped    *bool  `json:"scoped,omitempty" bson:"scoped,omitempty"`
 	ScopeNote string `json:"scope_note,omitempty" bson:"scope_note,omitempty"`
 }
