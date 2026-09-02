@@ -18,13 +18,22 @@ import (
 //
 // The declaration is optional and stays optional. An omitted one does not fail
 // the query; it fails to earn `scoped`, and the model is told the result is not
-// verified as scoped to the earlier datasource's rows. That keeps the existing
-// SQL multi-hop path working exactly as it did while making the difference
-// between a checked hop and an unchecked one visible in the result rather than
-// silent. A declaration that is self-contradictory — naming a step that does
-// not exist, or a column that step never returned — IS rejected: that is a
-// malformed call, not an omission, and the model is handed what it needs to fix
-// it.
+// verified against the earlier datasource. That keeps the existing SQL
+// multi-hop path working exactly as it did while making the difference between
+// a checked hop and an unchecked one visible in the result rather than silent.
+//
+// A declaration that CONTRADICTS the turn is rejected instead, because it is a
+// false claim this code can see through rather than an omission. Four ways:
+// naming a step that never ran, naming one issued in the same batch as this
+// query (its result did not exist when this query was written), naming one that
+// ran against this same datasource, or naming a column that step never
+// returned. Each rejection hands back what is needed to repair it.
+//
+// What a verified declaration establishes is narrower than the name `scoped`
+// suggests: that the declared field is a real key between the two datasources.
+// Whether this query applied it is the model's word. Checking that would mean
+// matching values against the query text, which #375 established is not
+// evidence — so the claim stays inside what the mechanism can keep.
 
 // joinDeclaration is the model's claim that this query filters on values it
 // read out of an earlier query against a different datasource.
