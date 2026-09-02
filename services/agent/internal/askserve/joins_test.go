@@ -24,7 +24,9 @@ func twoHopState() *turnState {
 		querySummariesByID: map[string]QuerySummary{
 			"q1": {Step: "q1", Columns: []string{"user_id", "spend"}},
 		},
-		queryStepsByID: map[string]queryStep{"q1": {datasource: "wh_a", round: 1}},
+		queryStepsByID: map[string]queryStep{
+			"q1": {datasource: "wh_a", columns: []string{"user_id", "spend"}, round: 1},
+		},
 	}
 }
 
@@ -32,7 +34,7 @@ func twoHopState() *turnState {
 // model wrote both queries before seeing either result.
 func sameBatchState() *turnState {
 	st := twoHopState()
-	st.queryStepsByID["q1"] = queryStep{datasource: "wh_a", round: st.round}
+	st.queryStepsByID["q1"] = queryStep{datasource: "wh_a", columns: []string{"user_id", "spend"}, round: st.round}
 	return st
 }
 
@@ -719,5 +721,59 @@ func TestExecQuery_BatchedHopIsNeitherCertifiedNorCaveated(t *testing.T) {
 	// no cross-datasource caveat.
 	if sum := summaryOf(t, store, 0); sum.Scoped != nil {
 		t.Fatalf("the first query of a batch has nothing before it: scoped = %v", *sum.Scoped)
+	}
+}
+
+// TestExecQuery_BatchInALaterRoundIsStillNotObserved pins that a step records
+// the round it actually ran in. A turn whose first round runs one query and
+// whose SECOND round batches two more is the only shape that can tell a real
+// round from a hardcoded one: with a constant, the batched q2 would look like
+// an earlier result and q3's declaration on it would be accepted.
+func TestExecQuery_BatchInALaterRoundIsStillNotObserved(t *testing.T) {
+	wireValidator(t, func(context.Context, agentplugin.JoinKeyRequest) (agentplugin.JoinKeyVerdict, error) {
+		t.Fatal("a step from this same round must be rejected before the report is consulted")
+		return agentplugin.JoinKeyVerdict{}, nil
+	})
+
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whA.DefaultResult = &gowarehouse.QueryResult{
+		Columns: []string{"user_id"},
+		Rows:    []map[string]interface{}{{"user_id": int64(7)}},
+	}
+	whB := testutil.NewMockWarehouseProvider("crm")
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		// Round 1: one query, observed normally.
+		toolCall(string(actQuery), map[string]any{"query": "SELECT user_id FROM sales.a", "datasource_id": "wh_a"}),
+		// Round 2: two queries at once; the second cites the first of THIS batch.
+		{
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "a", Name: string(actQuery), Input: map[string]any{"query": "SELECT user_id FROM sales.b", "datasource_id": "wh_a"}},
+				{ID: "b", Name: string(actQuery), Input: map[string]any{"query": "SELECT flagged FROM crm.users", "datasource_id": "wh_b",
+					"joins_on": map[string]any{"source_step": "q2", "field": "user_id"}}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "done"}),
+	}}
+	rt := twoDatasourceRuntime(p, whA, whB, nil, nil)
+	ensureToolProvider()
+	rt.AIClient.SetProvenance("p1", "", "test-tools")
+
+	store := &fakeStore{}
+	(&runner{cfg: mwConfig(), store: store}).run(context.Background(),
+		rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "q"})
+
+	if len(store.events) != 3 {
+		t.Fatalf("want three query events, got %d", len(store.events))
+	}
+	if store.events[2].Error == "" {
+		t.Fatalf("a declaration on a step from this same round must be rejected, got %+v", store.events[2])
+	}
+	if !strings.Contains(store.events[2].Error, "same step") {
+		t.Fatalf("rejection = %q, want it to name the reason", store.events[2].Error)
+	}
+	if len(whB.Calls) != 0 {
+		t.Fatalf("the rejected query must not reach the warehouse, got %d calls", len(whB.Calls))
 	}
 }

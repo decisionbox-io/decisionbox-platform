@@ -42,6 +42,9 @@ type joinDeclaration struct {
 type queryStep struct {
 	// datasource is the datasource the query ran against.
 	datasource string
+	// columns are the result's columns: the only names a declaration may cite,
+	// because they are the only ones the model could have read values out of.
+	columns []string
 	// round is the loop round whose results the model saw it in.
 	//
 	// A join may cite a step only from an EARLIER round. A native provider can
@@ -110,10 +113,7 @@ func (st *turnState) resolveJoinScope(ctx context.Context, targetDS string, decl
 		}
 	}
 
-	// A step's summary and its bookkeeping are recorded together when a query
-	// succeeds, so the summary is the test for whether the step exists at all.
-	sum, known := st.querySummariesByID[decl.SourceStep]
-	step := st.queryStepsByID[decl.SourceStep]
+	step, known := st.queryStepsByID[decl.SourceStep]
 	if !known {
 		return joinScope{
 			outcome: joinOutcomeRejectedStep,
@@ -139,12 +139,12 @@ func (st *turnState) resolveJoinScope(ctx context.Context, targetDS string, decl
 				decl.SourceStep, targetDS),
 		}
 	}
-	if !hasColumn(sum.Columns, decl.Field) {
+	if !hasColumn(step.columns, decl.Field) {
 		return joinScope{
 			outcome: joinOutcomeRejectedField,
 			reject: fmt.Sprintf("joins_on says the values came from %q in step %s, but that result has no such column (it returned: %s). "+
 				"Name the column you actually read the values from.",
-				decl.Field, decl.SourceStep, strings.Join(sum.Columns, ", ")),
+				decl.Field, decl.SourceStep, strings.Join(step.columns, ", ")),
 		}
 	}
 
@@ -206,7 +206,7 @@ func (st *turnState) hasQueriedAnotherDatasource(target string) bool {
 // issued in the same breath as the query now being checked, so its result was
 // not in front of the model when that query was written.
 func (st *turnState) observed(step queryStep) bool {
-	return step.round > 0 && step.round < st.round
+	return step.round < st.round
 }
 
 // describeQuerySteps lists the step ids this turn could legitimately be cited,

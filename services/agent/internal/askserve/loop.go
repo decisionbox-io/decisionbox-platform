@@ -732,7 +732,7 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	if st.queryStepsByID == nil {
 		st.queryStepsByID = make(map[string]queryStep)
 	}
-	st.queryStepsByID[sum.Step] = queryStep{datasource: dsID, round: st.round}
+	st.queryStepsByID[sum.Step] = queryStep{datasource: dsID, columns: sum.Columns, round: st.round}
 	if sum.chartable() {
 		st.queriesChartable++
 	}
