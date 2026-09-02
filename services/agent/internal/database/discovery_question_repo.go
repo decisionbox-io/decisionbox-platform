@@ -27,6 +27,25 @@ func NewDiscoveryQuestionRepository(client *DB) *DiscoveryQuestionRepository {
 	}
 }
 
+// EnsureIndexes creates the compound index the dedup read pattern relies on:
+// ListForProject filters by project_id (+ a status $in) and sorts by created_at
+// desc. Without it, the completion-path dedup query scans + sorts the whole
+// collection as it grows. Mirrors the enterprise repository's index so the agent
+// (writer) and API (reader) don't depend on each other's startup order.
+func (r *DiscoveryQuestionRepository) EnsureIndexes(ctx context.Context) error {
+	_, err := r.collection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "project_id", Value: 1},
+			{Key: "status", Value: 1},
+			{Key: "created_at", Value: -1},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("ensure discovery_questions indexes: %w", err)
+	}
+	return nil
+}
+
 // Insert writes a batch of freshly-generated questions. A nil/empty batch is a
 // no-op. Best-effort at the call site — the caller logs and continues on error.
 func (r *DiscoveryQuestionRepository) Insert(ctx context.Context, questions []commonmodels.DiscoveryQuestion) error {

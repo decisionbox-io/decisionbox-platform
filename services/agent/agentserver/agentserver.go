@@ -787,6 +787,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// (see database/discovery_log_repo.go). The previous embedded arrays
 	// hit the 16MB BSON limit on long runs.
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
+	discoveryQuestionRepo := database.NewDiscoveryQuestionRepository(db)
 
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure context indexes")
@@ -796,6 +797,9 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	if err := discoveryLogRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery log split-collection indexes")
+	}
+	if err := discoveryQuestionRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
 	}
 	if enableDebugLogs {
 		if err := debugLogRepo.EnsureIndexes(ctx); err != nil {
@@ -905,7 +909,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		ContextRepo:           contextRepo,
 		DiscoveryRepo:         discoveryRepo,
 		DiscoveryLogRepo:      discoveryLogRepo,
-		DiscoveryQuestionRepo: database.NewDiscoveryQuestionRepository(db),
+		DiscoveryQuestionRepo: discoveryQuestionRepo,
 		FeedbackRepo:          database.NewFeedbackRepository(db),
 		DebugLogRepo:          debugLogRepo,
 		RunRepo:               runRepo,
