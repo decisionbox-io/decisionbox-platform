@@ -804,3 +804,74 @@ func TestExecQuery_APanickingValidatorDegradesTheTurnInsteadOfKillingIt(t *testi
 		t.Fatalf("tracked %v", *tracked)
 	}
 }
+
+// TestJoinsOn_BothPathsAgree runs the same declarations through the native tool
+// parser and the JSON-text parser and requires identical verdicts.
+//
+// They diverged once: the text path decoded into a typed struct, so a real
+// attempt spelled with the wrong keys lost every key it had and arrived looking
+// like no attempt at all — no repair for the model, and a turn filed as an
+// undeclared hop in the very measurement that decides whether undeclared hops
+// get refused.
+func TestJoinsOn_BothPathsAgree(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		joins   string
+		wantErr bool
+		want    *joinDeclaration
+	}{
+		{name: "complete", joins: `{"source_step":"q1","field":"user_id"}`, want: &joinDeclaration{SourceStep: "q1", Field: "user_id"}},
+		{name: "absent", joins: ``},
+		{name: "null", joins: `null`},
+		{name: "empty object", joins: `{}`},
+		{name: "missing field", joins: `{"source_step":"q1"}`, wantErr: true},
+		{name: "missing source_step", joins: `{"field":"user_id"}`, wantErr: true},
+		{name: "blank halves", joins: `{"source_step":"  ","field":"  "}`, wantErr: true},
+		{name: "wrong key names entirely", joins: `{"step":"q1","column":"user_id"}`, wantErr: true},
+		{name: "one right key, one wrong", joins: `{"source_step":"q1","column":"user_id"}`, wantErr: true},
+		{name: "not an object", joins: `"q1.user_id"`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Text path.
+			payload := `{"query":"SELECT 1"}`
+			if tc.joins != "" {
+				payload = `{"query":"SELECT 1","joins_on":` + tc.joins + `}`
+			}
+			textAct, textErr := parseTurnAction(payload)
+
+			// Native tool path.
+			in := map[string]any{"query": "SELECT 1"}
+			if tc.joins != "" && tc.joins != "null" {
+				var v any
+				if err := json.Unmarshal([]byte(tc.joins), &v); err != nil {
+					t.Fatalf("bad fixture: %v", err)
+				}
+				in["joins_on"] = v
+			}
+			toolAct, toolErr := toolCallToAction(gollmToolCall(in))
+
+			if (textErr != nil) != tc.wantErr {
+				t.Fatalf("text path err = %v, wantErr = %v", textErr, tc.wantErr)
+			}
+			if (toolErr != nil) != tc.wantErr {
+				t.Fatalf("tool path err = %v, wantErr = %v", toolErr, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			for _, got := range []struct {
+				path string
+				decl *joinDeclaration
+			}{{"text", textAct.JoinsOn}, {"tool", toolAct.JoinsOn}} {
+				switch {
+				case tc.want == nil && got.decl != nil:
+					t.Fatalf("%s path: JoinsOn = %+v, want nil", got.path, got.decl)
+				case tc.want != nil && got.decl == nil:
+					t.Fatalf("%s path: JoinsOn = nil, want %+v", got.path, tc.want)
+				case tc.want != nil && *got.decl != *tc.want:
+					t.Fatalf("%s path: JoinsOn = %+v, want %+v", got.path, got.decl, tc.want)
+				}
+			}
+		})
+	}
+}
