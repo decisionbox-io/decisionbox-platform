@@ -356,23 +356,50 @@ func isStructuredQuery(text string) bool {
 	return len(probe) > 0
 }
 
-// extractSQLFromJSON extracts the fixed_sql field from a JSON response.
-// Returns empty string if the text is not valid JSON or lacks fixed_sql.
+// extractSQLFromJSON extracts the corrected query from a {"fixed_sql": …}
+// envelope. Returns empty string if the text is not a JSON object, lacks the
+// field, or holds something that is not a query.
+//
+// Models wrap their answer in this envelope whether or not the repair prompt
+// asked for one, which is why it exists — and a model repairing a source whose
+// queries are a request format wraps a request rather than a string of SQL. So
+// the field's contents are read three ways: a string containing SELECT, a
+// string that is itself a structured request, and a JSON object that IS the
+// request. Only the first was understood before, and the third could not even
+// be decoded — a struct with a string field fails outright on an object value,
+// so the whole envelope was discarded.
 func extractSQLFromJSON(text string) string {
 	if len(text) == 0 || text[0] != '{' {
 		return ""
 	}
-	var parsed struct {
-		FixedSQL string `json:"fixed_sql"`
-	}
-	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &obj); err != nil {
 		return ""
 	}
-	sql := strings.TrimSpace(parsed.FixedSQL)
-	if sql == "" || !strings.Contains(strings.ToUpper(sql), "SELECT") {
+	// Stated rather than left to fall out of the decode below. A missing key
+	// yields a nil RawMessage, which every branch that follows would reject
+	// anyway — but by accident, and a reader should not have to work that out.
+	raw, ok := obj["fixed_sql"]
+	if !ok {
 		return ""
 	}
-	return sql
+
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if strings.Contains(strings.ToUpper(str), "SELECT") || isStructuredQuery(str) {
+			return str
+		}
+		// A string that is neither. The reply carried no query, and saying so
+		// here is what keeps the caller from handing the wrapper on as one.
+		return ""
+	}
+
+	// Not a string: the corrected request itself, carried as an object.
+	if inner := strings.TrimSpace(string(raw)); isStructuredQuery(inner) {
+		return inner
+	}
+	return ""
 }
 
 func extractCodeBlock(text string, language string) string {

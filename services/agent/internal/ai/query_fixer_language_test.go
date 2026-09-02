@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,6 +127,62 @@ func TestExtractFixedSQL_StructuredAcceptanceDoesNotSwallowAnEnvelope(t *testing
 
 	if got, err := extractFixedSQL(&gollm.ChatResponse{Content: `{}`}); err == nil {
 		t.Errorf("an empty object asks for nothing and must be refused: %q", got)
+	}
+}
+
+// TestExtractFixedSQL_ReadsAStructuredQueryOutOfAnEnvelope covers the shape a
+// model actually produces when it wraps its answer anyway — which it does
+// whether or not the repair prompt asked for a wrapper. A model repairing a
+// source whose queries are a request format wraps a REQUEST, not a string of
+// SQL, and the old decode could not even represent that: a struct with a
+// string field fails outright on an object value, so the whole envelope was
+// discarded and the repair attempt recorded as a parse failure.
+func TestExtractFixedSQL_ReadsAStructuredQueryOutOfAnEnvelope(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{
+			name: "the request carried as an object",
+			body: `{"fixed_sql": ` + reportRequest + `}`,
+			want: reportRequest,
+		},
+		{
+			name: "the request carried as a string",
+			// Built with strconv.Quote so the nested escaping is unambiguous:
+			// the field holds a STRING whose contents are the request.
+			body: `{"fixed_sql": ` + strconv.Quote(`{"metrics":["activeUsers"]}`) + `}`,
+			want: `{"metrics":["activeUsers"]}`,
+		},
+		{
+			name: "SQL in the envelope still works exactly as before",
+			body: `{"fixed_sql": "SELECT 1"}`,
+			want: "SELECT 1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractFixedSQL(&gollm.ChatResponse{Content: tc.body})
+			if err != nil {
+				t.Fatalf("a wrapped correction was discarded: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("extracted %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// An envelope whose contents are neither is still refused — the reply
+	// carried no query, and handing the wrapper on would submit the model's
+	// packaging to the source as if it were one.
+	for _, body := range []string{
+		`{"fixed_sql": "I cannot fix this"}`,
+		`{"fixed_sql": null}`,
+		`{"fixed_sql": 42}`,
+		`{"fixed_sql": {}}`,
+	} {
+		if got, err := extractFixedSQL(&gollm.ChatResponse{Content: body}); err == nil {
+			t.Errorf("an envelope with no query in it was accepted: input %q gave %q", body, got)
+		}
 	}
 }
 
