@@ -289,7 +289,10 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !rejectAnchoringPromotion(w, p.EffectiveWarehouses()) {
 		return
 	}
-	if !rejectUnanchoredProject(w, p.EffectiveWarehouses()) {
+	// No project id: the refusal happens before the insert that assigns one,
+	// so there is nothing yet to attribute this to but the providers. Passing
+	// p.ID here would look like attribution and be empty in practice.
+	if !rejectUnanchoredProject(w, p.EffectiveWarehouses(), telemetry.AnchoringAtProjectCreate, "") {
 		return
 	}
 
@@ -559,7 +562,7 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// anchor, so swapping it for a non-anchoring source leaves nothing to
 		// carry the project — the same end state the create path refuses, one
 		// edit later.
-		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}) {
+		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}, telemetry.AnchoringAtSettingsEdit, existing.ID) {
 			return
 		}
 		existing.Warehouse = incoming.Warehouse
@@ -744,14 +747,52 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // shows — confidently, and with no error anyone would connect to the cause.
 // Refusing at configuration time is the only point where the message can name
 // the fix.
-func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
+func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig, at, projectID string) bool {
 	if len(whs) == 0 || models.AnyAnchors(whs) {
 		return true
 	}
+	recordAnchoringRefusal(at, projectID, whs)
 	writeError(w, http.StatusBadRequest,
 		"this project has no data source that can carry an analysis on its own; "+
 			"add one that is a system of record, or turn `anchoring` back on for a source you demoted")
 	return false
+}
+
+// recordAnchoringRefusal makes a refusal visible after the fact.
+//
+// Two sinks because they answer different questions and neither answers both.
+// The counter says how often the rule fires and at which site, which is the
+// only measure of whether a feature whose job is to say no is calibrated —
+// and it carries no identifiers, like every other event. The log line names
+// the project and the providers involved, which is what an operator needs when
+// a customer asks why their setup was refused.
+//
+// A package-level var so a test can substitute it and assert which SITE
+// refused. That is the part worth pinning and the part a type checker cannot
+// help with: every call passes a string, and a copy-pasted one is wrong in a
+// way nothing surfaces — the refusal still works, and the counts quietly
+// attribute it to the wrong place.
+var recordAnchoringRefusal = func(at, projectID string, whs []models.WarehouseConfig) {
+	telemetry.TrackAnchoringRefused(at, strings.Join(anchoringProviders(whs), ","))
+	apilog.WithFields(apilog.Fields{
+		"at":         at,
+		"project_id": projectID,
+		"providers":  anchoringProviders(whs),
+	}).Warn("anchoring refused: no data source can carry this project")
+}
+
+// anchoringProviders lists the provider slugs of the datasources that were
+// refused, skipping blank placeholder rows — a row with no provider is not a
+// datasource anyone chose, and naming it in the count would attribute the
+// refusal to a source that does not exist.
+func anchoringProviders(whs []models.WarehouseConfig) []string {
+	out := make([]string, 0, len(whs))
+	for _, wh := range whs {
+		if wh.Provider != "" {
+			out = append(out, wh.Provider)
+		}
+	}
+	return out
 }
 
 // rejectAnchoringPromotion refuses a request that tries to promote a datasource
@@ -768,6 +809,11 @@ func rejectAnchoringPromotion(w http.ResponseWriter, whs []models.WarehouseConfi
 			continue
 		}
 		if !gowarehouse.AnchoringOverrideAllowed(wh.Provider, *wh.Anchoring) {
+			// A promotion is refused for a different reason from an
+			// unanchored set — the operator asked for something the provider
+			// cannot do, rather than arriving at a state nothing can carry —
+			// and it is worth telling apart in the counts.
+			telemetry.TrackAnchoringRefused(telemetry.AnchoringAtPromotion, wh.Provider)
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
 				"data source %q uses provider %q, which cannot anchor a project; `anchoring` may be turned off for a source but never on",
 				wh.ID, wh.Provider))

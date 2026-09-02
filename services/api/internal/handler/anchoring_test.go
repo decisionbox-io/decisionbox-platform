@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
@@ -184,7 +185,7 @@ func TestRejectUnanchoredProject(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			if got := rejectUnanchoredProject(w, tc.warehouses); got != tc.wantOK {
+			if got := rejectUnanchoredProject(w, tc.warehouses, telemetry.AnchoringAtProjectCreate, "p1"); got != tc.wantOK {
 				t.Fatalf("rejectUnanchoredProject() = %v, want %v", got, tc.wantOK)
 			}
 			if tc.wantOK {
@@ -233,12 +234,20 @@ func TestProjectRoutes_RefuseLeavingAProjectWithNothingToCarryIt(t *testing.T) {
 	}
 
 	t.Run("create with only an enrichment source", func(t *testing.T) {
+		got := captureRefusals(t)
 		w := create(t, enrich)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 		}
 		if !strings.Contains(w.Body.String(), "carry an analysis") {
 			t.Errorf("the refusal does not say why: %s", w.Body.String())
+		}
+		// Recorded, and recorded as the site that actually refused. The label
+		// is chosen at the call site and is a plain string, so a copy-pasted
+		// one refuses correctly and counts wrongly — asserted through the
+		// route rather than by calling the guard with a label of my own.
+		if len(*got) != 1 || (*got)[0].at != telemetry.AnchoringAtProjectCreate {
+			t.Errorf("refusal records = %+v, want one at %q", *got, telemetry.AnchoringAtProjectCreate)
 		}
 	})
 

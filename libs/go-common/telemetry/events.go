@@ -2,11 +2,12 @@ package telemetry
 
 // Event names — every event sent by DecisionBox is defined here.
 const (
-	EventServerStarted       = "server_started"
-	EventServerStopped       = "server_stopped"
-	EventProjectCreated      = "project_created"
-	EventDiscoveryCompleted  = "discovery_completed"
-	EventDiscoveryFailed     = "discovery_failed"
+	EventServerStarted      = "server_started"
+	EventServerStopped      = "server_stopped"
+	EventProjectCreated     = "project_created"
+	EventDiscoveryCompleted = "discovery_completed"
+	EventDiscoveryFailed    = "discovery_failed"
+	EventAnchoringRefused   = "anchoring_refused"
 )
 
 // DurationBucket returns a human-readable duration bucket for telemetry.
@@ -80,5 +81,37 @@ func TrackDiscoveryFailed(warehouseProvider, llmProvider, domain string, errorCl
 		"llm_provider":       llmProvider,
 		"domain":             domain,
 		"error_class":        errorClass,
+	})
+}
+
+// Refusal sites, for EventAnchoringRefused's `at` property. A refusal is only
+// interpretable next to where it happened: refusing a project at creation is
+// the rule working as intended, while refusing a discovery run means a project
+// reached a state no configuration route should have allowed.
+const (
+	AnchoringAtProjectCreate  = "project_create"
+	AnchoringAtSettingsEdit   = "settings_edit"
+	AnchoringAtDiscoveryRun   = "discovery_run"
+	AnchoringAtDatasourceEdit = "datasource_edit"
+	AnchoringAtPromotion      = "promotion"
+	AnchoringAtPrimary        = "primary"
+)
+
+// TrackAnchoringRefused records that a configuration or a run was refused
+// because no data source could carry the project on its own.
+//
+// This is the only feature in the product whose job is to say no, so how often
+// it says no IS the measure of whether it is calibrated. A rule that fires
+// constantly is blocking setups customers legitimately want; one that never
+// fires anywhere but project creation is not earning the checks at the other
+// sites. Neither is visible from the code.
+//
+// Carries no identifiers, in line with every other event here: the aggregate
+// answers the question, and the attributable detail is in the structured log
+// at the refusal site for the deployment that needs it.
+func TrackAnchoringRefused(at, providerSlug string) {
+	Track(EventAnchoringRefused, map[string]any{
+		"at":       at,
+		"provider": providerSlug,
 	})
 }
