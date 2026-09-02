@@ -932,3 +932,43 @@ func TestJoinsOn_BothPathsAgree(t *testing.T) {
 		})
 	}
 }
+
+// TestParseTurnAction_EnvelopeStubDoesNotHideARealDeclaration covers a payload
+// carrying BOTH a tool envelope and a top-level joins_on stub. A stub is how a
+// model spells "none", so it must not outrank the declaration beside it — the
+// hop would be filed as undeclared with the declaration sitting right there.
+func TestParseTurnAction_EnvelopeStubDoesNotHideARealDeclaration(t *testing.T) {
+	for _, stub := range []string{`null`, `{}`, `{"source_step":"","field":""}`} {
+		t.Run(stub, func(t *testing.T) {
+			act, err := parseTurnAction(`{"name":"query_data","joins_on":` + stub +
+				`,"input":{"query":"SELECT 1","joins_on":{"source_step":"q1","field":"user_id"}}}`)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if act.JoinsOn == nil {
+				t.Fatal("the envelope's real declaration must survive the stub")
+			}
+			if act.JoinsOn.SourceStep != "q1" || act.JoinsOn.Field != "user_id" {
+				t.Fatalf("JoinsOn = %+v", act.JoinsOn)
+			}
+		})
+	}
+	// A malformed top-level value keeps precedence: it carries content, so it
+	// is an attempt, and the model gets it corrected rather than silently
+	// replaced by the envelope's.
+	if _, err := parseTurnAction(`{"name":"query_data","joins_on":{"step":"q1"},` +
+		`"input":{"query":"SELECT 1","joins_on":{"source_step":"q1","field":"user_id"}}}`); err == nil {
+		t.Fatal("a top-level attempt with wrong keys must be corrected, not overwritten")
+	}
+
+	// A real top-level declaration still outranks the envelope's, as every
+	// other key-driven field does.
+	act, err := parseTurnAction(`{"name":"query_data","joins_on":{"source_step":"q2","field":"order_id"},` +
+		`"input":{"query":"SELECT 1","joins_on":{"source_step":"q1","field":"user_id"}}}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if act.JoinsOn == nil || act.JoinsOn.SourceStep != "q2" {
+		t.Fatalf("JoinsOn = %+v, want the top-level declaration to win", act.JoinsOn)
+	}
+}

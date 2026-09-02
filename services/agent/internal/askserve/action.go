@@ -205,7 +205,14 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			if raw.Datasource == "" {
 				raw.Datasource = in.DatasourceID
 			}
-			if len(raw.JoinsOn) == 0 {
+			// "Already set" has to mean "says something", not "is present":
+			// null, {} and blank halves are all how a model spells no
+			// declaration, and a stub outranking the real declaration beside
+			// it would file the hop as undeclared with the answer in hand.
+			// A malformed top-level value does outrank it, deliberately —
+			// that is an attempt, and the model should get it corrected
+			// rather than quietly replaced.
+			if joinsOnSaysNothing(raw.JoinsOn) {
 				raw.JoinsOn = in.JoinsOn
 			}
 		}
@@ -400,11 +407,43 @@ func jsonHasActionKey(s string) bool {
 // refused. Misreading attempts as non-attempts is the one error that
 // measurement cannot survive.
 func (raw *rawAction) joinDeclaration() (*joinDeclaration, error) {
-	if !hasJSONPayload(raw.JoinsOn) { // absent, or an explicit null
+	return joinsFromRawJSON(raw.JoinsOn)
+}
+
+// joinsOnSaysNothing reports whether a joins_on value carries no content at all
+// — absent, null, {}, or an object whose every value is blank.
+//
+// This is a question about PRECEDENCE, not validity, which is why it is not
+// joinsFromRawJSON. The normaliser has to decide whether a top-level value is
+// worth keeping over the envelope's, and a template stub the model left behind
+// is not: letting it win would file the hop as undeclared with the real
+// declaration sitting in the envelope. A malformed value that does carry
+// content keeps precedence on purpose — that is an attempt, and it should be
+// corrected rather than quietly overwritten.
+func joinsOnSaysNothing(raw json.RawMessage) bool {
+	if !hasJSONPayload(raw) {
+		return true
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	for _, v := range obj {
+		if str, ok := v.(string); !ok || strings.TrimSpace(str) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// joinsFromRawJSON reads a joins_on value in its wire form, applying the same
+// rules the native tool path applies to the same object.
+func joinsFromRawJSON(raw json.RawMessage) (*joinDeclaration, error) {
+	if !hasJSONPayload(raw) { // absent, or an explicit null
 		return nil, nil
 	}
 	var obj map[string]interface{}
-	if err := json.Unmarshal(raw.JoinsOn, &obj); err != nil {
+	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("joins_on must be an object with %q and %q", "source_step", "field")
 	}
 	return joinsFromToolInput(obj)
