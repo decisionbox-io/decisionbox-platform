@@ -139,11 +139,10 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		// each statement is dialect-correct and governed by that datasource.
 		datasetsStr := strings.Join(wh.GetDatasets(), ", ")
 		mwFixWindow, mwFixOutputCap := o.resolveModelBudget()
-		fixer := ai.NewSQLFixer(ai.SQLFixerOptions{
-			Client:       o.aiClient,
-			SQLFixPrompt: provider.SQLFixPrompt(),
-			Dataset:      datasetsStr,
-			Filter:       filterClause(wh.FilterField, wh.FilterValue),
+		fixer := ai.NewQueryFixerFor(provider, ai.SQLFixerOptions{
+			Client:  o.aiClient,
+			Dataset: datasetsStr,
+			Filter:  filterClause(wh.FilterField, wh.FilterValue),
 			// Budget the fix call against the resolved window/output cap (#347).
 			Window:    mwFixWindow,
 			OutputCap: mwFixOutputCap,

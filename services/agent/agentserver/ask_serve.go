@@ -293,11 +293,10 @@ func runAskServe(cfg *config.Config) error {
 				return nil, fmt.Errorf("datasource %q credentials are not read-only: %w", dsID, err)
 			}
 			datasets := wh.GetDatasets()
-			sqlFixer := ai.NewSQLFixer(ai.SQLFixerOptions{
-				Client:       aiClient,
-				SQLFixPrompt: wp.SQLFixPrompt(),
-				Dataset:      strings.Join(datasets, ", "),
-				Filter:       buildFilterClause(wh.FilterField, wh.FilterValue),
+			sqlFixer := ai.NewQueryFixerFor(wp, ai.SQLFixerOptions{
+				Client:  aiClient,
+				Dataset: strings.Join(datasets, ", "),
+				Filter:  buildFilterClause(wh.FilterField, wh.FilterValue),
 			})
 			executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 				Warehouse:   wp,

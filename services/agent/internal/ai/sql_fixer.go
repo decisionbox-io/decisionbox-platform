@@ -8,6 +8,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
@@ -25,6 +26,11 @@ type SQLFixer struct {
 	filter       string
 	schemaCtx    string
 
+	// language names what the model is being asked to write, when that is not
+	// SQL. Empty means SQL — what every warehouse caller passes, and what
+	// keeps their instruction and their fence byte-identical.
+	language string
+
 	// window / outputCap are the model's resolved context window and output
 	// cap (#347 chain: operator override → live auto-detect → catalog →
 	// default). Used to budget the fix call's max_tokens so it can't exceed a
@@ -38,14 +44,43 @@ type SQLFixer struct {
 // SQLFixerOptions configures the SQL fixer.
 type SQLFixerOptions struct {
 	Client       *Client
-	SQLFixPrompt string // from warehouse.Provider.SQLFixPrompt()
+	SQLFixPrompt string // from warehouse.QueryRunner.QueryFixPrompt()
 	Dataset      string
 	Filter       string
+
+	// QueryLanguage names the language the corrected query must be written in,
+	// for a source whose queries are not SQL (warehouse.QueryRunner's
+	// QueryLanguage). Leave empty for a SQL warehouse. This is not decoration:
+	// the repair instruction is the LAST thing the model reads before writing,
+	// and telling a source that accepts no SQL to "fix this SQL query" inside a
+	// ```sql fence contradicts the repair prompt directly above it.
+	QueryLanguage string
 
 	// Window / OutputCap are the resolved model context window and output cap
 	// (see SQLFixer). Optional — 0 preserves the pre-#347 catalog-cap behaviour.
 	Window    int
 	OutputCap int
+}
+
+// NewQueryFixerFor builds the repair-loop fixer for one source, filling in the
+// two options that must come from the source itself: its repair template and,
+// when its queries are not SQL, its query language.
+//
+// Both are read through the query seam rather than off the SQL surface. For a
+// warehouse that is the same template it always got and an empty language, so
+// nothing about its repair changes. For a source that supplies the seam
+// itself it is that source's own template, and naming the language is what
+// stops the repair instruction demanding SQL of something that accepts none.
+//
+// They are set together, here, because setting one without the other is worse
+// than setting neither: a source's own repair template printed above an
+// instruction that says "fix this SQL query" is a contradiction the model
+// resolves in favour of the instruction, which is the more recent and more
+// concrete of the two.
+func NewQueryFixerFor(p gowarehouse.Provider, opts SQLFixerOptions) *SQLFixer {
+	opts.SQLFixPrompt = gowarehouse.AsQueryRunner(p).QueryFixPrompt()
+	opts.QueryLanguage = gowarehouse.NonSQLLanguage(p)
+	return NewSQLFixer(opts)
 }
 
 // NewSQLFixer creates a new SQL fixer.
@@ -55,6 +90,7 @@ func NewSQLFixer(opts SQLFixerOptions) *SQLFixer {
 		sqlFixPrompt: opts.SQLFixPrompt,
 		dataset:      opts.Dataset,
 		filter:       opts.Filter,
+		language:     opts.QueryLanguage,
 		window:       opts.Window,
 		outputCap:    opts.OutputCap,
 	}
@@ -82,7 +118,7 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{VERIFICATION_CONTEXT}}", opts.VerificationContext)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{CONVERSATION_HISTORY}}", "")
 
-	userMessage := fmt.Sprintf("Fix this SQL query (attempt %d). Return ONLY the corrected SQL.\n\nQuery:\n```sql\n%s\n```\n\nError:\n```\n%s\n```", attempt+1, query, errorMsg)
+	userMessage := fixInstruction(f.language, query, errorMsg, attempt)
 
 	conversation := NewConversation(ConversationOptions{
 		SystemPrompt: systemPrompt,
@@ -234,6 +270,19 @@ func applySection(template, name, value string) string {
 	}
 }
 
+// extractFixedSQL pulls the corrected query out of the model's reply.
+//
+// It accepts a structured request — a JSON object that IS the query — as well
+// as SQL, because a source whose language is a request format answers the
+// repair prompt with one, and a reply the extractor discards means that source
+// has no repair path at all: its query fails on the first error with the
+// attempt recorded as a parse failure rather than the source's own diagnosis.
+//
+// The SQL paths are unchanged and still take precedence. The one behaviour
+// that differs for a SQL warehouse is a reply that is a bare JSON object and
+// not a fixed_sql envelope: it used to be refused here and is now handed on,
+// where the warehouse rejects it as a syntax error. Both outcomes are a failed
+// attempt inside the same retry loop; only the recorded error differs.
 func extractFixedSQL(response *gollm.ChatResponse) (string, error) {
 	if response == nil || response.Content == "" {
 		return "", fmt.Errorf("empty response")
@@ -259,6 +308,9 @@ func extractFixedSQL(response *gollm.ChatResponse) (string, error) {
 			if strings.Contains(strings.ToUpper(block), "SELECT") {
 				return block, nil
 			}
+			if isStructuredQuery(block) {
+				return block, nil
+			}
 		}
 	}
 
@@ -268,11 +320,40 @@ func extractFixedSQL(response *gollm.ChatResponse) (string, error) {
 		return sql, nil
 	}
 
-	if !strings.Contains(strings.ToUpper(trimmed), "SELECT") {
-		return "", fmt.Errorf("response does not appear to be SQL")
+	if strings.Contains(strings.ToUpper(trimmed), "SELECT") {
+		return trimmed, nil
+	}
+	if isStructuredQuery(trimmed) {
+		return trimmed, nil
 	}
 
-	return trimmed, nil
+	return "", fmt.Errorf("response does not appear to be SQL")
+}
+
+// isStructuredQuery reports whether text is a JSON object that IS the query,
+// rather than a wrapper around one.
+//
+// A {"fixed_sql": …} envelope is excluded on purpose. Its CONTENTS are the
+// query, and extraction above has already had its chance at them — so if we
+// reach here with an envelope, the reply carried no usable query, and handing
+// the wrapper on would submit the model's packaging to the source as if it
+// were the query itself. An empty object is excluded for the same reason: it
+// asks for nothing.
+func isStructuredQuery(text string) bool {
+	// A cheap reject before parsing. Not the guard that rejects an array or a
+	// bare literal — decoding into a map already does that — just a way to
+	// avoid handing a whole prose reply to the JSON decoder.
+	if text == "" || text[0] != '{' {
+		return false
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &probe); err != nil {
+		return false
+	}
+	if _, wrapped := probe["fixed_sql"]; wrapped {
+		return false
+	}
+	return len(probe) > 0
 }
 
 // extractSQLFromJSON extracts the fixed_sql field from a JSON response.
@@ -325,4 +406,24 @@ func extractCodeBlock(text string, language string) string {
 	}
 
 	return text[startIdx : startIdx+endIdx]
+}
+
+// fixInstruction builds the user message that carries the failed query and its
+// error to the model.
+//
+// It is the last thing the model reads before writing a replacement, and it
+// arrives after the source's own repair template — so when the two disagree,
+// this one wins. For a source that accepts no SQL, "Fix this SQL query" inside
+// a ```sql fence tells the model to do exactly what the template above it just
+// forbade.
+//
+// An empty language is SQL, and renders the historic instruction unchanged.
+func fixInstruction(language, query, errorMsg string, attempt int) string {
+	if language == "" {
+		return fmt.Sprintf("Fix this SQL query (attempt %d). Return ONLY the corrected SQL.\n\nQuery:\n```sql\n%s\n```\n\nError:\n```\n%s\n```", attempt+1, query, errorMsg)
+	}
+	// No language tag on the fence: the tag names a syntax highlighter, and
+	// guessing one for an arbitrary request format would put a second, wrong
+	// claim about the language next to the right one.
+	return fmt.Sprintf("Fix this query (attempt %d). It is written in %s, not SQL. Return ONLY the corrected query.\n\nQuery:\n```\n%s\n```\n\nError:\n```\n%s\n```", attempt+1, language, query, errorMsg)
 }
