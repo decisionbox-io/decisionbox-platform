@@ -291,18 +291,6 @@ func warehouseIDOrDefault(wh models.WarehouseConfig) string {
 	return wh.ID
 }
 
-// requiresDataset reports whether a provider needs a dataset configured.
-// Everything table-shaped does — a dataset is where its tables live. A
-// cube-shaped source has none, and an unregistered slug is treated as
-// table-shaped, which is what every provider was before shape existed.
-func requiresDataset(providerSlug string) bool {
-	meta, ok := gowarehouse.GetProviderMeta(providerSlug)
-	if !ok {
-		return true
-	}
-	return meta.EffectiveShape() != gowarehouse.ShapeCube
-}
-
 func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
 	wh, ok := project.WarehouseByID(warehouseID)
 	if !ok || wh.Provider == "" {
@@ -315,7 +303,7 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 	// invent a value that means nothing. The shape is declared at provider
 	// registration, so this needs no connection and no credentials.
 	datasets := wh.Datasets
-	if len(datasets) == 0 && requiresDataset(wh.Provider) {
+	if len(datasets) == 0 && gowarehouse.RequiresDataset(wh.Provider) {
 		return nil, fmt.Errorf("no datasets configured in project")
 	}
 
