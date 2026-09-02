@@ -132,6 +132,26 @@ func (r sqlRunner) QueryFixPrompt() string { return r.p.SQLFixPrompt() }
 // without keeping a second reference alongside the runner.
 func (r sqlRunner) Unwrap() Provider { return r.p }
 
+// NonSQLLanguage names the language p's queries are written in, but only when
+// that is not SQL. A warehouse returns "".
+//
+// It answers "are this source's queries the SQL the Provider interface
+// assumes?" without opening a connection or pattern-matching a dialect label,
+// and it answers it from a declaration rather than an inference: a provider
+// implements QueryRunner precisely because its queries are not SQL, since a
+// SQL provider gains nothing by implementing a seam the adapter already maps
+// onto its SQL surface.
+//
+// The empty return is what lets a caller pass this straight through to a
+// prompt or an instruction that must stay unchanged for every warehouse.
+func NonSQLLanguage(p Provider) string {
+	r, ok := p.(QueryRunner)
+	if !ok {
+		return ""
+	}
+	return r.QueryLanguage()
+}
+
 // Anchoring returns a pointer to v, for declaring ProviderMeta.CanAnchor.
 //
 // Only a provider that cannot anchor needs to say so:

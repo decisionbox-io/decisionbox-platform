@@ -43,6 +43,21 @@ func (n *nativeRunner) RunQuery(_ context.Context, q NativeQuery) (*QueryResult,
 func (n *nativeRunner) QueryLanguage() string  { return "Report Request" }
 func (n *nativeRunner) QueryFixPrompt() string { return "native fix prompt" }
 
+// TestNonSQLLanguage_AnswersFromTheDeclarationNotADialectLabel pins the signal
+// callers use to decide whether a source's queries are the SQL the Provider
+// interface assumes. The empty return is load-bearing: it is what a caller
+// passes straight into a prompt or instruction that must stay unchanged for
+// every warehouse, so a SQL provider leaking a dialect name here would rewrite
+// text for sources this was never about.
+func TestNonSQLLanguage_AnswersFromTheDeclarationNotADialectLabel(t *testing.T) {
+	if got := NonSQLLanguage(&recordingProvider{}); got != "" {
+		t.Errorf("a SQL provider reported a non-SQL language %q", got)
+	}
+	if got := NonSQLLanguage(&nativeRunner{}); got != "Report Request" {
+		t.Errorf("NonSQLLanguage() = %q, want the source's declared language", got)
+	}
+}
+
 func TestAsQueryRunner_AdaptsASQLProvider(t *testing.T) {
 	p := &recordingProvider{}
 	r := AsQueryRunner(p)
