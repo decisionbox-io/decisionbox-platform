@@ -109,7 +109,11 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
       {question.rationale && (
         <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 4 }}>
           {question.rationale}
-          {onLinkClick && question.linked_target?.id && (
+          {/* Only offer the jump link for target types the run-detail page can
+              actually scroll to (insight-* / recommendation-* anchors); table /
+              area targets have no anchor, so a link would silently no-op. */}
+          {onLinkClick && question.linked_target?.id
+            && (question.linked_target.type === 'insight' || question.linked_target.type === 'recommendation') && (
             <>
               {' · '}
               <Text component="span" size="xs" c="blue" style={{ cursor: 'pointer' }}
