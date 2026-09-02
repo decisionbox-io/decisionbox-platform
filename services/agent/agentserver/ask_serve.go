@@ -294,8 +294,9 @@ func runAskServe(cfg *config.Config) error {
 			}
 			datasets := wh.GetDatasets()
 			executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-				Warehouse:   wp,
-				SQLFixer:    askQueryFixer(aiClient, wp, datasets, wh),
+				Warehouse:    wp,
+				ProviderSlug: wh.Provider,
+				SQLFixer:     askQueryFixer(aiClient, wp, datasets, wh),
 				MaxRetries:  5,
 				FilterField: wh.FilterField,
 				FilterValue: wh.FilterValue,

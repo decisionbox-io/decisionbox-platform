@@ -225,7 +225,7 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 
 	exec := &verifier.DefaultExecutor{
 		SchemaProvider:      schemaProvider,
-		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, FilterField: docWH.FilterField, FilterValue: docWH.FilterValue}),
+		QueryExec:           queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: warehouseProvider, ProviderSlug: docWH.Provider, FilterField: docWH.FilterField, FilterValue: docWH.FilterValue}),
 		StepByID:            stepByID,
 		Cfg:                 vCfg.Bundle,
 		MaxReadStepRowsCall: vCaps.MaxReadStepRowsCall,

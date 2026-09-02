@@ -20,14 +20,18 @@ import (
 // quoting. A SQL provider is adapted onto the seam by
 // gowarehouse.AsQueryRunner, so the SQL path is unchanged.
 type QueryExecutor struct {
-	runner       gowarehouse.QueryRunner
-	sqlFixer     SQLFixer
-	debugLogger  *debug.Logger
-	maxRetries   int
-	filterField  string
-	filterValue  string
-	currentStep  int
-	currentPhase string
+	runner      gowarehouse.QueryRunner
+	sqlFixer    SQLFixer
+	debugLogger *debug.Logger
+	maxRetries  int
+	filterField string
+	filterValue string
+	// nonSQLLanguage names the language this source's queries are written in
+	// when that is not SQL, and is "" for every SQL warehouse. It decides
+	// whether the tenant filter can be verified at all — see verifyFilter.
+	nonSQLLanguage string
+	currentStep    int
+	currentPhase   string
 }
 
 // FixOpts carries per-call context for the SQL fixer that does not belong on
@@ -78,8 +82,13 @@ type QueryExecutorOptions struct {
 	SQLFixer    SQLFixer
 	DebugLogger *debug.Logger
 	MaxRetries  int
-	FilterField string // optional: field to verify in queries (e.g., "app_id")
-	FilterValue string // optional: value the field must match
+	// ProviderSlug is the datasource's registered provider. Supplying it is
+	// what makes the tenant-filter guard robust: the language is then read
+	// from the registry, which no middleware can erase, rather than from a
+	// type assertion on a provider that may have been wrapped.
+	ProviderSlug string
+	FilterField  string // optional: field to verify in queries (e.g., "app_id")
+	FilterValue  string // optional: value the field must match
 }
 
 // NewQueryExecutor creates a new query executor with self-healing.
@@ -91,14 +100,47 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	if runner == nil && opts.Warehouse != nil {
 		runner = gowarehouse.AsQueryRunner(opts.Warehouse)
 	}
+	// Which language this source's queries are written in, decided from what
+	// the caller supplied rather than from the runner it becomes.
+	//
+	// Runner first, and unconditionally: it exists to supply the seam for a
+	// source that is NOT a SQL provider, so a caller reaching for it has
+	// already said what this is. Asking whether that runner also happens to
+	// implement Provider would leave a pure one looking like SQL, and a pure
+	// one is the ordinary case — which would reopen the unscoped-query bypass
+	// on the exact path built for the sources that have it.
+	//
+	// Warehouse otherwise, read from the PROVIDER: AsQueryRunner adapts
+	// anything, so by the time a SQL warehouse is a runner the distinction is
+	// gone and every warehouse would look native.
+	nonSQL := ""
+	switch {
+	// The registry first, because it is the only source of this answer that
+	// cannot be erased. A provider reaches this constructor through
+	// middleware, and a wrapper only has to return a Provider — one that does
+	// not re-expose QueryRunner turns a native source into an apparent SQL
+	// warehouse and skips the guard below. A registration cannot be wrapped.
+	case gowarehouse.NonSQLLanguageOf(opts.ProviderSlug) != "":
+		nonSQL = gowarehouse.NonSQLLanguageOf(opts.ProviderSlug)
+	// Runner exists to supply the seam for a source that is NOT a SQL
+	// provider, so a caller reaching for it has already said what this is.
+	case opts.Runner != nil:
+		nonSQL = opts.Runner.QueryLanguage()
+	// And the live provider last: still right for a caller that supplies
+	// neither a slug nor a runner, and still wrong through a flattening
+	// wrapper — which is why the slug is preferred wherever there is one.
+	case opts.Warehouse != nil:
+		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
+	}
 	return &QueryExecutor{
-		runner:       runner,
-		sqlFixer:     opts.SQLFixer,
-		debugLogger:  opts.DebugLogger,
-		maxRetries:   opts.MaxRetries,
-		filterField:  opts.FilterField,
-		filterValue:  opts.FilterValue,
-		currentPhase: "exploration",
+		runner:         runner,
+		nonSQLLanguage: nonSQL,
+		sqlFixer:       opts.SQLFixer,
+		debugLogger:    opts.DebugLogger,
+		maxRetries:     opts.MaxRetries,
+		filterField:    opts.FilterField,
+		filterValue:    opts.FilterValue,
+		currentPhase:   "exploration",
 	}
 }
 
@@ -407,6 +449,23 @@ func (e *QueryExecutor) ExecuteWithHistory(ctx context.Context, query string, pu
 func (e *QueryExecutor) verifyFilter(query string) error {
 	if e.filterField == "" {
 		return nil // no filter required
+	}
+	// A substring check is only evidence in SQL, where the field name appearing in
+	// the text at least means a predicate probably mentions it. In any other
+	// query language it means nothing: a GA4 report request naming `country`
+	// among its DIMENSIONS contains the string and filters by nothing, so the
+	// check passes and the query runs property-wide while reporting as scoped.
+	//
+	// Refuse instead of pretending. Scope for such a source rests on its
+	// credential — a property or an org is what the credential can reach — and
+	// a filter configured here is a guarantee this code cannot keep. Failing
+	// loudly at configuration is the only honest answer; silently returning
+	// unscoped rows as though they were scoped is the failure this refusal
+	// exists to prevent.
+	if e.nonSQLLanguage != "" {
+		return fmt.Errorf("a %s query cannot be checked for the %s filter; "+
+			"scope for this source rests on its credential, so remove the filter from the datasource "+
+			"or scope the credential instead", e.nonSQLLanguage, e.filterField)
 	}
 	if !strings.Contains(strings.ToLower(query), strings.ToLower(e.filterField)) {
 		applog.WithFields(applog.Fields{

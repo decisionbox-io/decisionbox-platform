@@ -245,3 +245,49 @@ func TestCapability_AnchorsDefaultsToTrue(t *testing.T) {
 // RegisteredProvidersMeta() in this test binary walks an empty registry and
 // asserts nothing. It lives in services/api/apiserver, whose package
 // blank-imports every provider — see TestWarehouseProvidersDeclareShortDialect.
+
+// NonSQLLanguageOf gates a security check — whether a tenant filter written
+// against query TEXT can be verified at all — so it is read from the registry
+// rather than from a live provider, which a middleware wrapper can strip of its
+// optional interfaces. These cases pin what it must answer.
+func TestNonSQLLanguageOf(t *testing.T) {
+	tests := []struct {
+		name, provider, want string
+	}{
+		{
+			name:     "a declared query language is the answer",
+			provider: "shape-test-native", want: "Report Request (JSON)",
+		},
+		{
+			// The descriptor has two ways to name a language and a provider
+			// need only use one. Reading QueryLanguage alone would call this a
+			// SQL warehouse and skip the guard.
+			name:     "a cube naming its language only as a dialect",
+			provider: "shape-test-cube-dialect", want: "Cube Request",
+		},
+		{
+			// A cube has no tables to select from, so it has no SQL to write
+			// whatever its metadata carries. The phrase does not claim SQL.
+			name:     "a cube naming its language nowhere",
+			provider: "shape-test-cube", want: "this source's own query format",
+		},
+		{
+			name:     "a table-shaped warehouse is SQL",
+			provider: "shape-test-tabular", want: "",
+		},
+		{
+			// What every provider was before the descriptor existed, and what
+			// a binary that has not linked a provider must assume.
+			name:     "an unregistered slug is SQL",
+			provider: "never-registered", want: "",
+		},
+		{name: "an empty slug is SQL", provider: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NonSQLLanguageOf(tt.provider); got != tt.want {
+				t.Errorf("NonSQLLanguageOf(%q) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+}
