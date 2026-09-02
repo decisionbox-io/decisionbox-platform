@@ -150,10 +150,11 @@ func TestValidateJoinKey_ValidatorPanicBecomesAnError(t *testing.T) {
 	defer ResetJoinKeyValidatorForTest()
 	ResetJoinKeyValidatorForTest()
 
+	// Stands in for the accident a real validator would have — a nil map or a
+	// bad index while parsing a project's report. What is under test is the
+	// recover, not which runtime fault reached it.
 	RegisterJoinKeyValidator("exploding", func(context.Context, JoinKeyRequest) (JoinKeyVerdict, error) {
-		var m map[string]string
-		m["boom"] = "" // assignment to entry in nil map
-		return JoinKeyVerdict{Verified: true}, nil
+		panic("nil map in the report parser")
 	})
 
 	// The point of the test is that this call RETURNS at all: an ask turn runs
