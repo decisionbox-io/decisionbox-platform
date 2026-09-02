@@ -16,6 +16,19 @@ func init() {
 		Name:       "Cube test source",
 		Capability: Capability{Shape: ShapeCube},
 	})
+	// A source that names its query language outright.
+	RegisterWithMeta("shape-test-native", shapeStubFactory, ProviderMeta{
+		Name:       "Native test source",
+		Dialect:    "Report Request (JSON)",
+		Capability: Capability{Shape: ShapeCube, QueryLanguage: "Report Request (JSON)"},
+	})
+	// A cube that names it only through the display Dialect — the descriptor
+	// allows either, and a provider need only use one.
+	RegisterWithMeta("shape-test-cube-dialect", shapeStubFactory, ProviderMeta{
+		Name:       "Cube test source, dialect only",
+		Dialect:    "Cube Request",
+		Capability: Capability{Shape: ShapeCube},
+	})
 }
 
 // TestRequiresDataset decides whether a datasource can be configured at all.
