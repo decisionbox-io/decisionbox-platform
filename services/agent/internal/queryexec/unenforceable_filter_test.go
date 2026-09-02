@@ -166,6 +166,41 @@ func TestExecute_RefusesThroughAWrapperThatHidesTheSeam(t *testing.T) {
 	}
 }
 
+// A cube has no tables to select from, so it has no SQL to write — whatever
+// its metadata happens to fill in. A descriptor offers two ways to name a
+// query language and a provider need only use one, so reading QueryLanguage
+// alone would call a cube registered with a Dialect a SQL warehouse and skip
+// the guard. This answer gates a security check, so it fails closed.
+func TestNonSQLLanguageOf_ACubeIsNeverSQL(t *testing.T) {
+	for slug, want := range map[string]string{
+		"queryexec-cube-dialect-only": "Cube Request",
+		"queryexec-cube-bare":         "this source's own query format",
+	} {
+		if got := gowarehouse.NonSQLLanguageOf(slug); got != want {
+			t.Errorf("NonSQLLanguageOf(%q) = %q, want %q", slug, got, want)
+		}
+	}
+}
+
+// And the guard follows: a cube whose language is only a Dialect still refuses
+// a filter it cannot verify.
+func TestExecute_RefusesForACubeThatNamesNoQueryLanguage(t *testing.T) {
+	wrapped := &wrappedNative{}
+	e := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:    wrapped,
+		ProviderSlug: "queryexec-cube-dialect-only",
+		FilterField:  "country",
+	})
+
+	if _, err := e.ExecuteNative(context.Background(),
+		gowarehouse.NativeQuery{Text: `{"dimensions":["country"]}`}, "traffic", FixOpts{}); err == nil {
+		t.Fatal("a cube declaring only a Dialect was treated as a SQL warehouse")
+	}
+	if wrapped.ran != 0 {
+		t.Errorf("the query ran anyway (%d times)", wrapped.ran)
+	}
+}
+
 // A SQL warehouse is not made native by supplying its slug: the registry
 // answers "" for a provider that declares no query language, which is every
 // one of them, and an unregistered slug answers "" too — what every provider

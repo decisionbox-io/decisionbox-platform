@@ -167,6 +167,17 @@ func NonSQLLanguage(p Provider) string {
 // QueryLanguage in its capability descriptor has said its queries are not SQL,
 // and that statement is true of the source no matter what is holding it.
 //
+// Two declarations answer it, because the descriptor has two ways to say the
+// same thing and a provider need only use one. QueryLanguage says it outright.
+// A CUBE says it by construction: a source with no tables to select from has
+// no SQL to write, whatever else its metadata does or does not carry. Reading
+// only the first would call a cube registered with a Dialect alone a SQL
+// warehouse — and this answer gates a security check, so the reading that
+// fails closed is the correct one.
+//
+// The name returned is the best one available: the declared query language,
+// else the display dialect, else a phrase that at least does not claim SQL.
+//
 // An unregistered slug answers "" — SQL — which is what every provider was
 // before the descriptor existed, and what a binary that has not linked a
 // provider must assume rather than guess.
@@ -175,7 +186,16 @@ func NonSQLLanguageOf(providerSlug string) string {
 	if !ok {
 		return ""
 	}
-	return meta.QueryLanguage
+	if meta.QueryLanguage != "" {
+		return meta.QueryLanguage
+	}
+	if meta.EffectiveShape() != ShapeCube {
+		return ""
+	}
+	if meta.Dialect != "" {
+		return meta.Dialect
+	}
+	return "this source's own query format"
 }
 
 // Anchoring returns a pointer to v, for declaring ProviderMeta.CanAnchor.
