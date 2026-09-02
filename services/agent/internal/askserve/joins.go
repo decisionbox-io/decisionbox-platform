@@ -165,7 +165,17 @@ func (st *turnState) resolveJoinScope(ctx context.Context, targetDS string, decl
 		}
 	}
 	if verdict.Verified {
-		return joinScope{scoped: boolPtr(true), outcome: joinOutcomeVerified}
+		// Said out loud rather than left as silence. What was checked is the
+		// KEY; that this query filtered on the earlier step's values is the
+		// model's own declaration, and the only way to check that would be to
+		// match values against the query text — which is not evidence (#375).
+		// A model told nothing reads the absence as certification.
+		return joinScope{
+			scoped:  boolPtr(true),
+			outcome: joinOutcomeVerified,
+			note: fmt.Sprintf("Join key confirmed: %s is a real key between these datasources (%s). That this query filtered on step %s's values is your declaration, not something checked here — "+
+				"do not present the result as restricted to those rows unless it is.", decl.Field, verdict.Detail, decl.SourceStep),
+		}
 	}
 	return joinScope{
 		scoped:  boolPtr(false),

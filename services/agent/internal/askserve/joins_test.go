@@ -186,9 +186,13 @@ func TestResolveJoinScope_VerifiedJoinIsScopedAndSaysNothingMore(t *testing.T) {
 	if js.scoped == nil || !*js.scoped {
 		t.Fatalf("scoped = %v, want true", js.scoped)
 	}
-	// Nothing to correct, so nothing is said: the observation exists to warn.
-	if js.note != "" {
-		t.Fatalf("a verified join needs no note, got %q", js.note)
+	// Verified is a claim about the KEY. The note must say so, because silence
+	// would read as certification of something never checked.
+	if !strings.Contains(js.note, "a shared customer key") {
+		t.Fatalf("the note must carry the report's own words, got %q", js.note)
+	}
+	if !strings.Contains(js.note, "your declaration") {
+		t.Fatalf("the note must say the filter itself was not checked, got %q", js.note)
 	}
 	want := agentplugin.JoinKeyRequest{ProjectID: "p1", SourceDatasourceID: "wh_a", TargetDatasourceID: "wh_b", Field: "user_id"}
 	if seen != want {
@@ -292,17 +296,15 @@ func TestJoinScopeTrack_ReportsOnlyWhenTheQuestionArose(t *testing.T) {
 
 // --- observation rendering ---------------------------------------------
 
-func TestObservation_OmitsTheScopeLineWhenThereIsNothingToSay(t *testing.T) {
+func TestObservation_SaysNothingAboutScopeOnASingleDatasourceTurn(t *testing.T) {
+	// The verdict never arises, so the observation must be byte-identical to
+	// what every existing single-datasource turn already renders.
 	sum := QuerySummary{Step: "q1", RowCount: 1, Columns: []string{"n"}, Preview: []map[string]interface{}{{"n": 1}}}
-	scoped := true
-	withVerdict := sum
-	withVerdict.Scoped = &scoped
-
-	if sum.observation() != withVerdict.observation() {
-		t.Fatalf("a verified result must read exactly like an unremarkable one:\n%q\nvs\n%q", sum.observation(), withVerdict.observation())
-	}
-	if strings.Contains(sum.observation(), "verified") {
-		t.Fatalf("nothing about scope belongs in an ordinary observation: %q", sum.observation())
+	obs := sum.observation()
+	for _, word := range []string{"scope", "Scope", "join", "Join", "datasource"} {
+		if strings.Contains(obs, word) {
+			t.Fatalf("nothing about scope belongs in an ordinary observation (%q): %q", word, obs)
+		}
 	}
 }
 
@@ -566,8 +568,8 @@ func TestExecQuery_DeclaredAndVerifiedHopIsScoped(t *testing.T) {
 	if second.Scoped == nil || !*second.Scoped {
 		t.Fatalf("Scoped = %v, want true", second.Scoped)
 	}
-	if second.ScopeNote != "" {
-		t.Fatalf("a verified hop needs no note, got %q", second.ScopeNote)
+	if !strings.Contains(second.ScopeNote, "not something checked here") {
+		t.Fatalf("a verified hop must still say what was NOT checked, got %q", second.ScopeNote)
 	}
 	// The claim is persisted next to the query it qualifies.
 	if got, _ := store.events[1].Args["joins_on"].(map[string]any); got == nil || got["field"] != "user_id" {

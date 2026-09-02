@@ -40,16 +40,28 @@ type QuerySummary struct {
 	// Persisted with the tool event, so a turn answered from a degraded result
 	// is identifiable afterwards rather than only in the moment.
 	Quality []gowarehouse.QualityCaveat `json:"quality,omitempty" bson:"quality,omitempty"`
-	// Scoped says whether this result was verified as restricted to the rows
-	// the turn observed on ANOTHER datasource. It is set only on a query made
+	// Scoped says whether the key this result's hop was declared to join on is
+	// a real key between the two datasources. It is set only on a query made
 	// after a different datasource was queried in the same turn; nil — the
 	// normal case, and every single-datasource turn — means the question never
 	// arose, so an existing turn's persisted summary is unchanged.
 	//
-	// True requires a positive answer from a join-key report. False is not an
-	// accusation: it covers an undeclared hop, a report that does not list the
-	// declared field, and a report that could not be reached. ScopeNote says
-	// which, and is what the model is shown.
+	// Read what true claims precisely, because it is narrower than the name
+	// suggests. It says a join-key report positively named the declared field
+	// as binding these two datasources. It does NOT say this query applied
+	// that key: that the query filtered on the values observed in the earlier
+	// step is the model's declaration, and nothing here re-checks it.
+	//
+	// Nothing here CAN re-check it. The only available evidence would be the
+	// query text, and matching a field or a value against query text is what
+	// this epic's #375 established is not evidence at all — a request-shaped
+	// query contains the name while filtering by nothing. A weaker claim
+	// honestly stated beats a stronger one resting on a check that does not
+	// work, which is the same rule the tenant filter now follows.
+	//
+	// False is not an accusation either: it covers an undeclared hop, a report
+	// that does not list the declared field, and a report that could not be
+	// reached. ScopeNote says which, and is what the model is shown.
 	//
 	// It deliberately does not affect chartability, unlike Quality. These rows
 	// are a faithful result of the query that ran; what is unverified is what
