@@ -110,10 +110,25 @@ const maxGroundingNudges = 2
 // groundingNudge is the correction when the model tries to answer without
 // having run any query — it forbids ungrounded answers and tells it how to
 // start gathering evidence even with no schema catalog in hand.
-const groundingNudge = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
-	"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
-	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
-	"Only use clarify or decline if the question genuinely cannot be turned into any query."
+//
+// Its discovery half is branched on shape for a sharper reason than the system
+// prompt's: this message arrives AFTER the model has gone wrong, as the most
+// recent thing in the conversation, and on the tool path it arrives as an
+// error attached to the call it is correcting. Sending a cube turn back to
+// INFORMATION_SCHEMA from there outranks everything the system prompt said.
+func groundingNudge(shapes sourceShapes) string {
+	discover := "If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. "
+	switch {
+	case shapes.allCube:
+		discover = "If you don't know what a datasource offers, discover it with search_tables — it lists the metrics and dimensions each one has. "
+	case shapes.anyCube:
+		discover = "If you don't know what a datasource offers, use search_tables; a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. "
+	}
+	return "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
+		"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
+		discover +
+		"Only use clarify or decline if the question genuinely cannot be turned into any query."
+}
 
 // turnRouting is the per-turn datasource plan: which datasources the model may
 // target and whether the turn is pinned to exactly one. Computed once at turn
@@ -133,6 +148,12 @@ type turnRouting struct {
 	// one visible, not pinned). When false the turn behaves exactly like the
 	// single-warehouse path — same prompt, same tools, same telemetry.
 	multi bool
+	// all is every datasource in the project. It is kept alongside the visible
+	// set because the two can differ: the router narrows `datasources` to what
+	// it chose, while resolveQueryDatasource validates a model-chosen
+	// datasource_id against the whole project on purpose. What the turn can
+	// REACH is this list; what it SHOWS is `datasources`.
+	all []DatasourceInfo
 	// routed reports that the evidence-grounded router made a real (non-clarify)
 	// decision for this turn. It stays true even when the router confidently
 	// pinned a single datasource (multi=false), so that datasource is still
@@ -159,13 +180,13 @@ func (rt *ProjectRuntime) resolveTurnRouting(explicit string) (turnRouting, erro
 		if !ok {
 			return turnRouting{}, fmt.Errorf("unknown datasource %q", explicit)
 		}
-		return turnRouting{datasources: []DatasourceInfo{d}, pinned: explicit, primary: explicit}, nil
+		return turnRouting{datasources: []DatasourceInfo{d}, all: rt.Datasources, pinned: explicit, primary: explicit}, nil
 	}
 	if len(rt.Datasources) == 1 {
 		only := rt.Datasources[0].ID
-		return turnRouting{datasources: rt.Datasources, pinned: only, primary: only}, nil
+		return turnRouting{datasources: rt.Datasources, all: rt.Datasources, pinned: only, primary: only}, nil
 	}
-	return turnRouting{datasources: rt.Datasources, primary: primary, multi: true}, nil
+	return turnRouting{datasources: rt.Datasources, all: rt.Datasources, primary: primary, multi: true}, nil
 }
 
 // trackDatasource records a queried datasource for routing telemetry (deduped,
@@ -288,7 +309,7 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				if st.groundingNudges < maxGroundingNudges {
 					st.groundingNudges++
-					conv.AddUserMessage(groundingNudge)
+					conv.AddUserMessage(groundingNudge(st.routing.shapes()))
 					continue
 				}
 				r.finishUngrounded(ctx, st)
@@ -404,7 +425,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		}
 
 		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.routing.shapes(), st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -445,7 +466,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				r.runText(ctx, rt, st)
 				return
 			}
-			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
+			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge(st.routing.shapes())})
 			continue
 		}
 
@@ -463,7 +484,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				continue
 			}
 			if act.Kind == actAnswer && st.groundedEvents == 0 {
-				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge(st.routing.shapes()), IsError: true}}})
 				continue
 			}
 			r.finishTerminal(ctx, st, act)

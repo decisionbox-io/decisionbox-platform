@@ -21,13 +21,31 @@ import (
 // runs against — one warehouse per statement, chained across a turn. On a
 // single-datasource / pinned turn the argument is omitted so behaviour is
 // identical to the single-warehouse path.
-func toolQueryData(multi bool) gollm.ToolDefinition {
+//
+// hasCube says whether any datasource the turn can reach has no tables. The
+// tool description is the most concrete instruction the model gets — more
+// concrete than the system prompt, and it arrives attached to the argument it
+// governs — so a description that says "SELECT / CTE only" is not softened by
+// prose elsewhere saying otherwise. It is branched rather than generalised so a
+// turn of only SQL datasources sends a byte-identical definition.
+func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
 	desc := "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
 		"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
 		"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
 		"query against INFORMATION_SCHEMA."
+	queryDesc := "The read-only SQL to execute."
+	if hasCube {
+		desc = "Run one read-only query against a datasource and observe a summary of the result " +
+			"(row count, columns, and a small row preview). This is how you gather evidence. Write it in that datasource's own query " +
+			"language — not every datasource here is SQL, and the datasource block in the system prompt states which language each one " +
+			"takes. Against a SQL datasource: SELECT / CTE only, and for totals, counts, or distributions write aggregate SQL " +
+			"(COUNT/SUM/AVG/GROUP BY) rather than paging raw rows; if you don't yet know its tables, start with a discovery query " +
+			"against INFORMATION_SCHEMA. A datasource marked NO TABLES accepts no SQL at all — use search_tables to see the metrics " +
+			"and dimensions it offers."
+		queryDesc = "The read-only query to execute, written in the target datasource's query language."
+	}
 	props := map[string]interface{}{
-		"query":   map[string]interface{}{"type": "string", "description": "The read-only SQL to execute."},
+		"query":   map[string]interface{}{"type": "string", "description": queryDesc},
 		"purpose": map[string]interface{}{"type": "string", "description": "Short note on what this query answers (optional)."},
 	}
 	if multi {
@@ -70,15 +88,29 @@ func toolLookupSchema(multi bool) gollm.ToolDefinition {
 	}
 }
 
-func toolSearchTables() gollm.ToolDefinition {
+// toolSearchTables defines search_tables. It is the only discovery tool that
+// works against a source with no tables, and the prompt sends a cube turn
+// straight to it — so when one is reachable its description must stop saying
+// "tables". A tool description is part of tool selection on a native
+// tool-calling provider: a model told this searches tables, and told by the
+// prompt that its source has none, has been given a reason not to call the one
+// tool that would have worked.
+func toolSearchTables(hasCube bool) gollm.ToolDefinition {
+	desc := "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need."
+	topK := "Max number of tables to return (optional)."
+	if hasCube {
+		desc = "Semantically search what the datasources offer — tables, and for a datasource with no tables its metrics and dimensions. " +
+			"Use this first when you don't know which datasource holds what you need; each result says what it is."
+		topK = "Max number of results to return (optional)."
+	}
 	return gollm.ToolDefinition{
 		Name:        string(actSearch),
-		Description: "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need.",
+		Description: desc,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"query": map[string]interface{}{"type": "string", "description": "Keywords describing the data you're looking for."},
-				"top_k": map[string]interface{}{"type": "integer", "description": "Max number of tables to return (optional)."},
+				"top_k": map[string]interface{}{"type": "integer", "description": topK},
 			},
 			"required": []string{"query"},
 		},
@@ -219,11 +251,23 @@ func toolDecline() gollm.ToolDefinition {
 // only when a schema provider is wired; search_insights only when an insights
 // provider is wired. render_chart is offered only when charting is enabled for
 // the turn AND a non-truncated query result exists to ground a chart against.
-// multi widens the query/schema tools for a project with several warehouses.
-func toolsForPhase(grounded, hasSchema, hasInsights, multi, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData(multi)}
+// multi widens the query/schema tools for a project with several warehouses;
+// shapes tells query_data and search_tables that not every reachable datasource
+// takes SQL, and withholds lookup_schema entirely when none of them has tables
+// for it to look up.
+func toolsForPhase(grounded, hasSchema, hasInsights, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
+	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes.anyCube)}
 	if hasSchema {
-		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
+		// lookup_schema returns columns, so it can only fail when nothing
+		// reachable has any. Leaving it advertised is not merely untidy: while
+		// the turn is ungrounded the model is FORCED to call some tool, so an
+		// advertised-but-impossible tool can consume the very step that was
+		// meant to gather evidence. It stays offered on a mixed turn, where it
+		// is still the right tool for the SQL datasource.
+		if !shapes.allCube {
+			tools = append(tools, toolLookupSchema(multi))
+		}
+		tools = append(tools, toolSearchTables(shapes.anyCube))
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
