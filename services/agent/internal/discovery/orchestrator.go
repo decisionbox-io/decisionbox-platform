@@ -173,9 +173,13 @@ type Orchestrator struct {
 	projectPrompts *models.ProjectPrompts
 	datasets       []string
 	filterField    string
-	filterValue    string
-	llmProvider    string
-	llmModel       string
+	// warehouseProviderSlug is the primary datasource's registered provider.
+	// The executor reads the query language from the registry by this slug,
+	// which no middleware can erase.
+	warehouseProviderSlug string
+	filterValue           string
+	llmProvider           string
+	llmModel              string
 
 	// llmConfig is the project's LLM provider config (project.LLM.Config).
 	// Read for the max_input_tokens / max_output_tokens operator overrides
@@ -403,42 +407,43 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:           opts.AIClient,
-		warehouse:          opts.Warehouse,
-		contextRepo:        opts.ContextRepo,
-		discoveryRepo:      opts.DiscoveryRepo,
-		discoveryLogRepo:   discoveryLogRepo,
-		feedbackRepo:       opts.FeedbackRepo,
-		debugLogRepo:       opts.DebugLogRepo,
-		debugLogger:        debugLogger,
-		statusReporter:     statusReporter,
-		projectID:          opts.ProjectID,
-		domain:             opts.Domain,
-		category:           opts.Category,
-		language:           opts.Language,
-		profile:            opts.Profile,
-		projectPrompts:     opts.ProjectPrompts,
-		datasets:           opts.Datasets,
-		filterField:        opts.FilterField,
-		filterValue:        opts.FilterValue,
-		llmProvider:        opts.LLMProvider,
-		llmModel:           opts.LLMModel,
-		llmConfig:          opts.LLMConfig,
-		llmInputWindow:     opts.LLMInputWindow,
-		llmOutputCap:       opts.LLMOutputCap,
-		modelWindowRepo:    opts.ModelWindowRepo,
-		vectorStore:        opts.VectorStore,
-		embeddingProvider:  opts.EmbeddingProvider,
-		embedIndexStore:    opts.EmbedIndexStore,
-		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:    opts.SchemaRetriever,
-		schemaCache:        opts.SchemaCache,
-		warehouseHash:      opts.WarehouseHash,
-		warehouseID:        opts.WarehouseID,
-		warehouseProviders: opts.WarehouseProviders,
-		warehouses:         opts.Warehouses,
-		runStepIndex:       opts.RunStepIndex,
-		runID:              opts.RunID,
+		aiClient:              opts.AIClient,
+		warehouse:             opts.Warehouse,
+		contextRepo:           opts.ContextRepo,
+		discoveryRepo:         opts.DiscoveryRepo,
+		discoveryLogRepo:      discoveryLogRepo,
+		feedbackRepo:          opts.FeedbackRepo,
+		debugLogRepo:          opts.DebugLogRepo,
+		debugLogger:           debugLogger,
+		statusReporter:        statusReporter,
+		projectID:             opts.ProjectID,
+		domain:                opts.Domain,
+		category:              opts.Category,
+		language:              opts.Language,
+		profile:               opts.Profile,
+		projectPrompts:        opts.ProjectPrompts,
+		datasets:              opts.Datasets,
+		filterField:           opts.FilterField,
+		warehouseProviderSlug: opts.WarehouseProvider,
+		filterValue:           opts.FilterValue,
+		llmProvider:           opts.LLMProvider,
+		llmModel:              opts.LLMModel,
+		llmConfig:             opts.LLMConfig,
+		llmInputWindow:        opts.LLMInputWindow,
+		llmOutputCap:          opts.LLMOutputCap,
+		modelWindowRepo:       opts.ModelWindowRepo,
+		vectorStore:           opts.VectorStore,
+		embeddingProvider:     opts.EmbeddingProvider,
+		embedIndexStore:       opts.EmbedIndexStore,
+		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:       opts.SchemaRetriever,
+		schemaCache:           opts.SchemaCache,
+		warehouseHash:         opts.WarehouseHash,
+		warehouseID:           opts.WarehouseID,
+		warehouseProviders:    opts.WarehouseProviders,
+		warehouses:            opts.Warehouses,
+		runStepIndex:          opts.RunStepIndex,
+		runID:                 opts.RunID,
 	}
 }
 
@@ -555,12 +560,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Initialize query executor (uses the warehouse provider which can query any dataset)
 	sqlFixer := o.newQueryFixer(o.warehouse, datasetsStr, filterClause)
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:   o.warehouse,
-		SQLFixer:    sqlFixer,
-		DebugLogger: o.debugLogger,
-		MaxRetries:  5,
-		FilterField: o.filterField,
-		FilterValue: o.filterValue,
+		Warehouse:    o.warehouse,
+		ProviderSlug: o.warehouseProviderSlug,
+		SQLFixer:     sqlFixer,
+		DebugLogger:  o.debugLogger,
+		MaxRetries:   5,
+		FilterField:  o.filterField,
+		FilterValue:  o.filterValue,
 	})
 
 	// Initialize the LLM-native validation agent.

@@ -124,3 +124,67 @@ func TestVerifyFilter_SQLBehaviourIsUnchanged(t *testing.T) {
 		t.Errorf("case sensitivity changed: %v", err)
 	}
 }
+
+// wrappedNative is a provider that HOLDS a native source but exposes only the
+// Provider surface — what a middleware wrapper looks like when it does not
+// re-expose the optional interfaces. It is not hypothetical: the governance
+// wrapper did exactly this until it was fixed, and the middleware contract
+// only requires returning a Provider, so the next one may do it again.
+type wrappedNative struct {
+	gowarehouse.Provider
+	ran int
+}
+
+func (w *wrappedNative) Query(context.Context, string, map[string]interface{}) (*gowarehouse.QueryResult, error) {
+	w.ran++
+	return &gowarehouse.QueryResult{}, nil
+}
+
+// The registry is the only statement of a source's query language that a
+// wrapper cannot erase. Reading it by slug is what keeps a SECURITY guard from
+// depending on every present and future middleware preserving an optional
+// interface — a dependency that has already failed once.
+func TestExecute_RefusesThroughAWrapperThatHidesTheSeam(t *testing.T) {
+	gowarehouse.RegisterWithMeta("queryexec-native-probe",
+		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) { return nil, nil },
+		gowarehouse.ProviderMeta{
+			Name:       "Native probe",
+			Capability: gowarehouse.Capability{QueryLanguage: "Probe Request (JSON)"},
+		})
+
+	wrapped := &wrappedNative{}
+	e := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:    wrapped, // the seam is gone from the type
+		ProviderSlug: "queryexec-native-probe",
+		FilterField:  "country",
+	})
+
+	_, err := e.ExecuteNative(context.Background(),
+		gowarehouse.NativeQuery{Text: `{"dimensions":["country"]}`}, "traffic", FixOpts{})
+
+	if err == nil {
+		t.Fatal("a wrapper hiding the query seam let an unverifiable filter through")
+	}
+	if wrapped.ran != 0 {
+		t.Errorf("the query ran anyway (%d times)", wrapped.ran)
+	}
+	if !strings.Contains(err.Error(), "Probe Request (JSON)") {
+		t.Errorf("error = %v, want the language the REGISTRY declares", err)
+	}
+}
+
+// A SQL warehouse is not made native by supplying its slug: the registry
+// answers "" for a provider that declares no query language, which is every
+// one of them, and an unregistered slug answers "" too — what every provider
+// was before the descriptor existed.
+func TestNonSQLLanguageOf_IsEmptyForSQLAndForTheUnknown(t *testing.T) {
+	if got := gowarehouse.NonSQLLanguageOf("not-registered-anywhere"); got != "" {
+		t.Errorf("unregistered slug = %q, want empty", got)
+	}
+	gowarehouse.RegisterWithMeta("queryexec-sql-probe",
+		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) { return nil, nil },
+		gowarehouse.ProviderMeta{Name: "SQL probe", Dialect: "postgresql"})
+	if got := gowarehouse.NonSQLLanguageOf("queryexec-sql-probe"); got != "" {
+		t.Errorf("a SQL warehouse = %q, want empty — a dialect is not another language", got)
+	}
+}

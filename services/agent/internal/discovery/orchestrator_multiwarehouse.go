@@ -141,8 +141,9 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		fixer := o.newQueryFixer(provider, datasetsStr, filterClause(wh.FilterField, wh.FilterValue))
 		fixer.SetSchemaContext((&SchemaContextBuilder{Schemas: schemas}).BuildCatalog(nil).Catalog)
 		dc.executors[id] = queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-			Warehouse: provider,
-			SQLFixer:  fixer,
+			Warehouse:    provider,
+			ProviderSlug: wh.Provider,
+			SQLFixer:     fixer,
 			// Per-datasource debug logger so every warehouse-query debug row
 			// (exploration AND validation, which reuses these executors) is
 			// stamped with THIS datasource's provider + id, not the primary.

@@ -82,8 +82,13 @@ type QueryExecutorOptions struct {
 	SQLFixer    SQLFixer
 	DebugLogger *debug.Logger
 	MaxRetries  int
-	FilterField string // optional: field to verify in queries (e.g., "app_id")
-	FilterValue string // optional: value the field must match
+	// ProviderSlug is the datasource's registered provider. Supplying it is
+	// what makes the tenant-filter guard robust: the language is then read
+	// from the registry, which no middleware can erase, rather than from a
+	// type assertion on a provider that may have been wrapped.
+	ProviderSlug string
+	FilterField  string // optional: field to verify in queries (e.g., "app_id")
+	FilterValue  string // optional: value the field must match
 }
 
 // NewQueryExecutor creates a new query executor with self-healing.
@@ -110,8 +115,20 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	// gone and every warehouse would look native.
 	nonSQL := ""
 	switch {
+	// The registry first, because it is the only source of this answer that
+	// cannot be erased. A provider reaches this constructor through
+	// middleware, and a wrapper only has to return a Provider — one that does
+	// not re-expose QueryRunner turns a native source into an apparent SQL
+	// warehouse and skips the guard below. A registration cannot be wrapped.
+	case gowarehouse.NonSQLLanguageOf(opts.ProviderSlug) != "":
+		nonSQL = gowarehouse.NonSQLLanguageOf(opts.ProviderSlug)
+	// Runner exists to supply the seam for a source that is NOT a SQL
+	// provider, so a caller reaching for it has already said what this is.
 	case opts.Runner != nil:
 		nonSQL = opts.Runner.QueryLanguage()
+	// And the live provider last: still right for a caller that supplies
+	// neither a slug nor a runner, and still wrong through a flattening
+	// wrapper — which is why the slug is preferred wherever there is one.
 	case opts.Warehouse != nil:
 		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
 	}

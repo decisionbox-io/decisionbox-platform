@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A tenant filter that cannot be verified is now refused, not assumed.** The filter is checked by looking for its field name in the query TEXT. That is weak evidence in SQL, where the name appearing at least means a predicate probably mentions it — and it is no evidence at all in any other query language. A report request naming `country` among its *dimensions* contains the string and filters by nothing, so the check passed and the query ran across the whole source while reporting as scoped: an unscoped result presented as a scoped one, which is precisely what the check exists to prevent. A source whose queries are not SQL now fails the query outright and says why, because scope for such a source rests on its credential and a filter configured on the datasource is a guarantee this code cannot keep. SQL behaviour is unchanged, character for character.
+  - Which language a source speaks is read from the **registry**, by provider slug, not from a type assertion on the live provider. A provider reaches this code through middleware, and a wrapper only has to return a `Provider` — one that does not re-expose the query seam turns a native source into an apparent SQL warehouse and skips the guard entirely. That has already happened once. A registration cannot be erased by wrapping (new `warehouse.NonSQLLanguageOf`).
 
 ### Added
 

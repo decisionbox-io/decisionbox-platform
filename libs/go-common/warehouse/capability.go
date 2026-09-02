@@ -152,6 +152,32 @@ func NonSQLLanguage(p Provider) string {
 	return r.QueryLanguage()
 }
 
+// NonSQLLanguageOf answers the same question from the REGISTRY, by provider
+// slug, and is the answer to trust when the consequence of being wrong is a
+// security guard skipped rather than a prompt worded oddly.
+//
+// NonSQLLanguage reads a type assertion on a live provider, and a provider
+// reaches most consumers through middleware. A wrapper only has to return a
+// Provider, so one that does not re-expose QueryRunner erases the declaration
+// and every caller downstream sees a SQL warehouse. That has already happened
+// once (the governance wrapper), and the middleware contract does not prevent
+// the next one.
+//
+// A registration cannot be erased by wrapping. A provider that declares a
+// QueryLanguage in its capability descriptor has said its queries are not SQL,
+// and that statement is true of the source no matter what is holding it.
+//
+// An unregistered slug answers "" — SQL — which is what every provider was
+// before the descriptor existed, and what a binary that has not linked a
+// provider must assume rather than guess.
+func NonSQLLanguageOf(providerSlug string) string {
+	meta, ok := GetProviderMeta(providerSlug)
+	if !ok {
+		return ""
+	}
+	return meta.QueryLanguage
+}
+
 // Anchoring returns a pointer to v, for declaring ProviderMeta.CanAnchor.
 //
 // Only a provider that cannot anchor needs to say so:

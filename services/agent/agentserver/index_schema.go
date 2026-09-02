@@ -155,8 +155,9 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		defer provider.Close()
 
 		executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-			Warehouse:   provider,
-			FilterField: wh.FilterField,
+			Warehouse:    provider,
+			ProviderSlug: wh.Provider,
+			FilterField:  wh.FilterField,
 			FilterValue: wh.FilterValue,
 		})
 
