@@ -138,15 +138,7 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		// Per-datasource executor: its own dialect, datasets and filter, so
 		// each statement is dialect-correct and governed by that datasource.
 		datasetsStr := strings.Join(wh.GetDatasets(), ", ")
-		mwFixWindow, mwFixOutputCap := o.resolveModelBudget()
-		fixer := ai.NewQueryFixerFor(provider, ai.SQLFixerOptions{
-			Client:  o.aiClient,
-			Dataset: datasetsStr,
-			Filter:  filterClause(wh.FilterField, wh.FilterValue),
-			// Budget the fix call against the resolved window/output cap (#347).
-			Window:    mwFixWindow,
-			OutputCap: mwFixOutputCap,
-		})
+		fixer := o.newQueryFixer(provider, datasetsStr, filterClause(wh.FilterField, wh.FilterValue))
 		fixer.SetSchemaContext((&SchemaContextBuilder{Schemas: schemas}).BuildCatalog(nil).Catalog)
 		dc.executors[id] = queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 			Warehouse: provider,

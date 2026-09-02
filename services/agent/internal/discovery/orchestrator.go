@@ -553,16 +553,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	datasetsStr := strings.Join(o.datasets, ", ")
 
 	// Initialize query executor (uses the warehouse provider which can query any dataset)
-	sqlFixWindow, sqlFixOutputCap := o.resolveModelBudget()
-	sqlFixer := ai.NewQueryFixerFor(o.warehouse, ai.SQLFixerOptions{
-		Client:  o.aiClient,
-		Dataset: datasetsStr,
-		Filter:  filterClause,
-		// Budget the fix call against the resolved window/output cap so it can't
-		// overflow a small model (#347-class fix).
-		Window:    sqlFixWindow,
-		OutputCap: sqlFixOutputCap,
-	})
+	sqlFixer := o.newQueryFixer(o.warehouse, datasetsStr, filterClause)
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 		Warehouse:   o.warehouse,
 		SQLFixer:    sqlFixer,

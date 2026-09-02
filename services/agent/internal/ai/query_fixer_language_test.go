@@ -136,7 +136,16 @@ func TestExtractFixedSQL_StillRefusesProse(t *testing.T) {
 	for _, body := range []string{
 		"I'm sorry, I cannot correct this query.",
 		"The dimension does not exist on this property.",
+		// A JSON array is not a query for any source here, and it must be
+		// rejected by the decode rather than by the leading-brace fast path.
 		"[1, 2, 3]",
+		// Starts like an object and is not one — the decode is what catches
+		// this, which is the branch the fast path cannot reach.
+		`{"metrics": ["activeUsers"`,
+		// An object whose only field is the envelope key, holding no query:
+		// the wrapper must not be handed on as if it were the query.
+		`{"fixed_sql": ""}`,
+		"",
 	} {
 		if got, err := extractFixedSQL(&gollm.ChatResponse{Content: body}); err == nil {
 			t.Errorf("prose was accepted as a query: input %q gave %q", body, got)
