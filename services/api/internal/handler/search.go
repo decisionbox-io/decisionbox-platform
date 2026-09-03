@@ -637,7 +637,28 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		knowledgeChunks = nil
 	}
 
-	if len(insights) == 0 && len(knowledgeChunks) == 0 {
+	// Resolve the conversation seed up front (before the no-context gate): a new
+	// session hydrates it from the request; an existing session carries its
+	// persisted seed. A verified seed is itself context, so a seeded "Ask about
+	// this" is answered even when vector/knowledge search returns nothing — e.g.
+	// a terse follow-up ("why?") or an item that isn't indexed yet. priorSession
+	// is reused for the history walk below so the session is loaded once.
+	var seed *commonmodels.AskSessionSeed
+	var priorSession *commonmodels.AskSession
+	if req.SessionID != "" {
+		priorSession, err = h.sessionRepo.GetByID(ctx, req.SessionID)
+		if err == nil && priorSession != nil {
+			if priorSession.ProjectID != projectID {
+				writeError(w, http.StatusBadRequest, "session does not belong to this project")
+				return
+			}
+			seed = priorSession.SeedContext
+		}
+	} else {
+		seed = h.hydrateSeed(ctx, projectID, req.SeedContext)
+	}
+
+	if len(insights) == 0 && len(knowledgeChunks) == 0 && seed == nil {
 		writeJSON(w, http.StatusOK, askResponse{
 			Answer:    "No relevant insights or knowledge sources found for this question. Try running a discovery first, attaching documents in Knowledge Sources, or rephrasing your question.",
 			Sources:   []searchResultItem{},
@@ -660,15 +681,6 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			"Keep technical tokens (SQL, column names, identifiers, citation markers) in English.",
 		project.EffectiveLanguage(),
 	)
-
-	// Resolve the conversation seed for a NEW session (existing sessions carry
-	// their persisted seed, read below). The block is appended to the system
-	// prompt once the session is known; the exact-fit check further down guards
-	// against the (bounded) addition overflowing the window.
-	var seed *commonmodels.AskSessionSeed
-	if req.SessionID == "" {
-		seed = h.hydrateSeed(ctx, projectID, req.SeedContext)
-	}
 
 	llmProvider, err := h.createLLMProvider(ctx, project, projectID)
 	if err != nil {
@@ -768,18 +780,12 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// multi-turn context. The walk drops oldest pairs first; the
 	// current user prompt always rides at the end.
 	var messages []gollm.Message
-	if req.SessionID != "" {
-		session, err := h.sessionRepo.GetByID(ctx, req.SessionID)
-		if err == nil && session != nil {
-			if session.ProjectID != projectID {
-				writeError(w, http.StatusBadRequest, "session does not belong to this project")
-				return
-			}
-			// A follow-up turn stays anchored to the seed persisted at creation.
-			seed = session.SeedContext
-			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
-			messages = append(messages, trimmed...)
-		}
+	// priorSession was loaded once above (to resolve the seed before the
+	// no-context gate); reuse it for the conversation history so a follow-up
+	// keeps multi-turn context without a second read.
+	if priorSession != nil {
+		trimmed, _ := trimMessagesByTokens(ctx, priorSession.Messages, counter, historyBudget)
+		messages = append(messages, trimmed...)
 	}
 	messages = append(messages, gollm.Message{Role: "user", Content: prompt})
 
