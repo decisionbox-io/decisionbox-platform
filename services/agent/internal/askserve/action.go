@@ -39,6 +39,10 @@ type turnAction struct {
 	// lookup_schema on a multi-datasource project. Empty = the primary. Ignored
 	// on a single-datasource project or a turn pinned to one datasource.
 	Datasource string
+	// JoinsOn is the model's optional declaration, on a query_data action, that
+	// this query filters on values observed in an earlier query against a
+	// different datasource. nil when it declared none.
+	JoinsOn *joinDeclaration
 
 	LookupSchema []string // lookup_schema
 	SearchTables string   // search_tables
@@ -59,9 +63,10 @@ type turnAction struct {
 type rawAction struct {
 	Thinking string `json:"thinking"`
 
-	Query      string `json:"query"`
-	Purpose    string `json:"purpose"`
-	Datasource string `json:"datasource_id"`
+	Query      string          `json:"query"`
+	Purpose    string          `json:"purpose"`
+	Datasource string          `json:"datasource_id"`
+	JoinsOn    json.RawMessage `json:"joins_on"`
 
 	LookupSchema []string `json:"lookup_schema"`
 	SearchTables string   `json:"search_tables"`
@@ -104,12 +109,12 @@ func parseTurnAction(response string) (*turnAction, error) {
 	// let the chart reference a stale step, and mixing it with a terminal would
 	// finish before the chart is validated). This mirrors the native path's
 	// same-batch refusal.
-	if hasChartPayload(raw.RenderChart) && rawHasNonChartAction(&raw) {
+	if hasJSONPayload(raw.RenderChart) && rawHasNonChartAction(&raw) {
 		return nil, fmt.Errorf("emit render_chart on its own — not together with a query, lookup, search, or answer/clarify/decline; render the chart in one step, then continue in the next")
 	}
 
 	switch {
-	case hasChartPayload(raw.RenderChart):
+	case hasJSONPayload(raw.RenderChart):
 		act.Kind = actRenderChart
 		act.Chart = raw.RenderChart
 	case strings.TrimSpace(raw.Answer) != "":
@@ -126,6 +131,11 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.Query = raw.Query
 		act.Purpose = strings.TrimSpace(raw.Purpose)
 		act.Datasource = strings.TrimSpace(raw.Datasource)
+		joins, err := raw.joinDeclaration()
+		if err != nil {
+			return nil, err
+		}
+		act.JoinsOn = joins
 	case len(raw.LookupSchema) > 0:
 		act.Kind = actLookup
 		act.LookupSchema = raw.LookupSchema
@@ -144,10 +154,10 @@ func parseTurnAction(response string) (*turnAction, error) {
 	return act, nil
 }
 
-// hasChartPayload reports whether a render_chart value carries an actual object
+// hasJSONPayload reports whether a raw JSON value carries an actual payload
 // (not absent, not JSON null). Guards the parser against a `{"render_chart":null}`
-// stub being treated as a chart action.
-func hasChartPayload(raw json.RawMessage) bool {
+// or `{"joins_on":null}` stub being treated as the thing itself.
+func hasJSONPayload(raw json.RawMessage) bool {
 	s := strings.TrimSpace(string(raw))
 	return s != "" && s != "null"
 }
@@ -182,9 +192,10 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			return
 		}
 		var in struct {
-			Query        string `json:"query"`
-			Purpose      string `json:"purpose"`
-			DatasourceID string `json:"datasource_id"`
+			Query        string          `json:"query"`
+			Purpose      string          `json:"purpose"`
+			DatasourceID string          `json:"datasource_id"`
+			JoinsOn      json.RawMessage `json:"joins_on"`
 		}
 		if json.Unmarshal(env.Input, &in) == nil {
 			raw.Query = in.Query
@@ -193,6 +204,16 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			}
 			if raw.Datasource == "" {
 				raw.Datasource = in.DatasourceID
+			}
+			// "Already set" has to mean "says something", not "is present":
+			// null, {} and blank halves are all how a model spells no
+			// declaration, and a stub outranking the real declaration beside
+			// it would file the hop as undeclared with the answer in hand.
+			// A malformed top-level value does outrank it, deliberately —
+			// that is an attempt, and the model should get it corrected
+			// rather than quietly replaced.
+			if joinsOnSaysNothing(raw.JoinsOn) {
+				raw.JoinsOn = in.JoinsOn
 			}
 		}
 	case actLookup:
@@ -238,7 +259,7 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			}
 		}
 	case actRenderChart:
-		if hasChartPayload(raw.RenderChart) {
+		if hasJSONPayload(raw.RenderChart) {
 			return
 		}
 		// The tool-use `input` IS the ChartSpec — capture it raw for validation.
@@ -373,4 +394,57 @@ func jsonHasActionKey(s string) bool {
 		}
 	}
 	return false
+}
+
+// joinDeclaration reads the optional joins_on key of a JSON-text query action.
+//
+// It decodes to the same loose map the native tool path receives and hands it
+// to the same parser, rather than to a typed struct. A struct silently drops
+// keys it does not know, so a real attempt spelled `{"step":..,"column":..}`
+// would arrive indistinguishable from no attempt at all: the model would get
+// no correction, and the turn would be filed as an undeclared hop — which is
+// the measurement deciding whether undeclared hops should eventually be
+// refused. Misreading attempts as non-attempts is the one error that
+// measurement cannot survive.
+func (raw *rawAction) joinDeclaration() (*joinDeclaration, error) {
+	return joinsFromRawJSON(raw.JoinsOn)
+}
+
+// joinsOnSaysNothing reports whether a joins_on value carries no content at all
+// — absent, null, {}, or an object whose every value is blank.
+//
+// This is a question about PRECEDENCE, not validity, which is why it is not
+// joinsFromRawJSON. The normaliser has to decide whether a top-level value is
+// worth keeping over the envelope's, and a template stub the model left behind
+// is not: letting it win would file the hop as undeclared with the real
+// declaration sitting in the envelope. A malformed value that does carry
+// content keeps precedence on purpose — that is an attempt, and it should be
+// corrected rather than quietly overwritten.
+func joinsOnSaysNothing(raw json.RawMessage) bool {
+	if !hasJSONPayload(raw) {
+		return true
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	for _, v := range obj {
+		if str, ok := v.(string); !ok || strings.TrimSpace(str) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// joinsFromRawJSON reads a joins_on value in its wire form, applying the same
+// rules the native tool path applies to the same object.
+func joinsFromRawJSON(raw json.RawMessage) (*joinDeclaration, error) {
+	if !hasJSONPayload(raw) { // absent, or an explicit null
+		return nil, nil
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("joins_on must be an object with %q and %q", "source_step", "field")
+	}
+	return joinsFromToolInput(obj)
 }

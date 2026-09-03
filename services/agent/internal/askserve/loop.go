@@ -94,6 +94,12 @@ type turnState struct {
 	// querySummariesByID maps a step id to the query summary the chart validator
 	// grounds against, for O(1) lookup of a chart's referenced source.
 	querySummariesByID map[string]QuerySummary
+	// queryStepsByID maps a step id to where and when that query ran, so a
+	// joins_on declaration can be checked against what the model could
+	// actually have observed. Kept beside the summaries rather than on them
+	// because it is turn bookkeeping, not part of the persisted result — the
+	// tool event already records each query's datasource and round.
+	queryStepsByID map[string]queryStep
 	// chartsEnabled is the per-turn entitlement (caller EnableCharts AND the ops
 	// kill-switch). It gates EXECUTION, not just tool offering: the text-fallback
 	// parser accepts render_chart regardless, and a provider can return an
@@ -631,12 +637,30 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		Name:  string(actQuery),
 		Args:  map[string]any{"sql": act.Query, "purpose": act.Purpose, "datasource_id": dsID},
 	}
+	if act.JoinsOn != nil {
+		// Persisted whether or not it holds up: what the model claimed is the
+		// measurement, and a rejected claim is as much a data point as a
+		// confirmed one.
+		ev.Args["joins_on"] = map[string]any{"source_step": act.JoinsOn.SourceStep, "field": act.JoinsOn.Field}
+	}
 	if derr != nil {
 		// Record what the model asked for so the transcript shows the bad id.
 		ev.Args["datasource_id"] = strings.TrimSpace(act.Datasource)
 		ev.Error = derr.Error()
 		r.emit(ctx, st, ev)
 		return fmt.Sprintf("Query rejected: %s. Target a valid datasource_id from the DATASOURCES list.", derr.Error())
+	}
+
+	// Where this query stands relative to the datasources already queried this
+	// turn. Resolved BEFORE the query runs so a declaration that contradicts
+	// the turn costs no warehouse work, and so the result can never be
+	// summarised without the scope verdict that belongs to it.
+	js := st.resolveJoinScope(ctx, dsID, act.JoinsOn)
+	js.track(act.JoinsOn != nil)
+	if js.reject != "" {
+		ev.Error = js.reject
+		r.emit(ctx, st, ev)
+		return "Query rejected: " + js.reject
 	}
 
 	// NB: we deliberately do NOT call the executor's SetStep here. The runtime
@@ -697,12 +721,18 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// preview, so a truncated result — whose preview omits rows — cannot ground).
 	st.queryStepSeq++
 	sum.Step = fmt.Sprintf("q%d", st.queryStepSeq)
+	sum.Scoped = js.scoped
+	sum.ScopeNote = js.note
 	ev.Args["step"] = sum.Step
 	ev.Output = sum
 	if st.querySummariesByID == nil {
 		st.querySummariesByID = make(map[string]QuerySummary)
 	}
 	st.querySummariesByID[sum.Step] = sum
+	if st.queryStepsByID == nil {
+		st.queryStepsByID = make(map[string]queryStep)
+	}
+	st.queryStepsByID[sum.Step] = queryStep{datasource: dsID, columns: sum.Columns, round: st.round}
 	if sum.chartable() {
 		st.queriesChartable++
 	}

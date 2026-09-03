@@ -40,6 +40,36 @@ type QuerySummary struct {
 	// Persisted with the tool event, so a turn answered from a degraded result
 	// is identifiable afterwards rather than only in the moment.
 	Quality []gowarehouse.QualityCaveat `json:"quality,omitempty" bson:"quality,omitempty"`
+	// Scoped says whether the key this result's hop was declared to join on is
+	// a real key between the two datasources. It is set only on a query made
+	// after a different datasource was queried in the same turn; nil — the
+	// normal case, and every single-datasource turn — means the question never
+	// arose, so an existing turn's persisted summary is unchanged.
+	//
+	// Read what true claims precisely, because it is narrower than the name
+	// suggests. It says a join-key report positively named the declared field
+	// as binding these two datasources. It does NOT say this query applied
+	// that key: that the query filtered on the values observed in the earlier
+	// step is the model's declaration, and nothing here re-checks it.
+	//
+	// Nothing here CAN re-check it. The only available evidence would be the
+	// query text, and matching a field or a value against query text is what
+	// this epic's #375 established is not evidence at all — a request-shaped
+	// query contains the name while filtering by nothing. A weaker claim
+	// honestly stated beats a stronger one resting on a check that does not
+	// work, which is the same rule the tenant filter now follows.
+	//
+	// False is not an accusation either: it covers an undeclared hop, a report
+	// that does not list the declared field, and a report that could not be
+	// reached. ScopeNote says which, and is what the model is shown.
+	//
+	// It deliberately does not affect chartability, unlike Quality. These rows
+	// are a faithful result of the query that ran; what is unverified is what
+	// the filter values MEAN across two sources. Withholding the chart would
+	// also stop charts working on the second hop of every existing SQL turn,
+	// which is the behaviour this was required not to change.
+	Scoped    *bool  `json:"scoped,omitempty" bson:"scoped,omitempty"`
+	ScopeNote string `json:"scope_note,omitempty" bson:"scope_note,omitempty"`
 }
 
 // summarizeResult turns an executor result into a bounded QuerySummary,
@@ -117,6 +147,13 @@ func (s QuerySummary) observation() string {
 	if s.Note != "" {
 		b.WriteString(s.Note)
 		b.WriteByte('\n')
+	}
+	// Before the source's own caveats, so that when a result carries both, the
+	// stronger statement — the source saying these rows are not the answer —
+	// is the one left in the tail position the loop reserves for corrections.
+	// With no caveats to follow it this note holds that position itself.
+	if s.ScopeNote != "" {
+		b.WriteString("\n" + s.ScopeNote + "\n")
 	}
 	// Last, and as an instruction. A model that has already read the rows and
 	// the preview needs to be told what they are NOT before it starts

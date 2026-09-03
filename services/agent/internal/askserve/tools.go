@@ -52,6 +52,17 @@ func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
 		desc += " This project has multiple datasources — set datasource_id to the one this query runs against (a single query cannot span datasources; " +
 			"to combine datasources, query one, then use its result values as literal filters in a follow-up query on another)."
 		props["datasource_id"] = map[string]interface{}{"type": "string", "description": "The datasource this query runs against (see the DATASOURCES list). Defaults to the primary if omitted."}
+		props["joins_on"] = map[string]interface{}{
+			"type": "object",
+			"description": "Set this when the query filters on values you read out of an EARLIER query against a DIFFERENT datasource, naming where those values came from. " +
+				"It is how a cross-datasource hop gets its join key checked: declared and confirmed, the result is marked scoped; left out, the result is returned but marked as not verified against the other datasource. " +
+				"Omit it for a query that stands on its own.",
+			"properties": map[string]interface{}{
+				"source_step": map[string]interface{}{"type": "string", "description": "The q<N> id of the earlier query you took the values from, e.g. \"q1\"."},
+				"field":       map[string]interface{}{"type": "string", "description": "The column IN THAT RESULT whose values this query filters on — the name as it appeared there, not the name it has in this datasource."},
+			},
+			"required": []string{"source_step", "field"},
+		}
 	}
 	return gollm.ToolDefinition{
 		Name:        string(actQuery),
@@ -315,7 +326,11 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 		if strings.TrimSpace(q) == "" {
 			return nil, fmt.Errorf("query_data requires a non-empty %q argument", "query")
 		}
-		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose"), Datasource: getStr("datasource_id")}, nil
+		joins, jerr := joinsFromToolInput(tc.Input["joins_on"])
+		if jerr != nil {
+			return nil, jerr
+		}
+		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose"), Datasource: getStr("datasource_id"), JoinsOn: joins}, nil
 	case actLookup:
 		tables := toStringSlice(tc.Input["tables"])
 		if len(tables) == 0 {
@@ -388,4 +403,33 @@ func toInt(v interface{}) int {
 		return int(n)
 	}
 	return 0
+}
+
+// joinsFromToolInput reads the optional joins_on argument of a query_data tool
+// call. An absent or null argument is not an error — the declaration is
+// optional. A present one missing either half IS: half a declaration says
+// values were carried across without saying from where, which is no more
+// checkable than saying nothing and reads as though it were.
+func joinsFromToolInput(v interface{}) (*joinDeclaration, error) {
+	if v == nil {
+		return nil, nil
+	}
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("query_data %q must be an object with %q and %q", "joins_on", "source_step", "field")
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	str := func(k string) string {
+		if s, ok := obj[k].(string); ok {
+			return strings.TrimSpace(s)
+		}
+		return ""
+	}
+	step, field := str("source_step"), str("field")
+	if step == "" || field == "" {
+		return nil, fmt.Errorf("query_data %q requires both %q (the q<N> id of the earlier query) and %q (the column in that result the values came from); omit joins_on entirely if this query stands on its own", "joins_on", "source_step", "field")
+	}
+	return &joinDeclaration{SourceStep: step, Field: field}, nil
 }
