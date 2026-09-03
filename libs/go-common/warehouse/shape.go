@@ -24,3 +24,19 @@ func RequiresDataset(providerSlug string) bool {
 	}
 	return meta.EffectiveShape() != ShapeCube
 }
+
+// Known reports whether s names a shape this build understands.
+//
+// The zero value is deliberately NOT known: an absent shape means the source
+// never declared one, which callers resolve to ShapeEntities through their own
+// EffectiveShape — a different question from "is this spelling a shape at
+// all". Keeping the two apart is what lets a typo be rejected where it is
+// written, instead of resolving to a shape nothing matches and disabling a
+// feature with no error attached.
+func (s SourceShape) Known() bool {
+	switch s {
+	case ShapeEntities, ShapeCube:
+		return true
+	}
+	return false
+}

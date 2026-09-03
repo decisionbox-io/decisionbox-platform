@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // DomainPackSlugRegex is the canonical slug shape for a saved domain
@@ -26,6 +28,7 @@ var DomainPackSlugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 // Checks:
 //   - slug shape (DomainPackSlugRegex, min length 2)
 //   - name + at least one category, each with id + name
+//   - a declared source shape is one this build knows (absent is legal)
 //   - base prompts non-empty
 //   - required template placeholders: {{PROFILE}} in base_context;
 //     {{DATASET}}, {{SCHEMA_INFO}}, {{ANALYSIS_AREAS}} in exploration;
@@ -43,6 +46,14 @@ func ValidateDomainPack(pack *DomainPack) error {
 	}
 	if pack.Name == "" {
 		return fmt.Errorf("name is required")
+	}
+	// A declared shape must be one the build understands. An unrecognised
+	// spelling would otherwise persist happily and then match nothing wherever
+	// shape is compared, which reads as a feature quietly not working rather
+	// than as the typo it is. Absent stays legal — it means ShapeEntities.
+	if pack.Shape != "" && !pack.Shape.Known() {
+		return fmt.Errorf("shape %q is not a source shape (use %q or %q, or leave it unset for %q)",
+			pack.Shape, warehouse.ShapeEntities, warehouse.ShapeCube, warehouse.ShapeEntities)
 	}
 	if len(pack.Categories) == 0 {
 		return fmt.Errorf("at least one category is required")

@@ -25,6 +25,27 @@ A domain pack provides four things:
 | **Prompts** | How the AI reasons | Markdown content (stored in MongoDB) |
 | **Profile Schema** | What context users provide | JSON Schema (stored in MongoDB) |
 
+### Source shape
+
+A pack also records the **shape** of the data source it was written for, as
+`shape` on the pack document:
+
+| Value | Means |
+|---|---|
+| `entities` | Tables or objects — rows and columns, selected from and joined. Every SQL warehouse. |
+| `cube` | Metrics and dimensions — no tables to select from; a query names what to measure and how to break it down. |
+
+The field is optional and **absent means `entities`**: every pack written
+before shape was recorded targets a table-shaped source, so the whole existing
+corpus reads correctly unedited.
+
+It is not decoration. A pack's exploration prompt and analysis areas assume a
+source organised one way, so a pack is only a useful example for another pack
+of the same shape — using one written for the other shape yields something
+that reads correctly and asks for queries the source cannot answer. A shape
+that is neither of the two above is rejected when the pack is saved, rather
+than stored and silently matching nothing.
+
 ## Three-Level Hierarchy
 
 ```

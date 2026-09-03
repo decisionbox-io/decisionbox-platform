@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+)
 
 // DomainPack represents a domain-specific analysis pack stored in MongoDB.
 // Domain packs define the prompts, analysis areas, categories, and profile
@@ -14,6 +18,18 @@ type DomainPack struct {
 	Author      string `bson:"author,omitempty" json:"author,omitempty"`
 	SourceURL   string `bson:"source_url,omitempty" json:"source_url,omitempty"`
 	IsPublished bool   `bson:"is_published" json:"is_published"`
+
+	// Shape is the source shape this pack was written for. A pack is not
+	// shape-neutral: its exploration prompt and analysis areas assume a source
+	// organised one way, and teaching a generator from a pack written for the
+	// other shape produces something that reads right and asks for queries the
+	// source cannot answer.
+	//
+	// Absent means ShapeEntities, via EffectiveShape. Every pack written before
+	// this field existed targets a table-shaped source, and a pack for any other
+	// shape cannot be authored without saying so — the same direction the
+	// provider descriptor's own default takes, for the same reason.
+	Shape warehouse.SourceShape `bson:"shape,omitempty" json:"shape,omitempty"`
 
 	Categories    []PackCategory    `bson:"categories" json:"categories"`
 	Prompts       PackPrompts       `bson:"prompts" json:"prompts"`
@@ -34,6 +50,20 @@ type DomainPack struct {
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
 
+// EffectiveShape returns the source shape this pack was written for,
+// defaulting to ShapeEntities when the pack declares none.
+//
+// Read it rather than the field: a pack persisted before shape was recorded
+// carries no value, and treating that as "no shape" rather than "the shape
+// everything used to be" would exclude the entire existing corpus from any
+// decision that branches on it.
+func (p DomainPack) EffectiveShape() warehouse.SourceShape {
+	if p.Shape != "" {
+		return p.Shape
+	}
+	return warehouse.ShapeEntities
+}
+
 // PackCategory is a sub-type within a domain (e.g., "match3" within gaming).
 type PackCategory struct {
 	ID          string `bson:"id" json:"id"`
@@ -43,8 +73,8 @@ type PackCategory struct {
 
 // PackPrompts holds all prompt templates organized by base and category.
 type PackPrompts struct {
-	Base       BasePrompts                    `bson:"base" json:"base"`
-	Categories map[string]CategoryPrompts     `bson:"categories" json:"categories"`
+	Base       BasePrompts                `bson:"base" json:"base"`
+	Categories map[string]CategoryPrompts `bson:"categories" json:"categories"`
 }
 
 // BasePrompts contains the three required prompt templates.
@@ -61,8 +91,8 @@ type CategoryPrompts struct {
 
 // PackAnalysisAreas holds analysis areas organized by base and category.
 type PackAnalysisAreas struct {
-	Base       []PackAnalysisArea              `bson:"base" json:"base"`
-	Categories map[string][]PackAnalysisArea   `bson:"categories" json:"categories"`
+	Base       []PackAnalysisArea            `bson:"base" json:"base"`
+	Categories map[string][]PackAnalysisArea `bson:"categories" json:"categories"`
 }
 
 // PackAnalysisArea defines a single analysis area with its inline prompt.
