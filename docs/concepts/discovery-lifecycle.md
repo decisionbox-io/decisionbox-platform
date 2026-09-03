@@ -131,7 +131,7 @@ So on a run that can query a cube-shaped datasource, `--min-steps` does not gate
 Two properties are worth knowing when reading a run:
 
 - A run whose novelty cannot be measured — no vector index, or one that is failing — falls back to `--min-steps` rather than refusing every completion until the cap. A degraded index should not turn every run into a maximum-length one against a source metered per request.
-- Steps novelty could not be judged on (a `lookup_schema` with no query, the first step of a run) count as neither new nor repeated. Three unmeasurable steps are not three repetitions.
+- Steps novelty could not be *measured* on — no vector index, or one that is failing — count as neither new nor repeated. Three measurement failures are not three repetitions. A step with no earlier step to compare against is different: it cannot be repeating anything, so it counts as new ground. That distinction matters because neighbours are scoped per datasource, so a run's first query against each source has none routinely.
 - **Novelty is judged within one datasource.** The same question asked of a second source returns different data, so it is new ground rather than a repeat — and a multi-datasource run asks parallel questions across its sources deliberately. Steps are only scored against earlier steps that queried the same datasource.
 - **A query that failed is not evidence either.** It returned no data, so it says nothing about what the source has left to give, and re-asking a broken request is a model that is stuck rather than a run that is finished. Failed steps are also skipped when scoring later steps, so a retry is never counted as a repeat of the attempt it retries. A run whose queries all fail therefore falls back to `--min-steps` rather than exploring to the cap.
 
@@ -141,7 +141,7 @@ Whether a run takes this path is decided from the registered shape of its dataso
 - `query` — SQL query executed (with thinking, SQL, row count, timing)
 - `lookup_schema` — Agent fetched L1 detail (columns + sample rows) for one or more tables from the cache (no warehouse traffic)
 - `search_tables` — Agent ran a semantic search against the per-project Qdrant index for tables not surfaced by the catalog
-- `complete_rejected` — LLM signalled `done` too early — before `--min-steps`, or, on a cube-reaching run, while steps were still turning up new ground; rejected and exploration continued
+- `complete_rejected` — LLM signalled `done` too early — before `--min-steps`, or, on a cube-reaching run, while steps were still turning up new ground; rejected and exploration continued. The log line carries the engine's own reason, so it names the rule that actually refused rather than always pointing at the floor
 - `insight` — The AI identified a pattern (name, severity)
 - `analysis` — Analysis phase started for an area
 - `validation` — Insight validation result

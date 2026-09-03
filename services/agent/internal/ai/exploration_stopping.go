@@ -116,11 +116,14 @@ func (s *stopRule) measurable() bool {
 // observe records what the run learned from one executed step.
 //
 // repeated is whether the step said what an earlier step already said;
-// judgeable is false when novelty could not be established — no index, an
-// index that failed, a step with nothing to embed, or the first step of a
-// run, which has nothing to be similar to. An unjudgeable step is not
-// evidence either way and clears the streak rather than extending it: three
-// silent failures must not read as three repetitions.
+// judgeable is false only when novelty could not be MEASURED — no index, an
+// index that failed, or a query that failed and so returned nothing to judge.
+// An unjudgeable step is not evidence either way and clears the streak rather
+// than extending it: three silent failures must not read as three repetitions.
+//
+// A step with nothing to compare against is judged, not unjudgeable: it broke
+// new ground by definition. That distinction is load-bearing — neighbours are
+// scoped per datasource, so first queries have no neighbour routinely.
 func (s *stopRule) observe(repeated, judgeable bool) {
 	if !judgeable {
 		s.unjudged++
@@ -192,12 +195,14 @@ func noveltySubject(step models.ExplorationStep) bool {
 // repeatsEarlierWork asks the step index whether this step said what an
 // earlier step already said.
 //
-// The second return is whether the question could be answered at all. A run
-// with no index, an index that failed, a step with nothing worth embedding,
-// and the first step of a run all come back unjudgeable — and an unjudgeable
-// step is not evidence of exhaustion. Failing that way round matters: the
-// opposite default would let a broken vector store end every run after three
-// steps, silently, with a full set of insights that were never looked for.
+// The second return is whether the question could be answered at all, and only
+// a genuine failure to measure comes back false: no index, or an index that
+// errored. Failing that way round matters — the opposite default would let a
+// broken vector store end every run after three steps, silently, with a full
+// set of insights that were never looked for.
+//
+// A step with no NEIGHBOUR is a different thing and counts as new ground; see
+// the branch below.
 func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.ExplorationStep) (repeated, judgeable bool) {
 	if e.stepIndexer == nil {
 		return false, false
@@ -224,7 +229,17 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 		return false, false
 	}
 	if !found {
-		return false, false
+		// Nothing to compare against is an ANSWER, not a failure to answer:
+		// a step with no neighbour cannot be repeating anything, so it broke
+		// new ground by definition.
+		//
+		// It has to be counted that way, because it is ordinary. Neighbours
+		// are scoped to one datasource, so the first query against each
+		// source legitimately has none — and on a run across three sources,
+		// reading those as failures to measure would disarm the rule before
+		// it had judged a single step and hand a completion back to a floor
+		// that usually is not set.
+		return false, true
 	}
 	return score >= repeatSimilarityThreshold, true
 }

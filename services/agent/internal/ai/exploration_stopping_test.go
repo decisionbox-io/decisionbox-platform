@@ -200,9 +200,14 @@ func TestRepeatsEarlierWork_ThresholdAndFailureModes(t *testing.T) {
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{repeatSimilarityThreshold}, found: []bool{true}}},
 			repeated: true, judgeable: true,
 		},
-		"nothing indexed yet": {
+		"no neighbour to compare against": {
+			// Judged, not unjudgeable: a step with nothing like it cannot be
+			// repeating anything. Neighbours are scoped per datasource, so
+			// this is the ordinary case on a run's first query against each
+			// source — reading it as a measurement failure would disarm the
+			// rule before it judged anything.
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{0}, found: []bool{false}}},
-			repeated: false, judgeable: false,
+			repeated: false, judgeable: true,
 		},
 		"the index failed": {
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{err: errors.New("qdrant unreachable")}},
@@ -303,5 +308,23 @@ func TestStopRule_ARunOfFailingQueriesFallsBackToTheFloor(t *testing.T) {
 	feed(s, "???") // three attempted queries, none judgeable
 	if ok, reason := s.acceptDone(6); !ok || reason != "" {
 		t.Errorf("a run of failing queries was not handed back to the floor: (%v, %q)", ok, reason)
+	}
+}
+
+// TestStopRule_FirstQueriesAcrossDatasourcesDoNotDisarmTheRule is the defect
+// per-datasource scoping introduced. Neighbours are scoped to one source, so
+// the first query against each has none — and on a run across three sources,
+// counting those as failures to measure disarmed the rule before it had judged
+// a single step, handing the next completion to a floor that is usually zero.
+func TestStopRule_FirstQueriesAcrossDatasourcesDoNotDisarmTheRule(t *testing.T) {
+	s := &stopRule{byNovelty: true} // no floor, as the CLI default has none
+	// One first-query per datasource: each has no neighbour, so each is new.
+	feed(s, "nnn")
+	ok, reason := s.acceptDone(4)
+	if ok {
+		t.Fatalf("a run that had only ever broken new ground was allowed to stop (reason %q)", reason)
+	}
+	if reason != "productive" {
+		t.Errorf("refusal reason = %q, want the novelty rule to still own the decision", reason)
 	}
 }
