@@ -4,7 +4,7 @@ import { CSSProperties, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import {
-  ActionIcon, Alert, Badge, Button, Card, Group, Loader, Modal, NavLink, Stack, Switch,
+  ActionIcon, Alert, Badge, Button, Card, Divider, Group, Loader, Modal, NavLink, ScrollArea, Stack, Switch,
   Text, TextInput, Title, Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -141,38 +141,54 @@ export default function PromptsPage() {
         {/* Master–detail: sections + analysis areas on the left, the selected
             prompt's editor on the right — fills the remaining height. */}
         <Group align="stretch" gap="lg" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
-          {/* LEFT — master list */}
-          <Stack gap={2} style={{ width: 250, flexShrink: 0, overflowY: 'auto' }}>
-            <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb={4}>Discovery</Text>
-            <NavLink label="Base Context" active={activeTab === 'base_context'}
-              onClick={() => setActiveTab('base_context')} />
-            <NavLink label="Exploration" active={activeTab === 'exploration'}
-              onClick={() => setActiveTab('exploration')} />
-            <NavLink label="Recommendations" active={activeTab === 'recommendations'}
-              onClick={() => setActiveTab('recommendations')} />
+          {/* LEFT — master list, a distinct bordered sidebar. The Discovery
+              items + the "Analysis areas" header stay fixed; only the areas
+              scroll (ScrollArea shows a scrollbar so it's clearly scrollable). */}
+          <Card withBorder p={0} style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+            <Stack gap={2} p="xs" style={{ flexShrink: 0 }}>
+              <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb={2} px={6}>Discovery</Text>
+              <NavLink label="Base Context" active={activeTab === 'base_context'}
+                onClick={() => setActiveTab('base_context')} />
+              <NavLink label="Exploration" active={activeTab === 'exploration'}
+                onClick={() => setActiveTab('exploration')} />
+              <NavLink label="Recommendations" active={activeTab === 'recommendations'}
+                onClick={() => setActiveTab('recommendations')} />
+            </Stack>
 
-            <Group justify="space-between" align="center" mt="md" mb={4}>
-              <Text size="xs" fw={700} c="dimmed" tt="uppercase">Analysis areas</Text>
+            <Divider />
+
+            <Group justify="space-between" align="center" px="sm" py={8} style={{ flexShrink: 0 }}>
+              <Group gap={6}>
+                <Text size="xs" fw={700} c="dimmed" tt="uppercase">Analysis areas</Text>
+                <Badge size="xs" variant="light" color="gray">{areas.length}</Badge>
+              </Group>
               <Tooltip label="Add analysis area">
                 <ActionIcon size="sm" variant="subtle" onClick={() => setAddModalOpen(true)}>
                   <IconPlus size={14} />
                 </ActionIcon>
               </Tooltip>
             </Group>
-            {areas.map(([areaId, area]) => (
-              <NavLink key={areaId} label={area.name} active={activeTab === areaId}
-                onClick={() => setActiveTab(areaId)}
-                rightSection={
-                  <Group gap={4} wrap="nowrap">
-                    {!area.enabled && <Badge size="xs" color="gray">off</Badge>}
-                    {area.is_custom && <Badge size="xs" color="violet">custom</Badge>}
-                  </Group>
-                } />
-            ))}
-            {areas.length === 0 && (
-              <Text size="xs" c="dimmed" px="xs">No analysis areas yet.</Text>
-            )}
-          </Stack>
+
+            <Divider />
+
+            <ScrollArea style={{ flex: 1, minHeight: 0 }} type="auto">
+              <Stack gap={2} p="xs">
+                {areas.map(([areaId, area]) => (
+                  <NavLink key={areaId} label={area.name} active={activeTab === areaId}
+                    onClick={() => setActiveTab(areaId)}
+                    rightSection={
+                      <Group gap={4} wrap="nowrap">
+                        {!area.enabled && <Badge size="xs" color="gray">off</Badge>}
+                        {area.is_custom && <Badge size="xs" color="violet">custom</Badge>}
+                      </Group>
+                    } />
+                ))}
+                {areas.length === 0 && (
+                  <Text size="xs" c="dimmed" px="xs" py={4}>No analysis areas yet.</Text>
+                )}
+              </Stack>
+            </ScrollArea>
+          </Card>
 
           {/* RIGHT — detail for the selected item, fills width + height */}
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
