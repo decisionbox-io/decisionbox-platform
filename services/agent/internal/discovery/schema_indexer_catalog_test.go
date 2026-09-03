@@ -21,16 +21,18 @@ type stubCatalog struct {
 // retractingCache records catalog saves so a retraction can be observed.
 type retractingCache struct {
 	stubCache
-	saved     [][]string
-	savedOnce bool
+	saved           [][]string
+	savedDimensions [][]string
+	savedOnce       bool
 }
 
 func (c *retractingCache) FindCatalog(context.Context, string, string, string) ([]string, error) {
 	return nil, nil
 }
 
-func (c *retractingCache) SaveCatalog(_ context.Context, _, _, _ string, refs []string) error {
+func (c *retractingCache) SaveCatalog(_ context.Context, _, _, _ string, refs, dimensionRefs []string) error {
 	c.saved = append(c.saved, refs)
+	c.savedDimensions = append(c.savedDimensions, dimensionRefs)
 	c.savedOnce = true
 	return nil
 }
@@ -289,5 +291,101 @@ func TestBuildCatalogIndex_DoesNotRetractWhenTheCatalogCouldNotBeRead(t *testing
 	}
 	if cache.savedOnce {
 		t.Error("a failed read must not retract the previous catalog — it is not evidence the source changed")
+	}
+}
+
+// TestDimensionRefs pins the rule that decides whether a catalog item can be a
+// join key, which is a question the item's NAME cannot answer.
+func TestDimensionRefs(t *testing.T) {
+	dim := func(ref string) gowarehouse.CatalogItem {
+		return gowarehouse.CatalogItem{Ref: ref, Kind: gowarehouse.ItemKindDimension, Text: "d"}
+	}
+	metric := func(ref string) gowarehouse.CatalogItem {
+		return gowarehouse.CatalogItem{Ref: ref, Kind: gowarehouse.ItemKindMetric, Text: "m"}
+	}
+
+	t.Run("dimensions are kept and metrics are not", func(t *testing.T) {
+		catalog := []gowarehouse.CatalogItem{dim("country"), metric("sessions")}
+		got := dimensionRefs(catalog, catalog)
+		if len(got) != 1 || got[0] != "country" {
+			t.Errorf("dimensionRefs = %v, want [country]", got)
+		}
+	})
+
+	t.Run("a ref the source gives two kinds is left out either way round", func(t *testing.T) {
+		// The indexable subset is deduplicated by ref and keeps the FIRST item
+		// it saw, so reading kinds from it would let the source's own ordering
+		// decide whether customEvent:score can identify a record.
+		for _, order := range [][]gowarehouse.CatalogItem{
+			{dim("customEvent:score"), metric("customEvent:score")},
+			{metric("customEvent:score"), dim("customEvent:score")},
+		} {
+			indexed, _ := indexableCatalogItems(order)
+			if got := dimensionRefs(order, indexed); len(got) != 0 {
+				t.Errorf("dimensionRefs = %v for %s-first, want none: the source calls one name two things",
+					got, order[0].Kind)
+			}
+		}
+	})
+
+	t.Run("a dimension nothing can read is not offered as a key", func(t *testing.T) {
+		// An item the credential cannot query is dropped before indexing, and
+		// naming it here would offer a key no query could ever use.
+		blocked := dim("customUser:crm_id")
+		blocked.Unavailable = "the credential cannot read this custom definition"
+		catalog := []gowarehouse.CatalogItem{dim("country"), blocked}
+
+		indexed, _ := indexableCatalogItems(catalog)
+		got := dimensionRefs(catalog, indexed)
+		for _, ref := range got {
+			if ref == "customUser:crm_id" {
+				t.Errorf("dimensionRefs = %v, want the unqueryable dimension left out", got)
+			}
+		}
+	})
+
+	t.Run("the order follows what was indexed", func(t *testing.T) {
+		catalog := []gowarehouse.CatalogItem{dim("b"), metric("m"), dim("a")}
+		indexed, _ := indexableCatalogItems(catalog)
+		got := dimensionRefs(catalog, indexed)
+		if len(got) != 2 || got[0] != "b" || got[1] != "a" {
+			t.Errorf("dimensionRefs = %v, want [b a]", got)
+		}
+	})
+}
+
+// The index run must record the dimensions alongside the refs, or the cache
+// cannot answer the question they exist for. Tested at the save rather than
+// through buildCatalogIndex, whose success path needs a live vector store.
+func TestSaveCatalogCache_RecordsRefsAndDimensionsSeparately(t *testing.T) {
+	cache := &retractingCache{}
+	si := &SchemaIndexer{Cache: cache, WarehouseHash: "hash-a"}
+
+	catalog := []gowarehouse.CatalogItem{
+		{Ref: "country", Kind: gowarehouse.ItemKindDimension, Text: "the country"},
+		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric, Text: "the sessions"},
+	}
+	indexed, _ := indexableCatalogItems(catalog)
+	si.saveCatalogCache(context.Background(), "p1", catalog, indexed)
+
+	if len(cache.saved) != 1 || len(cache.saved[0]) != 2 {
+		t.Fatalf("saved refs = %v, want both items — retrieval still sees the whole catalog", cache.saved)
+	}
+	if len(cache.savedDimensions) != 1 || len(cache.savedDimensions[0]) != 1 ||
+		cache.savedDimensions[0][0] != "country" {
+		t.Errorf("saved dimensions = %v, want [country]", cache.savedDimensions)
+	}
+}
+
+func TestSaveCatalogCache_WithoutAHashSavesNothing(t *testing.T) {
+	// The hash is what makes an entry answer for one configuration. Writing
+	// without it would leave a row nothing can invalidate.
+	cache := &retractingCache{}
+	si := &SchemaIndexer{Cache: cache}
+
+	si.saveCatalogCache(context.Background(), "p1", nil, nil)
+
+	if cache.savedOnce {
+		t.Error("a catalog was cached with no config hash to key it by")
 	}
 }

@@ -185,12 +185,12 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 	// 1. Vector hits.
 	areaQuery := buildAreaQueryText(area)
 	applog.WithFields(applog.Fields{
-		"area":         area.ID,
+		"area":          area.ID,
 		"area_keywords": len(area.Keywords),
-		"top_k":        topK,
-		"min_score":    minScore,
+		"top_k":         topK,
+		"min_score":     minScore,
 		"budget_tokens": budgetTokens,
-		"total_steps":  len(allSteps),
+		"total_steps":   len(allSteps),
 	}).Debug("analysis_step_picker: starting pick for area")
 
 	hits, err := p.Search(ctx, areaQuery, RunStepIndexSearchOpts{TopK: topK, MinScore: 0}) // we'll filter ourselves so we can record dropped
@@ -345,13 +345,13 @@ func (p *AnalysisStepPicker) Pick(ctx context.Context, area AnalysisArea, allSte
 
 	finalSize := estimate(stepsFromPicked(pickedList))
 	applog.WithFields(applog.Fields{
-		"area":             area.ID,
-		"vector_hits":      len(hits),
-		"picked":           len(pickedList),
-		"dropped":          len(dropped),
+		"area":               area.ID,
+		"vector_hits":        len(hits),
+		"picked":             len(pickedList),
+		"dropped":            len(dropped),
 		"trimmed_for_budget": preTrimCount - len(pickedList),
-		"rendered_chars":   finalSize,
-		"rendered_tokens":  finalSize / charsPerToken,
+		"rendered_chars":     finalSize,
+		"rendered_tokens":    finalSize / charsPerToken,
 	}).Info("analysis_step_picker: pick result")
 	return &PickResult{
 		Picked:       pickedList,

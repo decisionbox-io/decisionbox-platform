@@ -391,7 +391,7 @@ func (si *SchemaIndexer) retractCatalog(ctx context.Context, projectID string) {
 		}
 	}
 	if cc, ok := si.Cache.(CatalogCache); ok && si.WarehouseHash != "" {
-		if err := cc.SaveCatalog(ctx, projectID, si.WarehouseID, si.WarehouseHash, nil); err != nil {
+		if err := cc.SaveCatalog(ctx, projectID, si.WarehouseID, si.WarehouseHash, nil, nil); err != nil {
 			applog.WithError(err).Warn("schema_indexer: could not retract this datasource's cached catalog; removed items may stay authorised until the next successful index")
 		}
 	}
@@ -426,6 +426,66 @@ func indexableCatalogItems(items []gowarehouse.CatalogItem) (kept []gowarehouse.
 		kept = append(kept, it)
 	}
 	return kept, len(items) - len(kept)
+}
+
+// saveCatalogCache records what this run indexed, so consumers can tell a live
+// catalog item from one left behind by a datasource that has since changed.
+//
+// Best-effort: a failure leaves a usable index that consumers treat as
+// unindexed until the next run, which is the safe direction. It takes the whole
+// catalog as well as the indexed subset because the dimensions are a judgement
+// over both — see dimensionRefs.
+func (si *SchemaIndexer) saveCatalogCache(ctx context.Context, projectID string, catalog, indexed []gowarehouse.CatalogItem) {
+	cc, ok := si.Cache.(CatalogCache)
+	if !ok || si.WarehouseHash == "" {
+		return
+	}
+	refs := make([]string, 0, len(indexed))
+	for _, it := range indexed {
+		refs = append(refs, it.Ref)
+	}
+	if err := cc.SaveCatalog(ctx, projectID, si.WarehouseID, si.WarehouseHash, refs, dimensionRefs(catalog, indexed)); err != nil {
+		applog.WithError(err).Warn("schema_indexer: catalog cache save failed; consumers will treat this datasource as unindexed until the next run")
+	}
+}
+
+// dimensionRefs is the subset of indexed refs that identify or group rows.
+//
+// It exists because a catalog's names do not say which kind an item is — a GA4
+// custom metric and a custom event-scoped dimension are both
+// customEvent:<name> — and anything asking "could this field bind two sources?"
+// must not answer yes about a measure.
+//
+// Derived from the WHOLE catalog rather than from the indexable subset, which
+// is deduplicated by ref and keeps the first item it saw: a source that listed
+// a metric before a dimension of the same name would otherwise decide this by
+// its own ordering. A ref the source gives more than one kind is left out
+// entirely — it is calling one name two things, and neither answer is safe to
+// hand to something deciding whether a field identifies a record.
+//
+// Intersected with what was indexed, in that order, so the result is stable and
+// never names an item nothing can read: a dimension the credential cannot query
+// is dropped upstream and must not reappear here.
+func dimensionRefs(catalog, indexed []gowarehouse.CatalogItem) []string {
+	kinds := make(map[string]map[string]bool, len(catalog))
+	for _, it := range catalog {
+		if it.Ref == "" {
+			continue
+		}
+		if kinds[it.Ref] == nil {
+			kinds[it.Ref] = map[string]bool{}
+		}
+		kinds[it.Ref][it.Kind] = true
+	}
+
+	out := make([]string, 0, len(indexed))
+	for _, it := range indexed {
+		k := kinds[it.Ref]
+		if len(k) == 1 && k[gowarehouse.ItemKindDimension] {
+			out = append(out, it.Ref)
+		}
+	}
+	return out
 }
 
 // buildCatalogIndex is BuildIndex for a source that describes itself with a
@@ -552,15 +612,7 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 	// Best-effort, and deliberately after the upsert: a failure here leaves a
 	// usable index that consumers will treat as unindexed until the next run,
 	// which is the safe direction. Losing the points would not be.
-	if cc, ok := si.Cache.(CatalogCache); ok && si.WarehouseHash != "" {
-		refs := make([]string, 0, len(indexable))
-		for _, it := range indexable {
-			refs = append(refs, it.Ref)
-		}
-		if err := cc.SaveCatalog(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash, refs); err != nil {
-			applog.WithError(err).Warn("schema_indexer: catalog cache save failed; consumers will treat this datasource as unindexed until the next run")
-		}
-	}
+	si.saveCatalogCache(ctx, opts.ProjectID, items, indexable)
 
 	// Close out progress. The catalog path has no per-item leg to report
 	// against — one metadata read, one embedding batch, one upsert — so the

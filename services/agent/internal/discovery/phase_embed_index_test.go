@@ -32,16 +32,16 @@ func (m *mockEmbeddingProvider) Embed(_ context.Context, texts []string) ([][]fl
 	return result, nil
 }
 
-func (m *mockEmbeddingProvider) Dimensions() int        { return m.dims }
-func (m *mockEmbeddingProvider) ModelName() string       { return m.model }
+func (m *mockEmbeddingProvider) Dimensions() int                  { return m.dims }
+func (m *mockEmbeddingProvider) ModelName() string                { return m.model }
 func (m *mockEmbeddingProvider) Validate(_ context.Context) error { return nil }
 
 // mockVectorStore implements vectorstore.Provider for testing.
 type mockVectorStore struct {
-	upserted  []vectorstore.Point
-	dupes     []vectorstore.SearchResult
-	ensured   bool
-	deleted   []string
+	upserted []vectorstore.Point
+	dupes    []vectorstore.SearchResult
+	ensured  bool
+	deleted  []string
 }
 
 func (m *mockVectorStore) Upsert(_ context.Context, points []vectorstore.Point) error {
@@ -87,14 +87,14 @@ func TestDenormalizeInsights(t *testing.T) {
 		Category:  "match3",
 		Insights: []models.Insight{
 			{
-				ID:           "orig-1",
-				AnalysisArea: "churn",
-				Name:         "High churn at Level 45",
-				Description:  "Players leaving",
-				Severity:     "high",
+				ID:            "orig-1",
+				AnalysisArea:  "churn",
+				Name:          "High churn at Level 45",
+				Description:   "Players leaving",
+				Severity:      "high",
 				AffectedCount: 12450,
-				Confidence:   0.85,
-				DiscoveredAt: time.Now(),
+				Confidence:    0.85,
+				DiscoveredAt:  time.Now(),
 			},
 			{
 				ID:           "orig-2",
@@ -413,8 +413,8 @@ func TestRunPhaseEmbedIndex_DenormalizeOnly(t *testing.T) {
 	store := &mockEmbedIndexStore{}
 	// No embeddingProvider or vectorStore — should denormalize only
 	o := &Orchestrator{
-		embedIndexStore:   store,
-		statusReporter:    &StatusReporter{},
+		embedIndexStore: store,
+		statusReporter:  &StatusReporter{},
 	}
 
 	result := &models.DiscoveryResult{

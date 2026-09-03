@@ -224,14 +224,14 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 		return fmt.Errorf("run_step_index: upsert step %d: %w", step.Step, err)
 	}
 	applog.WithFields(applog.Fields{
-		"run_id":           r.runID,
-		"step":             step.Step,
-		"row_count":        step.RowCount,
-		"has_error":        step.Error != "",
-		"text_chars":       len(text),
-		"embed_dims":       len(vec),
-		"embed_ms":         upsertStart.Sub(embedStart).Milliseconds(),
-		"upsert_ms":        time.Since(upsertStart).Milliseconds(),
+		"run_id":     r.runID,
+		"step":       step.Step,
+		"row_count":  step.RowCount,
+		"has_error":  step.Error != "",
+		"text_chars": len(text),
+		"embed_dims": len(vec),
+		"embed_ms":   upsertStart.Sub(embedStart).Milliseconds(),
+		"upsert_ms":  time.Since(upsertStart).Milliseconds(),
 	}).Debug("run_step_index: step indexed")
 	return nil
 }
@@ -308,15 +308,15 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		bottomScore = hits[len(hits)-1].Score
 	}
 	applog.WithFields(applog.Fields{
-		"run_id":      r.runID,
-		"query":       truncateForLog(q, 80),
-		"top_k":       opts.TopK,
-		"min_score":   opts.MinScore,
-		"hits":        len(hits),
-		"top_score":   topScore,
+		"run_id":       r.runID,
+		"query":        truncateForLog(q, 80),
+		"top_k":        opts.TopK,
+		"min_score":    opts.MinScore,
+		"hits":         len(hits),
+		"top_score":    topScore,
 		"bottom_score": bottomScore,
-		"embed_ms":    queryStart.Sub(embedStart).Milliseconds(),
-		"query_ms":    time.Since(queryStart).Milliseconds(),
+		"embed_ms":     queryStart.Sub(embedStart).Milliseconds(),
+		"query_ms":     time.Since(queryStart).Milliseconds(),
 	}).Debug("run_step_index: search completed")
 	return hits, nil
 }
@@ -532,4 +532,3 @@ func truncateForLog(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
-

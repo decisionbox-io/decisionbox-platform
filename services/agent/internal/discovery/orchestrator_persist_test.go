@@ -25,14 +25,14 @@ type fakeDiscoveryLogPersister struct {
 	gotDiscoveryID []string
 	gotRunIDs      []string
 
-	gotExploration  []models.ExplorationStep
-	gotAnalysis     []models.AnalysisStep
-	gotValidation   []models.ValidationResult
-	gotRecommend    *models.RecommendationStep
+	gotExploration []models.ExplorationStep
+	gotAnalysis    []models.AnalysisStep
+	gotValidation  []models.ValidationResult
+	gotRecommend   *models.RecommendationStep
 
-	saveExplorationErr   error
-	saveAnalysisErr      error
-	saveValidationErr    error
+	saveExplorationErr    error
+	saveAnalysisErr       error
+	saveValidationErr     error
 	saveRecommendationErr error
 }
 

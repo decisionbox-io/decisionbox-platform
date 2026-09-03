@@ -576,10 +576,10 @@ func TestBuildPreviousContext_NotesRelevanceFilter(t *testing.T) {
 
 func TestInferColumnCategory(t *testing.T) {
 	tests := []struct {
-		name     string
-		colName  string
-		colType  string
-		wantCat  string
+		name    string
+		colName string
+		colType string
+		wantCat string
 	}{
 		{"user_id is primary_key", "user_id", "STRING", "primary_key"},
 		{"player_id is primary_key", "player_id", "STRING", "primary_key"},
@@ -617,11 +617,11 @@ func TestInferColumnCategory(t *testing.T) {
 
 func TestCategorizeColumn(t *testing.T) {
 	tests := []struct {
-		name     string
-		col      models.ColumnInfo
-		wantKey  bool
-		wantMet  bool
-		wantDim  bool
+		name    string
+		col     models.ColumnInfo
+		wantKey bool
+		wantMet bool
+		wantDim bool
 	}{
 		{
 			name:    "primary key",

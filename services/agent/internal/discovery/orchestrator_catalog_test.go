@@ -24,7 +24,7 @@ func (c *catalogStubCache) FindCatalog(context.Context, string, string, string) 
 	return c.refs, nil
 }
 
-func (c *catalogStubCache) SaveCatalog(context.Context, string, string, string, []string) error {
+func (c *catalogStubCache) SaveCatalog(context.Context, string, string, string, []string, []string) error {
 	return nil
 }
 
