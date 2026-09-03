@@ -17,7 +17,7 @@ import Shell from '@/components/layout/AppShell';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import {
-  api, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
+  api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY,
 } from '@/lib/api';
 
@@ -26,6 +26,34 @@ import {
 // NEXT_PUBLIC_HIDE_COST_ESTIMATE=1; self-hosted leaves it unset and keeps the
 // dollar estimate.
 const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
+
+// pollQuestionsNudge polls for clarifying questions after a run completes and
+// toasts once when some appear. Question generation runs after the status flip
+// (bounded by DISCOVERY_QUESTIONS_TIMEOUT), so a single immediate check usually
+// races ahead of the insert; poll across the window and stop on the first hit.
+async function pollQuestionsNudge(projectId: string) {
+  const MAX_ATTEMPTS = 20;
+  const DELAY_MS = 10000;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    try {
+      const qs = await api.listProjectQuestions(projectId, { status: 'pending' });
+      const n = qs?.length || 0;
+      if (n > 0) {
+        notifications.show({
+          title: `${n} question${n > 1 ? 's' : ''} await you`,
+          message: 'Answer them to sharpen the next discovery run.',
+          color: 'blue',
+        });
+        return;
+      }
+    } catch (e) {
+      // Community builds have no questions endpoint — a 404 is permanent, so
+      // stop rather than retrying for the whole window.
+      if (e instanceof ApiError && e.status === 404) return;
+    }
+    await new Promise((r) => setTimeout(r, DELAY_MS));
+  }
+}
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
@@ -87,6 +115,12 @@ export default function ProjectPage() {
         setRun(newRun);
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
+          // Nudge the analyst if the run left clarifying questions to answer.
+          // Generation is a best-effort step that runs AFTER completion (bounded
+          // by DISCOVERY_QUESTIONS_TIMEOUT), so poll for a while rather than
+          // firing one immediate query that would usually race ahead of the
+          // insert and silently show nothing.
+          if (newRun.status === 'completed') void pollQuestionsNudge(id);
         }
       }
     } catch { /* ignore */ }

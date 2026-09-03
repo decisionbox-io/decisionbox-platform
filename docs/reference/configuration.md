@@ -67,6 +67,21 @@ The LLM-native verifier + refuter run in Phase 4.5 (insights) and Phase 5.5 (rec
 | `VALIDATION_NUMERIC_TOLERANCE` | `0.20` | Relative tolerance (±20% by default) for comparing a claim's quantitative figure against row evidence. Prevents rounding-noise rejections — e.g. a "27% spike" claim with evidence of 26.5% stays `supported`. Only applies to magnitude/figure components; ranking and superlative claims are exact-match. |
 | `VALIDATION_MIN_SAMPLE_SIZE` | `30` | Minimum row population the refuter must observe before using a row as counter-evidence for a market-wide superlative claim. Below this, a contradicting outlier is dismissed (apples-to-apples — small-sample contradictions don't disprove the headline). |
 
+### Discovery Clarifying Questions
+
+After a discovery run, when the agent was genuinely uncertain about something a business analyst could resolve (an opaque code, an ambiguous column, a finding the verifier couldn't confirm), it can generate a short list of grounded clarifying questions.
+This runs as a separate, best-effort hop *after* the run is finalized, with its own token and timeout budget, so it never affects the run's exploration step count or completion timing.
+Generation is off by default and, where it is enabled, respects a per-project **Clarifying questions** toggle (Settings → Advanced, on by default).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCOVERY_QUESTIONS_ENABLED` | `false` | Master switch for question generation. Off by default. The agent runs as a separate container, so this is forwarded from the API process to spawned agent containers automatically. |
+| `DISCOVERY_QUESTIONS_MAX` | `5` | Hard cap on the number of questions generated per run (after dedup against already-asked / already-answered questions). |
+| `DISCOVERY_QUESTIONS_MAX_OUTPUT` | `2000` | Output-token budget for the single generation call, budgeted against the model's context window like the analysis/recommendation phases. |
+| `DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT` | `50` | An insight/recommendation with confidence below this percentage is treated as "uncertain" and eligible to raise a question. |
+| `DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES` | `1` | How many times to re-prompt if the model's response can't be parsed as the questions envelope. |
+| `DISCOVERY_QUESTIONS_TIMEOUT` | `3m` | Dedicated wall-clock budget for the questions hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
+
 ### Batch SQL Validation
 
 The `--mode=validate-sql` run mode compile-checks a batch of SQL statements against a project's warehouse via the warehouse's native compile-only path (see the [CLI reference](cli.md)).

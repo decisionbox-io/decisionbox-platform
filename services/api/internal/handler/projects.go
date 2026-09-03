@@ -598,6 +598,12 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.ValidationEnabled = incoming.ValidationEnabled
 	}
 
+	// ClarifyingQuestionsEnabled: same nil-means-untouched pointer semantics
+	// (including false — the whole point of the opt-out toggle).
+	if incoming.ClarifyingQuestionsEnabled != nil {
+		existing.ClarifyingQuestionsEnabled = incoming.ClarifyingQuestionsEnabled
+	}
+
 	// SmartOverflowEnabled: same nil-means-untouched pointer semantics.
 	if incoming.SmartOverflowEnabled != nil {
 		existing.SmartOverflowEnabled = incoming.SmartOverflowEnabled

@@ -71,6 +71,13 @@ type Project struct {
 	// reads the same field via EffectiveValidationEnabled at click time.
 	ValidationEnabled *bool `bson:"validation_enabled,omitempty" json:"validation_enabled,omitempty"`
 
+	// ClarifyingQuestionsEnabled is the per-project toggle for the discovery
+	// clarifying-questions loop. Nil pointer means "use the deployment default"
+	// — see EffectiveClarifyingQuestionsEnabled (default-on; users opt out in
+	// Settings). When false, the orchestrator skips question generation. The
+	// api's models.Project holds the matching field — keep the two in sync.
+	ClarifyingQuestionsEnabled *bool `bson:"clarifying_questions_enabled,omitempty" json:"clarifying_questions_enabled,omitempty"`
+
 	// SmartOverflowEnabled is the per-project toggle for the analysis picker's
 	// smart budget-overflow handling (dedup + "also examined" breadcrumb +
 	// tighter re-compaction of survivors, instead of plainly dropping the
@@ -233,6 +240,17 @@ func (p *Project) EffectiveValidationEnabled() bool {
 		return true
 	}
 	return *p.ValidationEnabled
+}
+
+// EffectiveClarifyingQuestionsEnabled resolves the per-project clarifying-
+// questions toggle. Returns true when unset (default-on for legacy projects and
+// any project the user has not explicitly opted out of); returns the stored
+// value when set. The api's models.Project holds the matching helper.
+func (p *Project) EffectiveClarifyingQuestionsEnabled() bool {
+	if p.ClarifyingQuestionsEnabled == nil {
+		return true
+	}
+	return *p.ClarifyingQuestionsEnabled
 }
 
 // EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.
