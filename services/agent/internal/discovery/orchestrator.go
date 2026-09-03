@@ -2192,6 +2192,15 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("\n")
 	}
 
+	// Recurring / trending patterns — read back from HistoricalPatterns (written
+	// every run by UpdatePatterns) so the next run narrates how a known finding is
+	// evolving instead of re-reporting it cold. Recurring = seen in more than one
+	// run; the ledger's finding statuses supersede this going forward, but the
+	// pattern history remains a cheap, always-available trend signal.
+	if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
+		sb.WriteString(trend)
+	}
+
 	// Agent observations are auto-learnings the orchestrator records during
 	// discovery (separate from user-authored knowledge sources, which render
 	// under "## Project Knowledge").
@@ -2207,6 +2216,53 @@ func (o *Orchestrator) buildPreviousContext(
 		}
 	}
 
+	return sb.String()
+}
+
+// maxHistoricalPatternsInPrompt caps how many recurring/worsening patterns the
+// trend block renders. A long-lived project accumulates up to 200 patterns
+// (UpdatePatterns trims to that); rendering all would bloat the prompt, so we
+// show the most-recently-seen recurring ones.
+const maxHistoricalPatternsInPrompt = 10
+
+// renderHistoricalPatterns builds the "Recurring / trending findings" block from
+// the project's pattern history. Only patterns seen in more than one run (or
+// explicitly flagged worsening/improving) are worth narrating as a trend — a
+// pattern seen once is just a prior insight, already covered above. Returns an
+// empty string when there is nothing to narrate.
+func renderHistoricalPatterns(patterns []models.HistoricalPattern) string {
+	trending := make([]models.HistoricalPattern, 0, len(patterns))
+	for _, p := range patterns {
+		if p.SeenCount > 1 || p.Status == "worsening" || p.Status == "improving" {
+			trending = append(trending, p)
+		}
+	}
+	if len(trending) == 0 {
+		return ""
+	}
+	// Most-recently-seen first, so the cap keeps the freshest trends.
+	sort.SliceStable(trending, func(i, j int) bool {
+		return trending[i].LastSeen.After(trending[j].LastSeen)
+	})
+	if len(trending) > maxHistoricalPatternsInPrompt {
+		trending = trending[:maxHistoricalPatternsInPrompt]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("### Recurring / trending findings\n")
+	sb.WriteString("These patterns have recurred across runs. Check whether each has changed since last time and narrate the trend (worsened / improved / stable) rather than re-reporting it as new.\n\n")
+	for _, p := range trending {
+		label := p.Name
+		if p.AnalysisArea != "" {
+			label = fmt.Sprintf("%s [%s]", p.Name, p.AnalysisArea)
+		}
+		status := p.Status
+		if status == "" {
+			status = "recurring"
+		}
+		fmt.Fprintf(&sb, "- **%s** — seen in %d runs, status: %s\n", label, p.SeenCount, status)
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }
 
