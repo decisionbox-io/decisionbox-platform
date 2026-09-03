@@ -215,6 +215,10 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 		"purpose":   step.QueryPurpose,
 		"row_count": int64(step.RowCount),
 		"has_error": step.Error != "",
+		// Which datasource the step queried. Novelty is only meaningful
+		// within one: the same question asked of a second source returns
+		// different data, so it is new ground rather than a repeat.
+		"warehouse_id": step.WarehouseID,
 	})
 	if err != nil {
 		return fmt.Errorf("run_step_index: payload encode for step %d: %w", step.Step, err)
@@ -249,6 +253,14 @@ func (r *runStepIndex) Upsert(ctx context.Context, step models.ExplorationStep) 
 
 // Search embeds the area query and returns matching hits.
 func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+	return r.search(ctx, areaQuery, opts, nil)
+}
+
+// search is Search with an optional Qdrant payload filter. Nearest needs one:
+// the points it must not compare against are better excluded by the server
+// than fetched and dropped here, because there is no bound on how many of
+// them sit closer than the neighbour it is looking for.
+func (r *runStepIndex) search(ctx context.Context, areaQuery string, opts RunStepIndexSearchOpts, filter *pb.Filter) ([]RunStepIndexHit, error) {
 	q := strings.TrimSpace(areaQuery)
 	if q == "" {
 		return nil, errors.New("run_step_index: areaQuery is empty")
@@ -273,6 +285,7 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		Query:          pb.NewQueryDense(float64sToFloat32sLocal(vec)),
 		Limit:          &limit,
 		WithPayload:    pb.NewWithPayload(true),
+		Filter:         filter,
 	}
 	if opts.MinScore > 0 {
 		threshold := float32(opts.MinScore)
@@ -332,18 +345,50 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 	return hits, nil
 }
 
-// nearestCandidates is how many hits Nearest asks for before giving up on
-// finding one worth comparing against. The step itself and any errored step
-// are skipped, and an early run can hold several of the latter.
-const nearestCandidates = 8
+// nearestCandidates is how many hits Nearest asks for. Everything it must not
+// compare against is excluded by the server, so the only hit it can still have
+// to skip is the step itself — two is therefore always enough to come back
+// with the nearest eligible neighbour if one exists.
+//
+// Client-side skipping cannot replace the filter: there is no bound on how
+// many failed attempts or other-datasource steps might sit closer than the
+// neighbour being looked for, so any fixed number of candidates could be
+// filled entirely with them and report "nothing to compare against" while
+// earlier work sits in the index.
+const nearestCandidates = 2
+
+// nearestFilter restricts the neighbours a step may be judged against.
+//
+// Failed steps are out: one returned no data, so asking something like it is
+// not asking a question this run has answered — it is asking one it failed to.
+//
+// Other datasources are out: the same question asked of a second source
+// returns different data, which is new ground and not a repeat. On a
+// multi-warehouse run the model deliberately asks parallel questions across
+// sources, so without this a run doing exactly what it should would read as
+// repeating itself.
+//
+// A step with no datasource recorded is compared only against others with
+// none. That case is unreachable for a judged step — the engine stamps the id
+// on every executed query — but the strict direction is the safe one: a
+// missing neighbour costs a longer run, which MaxSteps bounds, while a
+// spurious one ends a run early and silently.
+func nearestFilter(step models.ExplorationStep) *pb.Filter {
+	must := []*pb.Condition{pb.NewMatchBool("has_error", false)}
+	if step.WarehouseID == "" {
+		must = append(must, pb.NewIsEmpty("warehouse_id"))
+	} else {
+		must = append(must, pb.NewMatchKeyword("warehouse_id", step.WarehouseID))
+	}
+	return &pb.Filter{Must: must}
+}
 
 // Nearest scores a step against the ones already indexed for this run.
 //
-// It reuses Search rather than the raw client so both paths share one
-// embed-and-query implementation, and asks for several hits rather than one so
-// the two kinds it must skip — the step itself, and steps that errored — do
-// not leave it reporting "nothing to compare against" while earlier work sits
-// in the index.
+// It shares one embed-and-query implementation with Search, and narrows the
+// candidates with a server-side filter rather than by over-fetching and
+// discarding: see nearestFilter for which neighbours are ineligible and why
+// dropping them here instead would be unsound.
 //
 // A step with no embeddable text (an action carrying neither a purpose nor a
 // query) is unjudgeable rather than novel: it says nothing, so it is not
@@ -357,23 +402,19 @@ func (r *runStepIndex) Nearest(ctx context.Context, step models.ExplorationStep)
 	// an early run can hold several failed steps, and skipping them all
 	// would otherwise report "nothing to compare against" while there is
 	// plenty.
-	hits, err := r.Search(ctx, text, RunStepIndexSearchOpts{TopK: nearestCandidates})
+	hits, err := r.search(ctx, text, RunStepIndexSearchOpts{TopK: nearestCandidates}, nearestFilter(step))
 	if err != nil {
 		return 0, false, err
 	}
 	for _, h := range hits {
+		// Insurance against a caller that indexes before judging: a step is
+		// its own perfect match, and every run would read as repetitive.
 		if h.Step == step.Step {
 			continue
 		}
-		// A step that errored returned no data, so asking something like it
-		// is not asking a question this run has answered — it is asking one
-		// it failed to. Counting it as an answer would report a run as
-		// covered on the strength of queries that never ran.
-		if h.HasError {
-			continue
-		}
-		// Search returns hits sorted by score descending, so the first
-		// eligible hit is the nearest step worth comparing against.
+		// Hits come back sorted by score descending and the filter has
+		// already removed everything ineligible, so this is the nearest step
+		// worth comparing against.
 		return h.Score, true, nil
 	}
 	return 0, false, nil
