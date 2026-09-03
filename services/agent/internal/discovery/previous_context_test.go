@@ -1,10 +1,13 @@
 package discovery
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -62,4 +65,89 @@ func TestRenderHistoricalPatterns(t *testing.T) {
 			t.Errorf("oldest pattern should be dropped by the cap:\n%s", out)
 		}
 	})
+}
+
+// --- ledger read path ---
+
+func TestBuildPreviousContext_WithLedger(t *testing.T) {
+	o := &Orchestrator{}
+	pctx := &models.ProjectContext{TotalDiscoveries: 2, LastDiscoveryDate: time.Now()}
+	lrc := &ledgerReadContext{
+		hasLedger: true,
+		coverage:  commonmodels.LedgerCoverage{ExploredTables: []string{"ds.orders"}, TotalTables: 5, Summary: "orders covered; events untouched"},
+		findings: []commonmodels.LedgerFinding{
+			{Area: "churn", Name: "High EU churn", Severity: "high", Status: "confirmed", KeyMetric: "affected=300", Description: "churn elevated", SeenCount: 3},
+		},
+		tasks: []commonmodels.LedgerTask{{Text: "explore the events tables"}},
+	}
+	out := o.buildPreviousContext(pctx, nil, nil, nil, lrc)
+
+	for _, want := range []string{
+		"Investigation so far",
+		"Coverage map",
+		"events untouched",
+		"Key findings so far",
+		"High EU churn",
+		"affected=300",
+		"seen 3×",
+		"Open investigation threads",
+		"explore the events tables",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ledger context missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Previously Found Insights") {
+		t.Errorf("ledger present must suppress the legacy insight dump:\n%s", out)
+	}
+}
+
+func TestLoadLedgerReadContext_RanksAndExcludesResolved(t *testing.T) {
+	agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeAuto})
+	t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
+
+	now := time.Now()
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "crit", Area: "fraud", Name: "Card testing", Severity: "critical", Status: "confirmed", LastSeen: now},
+		{ID: "low", Area: "misc", Name: "Minor blip", Severity: "low", Status: "confirmed", LastSeen: now},
+		{ID: "done", Area: "old", Name: "Fixed thing", Severity: "critical", Status: commonmodels.LedgerFindingStatusResolved, LastSeen: now},
+	}}
+	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
+	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
+
+	lrc := o.loadLedgerReadContext(context.Background())
+	if lrc == nil || !lrc.hasLedger {
+		t.Fatal("expected a ledger read context")
+	}
+	if len(lrc.findings) != 2 {
+		t.Fatalf("resolved finding should be excluded, got %d findings", len(lrc.findings))
+	}
+	if lrc.findings[0].ID != "crit" {
+		t.Errorf("critical finding should rank first, got %q", lrc.findings[0].ID)
+	}
+	if len(lrc.tasks) != 1 {
+		t.Errorf("auto mode should surface open tasks, got %d", len(lrc.tasks))
+	}
+}
+
+func TestLoadLedgerReadContext_OffModeSuppressesTasks(t *testing.T) {
+	agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff})
+	t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
+
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "a", Area: "x", Name: "finding", Severity: "high", Status: "confirmed", LastSeen: time.Now()},
+	}}
+	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
+	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
+
+	lrc := o.loadLedgerReadContext(context.Background())
+	if lrc == nil {
+		t.Fatal("expected a ledger read context (findings present)")
+	}
+	if len(lrc.tasks) != 0 {
+		t.Errorf("off mode must suppress the next-task queue, got %d", len(lrc.tasks))
+	}
+	if len(lrc.findings) != 1 {
+		t.Errorf("findings are unconditional, got %d", len(lrc.findings))
+	}
 }

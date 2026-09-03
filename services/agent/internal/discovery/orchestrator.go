@@ -693,11 +693,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"feedback_items": len(feedbackSummaries),
 	}).Info("Previous context loaded")
 
-	// Previous discovery insights, recommendations, and user feedback are
-	// merged into a reusable context block that gets injected into later
-	// exploration and analysis prompts. This helps the LLM avoid repeating
-	// already-known findings and keeps future discoveries context-aware.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries)
+	// Discovery Ledger read context (compounding discovery): the accumulated,
+	// RANKED findings-with-substance, the coverage map, and the open next-task
+	// queue. Empty for legacy projects / community builds, in which case
+	// buildPreviousContext falls back to the older capped insight dump.
+	lrc := o.loadLedgerReadContext(ctx)
+
+	// Previous discovery insights, recommendations, user feedback, and the
+	// Discovery Ledger are merged into a reusable context block injected into the
+	// exploration and analysis prompts, so the run continues the investigation
+	// (drill / tile the frontier / re-check) instead of re-treading it.
+	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc)
 
 	// Phase 2: Load schemas from the per-project schema cache.
 	// (Discovery is gated on schema_index_status == "ready"; the indexer
@@ -2180,20 +2186,39 @@ func (o *Orchestrator) buildPreviousContext(
 	prevInsights []models.InsightSummary,
 	prevRecs []models.RecommendationSummary,
 	feedback []models.FeedbackSummary,
+	lrc *ledgerReadContext,
 ) string {
-	if pctx == nil || pctx.TotalDiscoveries == 0 {
+	hasLedger := lrc != nil && lrc.hasLedger
+	discoveries := 0
+	if pctx != nil {
+		discoveries = pctx.TotalDiscoveries
+	}
+	if discoveries == 0 && !hasLedger {
 		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString("## Previous Discovery Context\n\n")
-	fmt.Fprintf(&sb, "This is discovery run #%d. ", pctx.TotalDiscoveries+1)
-	fmt.Fprintf(&sb, "Last discovery: %s.\n\n", pctx.LastDiscoveryDate.Format("2006-01-02"))
+	sb.WriteString("## Investigation so far\n\n")
+	sb.WriteString("You are CONTINUING a standing investigation of this warehouse, not starting from scratch. Build on what earlier runs established: drill into open threads, tile territory that has not been explored yet, and check whether known findings have changed. Do not simply re-report what is already known.\n\n")
+	if pctx != nil && discoveries > 0 {
+		fmt.Fprintf(&sb, "This is discovery run #%d. Last discovery: %s.\n\n", discoveries+1, pctx.LastDiscoveryDate.Format("2006-01-02"))
+	}
 
-	// Previous insights
-	if len(prevInsights) > 0 {
+	// Coverage map (from the ledger): explored territory vs. the frontier.
+	if hasLedger {
+		if s := renderCoverage(lrc.coverage); s != "" {
+			sb.WriteString(s)
+		}
+	}
+
+	// Findings so far — ranked, WITH substance (from the ledger). Replaces the
+	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
+	// fall back to that older block.
+	if hasLedger && len(lrc.findings) > 0 {
+		sb.WriteString(renderLedgerFindings(lrc.findings))
+	} else if len(prevInsights) > 0 {
 		sb.WriteString("### Previously Found Insights\n")
-		sb.WriteString("These insights were already discovered. Do NOT repeat them unless the data has significantly changed. Focus on new patterns.\n\n")
+		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
 		for _, ins := range prevInsights {
 			fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
 				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
@@ -2242,6 +2267,13 @@ func (o *Orchestrator) buildPreviousContext(
 			fmt.Fprintf(&sb, "- P%d: %s (%s)\n", rec.Priority, rec.Title, rec.Category)
 		}
 		sb.WriteString("\n")
+	}
+
+	// Open investigation threads (the ledger's next-task queue) — concrete things
+	// earlier runs flagged to pursue. Steers this run toward the frontier /
+	// unfinished work instead of re-treading covered ground.
+	if hasLedger && len(lrc.tasks) > 0 {
+		sb.WriteString(renderLedgerTasks(lrc.tasks))
 	}
 
 	// Recurring / trending patterns — read back from HistoricalPatterns (written
