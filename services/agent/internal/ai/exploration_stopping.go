@@ -53,7 +53,26 @@ const (
 	// the answer comes from. Three consecutive means the model has stopped
 	// finding new ground rather than paused on one, and it costs at most two
 	// extra steps to establish.
+	//
+	// It is also the least evidence the rule will conclude anything from: a
+	// streak of three cannot exist before three steps have been judged, so a
+	// completion signalled earlier than that is refused for want of evidence
+	// rather than accepted for want of a floor.
 	repeatsBeforeDone = 3
+
+	// unjudgedStepsBeforeFallback is how many steps the rule will fail to
+	// assess before deciding it cannot assess anything, and handing the
+	// decision back to the step floor.
+	//
+	// Novelty is unmeasurable for real reasons that are not failures — an
+	// empty index on the first step, an action carrying no query — so a
+	// single miss must not disarm the rule. Three consecutive-or-not misses
+	// with nothing ever judged is a different thing: the vector store is
+	// unavailable, and a rule that cannot see must not be the one deciding
+	// when a run ends. Without this the run would reject every completion
+	// until the runaway cap, turning a degraded index into a maximum-length
+	// run against a metered source.
+	unjudgedStepsBeforeFallback = 3
 )
 
 // stopRule decides whether a "done" signal from the model is accepted.
@@ -77,6 +96,20 @@ type stopRule struct {
 	// that has judged nothing knows nothing, whatever its repeat count
 	// says, and must not accept a completion on the strength of it.
 	judged int
+
+	// unjudged counts steps the rule tried and failed to assess. Read only
+	// together with judged: the pair distinguishes "this run is young" from
+	// "novelty is not measurable here", which need opposite answers.
+	unjudged int
+}
+
+// measurable reports whether novelty is worth consulting at all.
+//
+// One judged step is enough to prove the machinery works. Nothing judged
+// after several attempts is the signature of an index that is not answering,
+// and the rule stands down rather than deciding a run it cannot see.
+func (s *stopRule) measurable() bool {
+	return s.judged > 0 || s.unjudged < unjudgedStepsBeforeFallback
 }
 
 // observe records what the run learned from one executed step.
@@ -89,6 +122,7 @@ type stopRule struct {
 // silent failures must not read as three repetitions.
 func (s *stopRule) observe(repeated, judgeable bool) {
 	if !judgeable {
+		s.unjudged++
 		s.consecutiveRepeats = 0
 		return
 	}
@@ -110,10 +144,18 @@ func (s *stopRule) observe(repeated, judgeable bool) {
 // a cube run whose index is unavailable degrade to today's behaviour instead
 // of rejecting every completion until the runaway cap.
 func (s *stopRule) acceptDone(step int) (bool, string) {
-	if s.byNovelty && s.judged >= repeatsBeforeDone {
-		if s.consecutiveRepeats >= repeatsBeforeDone {
+	if s.byNovelty && s.measurable() {
+		// Enough judged steps to hold an opinion, and the opinion is that
+		// the run has stopped finding new ground.
+		if s.judged >= repeatsBeforeDone && s.consecutiveRepeats >= repeatsBeforeDone {
 			return true, ""
 		}
+		// Otherwise the run is still turning things up, or has not yet done
+		// enough for the question to have an answer. Both are refusals, and
+		// deliberately NOT deferred to the floor: the floor defaults to zero,
+		// so deferring would accept a completion signalled on step one — the
+		// early termination the floor was added to prevent, reintroduced by
+		// the rule meant to replace it.
 		return false, "novelty"
 	}
 	if step < s.minSteps {
