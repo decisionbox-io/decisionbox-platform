@@ -102,11 +102,12 @@ type ExplorationEngine struct {
 	// to the model so a misconfigured run doesn't crash the loop.
 	schemaProvider SchemaProvider
 
-	// stepsIndexed counts steps the run-scoped index accepted. Read by the
-	// stopping rule: a search that comes back empty means "nothing like this
-	// has been asked" only once something has successfully been stored, and
-	// means "the index is not holding anything" before that.
-	stepsIndexed int
+	// stepsIndexed and stepsIndexOffered count what the run-scoped index
+	// accepted and what it was asked to accept. The stopping rule reads both,
+	// because an empty search result means opposite things depending on them
+	// — see emptySearchIsAboutTheStep.
+	stepsIndexed      int
+	stepsIndexOffered int
 
 	// stepIndexer ships each completed step to the run-scoped vector
 	// index. Optional — when nil the engine continues without
@@ -666,6 +667,7 @@ func (e *ExplorationEngine) Explore(
 				"compact_row_count": compactRowCount,
 				"has_error":         explorationStep.Error != "",
 			}).Debug("exploration: indexing step into per-run vector index")
+			e.stepsIndexOffered++
 			if err := e.stepIndexer.Upsert(ctx, explorationStep); err != nil {
 				logger.WithFields(logger.Fields{
 					"step":  step,

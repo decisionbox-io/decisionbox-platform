@@ -229,24 +229,31 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 		return false, false
 	}
 	if !found {
-		// Nothing to compare against means two different things, and only the
-		// index's own state tells them apart.
-		//
-		// Once something has been stored, it is an ANSWER: this step has no
-		// neighbour, so it cannot be repeating anything and broke new ground
-		// by definition. It has to be counted that way because it is
-		// ordinary — neighbours are scoped to one datasource, so the first
-		// query against each source legitimately has none, and reading those
-		// as failures would disarm the rule before it judged a single step.
-		//
-		// Before anything has been stored it is the opposite: the search came
-		// back empty because the index is empty, which says nothing about
-		// this step. A run whose writes are failing while its reads succeed
-		// would otherwise record every step as novel, keep the rule armed on
-		// that evidence, and refuse every completion until the runaway cap.
-		return false, e.stepsIndexed > 0
+		return false, e.emptySearchIsAboutTheStep()
 	}
 	return score >= repeatSimilarityThreshold, true
+}
+
+// emptySearchIsAboutTheStep reports whether "no neighbour" is a statement
+// about this step or about the index.
+//
+// About the STEP in two cases, and they bracket the failing one:
+//
+//   - Nothing has been offered to the index yet. This is the run's first
+//     judgeable step; it has nothing to be similar to and broke new ground by
+//     definition.
+//   - The index is holding something. Then an empty result means this step is
+//     unlike everything stored — which is ordinary, since neighbours are
+//     scoped per datasource and a run's first query against each source has
+//     none.
+//
+// About the INDEX in between: steps have been offered and none were kept, so
+// the write path is failing while reads still answer. Every search then comes
+// back empty, and reading those as new ground would record every step as
+// novel, keep the rule armed on that evidence, and refuse every completion
+// until the runaway cap.
+func (e *ExplorationEngine) emptySearchIsAboutTheStep() bool {
+	return e.stepsIndexed > 0 || e.stepsIndexOffered == 0
 }
 
 // rejectionFor renders the nudge sent back to the model when its completion

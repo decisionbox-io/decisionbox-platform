@@ -212,12 +212,25 @@ func TestRepeatsEarlierWork_ThresholdAndFailureModes(t *testing.T) {
 			},
 			repeated: false, judgeable: true,
 		},
-		"no neighbour, because nothing has been stored": {
-			// The same empty answer, meaning the opposite. A run whose index
-			// writes are failing while its reads succeed would otherwise
-			// record every step as new ground, keep the rule armed on that
-			// evidence, and refuse every completion until the runaway cap.
+		"no neighbour, on the run's very first judgeable step": {
+			// Nothing has been offered to the index yet, so its emptiness is
+			// expected and says nothing bad. The step has nothing to be
+			// similar to and broke new ground by definition — counting it
+			// unjudgeable would let two later failures disarm the rule with
+			// nothing ever judged, and hand a completion to a zero floor
+			// after one successful query.
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{0}, found: []bool{false}}},
+			repeated: false, judgeable: true,
+		},
+		"no neighbour, after steps were offered and none kept": {
+			// The same empty answer, meaning the opposite: the write path is
+			// failing while reads still answer. Reading these as new ground
+			// would record every step as novel, keep the rule armed on that
+			// evidence, and refuse every completion until the runaway cap.
+			engine: &ExplorationEngine{
+				stepIndexer:       &countingIndexer{scores: []float64{0}, found: []bool{false}},
+				stepsIndexOffered: 3,
+			},
 			repeated: false, judgeable: false,
 		},
 		"the index failed": {
@@ -359,5 +372,40 @@ func TestNewExplorationEngine_NoIndexMeansNoNoveltyRule(t *testing.T) {
 	}
 	if without.stop.minSteps != 5 {
 		t.Errorf("the floor it falls back to was lost: %d", without.stop.minSteps)
+	}
+}
+
+// TestEmptySearchIsAboutTheStep_BracketsTheFailingCase states the rule as a
+// table, because the two cases that mean "the step is new" sit on either side
+// of the one that means "the index is broken", and an implementation that
+// tested only one boundary would get the other backwards.
+func TestEmptySearchIsAboutTheStep_BracketsTheFailingCase(t *testing.T) {
+	cases := []struct {
+		name             string
+		indexed, offered int
+		want             bool
+	}{
+		{"nothing offered yet — the run's first judgeable step", 0, 0, true},
+		{"offered and kept — the index is working", 3, 3, true},
+		{"offered, none kept — the write path is failing", 0, 3, false},
+		{"offered, some kept — working, with a transient failure", 2, 3, true},
+	}
+	for _, tc := range cases {
+		e := &ExplorationEngine{stepsIndexed: tc.indexed, stepsIndexOffered: tc.offered}
+		if got := e.emptySearchIsAboutTheStep(); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestStopRule_OneGoodQueryThenFailuresDoesNotEndTheRun is the sequence Codex
+// found. The first successful query is new ground; two later unjudgeable
+// attempts must not then disarm the rule with nothing ever judged and hand the
+// next completion to a floor that defaults to zero.
+func TestStopRule_OneGoodQueryThenFailuresDoesNotEndTheRun(t *testing.T) {
+	s := &stopRule{byNovelty: true} // no floor, as the CLI default has none
+	feed(s, "n??")                  // one judged novel step, then two unjudgeable
+	if ok, _ := s.acceptDone(4); ok {
+		t.Error("a run with one successful query and two failures was allowed to stop")
 	}
 }
