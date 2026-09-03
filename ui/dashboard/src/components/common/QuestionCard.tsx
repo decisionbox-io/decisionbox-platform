@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { CSSProperties, useState } from 'react';
 import Link from 'next/link';
 import {
   Button, Checkbox, Group, Radio, SegmentedControl, Text, Textarea,
@@ -9,6 +9,21 @@ import { notifications } from '@mantine/notifications';
 import { api, DiscoveryQuestion, QuestionAnswerPayload } from '@/lib/api';
 
 const OTHER_ID = '__other';
+
+// cardStyle is the shared question-card shell: a white surface with a subtle
+// shadow and a status-coloured left accent so stacked cards read as distinct
+// blocks rather than blending into one wall of text.
+function cardStyle(accent: string): CSSProperties {
+  return {
+    background: 'var(--db-bg-white)',
+    border: '1px solid var(--db-border-default)',
+    borderLeft: `3px solid ${accent}`,
+    borderRadius: 'var(--db-radius)',
+    padding: 16,
+    marginBottom: 14,
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.06)',
+  };
+}
 
 // answerTypeLabel is a short human tag shown on each card so the analyst knows
 // how they'll answer before reading the controls.
@@ -123,25 +138,22 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
   }
 
   return (
-    <div style={{
-      border: '1px solid var(--db-border)', borderRadius: 'var(--db-radius)',
-      padding: 14, marginBottom: 10, background: 'var(--db-bg-surface)',
-    }}>
+    <div style={cardStyle('var(--db-blue-text)')}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>{question.question}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: 'var(--db-text-primary)' }}>{question.question}</div>
         <span style={{
-          fontSize: 11, whiteSpace: 'nowrap', padding: '1px 7px', borderRadius: 'var(--db-radius)',
-          background: 'var(--db-bg-muted)', color: 'var(--db-text-secondary)', height: 'fit-content',
+          fontSize: 11, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 'var(--db-radius)',
+          background: 'var(--db-blue-bg)', color: 'var(--db-blue-text)', height: 'fit-content', fontWeight: 500,
         }}>{answerTypeLabel(question.answer_type)}</span>
       </div>
       {question.rationale && (
-        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 4 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
           {question.rationale}
           <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
         </div>
       )}
 
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--db-border-default)' }}>
         {question.answer_type === 'boolean' && (
           <SegmentedControl
             value={bool ?? ''}
@@ -207,21 +219,20 @@ function ResolvedQuestionCard({ projectId, question, onLinkClick }: {
     ? question.answer_note : '';
   return (
     <div style={{
-      border: '1px solid var(--db-border)', borderRadius: 'var(--db-radius)',
-      padding: 14, marginBottom: 10, background: 'var(--db-bg-surface)',
-      opacity: answered ? 1 : 0.72,
+      ...cardStyle(answered ? 'var(--db-green-text)' : 'var(--db-border-strong)'),
+      ...(answered ? {} : { opacity: 0.8 }),
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>{question.question}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: 'var(--db-text-primary)' }}>{question.question}</div>
         <span style={{
-          fontSize: 11, whiteSpace: 'nowrap', padding: '1px 7px', borderRadius: 'var(--db-radius)',
-          height: 'fit-content',
-          background: answered ? 'var(--db-green-bg, #e6f4ea)' : 'var(--db-bg-muted)',
-          color: answered ? 'var(--db-green-text, #1e7d34)' : 'var(--db-text-secondary)',
+          fontSize: 11, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 'var(--db-radius)',
+          height: 'fit-content', fontWeight: 500,
+          background: answered ? 'var(--db-green-bg)' : 'var(--db-bg-muted)',
+          color: answered ? 'var(--db-green-text)' : 'var(--db-text-secondary)',
         }}>{answered ? 'Answered' : 'Dismissed'}</span>
       </div>
       {question.rationale && (
-        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 4 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
           {question.rationale}
           <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
         </div>
