@@ -1,18 +1,68 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // AskSession represents a multi-turn conversation in the "Ask Insights" feature.
 // Stored in the "ask_sessions" collection.
 type AskSession struct {
-	ID        string              `bson:"_id" json:"id"`
-	ProjectID string              `bson:"project_id" json:"project_id"`
-	UserID    string              `bson:"user_id" json:"user_id"`
-	Title     string              `bson:"title" json:"title"` // first question, used as display title
+	ID           string              `bson:"_id" json:"id"`
+	ProjectID    string              `bson:"project_id" json:"project_id"`
+	UserID       string              `bson:"user_id" json:"user_id"`
+	Title        string              `bson:"title" json:"title"` // first question, used as display title
 	Messages     []AskSessionMessage `bson:"messages" json:"messages"`
 	MessageCount int                 `bson:"message_count" json:"message_count"`
-	CreatedAt    time.Time           `bson:"created_at" json:"created_at"`
-	UpdatedAt    time.Time           `bson:"updated_at" json:"updated_at"`
+	// SeedContext grounds the whole conversation in one insight or
+	// recommendation the user launched the chat from ("Ask about this").
+	// It is resolved and stored once at session creation and re-applied to
+	// every turn (first and follow-ups) so the conversation stays on-topic.
+	// nil for a generic, unseeded chat. omitempty keeps legacy rows clean.
+	SeedContext *AskSessionSeed `bson:"seed_context,omitempty" json:"seed_context,omitempty"`
+	CreatedAt   time.Time       `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time       `bson:"updated_at" json:"updated_at"`
+}
+
+// AskSessionSeed is the insight / recommendation a seeded Ask conversation is
+// anchored to. Type + ID identify the entity; Label + Text are the resolved,
+// bounded values hydrated server-side at session creation so no re-fetch is
+// needed on later turns (and the client cannot spoof the grounding text).
+type AskSessionSeed struct {
+	Type  string `bson:"type" json:"type"` // "insight" | "recommendation"
+	ID    string `bson:"id" json:"id"`
+	Label string `bson:"label,omitempty" json:"label,omitempty"` // resolved name / title
+	Text  string `bson:"text,omitempty" json:"text,omitempty"`   // hydrated, length-bounded
+}
+
+// PromptBlock renders the FOCUS suffix that anchors a seeded Ask conversation
+// on its insight / recommendation, for appending to the system prompt. It
+// returns a leading-space-prefixed sentence when there is something to ground
+// on, or "" (including for a nil seed). Shared by the classic RAG paths in both
+// the community and enterprise handlers so the wording stays in one place; the
+// ask-serve data-query path renders its own FOCUS block from its wire type.
+func (s *AskSessionSeed) PromptBlock() string {
+	if s == nil {
+		return ""
+	}
+	kind := s.Type
+	if kind != "insight" && kind != "recommendation" {
+		kind = "item"
+	}
+	label := strings.TrimSpace(s.Label)
+	text := strings.TrimSpace(s.Text)
+	if label == "" && text == "" {
+		return ""
+	}
+	b := " The user opened this conversation from a specific " + kind +
+		" and their questions are about it — keep your answers anchored to it."
+	if label != "" {
+		b += " The " + kind + " is titled: " + label + "."
+	}
+	if text != "" {
+		b += " Details: " + text
+	}
+	return b
 }
 
 // AskSessionMessage is a single Q&A turn within a conversation.

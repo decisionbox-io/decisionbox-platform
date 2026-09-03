@@ -37,6 +37,24 @@ type TurnRequest struct {
 	// not sufficient on its own (a checker-less agent's NoopChecker allows
 	// everything), so the capability rides the wire.
 	EnableCharts bool `json:"enable_charts,omitempty"`
+	// SeedContext, when set, anchors the whole turn on one insight or
+	// recommendation the user launched Ask from ("Ask about this"). The server
+	// renders it as a FOCUS block in the system prompt so the answer stays about
+	// that entity. The caller resolves + bounds the text; the server never
+	// re-fetches. Hand-synced by JSON tag with the enterprise
+	// startTurnRequest.SeedContext (the two live in different modules).
+	SeedContext *SeedContext `json:"seed_context,omitempty"`
+}
+
+// SeedContext is the insight / recommendation a seeded Ask conversation is
+// anchored to. Type + ID identify the entity; Label + Text are the resolved,
+// bounded values the caller hydrated. Mirrors go-common AskSessionSeed and the
+// enterprise wire struct field-for-field.
+type SeedContext struct {
+	Type  string `json:"type"` // "insight" | "recommendation"
+	ID    string `json:"id"`
+	Label string `json:"label,omitempty"`
+	Text  string `json:"text,omitempty"`
 }
 
 // HistoryMessage is one prior conversation message. Role is "user" or

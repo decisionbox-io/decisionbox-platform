@@ -289,6 +289,54 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 	return items
 }
 
+// hydrateSeed resolves the "Ask about this" seed for a new conversation into the
+// persisted session seed. It reads the insight / recommendation and verifies it
+// belongs to projectID (InsightRepo.GetByID / RecommendationRepo.GetByID are not
+// project-scoped, so a client-supplied id from another project must be rejected).
+// Falls back to the client-supplied text only when the id can't be resolved.
+// Returns nil when there is nothing to ground on.
+func (h *SearchHandler) hydrateSeed(ctx context.Context, projectID string, in *seedContextReq) *commonmodels.AskSessionSeed {
+	if in == nil || in.ID == "" {
+		return nil
+	}
+	kind := in.Type
+	if kind != "insight" && kind != "recommendation" {
+		return nil
+	}
+	seed := &commonmodels.AskSessionSeed{Type: kind, ID: in.ID}
+	switch kind {
+	case "insight":
+		if ins, err := h.insightRepo.GetByID(ctx, in.ID); err == nil && ins != nil && ins.ProjectID == projectID {
+			seed.Label = ins.Name
+			seed.Text = boundedSeedText(ins.Description, askSeedTextCap)
+			return seed
+		}
+	case "recommendation":
+		if rec, err := h.recRepo.GetByID(ctx, in.ID); err == nil && rec != nil && rec.ProjectID == projectID {
+			seed.Label = rec.Title
+			seed.Text = boundedSeedText(rec.Description, askSeedTextCap)
+			return seed
+		}
+	}
+	// Unresolved id (unknown / wrong project / non-entity page) — fall back to
+	// the client text, which is never treated as authoritative.
+	if t := strings.TrimSpace(in.Text); t != "" {
+		seed.Text = boundedSeedText(t, askSeedTextCap)
+		return seed
+	}
+	return nil
+}
+
+// boundedSeedText trims and rune-caps seed text.
+func boundedSeedText(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) > limit {
+		return string(r[:limit]) + "…"
+	}
+	return s
+}
+
 // saveSearchHistory records the search for analytics.
 func (h *SearchHandler) saveSearchHistory(ctx context.Context, projectID string, req searchRequest, items []searchResultItem) {
 	topIDs := make([]string, 0, len(items))
@@ -453,7 +501,24 @@ type askRequest struct {
 	Question  string `json:"question"`
 	Limit     int    `json:"limit,omitempty"`
 	SessionID string `json:"session_id,omitempty"` // existing session for multi-turn; empty = new session
+	// SeedContext anchors a NEW conversation to one insight / recommendation the
+	// user launched "Ask about this" from. Honored only when creating a session
+	// (a follow-up reuses the seed persisted on the session). Grounding text is
+	// hydrated server-side by {Type,ID} scoped to the project. nil = generic chat.
+	SeedContext *seedContextReq `json:"seed_context,omitempty"`
 }
+
+// seedContextReq is the client seed reference; Text is a fallback used only when
+// the id can't be resolved in this project.
+type seedContextReq struct {
+	Type string `json:"type"` // "insight" | "recommendation"
+	ID   string `json:"id"`
+	Text string `json:"text,omitempty"`
+}
+
+// askSeedTextCap bounds the hydrated seed text fed into the prompt / persisted
+// on the session so a long description can't dominate the context window.
+const askSeedTextCap = 800
 
 type askResponse struct {
 	Answer       string             `json:"answer"`
@@ -598,6 +663,15 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		project.EffectiveLanguage(),
 	)
 
+	// Resolve the conversation seed for a NEW session (existing sessions carry
+	// their persisted seed, read below). The block is appended to the system
+	// prompt once the session is known; the exact-fit check further down guards
+	// against the (bounded) addition overflowing the window.
+	var seed *commonmodels.AskSessionSeed
+	if req.SessionID == "" {
+		seed = h.hydrateSeed(ctx, projectID, req.SeedContext)
+	}
+
 	llmProvider, err := h.createLLMProvider(ctx, project, projectID)
 	if err != nil {
 		writeErrorCode(w, http.StatusPreconditionFailed,
@@ -703,11 +777,18 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "session does not belong to this project")
 				return
 			}
+			// A follow-up turn stays anchored to the seed persisted at creation.
+			seed = session.SeedContext
 			trimmed, _ := trimMessagesByTokens(ctx, session.Messages, counter, historyBudget)
 			messages = append(messages, trimmed...)
 		}
 	}
 	messages = append(messages, gollm.Message{Role: "user", Content: prompt})
+
+	// Anchor the answer on the seeded insight / recommendation, if any. Appended
+	// after the token budget is computed; the exact-fit verification below uses
+	// this final system prompt, so a (bounded) overflow still surfaces as a 413.
+	systemPrompt += seed.PromptBlock()
 
 	// Single exact verification on the fully assembled request.
 	// Catches the rare case where the approximate walk under-counted
@@ -775,11 +856,12 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 		session := &commonmodels.AskSession{
-			ID:        sessionID,
-			ProjectID: projectID,
-			UserID:    "anonymous",
-			Title:     req.Question,
-			Messages:  []commonmodels.AskSessionMessage{msg},
+			ID:          sessionID,
+			ProjectID:   projectID,
+			UserID:      "anonymous",
+			Title:       req.Question,
+			Messages:    []commonmodels.AskSessionMessage{msg},
+			SeedContext: seed,
 		}
 		if err := h.sessionRepo.Create(ctx, session); err != nil {
 			apilog.WithError(err).Warn("Failed to create ask session")
