@@ -319,12 +319,9 @@ func (h *SearchHandler) hydrateSeed(ctx context.Context, projectID string, in *s
 			return seed
 		}
 	}
-	// Unresolved id (unknown / wrong project / non-entity page) — fall back to
-	// the client text, which is never treated as authoritative.
-	if t := strings.TrimSpace(in.Text); t != "" {
-		seed.Text = boundedSeedText(t, askSeedTextCap)
-		return seed
-	}
+	// Unresolved id (unknown / wrong project). We do NOT fall back to any
+	// client-supplied text — that would let a forged id inject text into the
+	// prompt. No verified entity → no seed.
 	return nil
 }
 
@@ -509,12 +506,12 @@ type askRequest struct {
 	SeedContext *seedContextReq `json:"seed_context,omitempty"`
 }
 
-// seedContextReq is the client seed reference; Text is a fallback used only when
-// the id can't be resolved in this project.
+// seedContextReq is the client seed reference: only the entity kind + id. The
+// grounding text is always hydrated server-side, so a forged id can never inject
+// client-supplied text into the prompt.
 type seedContextReq struct {
 	Type string `json:"type"` // "insight" | "recommendation"
 	ID   string `json:"id"`
-	Text string `json:"text,omitempty"`
 }
 
 // askSeedTextCap bounds the hydrated seed text fed into the prompt / persisted

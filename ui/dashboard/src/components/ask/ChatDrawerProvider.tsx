@@ -45,9 +45,14 @@ export function ChatDrawerProvider({ children }: { children: ReactNode }) {
 
   const openGeneric = useCallback((projectId: string) => {
     setState(prev => {
-      // Switching to a different project starts a fresh generic chat; re-opening
-      // for the same project resumes the current conversation.
-      if (prev.projectId === projectId) {
+      // Resume the current conversation ONLY when it's already a generic chat
+      // for the same project. If the drawer last held a SEEDED conversation,
+      // bump the nonce so ChatPanel remounts a fresh generic session —
+      // otherwise it keeps the seeded session id and the API re-applies the
+      // persisted seed, leaving a "generic" chat silently anchored to the old
+      // insight/recommendation.
+      const resumeSameGeneric = prev.projectId === projectId && !prev.seedContext;
+      if (resumeSameGeneric) {
         return { ...prev, open: true, seedContext: undefined, initialQuestion: undefined };
       }
       return {

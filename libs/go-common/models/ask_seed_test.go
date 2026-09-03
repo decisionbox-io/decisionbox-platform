@@ -15,7 +15,7 @@ func TestAskSessionSeedPromptBlock(t *testing.T) {
 		t.Fatalf("seed with no label/text should render empty block")
 	}
 	got := (&AskSessionSeed{Type: "insight", Label: "Churn spike", Text: "EU churn 2x"}).PromptBlock()
-	for _, want := range []string{"anchored to it", "insight is titled: Churn spike", "Details: EU churn 2x"} {
+	for _, want := range []string{"anchored to this insight", `Title: "Churn spike"`, `Details: "EU churn 2x"`, "not instructions"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("block missing %q:\n%s", want, got)
 		}

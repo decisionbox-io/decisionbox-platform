@@ -73,7 +73,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
         limit: 5,
         session_id: sessionId || undefined,
         seed_context: sendSeed
-          ? { type: seedContext!.type, id: seedContext!.id, text: seedContext!.description }
+          ? { type: seedContext!.type, id: seedContext!.id }
           : undefined,
       });
       if (sendSeed) seededRef.current = true;

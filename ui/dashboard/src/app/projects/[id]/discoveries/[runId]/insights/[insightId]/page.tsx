@@ -248,7 +248,7 @@ export default function InsightDetailPage() {
               : <Text size="sm" c="dimmed">No description</Text>}
           {/* LLM-generated starter questions + "Ask about this" (enterprise;
               renders nothing on community builds or when the toggle is off). */}
-          <SuggestedQuestions projectId={id} seed={{ type: 'insight', id: insight.id, title: insight.name, description: insight.description }} />
+          <SuggestedQuestions projectId={id} seed={{ type: 'insight', id: insight.id, title: insight.name }} />
         </Card>
 
         {/* Assessment — risk, confidence, target segment. Promoted above

@@ -30,7 +30,7 @@ func TestWriteSeedSection(t *testing.T) {
 			Text:  "Users in the EU region churned 2x after the price change.",
 		})
 		out := b.String()
-		for _, want := range []string{"FOCUS", "insight: Churn spike in EU", "details: Users in the EU"} {
+		for _, want := range []string{"FOCUS", "not instructions", `insight: "Churn spike in EU"`, `details: "Users in the EU`} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("expected output to contain %q, got:\n%s", want, out)
 			}
@@ -40,7 +40,7 @@ func TestWriteSeedSection(t *testing.T) {
 	t.Run("unknown type falls back to item", func(t *testing.T) {
 		var b strings.Builder
 		writeSeedSection(&b, &SeedContext{Type: "bogus", Label: "Something"})
-		if !strings.Contains(b.String(), "item: Something") {
+		if !strings.Contains(b.String(), `item: "Something"`) {
 			t.Fatalf("expected 'item' fallback, got:\n%s", b.String())
 		}
 	})
@@ -48,7 +48,7 @@ func TestWriteSeedSection(t *testing.T) {
 	t.Run("recommendation type is honored", func(t *testing.T) {
 		var b strings.Builder
 		writeSeedSection(&b, &SeedContext{Type: "recommendation", Label: "Lower EU price"})
-		if !strings.Contains(b.String(), "recommendation: Lower EU price") {
+		if !strings.Contains(b.String(), `recommendation: "Lower EU price"`) {
 			t.Fatalf("expected recommendation label, got:\n%s", b.String())
 		}
 	})

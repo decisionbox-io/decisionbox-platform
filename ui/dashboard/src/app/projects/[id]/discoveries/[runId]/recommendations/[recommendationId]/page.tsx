@@ -167,7 +167,7 @@ export default function RecommendationDetailPage() {
               : <Text size="sm" c="dimmed">No description</Text>}
           {/* LLM-generated starter questions + "Ask about this" (enterprise;
               renders nothing on community builds or when the toggle is off). */}
-          <SuggestedQuestions projectId={id} seed={{ type: 'recommendation', id: recommendation.id, title: recommendation.title, description: recommendation.description }} />
+          <SuggestedQuestions projectId={id} seed={{ type: 'recommendation', id: recommendation.id, title: recommendation.title }} />
         </Card>
 
         {/* Impact */}

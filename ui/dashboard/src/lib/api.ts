@@ -959,23 +959,22 @@ export interface SearchResponse {
 }
 
 // SeedContext anchors an Ask conversation to one insight / recommendation the
-// user launched "Ask about this" from. The client passes {type,id,title} (+ an
-// optional description fallback); the server hydrates the authoritative
-// grounding text by id.
+// user launched "Ask about this" from. The client passes {type,id} (+ a title
+// for the chip); the server hydrates the authoritative grounding text by id —
+// the client never supplies prompt text.
 export interface SeedContext {
   type: 'insight' | 'recommendation';
   id: string;
   title: string;
-  description?: string;
 }
 
 export interface AskRequest {
   question: string;
   limit?: number;
   session_id?: string;
-  // Sent on the first turn of a seeded conversation. The server hydrates + then
-  // persists it on the session so follow-ups stay grounded.
-  seed_context?: { type: string; id: string; text?: string };
+  // Sent on the first turn of a seeded conversation ({type,id} only — the server
+  // hydrates the grounding text and persists it on the session).
+  seed_context?: { type: string; id: string };
 }
 
 export interface AskSuggestionsResponse {

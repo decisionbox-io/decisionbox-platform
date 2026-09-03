@@ -71,6 +71,15 @@ describe('ChatDrawerProvider', () => {
     expect(screen.getByTestId('nonce')).toHaveTextContent('1'); // same project → resume
     expect(screen.getByTestId('seed')).toHaveTextContent('none');
   });
+
+  it('openGeneric AFTER a seeded chat remounts (fresh generic, not the seeded session)', () => {
+    wrap(<Probe />);
+    fireEvent.click(screen.getByText('seed'));    // seeded → nonce 1
+    fireEvent.click(screen.getByText('close'));
+    fireEvent.click(screen.getByText('generic')); // was seeded → must bump to nonce 2
+    expect(screen.getByTestId('nonce')).toHaveTextContent('2');
+    expect(screen.getByTestId('seed')).toHaveTextContent('none');
+  });
 });
 
 // --- SuggestedQuestions ---
