@@ -32,4 +32,20 @@ const (
 	// business analyst could resolve. The agent (writer) inserts rows; the
 	// enterprise API (reader) lists them and records answers / dismissals.
 	CollectionDiscoveryQuestions = "discovery_questions"
+
+	// Discovery Ledger collections (compounding discovery, enterprise#261).
+	// The agent's end-of-run reflection phase writes them; the read path and
+	// the enterprise API/RAG read them, so each run builds on the last.
+	//
+	//   - CollectionDiscoveryLedger:         one doc per project — the coverage
+	//     map + convergence history.
+	//   - CollectionDiscoveryLedgerFindings: one doc per durable finding, with
+	//     substance (metric + SQL + evidence) and a lifecycle status.
+	//   - CollectionDiscoveryLedgerTasks:    the open-thread / next-task queue.
+	//   - CollectionDiscoveryPackProposals:  proposed domain-pack (analysis-area)
+	//     deltas the enterprise approval workflow governs.
+	CollectionDiscoveryLedger         = "discovery_ledger"
+	CollectionDiscoveryLedgerFindings = "discovery_ledger_findings"
+	CollectionDiscoveryLedgerTasks    = "discovery_ledger_tasks"
+	CollectionDiscoveryPackProposals  = "discovery_pack_proposals"
 )
