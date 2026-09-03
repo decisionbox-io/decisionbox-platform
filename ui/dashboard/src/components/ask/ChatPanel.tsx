@@ -148,11 +148,12 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
     } catch { /* ignore */ }
   };
 
-  // Only while the seed is still active: after "New chat" (seededRef flipped
-  // true) the next turn is unanchored, so the chip must not keep claiming the
-  // conversation is about the seed. setMessages([]) in startNewChat re-renders,
-  // so the ref is read fresh here.
-  const showSeedChip = !!seedContext && messages.length === 0 && !sessionId && !seededRef.current;
+  // seedActive is true only while the seed still governs the conversation:
+  // after "New chat" (seededRef flipped true) the next turn is unanchored, so
+  // neither the empty-state heading nor the chip should claim the chat is about
+  // the seed. setMessages([]) in startNewChat re-renders, so the ref reads fresh.
+  const seedActive = !!seedContext && !seededRef.current;
+  const showSeedChip = seedActive && messages.length === 0 && !sessionId;
 
   return (
     <div style={{ display: 'flex', gap: 0, height: '100%', minHeight: 0, overflow: 'hidden' }}>
@@ -184,7 +185,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               </div>
               <div style={{ textAlign: 'center', maxWidth: 420 }}>
                 <p style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)', margin: '0 0 4px' }}>
-                  {seedContext ? 'Ask about this ' + seedContext.type : 'Ask anything about your insights'}
+                  {seedActive ? 'Ask about this ' + seedContext!.type : 'Ask anything about your insights'}
                 </p>
                 <p style={{ fontSize: 13, color: 'var(--db-text-tertiary)', margin: 0 }}>
                   Get answers backed by evidence from your discovery runs. Follow-up questions use conversation context.
