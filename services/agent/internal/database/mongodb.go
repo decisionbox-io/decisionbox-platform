@@ -37,6 +37,7 @@ const (
 	CollectionDiscoveryLedger            = gomongo.CollectionDiscoveryLedger
 	CollectionDiscoveryLedgerFindings    = gomongo.CollectionDiscoveryLedgerFindings
 	CollectionDiscoveryLedgerTasks       = gomongo.CollectionDiscoveryLedgerTasks
+	CollectionDiscoveryPackProposals     = gomongo.CollectionDiscoveryPackProposals
 )
 
 // DB wraps go-common's MongoDB client.

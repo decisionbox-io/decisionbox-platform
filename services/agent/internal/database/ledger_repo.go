@@ -176,6 +176,64 @@ func (r *LedgerFindingRepository) Prune(ctx context.Context, projectID string, m
 	return nil
 }
 
+// LedgerProposalRepository persists proposed domain-pack (analysis-area) deltas.
+// The agent's reflection phase is the writer (status "proposed"); the enterprise
+// evolution workflow reads/updates/applies them.
+type LedgerProposalRepository struct {
+	collection *mongo.Collection
+}
+
+// NewLedgerProposalRepository creates the repository.
+func NewLedgerProposalRepository(client *DB) *LedgerProposalRepository {
+	return &LedgerProposalRepository{collection: client.Collection(CollectionDiscoveryPackProposals)}
+}
+
+// EnsureIndexes creates the (project_id, status, created_at desc) list index.
+func (r *LedgerProposalRepository) EnsureIndexes(ctx context.Context) error {
+	_, err := r.collection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}},
+	})
+	if err != nil {
+		return fmt.Errorf("ensure discovery_pack_proposals indexes: %w", err)
+	}
+	return nil
+}
+
+// Insert writes a batch of freshly-proposed deltas. A nil/empty batch is a no-op.
+func (r *LedgerProposalRepository) Insert(ctx context.Context, proposals []commonmodels.PackProposal) error {
+	if len(proposals) == 0 {
+		return nil
+	}
+	docs := make([]interface{}, len(proposals))
+	for i := range proposals {
+		docs[i] = proposals[i]
+	}
+	if _, err := r.collection.InsertMany(ctx, docs); err != nil {
+		return fmt.Errorf("insert pack proposals: %w", err)
+	}
+	return nil
+}
+
+// ListForProject returns the project's proposals, newest first, optionally
+// filtered to the given statuses. Used by the reflection phase to skip
+// re-proposing a delta that already has an open proposal.
+func (r *LedgerProposalRepository) ListForProject(ctx context.Context, projectID string, statuses ...string) ([]commonmodels.PackProposal, error) {
+	filter := bson.M{"project_id": projectID}
+	if len(statuses) > 0 {
+		filter["status"] = bson.M{"$in": statuses}
+	}
+	cur, err := r.collection.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+	if err != nil {
+		return nil, fmt.Errorf("list pack proposals: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []commonmodels.PackProposal
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("decode pack proposals: %w", err)
+	}
+	return out, nil
+}
+
 // LedgerTaskRepository persists the open-thread / next-task queue.
 type LedgerTaskRepository struct {
 	collection *mongo.Collection

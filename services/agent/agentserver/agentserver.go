@@ -789,6 +789,12 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
 	discoveryQuestionRepo := database.NewDiscoveryQuestionRepository(db)
 
+	// Discovery Ledger repositories (compounding discovery, enterprise#261).
+	ledgerRepo := database.NewLedgerRepository(db)
+	ledgerFindingRepo := database.NewLedgerFindingRepository(db)
+	ledgerTaskRepo := database.NewLedgerTaskRepository(db)
+	ledgerProposalRepo := database.NewLedgerProposalRepository(db)
+
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure context indexes")
 	}
@@ -800,6 +806,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	if err := discoveryQuestionRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
+	}
+	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
+		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
+	} {
+		if err := li.EnsureIndexes(ctx); err != nil {
+			applog.WithError(err).Warn("Failed to ensure discovery ledger indexes")
+		}
 	}
 	if enableDebugLogs {
 		if err := debugLogRepo.EnsureIndexes(ctx); err != nil {
@@ -910,6 +923,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		DiscoveryRepo:         discoveryRepo,
 		DiscoveryLogRepo:      discoveryLogRepo,
 		DiscoveryQuestionRepo: discoveryQuestionRepo,
+		LedgerRepo:            ledgerRepo,
+		LedgerFindingRepo:     ledgerFindingRepo,
+		LedgerTaskRepo:        ledgerTaskRepo,
+		LedgerProposalRepo:    ledgerProposalRepo,
 		FeedbackRepo:          database.NewFeedbackRepository(db),
 		DebugLogRepo:          debugLogRepo,
 		RunRepo:               runRepo,
@@ -987,6 +1004,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		ReasoningEnabled:           project.EffectiveReasoningEnabled(),
 		RecommendationVerdicts:     project.EffectiveRecommendationVerdicts(),
 		ClarifyingQuestionsEnabled: project.EffectiveClarifyingQuestionsEnabled(),
+		ReflectionEnabled:          project.EffectiveReflectionEnabled(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{
@@ -1044,6 +1062,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// findings from the persisted result and self-gates on the deployment flag +
 	// per-project toggle; a no-op when either is off or nothing was uncertain.
 	orchestrator.RunPhaseQuestions(ctx, result)
+
+	// Reflection / Discovery Ledger hop — also AFTER the completion event, for
+	// the same reason: it consolidates the run into the persistent ledger so the
+	// next run builds on it, and must never delay or fail the completed run. It
+	// reads findings from the persisted result and self-gates on the deployment
+	// flag + per-project toggle + sources entitlement; a no-op when off.
+	orchestrator.RunPhaseReflection(ctx, result)
 
 	applog.WithFields(applog.Fields{
 		"project_id":      projectID,

@@ -144,6 +144,13 @@ type Orchestrator struct {
 	// run. Held as an interface so unit tests can inject a fake without MongoDB;
 	// nil disables the questions phase (single-binary / test builds).
 	questionRepo questionPersister
+	// Discovery Ledger stores (compounding discovery, enterprise#261). Held as
+	// interfaces so unit tests can inject fakes without MongoDB; a nil ledgerRepo
+	// / findingRepo disables the reflection phase.
+	ledgerRepo   ledgerStore
+	findingRepo  findingStore
+	taskRepo     taskStore
+	proposalRepo proposalStore
 	feedbackRepo *database.FeedbackRepository
 	debugLogRepo *database.DebugLogRepository
 
@@ -210,6 +217,11 @@ type Orchestrator struct {
 	// default-on). Layer B of the gate; the deployment flag is Layer A.
 	clarifyingQuestionsEnabled bool
 
+	// reflectionEnabled is the resolved per-project toggle for the end-of-run
+	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
+	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
+	reflectionEnabled bool
+
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
 	// (from DiscoveryOptions.RecommendationVerdicts). A set for O(1) lookup in
@@ -274,8 +286,14 @@ type OrchestratorOptions struct {
 	// of a run. Optional — nil disables the questions phase (unit / single-binary
 	// builds without MongoDB).
 	DiscoveryQuestionRepo *database.DiscoveryQuestionRepository
-	FeedbackRepo          *database.FeedbackRepository
-	DebugLogRepo          *database.DebugLogRepository
+	// Discovery Ledger repos (compounding discovery). Optional — nil disables
+	// the reflection phase (unit / single-binary builds without MongoDB).
+	LedgerRepo         *database.LedgerRepository
+	LedgerFindingRepo  *database.LedgerFindingRepository
+	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerProposalRepo *database.LedgerProposalRepository
+	FeedbackRepo       *database.FeedbackRepository
+	DebugLogRepo       *database.DebugLogRepository
 
 	RunRepo *database.RunRepository
 	// RunStepRepo persists the per-step rows that used to live as an
@@ -417,6 +435,26 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		questionRepo = opts.DiscoveryQuestionRepo
 	}
 
+	// Same typed-nil → untyped-nil normalization for the ledger repos, so the
+	// nil guards in RunPhaseReflection are not fooled by a nil concrete pointer
+	// boxed into a non-nil interface.
+	var ledgerRepo ledgerStore
+	if opts.LedgerRepo != nil {
+		ledgerRepo = opts.LedgerRepo
+	}
+	var findingRepo findingStore
+	if opts.LedgerFindingRepo != nil {
+		findingRepo = opts.LedgerFindingRepo
+	}
+	var taskRepo taskStore
+	if opts.LedgerTaskRepo != nil {
+		taskRepo = opts.LedgerTaskRepo
+	}
+	var proposalRepo proposalStore
+	if opts.LedgerProposalRepo != nil {
+		proposalRepo = opts.LedgerProposalRepo
+	}
+
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
@@ -424,6 +462,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryRepo:      opts.DiscoveryRepo,
 		discoveryLogRepo:   discoveryLogRepo,
 		questionRepo:       questionRepo,
+		ledgerRepo:         ledgerRepo,
+		findingRepo:        findingRepo,
+		taskRepo:           taskRepo,
+		proposalRepo:       proposalRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
@@ -504,6 +546,12 @@ type DiscoveryOptions struct {
 	// deployment-availability flag (DISCOVERY_QUESTIONS_ENABLED, default off) is
 	// the other gate — both must be on.
 	ClarifyingQuestionsEnabled bool
+
+	// ReflectionEnabled is the resolved per-project toggle for the end-of-run
+	// reflection / Discovery Ledger phase (project.EffectiveReflectionEnabled(),
+	// default-on). The deployment-availability flag (DISCOVERY_REFLECTION_ENABLED,
+	// default off) is the other gate — both must be on.
+	ReflectionEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -542,6 +590,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Clarifying-questions opt-out: the per-project Settings toggle (default on).
 	// The post-run questions hop also checks the deployment-availability flag.
 	o.clarifyingQuestionsEnabled = opts.ClarifyingQuestionsEnabled
+
+	// Reflection / Discovery Ledger opt-out: the per-project Settings toggle
+	// (default on). The post-run reflection hop also checks the deployment flag.
+	o.reflectionEnabled = opts.ReflectionEnabled
 
 	// Recommendation eligibility: the per-project set of validation verdicts an
 	// insight must carry to flow to the recommender (Settings → Advanced). Empty

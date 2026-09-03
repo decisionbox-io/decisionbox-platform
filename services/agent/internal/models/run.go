@@ -121,6 +121,7 @@ const (
 	PhaseSaving          = "saving"
 	PhaseEmbedIndex      = "embed_index"
 	PhaseQuestions       = "questions"
+	PhaseReflection      = "reflection"
 	PhaseComplete        = "complete"
 
 	RunStatusPending   = "pending"

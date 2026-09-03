@@ -111,6 +111,14 @@ type Project struct {
 	// — keep the two definitions in sync.
 	ClarifyingQuestionsEnabled *bool `bson:"clarifying_questions_enabled,omitempty" json:"clarifying_questions_enabled,omitempty"`
 
+	// ReflectionEnabled is the per-project toggle for the end-of-run reflection /
+	// Discovery Ledger phase (the agent consolidates each run into a persistent,
+	// compounding ledger so the next run builds on it). Nil means "use the
+	// deployment default" (true) — default-on, users opt out in Settings. The
+	// deployment-availability flag DISCOVERY_REFLECTION_ENABLED (default off) is
+	// the other gate. Keep in sync with the agent's models.Project copy.
+	ReflectionEnabled *bool `bson:"reflection_enabled,omitempty" json:"reflection_enabled,omitempty"`
+
 	// SmartOverflowEnabled is the per-project toggle for the analysis picker's
 	// smart budget-overflow handling (dedup + "also examined" breadcrumb +
 	// tighter re-compaction of survivors instead of plainly dropping the
@@ -274,6 +282,16 @@ func (p *Project) EffectiveClarifyingQuestionsEnabled() bool {
 		return true
 	}
 	return *p.ClarifyingQuestionsEnabled
+}
+
+// EffectiveReflectionEnabled resolves the per-project reflection / Discovery
+// Ledger toggle. Nil pointer → true (default-on; users opt out). The matching
+// helper on the agent's models.Project must stay in sync.
+func (p *Project) EffectiveReflectionEnabled() bool {
+	if p.ReflectionEnabled == nil {
+		return true
+	}
+	return *p.ReflectionEnabled
 }
 
 // EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.
