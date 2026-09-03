@@ -290,6 +290,10 @@ export interface Project {
   // uncertain about, and the answers feed the next run. False opts the project
   // out (no questions generated).
   clarifying_questions_enabled?: boolean;
+  // Undefined → default (true). Controls the end-of-run reflection / Discovery
+  // Ledger phase: after a run, the agent consolidates it into a persistent
+  // per-project ledger so the next run builds on it. False opts the project out.
+  reflection_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,
@@ -831,6 +835,80 @@ export interface QuestionOption {
   label: string;
 }
 
+// --- Compounding discovery: Discovery Ledger + evolution (enterprise-backed) ---
+
+export type EvolutionMode = 'off' | 'suggest_only' | 'admin_approval' | 'auto';
+export type FrontierPolicy = 'breadth_first' | 'depth_first' | 'balanced';
+
+export interface EvolutionSettings {
+  project_id: string;
+  evolution_mode: EvolutionMode;
+  frontier_policy: FrontierPolicy;
+  max_findings?: number;
+}
+
+export interface LedgerFinding {
+  id: string;
+  area: string;
+  name: string;
+  description?: string;
+  key_metric?: string;
+  sql?: string;
+  evidence?: string;
+  severity: string;
+  status: string; // confirmed | monitoring | changed | resolved | refuted
+  affected_count?: number;
+  seen_count: number;
+  liked?: boolean;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface LedgerTask {
+  id: string;
+  text: string;
+  kind: string; // next_task | hypothesis
+  status: string;
+}
+
+export interface LedgerCoverage {
+  explored_tables: string[];
+  area_depth?: Record<string, number>;
+  total_tables: number;
+  summary: string;
+}
+
+export interface ConvergencePoint {
+  run_id: string;
+  new_findings: number;
+  total_findings: number;
+  marginal_ratio: number;
+  date: string;
+}
+
+export interface LedgerView {
+  coverage: LedgerCoverage;
+  convergence: ConvergencePoint[];
+  findings: LedgerFinding[];
+  tasks: LedgerTask[];
+}
+
+export interface PackProposal {
+  id: string;
+  project_id: string;
+  action: string; // add_area | edit_area | disable_area | enable_area
+  area_id: string;
+  area_name?: string;
+  prompt?: string;
+  keywords?: string[];
+  rationale: string;
+  status: string; // proposed | approved | rejected | applied | reverted
+  decided_by?: string;
+  decided_at?: string;
+  applied_at?: string;
+  created_at: string;
+}
+
 export interface DiscoveryQuestion {
   id: string;
   project_id: string;
@@ -1370,6 +1448,29 @@ export const api = {
     request<DiscoveryQuestion>(`/api/v1/projects/${projectId}/discovery-questions/${questionId}/dismiss`, {
       method: 'POST',
     }),
+
+  // Compounding discovery — evolution settings + Discovery Ledger (enterprise-
+  // backed; the routes 404 on community builds, so callers .catch() and hide).
+  getEvolutionSettings: (projectId: string) =>
+    request<EvolutionSettings>(`/api/v1/projects/${projectId}/discovery-evolution`),
+  updateEvolutionSettings: (
+    projectId: string,
+    data: { evolution_mode: EvolutionMode; frontier_policy: FrontierPolicy; max_findings?: number },
+  ) =>
+    request<EvolutionSettings>(`/api/v1/projects/${projectId}/discovery-evolution`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+  getLedger: (projectId: string) =>
+    request<LedgerView>(`/api/v1/projects/${projectId}/discovery-ledger`),
+  listPackProposals: (projectId: string, status?: string) => {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request<PackProposal[]>(`/api/v1/projects/${projectId}/discovery-ledger/proposals${suffix}`);
+  },
+  decidePackProposal: (projectId: string, proposalId: string, action: 'approve' | 'reject' | 'revert') =>
+    request<PackProposal>(
+      `/api/v1/projects/${projectId}/discovery-ledger/proposals/${proposalId}/${action}`,
+      { method: 'POST' },
+    ),
 
   // Cost estimation
   estimateCost: (projectId: string, opts?: { areas?: string[]; max_steps?: number }) =>
