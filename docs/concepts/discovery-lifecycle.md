@@ -137,7 +137,16 @@ Two properties are worth knowing when reading a run:
 - **Novelty is judged within one datasource.** The same question asked of a second source returns different data, so it is new ground rather than a repeat — and a multi-datasource run asks parallel questions across its sources deliberately. Steps are only scored against earlier steps that queried the same datasource.
 - **A query that failed is not evidence either.** It returned no data, so it says nothing about what the source has left to give, and re-asking a broken request is a model that is stuck rather than a run that is finished. Failed steps are also skipped when scoring later steps, so a retry is never counted as a repeat of the attempt it retries. A run whose queries all fail therefore falls back to `--min-steps` rather than exploring to the cap.
 
-Whether a run takes this path is decided from the registered shape of its datasources' providers, and is logged at exploration start. A run that can only reach tables behaves exactly as it always has.
+Whether a run takes this path is decided from the registered shape of its datasources' providers, and is logged at exploration start.
+
+> **Testing note.** The Qdrant-backed tests for the run-scoped step index and
+> the novelty lookup live behind the `integration` build tag in
+> `services/agent/internal/discovery`. That package is **not** in CI's
+> integration job, so those tests run only where someone runs them —
+> `cd services/agent && go test -tags=integration ./internal/discovery/`.
+> Adding the package to CI was tried and reverted: a pre-existing test there
+> fails on a Qdrant gRPC connection reset when its container is started on a
+> CI runner, which needs its own investigation. A run that can only reach tables behaves exactly as it always has.
 
 **Step types reported to the dashboard:**
 - `query` — SQL query executed (with thinking, SQL, row count, timing)
