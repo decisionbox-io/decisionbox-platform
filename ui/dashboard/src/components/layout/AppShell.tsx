@@ -224,7 +224,7 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
             <NavItem
               href="/domain-packs"
               icon={<IconPackages size={16} />}
-              label="Domain Packs"
+              label="Playbooks"
               active={pathname?.startsWith('/domain-packs') ?? false}
             />
             <NavItem
