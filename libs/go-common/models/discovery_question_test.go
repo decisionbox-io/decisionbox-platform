@@ -28,7 +28,13 @@ func TestNormalizedQuestionKey(t *testing.T) {
 // what lets an answered/dismissed question stay suppressed. The key is text-only.
 func TestNormalizedQuestionKey_StableAcrossRunScopedTargets(t *testing.T) {
 	q := "does code 4 mean closed"
-	if NormalizedQuestionKey(q) != NormalizedQuestionKey(q) {
+	// Two independent computations over the same text must agree — a guard
+	// against anyone folding a non-deterministic input (time, randomness, map
+	// iteration order) into the key. Kept as two named results so it reads as a
+	// real determinism check rather than the tautology `f(x) != f(x)`.
+	k1 := NormalizedQuestionKey(q)
+	k2 := NormalizedQuestionKey(q)
+	if k1 != k2 {
 		t.Fatalf("key must be deterministic for the same text")
 	}
 	// (The dedup set keys on text only, so a re-linked question still matches.)
