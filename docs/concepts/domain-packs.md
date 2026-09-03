@@ -1,4 +1,7 @@
-# Domain Packs
+# Playbook / Domain Packs
+
+> In the DecisionBox dashboard these are called **Playbooks**.
+> "Playbook" and "domain pack" are the same thing — this reference keeps the name **domain pack** for the underlying JSON / API model, while the UI shows **Playbook**.
 
 Domain packs are DecisionBox's extensibility model. They define **what** the AI looks for and **how** it reasons about data for a specific industry. Without a domain pack, DecisionBox wouldn't know whether to look for churn patterns, cart abandonment rates, or supply chain bottlenecks.
 
