@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -366,7 +365,8 @@ func (r *SchemaCacheRepository) clearDatasourceCache(ctx context.Context, projec
 // entry_kind, so they are matched by its absence and are unaffected.
 const catalogEntryKind = "catalog"
 
-// SaveCatalog records the items a catalog source currently offers.
+// SaveCatalog records the refs a catalog source currently offers, and which of
+// them identify or group rows rather than measuring them.
 //
 // The refs are what makes a catalog datasource usable downstream: they are
 // the authority for "this datasource, at this config, offers exactly these
@@ -374,7 +374,7 @@ const catalogEntryKind = "catalog"
 // left in the shared vector collection by a datasource that has since been
 // removed — the index is not self-cleaning, and only a cache entry keyed by
 // the current config hash can say what is current.
-func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, items []gowarehouse.CatalogItem) error {
+func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs, dimensionRefs []string) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
 	}
@@ -393,17 +393,8 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
 		return err
 	}
-	if len(items) == 0 {
+	if len(refs) == 0 {
 		return nil
-	}
-
-	refs := make([]string, 0, len(items))
-	var dimensions []string
-	for _, it := range items {
-		refs = append(refs, it.Ref)
-		if it.Kind == gowarehouse.ItemKindDimension {
-			dimensions = append(dimensions, it.Ref)
-		}
 	}
 
 	_, err := r.col().InsertOne(ctx, CatalogCacheEntry{
@@ -412,7 +403,7 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 		WarehouseHash: warehouseHash,
 		EntryKind:     catalogEntryKind,
 		Refs:          refs,
-		DimensionRefs: dimensions,
+		DimensionRefs: dimensionRefs,
 		CachedAt:      time.Now().UTC(),
 	})
 	if err != nil {

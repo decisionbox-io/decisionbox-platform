@@ -27,7 +27,7 @@ type SchemaCache interface {
 // that consume it.
 type CatalogCache interface {
 	FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error)
-	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, items []warehouse.CatalogItem) error
+	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs, dimensionRefs []string) error
 }
 
 // The real cache must satisfy it. Asserted at compile time because every use of

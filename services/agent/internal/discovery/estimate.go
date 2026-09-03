@@ -120,7 +120,7 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 
 	// Validation phase: per insight (estimate 2 insights per area)
 	estimatedInsights := numAreas * 2
-	validationInputPerInsight := 500  // verification query prompt
+	validationInputPerInsight := 500 // verification query prompt
 	validationOutputPerInsight := 200
 	validationInputTokens := estimatedInsights * validationInputPerInsight
 	validationOutputTokens := estimatedInsights * validationOutputPerInsight
@@ -219,8 +219,8 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	}
 
 	applog.WithFields(applog.Fields{
-		"total_usd":    fmt.Sprintf("$%.4f", totalCost),
-		"llm_usd":      fmt.Sprintf("$%.4f", llmCostUSD),
+		"total_usd":     fmt.Sprintf("$%.4f", totalCost),
+		"llm_usd":       fmt.Sprintf("$%.4f", llmCostUSD),
 		"warehouse_usd": fmt.Sprintf("$%.4f", warehouseCostUSD),
 		"input_tokens":  totalInputTokens,
 		"output_tokens": totalOutputTokens,

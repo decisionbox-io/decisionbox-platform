@@ -6,19 +6,12 @@ import (
 	"context"
 	"testing"
 
-	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// dims renders refs as dimension items, which is what these cases are about —
-// the kind matters only to the tests that name it.
-func dims(refs ...string) []gowarehouse.CatalogItem {
-	out := make([]gowarehouse.CatalogItem, 0, len(refs))
-	for _, r := range refs {
-		out = append(out, gowarehouse.CatalogItem{Ref: r, Kind: gowarehouse.ItemKindDimension})
-	}
-	return out
-}
+// dims is refs that are all dimensions, which is what these cases are about —
+// the split matters only to the tests that name it.
+func dims(refs ...string) []string { return refs }
 
 const catalogTestProject = "catalog-cache-proj"
 
@@ -32,7 +25,7 @@ func TestAgentInteg_CatalogCache_RoundTrip(t *testing.T) {
 	r := NewSchemaCacheRepository(db)
 
 	refs := []string{"sessions", "activeUsers", "sessionDefaultChannelGroup"}
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims(refs...)); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims(refs...), dims(refs...)); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
 
@@ -69,7 +62,7 @@ func TestAgentInteg_CatalogCache_NotReadAsTableSchemas(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions")); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions"), dims("sessions")); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
 
@@ -105,7 +98,7 @@ func TestAgentInteg_CatalogCache_SaveOfEitherKindReplacesTheOther(t *testing.T) 
 		}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
-		if err := r.SaveCatalog(ctx, catalogTestProject, "moved", "hash-a", dims("sessions")); err != nil {
+		if err := r.SaveCatalog(ctx, catalogTestProject, "moved", "hash-a", dims("sessions"), dims("sessions")); err != nil {
 			t.Fatalf("SaveCatalog: %v", err)
 		}
 
@@ -123,7 +116,7 @@ func TestAgentInteg_CatalogCache_SaveOfEitherKindReplacesTheOther(t *testing.T) 
 	})
 
 	t.Run("a table save retracts the catalog", func(t *testing.T) {
-		if err := r.SaveCatalog(ctx, catalogTestProject, "moved-back", "hash-b", dims("sessions")); err != nil {
+		if err := r.SaveCatalog(ctx, catalogTestProject, "moved-back", "hash-b", dims("sessions"), dims("sessions")); err != nil {
 			t.Fatalf("SaveCatalog: %v", err)
 		}
 		if err := r.Save(ctx, catalogTestProject, "moved-back", "hash-b", map[string]models.TableSchema{
@@ -155,10 +148,10 @@ func TestAgentInteg_CatalogCache_ResaveReplaces(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions", "retiredMetric")); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions", "retiredMetric"), nil); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions")); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions"), dims("sessions")); err != nil {
 		t.Fatalf("SaveCatalog (resave): %v", err)
 	}
 
@@ -182,10 +175,10 @@ func TestAgentInteg_CatalogCache_EmptySaveClearsPriorRefs(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions", "retiredMetric")); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", dims("sessions", "retiredMetric"), nil); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", nil); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", nil, nil); err != nil {
 		t.Fatalf("SaveCatalog(empty): %v", err)
 	}
 
@@ -209,23 +202,19 @@ func TestAgentInteg_CatalogCache_KeepsDimensionsApartFromMetrics(t *testing.T) {
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	items := []gowarehouse.CatalogItem{
-		{Ref: "sessionDefaultChannelGroup", Kind: gowarehouse.ItemKindDimension},
-		{Ref: "customEvent:crm_id", Kind: gowarehouse.ItemKindDimension},
-		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric},
-		{Ref: "customEvent:score", Kind: gowarehouse.ItemKindMetric},
-	}
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", items); err != nil {
+	refs := []string{"sessionDefaultChannelGroup", "customEvent:crm_id", "sessions", "customEvent:score"}
+	dimensions := []string{"sessionDefaultChannelGroup", "customEvent:crm_id"}
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-a", refs, dimensions); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
 
 	// Everything is still searchable.
-	refs, err := r.FindCatalog(ctx, catalogTestProject, "ga", "hash-a")
+	got0, err := r.FindCatalog(ctx, catalogTestProject, "ga", "hash-a")
 	if err != nil {
 		t.Fatalf("FindCatalog: %v", err)
 	}
-	if len(refs) != 4 {
-		t.Errorf("FindCatalog = %v, want all four items", refs)
+	if len(got0) != 4 {
+		t.Errorf("FindCatalog = %v, want all four items", got0)
 	}
 
 	got, err := r.FindCatalogDimensions(ctx, catalogTestProject, "ga", "hash-a")
@@ -282,9 +271,7 @@ func TestAgentInteg_CatalogCache_AMetricOnlyCatalogYieldsNoDimensions(t *testing
 	ctx := context.Background()
 	r := NewSchemaCacheRepository(db)
 
-	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-m", []gowarehouse.CatalogItem{
-		{Ref: "sessions", Kind: gowarehouse.ItemKindMetric},
-	}); err != nil {
+	if err := r.SaveCatalog(ctx, catalogTestProject, "ga", "hash-m", []string{"sessions"}, nil); err != nil {
 		t.Fatalf("SaveCatalog: %v", err)
 	}
 	got, err := r.FindCatalogDimensions(ctx, catalogTestProject, "ga", "hash-m")
