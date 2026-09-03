@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import {
   Button, Checkbox, Group, Radio, SegmentedControl, Text, Textarea,
 } from '@mantine/core';
@@ -18,6 +19,26 @@ function answerTypeLabel(t: DiscoveryQuestion['answer_type']): string {
     case 'multi_choice': return 'Pick any';
     default: return 'Open answer';
   }
+}
+
+// TargetLink renders the "view insight / recommendation" jump shown under the
+// rationale. Only insight/recommendation targets have an on-page anchor to
+// scroll to, so table/area targets (or a missing handler) render nothing.
+function TargetLink({ target, onLinkClick }: {
+  target: DiscoveryQuestion['linked_target'];
+  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
+}) {
+  if (!onLinkClick || !target?.id) return null;
+  if (target.type !== 'insight' && target.type !== 'recommendation') return null;
+  return (
+    <>
+      {' · '}
+      <Text component="span" size="xs" c="blue" style={{ cursor: 'pointer' }}
+        onClick={() => onLinkClick(target)}>
+        view {target.type}
+      </Text>
+    </>
+  );
 }
 
 interface QuestionCardProps {
@@ -94,6 +115,13 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
     }
   };
 
+  // A resolved question (answered or dismissed) has no controls — it renders
+  // read-only so the review surfaces can show the full history, not just the
+  // still-open questions.
+  if (question.status !== 'pending') {
+    return <ResolvedQuestionCard projectId={projectId} question={question} onLinkClick={onLinkClick} />;
+  }
+
   return (
     <div style={{
       border: '1px solid var(--db-border)', borderRadius: 'var(--db-radius)',
@@ -109,19 +137,7 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
       {question.rationale && (
         <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 4 }}>
           {question.rationale}
-          {/* Only offer the jump link for target types the run-detail page can
-              actually scroll to (insight-* / recommendation-* anchors); table /
-              area targets have no anchor, so a link would silently no-op. */}
-          {onLinkClick && question.linked_target?.id
-            && (question.linked_target.type === 'insight' || question.linked_target.type === 'recommendation') && (
-            <>
-              {' · '}
-              <Text component="span" size="xs" c="blue" style={{ cursor: 'pointer' }}
-                onClick={() => onLinkClick(question.linked_target)}>
-                view {question.linked_target.type}
-              </Text>
-            </>
-          )}
+          <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
         </div>
       )}
 
@@ -172,6 +188,69 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
         <Button size="xs" onClick={submit} loading={busy}>Submit</Button>
         <Button size="xs" variant="subtle" color="gray" onClick={dismiss} disabled={busy}>Dismiss</Button>
       </Group>
+    </div>
+  );
+}
+
+// ResolvedQuestionCard is the read-only view of an answered or dismissed
+// question, used on the review page + insight page so analysts can see the
+// history, not just the open questions. Answered cards show the recorded answer
+// and a link to the knowledge base, where the materialized note can be edited.
+function ResolvedQuestionCard({ projectId, question, onLinkClick }: {
+  projectId: string;
+  question: DiscoveryQuestion;
+  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
+}) {
+  const answered = question.status === 'answered';
+  const when = question.answered_at || question.updated_at;
+  const note = question.answer_note && question.answer_note !== question.answer
+    ? question.answer_note : '';
+  return (
+    <div style={{
+      border: '1px solid var(--db-border)', borderRadius: 'var(--db-radius)',
+      padding: 14, marginBottom: 10, background: 'var(--db-bg-surface)',
+      opacity: answered ? 1 : 0.72,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>{question.question}</div>
+        <span style={{
+          fontSize: 11, whiteSpace: 'nowrap', padding: '1px 7px', borderRadius: 'var(--db-radius)',
+          height: 'fit-content',
+          background: answered ? 'var(--db-green-bg, #e6f4ea)' : 'var(--db-bg-muted)',
+          color: answered ? 'var(--db-green-text, #1e7d34)' : 'var(--db-text-secondary)',
+        }}>{answered ? 'Answered' : 'Dismissed'}</span>
+      </div>
+      {question.rationale && (
+        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 4 }}>
+          {question.rationale}
+          <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
+        </div>
+      )}
+      {answered ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{
+            fontSize: 13, color: 'var(--db-text-primary)', background: 'var(--db-bg-muted)',
+            borderRadius: 'var(--db-radius)', padding: '8px 10px',
+          }}>
+            <span style={{ color: 'var(--db-text-tertiary)', marginRight: 6 }}>Answer:</span>
+            {question.answer || '—'}
+            {note && (
+              <div style={{ marginTop: 4, color: 'var(--db-text-secondary)' }}>{note}</div>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', marginTop: 6 }}>
+            {when && <>Answered {new Date(when).toLocaleDateString()}
+              {question.answered_by ? ` by ${question.answered_by}` : ''} · </>}
+            <Link href={`/projects/${projectId}/sources`} style={{ color: 'var(--db-blue-text, #2563eb)' }}>
+              Edit in Knowledge Sources →
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 8, fontStyle: 'italic' }}>
+          Dismissed — not sent to the next run.
+        </div>
+      )}
     </div>
   );
 }

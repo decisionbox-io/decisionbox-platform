@@ -845,7 +845,14 @@ export interface DiscoveryQuestion {
   answer?: string;
   answer_option_ids?: string[];
   answer_note?: string;
+  // Populated once the question is resolved. answer_source_id links the answer
+  // to the knowledge-base note it created, so the review surfaces can point the
+  // analyst at the note they can edit.
+  answered_by?: string;
+  answered_at?: string;
+  answer_source_id?: string;
   created_at: string;
+  updated_at?: string;
 }
 
 // Payload for answering: send only the fields the answer_type needs; the server

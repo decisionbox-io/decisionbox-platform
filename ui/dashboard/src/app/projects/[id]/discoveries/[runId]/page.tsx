@@ -19,7 +19,7 @@ import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import UnreadDot from '@/components/common/UnreadDot';
-import QuestionsPanel from '@/components/common/QuestionsPanel';
+import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
 import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 
@@ -229,12 +229,16 @@ export default function DiscoveryDetailPage() {
         </div>
       </div>
 
-      {/* Questions the agent raised for this run — answer to sharpen the next one. */}
-      <QuestionsPanel
+      {/* Questions the agent raised — a collapsible right-edge drawer (default
+          open) rather than an inline block, so the main column keeps its width.
+          Renders nothing when there are no pending questions. */}
+      <QuestionsDrawer
         projectId={id}
         questions={questions}
         onResolved={(qid) => setQuestions((prev) => prev.filter((q) => q.id !== qid))}
         onLinkClick={scrollToTarget}
+        storageKey="dbx-questions-drawer-run"
+        viewAllHref={`/projects/${id}/questions`}
       />
 
       {/* Hero KPI Cards */}

@@ -79,6 +79,27 @@ describe('QuestionCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(api.answerQuestion).toHaveBeenCalledWith('p1', 'q1', { answer: 'closed flag' }));
   });
+
+  it('renders answered questions read-only with the recorded answer + a KB link, no controls', () => {
+    wrap(<QuestionCard projectId="p1" question={q({
+      status: 'answered', answer: 'Yes, code 4 means closed', answered_at: '2026-09-01T00:00:00Z',
+    })} onResolved={jest.fn()} />);
+    expect(screen.getByText('Answered')).toBeInTheDocument();
+    expect(screen.getByText(/Yes, code 4 means closed/)).toBeInTheDocument();
+    // No answer controls / buttons on a resolved card.
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
+    // Points at the knowledge base where the materialized note can be edited.
+    expect(screen.getByText('Edit in Knowledge Sources →').closest('a'))
+      .toHaveAttribute('href', '/projects/p1/sources');
+  });
+
+  it('renders dismissed questions read-only with a muted note', () => {
+    wrap(<QuestionCard projectId="p1" question={q({ status: 'dismissed' })} onResolved={jest.fn()} />);
+    expect(screen.getByText('Dismissed')).toBeInTheDocument();
+    expect(screen.getByText(/not sent to the next run/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+  });
 });
 
 describe('QuestionsPanel', () => {
