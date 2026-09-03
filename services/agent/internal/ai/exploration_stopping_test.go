@@ -200,14 +200,25 @@ func TestRepeatsEarlierWork_ThresholdAndFailureModes(t *testing.T) {
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{repeatSimilarityThreshold}, found: []bool{true}}},
 			repeated: true, judgeable: true,
 		},
-		"no neighbour to compare against": {
+		"no neighbour, with steps already stored": {
 			// Judged, not unjudgeable: a step with nothing like it cannot be
 			// repeating anything. Neighbours are scoped per datasource, so
 			// this is the ordinary case on a run's first query against each
 			// source — reading it as a measurement failure would disarm the
 			// rule before it judged anything.
-			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{0}, found: []bool{false}}},
+			engine: &ExplorationEngine{
+				stepIndexer:  &countingIndexer{scores: []float64{0}, found: []bool{false}},
+				stepsIndexed: 4,
+			},
 			repeated: false, judgeable: true,
+		},
+		"no neighbour, because nothing has been stored": {
+			// The same empty answer, meaning the opposite. A run whose index
+			// writes are failing while its reads succeed would otherwise
+			// record every step as new ground, keep the rule armed on that
+			// evidence, and refuse every completion until the runaway cap.
+			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{0}, found: []bool{false}}},
+			repeated: false, judgeable: false,
 		},
 		"the index failed": {
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{err: errors.New("qdrant unreachable")}},
@@ -326,5 +337,27 @@ func TestStopRule_FirstQueriesAcrossDatasourcesDoNotDisarmTheRule(t *testing.T) 
 	}
 	if reason != "productive" {
 		t.Errorf("refusal reason = %q, want the novelty rule to still own the decision", reason)
+	}
+}
+
+// TestNewExplorationEngine_NoIndexMeansNoNoveltyRule pins the wiring contract.
+// A run asked for the novelty rule but given no index cannot measure anything,
+// so leaving the rule armed would refuse every completion until the runaway
+// cap on the strength of a question never asked.
+func TestNewExplorationEngine_NoIndexMeansNoNoveltyRule(t *testing.T) {
+	withIndex := NewExplorationEngine(ExplorationEngineOptions{
+		StopOnNoNewSignal: true,
+		StepIndexer:       &countingIndexer{},
+	})
+	if !withIndex.stop.byNovelty {
+		t.Error("a cube run with an index did not get the novelty rule")
+	}
+
+	without := NewExplorationEngine(ExplorationEngineOptions{StopOnNoNewSignal: true, MinSteps: 5})
+	if without.stop.byNovelty {
+		t.Error("a run with no step index was armed with a rule it cannot measure")
+	}
+	if without.stop.minSteps != 5 {
+		t.Errorf("the floor it falls back to was lost: %d", without.stop.minSteps)
 	}
 }

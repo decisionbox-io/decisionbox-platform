@@ -229,17 +229,22 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 		return false, false
 	}
 	if !found {
-		// Nothing to compare against is an ANSWER, not a failure to answer:
-		// a step with no neighbour cannot be repeating anything, so it broke
-		// new ground by definition.
+		// Nothing to compare against means two different things, and only the
+		// index's own state tells them apart.
 		//
-		// It has to be counted that way, because it is ordinary. Neighbours
-		// are scoped to one datasource, so the first query against each
-		// source legitimately has none — and on a run across three sources,
-		// reading those as failures to measure would disarm the rule before
-		// it had judged a single step and hand a completion back to a floor
-		// that usually is not set.
-		return false, true
+		// Once something has been stored, it is an ANSWER: this step has no
+		// neighbour, so it cannot be repeating anything and broke new ground
+		// by definition. It has to be counted that way because it is
+		// ordinary — neighbours are scoped to one datasource, so the first
+		// query against each source legitimately has none, and reading those
+		// as failures would disarm the rule before it judged a single step.
+		//
+		// Before anything has been stored it is the opposite: the search came
+		// back empty because the index is empty, which says nothing about
+		// this step. A run whose writes are failing while its reads succeed
+		// would otherwise record every step as novel, keep the rule armed on
+		// that evidence, and refuse every completion until the runaway cap.
+		return false, e.stepsIndexed > 0
 	}
 	return score >= repeatSimilarityThreshold, true
 }

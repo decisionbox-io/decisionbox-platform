@@ -102,6 +102,12 @@ type ExplorationEngine struct {
 	// to the model so a misconfigured run doesn't crash the loop.
 	schemaProvider SchemaProvider
 
+	// stepsIndexed counts steps the run-scoped index accepted. Read by the
+	// stopping rule: a search that comes back empty means "nothing like this
+	// has been asked" only once something has successfully been stored, and
+	// means "the index is not holding anything" before that.
+	stepsIndexed int
+
 	// stepIndexer ships each completed step to the run-scoped vector
 	// index. Optional — when nil the engine continues without
 	// indexing, which downgrades the analysis phase to keyword-only
@@ -398,7 +404,11 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		tableDatasource:   opts.TableDatasource,
 		maxSteps:          opts.MaxSteps,
 		minSteps:          opts.MinSteps,
-		stop:              stopRule{minSteps: opts.MinSteps, byNovelty: opts.StopOnNoNewSignal},
+		// Not armed without an index: the rule cannot measure anything, so
+		// it would reject every completion until the runaway cap while
+		// reporting a reason that had never been evaluated. A run wired
+		// this way keeps the floor, which is what the option documents.
+		stop:              stopRule{minSteps: opts.MinSteps, byNovelty: opts.StopOnNoNewSignal && opts.StepIndexer != nil},
 		dataset:           opts.Dataset,
 		onStep:            opts.OnStep,
 		schemaProvider:    opts.SchemaProvider,
@@ -661,6 +671,12 @@ func (e *ExplorationEngine) Explore(
 					"step":  step,
 					"error": err.Error(),
 				}).Warn("Run-step index upsert failed; analysis ranking quality will degrade for this step")
+			} else {
+				// What the index is actually holding. The stopping rule reads
+				// it to tell "this run has found nothing like this before"
+				// from "this index is not storing anything" — the two look
+				// identical from a search, and only one of them is evidence.
+				e.stepsIndexed++
 			}
 		}
 
