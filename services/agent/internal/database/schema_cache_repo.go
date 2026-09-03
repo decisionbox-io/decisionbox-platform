@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -313,6 +314,22 @@ type CatalogCacheEntry struct {
 	EntryKind     string    `bson:"entry_kind"`
 	Refs          []string  `bson:"refs"`
 	CachedAt      time.Time `bson:"cached_at"`
+
+	// DimensionRefs are the subset of Refs that identify or group rows, as
+	// opposed to measuring them.
+	//
+	// Kept separately because Refs alone cannot answer "could this field
+	// identify a record?" — a catalog names dimensions and metrics in one flat
+	// list, and a source may spell them alike: a GA4 custom metric and a custom
+	// event-scoped dimension are both customEvent:<name>. Anything deciding
+	// whether a field can bind two datasources has to read this rather than
+	// Refs, because a metric is a measure and joining on one is meaningless.
+	//
+	// Omitted when empty, and absent entirely on rows written before this
+	// existed. A reader must treat absence as "not known", never as "no
+	// dimensions" — the two are opposite answers and only a re-index tells
+	// them apart.
+	DimensionRefs []string `bson:"dimension_refs,omitempty"`
 }
 
 // notCatalogCond matches a table entry: one written without an entry_kind.
@@ -349,7 +366,7 @@ func (r *SchemaCacheRepository) clearDatasourceCache(ctx context.Context, projec
 // entry_kind, so they are matched by its absence and are unaffected.
 const catalogEntryKind = "catalog"
 
-// SaveCatalog records the refs a catalog source currently offers.
+// SaveCatalog records the items a catalog source currently offers.
 //
 // The refs are what makes a catalog datasource usable downstream: they are
 // the authority for "this datasource, at this config, offers exactly these
@@ -357,7 +374,7 @@ const catalogEntryKind = "catalog"
 // left in the shared vector collection by a datasource that has since been
 // removed — the index is not self-cleaning, and only a cache entry keyed by
 // the current config hash can say what is current.
-func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs []string) error {
+func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, items []gowarehouse.CatalogItem) error {
 	if projectID == "" {
 		return errors.New("projectID is required")
 	}
@@ -376,8 +393,17 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 	if err := r.clearDatasourceCache(ctx, projectID, warehouseID); err != nil {
 		return err
 	}
-	if len(refs) == 0 {
+	if len(items) == 0 {
 		return nil
+	}
+
+	refs := make([]string, 0, len(items))
+	var dimensions []string
+	for _, it := range items {
+		refs = append(refs, it.Ref)
+		if it.Kind == gowarehouse.ItemKindDimension {
+			dimensions = append(dimensions, it.Ref)
+		}
 	}
 
 	_, err := r.col().InsertOne(ctx, CatalogCacheEntry{
@@ -386,6 +412,7 @@ func (r *SchemaCacheRepository) SaveCatalog(ctx context.Context, projectID, ware
 		WarehouseHash: warehouseHash,
 		EntryKind:     catalogEntryKind,
 		Refs:          refs,
+		DimensionRefs: dimensions,
 		CachedAt:      time.Now().UTC(),
 	})
 	if err != nil {
@@ -420,4 +447,36 @@ func (r *SchemaCacheRepository) FindCatalog(ctx context.Context, projectID, ware
 		return nil, fmt.Errorf("catalog cache find: %w", err)
 	}
 	return entry.Refs, nil
+}
+
+// FindCatalogDimensions returns the subset of a catalog's items that identify
+// or group rows, or nil when nothing is known.
+//
+// Nil is returned for a row written before dimension_refs existed as well as
+// for no row at all, and both mean the same thing to a caller: this datasource
+// is not indexed as far as this question is concerned. Falling back to Refs
+// would be worse than answering nothing — it would hand back metrics as though
+// they had been checked.
+func (r *SchemaCacheRepository) FindCatalogDimensions(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error) {
+	if projectID == "" || warehouseHash == "" {
+		return nil, nil
+	}
+	if warehouseID == "" {
+		warehouseID = models.DefaultWarehouseID
+	}
+
+	var entry CatalogCacheEntry
+	err := r.col().FindOne(ctx, bson.M{
+		"project_id":     projectID,
+		"warehouse_id":   warehouseIDCond(warehouseID),
+		"warehouse_hash": warehouseHash,
+		"entry_kind":     catalogEntryKind,
+	}).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("catalog dimensions find: %w", err)
+	}
+	return entry.DimensionRefs, nil
 }

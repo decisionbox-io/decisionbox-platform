@@ -29,7 +29,11 @@ func (c *retractingCache) FindCatalog(context.Context, string, string, string) (
 	return nil, nil
 }
 
-func (c *retractingCache) SaveCatalog(_ context.Context, _, _, _ string, refs []string) error {
+func (c *retractingCache) SaveCatalog(_ context.Context, _, _, _ string, items []gowarehouse.CatalogItem) error {
+	refs := make([]string, 0, len(items))
+	for _, it := range items {
+		refs = append(refs, it.Ref)
+	}
 	c.saved = append(c.saved, refs)
 	c.savedOnce = true
 	return nil

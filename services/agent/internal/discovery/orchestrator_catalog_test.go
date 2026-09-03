@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -24,7 +25,7 @@ func (c *catalogStubCache) FindCatalog(context.Context, string, string, string) 
 	return c.refs, nil
 }
 
-func (c *catalogStubCache) SaveCatalog(context.Context, string, string, string, []string) error {
+func (c *catalogStubCache) SaveCatalog(context.Context, string, string, string, []gowarehouse.CatalogItem) error {
 	return nil
 }
 

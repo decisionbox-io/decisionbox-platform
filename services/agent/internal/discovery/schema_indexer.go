@@ -553,11 +553,9 @@ func (si *SchemaIndexer) buildCatalogIndex(ctx context.Context, opts IndexOption
 	// usable index that consumers will treat as unindexed until the next run,
 	// which is the safe direction. Losing the points would not be.
 	if cc, ok := si.Cache.(CatalogCache); ok && si.WarehouseHash != "" {
-		refs := make([]string, 0, len(indexable))
-		for _, it := range indexable {
-			refs = append(refs, it.Ref)
-		}
-		if err := cc.SaveCatalog(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash, refs); err != nil {
+		// The items rather than their refs: the cache records which of them are
+		// dimensions, and that is only knowable here.
+		if err := cc.SaveCatalog(ctx, opts.ProjectID, si.WarehouseID, si.WarehouseHash, indexable); err != nil {
 			applog.WithError(err).Warn("schema_indexer: catalog cache save failed; consumers will treat this datasource as unindexed until the next run")
 		}
 	}

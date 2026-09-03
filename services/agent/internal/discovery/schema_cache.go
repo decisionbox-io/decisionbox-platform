@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -26,8 +27,15 @@ type SchemaCache interface {
 // that consume it.
 type CatalogCache interface {
 	FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error)
-	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs []string) error
+	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, items []warehouse.CatalogItem) error
 }
+
+// The real cache must satisfy it. Asserted at compile time because every use of
+// this interface is a type assertion: a repository that stops matching does not
+// fail to build, it silently stops being a CatalogCache, and the index run then
+// remembers nothing while reporting success. Changing SaveCatalog's signature
+// did exactly that to two test fakes, which is how this line came to be here.
+var _ CatalogCache = (*database.SchemaCacheRepository)(nil)
 
 // CatalogRefsFor reads a datasource's catalog refs from the cache, returning
 // nil when there are none to read.
