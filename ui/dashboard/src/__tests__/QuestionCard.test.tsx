@@ -13,6 +13,7 @@ jest.mock('@/lib/api', () => ({
   api: {
     answerQuestion: jest.fn().mockResolvedValue({}),
     dismissQuestion: jest.fn().mockResolvedValue({}),
+    getDiscoveryById: jest.fn().mockResolvedValue({ insights: [], recommendations: [] }),
   },
 }));
 

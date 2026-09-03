@@ -12,7 +12,6 @@ interface QuestionsPanelProps {
   projectId: string;
   questions: DiscoveryQuestion[];
   onResolved: (id: string) => void;
-  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
   // hideHeader suppresses the built-in SectionHeader — used inside QuestionsDrawer,
   // which renders its own header + collapse control.
   hideHeader?: boolean;
@@ -24,7 +23,7 @@ interface QuestionsPanelProps {
 // there are no questions, so it's safe to always mount (community builds, or a
 // clean run, simply show nothing).
 export default function QuestionsPanel({
-  projectId, questions, onResolved, onLinkClick, hideHeader, intro,
+  projectId, questions, onResolved, hideHeader, intro,
 }: QuestionsPanelProps) {
   if (!questions || questions.length === 0) return null;
   const introContent = intro === undefined ? DEFAULT_INTRO : intro;
@@ -37,7 +36,7 @@ export default function QuestionsPanel({
         </div>
       )}
       {questions.map((qn) => (
-        <QuestionCard key={qn.id} projectId={projectId} question={qn} onResolved={onResolved} onLinkClick={onLinkClick} />
+        <QuestionCard key={qn.id} projectId={projectId} question={qn} onResolved={onResolved} />
       ))}
     </div>
   );

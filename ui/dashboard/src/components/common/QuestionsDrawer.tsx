@@ -10,7 +10,6 @@ interface QuestionsDrawerProps {
   projectId: string;
   questions: DiscoveryQuestion[];
   onResolved: (id: string) => void;
-  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
   title?: string;
   // storageKey persists the collapsed choice across navigations so the analyst
   // isn't forced to re-collapse it on every page. Distinct keys let the run and
@@ -29,7 +28,7 @@ const DRAWER_WIDTH = 380;
 // that reopens on click. Renders nothing when there are no questions, so it's
 // safe to always mount.
 export default function QuestionsDrawer({
-  projectId, questions, onResolved, onLinkClick, title = 'Questions to answer',
+  projectId, questions, onResolved, title = 'Questions to answer',
   storageKey = 'dbx-questions-drawer', viewAllHref,
 }: QuestionsDrawerProps) {
   // Default open; a lazy initializer restores the last collapse choice so the
@@ -118,7 +117,6 @@ export default function QuestionsDrawer({
           projectId={projectId}
           questions={questions}
           onResolved={onResolved}
-          onLinkClick={onLinkClick}
           hideHeader
         />
       </div>

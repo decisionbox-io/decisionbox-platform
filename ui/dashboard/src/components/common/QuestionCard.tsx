@@ -3,9 +3,10 @@
 import { CSSProperties, useState } from 'react';
 import Link from 'next/link';
 import {
-  Button, Checkbox, Group, Radio, SegmentedControl, Text, Textarea,
+  Button, Checkbox, Group, Radio, SegmentedControl, Textarea,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import QuestionTargetLink from '@/components/common/QuestionTargetLink';
 import { api, DiscoveryQuestion, QuestionAnswerPayload } from '@/lib/api';
 
 const OTHER_ID = '__other';
@@ -36,37 +37,15 @@ function answerTypeLabel(t: DiscoveryQuestion['answer_type']): string {
   }
 }
 
-// TargetLink renders the "view insight / recommendation" jump shown under the
-// rationale. Only insight/recommendation targets have an on-page anchor to
-// scroll to, so table/area targets (or a missing handler) render nothing.
-function TargetLink({ target, onLinkClick }: {
-  target: DiscoveryQuestion['linked_target'];
-  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
-}) {
-  if (!onLinkClick || !target?.id) return null;
-  if (target.type !== 'insight' && target.type !== 'recommendation') return null;
-  return (
-    <>
-      {' · '}
-      <Text component="span" size="xs" c="blue" style={{ cursor: 'pointer' }}
-        onClick={() => onLinkClick(target)}>
-        view {target.type}
-      </Text>
-    </>
-  );
-}
-
 interface QuestionCardProps {
   projectId: string;
   question: DiscoveryQuestion;
   // onResolved fires after a successful answer or dismiss so the parent can drop
   // the card and update its pending count.
   onResolved: (id: string) => void;
-  // onLinkClick scrolls to the finding the question is about, when present.
-  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
 }
 
-export default function QuestionCard({ projectId, question, onResolved, onLinkClick }: QuestionCardProps) {
+export default function QuestionCard({ projectId, question, onResolved }: QuestionCardProps) {
   const [bool, setBool] = useState<string | null>(null);
   const [single, setSingle] = useState<string | null>(null);
   const [multi, setMulti] = useState<string[]>([]);
@@ -134,7 +113,7 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
   // read-only so the review surfaces can show the full history, not just the
   // still-open questions.
   if (question.status !== 'pending') {
-    return <ResolvedQuestionCard projectId={projectId} question={question} onLinkClick={onLinkClick} />;
+    return <ResolvedQuestionCard projectId={projectId} question={question} />;
   }
 
   return (
@@ -149,7 +128,7 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
       {question.rationale && (
         <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
           {question.rationale}
-          <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
+          <QuestionTargetLink projectId={projectId} discoveryId={question.discovery_id} target={question.linked_target} />
         </div>
       )}
 
@@ -208,10 +187,9 @@ export default function QuestionCard({ projectId, question, onResolved, onLinkCl
 // question, used on the review page + insight page so analysts can see the
 // history, not just the open questions. Answered cards show the recorded answer
 // and a link to the knowledge base, where the materialized note can be edited.
-function ResolvedQuestionCard({ projectId, question, onLinkClick }: {
+function ResolvedQuestionCard({ projectId, question }: {
   projectId: string;
   question: DiscoveryQuestion;
-  onLinkClick?: (target: DiscoveryQuestion['linked_target']) => void;
 }) {
   const answered = question.status === 'answered';
   const when = question.answered_at || question.updated_at;
@@ -234,7 +212,7 @@ function ResolvedQuestionCard({ projectId, question, onLinkClick }: {
       {question.rationale && (
         <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
           {question.rationale}
-          <TargetLink target={question.linked_target} onLinkClick={onLinkClick} />
+          <QuestionTargetLink projectId={projectId} discoveryId={question.discovery_id} target={question.linked_target} />
         </div>
       )}
       {answered ? (

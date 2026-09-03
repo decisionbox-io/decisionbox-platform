@@ -112,20 +112,6 @@ export default function DiscoveryDetailPage() {
     return () => clearInterval(timer);
   }, [loading, discovery, id]);
 
-  // Jump to the insight / recommendation a question is about. Reveal collapsed /
-  // filtered sections first so an on-page target can always be reached (recs past
-  // the first few are hidden until showAllRecs; insights can be severity-filtered
-  // out). A target from an earlier run isn't on this page and simply won't scroll.
-  const scrollToTarget = (target: DiscoveryQuestion['linked_target']) => {
-    setShowAllRecs(true);
-    setSeverityFilter('All');
-    // Wait for the re-render that reveals the target, then scroll to it.
-    setTimeout(() => {
-      const el = document.getElementById(`${target.type}-${target.id}`);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-  };
-
   const handleFeedbackUpdate = (targetType: string, targetId: string, fb: Feedback | null) => {
     const key = `${targetType}:${targetId}`;
     setFeedbackMap((prev) => {
@@ -236,7 +222,6 @@ export default function DiscoveryDetailPage() {
         projectId={id}
         questions={questions}
         onResolved={(qid) => setQuestions((prev) => prev.filter((q) => q.id !== qid))}
-        onLinkClick={scrollToTarget}
         storageKey="dbx-questions-drawer-run"
         viewAllHref={`/projects/${id}/questions`}
       />

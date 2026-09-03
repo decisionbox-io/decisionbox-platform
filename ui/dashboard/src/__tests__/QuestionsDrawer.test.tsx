@@ -9,7 +9,11 @@ import { DiscoveryQuestion } from '@/lib/api';
 
 jest.mock('@mantine/notifications', () => ({ notifications: { show: jest.fn() } }));
 jest.mock('@/lib/api', () => ({
-  api: { answerQuestion: jest.fn().mockResolvedValue({}), dismissQuestion: jest.fn().mockResolvedValue({}) },
+  api: {
+    answerQuestion: jest.fn().mockResolvedValue({}),
+    dismissQuestion: jest.fn().mockResolvedValue({}),
+    getDiscoveryById: jest.fn().mockResolvedValue({ insights: [], recommendations: [] }),
+  },
 }));
 
 function wrap(ui: React.ReactElement) {
