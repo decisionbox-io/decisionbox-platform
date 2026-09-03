@@ -264,6 +264,13 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			continue
 		}
 		newCount++
+		// Register the just-inserted finding so a LATER candidate in the same run
+		// with the same key merges into it (bumping seen_count) instead of writing
+		// a duplicate doc and inflating newCount / the convergence signal. cand is
+		// a per-iteration variable, so &cand is a distinct, heap-escaped pointer.
+		inserted := cand
+		priorByKey[inserted.NormalizedKey] = &inserted
+		priorByID[inserted.ID] = &inserted
 		if vec != nil {
 			toIndex = append(toIndex, indexItem{finding: cand, vector: vec})
 		}
@@ -649,36 +656,30 @@ func (o *Orchestrator) applyPackProposals(ctx context.Context, result *models.Di
 	}
 }
 
-// --- SQL literal masking (defense in depth — no warehouse PII in the ledger) ---
+// --- SQL literal masking (no warehouse PII in the ledger) ---
 
-var multiDigitRun = regexp.MustCompile(`\d{4,}`)
+var (
+	// sqlStringLiteral matches a whole single-quoted SQL string literal,
+	// including the two escape forms real warehouses use: a doubled quote
+	// (ANSI `''`) and a backslash escape (BigQuery / MySQL `\'`). Consuming
+	// the entire literal in one match — rather than toggling on each `'` —
+	// is what prevents a `'it\'s secret'` value from leaking its tail when a
+	// naive scanner mistakes the escaped quote for the terminator.
+	sqlStringLiteral = regexp.MustCompile(`'(?:[^'\\]|\\.|'')*'`)
+	// multiDigitRun masks long digit runs (ids, phone numbers, etc.).
+	multiDigitRun = regexp.MustCompile(`\d{4,}`)
+)
 
 // maskSQLLiterals replaces single-quoted string literals with '?' and long digit
-// runs with ?, so PII in WHERE clauses never lands in stored SQL. Best-effort;
-// the enterprise handler masks again on the way out.
+// runs with ?, so PII in WHERE clauses never lands in stored SQL. This is the
+// sole masking of ledger SQL, so it must be correct on every dialect's escape
+// syntax (see sqlStringLiteral).
 func maskSQLLiterals(sql string) string {
 	if sql == "" {
 		return ""
 	}
-	var b strings.Builder
-	inStr := false
-	for i := 0; i < len(sql); i++ {
-		c := sql[i]
-		if c == '\'' {
-			if !inStr {
-				b.WriteString("'?'")
-				inStr = true
-			} else {
-				inStr = false
-			}
-			continue
-		}
-		if inStr {
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return multiDigitRun.ReplaceAllString(b.String(), "?")
+	masked := sqlStringLiteral.ReplaceAllString(sql, "'?'")
+	return multiDigitRun.ReplaceAllString(masked, "?")
 }
 
 // getEnvAsFloat reads a float env var with a default (go-common has no float

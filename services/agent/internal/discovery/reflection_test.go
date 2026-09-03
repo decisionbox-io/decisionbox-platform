@@ -391,3 +391,45 @@ func (s stubPolicy) Policy(context.Context, string) (agentplugin.DiscoveryPolicy
 	return agentplugin.DiscoveryPolicy{EvolutionMode: s.mode, FrontierPolicy: agentplugin.FrontierBalanced}, nil
 }
 func (stubPolicy) Name() string { return "stub" }
+
+// Regression: PII in a backslash-escaped string literal must be fully masked
+// (a naive quote-toggler leaks the tail on BigQuery/MySQL escapes).
+func TestMaskSQLLiterals_BackslashEscape(t *testing.T) {
+	cases := []string{
+		`SELECT * FROM t WHERE note = 'it''s a secret pii value'`,      // ANSI doubled-quote
+		`SELECT * FROM t WHERE note = 'it\'s a secret pii value here'`, // backslash escape
+		`SELECT email FROM u WHERE email = 'alice@example.com' LIMIT 10`,
+	}
+	for _, sql := range cases {
+		got := maskSQLLiterals(sql)
+		for _, leak := range []string{"secret pii value", "alice@example.com", "a secret pii value here"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("PII leaked through masking:\n in:  %s\n out: %s\n leak: %q", sql, got, leak)
+			}
+		}
+	}
+}
+
+// Regression: two insights with the same area+name in ONE run must merge into a
+// single ledger finding, not create two docs and double-count newCount.
+func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
+	fr := &fakeFindingRepo{}
+	o := &Orchestrator{projectID: "p1", findingRepo: fr}
+	result := &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 100},
+			{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 100}, // dup
+		},
+	}
+	newCount, total, err := o.consolidateFindings(context.Background(), result)
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if newCount != 1 {
+		t.Errorf("same-run duplicate should count as 1 new finding, got %d", newCount)
+	}
+	if total != 1 {
+		t.Errorf("total should be 1 (one deduped finding), got %d", total)
+	}
+}
