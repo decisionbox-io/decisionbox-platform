@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
