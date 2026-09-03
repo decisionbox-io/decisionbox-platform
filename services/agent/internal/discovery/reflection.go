@@ -284,7 +284,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 					ID:     it.finding.ID,
 					Vector: it.vector,
 					Payload: map[string]interface{}{
-						"type":            ledgerFindingVectorType,
+						"type":            commonmodels.LedgerFindingVectorType,
 						"project_id":      o.projectID,
 						"analysis_area":   it.finding.Area,
 						"severity":        it.finding.Severity,
@@ -305,17 +305,12 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	return newCount, totalCount, nil
 }
 
-// ledgerFindingVectorType is the `type` payload marker under which ledger
-// findings live in the shared decisionbox_<dims> Qdrant collection, so the
-// enterprise ledger retriever can filter to them (SearchOpts.Types).
-const ledgerFindingVectorType = "ledger_finding"
-
 // searchLedgerNeighbour returns the id of the nearest prior ledger finding above
 // minScore, or "" when there is none. Best-effort — a search error yields "".
 func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64, minScore float64) string {
 	hits, err := o.vectorStore.Search(ctx, vec, vectorstore.SearchOpts{
 		ProjectIDs: []string{o.projectID},
-		Types:      []string{ledgerFindingVectorType},
+		Types:      []string{commonmodels.LedgerFindingVectorType},
 		Limit:      1,
 		MinScore:   minScore,
 	})

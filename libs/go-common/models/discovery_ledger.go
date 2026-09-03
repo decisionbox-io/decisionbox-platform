@@ -23,6 +23,12 @@ const (
 	LedgerFindingStatusRefuted    = "refuted"    // a later run disproved it
 )
 
+// LedgerFindingVectorType is the Qdrant `type` payload marker under which ledger
+// findings are indexed in the shared decisionbox_<dims> collection, so the
+// enterprise ledger retriever can filter to them (SearchOpts.Types). Shared here
+// so the platform writer and the enterprise reader cannot drift on the value.
+const LedgerFindingVectorType = "ledger_finding"
+
 // LedgerTask kinds + statuses. Tasks are the open-thread / hypothesis queue the
 // reflection phase emits to seed the next run.
 const (
