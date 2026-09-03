@@ -6,6 +6,7 @@ import (
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
 // Providers registered only for these tests, so shape resolution runs against
@@ -31,20 +32,41 @@ func init() {
 // existing deployment: a run that can only reach tables keeps the step floor
 // exactly as it is, and only a run that can reach a cube changes behaviour.
 func TestRunReachesCube_DecidesWhichRuleARunGets(t *testing.T) {
+	// wired names the datasources the engine actually got an executor for.
+	wired := func(ids ...string) map[string]*queryexec.QueryExecutor {
+		m := map[string]*queryexec.QueryExecutor{}
+		for _, id := range ids {
+			m[id] = nil
+		}
+		return m
+	}
+
 	cases := map[string]struct {
+		routable    map[string]*queryexec.QueryExecutor
 		warehouses  []models.WarehouseConfig
 		primarySlug string
 		want        bool
 	}{
 		"a SQL-only project": {
+			routable:    wired("a", "b"),
 			warehouses:  []models.WarehouseConfig{{ID: "a", Provider: testTablesSlug}, {ID: "b", Provider: testTablesSlug}},
 			primarySlug: testTablesSlug,
 			want:        false,
 		},
 		"a cube alongside the warehouse": {
+			routable:    wired("a", "b"),
 			warehouses:  []models.WarehouseConfig{{ID: "a", Provider: testTablesSlug}, {ID: "b", Provider: testCubeSlug}},
 			primarySlug: testTablesSlug,
 			want:        true,
+		},
+		"a cube configured but never wired into the run": {
+			// Its provider failed to open, or its schema was never indexed,
+			// so the engine has no executor for it. The run can only query
+			// tables and must keep the step floor.
+			routable:    wired("a"),
+			warehouses:  []models.WarehouseConfig{{ID: "a", Provider: testTablesSlug}, {ID: "b", Provider: testCubeSlug}},
+			primarySlug: testTablesSlug,
+			want:        false,
 		},
 		"a legacy single-warehouse run, which carries no warehouses[] at all": {
 			warehouses:  nil,
@@ -57,6 +79,7 @@ func TestRunReachesCube_DecidesWhichRuleARunGets(t *testing.T) {
 			want:        false,
 		},
 		"a provider this binary does not link": {
+			routable:    wired("a"),
 			warehouses:  []models.WarehouseConfig{{ID: "a", Provider: "not-registered"}},
 			primarySlug: "not-registered",
 			want:        false,
@@ -68,7 +91,7 @@ func TestRunReachesCube_DecidesWhichRuleARunGets(t *testing.T) {
 		},
 	}
 	for name, tc := range cases {
-		if got := runReachesCube(tc.warehouses, tc.primarySlug); got != tc.want {
+		if got := runReachesCube(tc.routable, tc.warehouses, tc.primarySlug); got != tc.want {
 			t.Errorf("%s: runReachesCube = %v, want %v", name, got, tc.want)
 		}
 	}
@@ -79,7 +102,8 @@ func TestRunReachesCube_DecidesWhichRuleARunGets(t *testing.T) {
 // project — so a check that only consulted the primary slug would report
 // every real mixed run as table-shaped.
 func TestRunReachesCube_ReadsTheWarehouseListNotOnlyThePrimary(t *testing.T) {
-	if !runReachesCube([]models.WarehouseConfig{{ID: "secondary", Provider: testCubeSlug}}, testTablesSlug) {
+	routable := map[string]*queryexec.QueryExecutor{"secondary": nil}
+	if !runReachesCube(routable, []models.WarehouseConfig{{ID: "secondary", Provider: testCubeSlug}}, testTablesSlug) {
 		t.Error("a cube configured as a secondary datasource was not seen")
 	}
 }

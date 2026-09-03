@@ -812,11 +812,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Which stopping rule this run's exploration uses. Logged because the
 	// two rules end a run for different reasons, and a run that stopped
 	// early is the first thing an operator will want explained.
-	reachesCube := runReachesCube(o.warehouses, o.warehouseProviderSlug)
+	reachesCube := runReachesCube(dsExecutors, o.warehouses, o.warehouseProviderSlug)
 	applog.WithFields(applog.Fields{
-		"reaches_cube": reachesCube,
-		"min_steps":    opts.MinSteps,
-		"max_steps":    opts.MaxSteps,
+		"reaches_cube":         reachesCube,
+		"routable_datasources": len(dsExecutors),
+		"min_steps":            opts.MinSteps,
+		"max_steps":            opts.MaxSteps,
 	}).Info("exploration: stopping rule resolved")
 
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{

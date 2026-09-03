@@ -249,3 +249,56 @@ func TestRejectionFor_TellsTheModelSomethingItCanActOn(t *testing.T) {
 		t.Errorf("recorded floor reason %q does not show the shortfall", recorded)
 	}
 }
+
+// TestNoveltySubject_OnlyADataQueryCounts is the fix for a rule that would
+// otherwise end a run on its own bookkeeping. lookup_schema and search_tables
+// stamp a CONSTANT purpose and carry no query, so every one of them embeds as
+// the same text and scores as a perfect repeat of the last — three in a row
+// would accept a completion in a run where no data query had repeated, or
+// where none had been run at all.
+func TestNoveltySubject_OnlyADataQueryCounts(t *testing.T) {
+	cases := map[string]struct {
+		step models.ExplorationStep
+		want bool
+	}{
+		"a SQL query": {
+			step: models.ExplorationStep{Action: "query_data", Query: "SELECT 1", QueryPurpose: "count"},
+			want: true,
+		},
+		"a structured request against a cube, rendered as text": {
+			step: models.ExplorationStep{Action: "query_data", Query: `{"metrics":["sessions"],"dimensions":["channel"]}`, QueryPurpose: "sessions by channel"},
+			want: true,
+		},
+		"a schema lookup, whose purpose is a constant": {
+			step: models.ExplorationStep{Action: "lookup_schema", QueryPurpose: "lookup_schema"},
+			want: false,
+		},
+		"a table search, likewise": {
+			step: models.ExplorationStep{Action: "search_tables", QueryPurpose: "search_tables"},
+			want: false,
+		},
+		"a query that is only whitespace": {
+			step: models.ExplorationStep{Action: "query_data", Query: "   \n", QueryPurpose: "lookup_schema"},
+			want: false,
+		},
+	}
+	for name, tc := range cases {
+		if got := noveltySubject(tc.step); got != tc.want {
+			t.Errorf("%s: noveltySubject = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// TestStopRule_SkippedStepsDoNotDisarmTheRule pins the consequence of
+// skipping non-subjects rather than counting them unmeasurable: a run that
+// opens with several schema lookups must still be judged by novelty once it
+// starts querying, not handed back to the floor because of them.
+func TestStopRule_SkippedStepsDoNotDisarmTheRule(t *testing.T) {
+	s := &stopRule{byNovelty: true, minSteps: 2}
+	// Three schema lookups are not observed at all — the engine skips them —
+	// so the rule sees only the query steps that followed.
+	feed(s, "nrrr")
+	if ok, _ := s.acceptDone(7); !ok {
+		t.Error("a run that opened with schema lookups was not judged on its queries")
+	}
+}

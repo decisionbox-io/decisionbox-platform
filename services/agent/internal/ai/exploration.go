@@ -640,7 +640,7 @@ func (e *ExplorationEngine) Explore(
 		// once it is in the index it is its own nearest neighbour. Only the
 		// novelty rule consumes this; a floor run skips the call entirely
 		// rather than paying for a measurement it will not read.
-		if e.stop.byNovelty {
+		if e.stop.byNovelty && noveltySubject(explorationStep) {
 			e.stop.observe(e.repeatsEarlierWork(ctx, explorationStep))
 		}
 

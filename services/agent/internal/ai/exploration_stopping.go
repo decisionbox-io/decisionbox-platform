@@ -29,6 +29,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -162,6 +163,23 @@ func (s *stopRule) acceptDone(step int) (bool, string) {
 		return false, "floor"
 	}
 	return true, ""
+}
+
+// noveltySubject reports whether a step is the kind this rule can judge: one
+// that actually asked the data a question.
+//
+// A lookup_schema or search_tables step is not. Those stamp a CONSTANT
+// purpose ("lookup_schema", "search_tables") and carry no query, so every one
+// of them embeds as the same text and scores as a perfect repeat of the last.
+// Three schema lookups in a row would then end a run in which no data query
+// had repeated — or in which none had been run at all.
+//
+// They are skipped rather than counted as unmeasurable, because they are not
+// a failure to measure. The unmeasurable count exists to notice an index that
+// is not answering, and a step that was never a subject says nothing about
+// that.
+func noveltySubject(step models.ExplorationStep) bool {
+	return strings.TrimSpace(step.Query) != ""
 }
 
 // repeatsEarlierWork asks the step index whether this step said what an
