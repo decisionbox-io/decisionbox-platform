@@ -61,18 +61,18 @@ const (
 	// rather than accepted for want of a floor.
 	repeatsBeforeDone = 3
 
-	// unjudgedStepsBeforeFallback is how many steps the rule will fail to
-	// assess before deciding it cannot assess anything, and handing the
-	// decision back to the step floor.
+	// unjudgedStepsBeforeFallback is how many steps IN A ROW the rule will
+	// fail to assess before handing the decision back to the step floor.
 	//
-	// Novelty is unmeasurable for real reasons that are not failures — an
-	// empty index on the first step, an action carrying no query — so a
-	// single miss must not disarm the rule. Three consecutive-or-not misses
-	// with nothing ever judged is a different thing: the vector store is
-	// unavailable, and a rule that cannot see must not be the one deciding
-	// when a run ends. Without this the run would reject every completion
-	// until the runaway cap, turning a degraded index into a maximum-length
-	// run against a metered source.
+	// Consecutive, not cumulative. Measurability is a question about the
+	// index's health NOW: a run that judged a step an hour ago and cannot
+	// read the index any more must fall back, and one that hit a single
+	// transient failure must not. A cumulative counter answers neither —
+	// it only ever describes history, and history is not what the next
+	// decision depends on.
+	//
+	// Without the fallback at all, a degraded vector store turns every run
+	// into a maximum-length one against a source metered per request.
 	unjudgedStepsBeforeFallback = 3
 )
 
@@ -93,24 +93,15 @@ type stopRule struct {
 	// judged.
 	consecutiveRepeats int
 
-	// judged counts steps this rule was actually able to assess. A rule
-	// that has judged nothing knows nothing, whatever its repeat count
-	// says, and must not accept a completion on the strength of it.
+	// judged counts steps this rule was able to assess. It separates "this
+	// run is too young to have an opinion" from "this run is still finding
+	// things" — two refusals that describe opposite runs.
 	judged int
 
-	// unjudged counts steps the rule tried and failed to assess. Read only
-	// together with judged: the pair distinguishes "this run is young" from
-	// "novelty is not measurable here", which need opposite answers.
-	unjudged int
-}
-
-// measurable reports whether novelty is worth consulting at all.
-//
-// One judged step is enough to prove the machinery works. Nothing judged
-// after several attempts is the signature of an index that is not answering,
-// and the rule stands down rather than deciding a run it cannot see.
-func (s *stopRule) measurable() bool {
-	return s.judged > 0 || s.unjudged < unjudgedStepsBeforeFallback
+	// consecutiveUnjudged counts steps in a row novelty could not be
+	// measured on. Reset by any successful judgement, because it stands for
+	// the index's health now rather than for anything that happened earlier.
+	consecutiveUnjudged int
 }
 
 // observe records what the run learned from one executed step.
@@ -126,10 +117,11 @@ func (s *stopRule) measurable() bool {
 // scoped per datasource, so first queries have no neighbour routinely.
 func (s *stopRule) observe(repeated, judgeable bool) {
 	if !judgeable {
-		s.unjudged++
+		s.consecutiveUnjudged++
 		s.consecutiveRepeats = 0
 		return
 	}
+	s.consecutiveUnjudged = 0
 	s.judged++
 	if repeated {
 		s.consecutiveRepeats++
@@ -143,15 +135,17 @@ func (s *stopRule) observe(repeated, judgeable bool) {
 //
 // step is the 1-based number of the step the signal arrived on.
 //
-// Novelty decides only for a run that uses the rule AND has judged enough
-// steps to hold an opinion. Everything else is the floor, which is what makes
-// a cube run whose index is unavailable degrade to today's behaviour instead
-// of rejecting every completion until the runaway cap.
-func (s *stopRule) acceptDone(step int) (bool, string) {
-	if s.byNovelty && s.measurable() {
-		// Enough judged steps to hold an opinion, and the opinion is that
-		// the run has stopped finding new ground.
-		if s.judged >= repeatsBeforeDone && s.consecutiveRepeats >= repeatsBeforeDone {
+// canMeasure is the caller's answer to "is the index in a state where novelty
+// means anything" — a question about the machinery, which the rule cannot see.
+// False hands the decision to the floor, which is what makes a run with a
+// degraded vector store behave as it did before this rule existed rather than
+// rejecting every completion until the runaway cap.
+func (s *stopRule) acceptDone(step int, canMeasure bool) (bool, string) {
+	if s.byNovelty && canMeasure && s.consecutiveUnjudged < unjudgedStepsBeforeFallback {
+		// The run has stopped finding new ground. A streak that long cannot
+		// exist without that many judged steps, so this subsumes the
+		// evidence check below.
+		if s.consecutiveRepeats >= repeatsBeforeDone {
 			return true, ""
 		}
 		// Otherwise the run has not shown that there is nothing left. Both
@@ -229,31 +223,38 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 		return false, false
 	}
 	if !found {
-		return false, e.emptySearchIsAboutTheStep()
+		// Nothing to compare against: this step cannot be repeating anything,
+		// so it broke new ground. Ordinary rather than exceptional — the
+		// neighbour search is scoped to one datasource, so a run's first
+		// query against each source has none.
+		//
+		// An index that is storing nothing also answers this way, and that is
+		// deliberately NOT untangled here: whether the machinery works is a
+		// question about the machinery, answered once by
+		// noveltyMeasurable at the point the decision is made. Encoding it
+		// into each measurement is what made a first step and a broken write
+		// path indistinguishable.
+		return false, true
 	}
 	return score >= repeatSimilarityThreshold, true
 }
 
-// emptySearchIsAboutTheStep reports whether "no neighbour" is a statement
-// about this step or about the index.
+// noveltyMeasurable reports whether the run-scoped index is in a state where
+// an answer from it means anything.
 //
-// About the STEP in two cases, and they bracket the failing one:
+// It is, in two cases that bracket the failing one: nothing has been offered
+// to the index yet, so it has had no chance to fail and refusing an immediate
+// completion is exactly what the rule is for; or it is holding something, so
+// its answers are about the steps. In between — steps offered, none kept — the
+// write path is failing while reads still answer, every search comes back
+// empty, and nothing it says is evidence about anything.
 //
-//   - Nothing has been offered to the index yet. This is the run's first
-//     judgeable step; it has nothing to be similar to and broke new ground by
-//     definition.
-//   - The index is holding something. Then an empty result means this step is
-//     unlike everything stored — which is ordinary, since neighbours are
-//     scoped per datasource and a run's first query against each source has
-//     none.
-//
-// About the INDEX in between: steps have been offered and none were kept, so
-// the write path is failing while reads still answer. Every search then comes
-// back empty, and reading those as new ground would record every step as
-// novel, keep the rule armed on that evidence, and refuse every completion
-// until the runaway cap.
-func (e *ExplorationEngine) emptySearchIsAboutTheStep() bool {
-	return e.stepsIndexed > 0 || e.stepsIndexOffered == 0
+// Asked at the moment the decision is made rather than recorded per step. A
+// count of past judgements cannot answer it: an observation made while the
+// machinery still looked healthy stays on the books after it stops being true,
+// and the rule then never stands down.
+func (e *ExplorationEngine) noveltyMeasurable() bool {
+	return e.stepsIndexOffered == 0 || e.stepsIndexed > 0
 }
 
 // rejectionFor renders the nudge sent back to the model when its completion

@@ -34,10 +34,10 @@ func TestStopRule_FloorRunIsUnchanged(t *testing.T) {
 	for _, seq := range []string{"", "rrrrrr", "nnn", "??????"} {
 		s := &stopRule{minSteps: 5}
 		feed(s, seq)
-		if ok, reason := s.acceptDone(4); ok || reason != "floor" {
+		if ok, reason := s.acceptDone(4, true); ok || reason != "floor" {
 			t.Errorf("seq %q: done at step 4 under a floor of 5 = (%v, %q), want refused by the floor", seq, ok, reason)
 		}
-		if ok, _ := s.acceptDone(5); !ok {
+		if ok, _ := s.acceptDone(5, true); !ok {
 			t.Errorf("seq %q: done at step 5 under a floor of 5 was refused", seq)
 		}
 	}
@@ -48,7 +48,7 @@ func TestStopRule_FloorRunIsUnchanged(t *testing.T) {
 // its word — this is the behaviour the cube rule must not inherit.
 func TestStopRule_NoFloorAcceptsImmediately(t *testing.T) {
 	s := &stopRule{}
-	if ok, _ := s.acceptDone(1); !ok {
+	if ok, _ := s.acceptDone(1, true); !ok {
 		t.Error("a run with no floor and no novelty rule should accept a completion at step 1")
 	}
 }
@@ -61,7 +61,7 @@ func TestStopRule_NoFloorAcceptsImmediately(t *testing.T) {
 func TestStopRule_NoveltyRefusesAnEarlyCompletionWithNoFloor(t *testing.T) {
 	s := &stopRule{byNovelty: true}
 	feed(s, "?") // the first step has nothing to be similar to
-	ok, reason := s.acceptDone(1)
+	ok, reason := s.acceptDone(1, true)
 	if ok {
 		t.Fatal("a cube run accepted a completion on step 1")
 	}
@@ -76,7 +76,7 @@ func TestStopRule_NoveltyRefusesAnEarlyCompletionWithNoFloor(t *testing.T) {
 func TestStopRule_NoveltyAcceptsOnceTheRunRepeatsItself(t *testing.T) {
 	s := &stopRule{byNovelty: true, minSteps: 40}
 	feed(s, "?nnrrr")
-	if ok, reason := s.acceptDone(6); !ok {
+	if ok, reason := s.acceptDone(6, true); !ok {
 		t.Errorf("three repeats in a row did not end the run: (%v, %q)", ok, reason)
 	}
 }
@@ -88,13 +88,13 @@ func TestStopRule_NoveltyIgnoresTheFloorInBothDirections(t *testing.T) {
 	// Well past a floor of 3, but still finding new things: keep going.
 	still := &stopRule{byNovelty: true, minSteps: 3}
 	feed(still, "nnnnnnnnnn")
-	if ok, _ := still.acceptDone(10); ok {
+	if ok, _ := still.acceptDone(10, true); ok {
 		t.Error("a run still turning up new ground was allowed to stop because it passed the floor")
 	}
 	// Well short of a floor of 40, but repeating itself: stop.
 	spent := &stopRule{byNovelty: true, minSteps: 40}
 	feed(spent, "nrrr")
-	if ok, _ := spent.acceptDone(4); !ok {
+	if ok, _ := spent.acceptDone(4, true); !ok {
 		t.Error("a run that had run dry was forced onward because it had not reached the floor")
 	}
 }
@@ -105,7 +105,7 @@ func TestStopRule_NoveltyIgnoresTheFloorInBothDirections(t *testing.T) {
 func TestStopRule_ANovelStepBreaksTheStreak(t *testing.T) {
 	s := &stopRule{byNovelty: true}
 	feed(s, "nrrnr")
-	if ok, _ := s.acceptDone(5); ok {
+	if ok, _ := s.acceptDone(5, true); ok {
 		t.Error("a novel step between repeats did not reset the streak")
 	}
 }
@@ -114,11 +114,18 @@ func TestStopRule_ANovelStepBreaksTheStreak(t *testing.T) {
 // most easily have had. Three steps novelty could not be measured on are not
 // three repetitions, and reading them as such would end runs on a silent
 // measurement failure — with a full set of insights that were never sought.
+//
+// A floor is set so the assertion isolates that from the separate, deliberate
+// fallback: an unmeasurable run hands the decision to the floor, and with the
+// CLI's default of zero "hands to the floor" and "accepts" look identical.
 func TestStopRule_UnjudgeableStepsAreNotRepeats(t *testing.T) {
-	s := &stopRule{byNovelty: true}
+	s := &stopRule{byNovelty: true, minSteps: 10}
 	feed(s, "nnn???")
-	if ok, _ := s.acceptDone(6); ok {
-		t.Error("steps that could not be judged were counted as repetitions")
+	if s.consecutiveRepeats != 0 {
+		t.Errorf("steps that could not be judged were counted as repetitions: streak = %d", s.consecutiveRepeats)
+	}
+	if ok, reason := s.acceptDone(6, true); ok {
+		t.Errorf("the run was allowed to stop at step 6 (reason %q)", reason)
 	}
 }
 
@@ -130,22 +137,50 @@ func TestStopRule_UnjudgeableStepsAreNotRepeats(t *testing.T) {
 func TestStopRule_AnUnmeasurableRunFallsBackToTheFloor(t *testing.T) {
 	s := &stopRule{byNovelty: true, minSteps: 5}
 	feed(s, "???")
-	if ok, reason := s.acceptDone(4); ok || reason != "floor" {
+	if ok, reason := s.acceptDone(4, true); ok || reason != "floor" {
 		t.Errorf("with novelty unmeasurable, step 4 under a floor of 5 = (%v, %q), want the floor to decide", ok, reason)
 	}
-	if ok, _ := s.acceptDone(5); !ok {
+	if ok, _ := s.acceptDone(5, true); !ok {
 		t.Error("with novelty unmeasurable, the floor should still let the run finish")
 	}
 }
 
-// TestStopRule_OneJudgedStepKeepsTheRuleArmed pins the boundary between the
-// two cases above: the machinery having worked once proves it is there, so
-// later unmeasurable steps must not be read as it being broken.
-func TestStopRule_OneJudgedStepKeepsTheRuleArmed(t *testing.T) {
+// TestStopRule_ALongSilenceStandsTheRuleDown is the counter's whole point
+// being consecutive rather than cumulative. Having judged a step earlier says
+// nothing about whether the index answers now: a run that has gone unmeasured
+// for several steps in a row must hand the decision back to the floor, or a
+// vector store that failed mid-run turns every remaining completion into a
+// refusal until the runaway cap.
+func TestStopRule_ALongSilenceStandsTheRuleDown(t *testing.T) {
 	s := &stopRule{byNovelty: true, minSteps: 1}
 	feed(s, "n????????")
-	if ok, reason := s.acceptDone(9); ok || reason != "unproven" {
-		t.Errorf("after a successful judgement the rule handed back to the floor: (%v, %q)", ok, reason)
+	if ok, _ := s.acceptDone(9, true); !ok {
+		t.Error("a run that has been unmeasurable for eight steps did not fall back to the floor")
+	}
+}
+
+// TestStopRule_ATransientFailureDoesNotStandTheRuleDown is the other side:
+// one miss between judgements is noise, not a broken index.
+func TestStopRule_ATransientFailureDoesNotStandTheRuleDown(t *testing.T) {
+	s := &stopRule{byNovelty: true, minSteps: 1}
+	feed(s, "n?n?n")
+	if ok, reason := s.acceptDone(6, true); ok {
+		t.Errorf("a run with occasional unmeasurable steps was handed to the floor (reason %q)", reason)
+	}
+}
+
+// TestStopRule_ABrokenIndexIsTheCallersAnswer pins the split of
+// responsibilities. Whether the machinery works is a question about the
+// machinery; the rule is told, rather than inferring it from a tally of
+// observations made while it still looked healthy.
+func TestStopRule_ABrokenIndexIsTheCallersAnswer(t *testing.T) {
+	s := &stopRule{byNovelty: true, minSteps: 4}
+	feed(s, "nn") // judged, but the index turns out not to be keeping anything
+	if ok, reason := s.acceptDone(3, false); ok || reason != "floor" {
+		t.Errorf("done at step 3 under a floor of 4 with an unusable index = (%v, %q), want the floor", ok, reason)
+	}
+	if ok, _ := s.acceptDone(4, false); !ok {
+		t.Error("the floor should still let the run finish when novelty cannot be measured")
 	}
 }
 
@@ -212,26 +247,13 @@ func TestRepeatsEarlierWork_ThresholdAndFailureModes(t *testing.T) {
 			},
 			repeated: false, judgeable: true,
 		},
-		"no neighbour, on the run's very first judgeable step": {
-			// Nothing has been offered to the index yet, so its emptiness is
-			// expected and says nothing bad. The step has nothing to be
-			// similar to and broke new ground by definition — counting it
-			// unjudgeable would let two later failures disarm the rule with
-			// nothing ever judged, and hand a completion to a zero floor
-			// after one successful query.
+		"no neighbour to compare against": {
+			// New ground: a step with nothing like it cannot be repeating
+			// anything. Whether the index is healthy enough for that answer
+			// to mean anything is asked once, at the decision, not encoded
+			// into every measurement — see TestNoveltyMeasurable.
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{scores: []float64{0}, found: []bool{false}}},
 			repeated: false, judgeable: true,
-		},
-		"no neighbour, after steps were offered and none kept": {
-			// The same empty answer, meaning the opposite: the write path is
-			// failing while reads still answer. Reading these as new ground
-			// would record every step as novel, keep the rule armed on that
-			// evidence, and refuse every completion until the runaway cap.
-			engine: &ExplorationEngine{
-				stepIndexer:       &countingIndexer{scores: []float64{0}, found: []bool{false}},
-				stepsIndexOffered: 3,
-			},
-			repeated: false, judgeable: false,
 		},
 		"the index failed": {
 			engine:   &ExplorationEngine{stepIndexer: &countingIndexer{err: errors.New("qdrant unreachable")}},
@@ -330,7 +352,7 @@ func TestRepeatsEarlierWork_AFailedQueryIsNotEvidence(t *testing.T) {
 func TestStopRule_ARunOfFailingQueriesFallsBackToTheFloor(t *testing.T) {
 	s := &stopRule{byNovelty: true, minSteps: 5}
 	feed(s, "???") // three attempted queries, none judgeable
-	if ok, reason := s.acceptDone(6); !ok || reason != "" {
+	if ok, reason := s.acceptDone(6, true); !ok || reason != "" {
 		t.Errorf("a run of failing queries was not handed back to the floor: (%v, %q)", ok, reason)
 	}
 }
@@ -344,7 +366,7 @@ func TestStopRule_FirstQueriesAcrossDatasourcesDoNotDisarmTheRule(t *testing.T) 
 	s := &stopRule{byNovelty: true} // no floor, as the CLI default has none
 	// One first-query per datasource: each has no neighbour, so each is new.
 	feed(s, "nnn")
-	ok, reason := s.acceptDone(4)
+	ok, reason := s.acceptDone(4, true)
 	if ok {
 		t.Fatalf("a run that had only ever broken new ground was allowed to stop (reason %q)", reason)
 	}
@@ -375,24 +397,28 @@ func TestNewExplorationEngine_NoIndexMeansNoNoveltyRule(t *testing.T) {
 	}
 }
 
-// TestEmptySearchIsAboutTheStep_BracketsTheFailingCase states the rule as a
-// table, because the two cases that mean "the step is new" sit on either side
-// of the one that means "the index is broken", and an implementation that
-// tested only one boundary would get the other backwards.
-func TestEmptySearchIsAboutTheStep_BracketsTheFailingCase(t *testing.T) {
+// TestNoveltyMeasurable_BracketsTheFailingCase states the machinery question
+// as a table, because the two states that mean "its answers are evidence" sit
+// on either side of the one that means "it is storing nothing", and an
+// implementation testing only one boundary gets the other backwards.
+//
+// Asked at decision time rather than tallied per step: an observation made
+// while the index still looked healthy would otherwise stay on the books after
+// it stopped being true, and the rule would never stand down.
+func TestNoveltyMeasurable_BracketsTheFailingCase(t *testing.T) {
 	cases := []struct {
 		name             string
 		indexed, offered int
 		want             bool
 	}{
-		{"nothing offered yet — the run's first judgeable step", 0, 0, true},
-		{"offered and kept — the index is working", 3, 3, true},
+		{"nothing offered yet — it has had no chance to fail", 0, 0, true},
+		{"offered and kept — it is holding the run's steps", 3, 3, true},
 		{"offered, none kept — the write path is failing", 0, 3, false},
 		{"offered, some kept — working, with a transient failure", 2, 3, true},
 	}
 	for _, tc := range cases {
 		e := &ExplorationEngine{stepsIndexed: tc.indexed, stepsIndexOffered: tc.offered}
-		if got := e.emptySearchIsAboutTheStep(); got != tc.want {
+		if got := e.noveltyMeasurable(); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -405,7 +431,7 @@ func TestEmptySearchIsAboutTheStep_BracketsTheFailingCase(t *testing.T) {
 func TestStopRule_OneGoodQueryThenFailuresDoesNotEndTheRun(t *testing.T) {
 	s := &stopRule{byNovelty: true} // no floor, as the CLI default has none
 	feed(s, "n??")                  // one judged novel step, then two unjudgeable
-	if ok, _ := s.acceptDone(4); ok {
+	if ok, _ := s.acceptDone(4, true); ok {
 		t.Error("a run with one successful query and two failures was allowed to stop")
 	}
 }

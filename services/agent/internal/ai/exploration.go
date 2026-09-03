@@ -590,7 +590,7 @@ func (e *ExplorationEngine) Explore(
 		// step count means nothing, by the exploration having stopped turning
 		// up anything new. See exploration_stopping.go.
 		if action.Action == "complete" {
-			if accepted, reason := e.stop.acceptDone(step); !accepted {
+			if accepted, reason := e.stop.acceptDone(step, e.noveltyMeasurable()); !accepted {
 				nudge, why := e.rejectionFor(reason, step)
 				logger.WithFields(logger.Fields{
 					"step":              step,
@@ -598,6 +598,9 @@ func (e *ExplorationEngine) Explore(
 					"reason":            reason,
 					"judged_steps":      e.stop.judged,
 					"repeated_in_a_row": e.stop.consecutiveRepeats,
+					"unjudged_in_a_row": e.stop.consecutiveUnjudged,
+					"steps_indexed":     e.stepsIndexed,
+					"steps_offered":     e.stepsIndexOffered,
 				}).Warn("LLM signalled done too early — rejecting and continuing")
 
 				conversation.AddUserMessage(nudge)
