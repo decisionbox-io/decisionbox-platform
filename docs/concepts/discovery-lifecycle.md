@@ -124,11 +124,22 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 
 **Early-termination guard (`--min-steps`):** Models biased toward early completion (Qwen3, DeepSeek-R1, GPT-OSS) sometimes return `{"done": true}` after just 1–2 steps even with a 100-step budget. Setting `--min-steps=N` rejects `done` signals until step `N`, records a `complete_rejected` exploration step, and injects a nudge telling the model how many steps remain. Default is `0` (no floor) for backwards compatibility.
 
+**Cube-shaped sources stop on signal, not on a step count.** The floor works because on a warehouse a step is roughly a table or a join, so counting steps approximates counting coverage. A cube-shaped source has no tables to work through — a query is a choice of metrics and dimensions — and the number of available slices is combinatorial, so any step count can be reached without covering anything. Sixty trivial breakdowns and fifteen revealing ones satisfy a floor equally well.
+
+So on a run that can query a cube-shaped datasource, `--min-steps` does not gate completion. Instead each executed step is scored against the steps already taken, using the per-run vector index the analysis phase already builds. While recent steps are still turning up something the run has not seen, a `done` signal is rejected exactly as the floor rejected it; once three consecutive steps repeat earlier work, the exploration has finished — at whatever step that happens to be. `--max-steps` is unaffected and remains the runaway cap.
+
+Two properties are worth knowing when reading a run:
+
+- A run whose novelty cannot be measured — no vector index, or one that is failing — falls back to `--min-steps` rather than refusing every completion until the cap. A degraded index should not turn every run into a maximum-length one against a source metered per request.
+- Steps novelty could not be judged on (a `lookup_schema` with no query, the first step of a run) count as neither new nor repeated. Three unmeasurable steps are not three repetitions.
+
+Whether a run takes this path is decided from the registered shape of its datasources' providers, and is logged at exploration start. A run that can only reach tables behaves exactly as it always has.
+
 **Step types reported to the dashboard:**
 - `query` — SQL query executed (with thinking, SQL, row count, timing)
 - `lookup_schema` — Agent fetched L1 detail (columns + sample rows) for one or more tables from the cache (no warehouse traffic)
 - `search_tables` — Agent ran a semantic search against the per-project Qdrant index for tables not surfaced by the catalog
-- `complete_rejected` — LLM signalled `done` before `--min-steps`; rejected and exploration continued
+- `complete_rejected` — LLM signalled `done` too early — before `--min-steps`, or, on a cube-reaching run, while steps were still turning up new ground; rejected and exploration continued
 - `insight` — The AI identified a pattern (name, severity)
 - `analysis` — Analysis phase started for an area
 - `validation` — Insight validation result
