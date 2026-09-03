@@ -65,7 +65,7 @@ func TestStopRule_NoveltyRefusesAnEarlyCompletionWithNoFloor(t *testing.T) {
 	if ok {
 		t.Fatal("a cube run accepted a completion on step 1")
 	}
-	if reason != "novelty" {
+	if reason != "unproven" {
 		t.Errorf("refusal reason = %q, want the novelty rule to own the decision", reason)
 	}
 }
@@ -144,7 +144,7 @@ func TestStopRule_AnUnmeasurableRunFallsBackToTheFloor(t *testing.T) {
 func TestStopRule_OneJudgedStepKeepsTheRuleArmed(t *testing.T) {
 	s := &stopRule{byNovelty: true, minSteps: 1}
 	feed(s, "n????????")
-	if ok, reason := s.acceptDone(9); ok || reason != "novelty" {
+	if ok, reason := s.acceptDone(9); ok || reason != "unproven" {
 		t.Errorf("after a successful judgement the rule handed back to the floor: (%v, %q)", ok, reason)
 	}
 }
@@ -221,27 +221,50 @@ func TestRepeatsEarlierWork_ThresholdAndFailureModes(t *testing.T) {
 	}
 }
 
-// TestRejectionFor_TellsTheModelSomethingItCanAct on. A nudge that just says
-// "keep going" is how a model produces three more near-identical slices and
-// signals done again, so the novelty refusal has to ask for the one thing
-// that ends the run: an unasked question.
-func TestRejectionFor_TellsTheModelSomethingItCanActOn(t *testing.T) {
-	e := &ExplorationEngine{minSteps: 12, stop: stopRule{consecutiveRepeats: 3}}
+// TestRejectionFor_NeverClaimsARunIsRepeatingItself covers a refusal that
+// used to lie. A run that repeats itself is ACCEPTED, so a refusal can never
+// truthfully say "you have been re-asking answered questions" — yet that was
+// the wording on the main productive path, alongside a recorded reason that
+// read "last 0 steps repeated earlier work".
+func TestRejectionFor_NeverClaimsARunIsRepeatingItself(t *testing.T) {
+	e := &ExplorationEngine{minSteps: 12, stop: stopRule{judged: 5, consecutiveRepeats: 1}}
 
-	nudge, recorded := e.rejectionFor("novelty", 4)
-	for _, want := range []string{"already answered", "not looked at"} {
-		if !strings.Contains(nudge, want) {
-			t.Errorf("novelty nudge does not mention %q: %s", want, nudge)
+	for _, reason := range []string{"productive", "unproven"} {
+		nudge, recorded := e.rejectionFor(reason, 4)
+		if strings.Contains(nudge, "already answered") || strings.Contains(nudge, "repeat") {
+			t.Errorf("%s nudge tells the model it is repeating itself: %s", reason, nudge)
+		}
+		if !strings.Contains(nudge, "has not looked at") && !strings.Contains(nudge, "no earlier step") {
+			t.Errorf("%s nudge does not ask for new ground: %s", reason, nudge)
+		}
+		if strings.Contains(nudge, "minimum") {
+			t.Errorf("%s nudge asks for a step count, which this run does not have: %s", reason, nudge)
+		}
+		if recorded == "" {
+			t.Errorf("%s refusal recorded no reason for an operator to read", reason)
 		}
 	}
-	if strings.Contains(nudge, "minimum") {
-		t.Error("the novelty nudge asks for a step count, which this run does not have")
-	}
-	if !strings.Contains(recorded, "repeated earlier work") {
-		t.Errorf("recorded reason %q does not say why the run continued", recorded)
-	}
+}
 
-	nudge, recorded = e.rejectionFor("floor", 4)
+// TestRejectionFor_DoesNotTeachTheModelHowToStopTheRun is a prompt-design
+// constraint, not a wording preference. Spelling out "three repeated steps
+// end the exploration" hands the model a cheaper way to satisfy the rule than
+// exploring: ask one question three times and go home.
+func TestRejectionFor_DoesNotTeachTheModelHowToStopTheRun(t *testing.T) {
+	e := &ExplorationEngine{stop: stopRule{judged: 5}}
+	nudge, _ := e.rejectionFor("productive", 4)
+	for _, leak := range []string{"three", "3 ", "consecutive", "repeat"} {
+		if strings.Contains(strings.ToLower(nudge), leak) {
+			t.Errorf("the nudge describes the stopping rule (%q), which invites gaming it: %s", leak, nudge)
+		}
+	}
+}
+
+// TestRejectionFor_TheFloorStillNamesItsNumber keeps the other refusal
+// unchanged: the floor HAS a target and the model can act on being told it.
+func TestRejectionFor_TheFloorStillNamesItsNumber(t *testing.T) {
+	e := &ExplorationEngine{minSteps: 12}
+	nudge, recorded := e.rejectionFor("floor", 4)
 	if !strings.Contains(nudge, "minimum 12") {
 		t.Errorf("floor nudge does not name the floor: %s", nudge)
 	}
@@ -250,55 +273,35 @@ func TestRejectionFor_TellsTheModelSomethingItCanActOn(t *testing.T) {
 	}
 }
 
-// TestNoveltySubject_OnlyADataQueryCounts is the fix for a rule that would
-// otherwise end a run on its own bookkeeping. lookup_schema and search_tables
-// stamp a CONSTANT purpose and carry no query, so every one of them embeds as
-// the same text and scores as a perfect repeat of the last — three in a row
-// would accept a completion in a run where no data query had repeated, or
-// where none had been run at all.
-func TestNoveltySubject_OnlyADataQueryCounts(t *testing.T) {
-	cases := map[string]struct {
-		step models.ExplorationStep
-		want bool
-	}{
-		"a SQL query": {
-			step: models.ExplorationStep{Action: "query_data", Query: "SELECT 1", QueryPurpose: "count"},
-			want: true,
-		},
-		"a structured request against a cube, rendered as text": {
-			step: models.ExplorationStep{Action: "query_data", Query: `{"metrics":["sessions"],"dimensions":["channel"]}`, QueryPurpose: "sessions by channel"},
-			want: true,
-		},
-		"a schema lookup, whose purpose is a constant": {
-			step: models.ExplorationStep{Action: "lookup_schema", QueryPurpose: "lookup_schema"},
-			want: false,
-		},
-		"a table search, likewise": {
-			step: models.ExplorationStep{Action: "search_tables", QueryPurpose: "search_tables"},
-			want: false,
-		},
-		"a query that is only whitespace": {
-			step: models.ExplorationStep{Action: "query_data", Query: "   \n", QueryPurpose: "lookup_schema"},
-			want: false,
-		},
+// TestRepeatsEarlierWork_AFailedQueryIsNotEvidence is the defect that mattered
+// most in this pass. A rejected or failing query still carries its text, so it
+// was scored like any other step — and the same broken request asked three
+// times built a repeat streak and accepted the next completion, ending a run
+// that had never successfully read anything.
+func TestRepeatsEarlierWork_AFailedQueryIsNotEvidence(t *testing.T) {
+	idx := &countingIndexer{scores: []float64{0.99}, found: []bool{true}}
+	e := &ExplorationEngine{stepIndexer: idx}
+
+	repeated, judgeable := e.repeatsEarlierWork(context.Background(), models.ExplorationStep{
+		Step: 3, Query: "SELECT broken", QueryPurpose: "count", Error: "syntax error at or near broken",
+	})
+	if repeated || judgeable {
+		t.Errorf("a failed query was judged: (repeated=%v, judgeable=%v)", repeated, judgeable)
 	}
-	for name, tc := range cases {
-		if got := noveltySubject(tc.step); got != tc.want {
-			t.Errorf("%s: noveltySubject = %v, want %v", name, got, tc.want)
-		}
+	if idx.calls != 0 {
+		t.Errorf("a failed query was sent to the index anyway (%d calls)", idx.calls)
 	}
 }
 
-// TestStopRule_SkippedStepsDoNotDisarmTheRule pins the consequence of
-// skipping non-subjects rather than counting them unmeasurable: a run that
-// opens with several schema lookups must still be judged by novelty once it
-// starts querying, not handed back to the floor because of them.
-func TestStopRule_SkippedStepsDoNotDisarmTheRule(t *testing.T) {
-	s := &stopRule{byNovelty: true, minSteps: 2}
-	// Three schema lookups are not observed at all — the engine skips them —
-	// so the rule sees only the query steps that followed.
-	feed(s, "nrrr")
-	if ok, _ := s.acceptDone(7); !ok {
-		t.Error("a run that opened with schema lookups was not judged on its queries")
+// TestStopRule_ARunOfFailingQueriesFallsBackToTheFloor is the consequence of
+// treating a failed query as unmeasurable rather than skipping it. A run whose
+// every query fails can never accumulate a judgement, and must hand the
+// decision back to the floor rather than refuse every completion until the
+// runaway cap — which on a metered source is the expensive way to fail.
+func TestStopRule_ARunOfFailingQueriesFallsBackToTheFloor(t *testing.T) {
+	s := &stopRule{byNovelty: true, minSteps: 5}
+	feed(s, "???") // three attempted queries, none judgeable
+	if ok, reason := s.acceptDone(6); !ok || reason != "" {
+		t.Errorf("a run of failing queries was not handed back to the floor: (%v, %q)", ok, reason)
 	}
 }

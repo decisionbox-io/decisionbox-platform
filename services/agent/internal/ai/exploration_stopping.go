@@ -151,13 +151,20 @@ func (s *stopRule) acceptDone(step int) (bool, string) {
 		if s.judged >= repeatsBeforeDone && s.consecutiveRepeats >= repeatsBeforeDone {
 			return true, ""
 		}
-		// Otherwise the run is still turning things up, or has not yet done
-		// enough for the question to have an answer. Both are refusals, and
-		// deliberately NOT deferred to the floor: the floor defaults to zero,
-		// so deferring would accept a completion signalled on step one — the
-		// early termination the floor was added to prevent, reintroduced by
-		// the rule meant to replace it.
-		return false, "novelty"
+		// Otherwise the run has not shown that there is nothing left. Both
+		// refusals are deliberately NOT deferred to the floor: the floor
+		// defaults to zero, so deferring would accept a completion signalled
+		// on step one — the early termination the floor was added to prevent,
+		// reintroduced by the rule meant to replace it.
+		//
+		// The two are recorded apart because they describe opposite runs, and
+		// an operator reading a run needs to know which happened. Neither is
+		// "you are repeating yourself": a run that repeats itself is accepted,
+		// so saying so in a refusal is always false.
+		if s.judged < repeatsBeforeDone {
+			return false, "unproven"
+		}
+		return false, "productive"
 	}
 	if step < s.minSteps {
 		return false, "floor"
@@ -195,6 +202,19 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 	if e.stepIndexer == nil {
 		return false, false
 	}
+	// A query that failed returned no data, so it says nothing about what
+	// the source has left to give. Asking the same broken request three
+	// times is a model that is stuck, not a run that is finished — and
+	// treating it as a repeat would end the run having never read anything.
+	//
+	// Unjudgeable rather than skipped, unlike a schema action: the run DID
+	// try to get data and could not, so novelty genuinely cannot be measured
+	// for this step. A run where every query fails therefore stops being
+	// measurable and hands the decision back to the floor, instead of
+	// refusing every completion until the runaway cap.
+	if step.Error != "" {
+		return false, false
+	}
 	score, found, err := e.stepIndexer.Nearest(ctx, step)
 	if err != nil {
 		logger.WithFields(logger.Fields{
@@ -219,14 +239,22 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 // already asked. Telling it "keep going" without that is how a model
 // produces three more near-identical slices and signals done again.
 func (e *ExplorationEngine) rejectionFor(reason string, step int) (nudge, recorded string) {
-	if reason == "novelty" {
-		return "Not yet — your recent steps have been re-asking questions this run has already answered, " +
-				"so completing now would stop on repetition rather than on coverage. " +
-				"Explore something this run has not looked at: a different metric, a different breakdown, " +
-				"or a segment no earlier step touched. " +
-				"Respond with the next query in the documented JSON format: " +
-				`{"thinking": "...", "query": "..."}.`,
-			fmt.Sprintf("rejected premature completion (last %d steps repeated earlier work)", e.stop.consecutiveRepeats)
+	// Both novelty refusals get the same nudge, and it says nothing about
+	// how the run will be allowed to end. Describing the rule would hand the
+	// model a cheaper way to satisfy it than exploring: re-ask one question
+	// three times and the run stops. What it asks for is the thing that is
+	// actually wanted either way — ground this run has not covered.
+	const keepGoing = "Not yet — this run has not covered everything it can. " +
+		"Explore something no earlier step has looked at: a different metric, " +
+		"a different breakdown, or a segment none of them touched. " +
+		"Respond with the next query in the documented JSON format: " +
+		`{"thinking": "...", "query": "..."}.`
+
+	switch reason {
+	case "productive":
+		return keepGoing, fmt.Sprintf("rejected premature completion (recent steps were still finding new ground; %d of the last steps repeated earlier work)", e.stop.consecutiveRepeats)
+	case "unproven":
+		return keepGoing, fmt.Sprintf("rejected premature completion (only %d steps could be judged for novelty so far)", e.stop.judged)
 	}
 	return fmt.Sprintf(
 			"You've only completed %d of the required minimum %d exploration steps. "+

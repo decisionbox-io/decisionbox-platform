@@ -107,3 +107,69 @@ func TestIntegration_Nearest_AStepWithNoTextIsUnjudgeable(t *testing.T) {
 		t.Error("a step with nothing to embed was judged anyway")
 	}
 }
+
+// TestIntegration_Nearest_SkipsAStepThatErrored is the index half of "a failed
+// query is not evidence". A step that errored returned no data, so asking
+// something like it is not asking a question this run has answered — it is
+// asking one it failed to. Scored as an answer, a run would read as covered
+// on the strength of queries that never ran.
+func TestIntegration_Nearest_SkipsAStepThatErrored(t *testing.T) {
+	ctx := context.Background()
+	idx := newNearestIndex(t, "nearest-errored")
+
+	failed := models.ExplorationStep{
+		Step: 1, QueryPurpose: "revenue by country", Query: "SELECT country, revenue FROM t",
+		Error: "table not found",
+	}
+	if err := idx.Upsert(ctx, failed); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// The same question, asked again and this time working. Its only
+	// neighbour is the failed attempt, which must not count.
+	retry := failed
+	retry.Step = 2
+	retry.Error = ""
+	_, found, err := idx.Nearest(ctx, retry)
+	if err != nil {
+		t.Fatalf("Nearest: %v", err)
+	}
+	if found {
+		t.Error("a retry of a failed query was scored against the failure it retried")
+	}
+}
+
+// TestIntegration_Nearest_StillFindsAGoodStepPastFailures pins the other half:
+// skipping failures must not make earlier successful work invisible, or a
+// genuinely repetitive run would read as novel forever.
+func TestIntegration_Nearest_StillFindsAGoodStepPastFailures(t *testing.T) {
+	ctx := context.Background()
+	idx := newNearestIndex(t, "nearest-past-failures")
+
+	good := models.ExplorationStep{Step: 1, QueryPurpose: "sessions by channel", Query: "SELECT channel FROM t"}
+	if err := idx.Upsert(ctx, good); err != nil {
+		t.Fatalf("upsert good: %v", err)
+	}
+	// Several failures on other questions pile up in between.
+	for i := 2; i <= 4; i++ {
+		if err := idx.Upsert(ctx, models.ExplorationStep{
+			Step: i, QueryPurpose: "attempt", Query: "SELECT broken " + string(rune('a'+i)),
+			Error: "boom",
+		}); err != nil {
+			t.Fatalf("upsert failure %d: %v", i, err)
+		}
+	}
+
+	again := good
+	again.Step = 5
+	score, found, err := idx.Nearest(ctx, again)
+	if err != nil {
+		t.Fatalf("Nearest: %v", err)
+	}
+	if !found {
+		t.Fatal("earlier successful work went unseen because failures were skipped")
+	}
+	if score < 0.99 {
+		t.Errorf("the repeated question scored %v against its twin; want ~1", score)
+	}
+}

@@ -332,12 +332,18 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 	return hits, nil
 }
 
+// nearestCandidates is how many hits Nearest asks for before giving up on
+// finding one worth comparing against. The step itself and any errored step
+// are skipped, and an early run can hold several of the latter.
+const nearestCandidates = 8
+
 // Nearest scores a step against the ones already indexed for this run.
 //
 // It reuses Search rather than the raw client so both paths share one
-// embed-and-query implementation, and it asks for two hits rather than one so
-// a step that is somehow already indexed can be skipped instead of matching
-// itself at 1.0 — cheap insurance against a caller that indexes first.
+// embed-and-query implementation, and asks for several hits rather than one so
+// the two kinds it must skip — the step itself, and steps that errored — do
+// not leave it reporting "nothing to compare against" while earlier work sits
+// in the index.
 //
 // A step with no embeddable text (an action carrying neither a purpose nor a
 // query) is unjudgeable rather than novel: it says nothing, so it is not
@@ -347,7 +353,11 @@ func (r *runStepIndex) Nearest(ctx context.Context, step models.ExplorationStep)
 	if text == "" {
 		return 0, false, nil
 	}
-	hits, err := r.Search(ctx, text, RunStepIndexSearchOpts{TopK: 2})
+	// More than two hits because the ones being skipped below are not rare:
+	// an early run can hold several failed steps, and skipping them all
+	// would otherwise report "nothing to compare against" while there is
+	// plenty.
+	hits, err := r.Search(ctx, text, RunStepIndexSearchOpts{TopK: nearestCandidates})
 	if err != nil {
 		return 0, false, err
 	}
@@ -355,8 +365,15 @@ func (r *runStepIndex) Nearest(ctx context.Context, step models.ExplorationStep)
 		if h.Step == step.Step {
 			continue
 		}
+		// A step that errored returned no data, so asking something like it
+		// is not asking a question this run has answered — it is asking one
+		// it failed to. Counting it as an answer would report a run as
+		// covered on the strength of queries that never ran.
+		if h.HasError {
+			continue
+		}
 		// Search returns hits sorted by score descending, so the first
-		// hit that is not this step is the nearest other step.
+		// eligible hit is the nearest step worth comparing against.
 		return h.Score, true, nil
 	}
 	return 0, false, nil
