@@ -380,6 +380,12 @@ jobs:
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-integ.txt" .)
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-db-integ.txt" ./internal/database/)
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-agentserver-integ.txt" ./agentserver/)
+          # Discovery's own integration lane. Its Qdrant-backed tests — the
+          # run-scoped step index, and the novelty lookup the cube stopping
+          # rule reads — bring their own container, so they need Docker rather
+          # than the MongoDB service above. Previously run nowhere but a
+          # developer's machine.
+          (cd services/agent && go test -tags=integration -count=1 -timeout=10m -coverprofile="$COV/agent-discovery-integ.txt" ./internal/discovery/)
 
       - name: API integration tests
         env:
