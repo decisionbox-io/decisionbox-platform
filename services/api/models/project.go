@@ -127,6 +127,13 @@ type Project struct {
 	// the agent's models.Project — keep the two definitions in sync.
 	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
 
+	// AskSuggestionsEnabled is the per-project toggle for LLM-generated suggested
+	// starter questions on insight / recommendation pages (the "Ask about this"
+	// nudge). It makes an automatic LLM call on page entry, so it is user-
+	// controllable; nil means "use the default" (true) — default-on, users opt
+	// out in Settings. API-only (Q&A time) — the discovery agent does not read it.
+	AskSuggestionsEnabled *bool `bson:"ask_suggestions_enabled,omitempty" json:"ask_suggestions_enabled,omitempty"`
+
 	// RecommendationVerdicts is the per-project set of validation verdicts that
 	// make an insight eligible for recommendation generation. Empty / unset →
 	// default {confirmed, supported} (today's hardcoded IsTerminalPositive
@@ -274,6 +281,16 @@ func (p *Project) EffectiveClarifyingQuestionsEnabled() bool {
 		return true
 	}
 	return *p.ClarifyingQuestionsEnabled
+}
+
+// EffectiveAskSuggestionsEnabled resolves the per-project suggested-questions
+// toggle. Nil pointer → true (default-on; users opt out because it makes
+// automatic LLM calls).
+func (p *Project) EffectiveAskSuggestionsEnabled() bool {
+	if p.AskSuggestionsEnabled == nil {
+		return true
+	}
+	return *p.AskSuggestionsEnabled
 }
 
 // EffectiveSmartOverflowEnabled resolves the per-project smart-overflow toggle.

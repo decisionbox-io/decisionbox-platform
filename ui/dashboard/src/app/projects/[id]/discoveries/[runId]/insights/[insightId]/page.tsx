@@ -11,6 +11,7 @@ import {
 import Shell from '@/components/layout/AppShell';
 import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import SuggestedQuestions from '@/components/ask/SuggestedQuestions';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
@@ -245,6 +246,9 @@ export default function InsightDetailPage() {
             : insight.description
               ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{insight.description}</Text>
               : <Text size="sm" c="dimmed">No description</Text>}
+          {/* LLM-generated starter questions + "Ask about this" (enterprise;
+              renders nothing on community builds or when the toggle is off). */}
+          <SuggestedQuestions projectId={id} seed={{ type: 'insight', id: insight.id, title: insight.name }} />
         </Card>
 
         {/* Assessment — risk, confidence, target segment. Promoted above

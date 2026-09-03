@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -399,7 +399,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	}
 
 	// List by project
-	sessions, err := repo.ListByProject(ctx, "proj-integ-1", 10)
+	sessions, err := repo.ListByProject(ctx, "proj-integ-1", 10, "", "")
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -409,6 +409,41 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	// List should exclude messages (projection)
 	if len(sessions[0].Messages) > 0 {
 		t.Error("ListByProject should exclude messages (projection)")
+	}
+
+	// Seed-scoped listing: create two seeded sessions for the same project but
+	// different insights, then confirm the seed filter returns only the matching
+	// one and projects the seed ref (not the bulky text).
+	seededA := &commonmodels.AskSession{
+		ID: "session-seed-a", ProjectID: "proj-integ-1", Title: "about insight A",
+		SeedContext: &commonmodels.AskSessionSeed{Type: "insight", ID: "ins-A", Label: "Insight A", Text: "long text A"},
+	}
+	seededB := &commonmodels.AskSession{
+		ID: "session-seed-b", ProjectID: "proj-integ-1", Title: "about insight B",
+		SeedContext: &commonmodels.AskSessionSeed{Type: "insight", ID: "ins-B", Label: "Insight B", Text: "long text B"},
+	}
+	if err := repo.Create(ctx, seededA); err != nil {
+		t.Fatalf("create seededA: %v", err)
+	}
+	if err := repo.Create(ctx, seededB); err != nil {
+		t.Fatalf("create seededB: %v", err)
+	}
+	filtered, err := repo.ListByProject(ctx, "proj-integ-1", 10, "insight", "ins-A")
+	if err != nil {
+		t.Fatalf("ListByProject seed filter: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "session-seed-a" {
+		t.Fatalf("seed filter should return only session-seed-a, got %d: %+v", len(filtered), filtered)
+	}
+	if filtered[0].SeedContext == nil || filtered[0].SeedContext.ID != "ins-A" || filtered[0].SeedContext.Label != "Insight A" {
+		t.Fatalf("seed ref not projected: %+v", filtered[0].SeedContext)
+	}
+	if filtered[0].SeedContext.Text != "" {
+		t.Errorf("bulky seed text should be excluded from the list projection, got %q", filtered[0].SeedContext.Text)
+	}
+	// A non-matching seed id returns nothing.
+	if none, _ := repo.ListByProject(ctx, "proj-integ-1", 10, "insight", "ins-ZZZ"); len(none) != 0 {
+		t.Errorf("seed filter for unknown id should be empty, got %d", len(none))
 	}
 
 	// Delete
@@ -447,9 +482,9 @@ func TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend(t *testing.T) {
 	// AppendMessage must succeed even though the session was created
 	// with no messages — the repository normalises nil → [] on insert.
 	err := repo.AppendMessage(ctx, "session-nil-msgs", commonmodels.AskSessionMessage{
-		Question: "first turn",
-		Answer:   "ok",
-		Model:    "claude",
+		Question:  "first turn",
+		Answer:    "ok",
+		Model:     "claude",
 		CreatedAt: time.Now(),
 	})
 	if err != nil {
@@ -495,9 +530,9 @@ func TestInteg_AskSessionRepo_AppendToLegacyNullSession(t *testing.T) {
 	t.Cleanup(func() { _ = repo.Delete(ctx, "session-legacy-null") })
 
 	if err := repo.AppendMessage(ctx, "session-legacy-null", commonmodels.AskSessionMessage{
-		Question: "first turn after legacy null",
-		Answer:   "ok",
-		Model:    "claude",
+		Question:  "first turn after legacy null",
+		Answer:    "ok",
+		Model:     "claude",
 		CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("AppendMessage on legacy null session: %v", err)

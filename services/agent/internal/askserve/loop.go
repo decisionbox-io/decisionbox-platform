@@ -242,7 +242,7 @@ func toolsSupported(rt *ProjectRuntime) bool {
 // decline rather than emit an ungrounded answer) is the safety net there.
 func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState) {
 	conv := ai.NewConversation(ai.ConversationOptions{
-		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg, st.chartsEnabled),
+		SystemPrompt: buildSystemPrompt(rt, st.routing, r.cfg, st.chartsEnabled, st.req.SeedContext),
 		// Two messages per step (assistant action + observation) across the
 		// round budget, plus history headroom — generous so the engine's own
 		// caps, not this ceiling, bound the turn.
@@ -381,7 +381,7 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 // []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
 // blocks.
 func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnState) {
-	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled)
+	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled, st.req.SeedContext)
 	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
 
