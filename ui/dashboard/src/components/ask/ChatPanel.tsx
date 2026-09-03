@@ -148,7 +148,11 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
     } catch { /* ignore */ }
   };
 
-  const showSeedChip = !!seedContext && messages.length === 0 && !sessionId;
+  // Only while the seed is still active: after "New chat" (seededRef flipped
+  // true) the next turn is unanchored, so the chip must not keep claiming the
+  // conversation is about the seed. setMessages([]) in startNewChat re-renders,
+  // so the ref is read fresh here.
+  const showSeedChip = !!seedContext && messages.length === 0 && !sessionId && !seededRef.current;
 
   return (
     <div style={{ display: 'flex', gap: 0, height: '100%', minHeight: 0, overflow: 'hidden' }}>
