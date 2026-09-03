@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -370,4 +371,48 @@ func orderWarehousesPrimaryFirst(warehouses []models.WarehouseConfig, primaryID 
 		}
 	}
 	return out
+}
+
+// runReachesCube reports whether exploration on this run can query a
+// cube-shaped datasource.
+//
+// It decides which stopping rule the exploration engine uses: on a run that
+// can only reach tables, a step count remains a passable proxy for coverage
+// and the existing floor is left exactly as it was, so every SQL-only run
+// behaves identically. A run that can reach a cube gets the marginal-value
+// rule instead, because a cube offers a combinatorial number of slices and
+// any step count can be satisfied without covering anything.
+//
+// Shape comes from the provider registry by slug, which is where a provider
+// declares it. The primary's slug is consulted as well as the configured
+// datasources: a legacy single-warehouse run carries no warehouses[] entries
+// at all, and reading only those would report every such run as table-shaped
+// without ever looking.
+//
+// An unregistered slug is table-shaped, matching the descriptor's own
+// default. That is the conservative direction here: it keeps the floor, which
+// is today's behaviour, rather than switching a run to a rule chosen for a
+// source nothing can confirm is a cube.
+func runReachesCube(warehouses []models.WarehouseConfig, primarySlug string) bool {
+	if providerIsCube(primarySlug) {
+		return true
+	}
+	for _, wh := range warehouses {
+		if providerIsCube(wh.Provider) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerIsCube resolves one provider slug's declared shape.
+func providerIsCube(slug string) bool {
+	if slug == "" {
+		return false
+	}
+	meta, ok := gowarehouse.GetProviderMeta(slug)
+	if !ok {
+		return false
+	}
+	return meta.EffectiveShape() == gowarehouse.ShapeCube
 }

@@ -37,6 +37,20 @@ const defaultDatasourceID = "default"
 // gRPC client is enough.
 type StepIndexer interface {
 	Upsert(ctx context.Context, step models.ExplorationStep) error
+
+	// Nearest reports the cosine score of the closest step already
+	// indexed for this run, which is how the engine tells a step that
+	// breaks new ground from one that repeats work already done.
+	//
+	// found is false when there is nothing to compare against — an empty
+	// index, or a step with nothing worth embedding. The caller must treat
+	// that as "cannot tell" rather than as "not similar".
+	//
+	// Required rather than an optional interface discovered by assertion:
+	// this seam is wrapped (see the orchestrator's telemetry decorator),
+	// and a wrapper that forgot to forward an optional method would strip
+	// the whole rule with nothing to notice it.
+	Nearest(ctx context.Context, step models.ExplorationStep) (score float64, found bool, err error)
 }
 
 // ExplorationEngine manages autonomous data exploration with LLM.
@@ -64,8 +78,12 @@ type ExplorationEngine struct {
 	tableDatasource map[string]string
 	maxSteps        int
 	minSteps        int
-	dataset         string
-	onStep          StepCallback
+	// stop decides whether a "done" signal is accepted — the step floor,
+	// or the marginal-value rule on a run that can query a cube. See
+	// exploration_stopping.go.
+	stop    stopRule
+	dataset string
+	onStep  StepCallback
 
 	// window / outputCap / reasoningEffective drive the reasoning-aware
 	// per-step output budget (R3). window and outputCap are the model's
@@ -263,8 +281,20 @@ type ExplorationEngineOptions struct {
 	// threshold are rejected with a nudge and exploration continues. Zero
 	// disables the floor.
 	MinSteps int
-	Dataset  string
-	OnStep   StepCallback // optional: called after each step for live status
+
+	// StopOnNoNewSignal replaces the MinSteps floor with a marginal-value
+	// rule: a "done" signal is rejected while recent steps are still
+	// turning up something the run has not already seen, and accepted once
+	// they stop. Set for a run that can query a cube-shaped datasource,
+	// where a step count says nothing about coverage — see
+	// exploration_stopping.go. MaxSteps is unaffected and remains the
+	// runaway cap.
+	//
+	// A run that sets this without a StepIndexer, or whose index fails,
+	// keeps the floor: novelty that cannot be measured decides nothing.
+	StopOnNoNewSignal bool
+	Dataset           string
+	OnStep            StepCallback // optional: called after each step for live status
 
 	// SchemaProvider serves on-demand schema actions issued by the LLM
 	// during a run (lookup_schema for L1 detail, search_tables for
@@ -368,6 +398,7 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		tableDatasource:   opts.TableDatasource,
 		maxSteps:          opts.MaxSteps,
 		minSteps:          opts.MinSteps,
+		stop:              stopRule{minSteps: opts.MinSteps, byNovelty: opts.StopOnNoNewSignal},
 		dataset:           opts.Dataset,
 		onStep:            opts.OnStep,
 		schemaProvider:    opts.SchemaProvider,
@@ -542,42 +573,42 @@ func (e *ExplorationEngine) Explore(
 			return result, err
 		}
 
-		// Reject premature completion: if the LLM says "done" before the min-step
-		// floor, nudge it to keep exploring instead of terminating. This guards
-		// against models (especially reasoning models) that are biased toward
-		// declaring completion quickly.
-		if action.Action == "complete" && step < e.minSteps {
-			logger.WithFields(logger.Fields{
-				"step":      step,
-				"min_steps": e.minSteps,
-			}).Warn("LLM signalled done before minimum steps — rejecting and continuing")
+		// Reject premature completion. Models — reasoning models especially —
+		// are biased toward declaring completion early, so a "done" signal has
+		// to earn it: either by clearing the step floor, or, on a run where a
+		// step count means nothing, by the exploration having stopped turning
+		// up anything new. See exploration_stopping.go.
+		if action.Action == "complete" {
+			if accepted, reason := e.stop.acceptDone(step); !accepted {
+				nudge, why := e.rejectionFor(reason, step)
+				logger.WithFields(logger.Fields{
+					"step":              step,
+					"min_steps":         e.minSteps,
+					"reason":            reason,
+					"judged_steps":      e.stop.judged,
+					"repeated_in_a_row": e.stop.consecutiveRepeats,
+				}).Warn("LLM signalled done too early — rejecting and continuing")
 
-			nudge := fmt.Sprintf(
-				"You've only completed %d of the required minimum %d exploration steps. "+
-					"Do not signal completion yet — there are more analysis areas to cover. "+
-					"Respond with the next query in the documented JSON format: "+
-					`{"thinking": "...", "query": "SELECT ..."}.`,
-				step, e.minSteps,
-			)
-			conversation.AddUserMessage(nudge)
+				conversation.AddUserMessage(nudge)
 
-			// Record the rejected completion as a step so it's visible in logs / UI
-			// without short-circuiting the run.
-			result.Steps = append(result.Steps, models.ExplorationStep{
-				Step:      step,
-				Timestamp: time.Now(),
-				Action:    "complete_rejected",
-				Thinking:  action.Thinking,
-				Error:     fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps),
-				TokensIn:  inputTokens,
-				TokensOut: outputTokens,
-			})
-			result.TotalSteps = step
+				// Record the rejected completion as a step so it's visible in
+				// logs / UI without short-circuiting the run.
+				result.Steps = append(result.Steps, models.ExplorationStep{
+					Step:      step,
+					Timestamp: time.Now(),
+					Action:    "complete_rejected",
+					Thinking:  action.Thinking,
+					Error:     why,
+					TokensIn:  inputTokens,
+					TokensOut: outputTokens,
+				})
+				result.TotalSteps = step
 
-			if e.onStep != nil {
-				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens, "")
+				if e.onStep != nil {
+					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
+				}
+				continue
 			}
-			continue
 		}
 
 		// Create exploration step. Tokens are stamped here so the per-phase
@@ -605,6 +636,14 @@ func (e *ExplorationEngine) Explore(
 		// each area's identity. Failure is non-fatal — it degrades
 		// the analysis selection back to keyword-only behaviour but
 		// must not abort exploration.
+		// Judge how much new ground this step broke, BEFORE indexing it —
+		// once it is in the index it is its own nearest neighbour. Only the
+		// novelty rule consumes this; a floor run skips the call entirely
+		// rather than paying for a measurement it will not read.
+		if e.stop.byNovelty {
+			e.stop.observe(e.repeatsEarlierWork(ctx, explorationStep))
+		}
+
 		if e.stepIndexer != nil {
 			compactRowCount := 0
 			if explorationStep.CompactResult != nil {

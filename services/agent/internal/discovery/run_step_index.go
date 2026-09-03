@@ -59,6 +59,17 @@ type RunStepIndex interface {
 	// the caller uses for budget-trimming logging.
 	Search(ctx context.Context, areaQuery string, opts RunStepIndexSearchOpts) ([]RunStepIndexHit, error)
 
+	// Nearest returns the cosine score of the already-indexed step closest
+	// to this one — how much of what it asks the run has asked before.
+	//
+	// found is false when there is nothing to compare against: an empty
+	// index, or a step with nothing worth embedding. Callers must read that
+	// as "cannot tell", never as "not similar".
+	//
+	// Call it BEFORE indexing the step. Afterwards the step is its own
+	// nearest neighbour and every answer is 1.
+	Nearest(ctx context.Context, step models.ExplorationStep) (score float64, found bool, err error)
+
 	// Drop removes the per-run collection. Idempotent — dropping a
 	// missing collection returns nil so a defer'd cleanup is safe
 	// even when Upsert never created the collection (e.g. all steps
@@ -319,6 +330,36 @@ func (r *runStepIndex) Search(ctx context.Context, areaQuery string, opts RunSte
 		"query_ms":     time.Since(queryStart).Milliseconds(),
 	}).Debug("run_step_index: search completed")
 	return hits, nil
+}
+
+// Nearest scores a step against the ones already indexed for this run.
+//
+// It reuses Search rather than the raw client so both paths share one
+// embed-and-query implementation, and it asks for two hits rather than one so
+// a step that is somehow already indexed can be skipped instead of matching
+// itself at 1.0 — cheap insurance against a caller that indexes first.
+//
+// A step with no embeddable text (an action carrying neither a purpose nor a
+// query) is unjudgeable rather than novel: it says nothing, so it is not
+// evidence that the run has found new ground.
+func (r *runStepIndex) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	text := embedTextForStep(step)
+	if text == "" {
+		return 0, false, nil
+	}
+	hits, err := r.Search(ctx, text, RunStepIndexSearchOpts{TopK: 2})
+	if err != nil {
+		return 0, false, err
+	}
+	for _, h := range hits {
+		if h.Step == step.Step {
+			continue
+		}
+		// Search returns hits sorted by score descending, so the first
+		// hit that is not this step is the nearest other step.
+		return h.Score, true, nil
+	}
+	return 0, false, nil
 }
 
 // Drop removes the run's Qdrant collection. Idempotent.
