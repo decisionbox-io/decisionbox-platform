@@ -40,6 +40,10 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<AskSession[]>([]);
+  // priorSeedSessions are earlier conversations launched from THIS insight /
+  // recommendation, shown in the seeded empty state so the user can resume one
+  // instead of starting over.
+  const [priorSeedSessions, setPriorSeedSessions] = useState<AskSession[]>([]);
   const [historyOpen, setHistoryOpen] = useState(true);
   // The seed is sent on the first turn only; after a session exists the server
   // has persisted it. seededRef guards against re-sending / losing it.
@@ -48,6 +52,11 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
 
   useEffect(() => {
     if (showHistory) loadSessions();
+    if (seedContext) {
+      api.listAskSessions(id, 10, { type: seedContext.type, id: seedContext.id })
+        .then(s => setPriorSeedSessions(s || []))
+        .catch(() => {});
+    }
     if (initialQuestion) handleAsk(initialQuestion);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -191,6 +200,29 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
                   Get answers backed by evidence from your discovery runs. Follow-up questions use conversation context.
                 </p>
               </div>
+              {seedActive && priorSeedSessions.length > 0 && (
+                <div style={{ width: '100%', maxWidth: 420, marginTop: 4 }}>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)', margin: '0 0 6px', textAlign: 'left' }}>
+                    Previous conversations about this {seedContext!.type}
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {priorSeedSessions.map(s => (
+                      <button key={s.id} type="button" onClick={() => loadSession(s)} style={{
+                        display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                        background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
+                        borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontFamily: 'inherit',
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-bg-white)'; }}
+                      >
+                        <IconClock size={13} color="var(--db-text-tertiary)" style={{ flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontSize: 13, color: 'var(--db-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                        <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', flexShrink: 0 }}>{s.message_count || 0} msg{(s.message_count || 0) !== 1 ? 's' : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

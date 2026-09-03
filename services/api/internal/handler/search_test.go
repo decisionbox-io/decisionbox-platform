@@ -110,7 +110,7 @@ func (m *mockAskSessionRepo) GetByID(_ context.Context, id string) (*commonmodel
 	}
 	return nil, fmt.Errorf("session not found")
 }
-func (m *mockAskSessionRepo) ListByProject(_ context.Context, _ string, _ int) ([]*commonmodels.AskSession, error) {
+func (m *mockAskSessionRepo) ListByProject(_ context.Context, _ string, _ int, _, _ string) ([]*commonmodels.AskSession, error) {
 	return nil, nil
 }
 func (m *mockAskSessionRepo) Delete(_ context.Context, _ string) error { return nil }

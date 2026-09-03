@@ -986,7 +986,19 @@ func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) 
 		limit = parsed
 	}
 
-	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, limit)
+	// Optional filter: scope to sessions seeded from one insight / recommendation
+	// ("previous conversations about this item"). Both params must be present and
+	// the kind must be a known entity kind, else the filter is ignored.
+	seedType := r.URL.Query().Get("seed_type")
+	seedID := r.URL.Query().Get("seed_id")
+	if seedType != "insight" && seedType != "recommendation" {
+		seedType = ""
+	}
+	if seedType == "" || seedID == "" {
+		seedType, seedID = "", ""
+	}
+
+	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, limit, seedType, seedID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return

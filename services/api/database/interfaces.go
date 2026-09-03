@@ -124,7 +124,7 @@ type AskSessionRepo interface {
 	Create(ctx context.Context, session *commonmodels.AskSession) error
 	AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error
 	GetByID(ctx context.Context, sessionID string) (*commonmodels.AskSession, error)
-	ListByProject(ctx context.Context, projectID string, limit int) ([]*commonmodels.AskSession, error)
+	ListByProject(ctx context.Context, projectID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error)
 	Delete(ctx context.Context, sessionID string) error
 }
 
@@ -190,21 +190,21 @@ type DomainPackRepo interface {
 
 // Compile-time checks: concrete repos satisfy interfaces.
 var (
-	_ ProjectRepo        = (*ProjectRepository)(nil)
-	_ DiscoveryRepo      = (*DiscoveryRepository)(nil)
-	_ RunRepo            = (*RunRepository)(nil)
-	_ DiscoveryLogRepo   = (*DiscoveryLogRepository)(nil)
-	_ RunStepRepo        = (*RunStepRepository)(nil)
-	_ FeedbackRepo       = (*FeedbackRepository)(nil)
-	_ PricingRepo        = (*PricingRepository)(nil)
-	_ InsightRepo        = (*InsightRepository)(nil)
-	_ RecommendationRepo = (*RecommendationRepository)(nil)
-	_ SearchHistoryRepo  = (*SearchHistoryRepository)(nil)
-	_ AskSessionRepo     = (*AskSessionRepository)(nil)
-	_ DomainPackRepo     = (*DomainPackRepository)(nil)
-	_ BookmarkListRepo   = (*BookmarkListRepository)(nil)
-	_ BookmarkRepo       = (*BookmarkRepository)(nil)
-	_ ReadMarkRepo       = (*ReadMarkRepository)(nil)
+	_ ProjectRepo             = (*ProjectRepository)(nil)
+	_ DiscoveryRepo           = (*DiscoveryRepository)(nil)
+	_ RunRepo                 = (*RunRepository)(nil)
+	_ DiscoveryLogRepo        = (*DiscoveryLogRepository)(nil)
+	_ RunStepRepo             = (*RunStepRepository)(nil)
+	_ FeedbackRepo            = (*FeedbackRepository)(nil)
+	_ PricingRepo             = (*PricingRepository)(nil)
+	_ InsightRepo             = (*InsightRepository)(nil)
+	_ RecommendationRepo      = (*RecommendationRepository)(nil)
+	_ SearchHistoryRepo       = (*SearchHistoryRepository)(nil)
+	_ AskSessionRepo          = (*AskSessionRepository)(nil)
+	_ DomainPackRepo          = (*DomainPackRepository)(nil)
+	_ BookmarkListRepo        = (*BookmarkListRepository)(nil)
+	_ BookmarkRepo            = (*BookmarkRepository)(nil)
+	_ ReadMarkRepo            = (*ReadMarkRepository)(nil)
 	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
 	_ ValidationJobRepo       = (*ValidationJobRepository)(nil)
 )

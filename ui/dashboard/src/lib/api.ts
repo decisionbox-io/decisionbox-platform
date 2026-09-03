@@ -999,6 +999,10 @@ export interface AskSession {
   message_count: number;
   created_at: string;
   updated_at: string;
+  // Present when the conversation was launched from an insight / recommendation
+  // ("Ask about this"). The list endpoint returns the ref (type/id/label) so the
+  // drawer can show prior conversations for the entity on screen.
+  seed_context?: { type: string; id: string; label?: string };
 }
 
 export interface AskSessionMessage {
@@ -1465,9 +1469,14 @@ export const api = {
   listSearchHistory: (projectId: string, limit = 20) =>
     request<SearchHistoryEntry[]>(`/api/v1/projects/${projectId}/search/history?limit=${limit}`),
 
-  // Ask sessions (conversations)
-  listAskSessions: (projectId: string, limit = 20) =>
-    request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?limit=${limit}`),
+  // Ask sessions (conversations). seed scopes the list to prior conversations
+  // launched from one insight / recommendation ("previous conversations about
+  // this item").
+  listAskSessions: (projectId: string, limit = 20, seed?: { type: string; id: string }) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (seed) { q.set('seed_type', seed.type); q.set('seed_id', seed.id); }
+    return request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?${q.toString()}`);
+  },
   getAskSession: (projectId: string, sessionId: string) =>
     request<AskSession>(`/api/v1/projects/${projectId}/ask/sessions/${sessionId}`),
   deleteAskSession: (projectId: string, sessionId: string) =>
