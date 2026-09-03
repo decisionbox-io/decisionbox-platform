@@ -290,6 +290,10 @@ export interface Project {
   // uncertain about, and the answers feed the next run. False opts the project
   // out (no questions generated).
   clarifying_questions_enabled?: boolean;
+  // Undefined → default (true). Controls the LLM-generated suggested starter
+  // questions shown on insight / recommendation pages ("Ask about this"). Makes
+  // an automatic LLM call on page entry, so users can opt out in Settings.
+  ask_suggestions_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,
@@ -954,10 +958,28 @@ export interface SearchResponse {
   projects_excluded?: number;
 }
 
+// SeedContext anchors an Ask conversation to one insight / recommendation the
+// user launched "Ask about this" from. The client passes {type,id,title} (+ an
+// optional description fallback); the server hydrates the authoritative
+// grounding text by id.
+export interface SeedContext {
+  type: 'insight' | 'recommendation';
+  id: string;
+  title: string;
+  description?: string;
+}
+
 export interface AskRequest {
   question: string;
   limit?: number;
   session_id?: string;
+  // Sent on the first turn of a seeded conversation. The server hydrates + then
+  // persists it on the session so follow-ups stay grounded.
+  seed_context?: { type: string; id: string; text?: string };
+}
+
+export interface AskSuggestionsResponse {
+  questions: string[];
 }
 
 export interface AskResponse {
@@ -1424,6 +1446,11 @@ export const api = {
     request<SearchResponse>('/api/v1/search', { method: 'POST', body: JSON.stringify(req) }),
   askInsights: (projectId: string, req: AskRequest) =>
     request<AskResponse>(`/api/v1/projects/${projectId}/ask`, { method: 'POST', body: JSON.stringify(req) }),
+  // LLM-generated starter questions for an insight / recommendation. Enterprise
+  // route; returns { questions: [] } (or 404 → caught by the caller) when the
+  // feature is unavailable, so the UI simply renders no chips.
+  getAskSuggestions: (projectId: string, body: { type: string; id: string }) =>
+    request<AskSuggestionsResponse>(`/api/v1/projects/${projectId}/ask/suggestions`, { method: 'POST', body: JSON.stringify(body) }),
 
   // Standalone insights & recommendations (denormalized collections)
   listStandaloneInsights: (projectId: string, limit = 50, offset = 0) =>

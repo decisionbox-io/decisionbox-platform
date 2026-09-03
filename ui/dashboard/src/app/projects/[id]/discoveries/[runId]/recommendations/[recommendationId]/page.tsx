@@ -9,6 +9,7 @@ import { IconArrowLeft, IconStarFilled } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import SuggestedQuestions from '@/components/ask/SuggestedQuestions';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
@@ -164,6 +165,9 @@ export default function RecommendationDetailPage() {
             : recommendation.description
               ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{recommendation.description}</Text>
               : <Text size="sm" c="dimmed">No description</Text>}
+          {/* LLM-generated starter questions + "Ask about this" (enterprise;
+              renders nothing on community builds or when the toggle is off). */}
+          <SuggestedQuestions projectId={id} seed={{ type: 'recommendation', id: recommendation.id, title: recommendation.title, description: recommendation.description }} />
         </Card>
 
         {/* Impact */}

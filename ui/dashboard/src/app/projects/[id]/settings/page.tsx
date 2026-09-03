@@ -111,6 +111,12 @@ export default function ProjectSettingsPage() {
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [savingReasoning, setSavingReasoning] = useState(false);
 
+  // Advanced — Suggested questions toggle (lives on the project document).
+  // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
+  // makes automatic LLM calls on insight / recommendation pages.
+  const [askSuggestionsEnabled, setAskSuggestionsEnabled] = useState(true);
+  const [savingAskSuggestions, setSavingAskSuggestions] = useState(false);
+
   // Advanced — Recommendation eligibility verdicts (lives on the project
   // document). Which validation verdicts qualify an insight for recommendation
   // generation. Empty / undefined → default {confirmed, supported}.
@@ -166,6 +172,7 @@ export default function ProjectSettingsPage() {
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
         setClarifyingQuestionsEnabled(proj.clarifying_questions_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
+        setAskSuggestionsEnabled(proj.ask_suggestions_enabled !== false);
         setRecommendationVerdicts(
           proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
             ? proj.recommendation_verdicts
@@ -325,6 +332,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReasoning(false);
+    }
+  };
+
+  // Save the suggested-questions toggle. Optimistic update + rollback on failure.
+  const saveAskSuggestionsEnabled = async (next: boolean) => {
+    const prev = askSuggestionsEnabled;
+    setAskSuggestionsEnabled(next);
+    setSavingAskSuggestions(true);
+    try {
+      const saved = await api.updateProject(id, { ask_suggestions_enabled: next });
+      setProject(saved);
+      setAskSuggestionsEnabled(saved.ask_suggestions_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Suggested questions enabled' : 'Suggested questions disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setAskSuggestionsEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingAskSuggestions(false);
     }
   };
 
@@ -517,6 +546,13 @@ export default function ProjectSettingsPage() {
                 checked={reasoningEnabled}
                 disabled={savingReasoning}
                 onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Suggested questions"
+                description="When on, opening an insight or recommendation shows a few AI-generated starter questions you can ask about it. This makes an automatic LLM call the first time each item is opened (results are cached), so turn it off to avoid the extra requests. On by default."
+                checked={askSuggestionsEnabled}
+                disabled={savingAskSuggestions}
+                onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
               <MultiSelect
                 label="Recommendation eligibility"
