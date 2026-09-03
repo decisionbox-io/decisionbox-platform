@@ -5,7 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
-  IconBook2, IconBookmark, IconHelpCircle, IconMessageCircle, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTool,
+  IconBook2, IconBookmark, IconHelpCircle, IconMessageCircle, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTimeline, IconTool,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 import SpotlightSearch from '@/components/common/SpotlightSearch';
@@ -152,6 +152,12 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               icon={<IconHelpCircle size={16} />}
               label="Questions"
               active={isActive(`/projects/${projectId}/questions`)}
+            />
+            <NavItem
+              href={`/projects/${projectId}/ledger`}
+              icon={<IconTimeline size={16} />}
+              label="Ledger"
+              active={isActive(`/projects/${projectId}/ledger`)}
             />
             <NavItem
               href={`/projects/${projectId}/lists`}
