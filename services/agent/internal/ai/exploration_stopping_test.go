@@ -162,9 +162,16 @@ func TestStopRule_ALongSilenceStandsTheRuleDown(t *testing.T) {
 // TestStopRule_ATransientFailureDoesNotStandTheRuleDown is the other side:
 // one miss between judgements is noise, not a broken index.
 func TestStopRule_ATransientFailureDoesNotStandTheRuleDown(t *testing.T) {
+	// Four misses, never two in a row, on a run that keeps judging in
+	// between. A cumulative counter reaches the threshold here and stands the
+	// rule down; a consecutive one does not, which is the difference between
+	// "the index is broken" and "the index blinked".
 	s := &stopRule{byNovelty: true, minSteps: 1}
-	feed(s, "n?n?n")
-	if ok, reason := s.acceptDone(6, true); ok {
+	feed(s, "n?n?n?n?n")
+	if s.consecutiveUnjudged != 0 {
+		t.Errorf("a judgement did not reset the silence counter: %d", s.consecutiveUnjudged)
+	}
+	if ok, reason := s.acceptDone(10, true); ok {
 		t.Errorf("a run with occasional unmeasurable steps was handed to the floor (reason %q)", reason)
 	}
 }
