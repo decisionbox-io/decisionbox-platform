@@ -168,7 +168,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 // indexes new/updated findings into Qdrant when the embedder is wired. Returns
 // the count of genuinely-new findings and the project's total afterward.
 func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (newCount, totalCount int, err error) {
-	candidates := buildFindingCandidates(result)
+	candidates := buildFindingCandidates(result, o.loadStepSQL(ctx, result.ID))
 	prior, lerr := o.findingRepo.List(ctx, o.projectID)
 	if lerr != nil {
 		return 0, 0, fmt.Errorf("list prior findings: %w", lerr)
@@ -330,7 +330,7 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 // buildFindingCandidates extracts durable, substance-carrying findings from the
 // run's insights. SQL literals are masked before storage so no warehouse PII
 // lands in the ledger.
-func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.LedgerFinding {
+func buildFindingCandidates(result *models.DiscoveryResult, stepSQL map[int]string) []commonmodels.LedgerFinding {
 	out := make([]commonmodels.LedgerFinding, 0, len(result.Insights))
 	for i := range result.Insights {
 		ins := result.Insights[i]
@@ -338,9 +338,15 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 		if name == "" {
 			continue
 		}
+		// The SQL that produced the finding. Live insights don't embed
+		// SQLMetadata — they cite SourceSteps — so fall back to the query of the
+		// first cited step that ran one. Masked either way, so no warehouse PII
+		// lands in the ledger.
 		sql := ""
-		if ins.SQLMetadata != nil {
+		if ins.SQLMetadata != nil && strings.TrimSpace(ins.SQLMetadata.Query) != "" {
 			sql = maskSQLLiterals(ins.SQLMetadata.Query)
+		} else {
+			sql = firstStepSQL(ins.SourceSteps, stepSQL)
 		}
 		out = append(out, commonmodels.LedgerFinding{
 			ProjectID:     result.ProjectID,
@@ -356,6 +362,50 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 		})
 	}
 	return out
+}
+
+// explorationStepLister is the read side of the discovery-log repo the
+// reflection needs to recover the SQL behind each finding. Declared narrowly
+// (not folded into discoveryLogPersister) and obtained by type-assertion, so
+// unit-level mocks that only implement the Save* side keep working — they simply
+// yield no step SQL.
+type explorationStepLister interface {
+	ListExplorationStepsByDiscovery(ctx context.Context, discoveryID string, limit int) ([]models.ExplorationStep, error)
+}
+
+// loadStepSQL indexes the run's persisted exploration steps by step number,
+// masking each query, so buildFindingCandidates can attach the SQL that produced
+// a finding (live insights cite SourceSteps rather than embedding SQLMetadata).
+// Best-effort: no lister / no discovery id / any error → nil, and findings
+// simply carry no SQL, exactly as before this path existed.
+func (o *Orchestrator) loadStepSQL(ctx context.Context, discoveryID string) map[int]string {
+	lister, ok := o.discoveryLogRepo.(explorationStepLister)
+	if !ok || lister == nil || discoveryID == "" {
+		return nil
+	}
+	steps, err := lister.ListExplorationStepsByDiscovery(ctx, discoveryID, 0)
+	if err != nil || len(steps) == 0 {
+		return nil
+	}
+	m := make(map[int]string, len(steps))
+	for _, s := range steps {
+		if q := strings.TrimSpace(s.Query); q != "" {
+			m[s.Step] = maskSQLLiterals(q)
+		}
+	}
+	return m
+}
+
+// firstStepSQL returns the (already-masked) SQL of the first cited source step
+// that ran a query, so a finding points at the query that produced it. Empty
+// when the insight cites no querying step or the index is unavailable.
+func firstStepSQL(sourceSteps []int, stepSQL map[int]string) string {
+	for _, n := range sourceSteps {
+		if q, ok := stepSQL[n]; ok {
+			return q
+		}
+	}
+	return ""
 }
 
 // buildKeyMetric renders a short, comparable metric string for a finding. It

@@ -121,7 +121,7 @@ func TestBuildFindingCandidates_SubstanceAndMasking(t *testing.T) {
 			{Name: ""}, // dropped (no name)
 		},
 	}
-	got := buildFindingCandidates(result)
+	got := buildFindingCandidates(result, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 candidate (empty name dropped), got %d", len(got))
 	}
@@ -131,6 +131,37 @@ func TestBuildFindingCandidates_SubstanceAndMasking(t *testing.T) {
 	}
 	if f.NormalizedKey == "" || f.Evidence == "" || f.KeyMetric == "" {
 		t.Errorf("substance not populated: %+v", f)
+	}
+}
+
+// TestBuildFindingCandidates_SQLFromSourceSteps covers the live path: insights
+// don't embed SQLMetadata, they cite SourceSteps, so the finding's SQL is
+// recovered from the step index (and masked). The first cited step that ran a
+// query wins; steps without a query are skipped.
+func TestBuildFindingCandidates_SQLFromSourceSteps(t *testing.T) {
+	result := &models.DiscoveryResult{
+		ProjectID: "proj-1",
+		Insights: []models.Insight{
+			{
+				AnalysisArea: "revenue",
+				Name:         "Refunds up",
+				Severity:     "medium",
+				SourceSteps:  []int{3, 7}, // step 3 ran no query; step 7 did
+			},
+		},
+	}
+	// Only step 7 has a query; the map is pre-masked as loadStepSQL would build it.
+	stepSQL := map[int]string{7: "SELECT sum(amount) FROM refunds WHERE region = ?"}
+	got := buildFindingCandidates(result, stepSQL)
+	if len(got) != 1 {
+		t.Fatalf("want 1 candidate, got %d", len(got))
+	}
+	if got[0].SQL != stepSQL[7] {
+		t.Errorf("SQL should come from the first cited querying step: got %q", got[0].SQL)
+	}
+	// No index → no SQL, no panic (nil map is the best-effort default).
+	if got2 := buildFindingCandidates(result, nil); got2[0].SQL != "" {
+		t.Errorf("nil step index should yield empty SQL, got %q", got2[0].SQL)
 	}
 }
 
