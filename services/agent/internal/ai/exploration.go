@@ -103,11 +103,12 @@ type ExplorationEngine struct {
 	schemaProvider SchemaProvider
 
 	// stepsIndexed and stepsIndexOffered count what the run-scoped index
-	// accepted and what it was asked to accept. The stopping rule reads both,
-	// because an empty search result means opposite things depending on them
-	// — see emptySearchIsAboutTheStep.
-	stepsIndexed      int
-	stepsIndexOffered int
+	// accepted and what it was asked to accept; consecutiveIndexFailures is
+	// how many of the most recent offers it refused, reset by any that lands.
+	// The stopping rule reads all three — see noveltyMeasurable.
+	stepsIndexed             int
+	stepsIndexOffered        int
+	consecutiveIndexFailures int
 
 	// stepIndexer ships each completed step to the run-scoped vector
 	// index. Optional — when nil the engine continues without
@@ -676,12 +677,16 @@ func (e *ExplorationEngine) Explore(
 					"step":  step,
 					"error": err.Error(),
 				}).Warn("Run-step index upsert failed; analysis ranking quality will degrade for this step")
+				// A step the index refused is not in it, so later searches
+				// answer about an index missing this run's most recent work.
+				e.consecutiveIndexFailures++
 			} else {
 				// What the index is actually holding. The stopping rule reads
 				// it to tell "this run has found nothing like this before"
 				// from "this index is not storing anything" — the two look
 				// identical from a search, and only one of them is evidence.
 				e.stepsIndexed++
+				e.consecutiveIndexFailures = 0
 			}
 		}
 

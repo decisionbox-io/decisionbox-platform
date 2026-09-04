@@ -414,17 +414,25 @@ func TestNewExplorationEngine_NoIndexMeansNoNoveltyRule(t *testing.T) {
 // it stopped being true, and the rule would never stand down.
 func TestNoveltyMeasurable_BracketsTheFailingCase(t *testing.T) {
 	cases := []struct {
-		name             string
-		indexed, offered int
-		want             bool
+		name                       string
+		indexed, offered, failures int
+		want                       bool
 	}{
-		{"nothing offered yet — it has had no chance to fail", 0, 0, true},
-		{"offered and kept — it is holding the run's steps", 3, 3, true},
-		{"offered, none kept — the write path is failing", 0, 3, false},
-		{"offered, some kept — working, with a transient failure", 2, 3, true},
+		{"nothing offered yet — it has had no chance to fail", 0, 0, 0, true},
+		{"offered and kept — it is holding the run's steps", 3, 3, 0, true},
+		{"offered, none kept — the write path never worked", 0, 3, 3, false},
+		{"kept some, one recent refusal — it blinked", 5, 6, 1, true},
+		// The case a lifetime count of successes cannot see: the index holds
+		// the run's early work and none of its latest, so a search reports
+		// steps as new that were never stored to be recognised.
+		{"kept some, then stopped keeping — it is stale", 5, 9, 4, false},
 	}
 	for _, tc := range cases {
-		e := &ExplorationEngine{stepsIndexed: tc.indexed, stepsIndexOffered: tc.offered}
+		e := &ExplorationEngine{
+			stepsIndexed:             tc.indexed,
+			stepsIndexOffered:        tc.offered,
+			consecutiveIndexFailures: tc.failures,
+		}
 		if got := e.noveltyMeasurable(); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}

@@ -61,8 +61,10 @@ const (
 	// rather than accepted for want of a floor.
 	repeatsBeforeDone = 3
 
-	// unjudgedStepsBeforeFallback is how many steps IN A ROW the rule will
-	// fail to assess before handing the decision back to the step floor.
+	// degradedStepsBeforeFallback is how many steps IN A ROW of a failing
+	// index the rule tolerates before handing the decision back to the step
+	// floor. It counts two independent signals of the same thing: steps whose
+	// novelty could not be read, and steps the index refused to store.
 	//
 	// Consecutive, not cumulative. Measurability is a question about the
 	// index's health NOW: a run that judged a step an hour ago and cannot
@@ -73,7 +75,7 @@ const (
 	//
 	// Without the fallback at all, a degraded vector store turns every run
 	// into a maximum-length one against a source metered per request.
-	unjudgedStepsBeforeFallback = 3
+	degradedStepsBeforeFallback = 3
 )
 
 // stopRule decides whether a "done" signal from the model is accepted.
@@ -141,7 +143,7 @@ func (s *stopRule) observe(repeated, judgeable bool) {
 // degraded vector store behave as it did before this rule existed rather than
 // rejecting every completion until the runaway cap.
 func (s *stopRule) acceptDone(step int, canMeasure bool) (bool, string) {
-	if s.byNovelty && canMeasure && s.consecutiveUnjudged < unjudgedStepsBeforeFallback {
+	if s.byNovelty && canMeasure && s.consecutiveUnjudged < degradedStepsBeforeFallback {
 		// The run has stopped finding new ground. A streak that long cannot
 		// exist without that many judged steps, so this subsumes the
 		// evidence check below.
@@ -242,19 +244,30 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 // noveltyMeasurable reports whether the run-scoped index is in a state where
 // an answer from it means anything.
 //
-// It is, in two cases that bracket the failing one: nothing has been offered
-// to the index yet, so it has had no chance to fail and refusing an immediate
-// completion is exactly what the rule is for; or it is holding something, so
-// its answers are about the steps. In between — steps offered, none kept — the
-// write path is failing while reads still answer, every search comes back
-// empty, and nothing it says is evidence about anything.
+// Three states, and each needs a different answer:
 //
-// Asked at the moment the decision is made rather than recorded per step. A
-// count of past judgements cannot answer it: an observation made while the
-// machinery still looked healthy stays on the books after it stops being true,
-// and the rule then never stands down.
+//   - Nothing offered yet. The index has had no chance to fail, and refusing
+//     an immediate completion is exactly what the rule is for.
+//   - Nothing ever kept. The write path has never worked, every search comes
+//     back empty, and nothing it says is evidence about anything.
+//   - Something kept, but the recent offers refused. The index is STALE: it
+//     holds the run's early work and none of its latest, so a search reports
+//     steps as new that were never stored to be recognised. A lifetime count
+//     of successes cannot see this — one early success would mark the
+//     machinery healthy for the rest of the run — so what is read is how many
+//     of the most recent offers it turned away.
+//
+// Asked at the moment the decision is made rather than recorded per step, for
+// the same reason: anything derived from what the machinery once did stays on
+// the books after it stops being true, and the rule then never stands down.
 func (e *ExplorationEngine) noveltyMeasurable() bool {
-	return e.stepsIndexOffered == 0 || e.stepsIndexed > 0
+	if e.stepsIndexOffered == 0 {
+		return true
+	}
+	if e.stepsIndexed == 0 {
+		return false
+	}
+	return e.consecutiveIndexFailures < degradedStepsBeforeFallback
 }
 
 // rejectionFor renders the nudge sent back to the model when its completion
