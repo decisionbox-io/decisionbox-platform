@@ -4,7 +4,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -168,7 +167,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 // indexes new/updated findings into Qdrant when the embedder is wired. Returns
 // the count of genuinely-new findings and the project's total afterward.
 func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (newCount, totalCount int, err error) {
-	candidates := buildFindingCandidates(result, o.loadStepSQL(ctx, result.ID))
+	candidates := buildFindingCandidates(result)
 	prior, lerr := o.findingRepo.List(ctx, o.projectID)
 	if lerr != nil {
 		return 0, 0, fmt.Errorf("list prior findings: %w", lerr)
@@ -226,7 +225,6 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			changed := findingMagnitudeChanged(match, &cand, trendDelta)
 			match.Description = cand.Description
 			match.KeyMetric = cand.KeyMetric
-			match.SQL = cand.SQL
 			match.Evidence = cand.Evidence
 			match.Severity = cand.Severity
 			match.AffectedCount = cand.AffectedCount
@@ -328,9 +326,8 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 }
 
 // buildFindingCandidates extracts durable, substance-carrying findings from the
-// run's insights. SQL literals are masked before storage so no warehouse PII
-// lands in the ledger.
-func buildFindingCandidates(result *models.DiscoveryResult, stepSQL map[int]string) []commonmodels.LedgerFinding {
+// run's insights.
+func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.LedgerFinding {
 	out := make([]commonmodels.LedgerFinding, 0, len(result.Insights))
 	for i := range result.Insights {
 		ins := result.Insights[i]
@@ -338,23 +335,12 @@ func buildFindingCandidates(result *models.DiscoveryResult, stepSQL map[int]stri
 		if name == "" {
 			continue
 		}
-		// The SQL that produced the finding. Live insights don't embed
-		// SQLMetadata — they cite SourceSteps — so fall back to the query of the
-		// first cited step that ran one. Masked either way, so no warehouse PII
-		// lands in the ledger.
-		sql := ""
-		if ins.SQLMetadata != nil && strings.TrimSpace(ins.SQLMetadata.Query) != "" {
-			sql = maskSQLLiterals(ins.SQLMetadata.Query)
-		} else {
-			sql = firstStepSQL(ins.SourceSteps, stepSQL)
-		}
 		out = append(out, commonmodels.LedgerFinding{
 			ProjectID:     result.ProjectID,
 			Area:          ins.AnalysisArea,
 			Name:          name,
 			Description:   truncate(ins.Description, 800),
 			KeyMetric:     buildKeyMetric(ins),
-			SQL:           sql,
 			Evidence:      truncate(strings.Join(ins.Indicators, "; "), 400),
 			Severity:      ins.Severity,
 			AffectedCount: ins.AffectedCount,
@@ -362,50 +348,6 @@ func buildFindingCandidates(result *models.DiscoveryResult, stepSQL map[int]stri
 		})
 	}
 	return out
-}
-
-// explorationStepLister is the read side of the discovery-log repo the
-// reflection needs to recover the SQL behind each finding. Declared narrowly
-// (not folded into discoveryLogPersister) and obtained by type-assertion, so
-// unit-level mocks that only implement the Save* side keep working — they simply
-// yield no step SQL.
-type explorationStepLister interface {
-	ListExplorationStepsByDiscovery(ctx context.Context, discoveryID string, limit int) ([]models.ExplorationStep, error)
-}
-
-// loadStepSQL indexes the run's persisted exploration steps by step number,
-// masking each query, so buildFindingCandidates can attach the SQL that produced
-// a finding (live insights cite SourceSteps rather than embedding SQLMetadata).
-// Best-effort: no lister / no discovery id / any error → nil, and findings
-// simply carry no SQL, exactly as before this path existed.
-func (o *Orchestrator) loadStepSQL(ctx context.Context, discoveryID string) map[int]string {
-	lister, ok := o.discoveryLogRepo.(explorationStepLister)
-	if !ok || lister == nil || discoveryID == "" {
-		return nil
-	}
-	steps, err := lister.ListExplorationStepsByDiscovery(ctx, discoveryID, 0)
-	if err != nil || len(steps) == 0 {
-		return nil
-	}
-	m := make(map[int]string, len(steps))
-	for _, s := range steps {
-		if q := strings.TrimSpace(s.Query); q != "" {
-			m[s.Step] = maskSQLLiterals(q)
-		}
-	}
-	return m
-}
-
-// firstStepSQL returns the (already-masked) SQL of the first cited source step
-// that ran a query, so a finding points at the query that produced it. Empty
-// when the insight cites no querying step or the index is unavailable.
-func firstStepSQL(sourceSteps []int, stepSQL map[int]string) string {
-	for _, n := range sourceSteps {
-		if q, ok := stepSQL[n]; ok {
-			return q
-		}
-	}
-	return ""
 }
 
 // buildKeyMetric renders a short, comparable metric string for a finding. It
@@ -704,32 +646,6 @@ func (o *Orchestrator) applyPackProposals(ctx context.Context, result *models.Di
 			applog.WithError(err).Warn("Reflection: insert pack proposals failed")
 		}
 	}
-}
-
-// --- SQL literal masking (no warehouse PII in the ledger) ---
-
-var (
-	// sqlStringLiteral matches a whole single-quoted SQL string literal,
-	// including the two escape forms real warehouses use: a doubled quote
-	// (ANSI `''`) and a backslash escape (BigQuery / MySQL `\'`). Consuming
-	// the entire literal in one match — rather than toggling on each `'` —
-	// is what prevents a `'it\'s secret'` value from leaking its tail when a
-	// naive scanner mistakes the escaped quote for the terminator.
-	sqlStringLiteral = regexp.MustCompile(`'(?:[^'\\]|\\.|'')*'`)
-	// multiDigitRun masks long digit runs (ids, phone numbers, etc.).
-	multiDigitRun = regexp.MustCompile(`\d{4,}`)
-)
-
-// maskSQLLiterals replaces single-quoted string literals with '?' and long digit
-// runs with ?, so PII in WHERE clauses never lands in stored SQL. This is the
-// sole masking of ledger SQL, so it must be correct on every dialect's escape
-// syntax (see sqlStringLiteral).
-func maskSQLLiterals(sql string) string {
-	if sql == "" {
-		return ""
-	}
-	masked := sqlStringLiteral.ReplaceAllString(sql, "'?'")
-	return multiDigitRun.ReplaceAllString(masked, "?")
 }
 
 // getEnvAsFloat reads a float env var with a default (go-common has no float

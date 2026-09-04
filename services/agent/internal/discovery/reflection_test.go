@@ -3,7 +3,6 @@ package discovery
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -92,20 +91,7 @@ func (f *fakeProposalRepo) ListForProject(_ context.Context, _ string, _ ...stri
 
 // --- pure helpers ---
 
-func TestMaskSQLLiterals(t *testing.T) {
-	got := maskSQLLiterals("SELECT * FROM users WHERE email = 'alice@example.com' AND id = 123456")
-	if strings.Contains(got, "alice@example.com") {
-		t.Errorf("string literal not masked: %s", got)
-	}
-	if strings.Contains(got, "123456") {
-		t.Errorf("long digit run not masked: %s", got)
-	}
-	if !strings.Contains(got, "FROM users WHERE email") {
-		t.Errorf("structure should survive masking: %s", got)
-	}
-}
-
-func TestBuildFindingCandidates_SubstanceAndMasking(t *testing.T) {
+func TestBuildFindingCandidates_Substance(t *testing.T) {
 	result := &models.DiscoveryResult{
 		ProjectID: "proj-1",
 		Insights: []models.Insight{
@@ -115,53 +101,18 @@ func TestBuildFindingCandidates_SubstanceAndMasking(t *testing.T) {
 				Description:   "Churn is elevated",
 				Severity:      "high",
 				AffectedCount: 100,
-				SQLMetadata:   &models.SQLMetadata{Query: "SELECT churn FROM t WHERE country = 'DE'"},
 				Indicators:    []string{"signal-a", "signal-b"},
 			},
 			{Name: ""}, // dropped (no name)
 		},
 	}
-	got := buildFindingCandidates(result, nil)
+	got := buildFindingCandidates(result)
 	if len(got) != 1 {
 		t.Fatalf("want 1 candidate (empty name dropped), got %d", len(got))
 	}
 	f := got[0]
-	if f.SQL == "" || strings.Contains(f.SQL, "'DE'") {
-		t.Errorf("SQL should be carried but masked: %q", f.SQL)
-	}
 	if f.NormalizedKey == "" || f.Evidence == "" || f.KeyMetric == "" {
 		t.Errorf("substance not populated: %+v", f)
-	}
-}
-
-// TestBuildFindingCandidates_SQLFromSourceSteps covers the live path: insights
-// don't embed SQLMetadata, they cite SourceSteps, so the finding's SQL is
-// recovered from the step index (and masked). The first cited step that ran a
-// query wins; steps without a query are skipped.
-func TestBuildFindingCandidates_SQLFromSourceSteps(t *testing.T) {
-	result := &models.DiscoveryResult{
-		ProjectID: "proj-1",
-		Insights: []models.Insight{
-			{
-				AnalysisArea: "revenue",
-				Name:         "Refunds up",
-				Severity:     "medium",
-				SourceSteps:  []int{3, 7}, // step 3 ran no query; step 7 did
-			},
-		},
-	}
-	// Only step 7 has a query; the map is pre-masked as loadStepSQL would build it.
-	stepSQL := map[int]string{7: "SELECT sum(amount) FROM refunds WHERE region = ?"}
-	got := buildFindingCandidates(result, stepSQL)
-	if len(got) != 1 {
-		t.Fatalf("want 1 candidate, got %d", len(got))
-	}
-	if got[0].SQL != stepSQL[7] {
-		t.Errorf("SQL should come from the first cited querying step: got %q", got[0].SQL)
-	}
-	// No index → no SQL, no panic (nil map is the best-effort default).
-	if got2 := buildFindingCandidates(result, nil); got2[0].SQL != "" {
-		t.Errorf("nil step index should yield empty SQL, got %q", got2[0].SQL)
 	}
 }
 
@@ -422,24 +373,6 @@ func (s stubPolicy) Policy(context.Context, string) (agentplugin.DiscoveryPolicy
 	return agentplugin.DiscoveryPolicy{EvolutionMode: s.mode, FrontierPolicy: agentplugin.FrontierBalanced}, nil
 }
 func (stubPolicy) Name() string { return "stub" }
-
-// Regression: PII in a backslash-escaped string literal must be fully masked
-// (a naive quote-toggler leaks the tail on BigQuery/MySQL escapes).
-func TestMaskSQLLiterals_BackslashEscape(t *testing.T) {
-	cases := []string{
-		`SELECT * FROM t WHERE note = 'it''s a secret pii value'`,      // ANSI doubled-quote
-		`SELECT * FROM t WHERE note = 'it\'s a secret pii value here'`, // backslash escape
-		`SELECT email FROM u WHERE email = 'alice@example.com' LIMIT 10`,
-	}
-	for _, sql := range cases {
-		got := maskSQLLiterals(sql)
-		for _, leak := range []string{"secret pii value", "alice@example.com", "a secret pii value here"} {
-			if strings.Contains(got, leak) {
-				t.Errorf("PII leaked through masking:\n in:  %s\n out: %s\n leak: %q", sql, got, leak)
-			}
-		}
-	}
-}
 
 // Regression: two insights with the same area+name in ONE run must merge into a
 // single ledger finding, not create two docs and double-count newCount.

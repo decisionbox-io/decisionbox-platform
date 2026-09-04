@@ -80,9 +80,9 @@ type ConvergencePoint struct {
 }
 
 // LedgerFinding is a durable, deduped finding carried across runs WITH substance
-// — the finding + its key metric + the SQL that found it + evidence — plus a
-// lifecycle status. This is the fix for today's names-only carry-forward
-// (InsightSummary), which dropped description/SQL/evidence.
+// — the finding + its key metric + evidence — plus a lifecycle status. This is
+// the fix for today's names-only carry-forward (InsightSummary), which dropped
+// description/evidence.
 type LedgerFinding struct {
 	ID          string `bson:"_id" json:"id"`
 	ProjectID   string `bson:"project_id" json:"project_id"`
@@ -90,7 +90,6 @@ type LedgerFinding struct {
 	Name        string `bson:"name" json:"name"`
 	Description string `bson:"description" json:"description"`
 	KeyMetric   string `bson:"key_metric,omitempty" json:"key_metric,omitempty"`
-	SQL         string `bson:"sql,omitempty" json:"sql,omitempty"`
 	Evidence    string `bson:"evidence,omitempty" json:"evidence,omitempty"`
 	Severity    string `bson:"severity" json:"severity"`
 	Status      string `bson:"status" json:"status"`

@@ -114,7 +114,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		ProjectID: projectID, ID: "disc-1",
 		Schemas: map[string]models.TableSchema{"ds.orders": {}, "ds.events": {}, "ds.users": {}},
 		Insights: []models.Insight{
-			{AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "churn elevated in EU", SQLMetadata: &models.SQLMetadata{Query: "SELECT count(*) FROM churn WHERE region = 'EU'"}},
+			{AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "churn elevated in EU"},
 			{AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
 			{AnalysisArea: "revenue", Name: "Refund rate up", Severity: "medium", AffectedCount: 40},
 		},
@@ -144,14 +144,14 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	if err != nil || len(stored) != 3 {
 		t.Fatalf("run1 findings not persisted: n=%d err=%v", len(stored), err)
 	}
-	var churn *struct{ sql, metric string }
-	for _, f := range stored {
-		if f.Name == "High EU churn" {
-			churn = &struct{ sql, metric string }{f.SQL, f.KeyMetric}
+	var churn *commonmodels.LedgerFinding
+	for i := range stored {
+		if stored[i].Name == "High EU churn" {
+			churn = &stored[i]
 		}
 	}
-	if churn == nil || churn.sql == "" || strings.Contains(churn.sql, "'EU'") {
-		t.Fatalf("finding SQL must be carried but masked: %+v", churn)
+	if churn == nil || churn.KeyMetric == "" || churn.Description == "" {
+		t.Fatalf("finding must be carried with substance: %+v", churn)
 	}
 
 	// --- Run 2: the next run READS the ledger back into its prompt context. ---
