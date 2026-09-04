@@ -19,11 +19,23 @@ var DomainPackSlugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 // failure.
 //
 // This is the single source of truth for "is this pack persistable"
-// — the dashboard's PUT /api/v1/domain-packs/{slug} handler runs
-// it, the seed-loading flow runs it, and the enterprise packgen
-// plugin's auto-fix loop runs it (via its own import) so a
-// generated pack that would later be rejected at save time is
-// caught at generation time instead.
+// — the dashboard's POST / PUT / import handlers run it, and the
+// enterprise packgen plugin's auto-fix loop runs it so a generated
+// pack that would later be rejected at save time is caught at
+// generation time instead.
+//
+// The seed loader deliberately does NOT: built-in packs ship in the
+// binary, so a failure there is a build-time mistake rather than
+// something an operator can act on at startup, and refusing to seed
+// leaves a fresh install with no packs at all.
+//
+// The pack's OWN shape decides the shape-dependent checks here. That
+// is right for a save: the pack being persisted is the pack, and it
+// is the shape pack selection will later key on, so a pack labelled
+// cube is one asked cube questions ever after. It is wrong mid-
+// generation, where the shape comes from the target datasource and
+// the model's raw output carries none — see
+// ValidateDomainPackForTarget.
 //
 // Checks:
 //   - slug shape (DomainPackSlugRegex, min length 2)
@@ -31,13 +43,35 @@ var DomainPackSlugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 //   - a declared source shape is one this build knows (absent is legal)
 //   - base prompts non-empty
 //   - required template placeholders: {{PROFILE}} in base_context;
-//     {{DATASET}}, {{SCHEMA_INFO}}, {{ANALYSIS_AREAS}} in exploration;
+//     {{SCHEMA_INFO}}, {{ANALYSIS_AREAS}} in exploration;
 //     {{INSIGHTS_DATA}} in recommendations — substituted by the
 //     discovery agent at run-time and required by the agent's
-//     prompt-rendering pipeline.
+//     prompt-rendering pipeline. {{DATASET}} joins them for every
+//     target but a cube; see requiresTableIdentifier.
 //   - at least one base analysis area; every area (base and
 //     per-category) has id + name + prompt + at least one keyword.
 func ValidateDomainPack(pack *DomainPack) error {
+	return ValidateDomainPackForTarget(pack, pack.EffectiveShape())
+}
+
+// ValidateDomainPackForTarget is ValidateDomainPack with the shape
+// supplied by the caller rather than read from the pack.
+//
+// The distinction is load-bearing exactly once: inside packgen's
+// synth retry loop, where the thing being validated is the model's
+// raw output. A generator never emits `shape` — it is not in the
+// output schema and is stripped from the example pack — so reading
+// the pack's own field there resolves every target to the default
+// and leaves a cube's requirements as unsatisfiable as they were
+// before this existed. Worse, it would let a hallucinated
+// `"shape": "cube"` in the model's output switch the SQL checks off
+// for a pack destined for a warehouse.
+//
+// Relaxing, not inverting: a cube-targeted pack that carries
+// {{DATASET}} anyway still passes. The placeholder is harmless
+// where nothing substitutes it, and the generator's prompt is what
+// stops asking for it, not this.
+func ValidateDomainPackForTarget(pack *DomainPack, target warehouse.SourceShape) error {
 	if pack.Slug == "" {
 		return fmt.Errorf("slug is required")
 	}
@@ -81,7 +115,7 @@ func ValidateDomainPack(pack *DomainPack) error {
 	if !strings.Contains(pack.Prompts.Base.BaseContext, "{{PROFILE}}") {
 		return fmt.Errorf("base_context must contain {{PROFILE}} template variable")
 	}
-	if !strings.Contains(pack.Prompts.Base.Exploration, "{{DATASET}}") {
+	if requiresTableIdentifier(target) && !strings.Contains(pack.Prompts.Base.Exploration, "{{DATASET}}") {
 		return fmt.Errorf("exploration must contain {{DATASET}} template variable")
 	}
 	if !strings.Contains(pack.Prompts.Base.Exploration, "{{SCHEMA_INFO}}") {
@@ -112,6 +146,26 @@ func ValidateDomainPack(pack *DomainPack) error {
 	}
 
 	return nil
+}
+
+// requiresTableIdentifier reports whether a pack written for this target
+// must name the tables it queries.
+//
+// {{DATASET}} is substituted with the connected datasource's dataset or
+// schema names, so the exploration prompt can say which tables exist to
+// query. A cube has none: a query there is a choice of metrics and
+// dimensions against a property, and there is no identifier to qualify
+// them with. Demanding the placeholder of such a pack is not a rule the
+// generator can meet by trying harder — there is nothing for it to say —
+// so it fails validation, exhausts its auto-fix budget, and produces
+// nothing.
+//
+// Asked of everything that is not a cube, rather than of an allow-list of
+// SQL shapes. A shape this build has never heard of is table-shaped until
+// proven otherwise, which fails toward keeping the check rather than
+// silently dropping it.
+func requiresTableIdentifier(target warehouse.SourceShape) bool {
+	return target != warehouse.ShapeCube
 }
 
 func validateAnalysisArea(area PackAnalysisArea, label string) error {
