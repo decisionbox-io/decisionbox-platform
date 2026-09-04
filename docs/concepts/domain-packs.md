@@ -53,6 +53,13 @@ of a pack written for an `entities` source. A cube has no tables to name, so
 requiring it there would be a rule no pack could satisfy. A cube pack that
 includes the placeholder anyway is still valid; nothing substitutes it.
 
+Shape also has to agree with the data source. Creating a project pairs a pack
+with a data source for the first time, and a pairing of different shapes is
+refused there: a cube pack seeded into a warehouse project produces prompts
+that ask for queries the source cannot answer, with no error to notice. A pack
+with no shape counts as `entities`, so every project created from the existing
+corpus is unaffected.
+
 ## Three-Level Hierarchy
 
 ```
