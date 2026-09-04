@@ -15,14 +15,25 @@ package ai
 // termination the floor exists to prevent. The number is not the problem, and
 // no value of it is right.
 //
-// So on a run that can query a cube, the floor is replaced by what it was
-// standing in for: whether the exploration is still turning up anything new.
-// A step's novelty is its distance from the steps already taken, which the
-// run-scoped step index can answer because it is already embedding every step
-// for the analysis phase. While recent steps are still novel, a "done" signal
-// is rejected exactly as the floor rejected it; once a run of them says the
-// same thing as earlier work, the exploration has finished whether or not it
-// has taken a particular number of steps.
+// The floor is not replaced, though. Every discovery run has tables: a
+// datasource that cannot anchor may not run discovery on its own, so a cube is
+// only ever present ALONGSIDE a warehouse, and the floor remains a fair proxy
+// for those tables. Replacing it would mean that connecting a cube to an
+// existing project silently shortened the SQL half of that project's run.
+//
+// So on a run that can query a cube, a marginal-value rule is added PAST the
+// floor: whether the exploration is still turning up anything new. A step's
+// novelty is its distance from the steps already taken, which the run-scoped
+// step index can answer because it is already embedding every step for the
+// analysis phase. Once the floor is satisfied, a "done" signal is held while
+// recent steps are still novel and accepted once a run of them says the same
+// thing as earlier work. The rule only ever lengthens a run.
+//
+// That leaves the cube half of the original problem standing: the floor still
+// counts steps rather than what they found, so sixty trivial slices satisfy it
+// as before. Crediting only non-repeating steps toward the floor would fix
+// that, at the cost of longer runs against a source metered per request — a
+// trade recorded in #383 rather than made here.
 //
 // The maximum step count is untouched and remains the runaway cap.
 
