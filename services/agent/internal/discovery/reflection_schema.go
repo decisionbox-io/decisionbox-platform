@@ -76,12 +76,13 @@ func reflectionResponseSchema() map[string]interface{} {
 				"items": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"text":        str("The task, phrased as an actionable next step"),
+						"title":       str("A short, plain-language title a business user would understand (max ~8 words; no table/column names or SQL jargon)"),
+						"text":        str("The detailed, technical description of the task as an actionable next step (may reference tables, columns, metrics, the specific hypothesis)"),
 						"kind":        map[string]interface{}{"type": "string", "enum": []string{"next_task", "hypothesis"}},
 						"target_type": map[string]interface{}{"type": "string", "enum": []string{"insight", "recommendation", "table", "area"}},
 						"target_id":   str("Optional: the id/name this task is about"),
 					},
-					"required": []interface{}{"text"},
+					"required": []interface{}{"title", "text"},
 				},
 			},
 			"domain_pack_deltas": map[string]interface{}{

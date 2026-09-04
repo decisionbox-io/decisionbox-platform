@@ -568,9 +568,16 @@ func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection
 		if kind != commonmodels.LedgerTaskKindHypothesis {
 			kind = commonmodels.LedgerTaskKindNextTask
 		}
+		// A short, user-facing title; fall back to the detailed text if the
+		// model omitted one so the UI always has something to lead with.
+		title := strings.TrimSpace(nt.Title)
+		if title == "" {
+			title = text
+		}
 		task := commonmodels.LedgerTask{
 			ID:            uuid.New().String(),
 			ProjectID:     o.projectID,
+			Title:         title,
 			Text:          text,
 			Kind:          kind,
 			Status:        commonmodels.LedgerTaskStatusOpen,

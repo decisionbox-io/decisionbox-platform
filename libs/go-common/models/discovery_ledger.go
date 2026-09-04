@@ -183,8 +183,13 @@ func (f *LedgerFinding) Rank(now time.Time) float64 {
 // emits to seed the next run ("couldn't verify X → check next", "A⋈B looked
 // anomalous → investigate", "table Z untouched").
 type LedgerTask struct {
-	ID            string         `bson:"_id" json:"id"`
-	ProjectID     string         `bson:"project_id" json:"project_id"`
+	ID        string `bson:"_id" json:"id"`
+	ProjectID string `bson:"project_id" json:"project_id"`
+	// Title is a short, plain-language label for the task a business user can
+	// scan (e.g. "Check which sellers drive dead inventory"). Text keeps the
+	// full, technical description (tables, metrics, the specific hypothesis).
+	// Older tasks have no title; the UI falls back to Text.
+	Title         string         `bson:"title,omitempty" json:"title,omitempty"`
 	Text          string         `bson:"text" json:"text"`
 	Kind          string         `bson:"kind" json:"kind"`
 	Status        string         `bson:"status" json:"status"`

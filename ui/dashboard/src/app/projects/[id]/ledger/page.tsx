@@ -252,11 +252,14 @@ export default function LedgerPage() {
             count={ledger.tasks.length}
             description="Open investigation threads the next run should pick up first."
           >
-            <Stack gap="sm">
+            <Stack gap="md">
               {ledger.tasks.map((t) => (
                 <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
                   <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
-                  <Text size="sm">{t.text}</Text>
+                  <div style={{ minWidth: 0 }}>
+                    <Text size="sm" fw={600}>{t.title || t.text}</Text>
+                    {t.title && t.title !== t.text && <Text size="xs" c="dimmed" mt={2}>{t.text}</Text>}
+                  </div>
                 </Group>
               ))}
             </Stack>

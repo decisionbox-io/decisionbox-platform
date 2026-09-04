@@ -36,6 +36,7 @@ type parsedReflection struct {
 	} `json:"learnings"`
 
 	NextTasks []struct {
+		Title      string `json:"title"`
 		Text       string `json:"text"`
 		Kind       string `json:"kind"`
 		TargetType string `json:"target_type"`

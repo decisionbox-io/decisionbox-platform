@@ -869,6 +869,7 @@ export interface LedgerFinding {
 
 export interface LedgerTask {
   id: string;
+  title?: string; // short, plain-language label (older tasks fall back to text)
   text: string;
   kind: string; // next_task | hypothesis
   status: string;

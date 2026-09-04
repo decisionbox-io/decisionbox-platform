@@ -72,7 +72,7 @@ export function UpcomingInvestigation({ projectId }: { projectId: string }) {
             <Badge size="xs" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>
               {t.kind.replace('_', ' ')}
             </Badge>
-            <Text size="sm" lineClamp={1}>{t.text}</Text>
+            <Text size="sm" lineClamp={1}>{t.title || t.text}</Text>
           </Group>
         ))}
       </Stack>
