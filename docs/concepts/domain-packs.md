@@ -46,6 +46,13 @@ that reads correctly and asks for queries the source cannot answer. A shape
 that is neither of the two above is rejected when the pack is saved, rather
 than stored and silently matching nothing.
 
+Shape also decides one validation rule. Every pack's exploration prompt must
+carry `{{SCHEMA_INFO}}` and `{{ANALYSIS_AREAS}}`, but `{{DATASET}}` — the
+dataset and schema names the prompt qualifies its tables with — is asked only
+of a pack written for an `entities` source. A cube has no tables to name, so
+requiring it there would be a rule no pack could satisfy. A cube pack that
+includes the placeholder anyway is still valid; nothing substitutes it.
+
 ## Three-Level Hierarchy
 
 ```
