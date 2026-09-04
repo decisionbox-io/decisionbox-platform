@@ -125,6 +125,7 @@ export default function LedgerPage() {
   const [savingMode, setSavingMode] = useState(false);
   const [deciding, setDeciding] = useState<string>(''); // proposal id currently being decided
   const [showFindings, setShowFindings] = useState(false); // advanced detail, collapsed by default
+  const [showFrontierHelp, setShowFrontierHelp] = useState(false); // frontier explainer, hidden by default
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()); // expanded follow-up ancestry
 
   const toggleThread = (id: string) => setOpenThreads((prev) => {
@@ -431,16 +432,26 @@ export default function LedgerPage() {
                 w={340}
               />
             </Group>
-            <Card withBorder radius="sm" padding="sm" mt="md">
-              <Text size="xs" c="dimmed">
-                <b>Frontier</b> — the parts of your data the investigation has not looked at yet (tables and areas it has not explored). The <b>frontier policy</b> tells the next run where to spend its time:
-              </Text>
-              <Stack gap={4} mt={8}>
-                <Text size="xs" c="dimmed"><b>Go wide (breadth)</b> — cover more ground: explore new tables and areas it has not touched yet, for a broad picture of what is there.</Text>
-                <Text size="xs" c="dimmed"><b>Go deep (depth)</b> — keep digging into the areas already showing the strongest signals, instead of spreading out.</Text>
-                <Text size="xs" c="dimmed"><b>Balanced</b> — a mix of both: some new ground, some deeper digging. A sensible default.</Text>
-              </Stack>
-            </Card>
+            <div style={{ marginTop: 12 }}>
+              <UnstyledButton onClick={() => setShowFrontierHelp((v) => !v)} aria-expanded={showFrontierHelp}>
+                <Group gap={4} wrap="nowrap">
+                  <IconChevronRight size={14} style={{ transform: showFrontierHelp ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
+                  <Text size="xs" c="dimmed">What do frontier, breadth and depth mean?</Text>
+                </Group>
+              </UnstyledButton>
+              <Collapse in={showFrontierHelp}>
+                <Card withBorder radius="sm" padding="sm" mt="xs">
+                  <Text size="xs" c="dimmed">
+                    <b>Frontier</b> — the parts of your data the investigation has not looked at yet (tables and areas it has not explored). The <b>frontier policy</b> tells the next run where to spend its time:
+                  </Text>
+                  <Stack gap={4} mt={8}>
+                    <Text size="xs" c="dimmed"><b>Go wide (breadth)</b> — cover more ground: explore new tables and areas it has not touched yet, for a broad picture of what is there.</Text>
+                    <Text size="xs" c="dimmed"><b>Go deep (depth)</b> — keep digging into the areas already showing the strongest signals, instead of spreading out.</Text>
+                    <Text size="xs" c="dimmed"><b>Balanced</b> — a mix of both: some new ground, some deeper digging. A sensible default.</Text>
+                  </Stack>
+                </Card>
+              </Collapse>
+            </div>
           </Section>
         )}
 
