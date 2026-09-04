@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton } from '@mantine/core';
+import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconBook2, IconChevronRight } from '@tabler/icons-react';
+import {
+  IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
+  IconMap2, IconHistory, IconAdjustments, IconListDetails,
+} from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { SectionHeader, EmptyState, StatCard, SeverityBadge, AreaBadge, Th } from '@/components/common/UIComponents';
 import {
@@ -61,14 +64,48 @@ function normalizeLedger(lv: LedgerView): LedgerView {
   };
 }
 
-// LedgerPage is the investigation view for compounding discovery. Layout is
-// ordered by what an analyst acts on first: the convergence trend and the open
-// investigation threads sit up top (is discovery still finding new things, and
-// what should the next run chase), then the actionable domain-pack proposals and
-// the coverage summary. The raw finding-level table is advanced detail, so it is
-// collapsed by default (technical users expand it). The evolution / frontier
-// controls are configuration, so they live at the bottom. Rendered full-width —
-// the finding table + convergence bars want the horizontal room.
+// Section is the single, consistent container every block on this page uses: a
+// bordered card with an icon chip, a title, an optional count, and a one-line
+// purpose. Using it everywhere (instead of a mix of bordered cards and bare
+// lists) is what keeps the page from blending together — each block reads as a
+// distinct, self-explaining unit.
+function Section({
+  icon, title, count, description, right, children,
+}: {
+  icon: ReactNode;
+  title: string;
+  count?: number;
+  description?: string;
+  right?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Card withBorder padding="lg" radius="md">
+      <Group justify="space-between" align="center" wrap="nowrap">
+        <Group gap="xs" wrap="nowrap">
+          <ThemeIcon variant="light" color="gray" size="md" radius="md">{icon}</ThemeIcon>
+          <Text fw={600} size="md">{title}</Text>
+          {typeof count === 'number' && <Badge size="sm" variant="light" color="gray">{count}</Badge>}
+        </Group>
+        {right}
+      </Group>
+      {description && <Text size="xs" c="dimmed" mt={6}>{description}</Text>}
+      <div style={{ marginTop: 16 }}>{children}</div>
+    </Card>
+  );
+}
+
+// LedgerPage is the investigation view for compounding discovery. It reads top
+// to bottom as one story, one titled card per step:
+//   1. Overview  — the at-a-glance numbers.
+//   2. Momentum  — is discovery still surfacing new things (convergence)?
+//   3. Next up   — the open investigation threads to chase.
+//   4. Decisions — playbook changes the run proposed, awaiting approval.
+//   5. Coverage  — how much of the warehouse has been reached.
+//   6. Findings  — the full finding-level table (advanced, collapsed).
+//   7. History   — applied / rejected playbook changes.
+//   8. Settings  — how the ledger is allowed to steer future runs.
+// Rendered full-width so the tables + convergence bars use the horizontal room.
 //
 // The whole feature is enterprise-backed — on a community build the routes 404
 // and the page shows an honest "not available" state.
@@ -168,12 +205,15 @@ export default function LedgerPage() {
   return (
     <Shell fullWidth>
       <Stack gap="lg">
-        <SectionHeader title="Discovery Ledger" />
-        <Text size="sm" c="dimmed">
-          {project?.name ? `${project.name} — ` : ''}the accumulated investigation state. Each run builds on this instead of starting fresh.
-        </Text>
+        {/* Page header */}
+        <div>
+          <SectionHeader title="Discovery Ledger" />
+          <Text size="sm" c="dimmed" mt={4}>
+            {project?.name ? `${project.name} — ` : ''}the accumulated investigation state. Each run builds on this instead of starting fresh.
+          </Text>
+        </div>
 
-        {/* At-a-glance KPIs */}
+        {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
           <StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet touched" />
@@ -185,42 +225,53 @@ export default function LedgerPage() {
           />
         </Group>
 
-        {/* Convergence trend — is discovery still finding new things? (top) */}
+        {/* 2. Momentum — is discovery still surfacing new things? */}
         {ledger.convergence.length > 0 && (
-          <Card withBorder padding="md" radius="md">
-            <Text size="sm" fw={600} mb="xs">Convergence — new findings per run</Text>
-            <Stack gap={6}>
+          <Section
+            icon={<IconTrendingUp size={16} />}
+            title="Momentum"
+            description="New findings per run. A falling line means discovery is converging — the project is well understood."
+          >
+            <Stack gap={8}>
               {ledger.convergence.slice(-12).map((c) => (
                 <Group key={c.run_id} gap="sm" wrap="nowrap">
                   <Text size="xs" c="dimmed" w={90} style={{ flexShrink: 0 }}>{new Date(c.date).toLocaleDateString()}</Text>
-                  <Progress value={Math.round(c.marginal_ratio * 100)} size="sm" style={{ flex: 1 }} />
-                  <Text size="xs" c="dimmed" w={110} ta="right" style={{ flexShrink: 0 }}>{c.new_findings} new / {c.total_findings}</Text>
+                  <Progress value={Math.round(c.marginal_ratio * 100)} size="md" radius="sm" style={{ flex: 1 }} />
+                  <Text size="xs" c="dimmed" w={120} ta="right" style={{ flexShrink: 0 }}>{c.new_findings} new / {c.total_findings}</Text>
                 </Group>
               ))}
             </Stack>
-          </Card>
+          </Section>
         )}
 
-        {/* Open investigation threads — what the next run should chase (top) */}
+        {/* 3. Next up — the open investigation threads */}
         {ledger.tasks.length > 0 && (
-          <div>
-            <SectionHeader title="Open investigation threads" count={ledger.tasks.length} />
-            <Stack gap="xs" mt="xs">
+          <Section
+            icon={<IconRoute size={16} />}
+            title="Next up"
+            count={ledger.tasks.length}
+            description="Open investigation threads the next run should pick up first."
+          >
+            <Stack gap="sm">
               {ledger.tasks.map((t) => (
-                <Group key={t.id} gap="xs" wrap="nowrap" align="flex-start">
-                  <Badge size="xs" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'}>{t.kind.replace('_', ' ')}</Badge>
+                <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
+                  <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
                   <Text size="sm">{t.text}</Text>
                 </Group>
               ))}
             </Stack>
-          </div>
+          </Section>
         )}
 
-        {/* Pending domain-pack proposals — needs a decision */}
+        {/* 4. Decisions — playbook changes awaiting approval */}
         {pending.length > 0 && (
-          <Card withBorder padding="md" radius="md">
-            <Text size="sm" fw={600} mb="xs">Proposed domain-pack changes ({pending.length})</Text>
-            <Stack gap="sm">
+          <Section
+            icon={<IconGitPullRequest size={16} />}
+            title="Playbook changes to review"
+            count={pending.length}
+            description="Analysis-area changes the run proposed. Approve to apply them to this project's playbook, or reject."
+          >
+            <Stack gap="md">
               {pending.map((p) => (
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="flex-start">
                   <div style={{ minWidth: 0 }}>
@@ -230,44 +281,47 @@ export default function LedgerPage() {
                     </Group>
                     <Text size="sm" c="dimmed">{p.rationale}</Text>
                   </div>
-                  <Group gap="xs" wrap="nowrap">
+                  <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
                     <Button size="xs" color="teal" loading={deciding === p.id} onClick={() => decide(p.id, 'approve')}>Approve</Button>
                     <Button size="xs" variant="default" loading={deciding === p.id} onClick={() => decide(p.id, 'reject')}>Reject</Button>
                   </Group>
                 </Group>
               ))}
             </Stack>
-          </Card>
+          </Section>
         )}
 
-        {/* Coverage summary */}
+        {/* 5. Coverage — how much of the warehouse has been reached */}
         {ledger.coverage.summary && (
-          <Card withBorder padding="md" radius="md">
-            <Text size="sm" fw={600} mb={4}>Coverage</Text>
-            <Text size="sm" c="dimmed">{ledger.coverage.summary}</Text>
-          </Card>
+          <Section
+            icon={<IconMap2 size={16} />}
+            title="Coverage"
+            description="What the investigation has reached across the warehouse so far."
+          >
+            <Text size="sm">{ledger.coverage.summary}</Text>
+          </Section>
         )}
 
-        {/* Findings — advanced finding-level detail, collapsed by default */}
-        <div>
+        {/* 6. Findings — advanced finding-level detail, collapsed by default */}
+        <Card withBorder padding="lg" radius="md">
           <UnstyledButton onClick={() => setShowFindings((v) => !v)} style={{ width: '100%' }}>
-            <Group justify="space-between" wrap="nowrap">
+            <Group justify="space-between" align="center" wrap="nowrap">
               <Group gap="xs" wrap="nowrap">
-                <IconChevronRight
-                  size={18}
-                  style={{ transform: showFindings ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }}
-                />
+                <ThemeIcon variant="light" color="gray" size="md" radius="md"><IconListDetails size={16} /></ThemeIcon>
                 <Text fw={600} size="md">Findings</Text>
                 <Badge size="sm" variant="light" color="gray">{ledger.findings.length}</Badge>
               </Group>
-              <Text size="xs" c="dimmed">{showFindings ? 'Hide detail' : 'Show detail'}</Text>
+              <Group gap={6} wrap="nowrap">
+                <Text size="xs" c="dimmed">{showFindings ? 'Hide detail' : 'Show detail'}</Text>
+                <IconChevronRight size={16} style={{ transform: showFindings ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
+              </Group>
             </Group>
           </UnstyledButton>
-          <Text size="xs" c="dimmed" mt={4} ml={26}>
-            The full finding-level table behind the ledger — severity, status, the metric and how often it has recurred.
+          <Text size="xs" c="dimmed" mt={6}>
+            The full finding-level table behind the ledger — severity, status, the metric and how often each has recurred.
           </Text>
           <Collapse in={showFindings}>
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 16 }}>
               {ledger.findings.length === 0 ? (
                 <EmptyState icon={<IconBook2 size={32} />} title="No findings yet" description="Findings accumulate here as discovery runs complete." />
               ) : (
@@ -304,13 +358,17 @@ export default function LedgerPage() {
               )}
             </div>
           </Collapse>
-        </div>
+        </Card>
 
-        {/* Decided-proposal history */}
+        {/* 7. History — applied / rejected playbook changes */}
         {decided.length > 0 && (
-          <div>
-            <SectionHeader title="Change history" count={decided.length} />
-            <Stack gap="xs" mt="xs">
+          <Section
+            icon={<IconHistory size={16} />}
+            title="Change history"
+            count={decided.length}
+            description="Playbook changes that have already been applied, rejected, or reverted."
+          >
+            <Stack gap="sm">
               {decided.map((p) => (
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="center">
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
@@ -325,13 +383,16 @@ export default function LedgerPage() {
                 </Group>
               ))}
             </Stack>
-          </div>
+          </Section>
         )}
 
-        {/* Evolution controls — configuration, at the bottom */}
+        {/* 8. Settings — how the ledger steers future runs */}
         {settings && (
-          <Card withBorder padding="md" radius="md">
-            <Text size="sm" fw={600} mb="xs">Evolution</Text>
+          <Section
+            icon={<IconAdjustments size={16} />}
+            title="Evolution settings"
+            description="How the ledger is allowed to steer future runs — whether proposed playbook changes apply automatically, and which direction the next run favours."
+          >
             <Group align="flex-end" gap="md">
               <Select
                 label="Mode"
@@ -352,7 +413,7 @@ export default function LedgerPage() {
                 w={280}
               />
             </Group>
-          </Card>
+          </Section>
         )}
       </Stack>
     </Shell>
