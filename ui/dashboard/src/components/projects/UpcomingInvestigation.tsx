@@ -96,7 +96,7 @@ export function UpcomingInvestigation({ projectId }: { projectId: string }) {
           <Group gap="xs" wrap="nowrap" mb={shown.length ? 'sm' : 0}>
             <Badge size="sm" variant="light" color="yellow">{pending.length}</Badge>
             <Text size="sm">
-              proposed playbook change{pending.length > 1 ? 's' : ''} awaiting your review
+              Proposed playbook change{pending.length > 1 ? 's' : ''} awaiting your review
             </Text>
           </Group>
         )}
