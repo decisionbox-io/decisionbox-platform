@@ -3,12 +3,14 @@
 import { useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
 import { IconAlertCircle, IconPlus, IconBrain } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { ProjectRunStatus } from '@/components/projects/ProjectRunStatus';
 import { api, Project } from '@/lib/api';
 
 export default function ProjectsPage() {
+  const t = useTranslations('projects');
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,28 +26,28 @@ export default function ProjectsPage() {
     <Shell>
       <Stack gap="lg">
         <Group justify="space-between">
-          <Title order={2}>Projects</Title>
+          <Title order={2}>{t('title')}</Title>
           <Button component={Link} href="/projects/new" leftSection={<IconPlus size={16} />}>
-            New Project
+            {t('newProject')}
           </Button>
         </Group>
 
         {error && (
-          <Alert icon={<IconAlertCircle size={16} />} title="Connection Error" color="red" variant="light">
+          <Alert icon={<IconAlertCircle size={16} />} title={t('connectionError')} color="red" variant="light">
             {error}
           </Alert>
         )}
 
-        {loading && <Text c="dimmed">Loading projects...</Text>}
+        {loading && <Text c="dimmed">{t('loading')}</Text>}
 
         {!loading && !error && projects.length === 0 && (
           <Card withBorder p="xl" ta="center">
             <Stack align="center" gap="md">
               <IconBrain size={48} color="var(--mantine-color-gray-5)" />
-              <Title order={3} c="dimmed">No projects yet</Title>
-              <Text c="dimmed">Create your first project to start discovering insights.</Text>
+              <Title order={3} c="dimmed">{t('emptyTitle')}</Title>
+              <Text c="dimmed">{t('emptyBody')}</Text>
               <Button component={Link} href="/projects/new" leftSection={<IconPlus size={16} />}>
-                Create Project
+                {t('createProject')}
               </Button>
             </Stack>
           </Card>

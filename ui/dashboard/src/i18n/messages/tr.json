@@ -1,0 +1,56 @@
+{
+  "language": {
+    "label": "Dil"
+  },
+  "common": {
+    "dashboard": "Panel",
+    "save": "Kaydet",
+    "cancel": "İptal",
+    "delete": "Sil",
+    "edit": "Düzenle",
+    "create": "Oluştur",
+    "close": "Kapat",
+    "loading": "Yükleniyor…",
+    "error": "Bir şeyler ters gitti",
+    "retry": "Yeniden dene",
+    "search": "Ara",
+    "back": "Geri",
+    "next": "İleri",
+    "previous": "Önceki",
+    "confirm": "Onayla",
+    "yes": "Evet",
+    "no": "Hayır",
+    "none": "Yok",
+    "saving": "Kaydediliyor…",
+    "saved": "Kaydedildi"
+  },
+  "projects": {
+    "title": "Projeler",
+    "newProject": "Yeni Proje",
+    "connectionError": "Bağlantı Hatası",
+    "loading": "Projeler yükleniyor…",
+    "emptyTitle": "Henüz proje yok",
+    "emptyBody": "İçgörüleri keşfetmeye başlamak için ilk projenizi oluşturun.",
+    "createProject": "Proje Oluştur"
+  },
+  "nav": {
+    "section": {
+      "discover": "Keşif",
+      "intelligence": "Zekâ",
+      "configure": "Yapılandırma"
+    },
+    "discoveryRuns": "Keşif çalışmaları",
+    "insights": "İçgörüler",
+    "recommendations": "Öneriler",
+    "questions": "Sorular",
+    "ledger": "Defter",
+    "lists": "Listeler",
+    "search": "Arama",
+    "askInsights": "İçgörülere Sor",
+    "settings": "Ayarlar",
+    "playbook": "Playbook",
+    "projects": "Projeler",
+    "playbooks": "Playbook'lar",
+    "system": "Sistem"
+  }
+}

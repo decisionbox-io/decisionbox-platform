@@ -14,6 +14,9 @@ const esmMarkdownDeps = [
   'escape-string-regexp', 'markdown-table', 'estree-util-is-identifier-name',
   'style-to-object', 'inline-style-parser', 'longest-streak', 'zwitch',
   'trim-lines', 'is-plain-obj',
+  // next-intl and its use-intl core ship ESM-only too, as do their
+  // @formatjs/intl-messageformat dependencies.
+  'next-intl', 'use-intl', '@formatjs.*', 'intl-messageformat.*',
 ].join('|');
 
 /** @type {import('jest').Config} */

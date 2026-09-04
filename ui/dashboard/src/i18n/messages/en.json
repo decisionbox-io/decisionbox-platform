@@ -1,0 +1,56 @@
+{
+  "language": {
+    "label": "Language"
+  },
+  "common": {
+    "dashboard": "Dashboard",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "close": "Close",
+    "loading": "Loading…",
+    "error": "Something went wrong",
+    "retry": "Retry",
+    "search": "Search",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "confirm": "Confirm",
+    "yes": "Yes",
+    "no": "No",
+    "none": "None",
+    "saving": "Saving…",
+    "saved": "Saved"
+  },
+  "projects": {
+    "title": "Projects",
+    "newProject": "New Project",
+    "connectionError": "Connection Error",
+    "loading": "Loading projects…",
+    "emptyTitle": "No projects yet",
+    "emptyBody": "Create your first project to start discovering insights.",
+    "createProject": "Create Project"
+  },
+  "nav": {
+    "section": {
+      "discover": "Discover",
+      "intelligence": "Intelligence",
+      "configure": "Configure"
+    },
+    "discoveryRuns": "Discovery runs",
+    "insights": "Insights",
+    "recommendations": "Recommendations",
+    "questions": "Questions",
+    "ledger": "Ledger",
+    "lists": "Lists",
+    "search": "Search",
+    "askInsights": "Ask Insights",
+    "settings": "Settings",
+    "playbook": "Playbook",
+    "projects": "Projects",
+    "playbooks": "Playbooks",
+    "system": "System"
+  }
+}
