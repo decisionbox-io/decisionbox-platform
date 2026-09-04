@@ -65,6 +65,7 @@ function normalizeLedger(lv: LedgerView): LedgerView {
     convergence: lv?.convergence ?? [],
     findings: lv?.findings ?? [],
     tasks: lv?.tasks ?? [],
+    ancestors: lv?.ancestors ?? [],
   };
 }
 

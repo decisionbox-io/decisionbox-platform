@@ -96,6 +96,22 @@ describe('LedgerPage', () => {
     expect(await screen.findByText(/Hide detail/i)).toBeInTheDocument();
   });
 
+  it('expands a follow-up task to its resolved parent (ancestors survive normalize)', async () => {
+    // Regression: normalizeLedger dropped `ancestors`, so a follow-up showed
+    // "Parent thread is no longer available." instead of the resolved parent.
+    getLedger.mockResolvedValue({
+      ...ledger,
+      tasks: [{ id: 't2', title: 'Refine churn drivers', text: 'dig into the churn drivers', kind: 'next_task', status: 'open', supersedes: 'p1' }],
+      ancestors: [{ id: 'p1', title: 'Look at churn', text: 'look at churn broadly', kind: 'next_task', status: 'done' }],
+    } as unknown as LedgerView);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    fireEvent.click(await screen.findByText(/follow-up/i));
+    expect(await screen.findByText('Look at churn')).toBeInTheDocument();
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
+  });
+
   it('approves a pending proposal', async () => {
     getLedger.mockResolvedValue(ledger);
     getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'admin_approval', frontier_policy: 'balanced' });
