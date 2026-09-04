@@ -614,6 +614,12 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.ReasoningEnabled = incoming.ReasoningEnabled
 	}
 
+	// AskSuggestionsEnabled: same nil-means-untouched pointer semantics
+	// (including false — the opt-out that stops the automatic LLM calls).
+	if incoming.AskSuggestionsEnabled != nil {
+		existing.AskSuggestionsEnabled = incoming.AskSuggestionsEnabled
+	}
+
 	// RecommendationVerdicts is a slice — nil means "do not touch", non-nil
 	// (including an explicit empty array, which EffectiveRecommendationVerdicts
 	// resolves back to the default) means "replace with this set". The

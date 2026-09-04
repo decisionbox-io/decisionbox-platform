@@ -294,6 +294,10 @@ export interface Project {
   // Ledger phase: after a run, the agent consolidates it into a persistent
   // per-project ledger so the next run builds on it. False opts the project out.
   reflection_enabled?: boolean;
+  // Undefined → default (true). Controls the LLM-generated suggested starter
+  // questions shown on insight / recommendation pages ("Ask about this"). Makes
+  // an automatic LLM call on page entry, so users can opt out in Settings.
+  ask_suggestions_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,
@@ -1032,10 +1036,27 @@ export interface SearchResponse {
   projects_excluded?: number;
 }
 
+// SeedContext anchors an Ask conversation to one insight / recommendation the
+// user launched "Ask about this" from. The client passes {type,id} (+ a title
+// for the chip); the server hydrates the authoritative grounding text by id —
+// the client never supplies prompt text.
+export interface SeedContext {
+  type: 'insight' | 'recommendation';
+  id: string;
+  title: string;
+}
+
 export interface AskRequest {
   question: string;
   limit?: number;
   session_id?: string;
+  // Sent on the first turn of a seeded conversation ({type,id} only — the server
+  // hydrates the grounding text and persists it on the session).
+  seed_context?: { type: string; id: string };
+}
+
+export interface AskSuggestionsResponse {
+  questions: string[];
 }
 
 export interface AskResponse {
@@ -1056,6 +1077,10 @@ export interface AskSession {
   message_count: number;
   created_at: string;
   updated_at: string;
+  // Present when the conversation was launched from an insight / recommendation
+  // ("Ask about this"). The list endpoint returns the ref (type/id/label) so the
+  // drawer can show prior conversations for the entity on screen.
+  seed_context?: { type: string; id: string; label?: string };
 }
 
 export interface AskSessionMessage {
@@ -1525,6 +1550,11 @@ export const api = {
     request<SearchResponse>('/api/v1/search', { method: 'POST', body: JSON.stringify(req) }),
   askInsights: (projectId: string, req: AskRequest) =>
     request<AskResponse>(`/api/v1/projects/${projectId}/ask`, { method: 'POST', body: JSON.stringify(req) }),
+  // LLM-generated starter questions for an insight / recommendation. Enterprise
+  // route; returns { questions: [] } (or 404 → caught by the caller) when the
+  // feature is unavailable, so the UI simply renders no chips.
+  getAskSuggestions: (projectId: string, body: { type: string; id: string }) =>
+    request<AskSuggestionsResponse>(`/api/v1/projects/${projectId}/ask/suggestions`, { method: 'POST', body: JSON.stringify(body) }),
 
   // Standalone insights & recommendations (denormalized collections)
   listStandaloneInsights: (projectId: string, limit = 50, offset = 0) =>
@@ -1540,9 +1570,14 @@ export const api = {
   listSearchHistory: (projectId: string, limit = 20) =>
     request<SearchHistoryEntry[]>(`/api/v1/projects/${projectId}/search/history?limit=${limit}`),
 
-  // Ask sessions (conversations)
-  listAskSessions: (projectId: string, limit = 20) =>
-    request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?limit=${limit}`),
+  // Ask sessions (conversations). seed scopes the list to prior conversations
+  // launched from one insight / recommendation ("previous conversations about
+  // this item").
+  listAskSessions: (projectId: string, limit = 20, seed?: { type: string; id: string }) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (seed) { q.set('seed_type', seed.type); q.set('seed_id', seed.id); }
+    return request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?${q.toString()}`);
+  },
   getAskSession: (projectId: string, sessionId: string) =>
     request<AskSession>(`/api/v1/projects/${projectId}/ask/sessions/${sessionId}`),
   deleteAskSession: (projectId: string, sessionId: string) =>

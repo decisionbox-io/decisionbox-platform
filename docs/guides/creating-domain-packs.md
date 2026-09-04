@@ -1,4 +1,6 @@
-# Creating Domain Packs
+# Creating a Playbook / Domain Pack
+
+> In the DecisionBox dashboard, domain packs are called **Playbooks** — the two names are interchangeable. This guide uses **domain pack** for the JSON / API model.
 
 A domain pack teaches DecisionBox how to analyze data for a specific industry. This guide walks through creating one.
 
