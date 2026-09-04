@@ -332,3 +332,32 @@ func TestCubeSeedPack_RecommendationExampleParsesAsTheModel(t *testing.T) {
 		t.Error("the example's expected_impact decoded empty — it is an object, and a sentence there is silently dropped")
 	}
 }
+
+// TestCubeSeedPack_UsesOnlyPlaceholdersTheRunSubstitutes catches the class of
+// mistake that put a Business Profile section in the exploration prompt.
+//
+// A prompt is assembled as buildBaseContext(base_context) + exploration, and
+// only the base-context half has {{PROFILE}} substituted into it. The
+// exploration half then gets {{DATASET}}, {{SCHEMA_INFO}}, {{FILTER*}} and
+// {{ANALYSIS_AREAS}} replaced and nothing else — so a {{PROFILE}} written
+// there reaches the model as four literal braces. It renders as an empty
+// section rather than an error, which is why no other seed pack has one and
+// why nothing would have reported it.
+func TestCubeSeedPack_UsesOnlyPlaceholdersTheRunSubstitutes(t *testing.T) {
+	// Substituted into the exploration half by Orchestrator.buildPrompts.
+	substituted := map[string]bool{
+		"{{DATASET}}": true, "{{SCHEMA_INFO}}": true, "{{FILTER}}": true,
+		"{{FILTER_CONTEXT}}": true, "{{FILTER_RULE}}": true, "{{ANALYSIS_AREAS}}": true,
+	}
+	body := loadSeedPack(t, cubeSeedSlug).Prompts.Base.Exploration
+	for _, part := range strings.Split(body, "{{") {
+		i := strings.Index(part, "}}")
+		if i < 0 {
+			continue
+		}
+		token := "{{" + part[:i] + "}}"
+		if !substituted[token] {
+			t.Errorf("the exploration prompt carries %s, which nothing substitutes there — it reaches the model as literal braces", token)
+		}
+	}
+}
