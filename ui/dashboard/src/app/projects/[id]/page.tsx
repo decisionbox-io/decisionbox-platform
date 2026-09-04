@@ -16,6 +16,7 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
+import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
   api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY,
@@ -337,6 +338,11 @@ export default function ProjectPage() {
           <StatCard label="Queries Executed" value={discoveries.reduce((sum, d) => sum + (d.summary?.queries_executed || 0), 0)} />
         </div>
       )}
+
+      {/* What's next — a compact preview of the open ledger threads +
+          pending playbook changes carried into the next run. Renders
+          nothing when the ledger is empty or the feature is off. */}
+      <UpcomingInvestigation projectId={id} />
 
       {/* Cost Estimation */}
       {(estimating || estimate) && (

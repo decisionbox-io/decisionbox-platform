@@ -857,7 +857,6 @@ export interface LedgerFinding {
   name: string;
   description?: string;
   key_metric?: string;
-  sql?: string;
   evidence?: string;
   severity: string;
   status: string; // confirmed | monitoring | changed | resolved | refuted
