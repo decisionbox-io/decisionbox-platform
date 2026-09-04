@@ -143,6 +143,23 @@ func (s *stopRule) observe(repeated, judgeable bool) {
 // degraded vector store behave as it did before this rule existed rather than
 // rejecting every completion until the runaway cap.
 func (s *stopRule) acceptDone(step int, canMeasure bool) (bool, string) {
+	// The floor governs FIRST, and novelty can only extend a run past it.
+	//
+	// Every discovery run has tables: a source that cannot anchor may not run
+	// discovery on its own, so a cube is only ever present ALONGSIDE a
+	// warehouse. The floor remains a good coverage proxy for those tables,
+	// and nothing about the warehouse changes when an enrichment source is
+	// connected beside it.
+	//
+	// Letting novelty override the floor meant connecting a cube to an
+	// existing project silently dropped its effective floor from sixty steps
+	// to four — no setting changed, and nothing in the run log naming the
+	// floor, because the floor never fired to be named. That is a regression
+	// in the SQL half of a mixed project, which is every project a cube can
+	// appear in.
+	if step < s.minSteps {
+		return false, "floor"
+	}
 	if s.byNovelty && canMeasure && s.consecutiveUnjudged < degradedStepsBeforeFallback {
 		// The run has stopped finding new ground. A streak that long cannot
 		// exist without that many judged steps, so this subsumes the
@@ -150,11 +167,9 @@ func (s *stopRule) acceptDone(step int, canMeasure bool) (bool, string) {
 		if s.consecutiveRepeats >= repeatsBeforeDone {
 			return true, ""
 		}
-		// Otherwise the run has not shown that there is nothing left. Both
-		// refusals are deliberately NOT deferred to the floor: the floor
-		// defaults to zero, so deferring would accept a completion signalled
-		// on step one — the early termination the floor was added to prevent,
-		// reintroduced by the rule meant to replace it.
+		// Past the floor and still productive, or not yet enough judged steps
+		// to tell. Both refuse — which is the only direction novelty moves a
+		// run now: it can keep exploration going, never cut it short.
 		//
 		// The two are recorded apart because they describe opposite runs, and
 		// an operator reading a run needs to know which happened. Neither is
@@ -164,9 +179,6 @@ func (s *stopRule) acceptDone(step int, canMeasure bool) (bool, string) {
 			return false, "unproven"
 		}
 		return false, "productive"
-	}
-	if step < s.minSteps {
-		return false, "floor"
 	}
 	return true, ""
 }

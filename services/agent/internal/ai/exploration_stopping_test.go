@@ -70,32 +70,59 @@ func TestStopRule_NoveltyRefusesAnEarlyCompletionWithNoFloor(t *testing.T) {
 	}
 }
 
-// TestStopRule_NoveltyAcceptsOnceTheRunRepeatsItself is the rule's whole
-// purpose: the exploration stops because it stopped finding anything, at
-// whatever step that happens to be.
+// TestStopRule_NoveltyAcceptsOnceTheRunRepeatsItself is the rule's purpose:
+// past the floor, the exploration stops because it stopped finding anything,
+// at whatever step that happens to be rather than at a fixed count.
 func TestStopRule_NoveltyAcceptsOnceTheRunRepeatsItself(t *testing.T) {
-	s := &stopRule{byNovelty: true, minSteps: 40}
+	s := &stopRule{byNovelty: true, minSteps: 3}
 	feed(s, "?nnrrr")
 	if ok, reason := s.acceptDone(6, true); !ok {
-		t.Errorf("three repeats in a row did not end the run: (%v, %q)", ok, reason)
+		t.Errorf("three repeats in a row past the floor did not end the run: (%v, %q)", ok, reason)
 	}
 }
 
-// TestStopRule_NoveltyIgnoresTheFloorInBothDirections is what "replace the
-// floor" means. A cube run neither stops because it hit a number nor keeps
-// going because it has not.
-func TestStopRule_NoveltyIgnoresTheFloorInBothDirections(t *testing.T) {
-	// Well past a floor of 3, but still finding new things: keep going.
-	still := &stopRule{byNovelty: true, minSteps: 3}
-	feed(still, "nnnnnnnnnn")
-	if ok, _ := still.acceptDone(10, true); ok {
-		t.Error("a run still turning up new ground was allowed to stop because it passed the floor")
+// TestStopRule_ConnectingACubeDoesNotDropAWarehousesFloor is the regression
+// this ordering exists to prevent, reported against the first version of it.
+//
+// A warehouse project running discovery with an effective floor of 60 connects
+// a cube as an enrichment source. Nothing about the warehouse changed and no
+// setting changed — but the run became cube-reaching, novelty took over from
+// the floor, and three consecutive repeats are trivially reachable early. The
+// floor dropped from sixty steps to four, and the run log could not even name
+// it, because the floor never fired to be named.
+func TestStopRule_ConnectingACubeDoesNotDropAWarehousesFloor(t *testing.T) {
+	s := &stopRule{byNovelty: true, minSteps: 60}
+	feed(s, "nrrr")
+	ok, reason := s.acceptDone(4, true)
+	if ok {
+		t.Fatal("a run with a floor of 60 accepted completion at step 4")
 	}
-	// Well short of a floor of 40, but repeating itself: stop.
-	spent := &stopRule{byNovelty: true, minSteps: 40}
-	feed(spent, "nrrr")
-	if ok, _ := spent.acceptDone(4, true); !ok {
-		t.Error("a run that had run dry was forced onward because it had not reached the floor")
+	if reason != "floor" {
+		t.Errorf("refusal reason = %q, want the floor to own it so the run log can name it", reason)
+	}
+}
+
+// TestStopRule_NoveltyOnlyEverExtendsARun states the direction guarantee that
+// makes this safe to ship to existing deployments: a cube-reaching run is
+// never SHORTER than the same run would be today, only longer.
+func TestStopRule_NoveltyOnlyEverExtendsARun(t *testing.T) {
+	// Below the floor, run dry: still refused. The floor decides.
+	dry := &stopRule{byNovelty: true, minSteps: 40}
+	feed(dry, "nrrr")
+	if ok, _ := dry.acceptDone(4, true); ok {
+		t.Error("novelty cut a run short of its floor")
+	}
+	// Past the floor, still productive: refused, which is the extension.
+	productive := &stopRule{byNovelty: true, minSteps: 3}
+	feed(productive, "nnnnnnnnnn")
+	if ok, _ := productive.acceptDone(10, true); ok {
+		t.Error("a run still turning up new ground stopped because it had passed the floor")
+	}
+	// The same run without the novelty rule stops at the floor, which is
+	// exactly today's behaviour and what the extension is measured against.
+	today := &stopRule{minSteps: 3}
+	if ok, _ := today.acceptDone(10, true); !ok {
+		t.Error("a floor-only run did not stop once past its floor")
 	}
 }
 
