@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,98 @@ func TestPackShapeMismatch_NoDatasourceIsNotAMismatch(t *testing.T) {
 	pack := &models.DomainPack{Slug: "analytics", Shape: gowarehouse.ShapeCube}
 	if msg := packShapeMismatch(pack, models.WarehouseConfig{}); msg != "" {
 		t.Errorf("a project with no data source should not be a mismatch: %s", msg)
+	}
+}
+
+// TestSettingsEdit_RefusesAPackTheNewDatasourceDoesNotMatch closes the gap the
+// create-time check cannot see.
+//
+// A project may be created before it has a data source — that is how the
+// product is set up — and its pack is seeded then, with nothing to disagree
+// with. The pairing only becomes checkable when the data source arrives, which
+// for a single-datasource project is this settings edit.
+func TestSettingsEdit_RefusesAPackTheNewDatasourceDoesNotMatch(t *testing.T) {
+	tables := shapeProbe(t, "probe_edit_tables", gowarehouse.ShapeEntities)
+	cube := shapeProbe(t, "probe_edit_cube", gowarehouse.ShapeCube)
+
+	edit := func(t *testing.T, packShape gowarehouse.SourceShape, provider string) *httptest.ResponseRecorder {
+		t.Helper()
+		pack := testDomainPack("gaming", "match3")
+		pack.Shape = packShape
+		packRepo := newMockDomainPackRepo()
+		packRepo.add(pack)
+
+		projRepo := newMockProjectRepo()
+		h := NewProjectsHandler(projRepo, packRepo)
+
+		// Created with no data source, exactly as the blank-project flow does.
+		p := &models.Project{Name: "p", Domain: "gaming", Category: "match3"}
+		if err := projRepo.Create(context.Background(), p); err != nil {
+			t.Fatalf("seeding the project: %v", err)
+		}
+
+		body := fmt.Sprintf(`{"warehouse": {"provider": %q, "datasets": ["d1"]}}`, provider)
+		req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+		req.SetPathValue("id", p.ID)
+		w := httptest.NewRecorder()
+		h.Update(w, req)
+		return w
+	}
+
+	t.Run("cube pack, table data source", func(t *testing.T) {
+		w := edit(t, gowarehouse.ShapeCube, tables)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), string(gowarehouse.ShapeCube)) {
+			t.Errorf("the refusal does not name the pack's shape: %s", w.Body.String())
+		}
+	})
+
+	t.Run("table pack, cube data source", func(t *testing.T) {
+		if w := edit(t, gowarehouse.ShapeEntities, cube); w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// The ordinary edit every existing project makes. A guard that refused this
+	// would break connecting a warehouse to any project in the product.
+	t.Run("table pack, table data source", func(t *testing.T) {
+		if w := edit(t, "", tables); w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("cube pack, cube data source", func(t *testing.T) {
+		if w := edit(t, gowarehouse.ShapeCube, cube); w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestSettingsEdit_AMissingPackDoesNotBlockTheEdit pins the direction this
+// guard fails in, which is the opposite of the one in packShapeMismatch.
+//
+// The pack may have been deleted or renamed since the project was created.
+// Refusing an unrelated settings edit over that would be a worse outcome than
+// the mismatch being guarded against, and the customer would have no way to
+// act on it.
+func TestSettingsEdit_AMissingPackDoesNotBlockTheEdit(t *testing.T) {
+	tables := shapeProbe(t, "probe_edit_nopack", gowarehouse.ShapeEntities)
+
+	projRepo := newMockProjectRepo()
+	h := NewProjectsHandler(projRepo, newMockDomainPackRepo()) // empty corpus
+	p := &models.Project{Name: "p", Domain: "deleted-since", Category: "match3"}
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatalf("seeding the project: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"warehouse": {"provider": %q, "datasets": ["d1"]}}`, tables)
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(body))
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 }

@@ -575,6 +575,15 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}, telemetry.AnchoringAtSettingsEdit, existing.ID) {
 			return
 		}
+		// The pairing is checked wherever it changes, and this is the other
+		// place it does. A project created before it had a datasource was
+		// seeded from its pack with nothing to disagree with; the shape only
+		// becomes checkable here, one edit later — which is also the flow a
+		// customer takes when they set the project up before connecting
+		// anything.
+		if !h.rejectPackShapeMismatch(r.Context(), w, existing.Domain, incoming.Warehouse) {
+			return
+		}
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {
@@ -744,19 +753,6 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// rejectUnanchoredProject refuses a datasource set in which nothing can carry
-// the project, writing a 400 and returning false.
-//
-// An EMPTY set passes. A project with no datasources yet is how every project
-// starts, and refusing it here would make the product unusable to say
-// something true; the run paths refuse an empty set on their own terms.
-//
-// What is refused is a set that HAS datasources, none of which is a system of
-// record. Such a project reaches the agent looking perfectly healthy and
-// produces analysis that restates what the source's own reporting already
-// shows — confidently, and with no error anyone would connect to the cause.
-// Refusing at configuration time is the only point where the message can name
-// the fix.
 // packShapeMismatch reports why a domain pack cannot seed this project's
 // prompts, or "" when it can.
 //
@@ -792,6 +788,42 @@ func packShapeMismatch(pack *models.DomainPack, primary models.WarehouseConfig) 
 	return fmt.Sprintf(
 		"domain pack %q is written for a %s data source, but this project's data source is %s; choose a pack written for %s",
 		pack.Slug, got, want, want)
+}
+
+// rejectUnanchoredProject refuses a datasource set in which nothing can carry
+// the project, writing a 400 and returning false.
+//
+// An EMPTY set passes. A project with no datasources yet is how every project
+// starts, and refusing it here would make the product unusable to say
+// something true; the run paths refuse an empty set on their own terms.
+//
+// What is refused is a set that HAS datasources, none of which is a system of
+// record. Such a project reaches the agent looking perfectly healthy and
+// produces analysis that restates what the source's own reporting already
+// shows — confidently, and with no error anyone would connect to the cause.
+// Refusing at configuration time is the only point where the message can name
+// the fix.
+// rejectPackShapeMismatch is packShapeMismatch over a project's saved pack
+// slug, writing a 400 and returning false on a mismatch.
+//
+// A pack that cannot be loaded is not a refusal. The pack may have been
+// deleted or renamed since the project was created, and blocking an unrelated
+// settings edit on that would be a worse outcome than the mismatch it is
+// guarding against — which the create path already catches for every project
+// that had a datasource to check.
+func (h *ProjectsHandler) rejectPackShapeMismatch(ctx context.Context, w http.ResponseWriter, domain string, wh models.WarehouseConfig) bool {
+	if h.domainPackRepo == nil || domain == "" {
+		return true
+	}
+	pack, err := h.domainPackRepo.GetBySlug(ctx, domain)
+	if err != nil || pack == nil {
+		return true
+	}
+	if msg := packShapeMismatch(pack, wh); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return false
+	}
+	return true
 }
 
 func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig, at, projectID string) bool {
