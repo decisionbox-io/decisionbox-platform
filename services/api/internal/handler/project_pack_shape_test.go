@@ -283,3 +283,60 @@ func TestSettingsEdit_AMissingPackDoesNotBlockTheEdit(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestCreate_CustomPromptsDoNotSkipTheShapeCheck.
+//
+// The check used to live inside the `p.Prompts == nil` seeding branch, so a
+// request that supplied its own prompts never looked the pack up and the whole
+// refusal was skippable by sending a `prompts` field. Custom prompts do not
+// make a project's domain compatible with its data source; they only stop the
+// pack being copied into it.
+func TestCreate_CustomPromptsDoNotSkipTheShapeCheck(t *testing.T) {
+	pack := testDomainPack("gaming", "match3")
+	pack.Shape = gowarehouse.ShapeCube
+	packRepo := newMockDomainPackRepo()
+	packRepo.add(pack)
+	h := NewProjectsHandler(newMockProjectRepo(), packRepo)
+
+	body := `{"name": "p", "domain": "gaming", "category": "match3",
+		"prompts": {"base_context": "mine", "exploration": "mine", "recommendations": "mine"},
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_CustomPromptsWithAnUnknownDomainStillPass pins the behaviour that
+// must NOT change alongside it. This route has never looked a domain up for a
+// client that brought its own prompts, so rejecting an unknown one now would
+// be a second change riding along with the fix above — and would break any
+// caller using a domain string the pack corpus does not have.
+func TestCreate_CustomPromptsWithAnUnknownDomainStillPass(t *testing.T) {
+	h := NewProjectsHandler(newMockProjectRepo(), newMockDomainPackRepo())
+	body := `{"name": "p", "domain": "no-such-pack", "category": "any",
+		"prompts": {"base_context": "mine", "exploration": "mine", "recommendations": "mine"},
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_SeedingStillRefusesAnUnknownDomain is the other side of that
+// switch: a request with no prompts still depends on the pack existing.
+func TestCreate_SeedingStillRefusesAnUnknownDomain(t *testing.T) {
+	h := NewProjectsHandler(newMockProjectRepo(), newMockDomainPackRepo())
+	body := `{"name": "p", "domain": "no-such-pack", "category": "any",
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}

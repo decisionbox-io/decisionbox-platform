@@ -317,21 +317,36 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// split-brain body nor an unanchored project has a settled answer to
 	// "which datasource is that". Nothing between here and the decode reads
 	// prompts, so the move costs nothing.
-	if p.Prompts == nil && h.domainPackRepo != nil {
+	if h.domainPackRepo != nil {
 		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
 			return
 		}
-		if pack == nil {
-			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
-			return
+		switch {
+		case pack == nil:
+			// Unknown domain is refused only when the request needed the pack
+			// to seed from, which is the behaviour this route has always had.
+			// Rejecting it for a client that supplied its own prompts would be
+			// a second change riding along with this one.
+			if p.Prompts == nil {
+				writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
+				return
+			}
+		default:
+			// The pairing is checked whether or not the prompts came from the
+			// pack. Supplying custom prompts does not make the project's domain
+			// compatible with its data source — it only stops the pack being
+			// copied — and gating this on the seeding branch left the whole
+			// refusal skippable by sending a `prompts` field.
+			if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+			if p.Prompts == nil {
+				SeedProjectPrompts(&p, pack)
+			}
 		}
-		if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
-			writeError(w, http.StatusBadRequest, msg)
-			return
-		}
-		SeedProjectPrompts(&p, pack)
 	}
 
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
