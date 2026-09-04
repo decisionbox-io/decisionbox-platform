@@ -261,20 +261,6 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Language = cleanLang
 	}
 
-	// Seed default prompts from domain pack.
-	if p.Prompts == nil && h.domainPackRepo != nil {
-		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
-			return
-		}
-		if pack == nil {
-			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
-			return
-		}
-		SeedProjectPrompts(&p, pack)
-	}
-
 	// Reject a split-brain body that sets BOTH the legacy `warehouse` field and
 	// the new `warehouses` slice. EffectiveWarehouses() would silently pick the
 	// slice and persist a divergent legacy field, so any code still reading
@@ -322,6 +308,30 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Warehouse.ID = ""
 		p.Warehouses = nil
 		p.PrimaryWarehouseID = ""
+	}
+
+	// Seed default prompts from domain pack.
+	//
+	// After the warehouse checks above, not before them, because the pack has
+	// to agree with the datasource it will be run against and neither the
+	// split-brain body nor an unanchored project has a settled answer to
+	// "which datasource is that". Nothing between here and the decode reads
+	// prompts, so the move costs nothing.
+	if p.Prompts == nil && h.domainPackRepo != nil {
+		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
+			return
+		}
+		if pack == nil {
+			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
+			return
+		}
+		if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		SeedProjectPrompts(&p, pack)
 	}
 
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
@@ -565,6 +575,15 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}, telemetry.AnchoringAtSettingsEdit, existing.ID) {
 			return
 		}
+		// The pairing is checked wherever it changes, and this is the other
+		// place it does. A project created before it had a datasource was
+		// seeded from its pack with nothing to disagree with; the shape only
+		// becomes checkable here, one edit later — which is also the flow a
+		// customer takes when they set the project up before connecting
+		// anything.
+		if !h.rejectPackShapeMismatch(r.Context(), w, existing.Domain, incoming.Warehouse) {
+			return
+		}
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {
@@ -734,6 +753,43 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// packShapeMismatch reports why a domain pack cannot seed this project's
+// prompts, or "" when it can.
+//
+// A pack's prompts are written for one shape of source and are not portable
+// across shapes. An entities pack tells the model to select from tables and
+// names them through {{DATASET}}; a cube pack tells it to choose metrics and
+// dimensions and has no dataset to name. Seeding either into a project whose
+// primary datasource is the other shape yields a discovery run that reads
+// correctly and asks for queries the source cannot answer — a failure with no
+// error attached, which is the expensive kind.
+//
+// This could not happen while every pack was table-shaped. It became
+// reachable the moment a cube pack could be saved, so it is checked at the
+// one place a pack and a datasource are first paired. It is not a validator
+// rule: a pack is not invalid for being cube-shaped, it is only wrong HERE.
+//
+// A project with no datasource is not a mismatch — nothing has been chosen to
+// disagree with. An unregistered provider is read as table-shaped, the same
+// default the rest of the system applies, so an unknown spelling keeps the
+// check rather than waving a pack through.
+func packShapeMismatch(pack *models.DomainPack, primary models.WarehouseConfig) string {
+	if pack == nil || primary.Provider == "" {
+		return ""
+	}
+	want := gowarehouse.ShapeEntities
+	if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
+		want = meta.EffectiveShape()
+	}
+	got := pack.EffectiveShape()
+	if got == want {
+		return ""
+	}
+	return fmt.Sprintf(
+		"domain pack %q is written for a %s data source, but this project's data source is %s; choose a pack written for %s",
+		pack.Slug, got, want, want)
+}
+
 // rejectUnanchoredProject refuses a datasource set in which nothing can carry
 // the project, writing a 400 and returning false.
 //
@@ -747,6 +803,29 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // shows — confidently, and with no error anyone would connect to the cause.
 // Refusing at configuration time is the only point where the message can name
 // the fix.
+// rejectPackShapeMismatch is packShapeMismatch over a project's saved pack
+// slug, writing a 400 and returning false on a mismatch.
+//
+// A pack that cannot be loaded is not a refusal. The pack may have been
+// deleted or renamed since the project was created, and blocking an unrelated
+// settings edit on that would be a worse outcome than the mismatch it is
+// guarding against — which the create path already catches for every project
+// that had a datasource to check.
+func (h *ProjectsHandler) rejectPackShapeMismatch(ctx context.Context, w http.ResponseWriter, domain string, wh models.WarehouseConfig) bool {
+	if h.domainPackRepo == nil || domain == "" {
+		return true
+	}
+	pack, err := h.domainPackRepo.GetBySlug(ctx, domain)
+	if err != nil || pack == nil {
+		return true
+	}
+	if msg := packShapeMismatch(pack, wh); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return false
+	}
+	return true
+}
+
 func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig, at, projectID string) bool {
 	if len(whs) == 0 || models.AnyAnchors(whs) {
 		return true
