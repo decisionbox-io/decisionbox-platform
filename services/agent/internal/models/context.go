@@ -9,14 +9,9 @@ type ProjectContext struct {
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 
-	// Schema knowledge
-	KnownSchemas map[string]SchemaKnowledge `bson:"known_schemas" json:"known_schemas"`
-
-	// Query history
-	SuccessfulQueries []QueryHistory `bson:"successful_queries" json:"successful_queries"`
-	FailedQueries     []QueryHistory `bson:"failed_queries" json:"failed_queries"`
-
-	// Pattern history (domain-agnostic)
+	// Pattern history (domain-agnostic). Recurring / worsening patterns are
+	// read back into the discovery prompt so the next run narrates trends
+	// rather than re-reporting them from scratch (see buildPreviousContext).
 	HistoricalPatterns []HistoricalPattern `bson:"historical_patterns" json:"historical_patterns"`
 
 	// Discovery metadata
@@ -27,20 +22,6 @@ type ProjectContext struct {
 
 	// Learning notes
 	Notes []ContextNote `bson:"notes" json:"notes"`
-}
-
-// SchemaKnowledge tracks what we know about a warehouse table.
-type SchemaKnowledge struct {
-	TableName     string      `bson:"table_name" json:"table_name"`
-	FirstSeen     time.Time   `bson:"first_seen" json:"first_seen"`
-	LastSeen      time.Time   `bson:"last_seen" json:"last_seen"`
-	SchemaVersion int         `bson:"schema_version" json:"schema_version"`
-	CurrentSchema TableSchema `bson:"current_schema" json:"current_schema"`
-
-	UsefulColumns []string `bson:"useful_columns" json:"useful_columns"`
-	CommonFilters []string `bson:"common_filters" json:"common_filters"`
-
-	EstimatedRowCount int64 `bson:"estimated_row_count" json:"estimated_row_count"`
 }
 
 // HistoricalPattern tracks a discovered pattern over time.
@@ -70,33 +51,10 @@ func NewProjectContext(projectID string) *ProjectContext {
 		ProjectID:          projectID,
 		CreatedAt:          now,
 		UpdatedAt:          now,
-		KnownSchemas:       make(map[string]SchemaKnowledge),
-		SuccessfulQueries:  make([]QueryHistory, 0),
-		FailedQueries:      make([]QueryHistory, 0),
 		HistoricalPatterns: make([]HistoricalPattern, 0),
 		Notes:              make([]ContextNote, 0),
 		FirstDiscoveryDate: now,
 	}
-}
-
-// AddSuccessfulQuery records a successful query (keeps last 100).
-func (ctx *ProjectContext) AddSuccessfulQuery(query QueryHistory) {
-	query.Success = true
-	ctx.SuccessfulQueries = append(ctx.SuccessfulQueries, query)
-	if len(ctx.SuccessfulQueries) > 100 {
-		ctx.SuccessfulQueries = ctx.SuccessfulQueries[len(ctx.SuccessfulQueries)-100:]
-	}
-	ctx.UpdatedAt = time.Now()
-}
-
-// AddFailedQuery records a failed query (keeps last 50).
-func (ctx *ProjectContext) AddFailedQuery(query QueryHistory) {
-	query.Success = false
-	ctx.FailedQueries = append(ctx.FailedQueries, query)
-	if len(ctx.FailedQueries) > 50 {
-		ctx.FailedQueries = ctx.FailedQueries[len(ctx.FailedQueries)-50:]
-	}
-	ctx.UpdatedAt = time.Now()
 }
 
 // AddNote adds a learning note (keeps last 200).

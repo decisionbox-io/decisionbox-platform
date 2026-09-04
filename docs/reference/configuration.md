@@ -82,6 +82,23 @@ Generation is off by default and, where it is enabled, respects a per-project **
 | `DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES` | `1` | How many times to re-prompt if the model's response can't be parsed as the questions envelope. |
 | `DISCOVERY_QUESTIONS_TIMEOUT` | `3m` | Dedicated wall-clock budget for the questions hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
 
+### Compounding Discovery (Discovery Ledger + reflection)
+
+After a discovery run, a best-effort **reflection** hop consolidates the run into a persistent, per-project **Discovery Ledger** (coverage map, findings-with-substance and status, next-task queue, convergence signal) so the next run builds on it instead of re-treading it.
+Like the clarifying-questions hop it runs *after* the run is finalized, with its own token and timeout budget, so it never affects the run's step count or completion timing.
+Off by default; where enabled it respects a per-project **Reflection** toggle (Settings → Advanced, on by default).
+Semantic dedup / trend detection and per-analysis-area retrieval of prior findings additionally require an embedding provider and a configured vector store.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCOVERY_REFLECTION_ENABLED` | `false` | Master switch for the reflection / Discovery Ledger hop. Off by default. Forwarded from the API process to spawned agent containers automatically. |
+| `DISCOVERY_REFLECTION_TIMEOUT` | `3m` | Dedicated wall-clock budget for the reflection hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
+| `DISCOVERY_REFLECTION_MAX_OUTPUT` | `3000` | Output-token budget for the single reflection call, budgeted against the model's context window. |
+| `DISCOVERY_REFLECTION_PARSE_MAX_RETRIES` | `1` | How many times to re-prompt if the model's reflection response can't be parsed. |
+| `DISCOVERY_LEDGER_MAX_FINDINGS` | `500` | Retention cap on ledger findings per project; least-valuable (resolved/refuted, oldest) are pruned first. |
+| `DISCOVERY_LEDGER_DEDUP_MINSCORE` | `0.85` | Cosine-similarity floor above which a new finding is treated as a semantic duplicate of a prior one (needs the embedding provider). |
+| `DISCOVERY_LEDGER_TREND_DELTA` | `0.2` | Relative change in a finding's affected-count above which a re-sighting is marked `changed` (a trend) rather than merged. |
+
 ### Batch SQL Validation
 
 The `--mode=validate-sql` run mode compile-checks a batch of SQL statements against a project's warehouse via the warehouse's native compile-only path (see the [CLI reference](cli.md)).

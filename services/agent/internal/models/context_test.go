@@ -15,15 +15,6 @@ func TestNewProjectContext(t *testing.T) {
 	if ctx.TotalDiscoveries != 0 {
 		t.Errorf("TotalDiscoveries = %d, want 0", ctx.TotalDiscoveries)
 	}
-	if len(ctx.KnownSchemas) != 0 {
-		t.Errorf("KnownSchemas should be empty")
-	}
-	if len(ctx.SuccessfulQueries) != 0 {
-		t.Errorf("SuccessfulQueries should be empty")
-	}
-	if len(ctx.FailedQueries) != 0 {
-		t.Errorf("FailedQueries should be empty")
-	}
 	if len(ctx.HistoricalPatterns) != 0 {
 		t.Errorf("HistoricalPatterns should be empty")
 	}
@@ -32,62 +23,6 @@ func TestNewProjectContext(t *testing.T) {
 	}
 	if ctx.CreatedAt.IsZero() {
 		t.Error("CreatedAt should not be zero")
-	}
-}
-
-func TestAddSuccessfulQuery(t *testing.T) {
-	ctx := NewProjectContext("proj-123")
-
-	ctx.AddSuccessfulQuery(QueryHistory{
-		Query:   "SELECT * FROM test",
-		Purpose: "test query",
-	})
-
-	if len(ctx.SuccessfulQueries) != 1 {
-		t.Fatalf("len = %d, want 1", len(ctx.SuccessfulQueries))
-	}
-	if !ctx.SuccessfulQueries[0].Success {
-		t.Error("query should be marked as success")
-	}
-}
-
-func TestAddSuccessfulQueryLimit(t *testing.T) {
-	ctx := NewProjectContext("proj-123")
-
-	for i := 0; i < 150; i++ {
-		ctx.AddSuccessfulQuery(QueryHistory{Query: "SELECT 1"})
-	}
-
-	if len(ctx.SuccessfulQueries) != 100 {
-		t.Errorf("len = %d, want 100 (should trim to last 100)", len(ctx.SuccessfulQueries))
-	}
-}
-
-func TestAddFailedQuery(t *testing.T) {
-	ctx := NewProjectContext("proj-123")
-
-	ctx.AddFailedQuery(QueryHistory{
-		Query: "SELECT invalid",
-		Error: "syntax error",
-	})
-
-	if len(ctx.FailedQueries) != 1 {
-		t.Fatalf("len = %d, want 1", len(ctx.FailedQueries))
-	}
-	if ctx.FailedQueries[0].Success {
-		t.Error("query should be marked as failure")
-	}
-}
-
-func TestAddFailedQueryLimit(t *testing.T) {
-	ctx := NewProjectContext("proj-123")
-
-	for i := 0; i < 100; i++ {
-		ctx.AddFailedQuery(QueryHistory{Query: "SELECT invalid"})
-	}
-
-	if len(ctx.FailedQueries) != 50 {
-		t.Errorf("len = %d, want 50 (should trim to last 50)", len(ctx.FailedQueries))
 	}
 }
 
@@ -263,54 +198,6 @@ func TestRecommendationSummary_Fields(t *testing.T) {
 	}
 }
 
-// --- ProjectContext schema knowledge ---
-
-func TestProjectContext_SchemaKnowledge(t *testing.T) {
-	ctx := NewProjectContext("proj-123")
-
-	now := time.Now()
-	ctx.KnownSchemas["sessions"] = SchemaKnowledge{
-		TableName:         "sessions",
-		FirstSeen:         now,
-		LastSeen:          now,
-		SchemaVersion:     1,
-		CurrentSchema: TableSchema{
-			TableName: "sessions",
-			RowCount:  5000,
-			Columns: []ColumnInfo{
-				{Name: "user_id", Type: "STRING", Nullable: false, Category: "primary_key"},
-				{Name: "duration", Type: "INT64", Nullable: true, Category: "metric"},
-			},
-		},
-		UsefulColumns:     []string{"user_id", "duration"},
-		CommonFilters:     []string{"app_id"},
-		EstimatedRowCount: 5000,
-	}
-
-	sk, ok := ctx.KnownSchemas["sessions"]
-	if !ok {
-		t.Fatal("should contain sessions schema")
-	}
-	if sk.TableName != "sessions" {
-		t.Errorf("TableName = %q, want sessions", sk.TableName)
-	}
-	if sk.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d, want 1", sk.SchemaVersion)
-	}
-	if len(sk.CurrentSchema.Columns) != 2 {
-		t.Errorf("Columns = %d, want 2", len(sk.CurrentSchema.Columns))
-	}
-	if sk.EstimatedRowCount != 5000 {
-		t.Errorf("EstimatedRowCount = %d, want 5000", sk.EstimatedRowCount)
-	}
-	if len(sk.UsefulColumns) != 2 {
-		t.Errorf("UsefulColumns = %d, want 2", len(sk.UsefulColumns))
-	}
-	if len(sk.CommonFilters) != 1 {
-		t.Errorf("CommonFilters = %d, want 1", len(sk.CommonFilters))
-	}
-}
-
 func TestHistoricalPattern_StatusTransitions(t *testing.T) {
 	ctx := NewProjectContext("proj-123")
 
@@ -365,15 +252,6 @@ func TestProjectContext_Empty(t *testing.T) {
 	}
 	if ctx.ConsecutiveFailures != 0 {
 		t.Errorf("zero-value ConsecutiveFailures = %d, want 0", ctx.ConsecutiveFailures)
-	}
-	if ctx.KnownSchemas != nil {
-		t.Error("zero-value KnownSchemas should be nil")
-	}
-	if ctx.SuccessfulQueries != nil {
-		t.Error("zero-value SuccessfulQueries should be nil")
-	}
-	if ctx.FailedQueries != nil {
-		t.Error("zero-value FailedQueries should be nil")
 	}
 	if ctx.HistoricalPatterns != nil {
 		t.Error("zero-value HistoricalPatterns should be nil")

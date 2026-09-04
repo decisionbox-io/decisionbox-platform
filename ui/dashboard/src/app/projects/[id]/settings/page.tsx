@@ -106,6 +106,11 @@ export default function ProjectSettingsPage() {
   const [clarifyingQuestionsEnabled, setClarifyingQuestionsEnabled] = useState(true);
   const [savingClarifyingQuestions, setSavingClarifyingQuestions] = useState(false);
 
+  // Advanced — Reflection / Discovery Ledger toggle (lives on the project
+  // document). Defaults to true (reflection_enabled === undefined) — opt-out.
+  const [reflectionEnabled, setReflectionEnabled] = useState(true);
+  const [savingReflection, setSavingReflection] = useState(false);
+
   // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
   // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
@@ -171,6 +176,7 @@ export default function ProjectSettingsPage() {
         setValidationEnabled(proj.validation_enabled !== false);
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
         setClarifyingQuestionsEnabled(proj.clarifying_questions_enabled !== false);
+        setReflectionEnabled(proj.reflection_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
         setAskSuggestionsEnabled(proj.ask_suggestions_enabled !== false);
         setRecommendationVerdicts(
@@ -310,6 +316,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingClarifyingQuestions(false);
+    }
+  };
+
+  // Save the reflection / Discovery Ledger toggle. Optimistic + rollback.
+  const saveReflectionEnabled = async (next: boolean) => {
+    const prev = reflectionEnabled;
+    setReflectionEnabled(next);
+    setSavingReflection(true);
+    try {
+      const saved = await api.updateProject(id, { reflection_enabled: next });
+      setProject(saved);
+      setReflectionEnabled(saved.reflection_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Discovery Ledger enabled' : 'Discovery Ledger disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setReflectionEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingReflection(false);
     }
   };
 
@@ -539,6 +567,13 @@ export default function ProjectSettingsPage() {
                 checked={clarifyingQuestionsEnabled}
                 disabled={savingClarifyingQuestions}
                 onChange={(e) => saveClarifyingQuestionsEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Discovery Ledger (compounding discovery)"
+                description="When on, after each run the agent consolidates it into a persistent per-project ledger — coverage of what's been explored, findings kept with their metric and SQL and a status, and a queue of what to investigate next — and the next run builds on that instead of starting fresh. Off by default at the deployment level; where enabled, this opts an individual project in or out. On by default."
+                checked={reflectionEnabled}
+                disabled={savingReflection}
+                onChange={(e) => saveReflectionEnabled(e.currentTarget.checked)}
               />
               <Switch
                 label="Enable reasoning"
