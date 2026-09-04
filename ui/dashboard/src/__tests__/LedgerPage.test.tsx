@@ -83,6 +83,19 @@ describe('LedgerPage', () => {
     expect(await screen.findByText(/No findings yet/i)).toBeInTheDocument();
   });
 
+  it('keeps the findings detail collapsed until toggled', async () => {
+    // Findings are advanced detail — the table is collapsed behind a "Show
+    // detail" toggle so the top of the page stays focused on convergence + the
+    // open threads. Clicking flips the control to "Hide detail".
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    const toggle = await screen.findByText(/Show detail/i);
+    fireEvent.click(toggle);
+    expect(await screen.findByText(/Hide detail/i)).toBeInTheDocument();
+  });
+
   it('approves a pending proposal', async () => {
     getLedger.mockResolvedValue(ledger);
     getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'admin_approval', frontier_policy: 'balanced' });
