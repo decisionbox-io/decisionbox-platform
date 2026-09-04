@@ -1,0 +1,243 @@
+{
+  "format": "decisionbox-domain-pack",
+  "format_version": 1,
+  "pack": {
+    "slug": "digital-analytics",
+    "name": "Digital Analytics Property",
+    "description": "Analytics for a data source organised as metrics and dimensions rather than tables — acquisition mix, engagement quality, conversion drop-off and platform experience, each read by measuring one metric and breaking it down.",
+    "version": "1.0.0",
+    "is_published": true,
+    "shape": "cube",
+    "categories": [
+      {
+        "id": "content_media",
+        "name": "Content & Media Property",
+        "description": "A property measured on attention — articles, video, or any surface where reading and returning is the outcome."
+      },
+      {
+        "id": "ecommerce_storefront",
+        "name": "E-commerce Storefront",
+        "description": "A property measured on completed purchases, where the conversion journey is the spine of the analysis."
+      },
+      {
+        "id": "lead_generation",
+        "name": "Lead Generation Site",
+        "description": "A property measured on enquiries submitted, where the quality of an enquiry matters more than the count."
+      }
+    ],
+    "prompts": {
+      "base": {
+        "base_context": "# Analyst Briefing\n\nYou are analysing a **metrics-and-dimensions data source**. It holds no tables\nand answers no SQL: every question is a selection of metrics to measure,\ndimensions to break them down by, and a date range.\n\n## Business Profile\n\n{{PROFILE}}\n\n## What Has Been Established So Far\n\n{{PREVIOUS_CONTEXT}}\n\n## Output Language\n\nWrite all narrative text — insight names and descriptions, recommendation\ntitles, summaries — in {{LANGUAGE}}. Keep technical tokens in English\nregardless of that setting: metric and dimension names as the source spells\nthem, JSON keys, severity values, analysis-area ids and citation markers.\n",
+        "exploration": "# Exploration\n\nThis source has no tables, no joins and no SQL. A query is a **selection**: one\nor more metrics to measure, the dimensions to break them down by, and a date\nrange. The source computes the result.\n\nUse only names that appear in the catalog below, spelled exactly as it spells\nthem. An invented name is not a query this source refuses cheaply — it spends\nquota and returns nothing.\n\n## Method\n\nPick a metric. Break it down by one dimension. Find the value that is out of\nline with the rest of the breakdown. Break that value down by a second\ndimension to see what it is made of. Stop when a step stops telling you\nsomething you did not already know.\n\nTwo things follow from the source being a cube rather than a warehouse:\n\n- **Not every pairing is legal.** A metric and a dimension can both exist and\n  still not be answerable together. A refused pairing is an answer — record it\n  and route around it rather than re-asking it unchanged.\n- **Breadth is not coverage.** The number of possible slices is the product of\n  two long lists, so a run can take many steps without learning anything.\n  Prefer one metric followed three dimensions deep over ten metrics broken down\n  once each.\n\n## Source Catalog\n\n{{SCHEMA_INFO}}\n\n## Business Profile\n\n{{PROFILE}}\n\n## Analysis Areas\n\n{{ANALYSIS_AREAS}}\n\n## A Note on Names\n\nAny metric or dimension named in this pack's own text is ordinary English, not\na spelling from any particular source's API. Always take the exact name from\nthe catalog above.\n",
+        "recommendations": "# Recommendations\n\nTurn the discovered insights into actions. State what to change, who it\naffects, and what would show the change worked — named as a metric and a\ndimension **this source can actually measure**, so the claim is checkable in\nthe next run rather than only arguable.\n\nEach recommendation cites the insights it rests on through\n`related_insight_ids`, so a reader can trace a proposal back to the figures\nthat produced it. A recommendation no insight supports is a guess; drop it\nrather than padding the list.\n\n## Discovered Insights\n\n{{INSIGHTS_DATA}}\n\n## Required Output Format\n\nReturn JSON only.\n\n```json\n{\n  \"recommendations\": [\n    {\n      \"title\": \"<what to change>\",\n      \"description\": \"<why, citing the figures>\",\n      \"priority\": \"high\",\n      \"related_insight_ids\": [\"<insight id>\"],\n      \"expected_impact\": \"<the metric and dimension that would move, and roughly how far>\"\n    }\n  ]\n}\n```\n"
+      },
+      "categories": {
+        "content_media": {
+          "exploration_context": "This property publishes content and is measured on attention rather than\ntransactions. Read engagement depth and returning share as the primary\noutcomes; treat arrivals as the input to them, not as the result."
+        },
+        "ecommerce_storefront": {
+          "exploration_context": "This property sells. The conversion journey is the spine of the analysis, and\nevery other breakdown is worth reporting mainly where it explains a difference\nin completion. Revenue-shaped metrics, where the catalog offers them, carry\nmore weight than arrival counts."
+        },
+        "lead_generation": {
+          "exploration_context": "This property collects enquiries. Volume is a weak signal on its own because a\nsmall number of qualified enquiries beats a large number of unqualified ones,\nso prefer completion of the enquiry journey broken down by acquisition channel\nover any headline arrival figure."
+        }
+      }
+    },
+    "analysis_areas": {
+      "base": [
+        {
+          "id": "acquisition_mix",
+          "name": "Acquisition Mix by Channel",
+          "description": "Where arrivals come from and how the mix is shifting — which channels grew or collapsed, and whether a shift in mix explains a change in a downstream metric.",
+          "keywords": [
+            "acquisition",
+            "channel",
+            "source",
+            "campaign",
+            "referral",
+            "traffic",
+            "mix",
+            "arrivals"
+          ],
+          "priority": 1,
+          "prompt": "# Acquisition Mix by Channel\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** arrivals or sessions. **Break it down by** the channel or source dimension. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\ncampaign or landing entry point to see what it is made of.\n\n## What to look for\n\nA channel whose share moved several points between the current period and the\none before it. Share matters more than absolute count: total arrivals move for\nseasonal reasons that say nothing about the mix.\n\nA channel that grew while a downstream metric fell is the finding worth having.\nIt usually means the new arrivals are a different kind of visitor, not that the\nsite got worse — and the recommendation for those two is opposite.\n\n## What good and bad look like\n\nA healthy mix has no single channel above roughly two thirds and no channel\nthat halves quarter over quarter. A channel that appears from nothing is either\na campaign nobody recorded or a misattribution; both are worth naming.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        },
+        {
+          "id": "engagement_quality",
+          "name": "Engagement Quality by Segment",
+          "description": "Whether visits are doing anything — depth, duration and repeat visits, broken down by the segments that plausibly differ, so a headline average is never reported on its own.",
+          "keywords": [
+            "engagement",
+            "duration",
+            "depth",
+            "bounce",
+            "repeat",
+            "session",
+            "quality",
+            "segment"
+          ],
+          "priority": 2,
+          "prompt": "# Engagement Quality by Segment\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** an engagement metric such as engaged sessions or average engagement time. **Break it down by** one audience dimension at a time. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\ndevice or entry point to see what it is made of.\n\n## What to look for\n\nAn average that hides two populations. Engagement metrics are the ones most\noften reported as a single number and least often true as one: a small,\nhighly-engaged cohort and a large, bouncing one average to a figure that\ndescribes nobody.\n\nCompare each slice against the property-wide figure rather than against a\ntarget. The target belongs to the business profile; the comparison belongs to\nthe data.\n\n## What good and bad look like\n\nA slice engaging at half the property-wide rate is worth an insight even when\nthe property-wide rate is healthy. A slice engaging at twice the rate is worth\none too — it is usually the cohort the business should be acquiring more of.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        },
+        {
+          "id": "conversion_dropoff",
+          "name": "Conversion Drop-off by Step",
+          "description": "Where the intended journey loses people, measured step by step and broken down by the dimension that separates the people who complete it from the people who do not.",
+          "keywords": [
+            "conversion",
+            "funnel",
+            "drop-off",
+            "completion",
+            "checkout",
+            "signup",
+            "step",
+            "abandon"
+          ],
+          "priority": 1,
+          "prompt": "# Conversion Drop-off by Step\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** the conversion or completion metric for each step of the journey. **Break it down by** the step or event-name dimension. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\nchannel or device to see what it is made of.\n\n## What to look for\n\nThe step with the largest fall in completions relative to the step before it,\nnot the step with the fewest completions. The last step always has the fewest;\nthat is arithmetic, not a finding.\n\nThen ask whether the fall is the same for everyone. A drop-off concentrated in\none device, one channel or one country is a fixable defect. A drop-off spread\nevenly is a design question, and saying which of the two it is is most of the\nvalue of this area.\n\n## What good and bad look like\n\nStep-to-step completion that degrades smoothly is normal. A single step that\nloses most of its traffic while its neighbours do not is a defect until proven\notherwise.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        },
+        {
+          "id": "audience_composition",
+          "name": "Audience Composition and Growth",
+          "description": "Who is arriving and how that population is changing — new against returning, and the geographies and languages the property is actually serving as opposed to the ones it was built for.",
+          "keywords": [
+            "audience",
+            "new",
+            "returning",
+            "geography",
+            "country",
+            "language",
+            "growth",
+            "composition"
+          ],
+          "priority": 3,
+          "prompt": "# Audience Composition and Growth\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** users or arrivals. **Break it down by** the new-versus-returning dimension. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\ncountry or language to see what it is made of.\n\n## What to look for\n\nA property whose growth is entirely new visitors is not growing, it is\nchurning. Read the new/returning split first and every other breakdown through\nit.\n\nThen look for a geography or language the business profile does not mention.\nAn audience the property was never built for is either an opportunity or a\nmisattribution, and the profile is what tells you which.\n\n## What good and bad look like\n\nA returning share that falls for two consecutive periods while total arrivals\nrise is the shape of a property buying traffic it cannot keep.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        },
+        {
+          "id": "content_performance",
+          "name": "Content Performance by Entry Point",
+          "description": "Which entry points carry the property — the pages, screens or campaigns people arrive on, ranked by what happens after the arrival rather than by arrivals alone.",
+          "keywords": [
+            "content",
+            "landing",
+            "entry",
+            "page",
+            "screen",
+            "campaign",
+            "performance",
+            "exit"
+          ],
+          "priority": 2,
+          "prompt": "# Content Performance by Entry Point\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** arrivals and a downstream metric together. **Break it down by** the landing page or entry screen dimension. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\nchannel to see what it is made of.\n\n## What to look for\n\nRank entry points by the downstream metric, not by arrivals. The most-visited\nentry point is almost always the home page and almost never the finding.\n\nThe pairs worth naming are the two off-diagonal ones: high arrivals with poor\ndownstream performance (spend arriving at something that does not work), and\nlow arrivals with strong downstream performance (something that works and\nnobody can find).\n\n## What good and bad look like\n\nA single entry point above roughly half of all arrivals is a concentration\nrisk. An entry point with strong arrivals and a downstream metric well below\nthe property-wide figure is the clearest fixable loss this source can show.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        },
+        {
+          "id": "platform_experience",
+          "name": "Platform and Device Experience",
+          "description": "Whether the experience holds up across devices, browsers and platforms — the breakdown most likely to hide a defect that looks like a business problem.",
+          "keywords": [
+            "device",
+            "platform",
+            "browser",
+            "mobile",
+            "desktop",
+            "operating system",
+            "experience",
+            "performance"
+          ],
+          "priority": 3,
+          "prompt": "# Platform and Device Experience\n\nThis source is queried by selecting metrics and dimensions over a date\nrange — there are no tables, no joins and no SQL.\n\n**Measure** an engagement or conversion metric. **Break it down by** the device category or platform dimension. **Find** the value that is out of\nline with the rest of the breakdown, then break that value down again by\nbrowser or operating system to see what it is made of.\n\n## What to look for\n\nA metric that is materially worse on one platform than the others. This is the\nbreakdown where a technical defect shows up as what looks like a commercial\nproblem, so it is worth running even when nothing else suggests it.\n\nCheck the share of arrivals on the affected platform before deciding severity.\nA defect on a platform carrying 2% of arrivals is real and low priority; the\nsame defect on 60% is the property's main problem.\n\n## What good and bad look like\n\nPlatforms differing by a few percent is normal. One platform at half the\nproperty-wide figure is a defect, and the insight should say so plainly rather\nthan describing it as a segment preference.\n\n## Required Output Format\n\nReturn JSON only. Every insight names the slice it is about — the metric, the\ndimension value, and the period — so a reader can re-run it without guessing.\n\n```json\n{\n  \"insights\": [\n    {\n      \"name\": \"<short title naming the metric and the slice>\",\n      \"description\": \"<2-4 sentences citing the exact figures from the query results, including the comparison the slice is out of line with>\",\n      \"severity\": \"high\",\n      \"affected_count\": 0,\n      \"confidence\": 0.0,\n      \"source_steps\": [1, 2],\n      \"risk_score\": 0.0,\n      \"metrics\": { \"primary_metric\": \"<metric as the catalog spells it>\", \"current_value\": 0, \"previous_value\": 0 },\n      \"indicators\": [\"<one human-readable bullet per supporting figure>\"],\n      \"target_segment\": \"<one sentence of prose describing who is affected — never a filter expression>\"\n    }\n  ]\n}\n```\n\n## Query Results\n\n{{QUERY_RESULTS}}\n"
+        }
+      ],
+      "categories": {}
+    },
+    "profile_schema": {
+      "base": {
+        "type": "object",
+        "properties": {
+          "property_purpose": {
+            "type": "string",
+            "title": "What this property is for",
+            "description": "One sentence: what the business wants people to do here (read, buy, enquire, sign up)."
+          },
+          "primary_outcome": {
+            "type": "string",
+            "title": "Primary outcome metric",
+            "description": "The metric the business is actually judged on, as the source's catalog spells it."
+          },
+          "secondary_outcomes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Secondary outcome metrics",
+            "description": "Metrics that matter but do not decide, in the catalog's spelling."
+          },
+          "reporting_period": {
+            "type": "string",
+            "enum": [
+              "daily",
+              "weekly",
+              "monthly",
+              "quarterly"
+            ],
+            "title": "Reporting period",
+            "description": "The grain the business reviews results at."
+          },
+          "comparison_window": {
+            "type": "string",
+            "title": "Comparison window",
+            "description": "What a period is compared against — the previous period, the same period last year, or a fixed baseline."
+          },
+          "seasonality": {
+            "type": "string",
+            "title": "Seasonality drivers",
+            "description": "Recurring events that move the numbers for reasons unrelated to performance (term dates, sales periods, campaign flights)."
+          },
+          "acquisition_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels the business actually buys",
+            "description": "Named so an unexpected channel in the data can be told from a known one."
+          },
+          "key_journeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Journeys that matter",
+            "description": "The step sequences the business cares about completing, named in its own words."
+          },
+          "audience_markets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Markets served",
+            "description": "Countries or regions the property is built for, so an unserved market showing up is recognisable."
+          },
+          "platform_priorities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms that matter most",
+            "description": "Where the business expects its audience to be, so a platform defect can be weighted."
+          },
+          "known_gaps": {
+            "type": "string",
+            "title": "Known measurement gaps",
+            "description": "Anything the business already knows is untracked or mis-tracked, so the analysis does not report it as a finding."
+          },
+          "excluded_traffic": {
+            "type": "string",
+            "title": "Traffic to discount",
+            "description": "Internal, test or bot traffic the business knows about but the source may still count."
+          }
+        }
+      },
+      "categories": {}
+    }
+  }
+}

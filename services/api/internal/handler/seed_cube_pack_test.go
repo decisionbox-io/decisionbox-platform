@@ -1,0 +1,210 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
+)
+
+// cubeSeedSlug is the reference pack written for a metrics-and-dimensions
+// source. It exists so pack generation for such a source has an example of its
+// own shape to imitate; without one the generator falls back to showing no
+// example at all, which is the defined behaviour but a worse one.
+const cubeSeedSlug = "digital-analytics"
+
+// referenceExcerptChars is how much of each prompt body a generator is shown.
+//
+// The number belongs to packgen, in the enterprise repository, which trims
+// every reference pack's prompts to a short excerpt so the example teaches
+// structure rather than content. It is duplicated here deliberately and with
+// its source named: this pack is written to be read through that window, and a
+// test that did not assert the window would let the pack drift into saying
+// what it needs to say on line 40, where nothing would ever read it.
+//
+// If packgen changes the value, this test becomes conservative rather than
+// wrong — it would assert against a smaller window than the reader has.
+const referenceExcerptChars = 400
+
+func loadSeedPack(t *testing.T, slug string) *models.DomainPack {
+	t.Helper()
+	data, err := seedFS.ReadFile("seed/" + slug + ".json")
+	if err != nil {
+		t.Fatalf("reading the %s seed: %v", slug, err)
+	}
+	var portable portableFormat
+	if err := json.Unmarshal(data, &portable); err != nil {
+		t.Fatalf("parsing the %s seed: %v", slug, err)
+	}
+	if portable.Format != "decisionbox-domain-pack" {
+		t.Fatalf("%s declares format %q", slug, portable.Format)
+	}
+	return &portable.Pack
+}
+
+// promptBodies returns every prompt the pack carries, labelled, since each one
+// is trimmed independently.
+func promptBodies(pack *models.DomainPack) map[string]string {
+	out := map[string]string{
+		"base_context":    pack.Prompts.Base.BaseContext,
+		"exploration":     pack.Prompts.Base.Exploration,
+		"recommendations": pack.Prompts.Base.Recommendations,
+	}
+	for _, area := range pack.AnalysisAreas.Base {
+		out["area:"+area.ID] = area.Prompt
+	}
+	for cat, areas := range pack.AnalysisAreas.Categories {
+		for _, area := range areas {
+			out["area:"+cat+"/"+area.ID] = area.Prompt
+		}
+	}
+	return out
+}
+
+// TestCubeSeedPack_IsSavable runs the pack through the same contract the API's
+// save and import handlers run. A seed pack that would be rejected on save is
+// one an operator can never edit and re-save through the product.
+func TestCubeSeedPack_IsSavable(t *testing.T) {
+	pack := loadSeedPack(t, cubeSeedSlug)
+	if err := models.ValidateDomainPack(pack); err != nil {
+		t.Errorf("the cube reference pack would be rejected on save: %v", err)
+	}
+}
+
+// TestCubeSeedPack_DeclaresItsShape is what keeps it out of SQL pack
+// generation. Selection filters by shape, and an undeclared shape reads as
+// entities — so a cube pack that forgot to say so would be offered as the
+// example for every warehouse pack, which is a quality regression with no
+// error attached and the reason this pack could not be published earlier.
+func TestCubeSeedPack_DeclaresItsShape(t *testing.T) {
+	pack := loadSeedPack(t, cubeSeedSlug)
+	if got := pack.EffectiveShape(); got != warehouse.ShapeCube {
+		t.Errorf("the cube reference pack resolves to shape %q, want %q", got, warehouse.ShapeCube)
+	}
+	if !pack.IsPublished {
+		t.Error("an unpublished pack is not in the pool selection reads, so it can never be the example")
+	}
+}
+
+// TestCubeSeedPack_CarriesNoSQLContract: the pack teaches by being imitated, so
+// a stray SQL placeholder in it teaches a generator to emit one for a source
+// that cannot substitute it.
+func TestCubeSeedPack_CarriesNoSQLContract(t *testing.T) {
+	pack := loadSeedPack(t, cubeSeedSlug)
+	for label, body := range promptBodies(pack) {
+		for _, tok := range []string{"{{DIALECT}}", "{{DATASET}}", "{{REF:"} {
+			if strings.Contains(body, tok) {
+				t.Errorf("%s carries %s, which nothing substitutes for a cube source", label, tok)
+			}
+		}
+	}
+}
+
+// TestCubeSeedPack_SaysItIsACubeInsideTheExcerptWindow is the assertion this
+// pack was actually written against.
+//
+// A generator sees only the first referenceExcerptChars of each prompt. A pack
+// that explains its shape in a section further down is, from the only reader
+// that matters, a pack that does not explain its shape at all — and the failure
+// is silent, because the pack itself remains perfectly good.
+func TestCubeSeedPack_SaysItIsACubeInsideTheExcerptWindow(t *testing.T) {
+	// Any one of these establishes that a query here is a selection rather
+	// than a statement. Several spellings, because insisting on one phrase
+	// would make this a test of wording rather than of substance.
+	markers := []string{
+		"no tables",
+		"metrics and dimensions",
+		"a metric and a dimension",
+		"break it down by",
+		"selection",
+	}
+	pack := loadSeedPack(t, cubeSeedSlug)
+	for label, body := range promptBodies(pack) {
+		head := string([]rune(body)[:min(len([]rune(body)), referenceExcerptChars)])
+		// Whitespace-normalised before matching: these prompts are hard-wrapped
+		// prose, so a marker phrase routinely straddles a line break. Matching
+		// the raw text would make this a test of where the paragraph happens to
+		// wrap, and it would pass or fail on a reflow that changed nothing.
+		flat := strings.ToLower(strings.Join(strings.Fields(head), " "))
+		found := false
+		for _, m := range markers {
+			if strings.Contains(flat, m) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s: the first %d characters never say the source is a cube, so a generator reading the excerpt would not learn it:\n%s",
+				label, referenceExcerptChars, head)
+		}
+	}
+}
+
+// TestListDomains_DoesNotOfferACubePack closes the loop this pack opens.
+//
+// The pack must be published — selection reads the published pool, and an
+// unpublished pack can never be the example. Published also means listed, and
+// the list this endpoint returns is the new-project domain picker. A project's
+// pack belongs to its primary data source, which must be able to carry the
+// analysis, and no cube can; so offering one would put an option in front of a
+// customer that project creation then refuses.
+func TestListDomains_DoesNotOfferACubePack(t *testing.T) {
+	repo := newMockDomainPackRepo()
+	table := testDomainPack("warehouse-domain", "cat")
+	cube := testDomainPack("cube-domain", "cat")
+	cube.Shape = warehouse.ShapeCube
+	repo.add(table)
+	repo.add(cube)
+
+	h := NewDomainsHandler(repo)
+	req := httptest.NewRequest("GET", "/api/v1/domains", nil)
+	w := httptest.NewRecorder()
+	h.ListDomains(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	// Responses are wrapped in the API envelope, so decode through it rather
+	// than asserting on the raw body.
+	var envelope struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decoding the response: %v (body: %s)", err, w.Body.String())
+	}
+	ids := map[string]bool{}
+	for _, d := range envelope.Data {
+		ids[d.ID] = true
+	}
+	if ids["cube-domain"] {
+		t.Error("the picker offered a cube pack, which project creation refuses for every project")
+	}
+	// The other half: a filter that dropped everything would also pass the
+	// assertion above, and would empty the picker for every customer.
+	if !ids["warehouse-domain"] {
+		t.Error("the picker dropped a table-shaped pack")
+	}
+}
+
+// TestListDomains_AnUndeclaredShapeIsStillOffered covers the entire existing
+// corpus, none of which carries the field.
+func TestListDomains_AnUndeclaredShapeIsStillOffered(t *testing.T) {
+	repo := newMockDomainPackRepo()
+	legacy := testDomainPack("legacy-domain", "cat")
+	if legacy.Shape != "" {
+		t.Fatalf("this test is about a pack with no shape, got %q", legacy.Shape)
+	}
+	repo.add(legacy)
+
+	w := httptest.NewRecorder()
+	NewDomainsHandler(repo).ListDomains(w, httptest.NewRequest("GET", "/api/v1/domains", nil))
+	if !strings.Contains(w.Body.String(), "legacy-domain") {
+		t.Errorf("a pack with no declared shape vanished from the picker: %s", w.Body.String())
+	}
+}

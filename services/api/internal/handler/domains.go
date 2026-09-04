@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
@@ -38,6 +39,20 @@ func (h *DomainsHandler) ListDomains(w http.ResponseWriter, r *http.Request) {
 
 	domains := make([]domainInfo, 0, len(packs))
 	for _, pack := range packs {
+		// Only packs written for a table-shaped source. This endpoint feeds the
+		// new-project domain picker, and a project's pack belongs to its PRIMARY
+		// data source — which must be one that can carry an analysis on its own,
+		// and no cube-shaped source can. So a cube pack is never a valid answer
+		// here: offering it would list an option that project creation refuses.
+		//
+		// Two kinds of pack reach this filter. A cube reference pack exists to
+		// be imitated by pack generation, which finds it by shape in the
+		// collection and never through this endpoint. A generated per-datasource
+		// cube pack belongs to one enrichment source on one project and was
+		// never a domain to start a project from.
+		if pack.EffectiveShape() != warehouse.ShapeEntities {
+			continue
+		}
 		info := domainInfo{ID: pack.Slug}
 		for _, cat := range pack.Categories {
 			info.Categories = append(info.Categories, categoryInfo{
