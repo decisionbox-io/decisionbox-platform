@@ -873,6 +873,7 @@ export interface LedgerTask {
   text: string;
   kind: string; // next_task | hypothesis
   status: string;
+  supersedes?: string; // id of the task this one continued (a resolved thread)
 }
 
 export interface LedgerCoverage {

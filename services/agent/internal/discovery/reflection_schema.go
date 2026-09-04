@@ -57,6 +57,18 @@ func reflectionResponseSchema() map[string]interface{} {
 					"required": []interface{}{"finding_id", "status"},
 				},
 			},
+			"task_status_updates": map[string]interface{}{
+				"type":        "array",
+				"description": "Close OPEN tasks (by id) this run resolved: 'done' when a finding from THIS run answers the task, 'dropped' when it is a proven dead-end / no longer relevant. Only with grounded evidence — leave a partially-explored or untouched task alone. Empty if you closed none.",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"task_id": str("The open task id, copied verbatim from the OPEN TASKS list"),
+						"status":  map[string]interface{}{"type": "string", "enum": []string{"done", "dropped"}},
+					},
+					"required": []interface{}{"task_id", "status"},
+				},
+			},
 			"learnings": map[string]interface{}{
 				"type":        "array",
 				"description": "Durable, reusable learnings about this warehouse/domain (opaque codes decoded, a table's grain, a join that works). Not findings — operating knowledge for future runs.",
@@ -81,6 +93,7 @@ func reflectionResponseSchema() map[string]interface{} {
 						"kind":        map[string]interface{}{"type": "string", "enum": []string{"next_task", "hypothesis"}},
 						"target_type": map[string]interface{}{"type": "string", "enum": []string{"insight", "recommendation", "table", "area"}},
 						"target_id":   str("Optional: the id/name this task is about"),
+						"supersedes":  str("Optional: the id of an OPEN task (from the OPEN TASKS list) this thread continues — set it when this follow-up grew out of a task you are marking done"),
 					},
 					"required": []interface{}{"title", "text"},
 				},

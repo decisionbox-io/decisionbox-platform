@@ -189,9 +189,13 @@ type LedgerTask struct {
 	// scan (e.g. "Check which sellers drive dead inventory"). Text keeps the
 	// full, technical description (tables, metrics, the specific hypothesis).
 	// Older tasks have no title; the UI falls back to Text.
-	Title         string         `bson:"title,omitempty" json:"title,omitempty"`
-	Text          string         `bson:"text" json:"text"`
-	Kind          string         `bson:"kind" json:"kind"`
+	Title string `bson:"title,omitempty" json:"title,omitempty"`
+	Text  string `bson:"text" json:"text"`
+	Kind  string `bson:"kind" json:"kind"`
+	// Supersedes is the id of the task this one grew out of — set when a run
+	// answers a task and the follow-up question becomes a new task, so the
+	// investigation thread stays connected and the next run doesn't re-tread.
+	Supersedes    string         `bson:"supersedes,omitempty" json:"supersedes,omitempty"`
 	Status        string         `bson:"status" json:"status"`
 	LinkedTarget  QuestionTarget `bson:"linked_target,omitempty" json:"linked_target,omitempty"`
 	CreatedRunID  string         `bson:"created_run_id,omitempty" json:"created_run_id,omitempty"`

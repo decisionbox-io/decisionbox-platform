@@ -15,6 +15,10 @@ import {
   EvolutionMode, FrontierPolicy,
 } from '@/lib/api';
 
+// Cap the "Next up" list so the ledger never renders an unbounded wall of
+// tasks; the rest are summarised as "+N more".
+const MAX_NEXT_UP = 12;
+
 const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
   { value: 'off', label: 'Off — record only' },
   { value: 'suggest_only', label: 'Suggest only — show, never apply' },
@@ -253,16 +257,24 @@ export default function LedgerPage() {
             description="Open investigation threads the next run should pick up first."
           >
             <Stack gap="md">
-              {ledger.tasks.map((t) => (
+              {ledger.tasks.slice(0, MAX_NEXT_UP).map((t) => (
                 <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
                   <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
                   <div style={{ minWidth: 0 }}>
-                    <Text size="sm" fw={600}>{t.title || t.text}</Text>
+                    <Group gap="xs" wrap="nowrap">
+                      <Text size="sm" fw={600}>{t.title || t.text}</Text>
+                      {t.supersedes && <Badge size="xs" variant="outline" color="gray" style={{ flexShrink: 0 }}>follow-up</Badge>}
+                    </Group>
                     {t.title && t.title !== t.text && <Text size="xs" c="dimmed" mt={2}>{t.text}</Text>}
                   </div>
                 </Group>
               ))}
             </Stack>
+            {ledger.tasks.length > MAX_NEXT_UP && (
+              <Text size="xs" c="dimmed" mt="sm">
+                +{ledger.tasks.length - MAX_NEXT_UP} more open thread{ledger.tasks.length - MAX_NEXT_UP > 1 ? 's' : ''}
+              </Text>
+            )}
           </Section>
         )}
 

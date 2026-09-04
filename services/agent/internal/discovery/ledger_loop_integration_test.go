@@ -133,11 +133,13 @@ func TestLedgerLoop_Integration(t *testing.T) {
 
 	// Seed a next-task the way applyNextTasks would.
 	o.applyNextTasks(ctx, &parsedReflection{NextTasks: []struct {
+		Title      string `json:"title"`
 		Text       string `json:"text"`
 		Kind       string `json:"kind"`
 		TargetType string `json:"target_type"`
 		TargetID   string `json:"target_id"`
-	}{{Text: "explore the untouched events tables", Kind: "next_task"}}})
+		Supersedes string `json:"supersedes"`
+	}{{Text: "explore the untouched events tables", Kind: "next_task"}}}, nil)
 
 	// Verify the ledger persisted with substance.
 	stored, err := findingRepo.List(ctx, projectID)

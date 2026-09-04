@@ -66,13 +66,20 @@ func (f *fakeFindingRepo) Prune(_ context.Context, _ string, max int) error {
 type fakeTaskRepo struct {
 	existing []commonmodels.LedgerTask
 	inserted []commonmodels.LedgerTask
+	updates  []taskUpdate
 }
+
+type taskUpdate struct{ id, status string }
 
 func (f *fakeTaskRepo) List(_ context.Context, _ string, _ ...string) ([]commonmodels.LedgerTask, error) {
 	return f.existing, nil
 }
 func (f *fakeTaskRepo) Insert(_ context.Context, ts []commonmodels.LedgerTask) error {
 	f.inserted = append(f.inserted, ts...)
+	return nil
+}
+func (f *fakeTaskRepo) UpdateStatus(_ context.Context, _, id, status string) error {
+	f.updates = append(f.updates, taskUpdate{id, status})
 	return nil
 }
 
@@ -113,6 +120,65 @@ func TestBuildFindingCandidates_Substance(t *testing.T) {
 	f := got[0]
 	if f.NormalizedKey == "" || f.Evidence == "" || f.KeyMetric == "" {
 		t.Errorf("substance not populated: %+v", f)
+	}
+}
+
+// TestApplyTaskStatusUpdates verifies grounded closure: only done/dropped
+// against a known open task id is applied, unknown ids and invalid statuses are
+// ignored, and the closed tasks' normalized keys are returned for dedup.
+func TestApplyTaskStatusUpdates(t *testing.T) {
+	t1 := commonmodels.LedgerTask{ID: "t1", Status: "open", NormalizedKey: "k1"}
+	t2 := commonmodels.LedgerTask{ID: "t2", Status: "open", NormalizedKey: "k2"}
+	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{t1, t2}}
+	o := &Orchestrator{projectID: "p1", taskRepo: tr}
+
+	ref := &parsedReflection{}
+	ref.TaskStatusUpdates = []struct {
+		TaskID string `json:"task_id"`
+		Status string `json:"status"`
+	}{
+		{TaskID: "t1", Status: "done"},
+		{TaskID: "t2", Status: "dropped"},
+		{TaskID: "ghost", Status: "done"},  // unknown id → skip
+		{TaskID: "t1", Status: "reopened"}, // invalid status → skip
+	}
+	closed := o.applyTaskStatusUpdates(context.Background(), ref)
+
+	if len(tr.updates) != 2 {
+		t.Fatalf("want 2 status writes (t1 done, t2 dropped), got %d: %+v", len(tr.updates), tr.updates)
+	}
+	if !closed["k1"] || !closed["k2"] || len(closed) != 2 {
+		t.Errorf("closed keys should be {k1,k2}, got %+v", closed)
+	}
+}
+
+// TestApplyNextTasks_DedupAndSupersedes verifies a follow-up that matches a task
+// just closed this run is NOT recreated (no close→recreate ping-pong), and that
+// supersedes is carried onto the new task.
+func TestApplyNextTasks_DedupAndSupersedes(t *testing.T) {
+	tr := &fakeTaskRepo{} // no open tasks
+	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+
+	repeatKey := commonmodels.NormalizedQuestionKey("re-check the churn spike")
+	ref := &parsedReflection{}
+	ref.NextTasks = []struct {
+		Title      string `json:"title"`
+		Text       string `json:"text"`
+		Kind       string `json:"kind"`
+		TargetType string `json:"target_type"`
+		TargetID   string `json:"target_id"`
+		Supersedes string `json:"supersedes"`
+	}{
+		{Title: "Recheck churn", Text: "re-check the churn spike"},                          // matches a closed task → dropped
+		{Title: "Profile power sellers", Text: "profile the top sellers", Supersedes: "t9"}, // fresh → kept, keeps link
+	}
+	o.applyNextTasks(context.Background(), ref, map[string]bool{repeatKey: true})
+
+	if len(tr.inserted) != 1 {
+		t.Fatalf("want 1 inserted (the closed repeat is skipped), got %d: %+v", len(tr.inserted), tr.inserted)
+	}
+	if tr.inserted[0].Supersedes != "t9" {
+		t.Errorf("supersedes should be carried, got %q", tr.inserted[0].Supersedes)
 	}
 }
 

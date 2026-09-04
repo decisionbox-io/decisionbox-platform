@@ -69,6 +69,7 @@ type findingStore interface {
 type taskStore interface {
 	List(ctx context.Context, projectID string, statuses ...string) ([]commonmodels.LedgerTask, error)
 	Insert(ctx context.Context, tasks []commonmodels.LedgerTask) error
+	UpdateStatus(ctx context.Context, projectID, id, status string) error
 }
 
 type proposalStore interface {
@@ -527,19 +528,62 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 		}
 	}
 
+	// Close open tasks this run resolved. Runs regardless of evolution mode —
+	// keeping the queue honest is hygiene, not self-direction — and returns the
+	// closed tasks' keys so applyNextTasks won't recreate one as "new".
+	closedTaskKeys := o.applyTaskStatusUpdates(ctx, ref)
+
 	// The rest (next-tasks + domain-pack deltas) is the self-directing part the
 	// evolution mode governs. Off records coverage/findings/learnings only.
 	if pol.EvolutionMode == agentplugin.EvolutionModeOff {
 		return
 	}
 
-	o.applyNextTasks(ctx, ref)
+	o.applyNextTasks(ctx, ref, closedTaskKeys)
 	o.applyPackProposals(ctx, result, ref)
+}
+
+// applyTaskStatusUpdates closes the open tasks the reflection resolved this run
+// (done / dropped), wiring the previously-dead LedgerTask lifecycle. It is
+// grounded: the model only closes a task a finding from this run answered, or a
+// proven dead-end. Returns the normalized keys of the tasks it closed so the
+// follow-up generation below does not immediately recreate one.
+func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, ref *parsedReflection) map[string]bool {
+	closed := make(map[string]bool)
+	if o.taskRepo == nil || len(ref.TaskStatusUpdates) == 0 {
+		return closed
+	}
+	open, err := o.taskRepo.List(ctx, o.projectID,
+		commonmodels.LedgerTaskStatusOpen, commonmodels.LedgerTaskStatusInProgress)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: list tasks for status update failed")
+		return closed
+	}
+	byID := make(map[string]*commonmodels.LedgerTask, len(open))
+	for i := range open {
+		byID[open[i].ID] = &open[i]
+	}
+	for _, u := range ref.TaskStatusUpdates {
+		status := strings.TrimSpace(u.Status)
+		if status != commonmodels.LedgerTaskStatusDone && status != commonmodels.LedgerTaskStatusDropped {
+			continue
+		}
+		t := byID[strings.TrimSpace(u.TaskID)]
+		if t == nil {
+			continue // unknown / already-closed id
+		}
+		if err := o.taskRepo.UpdateStatus(ctx, o.projectID, t.ID, status); err != nil {
+			applog.WithError(err).Warn("Reflection: close task failed")
+			continue
+		}
+		closed[t.NormalizedKey] = true
+	}
+	return closed
 }
 
 // applyNextTasks inserts fresh next-tasks/hypotheses, deduped against the open
 // queue by normalized text key.
-func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection) {
+func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection, closedKeys map[string]bool) {
 	if len(ref.NextTasks) == 0 || o.taskRepo == nil {
 		return
 	}
@@ -548,9 +592,16 @@ func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list tasks failed; proceeding without dedup")
 	}
-	seen := make(map[string]bool, len(existing))
+	// Seed dedup with the open queue AND the tasks just closed this run, so a
+	// follow-up never recreates a task we resolved moments ago (close→recreate
+	// ping-pong). A genuine re-open only comes from contradicting evidence,
+	// which flows through the finding-status path, not task churn.
+	seen := make(map[string]bool, len(existing)+len(closedKeys))
 	for _, t := range existing {
 		seen[t.NormalizedKey] = true
+	}
+	for k := range closedKeys {
+		seen[k] = true
 	}
 	now := time.Now()
 	var fresh []commonmodels.LedgerTask
@@ -581,6 +632,7 @@ func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection
 			Text:          text,
 			Kind:          kind,
 			Status:        commonmodels.LedgerTaskStatusOpen,
+			Supersedes:    strings.TrimSpace(nt.Supersedes),
 			CreatedRunID:  o.runID,
 			NormalizedKey: key,
 			CreatedAt:     now,

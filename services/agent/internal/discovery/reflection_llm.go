@@ -35,12 +35,18 @@ type parsedReflection struct {
 		Relevance float64 `json:"relevance"`
 	} `json:"learnings"`
 
+	TaskStatusUpdates []struct {
+		TaskID string `json:"task_id"`
+		Status string `json:"status"` // done | dropped
+	} `json:"task_status_updates"`
+
 	NextTasks []struct {
 		Title      string `json:"title"`
 		Text       string `json:"text"`
 		Kind       string `json:"kind"`
 		TargetType string `json:"target_type"`
 		TargetID   string `json:"target_id"`
+		Supersedes string `json:"supersedes"`
 	} `json:"next_tasks"`
 
 	PackDeltas []struct {
@@ -132,7 +138,7 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 
 func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 	if mode == agentplugin.EvolutionModeOff {
-		return "Domain-pack evolution is OFF for this project: return an EMPTY next_tasks array and an EMPTY domain_pack_deltas array. Only produce coverage, learnings, and prior-finding status updates."
+		return "Domain-pack evolution is OFF for this project: return an EMPTY next_tasks array and an EMPTY domain_pack_deltas array. You may still produce coverage, learnings, prior-finding status updates, and task_status_updates that close resolved open tasks."
 	}
 	return "You may propose next_tasks (self-directed investigation threads for the next run) and domain_pack_deltas (analysis-area changes). Ground every proposal in the findings above."
 }
@@ -182,7 +188,7 @@ func renderOpenTasks(tasks []commonmodels.LedgerTask) string {
 	}
 	var b strings.Builder
 	for _, t := range tasks {
-		fmt.Fprintf(&b, "- %s\n", t.Text)
+		fmt.Fprintf(&b, "- id=%s (%s) %s\n", t.ID, t.Kind, t.Text)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -235,6 +241,6 @@ func reflectionRepairSuffix(err error) string {
 	}
 	return "\n\nYour previous response could not be used: " + reason + ".\n" +
 		"Respond with ONLY a single JSON object with the fields coverage_summary, covered_tables, " +
-		"covered_areas, prior_status_updates, learnings, next_tasks, domain_pack_deltas, " +
+		"covered_areas, prior_status_updates, task_status_updates, learnings, next_tasks, domain_pack_deltas, " +
 		"convergence_note — no prose and no markdown fences."
 }
