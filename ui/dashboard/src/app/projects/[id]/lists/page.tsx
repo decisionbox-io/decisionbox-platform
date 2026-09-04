@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import { Button, Loader, Menu, ActionIcon, Modal, Text, Group } from '@mantine/core';
 import { IconBookmark, IconPlus, IconDots, IconTrash } from '@tabler/icons-react';
@@ -12,6 +13,7 @@ import { api, BookmarkList } from '@/lib/api';
 
 export default function ListsPage() {
   const { id } = useParams<{ id: string }>();
+  const t = useTranslations('lists');
   const [lists, setLists] = useState<BookmarkList[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,8 +49,8 @@ export default function ListsPage() {
   }
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
-    { label: 'Lists' },
+    { label: t('breadcrumbProjects'), href: '/' },
+    { label: t('breadcrumbLists') },
   ];
 
   return (
@@ -60,11 +62,11 @@ export default function ListsPage() {
           leftSection={<IconPlus size={14} />}
           onClick={() => setCreating(true)}
         >
-          New list
+          {t('newList')}
         </Button>
       }
     >
-      <SectionHeader title="Lists" count={lists?.length} />
+      <SectionHeader title={t('title')} count={lists?.length} />
 
       {error && (
         <div style={{
@@ -78,8 +80,8 @@ export default function ListsPage() {
       ) : lists.length === 0 ? (
         <EmptyState
           icon={<IconBookmark size={32} />}
-          title="No lists yet"
-          description="Create your first list to bookmark insights and recommendations you want to revisit."
+          title={t('emptyTitle')}
+          description={t('emptyDescription')}
         />
       ) : (
         <div style={{
@@ -134,7 +136,7 @@ export default function ListsPage() {
                       <ActionIcon
                         variant="subtle"
                         size="sm"
-                        aria-label="List actions"
+                        aria-label={t('listActions')}
                         onClick={e => { e.preventDefault(); e.stopPropagation(); }}
                       >
                         <IconDots size={14} />
@@ -150,7 +152,7 @@ export default function ListsPage() {
                           setDeleteTarget(list);
                         }}
                       >
-                        Delete
+                        {t('delete')}
                       </Menu.Item>
                     </Menu.Dropdown>
                   </Menu>
@@ -165,8 +167,8 @@ export default function ListsPage() {
                   fontSize: 11, color: 'var(--db-text-tertiary)', marginTop: 8,
                   display: 'flex', justifyContent: 'space-between',
                 }}>
-                  <span>{list.item_count} {list.item_count === 1 ? 'item' : 'items'}</span>
-                  <span>Updated {new Date(list.updated_at).toLocaleDateString()}</span>
+                  <span>{list.item_count} {list.item_count === 1 ? t('itemSingular') : t('itemPlural')}</span>
+                  <span>{t('updated')} {new Date(list.updated_at).toLocaleDateString()}</span>
                 </div>
               </div>
             </Link>
@@ -184,19 +186,17 @@ export default function ListsPage() {
       <Modal
         opened={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
-        title="Delete this list?"
+        title={t('deleteModalTitle')}
         centered
       >
         {deleteTarget && (
           <>
             <Text size="sm" mb="md">
-              This will permanently remove &quot;{deleteTarget.name}&quot; and all
-              {' '}{deleteTarget.item_count} bookmark{deleteTarget.item_count === 1 ? '' : 's'} in it.
-              The underlying insights and recommendations are not affected.
+              {t('deleteConfirmBody', { name: deleteTarget.name, count: deleteTarget.item_count })}
             </Text>
             <Group justify="flex-end">
-              <Button variant="default" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-              <Button color="red" onClick={confirmDelete}>Delete</Button>
+              <Button variant="default" onClick={() => setDeleteTarget(null)}>{t('cancel')}</Button>
+              <Button color="red" onClick={confirmDelete}>{t('delete')}</Button>
             </Group>
           </>
         )}
