@@ -10,10 +10,12 @@ import Shell from '@/components/layout/AppShell';
 import { EmptyState, SectionHeader } from '@/components/common/UIComponents';
 import CreateListModal from '@/components/lists/CreateListModal';
 import { api, BookmarkList } from '@/lib/api';
+import { useFormat } from '@/lib/format';
 
 export default function ListsPage() {
   const { id } = useParams<{ id: string }>();
   const t = useTranslations('lists');
+  const fmt = useFormat();
   const [lists, setLists] = useState<BookmarkList[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -168,7 +170,7 @@ export default function ListsPage() {
                   display: 'flex', justifyContent: 'space-between',
                 }}>
                   <span>{list.item_count} {list.item_count === 1 ? t('itemSingular') : t('itemPlural')}</span>
-                  <span>{t('updated')} {new Date(list.updated_at).toLocaleDateString()}</span>
+                  <span>{t('updated')} {fmt.dateTime(list.updated_at, { dateStyle: 'medium' })}</span>
                 </div>
               </div>
             </Link>
