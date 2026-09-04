@@ -317,21 +317,35 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// split-brain body nor an unanchored project has a settled answer to
 	// "which datasource is that". Nothing between here and the decode reads
 	// prompts, so the move costs nothing.
-	if p.Prompts == nil && h.domainPackRepo != nil {
+	if h.domainPackRepo != nil {
 		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
 			return
 		}
+		// Unknown domain is refused only when the request needed the pack to
+		// seed from, which is the behaviour this route has always had.
+		// Rejecting it for a client that supplied its own prompts would be a
+		// second change riding along with this one.
 		if pack == nil {
-			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
-			return
+			if p.Prompts == nil {
+				writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
+				return
+			}
+		} else {
+			// The pairing is checked whether or not the prompts came from the
+			// pack. Supplying custom prompts does not make the project's domain
+			// compatible with its data source — it only stops the pack being
+			// copied — and gating this on the seeding branch left the whole
+			// refusal skippable by sending a `prompts` field.
+			if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+			if p.Prompts == nil {
+				SeedProjectPrompts(&p, pack)
+			}
 		}
-		if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
-			writeError(w, http.StatusBadRequest, msg)
-			return
-		}
-		SeedProjectPrompts(&p, pack)
 	}
 
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
@@ -769,21 +783,37 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // one place a pack and a datasource are first paired. It is not a validator
 // rule: a pack is not invalid for being cube-shaped, it is only wrong HERE.
 //
-// A project with no datasource is not a mismatch — nothing has been chosen to
-// disagree with. An unregistered provider is read as table-shaped, the same
-// default the rest of the system applies, so an unknown spelling keeps the
-// check rather than waving a pack through.
+// A project with no datasource yet is still checked, against entities. That is
+// not a guess: the pack has to agree with the datasource the project will end
+// up with, that datasource must be one that can carry an analysis on its own,
+// and no cube-shaped source can be. Returning "no mismatch" here instead —
+// which this did at first, on the reasoning that nothing had been chosen to
+// disagree with — creates a project holding a cube pack that the settings-edit
+// guard then refuses to give any anchoring datasource to. Unusable, and
+// unrepairable through the API, built out of two guards disagreeing about the
+// empty case. It is also exactly the rule the domain picker applies.
+//
+// An unregistered provider is read as table-shaped, the same default the rest
+// of the system applies, so an unknown spelling keeps the check rather than
+// waving a pack through.
 func packShapeMismatch(pack *models.DomainPack, primary models.WarehouseConfig) string {
-	if pack == nil || primary.Provider == "" {
+	if pack == nil {
 		return ""
 	}
 	want := gowarehouse.ShapeEntities
-	if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
-		want = meta.EffectiveShape()
+	if primary.Provider != "" {
+		if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
+			want = meta.EffectiveShape()
+		}
 	}
 	got := pack.EffectiveShape()
 	if got == want {
 		return ""
+	}
+	if primary.Provider == "" {
+		return fmt.Sprintf(
+			"domain pack %q is written for a %s data source, and a project's domain pack has to match the data source that carries it, which is always %s; choose a pack written for %s",
+			pack.Slug, got, want, want)
 	}
 	return fmt.Sprintf(
 		"domain pack %q is written for a %s data source, but this project's data source is %s; choose a pack written for %s",
