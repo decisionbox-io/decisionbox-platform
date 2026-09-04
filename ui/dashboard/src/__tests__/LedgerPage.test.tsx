@@ -66,6 +66,23 @@ describe('LedgerPage', () => {
     expect(screen.getByText('fraud signals recur')).toBeInTheDocument();
   });
 
+  it('renders (no crash) when the ledger exists but is empty — null slices from the API', async () => {
+    // A project that has never reflected: the API returns 200 with null
+    // coverage/convergence/findings/tasks (Go nil → JSON null). Regression for
+    // "Cannot read properties of null (reading 'length')".
+    getLedger.mockResolvedValue({
+      coverage: { explored_tables: null, area_depth: null, total_tables: 0, summary: '' },
+      convergence: null,
+      findings: null,
+      tasks: null,
+    } as unknown as LedgerView);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    // The findings empty-state renders instead of a crash.
+    expect(await screen.findByText(/No findings yet/i)).toBeInTheDocument();
+  });
+
   it('approves a pending proposal', async () => {
     getLedger.mockResolvedValue(ledger);
     getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'admin_approval', frontier_policy: 'balanced' });

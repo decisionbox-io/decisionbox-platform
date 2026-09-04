@@ -43,6 +43,24 @@ const PROPOSAL_STATUS_COLOR: Record<string, string> = {
   reverted: 'gray',
 };
 
+// normalizeLedger defends against a project that has no ledger yet: the API
+// returns a 200 with null slices (Go nil → JSON null) for coverage/convergence/
+// findings/tasks, and rendering `.length`/`.map` on null throws. Default every
+// array + coverage field so the page shows an honest empty state instead.
+function normalizeLedger(lv: LedgerView): LedgerView {
+  return {
+    coverage: {
+      explored_tables: lv?.coverage?.explored_tables ?? [],
+      area_depth: lv?.coverage?.area_depth ?? {},
+      total_tables: lv?.coverage?.total_tables ?? 0,
+      summary: lv?.coverage?.summary ?? '',
+    },
+    convergence: lv?.convergence ?? [],
+    findings: lv?.findings ?? [],
+    tasks: lv?.tasks ?? [],
+  };
+}
+
 // LedgerPage is the investigation view for compounding discovery: the coverage
 // map, the accumulated findings with status, the open next-task queue, the
 // convergence trend, and the domain-pack evolution controls + approval queue.
@@ -72,7 +90,7 @@ export default function LedgerPage() {
       api.getEvolutionSettings(id).catch(() => null),
     ])
       .then(([lv, st]) => {
-        setLedger(lv);
+        setLedger(normalizeLedger(lv));
         setSettings(st);
         setUnsupported(false);
         loadProposals();
