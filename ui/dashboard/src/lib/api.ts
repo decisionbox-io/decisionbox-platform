@@ -896,6 +896,9 @@ export interface LedgerView {
   convergence: ConvergencePoint[];
   findings: LedgerFinding[];
   tasks: LedgerTask[];
+  // Closed tasks referenced via a `supersedes` link from an open task, so a
+  // follow-up's parent chain can be shown inline. Only the referenced ones.
+  ancestors?: LedgerTask[];
 }
 
 export interface PackProposal {

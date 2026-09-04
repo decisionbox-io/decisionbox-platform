@@ -11,7 +11,7 @@ import {
 import Shell from '@/components/layout/AppShell';
 import { SectionHeader, EmptyState, StatCard, SeverityBadge, AreaBadge, Th } from '@/components/common/UIComponents';
 import {
-  api, ApiError, LedgerView, EvolutionSettings, PackProposal, Project,
+  api, ApiError, LedgerView, LedgerTask, EvolutionSettings, PackProposal, Project,
   EvolutionMode, FrontierPolicy,
 } from '@/lib/api';
 
@@ -124,6 +124,13 @@ export default function LedgerPage() {
   const [savingMode, setSavingMode] = useState(false);
   const [deciding, setDeciding] = useState<string>(''); // proposal id currently being decided
   const [showFindings, setShowFindings] = useState(false); // advanced detail, collapsed by default
+  const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()); // expanded follow-up ancestry
+
+  const toggleThread = (id: string) => setOpenThreads((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const loadProposals = () => {
     api.listPackProposals(id)
@@ -206,6 +213,23 @@ export default function LedgerPage() {
   const pending = proposals.filter((p) => p.status === 'proposed');
   const decided = proposals.filter((p) => p.status !== 'proposed');
 
+  // Resolve a follow-up task's parent chain from the embedded ancestors (closed
+  // tasks aren't in the live queue). Walks supersedes links, guarding cycles, so
+  // a multi-level thread (A → B → C) shows the whole lineage.
+  const ancestorById = new Map((ledger.ancestors ?? []).map((a) => [a.id, a]));
+  const chainOf = (task: LedgerTask): LedgerTask[] => {
+    const chain: LedgerTask[] = [];
+    const guard = new Set<string>();
+    let cursor = task.supersedes;
+    while (cursor && ancestorById.has(cursor) && !guard.has(cursor)) {
+      guard.add(cursor);
+      const parent = ancestorById.get(cursor)!;
+      chain.push(parent);
+      cursor = parent.supersedes;
+    }
+    return chain;
+  };
+
   return (
     <Shell fullWidth>
       <Stack gap="lg">
@@ -257,18 +281,52 @@ export default function LedgerPage() {
             description="Open investigation threads the next run should pick up first."
           >
             <Stack gap="md">
-              {ledger.tasks.slice(0, MAX_NEXT_UP).map((t) => (
-                <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
-                  <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
-                  <div style={{ minWidth: 0 }}>
-                    <Group gap="xs" wrap="nowrap">
-                      <Text size="sm" fw={600}>{t.title || t.text}</Text>
-                      {t.supersedes && <Badge size="xs" variant="outline" color="gray" style={{ flexShrink: 0 }}>follow-up</Badge>}
-                    </Group>
-                    {t.title && t.title !== t.text && <Text size="xs" c="dimmed" mt={2}>{t.text}</Text>}
-                  </div>
-                </Group>
-              ))}
+              {ledger.tasks.slice(0, MAX_NEXT_UP).map((t) => {
+                const chain = t.supersedes ? chainOf(t) : [];
+                const expanded = openThreads.has(t.id);
+                return (
+                  <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
+                    <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <Group gap="xs" wrap="nowrap">
+                        <Text size="sm" fw={600}>{t.title || t.text}</Text>
+                        {t.supersedes && (
+                          <UnstyledButton onClick={() => toggleThread(t.id)} style={{ flexShrink: 0 }} aria-expanded={expanded}>
+                            <Badge
+                              size="xs"
+                              variant="outline"
+                              color="gray"
+                              style={{ cursor: 'pointer' }}
+                              rightSection={<IconChevronRight size={10} style={{ display: 'block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />}
+                            >
+                              follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
+                            </Badge>
+                          </UnstyledButton>
+                        )}
+                      </Group>
+                      {t.title && t.title !== t.text && <Text size="xs" c="dimmed" mt={2}>{t.text}</Text>}
+                      {t.supersedes && (
+                        <Collapse in={expanded}>
+                          <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--db-border-default)' }}>
+                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these resolved threads' : 'this resolved thread'}:</Text>
+                            {chain.length === 0 ? (
+                              <Text size="xs" c="dimmed">Parent thread is no longer available.</Text>
+                            ) : chain.map((a) => (
+                              <div key={a.id} style={{ marginBottom: 6 }}>
+                                <Group gap="xs" wrap="nowrap" align="center">
+                                  <Badge size="xs" variant="light" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{a.status}</Badge>
+                                  <Text size="xs" fw={500}>{a.title || a.text}</Text>
+                                </Group>
+                                {a.title && a.title !== a.text && <Text size="xs" c="dimmed" ml={4}>{a.text}</Text>}
+                              </div>
+                            ))}
+                          </div>
+                        </Collapse>
+                      )}
+                    </div>
+                  </Group>
+                );
+              })}
             </Stack>
             {ledger.tasks.length > MAX_NEXT_UP && (
               <Text size="xs" c="dimmed" mt="sm">
