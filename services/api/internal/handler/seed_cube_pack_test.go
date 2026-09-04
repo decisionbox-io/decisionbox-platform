@@ -279,3 +279,49 @@ func TestCubeSeedPack_TeachesTheActionEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// jsonBlock pulls the first fenced ```json block out of a prompt.
+func jsonBlock(t *testing.T, body string) string {
+	t.Helper()
+	const fence = "```json"
+	i := strings.Index(body, fence)
+	if i < 0 {
+		t.Fatal("the prompt carries no fenced json example")
+	}
+	rest := body[i+len(fence):]
+	j := strings.Index(rest, "```")
+	if j < 0 {
+		t.Fatal("the fenced json example is never closed")
+	}
+	return rest[:j]
+}
+
+// TestCubeSeedPack_RecommendationExampleParsesAsTheModel is the type half of
+// the same agreement, and the half a field-name check cannot see.
+//
+// The example the model copies has to decode into the struct that stores it. A
+// string where the model has an int, or a sentence where it has an object,
+// leaves that field at its zero value with no error raised anywhere — the
+// dashboard renders a priority of 0 and an empty impact, and nothing in the
+// pipeline ever says why.
+func TestCubeSeedPack_RecommendationExampleParsesAsTheModel(t *testing.T) {
+	var envelope struct {
+		Recommendations []models.Recommendation `json:"recommendations"`
+	}
+	raw := jsonBlock(t, loadSeedPack(t, cubeSeedSlug).Prompts.Base.Recommendations)
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		t.Fatalf("the recommendations example does not decode as the model that stores it: %v", err)
+	}
+	if len(envelope.Recommendations) == 0 {
+		t.Fatal("the example decoded to no recommendations, so it proves nothing")
+	}
+	// Zero values would decode happily from an example that simply omitted the
+	// fields, so check the two that carry a type the wrong shape would break.
+	r := envelope.Recommendations[0]
+	if r.Priority == 0 {
+		t.Error("the example's priority decoded to 0 — it is an integer field, and a string there is silently dropped")
+	}
+	if r.ExpectedImpact.Metric == "" {
+		t.Error("the example's expected_impact decoded empty — it is an object, and a sentence there is silently dropped")
+	}
+}
