@@ -112,7 +112,7 @@ The agent also accepts command-line flags (typically set by the API when spawnin
 | `--run-id` | No | — | Discovery run ID for live status updates. Set by the API. |
 | `--areas` | No | *(all)* | Comma-separated analysis areas to run. Empty = all areas. Example: `--areas churn,monetization` |
 | `--max-steps` | No | `100` | Maximum exploration steps. More steps = more comprehensive but slower and more expensive. |
-| `--min-steps` | No | `0` | Minimum exploration steps before the agent accepts a `done` signal from the LLM. Early `done` signals are rejected (recorded as `complete_rejected`) and exploration continues. `0` disables the floor. Use on reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that terminate too early. |
+| `--min-steps` | No | `0` | Minimum exploration steps before the agent accepts a `done` signal from the LLM. Early `done` signals are rejected (recorded as `complete_rejected`) and exploration continues. `0` disables the floor. Use on reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that terminate too early. **Always applied**, including on a run that can query a cube-shaped datasource: such a run also has tables (a source that cannot anchor may not run discovery alone), so the floor stays a valid coverage proxy. On those runs a no-new-signal rule is added *past* the floor and can only extend a run, never shorten it. See [Discovery lifecycle](../concepts/discovery-lifecycle.md). |
 | `--estimate` | No | `false` | Estimate cost only (no actual discovery). Outputs JSON to stdout. |
 | `--skip-cache` | No | `false` | Force re-discovery of warehouse schemas (ignore cache). |
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to MongoDB (TTL: 30 days). |

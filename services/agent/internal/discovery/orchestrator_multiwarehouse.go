@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -370,4 +371,63 @@ func orderWarehousesPrimaryFirst(warehouses []models.WarehouseConfig, primaryID 
 		}
 	}
 	return out
+}
+
+// runReachesCube reports whether exploration on this run can query a
+// cube-shaped datasource.
+//
+// Routable, not merely configured. A secondary whose provider failed to open,
+// or whose schema was never indexed, is dropped before the engine is wired —
+// the run carries the configuration but cannot query it. Reading the project
+// instead would put a run that can only reach tables onto the rule chosen for
+// cubes and drop its step floor, in exactly the degraded case where a run
+// least deserves a behaviour change.
+//
+// It decides which stopping rule the exploration engine uses: on a run that
+// can only reach tables, a step count remains a passable proxy for coverage
+// and the existing floor is left exactly as it was, so every SQL-only run
+// behaves identically. A run that can reach a cube gets the marginal-value
+// rule instead, because a cube offers a combinatorial number of slices and
+// any step count can be satisfied without covering anything.
+//
+// Shape comes from the provider registry by slug, which is where a provider
+// declares it. The primary's slug is consulted as well as the configured
+// datasources: a legacy single-warehouse run carries no warehouses[] entries
+// at all, and reading only those would report every such run as table-shaped
+// without ever looking.
+//
+// An unregistered slug is table-shaped, matching the descriptor's own
+// default. That is the conservative direction here: it keeps the floor, which
+// is today's behaviour, rather than switching a run to a rule chosen for a
+// source nothing can confirm is a cube.
+func runReachesCube(routable map[string]*queryexec.QueryExecutor, warehouses []models.WarehouseConfig, primarySlug string) bool {
+	// No per-datasource executors is the single-warehouse wiring: the engine
+	// falls back to one executor and the primary is the only thing it can
+	// query. It is also the legacy shape, which carries no warehouses[]
+	// entries at all — reading only those would report every such run as
+	// table-shaped without ever looking.
+	if len(routable) == 0 {
+		return providerIsCube(primarySlug)
+	}
+	for _, wh := range warehouses {
+		if _, wired := routable[normDatasourceID(wh.ID)]; !wired {
+			continue
+		}
+		if providerIsCube(wh.Provider) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerIsCube resolves one provider slug's declared shape.
+func providerIsCube(slug string) bool {
+	if slug == "" {
+		return false
+	}
+	meta, ok := gowarehouse.GetProviderMeta(slug)
+	if !ok {
+		return false
+	}
+	return meta.EffectiveShape() == gowarehouse.ShapeCube
 }

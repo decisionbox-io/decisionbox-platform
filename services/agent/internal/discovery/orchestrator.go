@@ -809,6 +809,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// exploration ceiling regardless of these values.
 	exploreWindow, exploreOutputCap := o.resolveModelBudget()
 
+	// Which stopping rule this run's exploration uses. Logged because the
+	// two rules end a run for different reasons, and a run that stopped
+	// early is the first thing an operator will want explained.
+	reachesCube := runReachesCube(dsExecutors, o.warehouses, o.warehouseProviderSlug)
+	applog.WithFields(applog.Fields{
+		"reaches_cube":         reachesCube,
+		"routable_datasources": len(dsExecutors),
+		"min_steps":            opts.MinSteps,
+		"max_steps":            opts.MaxSteps,
+	}).Info("exploration: stopping rule resolved")
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -817,6 +828,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		TableDatasource:   tableWarehouse,
 		MaxSteps:          opts.MaxSteps,
 		MinSteps:          opts.MinSteps,
+		// A run that can query a cube stops on whether it is still finding
+		// anything new, not on a step count — see exploration_stopping.go.
+		StopOnNoNewSignal: reachesCube,
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
@@ -2500,6 +2514,15 @@ func (c countingStepIndexer) Upsert(ctx context.Context, step models.Exploration
 		c.reporter.IncrementAnalysisCounter(c.ctx, "step_index_upserts", 1)
 	}
 	return nil
+}
+
+// Nearest delegates to the wrapped index. Forwarded explicitly because a
+// decorator that omits a method of the interface it stands in for removes
+// that capability from everything downstream — here, the novelty rule the
+// cube stopping decision reads, which would silently fall back to the step
+// floor with nothing to notice it.
+func (c countingStepIndexer) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	return c.inner.Nearest(ctx, step)
 }
 
 // stepsFromPickResult flattens PickResult.Picked back to plain
