@@ -323,17 +323,16 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
 			return
 		}
-		switch {
-		case pack == nil:
-			// Unknown domain is refused only when the request needed the pack
-			// to seed from, which is the behaviour this route has always had.
-			// Rejecting it for a client that supplied its own prompts would be
-			// a second change riding along with this one.
+		// Unknown domain is refused only when the request needed the pack to
+		// seed from, which is the behaviour this route has always had.
+		// Rejecting it for a client that supplied its own prompts would be a
+		// second change riding along with this one.
+		if pack == nil {
 			if p.Prompts == nil {
 				writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
 				return
 			}
-		default:
+		} else {
 			// The pairing is checked whether or not the prompts came from the
 			// pack. Supplying custom prompts does not make the project's domain
 			// compatible with its data source — it only stops the pack being
