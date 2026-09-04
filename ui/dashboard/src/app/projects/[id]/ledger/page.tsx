@@ -27,9 +27,9 @@ const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
 ];
 
 const FRONTIER_POLICIES: { value: FrontierPolicy; label: string }[] = [
-  { value: 'breadth_first', label: 'Breadth first — tile the frontier' },
-  { value: 'depth_first', label: 'Depth first — drill the richest seam' },
-  { value: 'balanced', label: 'Balanced' },
+  { value: 'breadth_first', label: 'Go wide — explore new tables & areas' },
+  { value: 'depth_first', label: 'Go deep — dig into the richest findings' },
+  { value: 'balanced', label: 'Balanced — a mix of new ground and depth' },
 ];
 
 // Finding-status → badge colour. Kept local so the ledger view owns its own
@@ -245,7 +245,9 @@ export default function LedgerPage() {
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
-          <StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet touched" />
+          <Tooltip label="The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored." multiline w={280} openDelay={200}>
+            <div><StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet explored" /></div>
+          </Tooltip>
           <StatCard label="Findings" value={String(ledger.findings.length)} subtitle="carried across runs" />
           <StatCard
             label="New last run"
@@ -376,65 +378,7 @@ export default function LedgerPage() {
           </Section>
         )}
 
-        {/* 6. Findings — advanced finding-level detail, collapsed by default */}
-        <Card withBorder padding="lg" radius="md">
-          <UnstyledButton onClick={() => setShowFindings((v) => !v)} style={{ width: '100%' }}>
-            <Group justify="space-between" align="center" wrap="nowrap">
-              <Group gap="xs" wrap="nowrap">
-                <ThemeIcon variant="light" color="gray" size="md" radius="md"><IconListDetails size={16} /></ThemeIcon>
-                <Text fw={600} size="md">Findings</Text>
-                <Badge size="sm" variant="light" color="gray">{ledger.findings.length}</Badge>
-              </Group>
-              <Group gap={6} wrap="nowrap">
-                <Text size="xs" c="dimmed">{showFindings ? 'Hide detail' : 'Show detail'}</Text>
-                <IconChevronRight size={16} style={{ transform: showFindings ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
-              </Group>
-            </Group>
-          </UnstyledButton>
-          <Text size="xs" c="dimmed" mt={6}>
-            The full finding-level table behind the ledger — severity, status, the metric and how often each has recurred.
-          </Text>
-          <Collapse in={showFindings}>
-            <div style={{ marginTop: 16 }}>
-              {ledger.findings.length === 0 ? (
-                <EmptyState icon={<IconBook2 size={32} />} title="No findings yet" description="Findings accumulate here as discovery runs complete." />
-              ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      <Th width="30%">Finding</Th>
-                      <Th width="14%">Area</Th>
-                      <Th width="9%">Severity</Th>
-                      <Th width="9%">Status</Th>
-                      <Th width="30%">Metric</Th>
-                      <Th width="8%">Seen</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ledger.findings.map((f) => (
-                      <tr key={f.id} style={{ borderBottom: '1px solid var(--db-border-default)' }}>
-                        <td style={{ padding: '10px 12px' }}>
-                          <Tooltip label={f.description || f.name} multiline w={360} disabled={!f.description} openDelay={300}>
-                            <Text size="sm" fw={600} lineClamp={1}>{f.name}</Text>
-                          </Tooltip>
-                        </td>
-                        <td style={{ padding: '10px 12px' }}>{f.area ? <AreaBadge area={f.area} /> : <Text size="xs" c="dimmed">—</Text>}</td>
-                        <td style={{ padding: '10px 12px' }}><SeverityBadge severity={f.severity} type="severity" /></td>
-                        <td style={{ padding: '10px 12px' }}>
-                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
-                        </td>
-                        <td style={{ padding: '10px 12px' }}><Text size="xs" c="dimmed" lineClamp={1}>{f.key_metric || '—'}</Text></td>
-                        <td style={{ padding: '10px 12px' }}><Text size="sm">{f.seen_count}×</Text></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </Collapse>
-        </Card>
-
-        {/* 7. History — applied / rejected playbook changes */}
+        {/* 6. History — applied / rejected playbook changes */}
         {decided.length > 0 && (
           <Section
             icon={<IconHistory size={16} />}
@@ -479,16 +423,82 @@ export default function LedgerPage() {
               />
               <Select
                 label="Frontier policy"
-                description="Biases the next run's direction"
+                description="How the next run spends its effort"
                 data={FRONTIER_POLICIES}
                 value={settings.frontier_policy}
                 disabled={savingMode}
                 onChange={(v) => v && saveSettings({ frontier_policy: v as FrontierPolicy })}
-                w={280}
+                w={340}
               />
             </Group>
+            <Card withBorder radius="sm" padding="sm" mt="md">
+              <Text size="xs" c="dimmed">
+                <b>Frontier</b> — the parts of your data the investigation has not looked at yet (tables and areas it has not explored). The <b>frontier policy</b> tells the next run where to spend its time:
+              </Text>
+              <Stack gap={4} mt={8}>
+                <Text size="xs" c="dimmed"><b>Go wide (breadth)</b> — cover more ground: explore new tables and areas it has not touched yet, for a broad picture of what is there.</Text>
+                <Text size="xs" c="dimmed"><b>Go deep (depth)</b> — keep digging into the areas already showing the strongest signals, instead of spreading out.</Text>
+                <Text size="xs" c="dimmed"><b>Balanced</b> — a mix of both: some new ground, some deeper digging. A sensible default.</Text>
+              </Stack>
+            </Card>
           </Section>
         )}
+
+        {/* 8. Findings — the full finding-level detail, collapsed by default, at the bottom */}
+        <Card withBorder padding="lg" radius="md">
+          <UnstyledButton onClick={() => setShowFindings((v) => !v)} style={{ width: '100%' }}>
+            <Group justify="space-between" align="center" wrap="nowrap">
+              <Group gap="xs" wrap="nowrap">
+                <ThemeIcon variant="light" color="gray" size="md" radius="md"><IconListDetails size={16} /></ThemeIcon>
+                <Text fw={600} size="md">Findings</Text>
+                <Badge size="sm" variant="light" color="gray">{ledger.findings.length}</Badge>
+              </Group>
+              <Group gap={6} wrap="nowrap">
+                <Text size="xs" c="dimmed">{showFindings ? 'Hide detail' : 'Show detail'}</Text>
+                <IconChevronRight size={16} style={{ transform: showFindings ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
+              </Group>
+            </Group>
+          </UnstyledButton>
+          <Text size="xs" c="dimmed" mt={6}>
+            The full finding-level table behind the ledger — severity, status, and how often each has recurred.
+          </Text>
+          <Collapse in={showFindings}>
+            <div style={{ marginTop: 16 }}>
+              {ledger.findings.length === 0 ? (
+                <EmptyState icon={<IconBook2 size={32} />} title="No findings yet" description="Findings accumulate here as discovery runs complete." />
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <Th width="48%">Finding</Th>
+                      <Th width="18%">Area</Th>
+                      <Th width="12%">Severity</Th>
+                      <Th width="12%">Status</Th>
+                      <Th width="10%">Seen</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.findings.map((f) => (
+                      <tr key={f.id} style={{ borderBottom: '1px solid var(--db-border-default)' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          <Tooltip label={f.description || f.name} multiline w={360} disabled={!f.description} openDelay={300}>
+                            <Text size="sm" fw={600} lineClamp={1}>{f.name}</Text>
+                          </Tooltip>
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>{f.area ? <AreaBadge area={f.area} /> : <Text size="xs" c="dimmed">—</Text>}</td>
+                        <td style={{ padding: '10px 12px' }}><SeverityBadge severity={f.severity} type="severity" /></td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
+                        </td>
+                        <td style={{ padding: '10px 12px' }}><Text size="sm">{f.seen_count}×</Text></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Collapse>
+        </Card>
       </Stack>
     </Shell>
   );
