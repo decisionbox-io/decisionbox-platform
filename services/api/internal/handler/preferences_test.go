@@ -106,7 +106,12 @@ func TestPreferences_Get_ScopedPerUser(t *testing.T) {
 
 func TestPreferences_Update_InvalidLocale(t *testing.T) {
 	h := NewPreferencesHandler(newMockUserPrefRepo())
-	for _, bad := range []string{"", "e", "en_US", "toolonglocalesegment", "tr; DROP", "12"} {
+	for _, bad := range []string{
+		"", "e", "en_US", "toolonglocalesegment", "tr; DROP", "12",
+		// Many short subtags: each passes the per-subtag regex but the whole
+		// tag is over the length cap — must still be rejected.
+		"aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa-aa",
+	} {
 		body, _ := json.Marshal(map[string]string{"locale": bad})
 		req, w := newAuthedRequest("PUT", "/api/v1/me/preferences", string(body), "alice")
 		h.Update(w, req)

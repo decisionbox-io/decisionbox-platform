@@ -10,9 +10,14 @@ import (
 // localePattern validates a locale tag by shape (BCP-47-ish), not against a
 // fixed list. The set of supported UI languages is defined by the dashboard
 // message catalog, so the API must not hardcode it — that keeps adding a
-// language a drop-in on the frontend with no server change. Length-bounded to
-// reject junk.
+// language a drop-in on the frontend with no server change.
 var localePattern = regexp.MustCompile(`^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*$`)
+
+// maxLocaleLen caps the whole tag. The per-subtag regex alone would still admit
+// arbitrarily long chains of short subtags (aa-aa-aa-…); a total bound keeps a
+// malformed value from being persisted and refetched on every dashboard load.
+// RFC 5646 language tags don't exceed this in practice.
+const maxLocaleLen = 35
 
 // PreferencesHandler owns the /api/v1/me/preferences routes — per-user
 // dashboard preferences keyed by the authenticated principal.
@@ -64,7 +69,7 @@ func (h *PreferencesHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !localePattern.MatchString(body.Locale) {
+	if len(body.Locale) > maxLocaleLen || !localePattern.MatchString(body.Locale) {
 		writeError(w, http.StatusBadRequest, "invalid locale")
 		return
 	}
