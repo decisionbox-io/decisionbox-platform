@@ -241,6 +241,25 @@ func (e *ExplorationEngine) repeatsEarlierWork(ctx context.Context, step models.
 	return score >= repeatSimilarityThreshold, true
 }
 
+// recordIndexOutcome notes whether the index kept the step just offered to it.
+//
+// The reset on success is the load-bearing half. Without it the failure count
+// only ever grows, so an index that dropped a few steps early and has worked
+// ever since would eventually be treated as unusable — standing the rule down
+// on a machine that is fine, which is the mirror image of the bug this
+// counter exists to catch.
+func (e *ExplorationEngine) recordIndexOutcome(kept bool) {
+	e.stepsIndexOffered++
+	if kept {
+		e.stepsIndexed++
+		e.consecutiveIndexFailures = 0
+		return
+	}
+	// A step the index refused is not in it, so later searches answer about an
+	// index missing this run's most recent work.
+	e.consecutiveIndexFailures++
+}
+
 // noveltyMeasurable reports whether the run-scoped index is in a state where
 // an answer from it means anything.
 //

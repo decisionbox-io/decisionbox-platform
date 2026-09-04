@@ -450,3 +450,42 @@ func TestStopRule_OneGoodQueryThenFailuresDoesNotEndTheRun(t *testing.T) {
 		t.Error("a run with one successful query and two failures was allowed to stop")
 	}
 }
+
+// TestRecordIndexOutcome_ResetsOnASuccessfulWrite pins the half of the
+// bookkeeping that decides whether an index which blinked is treated as
+// broken. Without the reset the count only grows, so a run that lost a few
+// steps early and has indexed cleanly ever since would eventually stand the
+// rule down on a machine that is working — the mirror image of the bug the
+// counter exists to catch.
+func TestRecordIndexOutcome_ResetsOnASuccessfulWrite(t *testing.T) {
+	e := &ExplorationEngine{}
+	for _, kept := range []bool{true, false, false, true} {
+		e.recordIndexOutcome(kept)
+	}
+	if e.consecutiveIndexFailures != 0 {
+		t.Errorf("a successful write did not clear the failure streak: %d", e.consecutiveIndexFailures)
+	}
+	if e.stepsIndexed != 2 || e.stepsIndexOffered != 4 {
+		t.Errorf("kept/offered = %d/%d, want 2/4", e.stepsIndexed, e.stepsIndexOffered)
+	}
+	if !e.noveltyMeasurable() {
+		t.Error("an index that is keeping steps again was reported unusable")
+	}
+}
+
+// TestRecordIndexOutcome_ARunOfRefusalsStandsTheRuleDown is the other
+// direction: once the index stops keeping the run's latest work, searching it
+// says nothing about the steps that never reached it.
+func TestRecordIndexOutcome_ARunOfRefusalsStandsTheRuleDown(t *testing.T) {
+	e := &ExplorationEngine{}
+	e.recordIndexOutcome(true)
+	if !e.noveltyMeasurable() {
+		t.Fatal("a working index was reported unusable")
+	}
+	for i := 0; i < degradedStepsBeforeFallback; i++ {
+		e.recordIndexOutcome(false)
+	}
+	if e.noveltyMeasurable() {
+		t.Error("an index that stopped keeping steps is still trusted, on the strength of one early success")
+	}
+}

@@ -671,23 +671,14 @@ func (e *ExplorationEngine) Explore(
 				"compact_row_count": compactRowCount,
 				"has_error":         explorationStep.Error != "",
 			}).Debug("exploration: indexing step into per-run vector index")
-			e.stepsIndexOffered++
-			if err := e.stepIndexer.Upsert(ctx, explorationStep); err != nil {
+			err := e.stepIndexer.Upsert(ctx, explorationStep)
+			if err != nil {
 				logger.WithFields(logger.Fields{
 					"step":  step,
 					"error": err.Error(),
 				}).Warn("Run-step index upsert failed; analysis ranking quality will degrade for this step")
-				// A step the index refused is not in it, so later searches
-				// answer about an index missing this run's most recent work.
-				e.consecutiveIndexFailures++
-			} else {
-				// What the index is actually holding. The stopping rule reads
-				// it to tell "this run has found nothing like this before"
-				// from "this index is not storing anything" — the two look
-				// identical from a search, and only one of them is evidence.
-				e.stepsIndexed++
-				e.consecutiveIndexFailures = 0
 			}
+			e.recordIndexOutcome(err == nil)
 		}
 
 		// Add to results
