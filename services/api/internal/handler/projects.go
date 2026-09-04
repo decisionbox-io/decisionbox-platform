@@ -769,21 +769,37 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // one place a pack and a datasource are first paired. It is not a validator
 // rule: a pack is not invalid for being cube-shaped, it is only wrong HERE.
 //
-// A project with no datasource is not a mismatch — nothing has been chosen to
-// disagree with. An unregistered provider is read as table-shaped, the same
-// default the rest of the system applies, so an unknown spelling keeps the
-// check rather than waving a pack through.
+// A project with no datasource yet is still checked, against entities. That is
+// not a guess: the pack has to agree with the datasource the project will end
+// up with, that datasource must be one that can carry an analysis on its own,
+// and no cube-shaped source can be. Returning "no mismatch" here instead —
+// which this did at first, on the reasoning that nothing had been chosen to
+// disagree with — creates a project holding a cube pack that the settings-edit
+// guard then refuses to give any anchoring datasource to. Unusable, and
+// unrepairable through the API, built out of two guards disagreeing about the
+// empty case. It is also exactly the rule the domain picker applies.
+//
+// An unregistered provider is read as table-shaped, the same default the rest
+// of the system applies, so an unknown spelling keeps the check rather than
+// waving a pack through.
 func packShapeMismatch(pack *models.DomainPack, primary models.WarehouseConfig) string {
-	if pack == nil || primary.Provider == "" {
+	if pack == nil {
 		return ""
 	}
 	want := gowarehouse.ShapeEntities
-	if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
-		want = meta.EffectiveShape()
+	if primary.Provider != "" {
+		if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
+			want = meta.EffectiveShape()
+		}
 	}
 	got := pack.EffectiveShape()
 	if got == want {
 		return ""
+	}
+	if primary.Provider == "" {
+		return fmt.Sprintf(
+			"domain pack %q is written for a %s data source, and a project's domain pack has to match the data source that carries it, which is always %s; choose a pack written for %s",
+			pack.Slug, got, want, want)
 	}
 	return fmt.Sprintf(
 		"domain pack %q is written for a %s data source, but this project's data source is %s; choose a pack written for %s",
