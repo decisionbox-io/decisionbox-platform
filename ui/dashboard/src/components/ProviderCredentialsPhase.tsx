@@ -41,6 +41,7 @@
  */
 
 import { useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Alert, Button, Card, Group, Select, Stack, Text, Textarea } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { DynamicField as CatalogAwareField } from '@/components/common/LLMModelField';
@@ -127,12 +128,13 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
   onChange,
   onLoad,
   children,
-  loadButtonLabel = 'Load models',
-  noKeyHint = 'This provider uses cloud credentials (IAM / ADC). No API key needed.',
+  loadButtonLabel,
+  noKeyHint,
   backable = true,
   phaseOverride,
   onPhaseChange,
 }: ProviderCredentialsPhaseProps<P>) {
+  const t = useTranslations('providerSetup');
   const [phase, setPhase] = useState<'credentials' | 'model'>(() => phaseOverride ?? 'credentials');
   const [loading, setLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -203,7 +205,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
       <Select
         label={label}
         required={required}
-        placeholder={`Select ${label.toLowerCase()}`}
+        placeholder={t('selectField', { label })}
         data={providers.map((p) => ({ value: p.id, label: p.name }))}
         value={value.provider || null}
         onChange={(v) => v && setProvider(v)}
@@ -243,7 +245,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                     Single-method providers (Claude/OpenAI/Voyage api_key, …) auto-select. */}
                 {authMethods.length > 1 && (
                   <Select
-                    label="Authentication method"
+                    label={t('authenticationMethod')}
                     required={required}
                     data={authMethods.map((m) => ({ value: m.id, label: m.name }))}
                     value={value.authMethod || null}
@@ -269,12 +271,12 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
 
                 {credentialField && (
                   <Textarea
-                    label={credentialField.label || 'Credentials'}
+                    label={credentialField.label || t('credentials')}
                     required={required}
-                    placeholder={credentialField.placeholder || `Enter ${(credentialField.label || 'credentials').toLowerCase()}`}
+                    placeholder={credentialField.placeholder || t('enterField', { label: credentialField.label || t('credentials') })}
                     value={value.apiKey}
                     onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
-                    description="Used now only to load the model list; stored encrypted when the project is saved."
+                    description={t('credentialFieldHint')}
                     minRows={3}
                     autosize
                     styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
@@ -282,11 +284,11 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                 )}
 
                 {value.authMethod && !credentialField && (
-                  <Text size="xs" c="dimmed">{noKeyHint}</Text>
+                  <Text size="xs" c="dimmed">{noKeyHint ?? t('noKeyHint')}</Text>
                 )}
 
                 {authMethods.length === 0 && (
-                  <Text size="xs" c="dimmed">This provider requires no credentials.</Text>
+                  <Text size="xs" c="dimmed">{t('noCredentialsRequired')}</Text>
                 )}
 
                 <Button
@@ -300,7 +302,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                   }
                   style={{ alignSelf: 'flex-start' }}
                 >
-                  {loadButtonLabel}
+                  {loadButtonLabel ?? t('loadModels')}
                 </Button>
               </>
             )}
@@ -308,8 +310,8 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
             {phase === 'model' && (
               <>
                 {liveError && (
-                  <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
-                    {liveError} — showing catalog models instead.
+                  <Alert color="orange" icon={<IconAlertCircle size={16} />} title={t('liveModelListErrorTitle')}>
+                    {t('liveModelListErrorBody', { error: liveError })}
                   </Alert>
                 )}
 
@@ -325,11 +327,11 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                         onPhaseChange?.('credentials');
                       }}
                     >
-                      Back to credentials
+                      {t('backToCredentials')}
                     </Button>
                   )}
                   <Button variant="subtle" size="xs" onClick={handleLoad} loading={loading}>
-                    Refresh model list
+                    {t('refreshModelList')}
                   </Button>
                 </Group>
               </>

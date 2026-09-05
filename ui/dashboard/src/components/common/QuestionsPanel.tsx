@@ -1,12 +1,10 @@
 'use client';
 
 import { ReactNode } from 'react';
+import { useTranslations } from 'next-intl';
 import { SectionHeader } from '@/components/common/UIComponents';
 import { DiscoveryQuestion } from '@/lib/api';
 import QuestionCard from '@/components/common/QuestionCard';
-
-const DEFAULT_INTRO =
-  'The analysis was unsure about a few things. Your answers are saved as notes and sharpen the next run.';
 
 interface QuestionsPanelProps {
   projectId: string;
@@ -25,11 +23,12 @@ interface QuestionsPanelProps {
 export default function QuestionsPanel({
   projectId, questions, onResolved, hideHeader, intro,
 }: QuestionsPanelProps) {
+  const t = useTranslations('commonUi');
   if (!questions || questions.length === 0) return null;
-  const introContent = intro === undefined ? DEFAULT_INTRO : intro;
+  const introContent = intro === undefined ? t('questionsIntro') : intro;
   return (
     <div style={{ marginBottom: 20 }}>
-      {!hideHeader && <SectionHeader title="Questions to answer" count={questions.length} />}
+      {!hideHeader && <SectionHeader title={t('questionsToAnswer')} count={questions.length} />}
       {introContent && (
         <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginBottom: 10 }}>
           {introContent}

@@ -2,6 +2,7 @@
 
 import { Alert, Button, Collapse, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { useRef, useState } from 'react';
 import { DynamicField as CatalogAwareField, LiveModelCombobox, modelWireIsKnown } from '@/components/common/LLMModelField';
 import { LiveModel, ProviderMeta } from '@/lib/api';
@@ -61,6 +62,7 @@ export function LLMFormFields({
   providers, value, onChange, phase, onPhaseChange,
   liveModels, liveError, loading, onLoadModels, hasSavedApiKey,
 }: Props) {
+  const t = useTranslations('llmForms');
   const selected = providers.find((p) => p.id === value.provider) || null;
   const authMethods = selected?.auth_methods ?? [];
   const selectedMethod = authMethods.find((m) => m.id === value.authMethod);
@@ -176,9 +178,9 @@ export function LLMFormFields({
   return (
     <Stack>
       <Select
-        label="LLM Provider"
+        label={t('llmProvider')}
         required
-        placeholder="Select LLM provider"
+        placeholder={t('selectLlmProvider')}
         data={providers.map((p) => ({ value: p.id, label: p.name }))}
         value={value.provider}
         onChange={(v) => setProvider(v || '')}
@@ -201,7 +203,7 @@ export function LLMFormFields({
 
           {authMethods.length > 1 && (
             <Select
-              label="Authentication method"
+              label={t('authenticationMethod')}
               required
               data={authMethods.map((m) => ({ value: m.id, label: m.name }))}
               value={value.authMethod || null}
@@ -224,14 +226,14 @@ export function LLMFormFields({
 
           {credentialField && (
             <Textarea
-              label={hasSavedApiKey ? 'Update credentials' : credentialField.label || 'Credentials'}
+              label={hasSavedApiKey ? t('updateCredentials') : credentialField.label || t('credentials')}
               required={!hasSavedApiKey}
-              placeholder={credentialField.placeholder || `Enter ${(credentialField.label || 'credentials').toLowerCase()}`}
+              placeholder={credentialField.placeholder || t('enterField', { label: credentialField.label || t('credentials') })}
               value={value.apiKey}
               onChange={(e) => onChange({ ...value, apiKey: e.target.value })}
               description={hasSavedApiKey
-                ? 'Stored encrypted. Leave empty to keep current. Used now only to refresh the model list.'
-                : 'Stored encrypted. Used now only to load the model list.'}
+                ? t('credentialsStoredUpdateHelp')
+                : t('credentialsStoredHelp')}
               minRows={3}
               autosize
               styles={{ input: { fontFamily: 'monospace', fontSize: '13px' } }}
@@ -240,19 +242,19 @@ export function LLMFormFields({
 
           {value.authMethod && !credentialField && (
             <Text size="xs" c="dimmed">
-              This auth method uses ambient cloud credentials (IAM role / ADC) — no credentials needed in the dashboard.
+              {t('ambientCredentialsHelp')}
             </Text>
           )}
 
           {authMethods.length === 0 && (
             <Text size="xs" c="dimmed">
-              This provider requires no credentials.
+              {t('noCredentialsRequired')}
             </Text>
           )}
 
           {usingEndpoint ? (
             <Text size="xs" c="dimmed">
-              This endpoint serves its own deployed model — no model selection needed.
+              {t('endpointServesOwnModel')}
             </Text>
           ) : (
             <Button
@@ -264,7 +266,7 @@ export function LLMFormFields({
                 (needsCredential && !value.apiKey && !hasSavedApiKey)
               }
             >
-              Load models
+              {t('loadModels')}
             </Button>
           )}
         </>
@@ -273,8 +275,8 @@ export function LLMFormFields({
       {phase === 'model' && !usingEndpoint && (
         <>
           {liveError && (
-            <Alert color="orange" icon={<IconAlertCircle size={16} />} title="Could not fetch live model list">
-              {liveError} — showing catalog models instead.
+            <Alert color="orange" icon={<IconAlertCircle size={16} />} title={t('couldNotFetchModels')}>
+              {t('liveErrorFallback', { error: liveError })}
             </Alert>
           )}
 
@@ -302,7 +304,7 @@ export function LLMFormFields({
                 key={key}
                 label={f.label}
                 description={f.description}
-                placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
+                placeholder={t('tokenDefaultPlaceholder', { value: effective.toLocaleString() })}
                 value={value.config[key] || ''}
                 onChange={(e) => {
                   touchedRef.current.add(key);
@@ -333,7 +335,7 @@ export function LLMFormFields({
                   onClick={() => setShowAdvanced((v) => !v)}
                   style={{ alignSelf: 'flex-start' }}
                 >
-                  {showAdvanced ? 'Hide advanced settings' : 'Advanced settings'}
+                  {showAdvanced ? t('hideAdvancedSettings') : t('advancedSettings')}
                 </Button>
                 <Collapse in={showAdvanced}>{renderField}</Collapse>
               </>
@@ -341,8 +343,8 @@ export function LLMFormFields({
           })()}
 
           <Group>
-            <Button variant="default" onClick={() => onPhaseChange('credentials')}>Back to credentials</Button>
-            <Button variant="subtle" onClick={onLoadModels} loading={loading}>Refresh model list</Button>
+            <Button variant="default" onClick={() => onPhaseChange('credentials')}>{t('backToCredentials')}</Button>
+            <Button variant="subtle" onClick={onLoadModels} loading={loading}>{t('refreshModelList')}</Button>
           </Group>
         </>
       )}

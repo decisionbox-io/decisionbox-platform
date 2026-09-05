@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { notifications } from '@mantine/notifications';
 import { api, ApiError } from '@/lib/api';
 import type {
@@ -70,6 +71,7 @@ export function ValidationRouter({
   // picks up the new verdict (if the agent wrote one).
   onTerminal?: () => void;
 }) {
+  const t = useTranslations('validation');
   const [activeJob, setActiveJob] = useState<ValidationJob | null>(null);
   const [enqueuing, setEnqueuing] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -149,11 +151,11 @@ export function ValidationRouter({
       pollTimer.current = setInterval(fetchActiveJob, POLL_INTERVAL_MS);
     } catch (err) {
       const message = err instanceof ApiError ? err.message : (err as Error).message;
-      notifications.show({ title: 'Could not start validation', message, color: 'red' });
+      notifications.show({ title: t('couldNotStartValidation'), message, color: 'red' });
     } finally {
       setEnqueuing(false);
     }
-  }, [docKind, discoveryId, docId, fetchActiveJob, stopPolling]);
+  }, [docKind, discoveryId, docId, fetchActiveJob, stopPolling, t]);
 
   const cancel = useCallback(async (jobId: string) => {
     try {
@@ -163,9 +165,9 @@ export function ValidationRouter({
       await fetchActiveJob();
     } catch (err) {
       const message = err instanceof ApiError ? err.message : (err as Error).message;
-      notifications.show({ title: 'Cancel failed', message, color: 'red' });
+      notifications.show({ title: t('cancelFailed'), message, color: 'red' });
     }
-  }, [fetchActiveJob]);
+  }, [fetchActiveJob, t]);
 
   // Legacy shape — render the legacy card regardless of job state.
   // Legacy docs are read-only with respect to the new pipeline; no

@@ -3,11 +3,27 @@
 import { Button, Card, Group, Text } from '@mantine/core';
 import { IconShieldCheck } from '@tabler/icons-react';
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
-import { ValidationBreakdownDrawer, REFUTER_DISABLED_NOTE } from './ValidationBreakdownDrawer';
-import { statusMeta } from './statusMeta';
+import { ValidationBreakdownDrawer } from './ValidationBreakdownDrawer';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import type { InsightValidation } from '@/lib/api';
+
+// Verdict statuses that carry a localized one-line tagline. Anything
+// outside the set falls back to the "unknown" tagline — matching the
+// English fallback in statusMeta.
+const TAGLINE_VERDICTS = new Set([
+  'confirmed',
+  'supported',
+  'partial',
+  'rejected',
+  'unverifiable',
+  'validation_disabled',
+  'skipped_budget_cap',
+  'adjusted',
+  'unverified',
+  'error',
+]);
 
 // Compact sidebar-sized card for the plan-v5 validation shape. Renders:
 //   - Combined verdict badge.
@@ -21,13 +37,17 @@ import type { InsightValidation } from '@/lib/api';
 
 export function NewValidationPanel({
   validation,
-  title = 'Validation',
+  title,
 }: {
   validation: InsightValidation;
   title?: string;
 }) {
+  const t = useTranslations('validation');
   const [open, setOpen] = useState(false);
-  const meta = statusMeta(validation.combined);
+  const status = validation.combined;
+  const tagline = status && TAGLINE_VERDICTS.has(status)
+    ? t(`tagline_${status}`)
+    : t('tagline_unknown');
   const hasBreakdown = validation.verifier != null || validation.refuter != null;
   return (
     <>
@@ -42,7 +62,7 @@ export function NewValidationPanel({
               c="dimmed"
               style={{ letterSpacing: '0.5px' }}
             >
-              {title}
+              {title ?? t('title')}
             </Text>
           </Group>
           <Group gap={6} align="center">
@@ -51,11 +71,11 @@ export function NewValidationPanel({
           </Group>
         </Group>
         <Text size="xs" c="dimmed" mb={validation.refuter_disabled || hasBreakdown ? 8 : 0}>
-          {meta.tagline}
+          {tagline}
         </Text>
         {validation.refuter_disabled && (
           <Text size="xs" c="dimmed" mb={hasBreakdown ? 8 : 0} fs="italic">
-            {REFUTER_DISABLED_NOTE}
+            {t('refuterDisabledNote')}
           </Text>
         )}
         {hasBreakdown && (
@@ -65,7 +85,7 @@ export function NewValidationPanel({
             onClick={() => setOpen(true)}
             px={0}
           >
-            Show breakdown
+            {t('showBreakdown')}
           </Button>
         )}
       </Card>

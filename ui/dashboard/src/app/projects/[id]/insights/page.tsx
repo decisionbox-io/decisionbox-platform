@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { Loader } from '@mantine/core';
 import { IconBulb } from '@tabler/icons-react';
 import Link from 'next/link';
@@ -41,6 +42,7 @@ interface InsightWithContext extends Insight {
 }
 
 export default function InsightsListPage() {
+  const t = useTranslations('insights');
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [allInsights, setAllInsights] = useState<InsightWithContext[]>([]);
@@ -167,17 +169,17 @@ export default function InsightsListPage() {
   }
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
+    { label: t('breadcrumbProjects'), href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
-    { label: 'Insights' },
+    { label: t('breadcrumbInsights') },
   ];
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Insights" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
+      <SectionHeader title={t('title')} count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
-            placeholder={hasEmbedding ? 'Semantic search insights...' : 'Filter insights...'} />
+            placeholder={hasEmbedding ? t('searchPlaceholderSemantic') : t('searchPlaceholderFilter')} />
           {searching && <Loader size="xs" />}
         </div>
       } />
@@ -192,16 +194,24 @@ export default function InsightsListPage() {
             background: severityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
             color: severityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
-          }}>{sev}</button>
+          }}>{t(`severity_${sev}`)}</button>
         ))}
         <span style={{ flex: 1 }} />
-        <FilterDropdown label="Validation" value={validationFilter}
+        <FilterDropdown label={t('filterValidation')} value={validationFilter}
           onChange={v => { setValidationFilter(v); setPage(1); }}
           options={[
-            { value: 'All', label: 'All' },
+            { value: 'All', label: t('filterAll') },
             ...validationFilterValues.map(v => ({ value: v, label: statusMeta(v).label })),
           ]} />
         <SortDropdown value={sortBy} onChange={setSortBy}
+          sortLabel={t('sortLabel')}
+          optionLabels={{
+            Severity: t('sortSeverity'),
+            Confidence: t('sortConfidence'),
+            'Users affected': t('sortUsersAffected'),
+            Validation: t('sortValidation'),
+            Date: t('sortDate'),
+          }}
           options={['Severity', 'Confidence', 'Users affected', 'Validation', 'Date']} />
       </div>
 
@@ -214,12 +224,12 @@ export default function InsightsListPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                <Th width="5%">Match</Th>
-                <Th width="30%">Insight</Th>
-                <Th>Severity</Th>
-                <Th>Area</Th>
-                <Th>Validation</Th>
-                <Th>Date</Th>
+                <Th width="5%">{t('colMatch')}</Th>
+                <Th width="30%">{t('colInsight')}</Th>
+                <Th>{t('colSeverity')}</Th>
+                <Th>{t('colArea')}</Th>
+                <Th>{t('colValidation')}</Th>
+                <Th>{t('colDate')}</Th>
               </tr>
             </thead>
             <tbody>
@@ -262,10 +272,10 @@ export default function InsightsListPage() {
       )}
 
       {shownSemanticResults && shownSemanticResults.length === 0 && !searching && (
-        <EmptyState icon={<IconBulb size={32} />} title="No results"
+        <EmptyState icon={<IconBulb size={32} />} title={t('noResultsTitle')}
           description={validationFilter !== 'All'
-            ? `No "${statusMeta(validationFilter).label}" insights matched "${search}". Try a different verdict or keywords.`
-            : `No insights matched "${search}". Try different keywords.`} />
+            ? t('noResultsVerdictBody', { verdict: statusMeta(validationFilter).label, query: search })
+            : t('noResultsBody', { query: search })} />
       )}
 
       {/* Client-side filtered results (when no semantic search) */}
@@ -279,14 +289,14 @@ export default function InsightsListPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                <Th width="30%">Insight</Th>
-                <Th>Severity</Th>
-                <Th>Area</Th>
-                <Th>Validation</Th>
-                <Th align="right">Affected</Th>
-                <Th>Confidence</Th>
-                <Th>Discovery</Th>
-                <Th width="70px">Feedback</Th>
+                <Th width="30%">{t('colInsight')}</Th>
+                <Th>{t('colSeverity')}</Th>
+                <Th>{t('colArea')}</Th>
+                <Th>{t('colValidation')}</Th>
+                <Th align="right">{t('colAffected')}</Th>
+                <Th>{t('colConfidence')}</Th>
+                <Th>{t('colDiscovery')}</Th>
+                <Th width="70px">{t('colFeedback')}</Th>
               </tr>
             </thead>
             <tbody>
@@ -358,8 +368,8 @@ export default function InsightsListPage() {
         </div>
         <Pagination page={page} totalPages={totalPages} onChange={p => { setPage(p); window.scrollTo(0, 0); }} />
       </>) : !semanticResults ? (
-        <EmptyState icon={<IconBulb size={32} />} title="No insights found"
-          description={search ? 'No insights match your search.' : 'Run a discovery to see insights.'} />
+        <EmptyState icon={<IconBulb size={32} />} title={t('emptyTitle')}
+          description={search ? t('emptySearchBody') : t('emptyBody')} />
       ) : null}
     </Shell>
   );
@@ -412,7 +422,10 @@ function FilterDropdown({ label, value, onChange, options }: {
   );
 }
 
-function SortDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: string[] }) {
+function SortDropdown({ value, onChange, options, sortLabel, optionLabels }: {
+  value: string; onChange: (v: string) => void; options: string[];
+  sortLabel: string; optionLabels: Record<string, string>;
+}) {
   const [open, { toggle, close }] = useDisclosure(false);
   return (
     <div style={{ position: 'relative' }}>
@@ -421,7 +434,7 @@ function SortDropdown({ value, onChange, options }: { value: string; onChange: (
         background: 'none', border: 'none', cursor: 'pointer',
         fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        Sort: {value} <IconChevronDown size={12} />
+        {sortLabel}: {optionLabels[value] ?? value} <IconChevronDown size={12} />
       </button>
       {open && (
         <div style={{
@@ -440,7 +453,7 @@ function SortDropdown({ value, onChange, options }: { value: string; onChange: (
               }}
               onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
               onMouseLeave={e => { if (opt !== value) e.currentTarget.style.background = 'transparent'; }}
-            >{opt}</div>
+            >{optionLabels[opt] ?? opt}</div>
           ))}
         </div>
       )}

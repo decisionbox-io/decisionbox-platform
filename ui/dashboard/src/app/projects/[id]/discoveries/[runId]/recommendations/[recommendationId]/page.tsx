@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Badge, Box, Button, Card, Grid, Group, Loader, Stack, Text, Title,
@@ -15,6 +16,7 @@ import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/list
 import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { markRead } from '@/lib/readState';
+import { useFormat } from '@/lib/format';
 import {
   Pill, normalizeConfidence,
 } from '@/components/common/UIComponents';
@@ -31,6 +33,8 @@ const effortColors: Record<string, { bg: string; color: string }> = {
 };
 
 export default function RecommendationDetailPage() {
+  const t = useTranslations('recommendationDetail');
+  const fmt = useFormat();
   const { id, runId, recommendationId } = useParams<{ id: string; runId: string; recommendationId: string }>();
   const router = useRouter();
   // See the twin goBack on the insight detail page for the rationale.
@@ -94,7 +98,7 @@ export default function RecommendationDetailPage() {
   }, [id, recommendation, recommendationId]);
 
   if (loading) return <Shell><Loader /></Shell>;
-  if (!recommendation) return <Shell><Text>Recommendation not found</Text></Shell>;
+  if (!recommendation) return <Shell><Text>{t('notFound')}</Text></Shell>;
 
   const effort = recommendation.priority <= 1 ? 'low' : recommendation.priority <= 3 ? 'medium' : 'high';
   const effortStyle = effortColors[effort] || effortColors.medium;
@@ -114,7 +118,7 @@ export default function RecommendationDetailPage() {
       ? { label: insight.severity, color: severityColor[insight.severity] || 'gray' }
       : undefined,
     subtitle: insight.affected_count > 0
-      ? `${insight.affected_count.toLocaleString()} affected`
+      ? t('affectedCount', { count: fmt.number(insight.affected_count) })
       : undefined,
   }));
 
@@ -122,7 +126,7 @@ export default function RecommendationDetailPage() {
     <Shell>
       <Button variant="subtle" onClick={goBack}
         leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
-        Back
+        {t('back')}
       </Button>
 
       {/* Header */}
@@ -133,10 +137,10 @@ export default function RecommendationDetailPage() {
         </Group>
         <Group gap="xs">
           <Badge color={recommendation.priority <= 1 ? 'red' : recommendation.priority <= 2 ? 'orange' : 'blue'} variant="light">
-            P{recommendation.priority}
+            {t('priorityBadge', { priority: recommendation.priority })}
           </Badge>
           <Pill bg={effortStyle.bg} color={effortStyle.color}>
-            {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+            {t(`effort_${effort}` as 'effort_low' | 'effort_medium' | 'effort_high')}
           </Pill>
           {recommendation.category && <Badge variant="outline">{recommendation.category}</Badge>}
           <FeedbackButtons projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId}
@@ -147,7 +151,7 @@ export default function RecommendationDetailPage() {
 
       <Box hiddenFrom="lg" mb="md">
         <RelatedChipStrip
-          relatedLabel="Related Insights"
+          relatedLabel={t('relatedInsights')}
           related={relatedItems}
         />
       </Box>
@@ -164,7 +168,7 @@ export default function RecommendationDetailPage() {
             ? <Markdown>{recommendation.description_md}</Markdown>
             : recommendation.description
               ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{recommendation.description}</Text>
-              : <Text size="sm" c="dimmed">No description</Text>}
+              : <Text size="sm" c="dimmed">{t('noDescription')}</Text>}
           {/* LLM-generated starter questions + "Ask about this" (enterprise;
               renders nothing on community builds or when the toggle is off). */}
           <SuggestedQuestions projectId={id} seed={{ type: 'recommendation', id: recommendation.id, title: recommendation.title }} />
@@ -173,17 +177,17 @@ export default function RecommendationDetailPage() {
         {/* Impact */}
         {recommendation.expected_impact && (
           <Card withBorder p="lg">
-            <Title order={4} mb="sm">Expected Impact</Title>
+            <Title order={4} mb="sm">{t('expectedImpact')}</Title>
             <Group gap="xl">
               {recommendation.expected_impact.metric && (
                 <div>
-                  <Text size="xs" c="dimmed">Metric</Text>
+                  <Text size="xs" c="dimmed">{t('metric')}</Text>
                   <Text size="sm" fw={600}>{recommendation.expected_impact.metric}</Text>
                 </div>
               )}
               {recommendation.expected_impact.estimated_improvement && (
                 <div>
-                  <Text size="xs" c="dimmed">Estimated Improvement</Text>
+                  <Text size="xs" c="dimmed">{t('estimatedImprovement')}</Text>
                   <Text size="sm" fw={600} c="green">{recommendation.expected_impact.estimated_improvement}</Text>
                 </div>
               )}
@@ -197,22 +201,22 @@ export default function RecommendationDetailPage() {
         {/* Target Segment */}
         {recommendation.target_segment && (
           <Card withBorder p="lg">
-            <Title order={4} mb="sm">Target Segment</Title>
+            <Title order={4} mb="sm">{t('targetSegment')}</Title>
             <Group gap="xl">
               <div>
-                <Text size="xs" c="dimmed">Segment</Text>
+                <Text size="xs" c="dimmed">{t('segment')}</Text>
                 <Text size="sm" fw={600}>{recommendation.target_segment}</Text>
               </div>
               {recommendation.segment_size > 0 && (
                 <div>
-                  <Text size="xs" c="dimmed">Segment Size</Text>
-                  <Text size="sm" fw={600}>{recommendation.segment_size.toLocaleString()}</Text>
+                  <Text size="xs" c="dimmed">{t('segmentSize')}</Text>
+                  <Text size="sm" fw={600}>{fmt.number(recommendation.segment_size)}</Text>
                 </div>
               )}
               {recommendation.confidence > 0 && (
                 <div>
-                  <Text size="xs" c="dimmed">Confidence</Text>
-                  <Text size="sm" fw={600}>{normalizeConfidence(recommendation.confidence)}%</Text>
+                  <Text size="xs" c="dimmed">{t('confidence')}</Text>
+                  <Text size="sm" fw={600}>{t('confidenceValue', { value: normalizeConfidence(recommendation.confidence) })}</Text>
                 </div>
               )}
             </Group>
@@ -222,7 +226,7 @@ export default function RecommendationDetailPage() {
         {/* Action Steps */}
         {recommendation.actions && recommendation.actions.length > 0 && (
           <Card withBorder p="lg">
-            <Title order={4} mb="sm">Action Steps</Title>
+            <Title order={4} mb="sm">{t('actionSteps')}</Title>
             <Stack gap="xs">
               {recommendation.actions.map((action, i) => (
                 <Group key={i} gap="sm" align="flex-start" wrap="nowrap">
@@ -258,7 +262,7 @@ export default function RecommendationDetailPage() {
           <Box style={{ position: 'sticky', top: 16 }}>
             <Stack gap="md">
               <RelatedSidebar
-                relatedLabel="Related Insights"
+                relatedLabel={t('relatedInsights')}
                 related={relatedItems}
               />
               <ValidationRouter
@@ -279,7 +283,7 @@ export default function RecommendationDetailPage() {
           the grid. Twin of the same block on the insight detail page. */}
       <div style={{ maxWidth: 800 }}>
         <SimilarItems
-          label="Similar Recommendations"
+          label={t('similarRecommendations')}
           items={similarRecs}
           hrefFor={(sim) => `/projects/${id}/discoveries/${sim.discovery_id}/recommendations/${sim.id}`}
         />

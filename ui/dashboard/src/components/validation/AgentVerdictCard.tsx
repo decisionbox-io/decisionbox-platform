@@ -1,6 +1,7 @@
 'use client';
 
 import { Card, Group, Stack, Text } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
 import { ClaimList } from './ClaimList';
 import { AgentRunStats } from './AgentRunStats';
@@ -12,19 +13,15 @@ import type { StructuredVerdict } from '@/lib/api';
 // explicitly so a decision maker knows which agent's verdict they're
 // reading without having to learn the verbal contract.
 
-const AGENT_LABEL: Record<string, string> = {
-  verifier: 'Verifier',
-  refuter: 'Refuter',
-};
-
-const AGENT_SUBTITLE: Record<string, string> = {
-  verifier: 'Checks the claim against the evidence cited by the AI.',
-  refuter: 'Searches for evidence that contradicts the claim.',
-};
+// Agent modes that carry a localized label + subtitle. Any other mode
+// falls back to its raw value (label) and no subtitle.
+const KNOWN_AGENT_MODES = new Set(['verifier', 'refuter']);
 
 export function AgentVerdictCard({ verdict }: { verdict: StructuredVerdict }) {
-  const label = AGENT_LABEL[verdict.mode] ?? verdict.mode;
-  const subtitle = AGENT_SUBTITLE[verdict.mode] ?? '';
+  const t = useTranslations('validation');
+  const known = KNOWN_AGENT_MODES.has(verdict.mode);
+  const label = known ? t(`agent_${verdict.mode}`) : verdict.mode;
+  const subtitle = known ? t(`agentSubtitle_${verdict.mode}`) : '';
   return (
     <Card withBorder p="md" radius="sm">
       <Stack gap="sm">
@@ -57,7 +54,7 @@ export function AgentVerdictCard({ verdict }: { verdict: StructuredVerdict }) {
                 c="dimmed"
                 style={{ letterSpacing: '0.5px' }}
               >
-                Per-claim breakdown ({claims.length})
+                {t('perClaimBreakdown', { count: claims.length })}
               </Text>
               <ClaimList claims={claims} />
             </Stack>

@@ -2,6 +2,7 @@
 
 import { Box, Button, Group, Text } from '@mantine/core';
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
 import { ValidationBreakdownDrawer } from './ValidationBreakdownDrawer';
 import { isNewValidation } from './validationShape';
@@ -39,6 +40,7 @@ function logEntryToValidation(entry: ValidationLogEntry): InsightValidation {
 }
 
 export function ValidationLogRow({ entry }: { entry: ValidationLogEntry }) {
+  const t = useTranslations('validation');
   const [open, setOpen] = useState(false);
   const validation = logEntryToValidation(entry);
 
@@ -79,7 +81,7 @@ export function ValidationLogRow({ entry }: { entry: ValidationLogEntry }) {
             onClick={() => setOpen(true)}
             px={0}
           >
-            Show breakdown
+            {t('showBreakdown')}
           </Button>
         )}
       </Box>

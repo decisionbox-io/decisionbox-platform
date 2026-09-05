@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useTranslations } from 'next-intl';
 import {
   Modal, Stack, TextInput, Textarea, ColorInput, Group, Button, Text,
 } from '@mantine/core';
@@ -20,6 +21,7 @@ interface Props {
 // and the AddToListMenu on detail pages. Presents name, description, and a
 // color swatch picker with sensible defaults.
 export default function CreateListModal({ projectId, opened, onClose, onCreated }: Props) {
+  const t = useTranslations('listsUi');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('#2563eb');
@@ -58,11 +60,11 @@ export default function CreateListModal({ projectId, opened, onClose, onCreated 
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title="New list" centered>
+    <Modal opened={opened} onClose={onClose} title={t('newList')} centered>
       <Stack gap="sm">
         <TextInput
-          label="Name"
-          placeholder="Retention ideas"
+          label={t('name')}
+          placeholder={t('namePlaceholder')}
           value={name}
           onChange={e => setName(e.currentTarget.value)}
           required
@@ -73,24 +75,24 @@ export default function CreateListModal({ projectId, opened, onClose, onCreated 
           }}
         />
         <Textarea
-          label="Description"
-          placeholder="Optional — what kind of items will you collect here?"
+          label={t('description')}
+          placeholder={t('descriptionPlaceholder')}
           value={description}
           onChange={e => setDescription(e.currentTarget.value)}
           autosize
           minRows={2}
         />
         <ColorInput
-          label="Color"
+          label={t('color')}
           value={color}
           onChange={setColor}
           format="hex"
           swatches={['#2563eb', '#16a34a', '#dc2626', '#ea580c', '#9333ea', '#0891b2']}
         />
         <Group justify="flex-end" mt="sm">
-          <Button variant="default" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button variant="default" onClick={onClose} disabled={submitting}>{t('cancel')}</Button>
           <Button onClick={handleCreate} loading={submitting} disabled={!name.trim()}>
-            Create
+            {t('create')}
           </Button>
         </Group>
         {error && <Text size="xs" c="red">{error}</Text>}

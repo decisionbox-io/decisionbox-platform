@@ -65,6 +65,7 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	bookmarkListRepo := database.NewBookmarkListRepository(db)
 	bookmarkRepo := database.NewBookmarkRepository(db)
 	readMarkRepo := database.NewReadMarkRepository(db)
+	userPrefRepo := database.NewUserPreferenceRepository(db)
 
 	// Clean up stale runs from previous container lifecycle
 	cleaned, err := runRepo.CleanupStaleRuns(context.Background())
@@ -140,6 +141,7 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	recommendations := handler.NewRecommendationsHandler(recommendationRepo)
 	lists := handler.NewListsHandler(bookmarkListRepo, bookmarkRepo, insightRepo, recommendationRepo, discoveryRepo)
 	reads := handler.NewReadsHandler(readMarkRepo)
+	preferences := handler.NewPreferencesHandler(userPrefRepo)
 	searchHistoryRepo := database.NewSearchHistoryRepository(db)
 	askSessionRepo := database.NewAskSessionRepository(db)
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
@@ -178,6 +180,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// Any auth backend works identically: the middleware writes the
 	// principal into the request context, this handler reads it back.
 	mux.HandleFunc("GET /api/v1/me", withRole(viewer, handler.Me))
+
+	// Per-user dashboard preferences (UI locale). Any authenticated user
+	// manages their own; keyed by the principal's subject.
+	mux.HandleFunc("GET /api/v1/me/preferences", withRole(viewer, preferences.Get))
+	mux.HandleFunc("PUT /api/v1/me/preferences", withRole(viewer, preferences.Update))
 
 	// System inventory — component + worker versions (viewer). Built
 	// from the systeminfo registry; the handler holds no component list.

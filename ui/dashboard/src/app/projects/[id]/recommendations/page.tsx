@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { Loader } from '@mantine/core';
 import { IconChevronDown, IconStack2 } from '@tabler/icons-react';
 import { useDisclosure } from '@mantine/hooks';
@@ -23,6 +24,7 @@ interface RecWithContext extends Recommendation {
 }
 
 export default function RecommendationsListPage() {
+  const t = useTranslations('recommendations');
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [allRecs, setAllRecs] = useState<RecWithContext[]>([]);
@@ -120,9 +122,9 @@ export default function RecommendationsListPage() {
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
+    { label: t('breadcrumbProjects'), href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
-    { label: 'Recommendations' },
+    { label: t('breadcrumbRecommendations') },
   ];
 
   const effortColors: Record<string, { bg: string; color: string }> = {
@@ -133,13 +135,20 @@ export default function RecommendationsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Recommendations" count={semanticResults ? semanticResults.length : filtered.length} right={
+      <SectionHeader title={t('title')} count={semanticResults ? semanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {searching && <Loader size="xs" />}
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
-            placeholder={hasEmbedding ? 'Semantic search recommendations...' : 'Filter recommendations...'} />
+            placeholder={hasEmbedding ? t('searchPlaceholder') : t('filterPlaceholder')} />
           <SortDropdown value={sortBy} onChange={setSortBy}
-            options={['Priority', 'Confidence', 'Segment size', 'Date']} />
+            options={['Priority', 'Confidence', 'Segment size', 'Date']}
+            sortLabel={t('sortLabel')}
+            labelFor={{
+              Priority: t('sortPriority'),
+              Confidence: t('sortConfidence'),
+              'Segment size': t('sortSegmentSize'),
+              Date: t('sortDate'),
+            }} />
         </div>
       } />
 
@@ -176,8 +185,8 @@ export default function RecommendationsListPage() {
       )}
 
       {semanticResults && semanticResults.length === 0 && !searching && (
-        <EmptyState icon={<IconStack2 size={32} />} title="No results"
-          description={`No recommendations matched "${search}". Try different keywords.`} />
+        <EmptyState icon={<IconStack2 size={32} />} title={t('noResultsTitle')}
+          description={t('noResultsDescription', { query: search })} />
       )}
 
       {/* Client-side filtered results (when no semantic search) */}
@@ -225,7 +234,7 @@ export default function RecommendationsListPage() {
                 {/* Pills row */}
                 <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Pill bg={effortStyle.bg} color={effortStyle.color}>
-                    {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+                    {t(`effort_${effort}` as 'effort_low' | 'effort_medium' | 'effort_high')}
                   </Pill>
                   {rec.expected_impact?.estimated_improvement && (
                     rec.expected_impact.estimated_improvement.length > 30
@@ -255,13 +264,13 @@ export default function RecommendationsListPage() {
                     <span>{rec.segment_size?.toLocaleString() || ''} {rec.target_segment}</span>
                   )}
                   {rec.expected_impact?.metric && <span>{rec.expected_impact.metric}</span>}
-                  {rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+                  {rec.confidence > 0 && <span>{t('confidenceLabel', { value: normalizeConfidence(rec.confidence) })}</span>}
                 </div>
 
                 {/* Related insights */}
                 {relatedInsights.length > 0 && (
                   <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', fontWeight: 500 }}>Addresses:</span>
+                    <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', fontWeight: 500 }}>{t('addresses')}</span>
                     {relatedInsights.map((insight, i) => (
                       <Link key={i} href={`/projects/${id}/discoveries/${rec.discoveryId}/insights/${insight.id}`}
                         style={{
@@ -289,7 +298,7 @@ export default function RecommendationsListPage() {
                     <div style={{
                       fontSize: 11, fontWeight: 500, color: 'var(--db-text-tertiary)',
                       textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6,
-                    }}>Action steps</div>
+                    }}>{t('actionSteps')}</div>
                     {rec.actions.map((action, i) => (
                       <div key={i} style={{
                         display: 'flex', gap: 6, fontSize: 13, color: 'var(--db-text-secondary)',
@@ -307,8 +316,8 @@ export default function RecommendationsListPage() {
         </div>
         <Pagination page={page} totalPages={totalPages} onChange={p => { setPage(p); window.scrollTo(0, 0); }} />
       </>) : !semanticResults ? (
-        <EmptyState icon={<IconStack2 size={32} />} title="No recommendations found"
-          description={search ? 'No recommendations match your search.' : 'Run a discovery to get recommendations.'} />
+        <EmptyState icon={<IconStack2 size={32} />} title={t('emptyTitle')}
+          description={search ? t('emptySearchDescription') : t('emptyRunDescription')} />
       ) : null}
     </Shell>
   );
@@ -316,7 +325,10 @@ export default function RecommendationsListPage() {
 
 /* ========== Sort Dropdown ========== */
 
-function SortDropdown({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: string[] }) {
+function SortDropdown({ value, onChange, options, sortLabel, labelFor }: {
+  value: string; onChange: (v: string) => void; options: string[];
+  sortLabel: string; labelFor: Record<string, string>;
+}) {
   const [open, { toggle, close }] = useDisclosure(false);
   return (
     <div style={{ position: 'relative' }}>
@@ -325,7 +337,7 @@ function SortDropdown({ value, onChange, options }: { value: string; onChange: (
         background: 'none', border: 'none', cursor: 'pointer',
         fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        Sort: {value} <IconChevronDown size={12} />
+        {sortLabel}: {labelFor[value] ?? value} <IconChevronDown size={12} />
       </button>
       {open && (
         <div style={{
@@ -344,7 +356,7 @@ function SortDropdown({ value, onChange, options }: { value: string; onChange: (
               }}
               onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
               onMouseLeave={e => { if (opt !== value) e.currentTarget.style.background = 'transparent'; }}
-            >{opt}</div>
+            >{labelFor[opt] ?? opt}</div>
           ))}
         </div>
       )}

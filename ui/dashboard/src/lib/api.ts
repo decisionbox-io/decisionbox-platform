@@ -1633,6 +1633,17 @@ export const api = {
     }),
   listReadIDs: (projectId: string, targetType: 'insight' | 'recommendation') =>
     request<string[]>(`/api/v1/projects/${projectId}/reads?target_type=${encodeURIComponent(targetType)}`),
+
+  // Per-user preferences (UI locale). Durable, cross-device source of truth for
+  // the language choice; the NEXT_LOCALE cookie is the SSR fast path kept in
+  // sync with this. `locale` is empty when the user has no stored preference.
+  getPreferences: () =>
+    request<{ locale: string }>(`/api/v1/me/preferences`),
+  updatePreferences: (locale: string) =>
+    request<{ locale: string }>(`/api/v1/me/preferences`, {
+      method: 'PUT',
+      body: JSON.stringify({ locale }),
+    }),
 };
 // build trigger 20260319111744
 // coverage trigger

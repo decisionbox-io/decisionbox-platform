@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import { IconChevronRight, IconHelpCircle } from '@tabler/icons-react';
 import { DiscoveryQuestion } from '@/lib/api';
@@ -28,9 +29,11 @@ const DRAWER_WIDTH = 380;
 // that reopens on click. Renders nothing when there are no questions, so it's
 // safe to always mount.
 export default function QuestionsDrawer({
-  projectId, questions, onResolved, title = 'Questions to answer',
+  projectId, questions, onResolved, title,
   storageKey = 'dbx-questions-drawer', viewAllHref,
 }: QuestionsDrawerProps) {
+  const t = useTranslations('commonUi');
+  const heading = title ?? t('questionsToAnswer');
   // Default open; a lazy initializer restores the last collapse choice so the
   // analyst isn't forced to re-collapse it on every navigation. Guarded for SSR
   // (window undefined → open), mirroring the repo's other localStorage-backed
@@ -53,7 +56,7 @@ export default function QuestionsDrawer({
       <button
         type="button"
         onClick={() => setCollapsedPersistent(false)}
-        title={`${questions.length} question${questions.length > 1 ? 's' : ''} to answer`}
+        title={t('questionsToAnswerCount', { count: questions.length })}
         style={{
           position: 'fixed', top: 'calc(var(--db-topbar-height) + 16px)', right: 0, zIndex: 30,
           display: 'flex', alignItems: 'center', gap: 6,
@@ -71,7 +74,7 @@ export default function QuestionsDrawer({
 
   return (
     <aside
-      aria-label="Clarifying questions"
+      aria-label={t('clarifyingQuestions')}
       style={{
         position: 'fixed', top: 'var(--db-topbar-height)', right: 0, bottom: 0, zIndex: 30,
         width: DRAWER_WIDTH, maxWidth: '92vw',
@@ -86,7 +89,7 @@ export default function QuestionsDrawer({
       }}>
         <IconHelpCircle size={18} style={{ color: 'var(--db-blue-text, #2563eb)', flexShrink: 0 }} />
         <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>
-          {title}
+          {heading}
           <span style={{
             marginLeft: 8, fontSize: 12, fontWeight: 500, background: 'var(--db-blue-bg, #eaf1ff)',
             color: 'var(--db-blue-text, #2563eb)', padding: '0 7px', borderRadius: 10, lineHeight: '18px',
@@ -94,14 +97,14 @@ export default function QuestionsDrawer({
         </span>
         {viewAllHref && (
           <Link href={viewAllHref} style={{ fontSize: 12, color: 'var(--db-blue-text, #2563eb)', textDecoration: 'none' }}>
-            View all
+            {t('viewAll')}
           </Link>
         )}
         <button
           type="button"
           onClick={() => setCollapsedPersistent(true)}
-          title="Collapse"
-          aria-label="Collapse questions"
+          title={t('collapse')}
+          aria-label={t('collapseQuestions')}
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: 'transparent', border: 'none', cursor: 'pointer',

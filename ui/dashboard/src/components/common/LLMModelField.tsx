@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Alert, Autocomplete, Badge, Button, FileButton, Group, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import type { ConfigField, ConfigOption, LiveModel, ProviderMeta } from '@/lib/api';
@@ -33,6 +34,7 @@ export function DynamicField({
    * unused since the model picker no longer surfaces catalog rows. */
   providerMeta?: ProviderMeta | null;
 }) {
+  const t = useTranslations('llmModelField');
   // Model field falls through to the plain free-text branch below.
   // No catalog dropdown — see the component-level comment above for
   // why; live-list pickers live in LiveModelCombobox instead.
@@ -86,8 +88,8 @@ export function DynamicField({
           onChange={(e) => onChange(e.currentTarget.checked ? 'true' : 'false')}
         />
         {checked && field.key === 'tls_skip_verify' && (
-          <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />} title="TLS verification disabled">
-            Certificate verification is off for this endpoint — the connection can be intercepted. Prefer uploading a CA certificate instead; use this only on a trusted network.
+          <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />} title={t('tlsDisabledTitle')}>
+            {t('tlsDisabledBody')}
           </Alert>
         )}
       </Stack>
@@ -118,11 +120,11 @@ export function DynamicField({
                 if (file) file.text().then(onChange);
               }}
             >
-              {(props) => <Button {...props} size="xs" variant="light">Load from file…</Button>}
+              {(props) => <Button {...props} size="xs" variant="light">{t('loadFromFile')}</Button>}
             </FileButton>
             {value && (
               <Button size="xs" variant="subtle" color="gray" onClick={() => onChange('')}>
-                Clear
+                {t('clear')}
               </Button>
             )}
           </Group>
@@ -171,6 +173,7 @@ export function LiveModelCombobox({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const t = useTranslations('llmModelField');
   // Default view hides models the agent can't dispatch today — the
   // upstream advertises them but we have no wire implementation that
   // speaks their schema (Nova / Titan on Bedrock, Cohere Command, AI21,
@@ -183,12 +186,12 @@ export function LiveModelCombobox({
   if (liveModels === null) {
     return (
       <TextInput
-        label="Model"
+        label={t('modelLabel')}
         required
-        placeholder="Load models to pick from the list"
+        placeholder={t('preloadPlaceholder')}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        description="Enter credentials and load the model list to see everything available to this key. Free text also works."
+        description={t('preloadDescription')}
       />
     );
   }
@@ -214,12 +217,12 @@ export function LiveModelCombobox({
   if (rows.length === 0) {
     return (
       <TextInput
-        label="Model"
+        label={t('modelLabel')}
         required
-        placeholder="Enter model ID"
+        placeholder={t('enterModelIdPlaceholder')}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        description="Upstream returned no models — type any model ID the provider accepts."
+        description={t('noModelsDescription')}
       />
     );
   }
@@ -240,14 +243,14 @@ export function LiveModelCombobox({
   return (
     <Stack gap={4}>
       <Autocomplete
-        label="Model"
+        label={t('modelLabel')}
         required
         description={
           hiddenCount > 0 && !showAll
-            ? `${rows.length} dispatchable model${rows.length === 1 ? '' : 's'} loaded · ${hiddenCount} hidden (unsupported wire). Type to filter; free text also works.`
-            : `${rows.length} model${rows.length === 1 ? '' : 's'} loaded — clear the box to browse, or type to filter. Free text also works.`
+            ? t('loadedWithHiddenDescription', { count: rows.length, hidden: hiddenCount })
+            : t('loadedDescription', { count: rows.length })
         }
-        placeholder="e.g. claude-opus-4-6, gpt-4o, gemini-2.5-pro"
+        placeholder={t('modelExamplesPlaceholder')}
         value={value}
         onChange={handleChange}
         limit={100}
@@ -271,7 +274,7 @@ export function LiveModelCombobox({
           size="xs"
           checked={showAll}
           onChange={(e) => setShowAll(e.currentTarget.checked)}
-          label={`Show ${hiddenCount} unsupported model${hiddenCount === 1 ? '' : 's'} (Nova, Titan, Cohere, …)`}
+          label={t('showUnsupportedToggle', { count: hiddenCount })}
         />
       )}
       <LiveModelDetails match={match ?? enrichmentOnly} typedValue={value} matched={!!match} />
@@ -320,45 +323,50 @@ function LiveModelDetails({
   typedValue: string;
   matched: boolean;
 }) {
+  const t = useTranslations('llmModelField');
   if (!typedValue) return null;
   if (!match) {
     return (
       <Text size="xs" c="dimmed">
-        <Text span fw={500} c="orange">Not in the loaded list.</Text>{' '}
-        DecisionBox will still try to dispatch — you may need to set <Text span fw={500}>Wire override</Text>.
+        <Text span fw={500} c="orange">{t('notInListTitle')}</Text>{' '}
+        {t.rich('notInListBody', {
+          wire: (chunks) => <Text span fw={500}>{chunks}</Text>,
+        })}
       </Text>
     );
   }
   const pricing =
     match.input_price_per_million || match.output_price_per_million
-      ? `$${match.input_price_per_million ?? 0}/M in · $${match.output_price_per_million ?? 0}/M out`
+      ? t('pricingBadge', {
+          in: match.input_price_per_million ?? 0,
+          out: match.output_price_per_million ?? 0,
+        })
       : null;
   return (
     <Stack gap={4}>
       {!match.dispatchable && (
         <Text size="xs" c="orange" fw={500}>
-          Not supported yet: DecisionBox doesn&apos;t have a wire implementation for this model&apos;s family.
-          Pick another model, or set Wire override if you know a compatible wire.
+          {t('notSupportedYet')}
         </Text>
       )}
       <Group gap="xs" wrap="wrap">
         {!matched && (
           <Badge size="xs" variant="light" color="gray">
-            not in live list — using catalog enrichment
+            {t('catalogEnrichmentBadge')}
           </Badge>
         )}
         {match.wire ? (
           <Badge size="xs" variant="light" color={match.dispatchable ? 'blue' : 'orange'}>
-            wire: {match.wire}
+            {t('wireBadge', { wire: match.wire })}
           </Badge>
         ) : (
           <Badge size="xs" variant="light" color="orange">
-            wire: unknown — set Wire override
+            {t('wireUnknownBadge')}
           </Badge>
         )}
         {match.max_output_tokens ? (
           <Badge size="xs" variant="light" color="gray">
-            max out: {match.max_output_tokens.toLocaleString()}
+            {t('maxOutBadge', { tokens: match.max_output_tokens.toLocaleString() })}
           </Badge>
         ) : null}
         {pricing ? (

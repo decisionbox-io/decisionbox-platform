@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import {
   Alert, Button, Card, Group, Loader, Select, Stack, Stepper, Text, TextInput, Textarea, Title,
 } from '@mantine/core';
@@ -16,6 +17,7 @@ import { api, Domain, Category, ProviderMeta, EmbeddingProviderMeta, LiveModel }
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const t = useTranslations('newProject');
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
 
@@ -317,10 +319,10 @@ export default function NewProjectPage() {
         await Promise.all(writes);
       }
 
-      notifications.show({ title: 'Project created', message: project.name, color: 'green' });
+      notifications.show({ title: t('createdTitle'), message: project.name, color: 'green' });
       router.push(`/projects/${project.id}`);
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setLoading(false);
     }
@@ -329,29 +331,29 @@ export default function NewProjectPage() {
   return (
     <Shell>
       <Stack gap="lg" maw={700}>
-        <Title order={2}>New Project</Title>
+        <Title order={2}>{t('title')}</Title>
 
         {dataError && (
-          <Alert icon={<IconAlertCircle size={16} />} title="Cannot load configuration" color="red">{dataError}</Alert>
+          <Alert icon={<IconAlertCircle size={16} />} title={t('loadErrorTitle')} color="red">{dataError}</Alert>
         )}
 
         {dataLoading && (
-          <Group><Loader size="sm" /><Text size="sm" c="dimmed">Loading configuration...</Text></Group>
+          <Group><Loader size="sm" /><Text size="sm" c="dimmed">{t('loadingConfig')}</Text></Group>
         )}
 
         {!dataLoading && !dataError && (
           <>
             <Stepper active={active} onStepClick={setActive}>
-              <Stepper.Step label="Basics" description="Name and domain">
+              <Stepper.Step label={t('stepBasics')} description={t('stepBasicsDesc')}>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
-                    <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="My Game Analytics" />
-                    <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" />
-                    <Select label="Domain" required placeholder="Select a domain"
-                      data={domains.map((d) => ({ value: d.id, label: d.id.charAt(0).toUpperCase() + d.id.slice(1) }))}
+                    <TextInput label={t('nameLabel')} required value={name} onChange={(e) => setName(e.target.value)} placeholder={t('namePlaceholder')} />
+                    <Textarea label={t('descriptionLabel')} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t('descriptionPlaceholder')} />
+                    <Select label={t('domainLabel')} required placeholder={t('domainPlaceholder')}
+                      data={domains.map((d) => ({ value: d.id, label: d.id }))}
                       value={domain} onChange={(v) => { setDomain(v || ''); setCategory(''); }} />
                     {domain && categories.length > 0 && (
-                      <Select label="Category" required placeholder="Select a category"
+                      <Select label={t('categoryLabel')} required placeholder={t('categoryPlaceholder')}
                         data={categories.map((c) => ({ value: c.id, label: c.name }))}
                         value={category} onChange={(v) => setCategory(v || '')} />
                     )}
@@ -359,7 +361,7 @@ export default function NewProjectPage() {
                 </Card>
               </Stepper.Step>
 
-              <Stepper.Step label="Warehouse" description="Data source">
+              <Stepper.Step label={t('stepWarehouse')} description={t('stepWarehouseDesc')}>
                 <Card withBorder p="lg" mt="md">
                   <WarehouseFormFields
                     providers={warehouseProviders}
@@ -374,7 +376,7 @@ export default function NewProjectPage() {
                   filters out these `false` children, so the remaining step
                   indices collapse cleanly. */}
               {!aiConfigManaged && (
-              <Stepper.Step label="AI" description="Provider + model">
+              <Stepper.Step label={t('stepAi')} description={t('stepAiDesc')}>
                 <Card withBorder p="lg" mt="md">
                   <LLMFormFields
                     providers={llmProviders}
@@ -398,11 +400,11 @@ export default function NewProjectPage() {
               )}
 
               {!aiConfigManaged && (
-              <Stepper.Step label="Embedding" description="Vector model">
+              <Stepper.Step label={t('stepEmbedding')} description={t('stepEmbeddingDesc')}>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
                     <Text size="sm" c="dimmed">
-                      Used to embed schema blurbs (for retrieval during discovery) and discovered insights (for semantic search). Schema indexing will not start until this is configured. Default recommendation from the spike against a real 2K-table ERP: OpenAI <code>text-embedding-3-large</code>.
+                      {t.rich('embeddingHelp', { code: (chunks) => <code>{chunks}</code> })}
                     </Text>
                     <EmbeddingEditor
                       providers={embeddingProviders}
@@ -416,11 +418,11 @@ export default function NewProjectPage() {
               )}
 
               {!aiConfigManaged && (
-              <Stepper.Step label="Blurb Model" description="Schema-index LLM">
+              <Stepper.Step label={t('stepBlurb')} description={t('stepBlurbDesc')}>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
                     <Text size="sm" c="dimmed">
-                      The blurb model generates per-table descriptions during schema indexing (the ones the retriever embeds in Qdrant). A separate cheap + fast model here usually pays off — spike winners were Bedrock <code>qwen.qwen3-32b-v1:0</code> and OpenAI <code>gpt-4.1-nano</code>. Leave off to reuse the analysis LLM.
+                      {t.rich('blurbHelp', { code: (chunks) => <code>{chunks}</code> })}
                     </Text>
                     <BlurbLLMEditor
                       llmProviders={llmProviders}
@@ -435,36 +437,36 @@ export default function NewProjectPage() {
               <Stepper.Completed>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
-                    <Title order={4}>Ready to create</Title>
-                    <Text><strong>Name:</strong> {name}</Text>
-                    <Text><strong>Domain:</strong> {domain} / {category}</Text>
-                    <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
+                    <Title order={4}>{t('readyTitle')}</Title>
+                    <Text><strong>{t('summaryName')}</strong> {name}</Text>
+                    <Text><strong>{t('summaryDomain')}</strong> {domain} / {category}</Text>
+                    <Text><strong>{t('summaryWarehouse')}</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
                     {aiConfigManaged ? (
-                      <Text c="dimmed"><strong>AI:</strong> managed by DecisionBox (analysis, blurb, and embedding preset)</Text>
+                      <Text c="dimmed"><strong>{t('summaryAi')}</strong> {t('summaryAiManaged')}</Text>
                     ) : (
                       <>
-                        <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? `endpoint ${llm.config['endpoint_id']}` : llm.config['model']}</Text>
+                        <Text><strong>{t('summaryLlm')}</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? t('summaryEndpoint', { id: llm.config['endpoint_id'] }) : llm.config['model']}</Text>
                         <Text>
-                          <strong>Embedding:</strong>{' '}
+                          <strong>{t('summaryEmbedding')}</strong>{' '}
                           {embProviderMeta?.name || embedding.provider} / {embedding.model}
                         </Text>
                         <Text>
-                          <strong>Blurb model:</strong>{' '}
+                          <strong>{t('summaryBlurb')}</strong>{' '}
                           {blurb.enabled && blurb.model
                             ? `${llmProviders.find((p) => p.id === blurb.provider)?.name || blurb.provider} / ${blurb.model}`
-                            : 'same as analysis LLM'}
+                            : t('summaryBlurbSameAsAnalysis')}
                         </Text>
                       </>
                     )}
-                    <Button onClick={handleCreate} loading={loading} fullWidth mt="md">Create Project</Button>
+                    <Button onClick={handleCreate} loading={loading} fullWidth mt="md">{t('createButton')}</Button>
                   </Stack>
                 </Card>
               </Stepper.Completed>
             </Stepper>
 
             <Group justify="flex-end">
-              {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>Back</Button>}
-              {active < stepIds.length && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceedById[stepIds[active]]?.()}>Next</Button>}
+              {active > 0 && <Button variant="default" onClick={() => setActive((c) => c - 1)}>{t('back')}</Button>}
+              {active < stepIds.length && <Button onClick={() => setActive((c) => c + 1)} disabled={!canProceedById[stepIds[active]]?.()}>{t('next')}</Button>}
             </Group>
           </>
         )}

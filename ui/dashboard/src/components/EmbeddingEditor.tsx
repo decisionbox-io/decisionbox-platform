@@ -11,6 +11,7 @@
  */
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { api, EmbeddingLiveModel, EmbeddingProviderMeta } from '@/lib/api';
 import { ProviderCredentialsPhase, CredentialsPhaseValue, emptyCredentials } from './ProviderCredentialsPhase';
 import { EmbeddingModelCombobox } from './EmbeddingModelCombobox';
@@ -53,6 +54,7 @@ interface Props {
 }
 
 export function EmbeddingEditor({ providers, value, onChange, required, startInModelPhase, projectId, savedProvider }: Props) {
+  const t = useTranslations('projectsMisc');
   const [liveModels, setLiveModels] = useState<EmbeddingLiveModel[] | null>(null);
 
   const selectedProvider = providers.find((p) => p.id === value.provider) || null;
@@ -84,7 +86,7 @@ export function EmbeddingEditor({ providers, value, onChange, required, startInM
   return (
     <ProviderCredentialsPhase<EmbeddingProviderMeta>
       providers={providers}
-      label="Embedding Provider"
+      label={t('embeddingProvider')}
       required={required}
       value={credentials}
       onChange={applyCredentials}

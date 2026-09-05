@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { Badge, Card, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import { IconServer, IconCpu } from '@tabler/icons-react';
 import type { SystemComponent } from '@/lib/api';
@@ -68,8 +69,14 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
+const KNOWN_KINDS = new Set(['service', 'worker']);
+
 function ComponentCard({ component }: { component: SystemComponent }) {
+  const t = useTranslations('systemSearch');
   const isWorker = component.kind === 'worker';
+  const kindBadge = KNOWN_KINDS.has(component.kind)
+    ? t(`kindSingular_${component.kind}`)
+    : component.kind;
   return (
     <Card withBorder radius="md" padding="md">
       <Stack gap="xs">
@@ -78,14 +85,14 @@ function ComponentCard({ component }: { component: SystemComponent }) {
             {isWorker ? <IconCpu size={18} /> : <IconServer size={18} />}
             <Text fw={600}>{component.name}</Text>
           </Group>
-          <Badge variant="light" color={isWorker ? 'grape' : 'blue'}>{component.kind}</Badge>
+          <Badge variant="light" color={isWorker ? 'grape' : 'blue'}>{kindBadge}</Badge>
         </Group>
 
         <Stack gap={2}>
-          <Field label="Version" value={component.version || 'unknown'} />
-          {component.commit && <Field label="Commit" value={component.commit} />}
-          {component.build_date && <Field label="Built" value={component.build_date} />}
-          {component.runs_in && <Field label="Runs in" value={component.runs_in} />}
+          <Field label={t('fieldVersion')} value={component.version || t('unknownVersion')} />
+          {component.commit && <Field label={t('fieldCommit')} value={component.commit} />}
+          {component.build_date && <Field label={t('fieldBuilt')} value={component.build_date} />}
+          {component.runs_in && <Field label={t('fieldRunsIn')} value={component.runs_in} />}
         </Stack>
 
         {component.note && (
@@ -101,15 +108,16 @@ function ComponentCard({ component }: { component: SystemComponent }) {
  * renders whatever it is given — no component list is hardcoded here.
  */
 export function SystemInventory({ components }: { components: SystemComponent[] }) {
+  const t = useTranslations('systemSearch');
   if (components.length === 0) {
-    return <Text c="dimmed">No components reported.</Text>;
+    return <Text c="dimmed">{t('noComponents')}</Text>;
   }
   return (
     <Stack gap="xl">
       {groupByKind(components).map((group) => (
         <Stack key={group.kind} gap="sm">
           <Text size="sm" fw={600} tt="uppercase" c="dimmed" style={{ letterSpacing: '0.6px' }}>
-            {group.label}
+            {KNOWN_KINDS.has(group.kind) ? t(`kind_${group.kind}`) : group.label}
           </Text>
           <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
             {group.items.map((c) => (

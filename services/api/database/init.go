@@ -170,6 +170,17 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "user_preferences",
+		Indexes: []mongo.IndexModel{
+			// One preferences document per principal; the handler upserts and
+			// reads by sub.
+			{
+				Keys:    bson.D{{Key: "sub", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+	},
+	{
 		Name: "discovery_debug_logs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "timestamp", Value: -1}}},

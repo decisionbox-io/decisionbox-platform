@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Badge, Card, Group, List, Stack, Text } from '@mantine/core';
 import { api, DomainPack } from '@/lib/api';
 
@@ -16,6 +17,7 @@ export interface DraftDiffSummaryProps {
 // draft lines up with ecommerce). Excludes the draft itself + the
 // system-test pack from the candidate set.
 export default function DraftDiffSummary({ draft }: DraftDiffSummaryProps) {
+  const t = useTranslations('projectsMisc');
   const [packs, setPacks] = useState<DomainPack[] | null>(null);
 
   useEffect(() => {
@@ -37,12 +39,12 @@ export default function DraftDiffSummary({ draft }: DraftDiffSummaryProps) {
     <Card withBorder padding="sm" bg="var(--db-bg-muted)">
       <Stack gap={8}>
         <Group gap={6}>
-          <Text size="sm" fw={500}>What&apos;s unique about this draft</Text>
-          <Badge size="sm" variant="light">vs {baseline.name}</Badge>
+          <Text size="sm" fw={500}>{t('draftUniqueTitle')}</Text>
+          <Badge size="sm" variant="light">{t('vsBaseline', { name: baseline.name })}</Badge>
         </Group>
-        <DiffRow label="Categories" total={draft.categories.length} baseline={baseline.categories.length} extras={newCategories} />
-        <DiffRow label="Analysis areas" total={draft.analysis_areas.base.length} baseline={baseline.analysis_areas.base.length} extras={newAreas} />
-        <DiffRow label="Profile fields" total={countProfileFields(draft.profile_schema.base)} baseline={countProfileFields(baseline.profile_schema.base)} extras={newProfileFields} />
+        <DiffRow label={t('categories')} total={draft.categories.length} baseline={baseline.categories.length} extras={newCategories} />
+        <DiffRow label={t('analysisAreas')} total={draft.analysis_areas.base.length} baseline={baseline.analysis_areas.base.length} extras={newAreas} />
+        <DiffRow label={t('profileFields')} total={countProfileFields(draft.profile_schema.base)} baseline={countProfileFields(baseline.profile_schema.base)} extras={newProfileFields} />
       </Stack>
     </Card>
   );
@@ -54,17 +56,18 @@ function DiffRow({ label, total, baseline, extras }: {
   baseline: number;
   extras: string[];
 }) {
+  const t = useTranslations('projectsMisc');
   return (
     <div>
       <Group gap={6}>
         <Text size="xs" c="dimmed" w={120}>{label}</Text>
-        <Text size="xs">{total} <Text span c="dimmed">(baseline: {baseline})</Text></Text>
+        <Text size="xs">{total} <Text span c="dimmed">{t('baselineParen', { count: baseline })}</Text></Text>
       </Group>
       {extras.length > 0 && (
         <List size="xs" spacing={2} mt={4} ml={120}>
           {extras.slice(0, 5).map((e) => <List.Item key={e}>{e}</List.Item>)}
           {extras.length > 5 && (
-            <Text size="xs" c="dimmed" ml={20}>+ {extras.length - 5} more…</Text>
+            <Text size="xs" c="dimmed" ml={20}>{t('plusMore', { count: extras.length - 5 })}</Text>
           )}
         </List>
       )}

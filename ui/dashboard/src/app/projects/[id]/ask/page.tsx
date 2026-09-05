@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import Shell from '@/components/layout/AppShell';
 import ChatPanel from '@/components/ask/ChatPanel';
 import { api } from '@/lib/api';
@@ -11,6 +12,7 @@ import { api } from '@/lib/api';
 // global chat drawer uses, so page and drawer never diverge.
 export default function AskPage() {
   const { id } = useParams<{ id: string }>();
+  const t = useTranslations('nav');
   const searchParams = useSearchParams();
   const initialQuestion = searchParams.get('q') || '';
   const [project, setProject] = useState<{ name: string } | null>(null);
@@ -20,7 +22,7 @@ export default function AskPage() {
   }, [id]);
 
   return (
-    <Shell fullWidth breadcrumb={project ? [{ label: project.name, href: `/projects/${id}` }, { label: 'Ask Insights' }] : undefined}>
+    <Shell fullWidth breadcrumb={project ? [{ label: project.name, href: `/projects/${id}` }, { label: t('askInsights') }] : undefined}>
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--db-topbar-height))', margin: '-24px -24px -24px -24px', overflow: 'hidden' }}>
         <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
           <h1 style={{ fontSize: 22, fontWeight: 600, color: 'var(--db-text-primary)', margin: '0 0 4px' }}>

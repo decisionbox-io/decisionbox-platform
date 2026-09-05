@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import {
   Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
 } from '@mantine/core';
@@ -20,6 +21,7 @@ import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
+import { useFormat } from '@/lib/format';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { api, DiscoveryResult, DiscoveryQuestion, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
@@ -28,6 +30,8 @@ const severityColor: Record<string, string> = {
 };
 
 export default function InsightDetailPage() {
+  const t = useTranslations('insightDetail');
+  const f = useFormat();
   const { id, runId, insightId } = useParams<{ id: string; runId: string; insightId: string }>();
   const router = useRouter();
   // goBack relies on browser history whenever possible — that's the only
@@ -130,7 +134,7 @@ export default function InsightDetailPage() {
   }, [id, insightId]);
 
   if (loading) return <Shell><Loader /></Shell>;
-  if (!insight) return <Shell><Text>Insight not found</Text></Shell>;
+  if (!insight) return <Shell><Text>{t('notFound')}</Text></Shell>;
 
   // Get the exploration steps this insight is based on (cited by the LLM)
   const sourceSteps = (insight.source_steps || [])
@@ -192,14 +196,14 @@ export default function InsightDetailPage() {
         projectId={id}
         questions={questions}
         onResolved={(qid) => setQuestions((prev) => prev.filter((qn) => qn.id !== qid))}
-        title="Questions about this insight"
+        title={t('questionsDrawerTitle')}
         storageKey="dbx-questions-drawer-insight"
         viewAllHref={`/projects/${id}/questions`}
       />
 
       <Button variant="subtle" onClick={goBack}
         leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
-        Back
+        {t('back')}
       </Button>
 
       {/* Header — full width so title can breathe, no sidebar beside it. */}
@@ -210,13 +214,15 @@ export default function InsightDetailPage() {
           <Title order={2}>{insight.name}</Title>
         </Group>
         <Group gap="xs">
-          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
+          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">
+            {severityColor[insight.severity] ? t(`severity_${insight.severity}`) : insight.severity}
+          </Badge>
           <Badge variant="outline">{insight.analysis_area}</Badge>
           {insight.affected_count > 0 && (
-            <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
+            <Badge variant="outline">{t('affectedBadge', { count: f.number(insight.affected_count) })}</Badge>
           )}
           {insightDatasources.map((ds) => (
-            <Badge key={ds} color="blue" variant="light" title="Datasource this insight was derived from">{ds}</Badge>
+            <Badge key={ds} color="blue" variant="light" title={t('datasourceTooltip')}>{ds}</Badge>
           ))}
           <FeedbackButtons projectId={id} discoveryId={runId} targetType="insight" targetId={insightId}
             feedback={feedback} onUpdate={setFeedback} />
@@ -228,7 +234,7 @@ export default function InsightDetailPage() {
           horizontally-scrollable strip. Hidden once the right sidebar shows. */}
       <Box hiddenFrom="lg" mb="md">
         <RelatedChipStrip
-          relatedLabel="Related Recommendations"
+          relatedLabel={t('relatedRecommendations')}
           related={relatedItems}
         />
       </Box>
@@ -245,7 +251,7 @@ export default function InsightDetailPage() {
             ? <Markdown>{insight.description_md}</Markdown>
             : insight.description
               ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{insight.description}</Text>
-              : <Text size="sm" c="dimmed">No description</Text>}
+              : <Text size="sm" c="dimmed">{t('noDescription')}</Text>}
           {/* LLM-generated starter questions + "Ask about this" (enterprise;
               renders nothing on community builds or when the toggle is off). */}
           <SuggestedQuestions projectId={id} seed={{ type: 'insight', id: insight.id, title: insight.name }} />
@@ -255,21 +261,21 @@ export default function InsightDetailPage() {
             Indicators/Metrics so skimming readers see the decision-ready
             numbers right after the description. */}
         <Card withBorder p="lg">
-          <Title order={4} mb="sm">Assessment</Title>
+          <Title order={4} mb="sm">{t('assessment')}</Title>
           <Group gap="xl">
             <div>
-              <Text size="xs" c="dimmed">Risk Score</Text>
+              <Text size="xs" c="dimmed">{t('riskScore')}</Text>
               <Text size="lg" fw={700} c={insight.risk_score > 0.7 ? 'red' : insight.risk_score > 0.4 ? 'orange' : 'green'}>
-                {(insight.risk_score * 100).toFixed(0)}%
+                {f.number(insight.risk_score, { style: 'percent', maximumFractionDigits: 0 })}
               </Text>
             </div>
             <div>
-              <Text size="xs" c="dimmed">Confidence</Text>
-              <Text size="lg" fw={700}>{(insight.confidence * 100).toFixed(0)}%</Text>
+              <Text size="xs" c="dimmed">{t('confidence')}</Text>
+              <Text size="lg" fw={700}>{f.number(insight.confidence, { style: 'percent', maximumFractionDigits: 0 })}</Text>
             </div>
             {insight.target_segment && (
               <div>
-                <Text size="xs" c="dimmed">Target Segment</Text>
+                <Text size="xs" c="dimmed">{t('targetSegment')}</Text>
                 <Text size="sm">{insight.target_segment}</Text>
               </div>
             )}
@@ -279,7 +285,7 @@ export default function InsightDetailPage() {
         {/* Key Indicators — plain-language bullets supporting the claim. */}
         {insight.indicators && insight.indicators.length > 0 && (
           <Card withBorder p="lg">
-            <Title order={4} mb="sm">Key Indicators</Title>
+            <Title order={4} mb="sm">{t('keyIndicators')}</Title>
             <Stack gap={6}>
               {insight.indicators.map((ind, i) => (
                 <Text key={i} size="sm">- {ind}</Text>
@@ -291,12 +297,12 @@ export default function InsightDetailPage() {
         {/* Metrics — raw numbers for readers who want to dig in. */}
         {insight.metrics && Object.keys(insight.metrics).length > 0 && (
           <Card withBorder p="lg">
-            <Title order={4} mb="sm">Metrics</Title>
+            <Title order={4} mb="sm">{t('metrics')}</Title>
             <Table>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Metric</Table.Th>
-                  <Table.Th>Value</Table.Th>
+                  <Table.Th>{t('metricColumn')}</Table.Th>
+                  <Table.Th>{t('valueColumn')}</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -332,13 +338,13 @@ export default function InsightDetailPage() {
               onClick={() => setTechOpen(true)}
               w="fit-content"
             >
-              Show technical details
+              {t('showTechnicalDetails')}
             </Button>
           </Stack>
         </Box>
 
         {insight.discovered_at && (
-          <Text size="xs" c="dimmed">Discovered: {new Date(insight.discovered_at).toLocaleString()}</Text>
+          <Text size="xs" c="dimmed">{t('discoveredAt', { time: f.dateTime(insight.discovered_at, { dateStyle: 'medium', timeStyle: 'short' }) })}</Text>
         )}
       </Stack>
         </Grid.Col>
@@ -350,7 +356,7 @@ export default function InsightDetailPage() {
           <Box style={{ position: 'sticky', top: 16 }}>
             <Stack gap="md">
               <RelatedSidebar
-                relatedLabel="Related Recommendations"
+                relatedLabel={t('relatedRecommendations')}
                 related={relatedItems}
               />
               <ValidationRouter
@@ -370,7 +376,7 @@ export default function InsightDetailPage() {
                 justify="flex-start"
                 fullWidth
               >
-                Show technical details
+                {t('showTechnicalDetails')}
               </Button>
             </Stack>
           </Box>
@@ -389,7 +395,7 @@ export default function InsightDetailPage() {
         title={
           <Group gap="xs">
             <IconSearch size={18} />
-            <Text fw={600}>How This Insight Was Found</Text>
+            <Text fw={600}>{t('howFoundTitle')}</Text>
           </Group>
         }
       >
@@ -400,8 +406,8 @@ export default function InsightDetailPage() {
               <Accordion.Control>
                 <Group gap="xs">
                   <IconDatabase size={16} />
-                  <Text size="sm" fw={600}>Source Data ({sourceSteps.length} queries cited)</Text>
-                  <Text size="xs" c="dimmed">The specific queries the AI used for this insight</Text>
+                  <Text size="sm" fw={600}>{t('sourceDataTitle', { count: sourceSteps.length })}</Text>
+                  <Text size="xs" c="dimmed">{t('sourceDataHelp')}</Text>
                 </Group>
               </Accordion.Control>
               <Accordion.Panel>
@@ -410,12 +416,12 @@ export default function InsightDetailPage() {
                     <Card key={idx} withBorder p="sm" radius="sm">
                       <Group justify="space-between" mb={4}>
                         <Group gap={6} align="center">
-                          <Text size="xs" fw={600}>Step {step.step}</Text>
+                          <Text size="xs" fw={600}>{t('stepLabel', { step: step.step })}</Text>
                           <DatasourceBadge warehouseId={step.warehouse_id} />
                         </Group>
                         <Group gap="xs">
-                          {step.row_count > 0 && <Badge size="xs" variant="outline">{step.row_count} rows</Badge>}
-                          {step.execution_time_ms > 0 && <Badge size="xs" variant="outline">{step.execution_time_ms}ms</Badge>}
+                          {step.row_count > 0 && <Badge size="xs" variant="outline">{t('rowsBadge', { count: f.number(step.row_count) })}</Badge>}
+                          {step.execution_time_ms > 0 && <Badge size="xs" variant="outline">{t('msBadge', { ms: f.number(step.execution_time_ms) })}</Badge>}
                         </Group>
                       </Group>
                       {step.thinking && <Text size="xs" c="dimmed" mb={4}>{step.thinking}</Text>}
@@ -435,10 +441,10 @@ export default function InsightDetailPage() {
           {sourceSteps.length === 0 && (
             <Card withBorder p="sm">
               <Text size="xs" c="dimmed">
-                Source step citations not available for this insight.
-                {insight.source_steps && insight.source_steps.length > 0
-                  ? ` (Steps ${insight.source_steps.join(', ')} cited but not found in exploration log)`
-                  : ' Run a new discovery to get per-insight source tracking.'}
+                {t('sourceStepsUnavailable', {
+                  hasSteps: insight.source_steps && insight.source_steps.length > 0 ? 'yes' : 'no',
+                  steps: (insight.source_steps || []).join(', '),
+                })}
               </Text>
             </Card>
           )}
@@ -448,26 +454,26 @@ export default function InsightDetailPage() {
             <Accordion.Item value="analysis">
               <Accordion.Control>
                 <Group gap="xs">
-                  <Text size="sm" fw={600}>AI Analysis ({analysisStep.area_name})</Text>
-                  <Badge size="xs" variant="outline">{analysisStep.tokens_in + analysisStep.tokens_out} tokens</Badge>
+                  <Text size="sm" fw={600}>{t('aiAnalysisTitle', { area: analysisStep.area_name })}</Text>
+                  <Badge size="xs" variant="outline">{t('tokensBadge', { count: f.number(analysisStep.tokens_in + analysisStep.tokens_out) })}</Badge>
                   {analysisStep.duration_ms > 0 && (
-                    <Badge size="xs" variant="outline">{(analysisStep.duration_ms / 1000).toFixed(1)}s</Badge>
+                    <Badge size="xs" variant="outline">{t('secondsBadge', { seconds: f.number(analysisStep.duration_ms / 1000, { maximumFractionDigits: 1, minimumFractionDigits: 1 }) })}</Badge>
                   )}
                 </Group>
               </Accordion.Control>
               <Accordion.Panel>
                 <Group gap="xl">
                   <div>
-                    <Text size="xs" c="dimmed">Queries Fed</Text>
-                    <Text size="sm" fw={600}>{analysisStep.relevant_queries}</Text>
+                    <Text size="xs" c="dimmed">{t('queriesFed')}</Text>
+                    <Text size="sm" fw={600}>{f.number(analysisStep.relevant_queries)}</Text>
                   </div>
                   <div>
-                    <Text size="xs" c="dimmed">Input Tokens</Text>
-                    <Text size="sm" fw={600}>{analysisStep.tokens_in.toLocaleString()}</Text>
+                    <Text size="xs" c="dimmed">{t('inputTokens')}</Text>
+                    <Text size="sm" fw={600}>{f.number(analysisStep.tokens_in)}</Text>
                   </div>
                   <div>
-                    <Text size="xs" c="dimmed">Output Tokens</Text>
-                    <Text size="sm" fw={600}>{analysisStep.tokens_out.toLocaleString()}</Text>
+                    <Text size="xs" c="dimmed">{t('outputTokens')}</Text>
+                    <Text size="sm" fw={600}>{f.number(analysisStep.tokens_out)}</Text>
                   </div>
                 </Group>
               </Accordion.Panel>
@@ -480,7 +486,7 @@ export default function InsightDetailPage() {
           {legacyValidationEntries.length > 0 && (
             <Accordion.Item value="validation">
               <Accordion.Control>
-                <Text size="sm" fw={600}>Validation ({legacyValidationEntries.length} legacy checks)</Text>
+                <Text size="sm" fw={600}>{t('validationLegacyTitle', { count: legacyValidationEntries.length })}</Text>
               </Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="sm">
@@ -499,7 +505,7 @@ export default function InsightDetailPage() {
           that width and visually complements rather than sprawls. */}
       <div style={{ maxWidth: 800 }}>
         <SimilarItems
-          label="Similar Insights"
+          label={t('similarInsights')}
           items={similarInsights}
           hrefFor={(sim) => `/projects/${id}/discoveries/${sim.discovery_id}/insights/${sim.id}`}
         />

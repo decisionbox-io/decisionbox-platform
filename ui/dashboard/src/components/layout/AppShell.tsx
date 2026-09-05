@@ -7,8 +7,10 @@ import { usePathname, useParams } from 'next/navigation';
 import {
   IconBook2, IconBookmark, IconHelpCircle, IconMessageCircle, IconNotebook, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTimeline,
 } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { api, Project } from '@/lib/api';
 import SpotlightSearch from '@/components/common/SpotlightSearch';
+import LanguageSwitcher from '@/components/layout/LanguageSwitcher';
 
 interface ShellProps {
   children: ReactNode;
@@ -21,6 +23,8 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
   const pathname = usePathname();
   const params = useParams<{ id?: string }>();
   const projectId = params?.id;
+  const t = useTranslations('nav');
+  const tc = useTranslations('common');
 
   const [project, setProject] = useState<Project | null>(null);
 
@@ -126,43 +130,43 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               color: 'var(--db-text-tertiary)',
               padding: '12px 10px 6px',
             }}>
-              Discover
+              {t('section.discover')}
             </div>
 
             <NavItem
               href={`/projects/${projectId}`}
               icon={<IconSearch size={16} />}
-              label="Discovery runs"
+              label={t('discoveryRuns')}
               active={isActive(`/projects/${projectId}`)}
             />
             <NavItem
               href={`/projects/${projectId}/insights`}
               icon={<IconBook2 size={16} />}
-              label="Insights"
+              label={t('insights')}
               active={isActive(`/projects/${projectId}/insights`)}
             />
             <NavItem
               href={`/projects/${projectId}/recommendations`}
               icon={<IconStack2 size={16} />}
-              label="Recommendations"
+              label={t('recommendations')}
               active={isActive(`/projects/${projectId}/recommendations`)}
             />
             <NavItem
               href={`/projects/${projectId}/questions`}
               icon={<IconHelpCircle size={16} />}
-              label="Questions"
+              label={t('questions')}
               active={isActive(`/projects/${projectId}/questions`)}
             />
             <NavItem
               href={`/projects/${projectId}/ledger`}
               icon={<IconTimeline size={16} />}
-              label="Ledger"
+              label={t('ledger')}
               active={isActive(`/projects/${projectId}/ledger`)}
             />
             <NavItem
               href={`/projects/${projectId}/lists`}
               icon={<IconBookmark size={16} />}
-              label="Lists"
+              label={t('lists')}
               active={isActive(`/projects/${projectId}/lists`)}
             />
 
@@ -175,19 +179,19 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               color: 'var(--db-text-tertiary)',
               padding: '12px 10px 6px',
             }}>
-              Intelligence
+              {t('section.intelligence')}
             </div>
 
             <NavItem
               href={`/projects/${projectId}/search`}
               icon={<IconSparkles size={16} />}
-              label="Search"
+              label={t('search')}
               active={isActive(`/projects/${projectId}/search`)}
             />
             <NavItem
               href={`/projects/${projectId}/ask`}
               icon={<IconMessageCircle size={16} />}
-              label="Ask Insights"
+              label={t('askInsights')}
               active={isActive(`/projects/${projectId}/ask`)}
             />
 
@@ -200,19 +204,19 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               color: 'var(--db-text-tertiary)',
               padding: '12px 10px 6px',
             }}>
-              Configure
+              {t('section.configure')}
             </div>
 
             <NavItem
               href={`/projects/${projectId}/settings`}
               icon={<IconSettings size={16} />}
-              label="Settings"
+              label={t('settings')}
               active={isActive(`/projects/${projectId}/settings`)}
             />
             <NavItem
               href={`/projects/${projectId}/prompts`}
               icon={<IconNotebook size={16} />}
-              label="Playbook"
+              label={t('playbook')}
               active={isActive(`/projects/${projectId}/prompts`)}
             />
           </nav>
@@ -224,19 +228,19 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
             <NavItem
               href="/"
               icon={<IconSearch size={16} />}
-              label="Projects"
+              label={t('projects')}
               active={isActive('/')}
             />
             <NavItem
               href="/domain-packs"
               icon={<IconPackages size={16} />}
-              label="Playbooks"
+              label={t('playbooks')}
               active={pathname?.startsWith('/domain-packs') ?? false}
             />
             <NavItem
               href="/system"
               icon={<IconServer size={16} />}
-              label="System"
+              label={t('system')}
               active={pathname?.startsWith('/system') ?? false}
             />
           </nav>
@@ -284,7 +288,7 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
                 )}
               </span>
             )) : (
-              <span style={{ fontWeight: 500, color: 'var(--db-text-primary)' }}>Dashboard</span>
+              <span style={{ fontWeight: 500, color: 'var(--db-text-primary)' }}>{tc('dashboard')}</span>
             )}
           </div>
 
@@ -294,6 +298,7 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: '1 1 0', justifyContent: 'flex-end' }}>
             {actions}
+            <LanguageSwitcher />
           </div>
         </header>
 

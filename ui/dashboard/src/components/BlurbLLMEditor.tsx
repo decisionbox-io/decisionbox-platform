@@ -13,6 +13,7 @@
 
 import { useState } from 'react';
 import { Stack, Switch, TextInput } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { api, LiveModel, ProviderMeta } from '@/lib/api';
 import { LiveModelCombobox } from '@/components/common/LLMModelField';
 import { ProviderCredentialsPhase, CredentialsPhaseValue, emptyCredentials } from './ProviderCredentialsPhase';
@@ -59,6 +60,7 @@ interface Props {
 }
 
 export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInModelPhase, projectId, savedProvider }: Props) {
+  const t = useTranslations('llmForms');
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
 
   const credentials: CredentialsPhaseValue = value.enabled
@@ -104,8 +106,8 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
   return (
     <Stack gap="sm">
       <Switch
-        label="Use a separate model for schema-index blurbs"
-        description="When off, indexing reuses the analysis LLM + its API key. Turn on to pick a cheaper/faster model for the per-table descriptions the retriever indexes (e.g. Bedrock Qwen3-32B or gpt-4.1-nano)."
+        label={t('useSeparateBlurbModel')}
+        description={t('useSeparateBlurbModelHelp')}
         checked={value.enabled}
         onChange={(e) => setEnabled(e.currentTarget.checked)}
       />
@@ -113,7 +115,7 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
       {value.enabled && (
         <ProviderCredentialsPhase<ProviderMeta>
           providers={llmProviders}
-          label="Blurb LLM Provider"
+          label={t('blurbLlmProvider')}
           value={credentials}
           onChange={applyCredentials}
           phaseOverride={startInModelPhase ? 'model' : undefined}
@@ -162,7 +164,7 @@ export function BlurbLLMEditor({ llmProviders, value, onChange, footer, startInM
                 key={key}
                 label={f.label}
                 description={f.description}
-                placeholder={`${effective.toLocaleString()} (current default — leave blank to use it)`}
+                placeholder={t('tokenDefaultPlaceholder', { value: effective.toLocaleString() })}
                 value={value.config[key] || ''}
                 onChange={(e) => onChange({ ...value, config: { ...value.config, [key]: e.currentTarget.value } })}
               />

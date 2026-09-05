@@ -152,6 +152,13 @@ type ReadMarkRepo interface {
 	ListReadIDs(ctx context.Context, projectID, userID, targetType string) ([]string, error)
 }
 
+// UserPreferenceRepo abstracts per-user preference storage for handler unit
+// testing. One document per principal, keyed by Sub.
+type UserPreferenceRepo interface {
+	Get(ctx context.Context, sub string) (*models.UserPreference, error)
+	SetLocale(ctx context.Context, sub, locale string) error
+}
+
 // SchemaIndexProgressRepo abstracts live schema-indexing progress operations.
 // One document per project, upserted by (project_id). Reset at the start of
 // each indexing run.
@@ -205,6 +212,7 @@ var (
 	_ BookmarkListRepo        = (*BookmarkListRepository)(nil)
 	_ BookmarkRepo            = (*BookmarkRepository)(nil)
 	_ ReadMarkRepo            = (*ReadMarkRepository)(nil)
+	_ UserPreferenceRepo      = (*UserPreferenceRepository)(nil)
 	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
 	_ ValidationJobRepo       = (*ValidationJobRepository)(nil)
 )

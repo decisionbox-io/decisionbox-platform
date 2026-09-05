@@ -6,17 +6,19 @@ import {
   IconSearch, IconBulb, IconStarFilled, IconClock, IconSparkles,
   IconArrowRight, IconMessageCircle, IconTrendingUp,
 } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { SeverityBadge } from './UIComponents';
 import { api, SearchResultItem, SearchHistoryEntry } from '@/lib/api';
 import { searchResultHref } from '@/lib/searchNav';
 
 const EXAMPLE_QUERIES = [
-  { text: 'Why are users churning?', icon: IconTrendingUp },
-  { text: 'Revenue optimization opportunities', icon: IconBulb },
-  { text: 'What are the most critical issues?', icon: IconSparkles },
-];
+  { key: 'exampleChurn', icon: IconTrendingUp },
+  { key: 'exampleRevenue', icon: IconBulb },
+  { key: 'exampleCritical', icon: IconSparkles },
+] as const;
 
 export default function SpotlightSearch() {
+  const t = useTranslations('spotlight');
   const { id: projectId } = useParams<{ id?: string }>();
   const router = useRouter();
   const [query, setQuery] = useState('');
@@ -170,8 +172,8 @@ export default function SpotlightSearch() {
           onFocus={() => setOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder={projectId
-            ? (mode === 'search' ? 'Search insights...' : 'Ask a question...')
-            : 'Select a project first'
+            ? (mode === 'search' ? t('placeholderSearch') : t('placeholderAsk'))
+            : t('placeholderNoProject')
           }
           disabled={!projectId}
           role="combobox"
@@ -194,7 +196,7 @@ export default function SpotlightSearch() {
         {/* Mode toggle */}
         <button
           onClick={() => setMode(m => m === 'search' ? 'ask' : 'search')}
-          title={`Switch to ${mode === 'search' ? 'Ask' : 'Search'} mode (Tab)`}
+          title={t('switchMode', { mode: mode === 'search' ? t('modeAsk') : t('modeSearch') })}
           style={{
             display: 'flex', alignItems: 'center', gap: 3,
             fontSize: 10, fontWeight: 600, flexShrink: 0,
@@ -205,7 +207,7 @@ export default function SpotlightSearch() {
             transition: 'all 120ms ease',
           }}
         >
-          {mode === 'search' ? 'Search' : 'Ask'}
+          {mode === 'search' ? t('modeSearch') : t('modeAsk')}
         </button>
         <kbd style={{
           fontSize: 10, color: 'var(--db-text-tertiary)',
@@ -228,7 +230,7 @@ export default function SpotlightSearch() {
           {/* Search results */}
           {results.length > 0 && (
             <div style={{ padding: '8px 0 4px' }}>
-              <SectionLabel>Results</SectionLabel>
+              <SectionLabel>{t('sectionResults')}</SectionLabel>
               {results.map((r, i) => (
                 <DropdownRow
                   key={r.id}
@@ -280,7 +282,7 @@ export default function SpotlightSearch() {
                 onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
               >
-                View all results <IconArrowRight size={13} />
+                {t('viewAllResults')} <IconArrowRight size={13} />
               </div>
             </div>
           )}
@@ -289,7 +291,7 @@ export default function SpotlightSearch() {
           {query.trim() && !loading && results.length === 0 && (
             <div style={{ padding: '20px 14px', textAlign: 'center' }}>
               <p style={{ fontSize: 13, color: 'var(--db-text-tertiary)', margin: '0 0 10px' }}>
-                No results for &ldquo;{query}&rdquo;
+                {t('noResults', { query })}
               </p>
               <div
                 onClick={() => goToAsk(query.trim())}
@@ -299,7 +301,7 @@ export default function SpotlightSearch() {
                   fontWeight: 500,
                 }}
               >
-                <IconMessageCircle size={14} /> Ask AI about this instead →
+                <IconMessageCircle size={14} /> {t('askAiInstead')}
               </div>
             </div>
           )}
@@ -310,7 +312,7 @@ export default function SpotlightSearch() {
               {/* Recent searches */}
               {recentSearches.length > 0 && (
                 <>
-                  <SectionLabel>Recent Searches</SectionLabel>
+                  <SectionLabel>{t('recentSearches')}</SectionLabel>
                   {recentSearches.slice(0, 4).map(h => (
                     <DropdownRow key={h.id} onClick={() => setQuery(h.query)}>
                       <IconClock size={14} color="var(--db-text-tertiary)" style={{ flexShrink: 0 }} />
@@ -321,7 +323,7 @@ export default function SpotlightSearch() {
                         {h.query}
                       </span>
                       <span style={{ fontSize: 10, color: 'var(--db-text-tertiary)', flexShrink: 0 }}>
-                        {h.results_count} result{h.results_count !== 1 ? 's' : ''}
+                        {t('resultCount', { count: h.results_count })}
                       </span>
                     </DropdownRow>
                   ))}
@@ -331,7 +333,7 @@ export default function SpotlightSearch() {
               {/* Recent asks */}
               {recentAsks.length > 0 && (
                 <>
-                  <SectionLabel>Recent Questions</SectionLabel>
+                  <SectionLabel>{t('recentQuestions')}</SectionLabel>
                   {recentAsks.slice(0, 3).map(h => (
                     <DropdownRow key={h.id} onClick={() => {
                       setOpen(false);
@@ -350,11 +352,11 @@ export default function SpotlightSearch() {
               )}
 
               {/* Try searching */}
-              <SectionLabel>Try Searching</SectionLabel>
+              <SectionLabel>{t('trySearching')}</SectionLabel>
               {EXAMPLE_QUERIES.map(ex => (
-                <DropdownRow key={ex.text} onClick={() => setQuery(ex.text)}>
+                <DropdownRow key={ex.key} onClick={() => setQuery(t(ex.key))}>
                   <ex.icon size={14} color="var(--db-blue-text)" style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>{ex.text}</span>
+                  <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>{t(ex.key)}</span>
                 </DropdownRow>
               ))}
 
@@ -374,7 +376,7 @@ export default function SpotlightSearch() {
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <IconSearch size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  Advanced Search
+                  {t('advancedSearch')}
                 </div>
                 <div
                   onClick={() => { setOpen(false); router.push(`/projects/${projectId}/ask`); }}
@@ -386,7 +388,7 @@ export default function SpotlightSearch() {
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <IconMessageCircle size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  Ask Insights
+                  {t('askInsights')}
                 </div>
               </div>
             </div>

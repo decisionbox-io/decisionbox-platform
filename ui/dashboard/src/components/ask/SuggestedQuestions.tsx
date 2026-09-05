@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Loader } from '@mantine/core';
 import { IconSparkles, IconMessageCircle } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { api, SeedContext } from '@/lib/api';
 import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 
@@ -13,6 +14,7 @@ import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 // It renders nothing when the feature is off / unavailable, on error, or when
 // there are no suggestions — so it's safe to always place on the page.
 export default function SuggestedQuestions({ projectId, seed }: { projectId: string; seed: SeedContext }) {
+  const t = useTranslations('askUi');
   const ctx = useChatDrawer();
   const [questions, setQuestions] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,13 +50,13 @@ export default function SuggestedQuestions({ projectId, seed }: { projectId: str
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <IconSparkles size={14} color="var(--db-purple-text)" />
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)' }}>Suggested questions</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)' }}>{t('suggestedQuestions')}</span>
       </div>
 
       {loading ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--db-text-secondary)', fontSize: 13, padding: '4px 0' }}>
           <Loader size="xs" />
-          <span>Thinking of good questions…</span>
+          <span>{t('thinkingOfQuestions')}</span>
         </div>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -89,6 +91,7 @@ export default function SuggestedQuestions({ projectId, seed }: { projectId: str
 }
 
 function AskButton({ onClick, kind }: { onClick: () => void; kind: string }) {
+  const t = useTranslations('askUi');
   return (
     <button
       type="button"
@@ -100,7 +103,7 @@ function AskButton({ onClick, kind }: { onClick: () => void; kind: string }) {
         borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit',
       }}
     >
-      <IconMessageCircle size={14} /> Ask about this {kind}
+      <IconMessageCircle size={14} /> {t('askAboutThis', { type: kind })}
     </button>
   );
 }

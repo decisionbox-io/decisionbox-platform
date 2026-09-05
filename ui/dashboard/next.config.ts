@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
 import { version as pkgVersion } from "./package.json";
 
 // Build metadata for the System page. The Docker build sets
@@ -15,4 +16,9 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// next-intl: point the plugin at the request-scoped config (locale + messages).
+// The enterprise dashboard reuses this community next.config.ts, so wiring it
+// here covers both builds.
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
+export default withNextIntl(nextConfig);

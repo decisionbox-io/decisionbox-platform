@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import {
   Popover, Button, Stack, Checkbox, Loader, ScrollArea, Text, Divider,
 } from '@mantine/core';
@@ -26,6 +27,7 @@ interface Props {
 export default function AddToListMenu({
   projectId, discoveryId, targetType, targetId, onMembershipChange, children,
 }: Props) {
+  const t = useTranslations('listsUi');
   const [opened, setOpened] = useState(false);
   const [lists, setLists] = useState<BookmarkList[] | null>(null);
   // Map of listId -> bookmarkId for lists containing this target.
@@ -124,7 +126,7 @@ export default function AddToListMenu({
         ) : (
           <Stack gap={4}>
             {lists.length === 0 && !creating && (
-              <Text size="xs" c="dimmed" p="xs">No lists yet. Create one below.</Text>
+              <Text size="xs" c="dimmed" p="xs">{t('noListsYet')}</Text>
             )}
             {lists.length > 0 && (
               <ScrollArea.Autosize mah={220}>
@@ -151,7 +153,7 @@ export default function AddToListMenu({
               justify="flex-start"
               fullWidth
             >
-              New list…
+              {t('newListEllipsis')}
             </Button>
           </Stack>
         )}
