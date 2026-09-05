@@ -20,7 +20,7 @@ jest.mock('@/lib/api', () => ({
 // Two supported locales so the switcher renders.
 jest.mock('@/i18n/messages', () => ({ SUPPORTED_LOCALES: ['en', 'tr'] }));
 
-const messages = { language: { label: 'Language' } };
+const messages = { language: { label: 'Language', beta: 'beta' } };
 
 function mount(locale = 'en') {
   return render(
@@ -46,6 +46,16 @@ describe('LanguageSwitcher', () => {
       expect(screen.getByText('Türkçe')).toBeInTheDocument();
       expect(screen.getByText('English')).toBeInTheDocument();
     });
+  });
+
+  it('tags in-testing locales (Turkish) with a beta badge, not English', async () => {
+    mount('en');
+    fireEvent.click(screen.getByLabelText('Language'));
+    const beta = await screen.findAllByText('beta');
+    // Exactly one beta tag (Turkish), and it sits with the Türkçe row.
+    expect(beta).toHaveLength(1);
+    expect(screen.getByText('Türkçe').parentElement).toHaveTextContent('beta');
+    expect(screen.getByText('English').parentElement).not.toHaveTextContent('beta');
   });
 
   it('switching persists the cookie, calls the API and refreshes', async () => {

@@ -1,6 +1,7 @@
 {
   "language": {
-    "label": "Dil"
+    "label": "Dil",
+    "beta": "beta"
   },
   "common": {
     "dashboard": "Panel",

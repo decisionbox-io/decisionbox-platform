@@ -33,6 +33,15 @@ export function setLocaleCookie(locale: string): void {
 // language is a flip rather than a rewrite; no RTL language ships today.
 const RTL_LANGUAGES = new Set(['ar', 'he', 'fa', 'ur']);
 
+// Locales still under test — shown with a "beta" tag in the switcher. English is
+// the stable primary; a language graduates by dropping it from this set.
+const BETA_LOCALES = new Set(['tr']);
+
+// isBetaLocale reports whether a locale is still in testing (switcher tag).
+export function isBetaLocale(locale: string): boolean {
+  return BETA_LOCALES.has(locale.toLowerCase());
+}
+
 // primarySubtag returns the language part of a BCP-47 tag ("tr-TR" -> "tr").
 function primarySubtag(locale: string): string {
   return locale.split('-')[0].toLowerCase();

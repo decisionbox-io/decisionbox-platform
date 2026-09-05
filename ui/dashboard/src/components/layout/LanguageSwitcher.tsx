@@ -2,10 +2,10 @@
 
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
-import { Menu, ActionIcon } from '@mantine/core';
+import { Menu, ActionIcon, Badge, Group } from '@mantine/core';
 import { IconWorld, IconCheck } from '@tabler/icons-react';
 import { api } from '@/lib/api';
-import { localeLabel, setLocaleCookie } from '@/i18n/locales';
+import { isBetaLocale, localeLabel, setLocaleCookie } from '@/i18n/locales';
 import { SUPPORTED_LOCALES } from '@/i18n/messages';
 
 // Language switcher for the app-shell header. Changing the language:
@@ -45,7 +45,14 @@ export default function LanguageSwitcher() {
             onClick={() => change(code)}
             rightSection={code === locale ? <IconCheck size={14} /> : null}
           >
-            {localeLabel(code)}
+            <Group gap={6} wrap="nowrap">
+              {localeLabel(code)}
+              {isBetaLocale(code) && (
+                <Badge size="xs" variant="light" color="gray" radius="sm" style={{ textTransform: 'lowercase' }}>
+                  {t('beta')}
+                </Badge>
+              )}
+            </Group>
           </Menu.Item>
         ))}
       </Menu.Dropdown>

@@ -1,6 +1,7 @@
 {
   "language": {
-    "label": "Language"
+    "label": "Language",
+    "beta": "beta"
   },
   "common": {
     "dashboard": "Dashboard",
