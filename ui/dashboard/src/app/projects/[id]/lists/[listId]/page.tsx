@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import {
   Button, Loader, Modal, TextInput, Textarea, ColorInput, Stack, Group, Text, Menu, ActionIcon,
@@ -14,6 +15,7 @@ import { api, BookmarkListWithItems, StandaloneInsight, StandaloneRecommendation
 export default function ListDetailPage() {
   const { id, listId } = useParams<{ id: string; listId: string }>();
   const router = useRouter();
+  const t = useTranslations('listDetail');
 
   const [list, setList] = useState<BookmarkListWithItems | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -93,11 +95,11 @@ export default function ListDetailPage() {
 
   if (notFound) {
     return (
-      <Shell breadcrumb={[{ label: 'Projects', href: '/' }, { label: 'Lists', href: `/projects/${id}/lists` }, { label: 'Not found' }]}>
+      <Shell breadcrumb={[{ label: t('breadcrumbProjects'), href: '/' }, { label: t('breadcrumbLists'), href: `/projects/${id}/lists` }, { label: t('breadcrumbNotFound') }]}>
         <EmptyState
           icon={<IconBookmark size={32} />}
-          title="List not found"
-          description="This list may have been deleted."
+          title={t('notFoundTitle')}
+          description={t('notFoundDescription')}
         />
       </Shell>
     );
@@ -105,7 +107,7 @@ export default function ListDetailPage() {
 
   if (!list) {
     return (
-      <Shell breadcrumb={[{ label: 'Projects', href: '/' }, { label: 'Lists', href: `/projects/${id}/lists` }]}>
+      <Shell breadcrumb={[{ label: t('breadcrumbProjects'), href: '/' }, { label: t('breadcrumbLists'), href: `/projects/${id}/lists` }]}>
         <div style={{ padding: 32, textAlign: 'center' }}><Loader /></div>
       </Shell>
     );
@@ -117,21 +119,21 @@ export default function ListDetailPage() {
   return (
     <Shell
       breadcrumb={[
-        { label: 'Projects', href: '/' },
-        { label: 'Lists', href: `/projects/${id}/lists` },
+        { label: t('breadcrumbProjects'), href: '/' },
+        { label: t('breadcrumbLists'), href: `/projects/${id}/lists` },
         { label: list.name },
       ]}
       actions={
         <Menu position="bottom-end" width={180}>
           <Menu.Target>
-            <ActionIcon variant="subtle" size="lg" aria-label="List actions">
+            <ActionIcon variant="subtle" size="lg" aria-label={t('listActions')}>
               <IconDots size={18} />
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
-            <Menu.Item leftSection={<IconPencil size={14} />} onClick={openEdit}>Edit</Menu.Item>
+            <Menu.Item leftSection={<IconPencil size={14} />} onClick={openEdit}>{t('edit')}</Menu.Item>
             <Menu.Item leftSection={<IconTrash size={14} />} color="red" onClick={() => setConfirmingDelete(true)}>
-              Delete list
+              {t('deleteList')}
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
@@ -158,50 +160,50 @@ export default function ListDetailPage() {
       {list.items.length === 0 ? (
         <EmptyState
           icon={<IconBookmark size={32} />}
-          title="No bookmarks yet"
-          description="Open an insight or recommendation and use the bookmark button to add it to this list."
+          title={t('emptyTitle')}
+          description={t('emptyDescription')}
         />
       ) : (
         <>
           {insightItems.length > 0 && (
             <>
-              <SectionHeader title="Insights" count={insightItems.length} />
+              <SectionHeader title={t('sectionInsights')} count={insightItems.length} />
               <Stack gap="xs" mb="lg">
-                {insightItems.map((it) => renderItem(it, id, handleRemoveBookmark))}
+                {insightItems.map((it) => renderItem(it, id, handleRemoveBookmark, t))}
               </Stack>
             </>
           )}
           {recommendationItems.length > 0 && (
             <>
-              <SectionHeader title="Recommendations" count={recommendationItems.length} />
+              <SectionHeader title={t('sectionRecommendations')} count={recommendationItems.length} />
               <Stack gap="xs">
-                {recommendationItems.map((it) => renderItem(it, id, handleRemoveBookmark))}
+                {recommendationItems.map((it) => renderItem(it, id, handleRemoveBookmark, t))}
               </Stack>
             </>
           )}
         </>
       )}
 
-      <Modal opened={editing} onClose={() => setEditing(false)} title="Edit list" centered>
+      <Modal opened={editing} onClose={() => setEditing(false)} title={t('editModalTitle')} centered>
         <Stack gap="sm">
           <TextInput
-            label="Name"
+            label={t('nameLabel')}
             value={editName}
             onChange={e => setEditName(e.currentTarget.value)}
             required
             maxLength={200}
           />
           <Textarea
-            label="Description"
+            label={t('descriptionLabel')}
             value={editDescription}
             onChange={e => setEditDescription(e.currentTarget.value)}
             autosize
             minRows={2}
           />
-          <ColorInput label="Color" value={editColor} onChange={setEditColor} format="hex" />
+          <ColorInput label={t('colorLabel')} value={editColor} onChange={setEditColor} format="hex" />
           <Group justify="flex-end" mt="sm">
-            <Button variant="default" onClick={() => setEditing(false)} disabled={submitting}>Cancel</Button>
-            <Button onClick={handleSave} loading={submitting} disabled={!editName.trim()}>Save</Button>
+            <Button variant="default" onClick={() => setEditing(false)} disabled={submitting}>{t('cancel')}</Button>
+            <Button onClick={handleSave} loading={submitting} disabled={!editName.trim()}>{t('save')}</Button>
           </Group>
         </Stack>
       </Modal>
@@ -209,16 +211,15 @@ export default function ListDetailPage() {
       <Modal
         opened={confirmingDelete}
         onClose={() => setConfirmingDelete(false)}
-        title="Delete this list?"
+        title={t('deleteModalTitle')}
         centered
       >
         <Text size="sm" mb="md">
-          This will permanently remove the list and all {list.item_count} bookmark{list.item_count === 1 ? '' : 's'} in it.
-          The underlying insights and recommendations are not affected.
+          {t('deleteModalBody', { count: list.item_count })}
         </Text>
         <Group justify="flex-end">
-          <Button variant="default" onClick={() => setConfirmingDelete(false)}>Cancel</Button>
-          <Button color="red" onClick={handleDeleteList}>Delete</Button>
+          <Button variant="default" onClick={() => setConfirmingDelete(false)}>{t('cancel')}</Button>
+          <Button color="red" onClick={handleDeleteList}>{t('delete')}</Button>
         </Group>
       </Modal>
     </Shell>
@@ -229,6 +230,7 @@ function renderItem(
   it: BookmarkListWithItems['items'][number],
   projectId: string,
   onRemove: (bookmarkId: string) => void,
+  t: ReturnType<typeof useTranslations<'listDetail'>>,
 ) {
   const { bookmark, target, deleted } = it;
 
@@ -245,12 +247,12 @@ function renderItem(
         }}
       >
         <div>
-          <Text size="sm" fw={500}>[removed]</Text>
+          <Text size="sm" fw={500}>{t('removedTitle')}</Text>
           <Text size="xs" c="dimmed">
-            This {bookmark.target_type} has been deleted.
+            {t('removedBody', { type: bookmark.target_type })}
           </Text>
         </div>
-        <ActionIcon variant="subtle" color="red" onClick={() => onRemove(bookmark.id)} aria-label="Remove bookmark">
+        <ActionIcon variant="subtle" color="red" onClick={() => onRemove(bookmark.id)} aria-label={t('removeBookmark')}>
           <IconTrash size={14} />
         </ActionIcon>
       </div>
@@ -287,10 +289,10 @@ function renderItem(
           <Text size="xs" c="dimmed" lineClamp={2} mt={2}>{description}</Text>
         )}
         {bookmark.note && (
-          <Text size="xs" fs="italic" c="dimmed" mt={4}>Note: {bookmark.note}</Text>
+          <Text size="xs" fs="italic" c="dimmed" mt={4}>{t('note', { note: bookmark.note })}</Text>
         )}
       </Link>
-      <ActionIcon variant="subtle" color="red" onClick={() => onRemove(bookmark.id)} aria-label="Remove bookmark">
+      <ActionIcon variant="subtle" color="red" onClick={() => onRemove(bookmark.id)} aria-label={t('removeBookmark')}>
         <IconTrash size={14} />
       </ActionIcon>
     </div>

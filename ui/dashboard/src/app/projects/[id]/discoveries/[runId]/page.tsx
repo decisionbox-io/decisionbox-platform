@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import {
   Accordion, Code, Loader, Text,
 } from '@mantine/core';
@@ -21,6 +22,7 @@ import { InsightValidationBadge } from '@/components/validation/InsightValidatio
 import UnreadDot from '@/components/common/UnreadDot';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
+import { useFormat } from '@/lib/format';
 import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 
 const severityOrder: Record<string, number> = {
@@ -28,6 +30,8 @@ const severityOrder: Record<string, number> = {
 };
 
 export default function DiscoveryDetailPage() {
+  const t = useTranslations('runDetail');
+  const fmt = useFormat();
   const { id, runId } = useParams<{ id: string; runId: string }>();
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [project, setProject] = useState<{ name: string; domain: string; category: string } | null>(null);
@@ -123,7 +127,7 @@ export default function DiscoveryDetailPage() {
   };
 
   if (loading) return <Shell><Loader /></Shell>;
-  if (!discovery) return <Shell><Text>Discovery not found</Text></Shell>;
+  if (!discovery) return <Shell><Text>{t('notFound')}</Text></Shell>;
 
   const insights = discovery.insights || [];
   const recommendations = [...(discovery.recommendations || [])].sort((a, b) => a.priority - b.priority);
@@ -154,9 +158,9 @@ export default function DiscoveryDetailPage() {
   const durationSec = discovery.duration ? (discovery.duration / 1000000000).toFixed(2) : '—';
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
+    { label: t('breadcrumbProjects'), href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
-    { label: new Date(discovery.discovery_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) },
+    { label: fmt.dateTime(discovery.discovery_date, { month: 'short', day: 'numeric' }) },
   ];
 
   const visibleRecs = showAllRecs ? recommendations : recommendations.slice(0, 3);
@@ -166,20 +170,20 @@ export default function DiscoveryDetailPage() {
   // silent (issue #342). Derived from the recommendation-phase log status.
   const recEmptyReason = (() => {
     if (recLog?.status === 'recommendation_parse_error') {
-      return 'The recommendation model returned a response that could not be parsed, so none were saved. This has been logged for investigation.';
+      return t('recEmptyParseError');
     }
     if (recLog?.status === 'skipped_no_eligible_insights') {
-      return 'No insights passed validation, so no recommendations were generated.';
+      return t('recEmptyNoEligibleInsights');
     }
     if ((recLog?.recommendations_dropped_parse ?? 0) > 0) {
-      return 'Some recommendations could not be parsed and were dropped. See the recommendation log for details.';
+      return t('recEmptyDroppedParse');
     }
     if (recLog?.error) {
       // Generation failed (e.g. LLM timeout / rate limit) before parsing —
       // don't present it as a valid empty result.
-      return 'Recommendation generation did not complete (see the recommendation log). This has been logged for investigation.';
+      return t('recEmptyGenerationIncomplete');
     }
-    return 'No actionable recommendations for the insights found.';
+    return t('recEmptyNoActionable');
   })();
 
   return (
@@ -192,13 +196,15 @@ export default function DiscoveryDetailPage() {
           </div>
         )}
         <div style={{ fontSize: 18, fontWeight: 500, marginBottom: 6 }}>
-          Discovery run · {new Date(discovery.discovery_date).toLocaleDateString('en-US', {
-            month: 'long', day: 'numeric', year: 'numeric',
+          {t('runHeading', {
+            date: fmt.dateTime(discovery.discovery_date, {
+              month: 'long', day: 'numeric', year: 'numeric',
+            }),
           })}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <SeverityBadge severity={discovery.run_type === 'partial' ? 'Partial' : 'Complete'}
-            type="status" />
+          <RunStatusBadge label={discovery.run_type === 'partial' ? t('statusPartial') : t('statusComplete')}
+            partial={discovery.run_type === 'partial'} />
           {/* Analysis-area failures collapse to a compact warning icon next to
               the run status. Clicking it expands the full error(s) in a
               scrollable popover instead of dumping the raw text into the page. */}
@@ -210,7 +216,7 @@ export default function DiscoveryDetailPage() {
             }}>{a}</span>
           ))}
           <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-            {discovery.total_steps} queries · completed in {durationSec}s
+            {t('queriesCompleted', { queries: discovery.total_steps, seconds: durationSec })}
           </span>
         </div>
       </div>
@@ -230,23 +236,23 @@ export default function DiscoveryDetailPage() {
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24,
       }}>
-        <StatCard label="Total Insights" value={totalInsights} />
-        <StatCard label="Critical Findings" value={criticalCount}
-          subtitle={`Of ${totalInsights} total insights`}
+        <StatCard label={t('kpiTotalInsights')} value={totalInsights} />
+        <StatCard label={t('kpiCriticalFindings')} value={criticalCount}
+          subtitle={t('kpiCriticalSubtitle', { total: totalInsights })}
           valueColor={criticalCount > 0 ? 'var(--db-red-text)' : undefined} />
-        <StatCard label="Recommendations" value={recommendations.length} />
-        <StatCard label="Avg. Confidence" value={`${avgConfidence}%`}
-          subtitle={`${discovery.summary?.queries_executed || 0} queries executed`} />
+        <StatCard label={t('kpiRecommendations')} value={recommendations.length} />
+        <StatCard label={t('kpiAvgConfidence')} value={t('percentValue', { value: avgConfidence })}
+          subtitle={t('kpiQueriesExecuted', { count: discovery.summary?.queries_executed || 0 })} />
       </div>
 
       {/* Insights Section */}
-      <SectionHeader title="Insights" count={filtered.length} />
+      <SectionHeader title={t('insightsTitle')} count={filtered.length} />
 
       {insights.length > 0 ? (
         <>
           {/* Filter bar */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            {['All', 'Critical', 'High', 'Medium', 'Low'].map(sev => (
+            {(['All', 'Critical', 'High', 'Medium', 'Low'] as const).map(sev => (
               <button key={sev} onClick={() => setSeverityFilter(sev)} style={{
                 fontSize: 12, padding: '4px 12px',
                 border: `0.5px solid var(--db-border-strong)`,
@@ -254,7 +260,7 @@ export default function DiscoveryDetailPage() {
                 background: severityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
                 color: severityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
                 cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
-              }}>{sev}</button>
+              }}>{t(`filter${sev}` as 'filterAll' | 'filterCritical' | 'filterHigh' | 'filterMedium' | 'filterLow')}</button>
             ))}
             <span style={{ flex: 1 }} />
             <SortDropdown value={sortBy} onChange={setSortBy} />
@@ -271,13 +277,13 @@ export default function DiscoveryDetailPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr>
-                  <Th width="35%">Insight</Th>
-                  <Th>Severity</Th>
-                  <Th>Area</Th>
-                  <Th>Validation</Th>
-                  <Th align="right">Users affected</Th>
-                  <Th>Confidence</Th>
-                  <Th width="70px">Feedback</Th>
+                  <Th width="35%">{t('colInsight')}</Th>
+                  <Th>{t('colSeverity')}</Th>
+                  <Th>{t('colArea')}</Th>
+                  <Th>{t('colValidation')}</Th>
+                  <Th align="right">{t('colUsersAffected')}</Th>
+                  <Th>{t('colConfidence')}</Th>
+                  <Th width="70px">{t('colFeedback')}</Th>
                 </tr>
               </thead>
               <tbody>
@@ -292,13 +298,13 @@ export default function DiscoveryDetailPage() {
           </div>
         </>
       ) : (
-        <EmptyState icon={<IconBulb size={32} />} title="No insights found"
-          description="No issues were detected in this discovery run." />
+        <EmptyState icon={<IconBulb size={32} />} title={t('noInsightsTitle')}
+          description={t('noInsightsDescription')} />
       )}
 
       {/* Recommendations Section */}
       <div style={{ marginTop: '2.5rem' }}>
-        <SectionHeader title="Recommendations" count={recommendations.length} />
+        <SectionHeader title={t('recommendationsTitle')} count={recommendations.length} />
       </div>
 
       {recommendations.length > 0 ? (
@@ -325,13 +331,13 @@ export default function DiscoveryDetailPage() {
             onMouseLeave={e => { e.currentTarget.style.opacity = '0.7'; }}
             >
               <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-secondary)' }}>
-                + {hiddenRecCount} more recommendations
+                {t('moreRecommendations', { count: hiddenRecCount })}
               </span>
             </div>
           )}
         </div>
       ) : (
-        <EmptyState icon={<IconClipboardX size={32} />} title="No recommendations available"
+        <EmptyState icon={<IconClipboardX size={32} />} title={t('noRecommendationsTitle')}
           description={recEmptyReason} />
       )}
 
@@ -339,7 +345,7 @@ export default function DiscoveryDetailPage() {
       {((explorationLog && explorationLog.length > 0) ||
         (analysisLog && analysisLog.length > 0)) && (
         <div style={{ marginTop: '2.5rem' }}>
-          <SectionHeader title="How the AI Found This" />
+          <SectionHeader title={t('transparencyTitle')} />
           <Accordion variant="separated" styles={{
             item: { borderColor: 'var(--db-border-default)' },
             control: { fontSize: 13 },
@@ -349,7 +355,7 @@ export default function DiscoveryDetailPage() {
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconDatabase size={16} />
-                    <span style={{ fontWeight: 500 }}>Exploration Steps ({explorationLog.length})</span>
+                    <span style={{ fontWeight: 500 }}>{t('explorationSteps', { count: explorationLog.length })}</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
@@ -362,7 +368,7 @@ export default function DiscoveryDetailPage() {
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                            <span style={{ fontSize: 12, fontWeight: 600 }}>Step {step.step}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600 }}>{t('stepLabel', { step: step.step })}</span>
                             {/* Datasource this step queried — shown only for a non-primary
                                 datasource, so single-warehouse runs stay unlabeled. */}
                             {step.warehouse_id && step.warehouse_id !== 'default' && (
@@ -370,10 +376,10 @@ export default function DiscoveryDetailPage() {
                             )}
                           </span>
                           <span style={{ display: 'flex', gap: 4 }}>
-                            {step.row_count > 0 && <MicroBadge>{step.row_count} rows</MicroBadge>}
-                            {step.execution_time_ms > 0 && <MicroBadge>{step.execution_time_ms}ms</MicroBadge>}
-                            {step.fixed && <MicroBadge color="amber">auto-fixed</MicroBadge>}
-                            {step.error && <MicroBadge color="red">error</MicroBadge>}
+                            {step.row_count > 0 && <MicroBadge>{t('rowsBadge', { count: step.row_count })}</MicroBadge>}
+                            {step.execution_time_ms > 0 && <MicroBadge>{t('msBadge', { ms: step.execution_time_ms })}</MicroBadge>}
+                            {step.fixed && <MicroBadge color="amber">{t('autoFixedBadge')}</MicroBadge>}
+                            {step.error && <MicroBadge color="red">{t('errorBadge')}</MicroBadge>}
                             {step.query && !step.error && (
                               <FeedbackButtons projectId={id} discoveryId={runId} targetType="exploration_step"
                                 targetId={String(step.step)}
@@ -401,7 +407,7 @@ export default function DiscoveryDetailPage() {
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconBulb size={16} />
-                    <span style={{ fontWeight: 500 }}>Analysis by Area ({analysisLog.length})</span>
+                    <span style={{ fontWeight: 500 }}>{t('analysisByArea', { count: analysisLog.length })}</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
@@ -415,10 +421,10 @@ export default function DiscoveryDetailPage() {
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                           <span style={{ fontSize: 13, fontWeight: 500 }}>{step.area_name || step.area_id}</span>
                           <span style={{ display: 'flex', gap: 4 }}>
-                            <MicroBadge>{step.relevant_queries} queries</MicroBadge>
-                            <MicroBadge>{step.tokens_in + step.tokens_out} tokens</MicroBadge>
-                            {step.duration_ms > 0 && <MicroBadge>{(step.duration_ms / 1000).toFixed(1)}s</MicroBadge>}
-                            {step.error && <MicroBadge color="red">error</MicroBadge>}
+                            <MicroBadge>{t('queriesBadge', { count: step.relevant_queries })}</MicroBadge>
+                            <MicroBadge>{t('tokensBadge', { count: step.tokens_in + step.tokens_out })}</MicroBadge>
+                            {step.duration_ms > 0 && <MicroBadge>{t('secondsBadge', { seconds: (step.duration_ms / 1000).toFixed(1) })}</MicroBadge>}
+                            {step.error && <MicroBadge color="red">{t('errorBadge')}</MicroBadge>}
                           </span>
                         </div>
                         {step.error && <div style={{ fontSize: 12, color: 'var(--db-red-text)', marginTop: 4 }}>{step.error}</div>}
@@ -434,7 +440,7 @@ export default function DiscoveryDetailPage() {
                 <Accordion.Control>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconSearch size={16} />
-                    <span style={{ fontWeight: 500 }}>Validation ({validationLog.length})</span>
+                    <span style={{ fontWeight: 500 }}>{t('validationSection', { count: validationLog.length })}</span>
                   </span>
                 </Accordion.Control>
                 <Accordion.Panel>
@@ -460,6 +466,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
   isRead: boolean;
   feedback?: Feedback; onFeedbackUpdate: (fb: Feedback | null) => void;
 }) {
+  const fmt = useFormat();
   return (
     <tr id={insight.id ? `insight-${insight.id}` : undefined}
       style={{ borderBottom: '1px solid var(--db-border-default)' }}
@@ -490,7 +497,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         <InsightValidationBadge validation={insight.validation} />
       </td>
       <td style={{ padding: '10px 12px', textAlign: 'right', verticalAlign: 'top', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-        {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
+        {insight.affected_count > 0 ? fmt.number(insight.affected_count) : '—'}
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <ConfidenceBar confidence={insight.confidence} />
@@ -512,6 +519,8 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
   isRead: boolean;
   feedback?: Feedback | null; onFeedbackUpdate?: (fb: Feedback | null) => void;
 }) {
+  const t = useTranslations('runDetail');
+  const fmt = useFormat();
   const effortColors: Record<string, { bg: string; color: string }> = {
     low: { bg: '#EAF3DE', color: '#3B6D11' },
     medium: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
@@ -550,7 +559,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
       {/* Pills + impact row */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Pill bg={effortStyle.bg} color={effortStyle.color}>
-          {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
+          {t(`effort_${effort}` as 'effort_low' | 'effort_medium' | 'effort_high')}
         </Pill>
         {rec.expected_impact?.estimated_improvement && (
           rec.expected_impact.estimated_improvement.length > 30
@@ -566,12 +575,12 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
       {/* Metadata */}
       <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--db-text-tertiary)', marginBottom: 8, flexWrap: 'wrap' }}>
         {rec.target_segment && (
-          <span>{rec.segment_size?.toLocaleString() || ''} {rec.target_segment}</span>
+          <span>{rec.segment_size ? fmt.number(rec.segment_size) : ''} {rec.target_segment}</span>
         )}
         {rec.expected_impact?.metric && (
           <span>{rec.expected_impact.metric}</span>
         )}
-        {rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+        {rec.confidence > 0 && <span>{t('confidenceLabel', { value: normalizeConfidence(rec.confidence) })}</span>}
       </div>
 
       {/* Related Insights */}
@@ -582,7 +591,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
         if (relatedInsights.length === 0) return null;
         return (
           <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', fontWeight: 500 }}>Addresses:</span>
+            <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', fontWeight: 500 }}>{t('addresses')}</span>
             {relatedInsights.map((insight, i) => (
               <Link key={i} href={`/projects/${projectId}/discoveries/${discoveryId}/insights/${insight.id}`}
                 style={{
@@ -613,7 +622,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
           <div style={{
             fontSize: 11, fontWeight: 500, color: 'var(--db-text-tertiary)',
             textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6,
-          }}>Action steps</div>
+          }}>{t('actionSteps')}</div>
           {rec.actions.map((action, i) => (
             <div key={i} style={{
               display: 'flex', gap: 6, fontSize: 13, color: 'var(--db-text-secondary)',
@@ -631,6 +640,22 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
 
 /* ========== Page-Specific Components ========== */
 
+// Run-status pill. Colours mirror the shared SeverityBadge status map
+// (Complete → green, Partial → amber) but the visible label is translated
+// separately from the status key so localised text never breaks the colour
+// lookup.
+function RunStatusBadge({ label, partial }: { label: string; partial: boolean }) {
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 500, padding: '1px 6px',
+      borderRadius: 'var(--db-radius)',
+      background: partial ? 'var(--db-amber-bg)' : 'var(--db-green-bg)',
+      color: partial ? 'var(--db-amber-text)' : 'var(--db-green-text)',
+      display: 'inline-block',
+    }}>{label}</span>
+  );
+}
+
 function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'red' | 'amber' | 'blue' }) {
   const bg = color === 'red' ? 'var(--db-red-bg)' : color === 'amber' ? 'var(--db-amber-bg)' : color === 'blue' ? 'var(--db-blue-bg)' : 'var(--db-bg-muted)';
   const textColor = color === 'red' ? 'var(--db-red-text)' : color === 'amber' ? 'var(--db-amber-text)' : color === 'blue' ? 'var(--db-blue-text)' : 'var(--db-text-tertiary)';
@@ -642,9 +667,20 @@ function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'r
   );
 }
 
+const SORT_OPTIONS = ['Severity', 'Confidence', 'Users affected', 'Area'] as const;
+type SortOption = typeof SORT_OPTIONS[number];
+const SORT_OPTION_KEYS: Record<SortOption, 'sortSeverity' | 'sortConfidence' | 'sortUsersAffected' | 'sortArea'> = {
+  Severity: 'sortSeverity',
+  Confidence: 'sortConfidence',
+  'Users affected': 'sortUsersAffected',
+  Area: 'sortArea',
+};
+
 function SortDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const t = useTranslations('runDetail');
   const [open, { toggle, close }] = useDisclosure(false);
-  const options = ['Severity', 'Confidence', 'Users affected', 'Area'];
+  const options = SORT_OPTIONS;
+  const sortLabel = (opt: string) => t(SORT_OPTION_KEYS[opt as SortOption] ?? 'sortSeverity');
   return (
     <div style={{ position: 'relative' }}>
       <button onClick={toggle} style={{
@@ -652,7 +688,7 @@ function SortDropdown({ value, onChange }: { value: string; onChange: (v: string
         background: 'none', border: 'none', cursor: 'pointer',
         fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        Sort: {value} <IconChevronDown size={12} />
+        {t('sortPrefix', { value: sortLabel(value) })} <IconChevronDown size={12} />
       </button>
       {open && (
         <div style={{
@@ -671,7 +707,7 @@ function SortDropdown({ value, onChange }: { value: string; onChange: (v: string
               }}
               onMouseEnter={e => { e.currentTarget.style.background = 'var(--db-bg-muted)'; }}
               onMouseLeave={e => { if (opt !== value) e.currentTarget.style.background = 'transparent'; }}
-            >{opt}</div>
+            >{sortLabel(opt)}</div>
           ))}
         </div>
       )}
