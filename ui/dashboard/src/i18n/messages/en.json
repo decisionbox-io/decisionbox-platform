@@ -1104,5 +1104,11 @@
     "agentSubtitle_verifier": "Checks the claim against the evidence cited by the AI.",
     "agentSubtitle_refuter": "Searches for evidence that contradicts the claim.",
     "nVerified": "{count} verified"
+  },
+  "validationRouter": {
+    "validation": {
+      "couldNotStartValidation": "Could not start validation",
+      "cancelFailed": "Cancel failed"
+    }
   }
 }

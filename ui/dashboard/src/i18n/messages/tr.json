@@ -1104,5 +1104,11 @@
     "agentSubtitle_verifier": "İddiayı, yapay zekânın atıf yaptığı kanıta karşı kontrol eder.",
     "agentSubtitle_refuter": "İddiayla çelişen kanıt arar.",
     "nVerified": "{count} doğrulandı"
+  },
+  "validationRouter": {
+    "validation": {
+      "couldNotStartValidation": "Doğrulama başlatılamadı",
+      "cancelFailed": "İptal başarısız oldu"
+    }
   }
 }
