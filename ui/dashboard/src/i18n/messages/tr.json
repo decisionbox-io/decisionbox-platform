@@ -221,7 +221,13 @@
     "savedMessage": "Evrim ayarları güncellendi",
     "errorTitle": "Hata",
     "doneTitle": "Tamamlandı",
-    "decideDoneMessage": "{action, select, approve {Öneri onaylandı} reject {Öneri reddedildi} revert {Öneri geri alındı} other {Öneri güncellendi}}"
+    "decideDoneMessage": "{action, select, approve {Öneri onaylandı} reject {Öneri reddedildi} revert {Öneri geri alındı} other {Öneri güncellendi}}",
+    "kindHypothesis": "Hipotez",
+    "kindNextTask": "Sonraki görev",
+    "action_add_area": "Ekle",
+    "action_edit_area": "Düzenle",
+    "action_disable_area": "Devre dışı bırak",
+    "action_enable_area": "Etkinleştir"
   },
   "spotlight": {
     "placeholderSearch": "İçgörülerde ara...",
@@ -995,7 +1001,9 @@
     "knowledgeSourcesUploadHelp": "Web sitesi URL'leri, DOCX/XLSX/CSV/MD/TXT dosyaları yükleyin veya işletmenizi anlatan serbest metin notları yapıştırın.",
     "knowledgeSourcesNotConfiguredTitle": "Bilgi kaynakları yapılandırılmadı",
     "knowledgeSourcesNotConfiguredBody": "Bu dağıtımda kayıtlı bir bilgi kaynağı sağlayıcısı yok. Paket oluşturma çalışır, ancak kaynak metin bağlamı olmadan sonuç yalnızca veri ambarı şemasına dayanır.",
-    "embeddingProvider": "Gömme Sağlayıcısı"
+    "embeddingProvider": "Gömme Sağlayıcısı",
+    "kindHypothesis": "Hipotez",
+    "kindNextTask": "Sonraki görev"
   },
   "systemSearch": {
     "title": "Sistem",

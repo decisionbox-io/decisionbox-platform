@@ -104,12 +104,12 @@ export function UpcomingInvestigation({ projectId }: { projectId: string }) {
         )}
 
         <Stack gap="xs">
-          {shown.map((t) => (
-            <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
-              <Badge size="xs" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>
-                {t.kind.replace('_', ' ')}
+          {shown.map((task) => (
+            <Group key={task.id} gap="sm" wrap="nowrap" align="flex-start">
+              <Badge size="xs" variant="light" color={task.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>
+                {task.kind === 'hypothesis' ? t('kindHypothesis') : t('kindNextTask')}
               </Badge>
-              <Text size="sm" lineClamp={1}>{t.title || t.text}</Text>
+              <Text size="sm" lineClamp={1}>{task.title || task.text}</Text>
             </Group>
           ))}
         </Stack>

@@ -295,7 +295,7 @@ export default function LedgerPage() {
                 const expanded = openThreads.has(task.id);
                 return (
                   <Group key={task.id} gap="sm" wrap="nowrap" align="flex-start">
-                    <Badge size="sm" variant="light" color={task.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{task.kind.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="light" color={task.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{task.kind === 'hypothesis' ? t('kindHypothesis') : t('kindNextTask')}</Badge>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <Group gap="xs" wrap="nowrap">
                         <Text size="sm" fw={600}>{task.title || task.text}</Text>
@@ -358,7 +358,7 @@ export default function LedgerPage() {
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="flex-start">
                   <div style={{ minWidth: 0 }}>
                     <Group gap="xs" mb={2}>
-                      <Badge size="sm" variant="light">{p.action.replace('_', ' ')}</Badge>
+                      <Badge size="sm" variant="light">{t(`action_${p.action}`)}</Badge>
                       <Text size="sm" fw={600}>{p.area_name || p.area_id}</Text>
                     </Group>
                     <Text size="sm" c="dimmed">{p.rationale}</Text>
@@ -397,7 +397,7 @@ export default function LedgerPage() {
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="center">
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
                     <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{p.status}</Badge>
-                    <Badge size="sm" variant="outline">{p.action.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="outline">{t(`action_${p.action}`)}</Badge>
                     <Text size="sm" lineClamp={1}>{p.area_name || p.area_id}</Text>
                     {p.decided_by && <Text size="xs" c="dimmed">{t('decidedBy', { name: p.decided_by })}</Text>}
                   </Group>

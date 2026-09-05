@@ -221,7 +221,13 @@
     "savedMessage": "Evolution settings updated",
     "errorTitle": "Error",
     "doneTitle": "Done",
-    "decideDoneMessage": "{action, select, approve {Proposal approved} reject {Proposal rejected} revert {Proposal reverted} other {Proposal updated}}"
+    "decideDoneMessage": "{action, select, approve {Proposal approved} reject {Proposal rejected} revert {Proposal reverted} other {Proposal updated}}",
+    "kindHypothesis": "Hypothesis",
+    "kindNextTask": "Next task",
+    "action_add_area": "Add",
+    "action_edit_area": "Edit",
+    "action_disable_area": "Disable",
+    "action_enable_area": "Enable"
   },
   "spotlight": {
     "placeholderSearch": "Search insights...",
@@ -995,7 +1001,9 @@
     "knowledgeSourcesUploadHelp": "Upload website URLs, DOCX/XLSX/CSV/MD/TXT files, or paste free-text notes describing your business.",
     "knowledgeSourcesNotConfiguredTitle": "Knowledge sources not configured",
     "knowledgeSourcesNotConfiguredBody": "No knowledge-sources provider is registered on this deployment. Pack generation will run, but without the source-text context the result will rely on the warehouse schema alone.",
-    "embeddingProvider": "Embedding Provider"
+    "embeddingProvider": "Embedding Provider",
+    "kindHypothesis": "Hypothesis",
+    "kindNextTask": "Next task"
   },
   "systemSearch": {
     "title": "System",
