@@ -1,6 +1,7 @@
 'use client';
 
 import { Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { ConfigField, ProviderMeta } from '@/lib/api';
 
 export interface WarehouseFormState {
@@ -70,6 +71,7 @@ interface Props {
 //   - projects/new/page.tsx       (Step 2 of the new-project wizard)
 //   - WarehouseConfigPanel.tsx    (settings tab + plugin-overlaid wizards)
 export function WarehouseFormFields({ providers, value, onChange, hasSavedCredential }: Props) {
+  const t = useTranslations('warehouseForm');
   const selected = providers.find((p) => p.id === value.provider);
   const authMethods = selected?.auth_methods || [];
   const selectedAuth = authMethods.find((m) => m.id === value.authMethod);
@@ -95,9 +97,9 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
   return (
     <Stack>
       <Select
-        label="Warehouse Provider"
+        label={t('providerLabel')}
         required
-        placeholder="Select warehouse"
+        placeholder={t('providerPlaceholder')}
         data={providers.map((p) => ({ value: p.id, label: p.name }))}
         value={value.provider}
         onChange={(v) => setProvider(v || '')}
@@ -116,9 +118,9 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
       {authMethods.length > 0 && (
         <Select
           key={`auth-${value.provider}`}
-          label="Authentication"
+          label={t('authLabel')}
           required
-          placeholder="Select auth method"
+          placeholder={t('authPlaceholder')}
           data={authMethods.map((m) => ({ value: m.id, label: m.name }))}
           value={value.authMethod}
           onChange={(v) => onChange({ ...value, authMethod: v || '', credential: '' })}
@@ -138,10 +140,10 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
 
       {authCredField && (
         <Textarea
-          label={hasSavedCredential ? `Update ${authCredField.label}` : authCredField.label}
+          label={hasSavedCredential ? t('updateField', { label: authCredField.label }) : authCredField.label}
           required={authCredField.required && !hasSavedCredential}
-          placeholder={authCredField.placeholder || `Enter ${authCredField.label.toLowerCase()}`}
-          description={(authCredField.description || '') + (hasSavedCredential ? ' Stored encrypted. Leave empty to keep current.' : ' Stored encrypted.')}
+          placeholder={authCredField.placeholder || t('enterField', { label: authCredField.label })}
+          description={(authCredField.description || '') + (hasSavedCredential ? ' ' + t('storedEncryptedKeep') : ' ' + t('storedEncrypted'))}
           value={value.credential}
           onChange={(e) => onChange({ ...value, credential: e.target.value })}
           minRows={3}
@@ -150,18 +152,18 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
         />
       )}
 
-      <Text size="sm" fw={600} mt="sm">Filter (optional)</Text>
-      <Text size="xs" c="dimmed">For shared datasets. Leave empty if the entire dataset is yours.</Text>
+      <Text size="sm" fw={600} mt="sm">{t('filterHeader')}</Text>
+      <Text size="xs" c="dimmed">{t('filterHelp')}</Text>
       <Group grow>
         <TextInput
-          label="Filter Field"
-          placeholder="e.g. app_id"
+          label={t('filterFieldLabel')}
+          placeholder={t('filterFieldPlaceholder')}
           value={value.filterField}
           onChange={(e) => onChange({ ...value, filterField: e.target.value })}
         />
         <TextInput
-          label="Filter Value"
-          placeholder="e.g. my-app-123"
+          label={t('filterValueLabel')}
+          placeholder={t('filterValuePlaceholder')}
           value={value.filterValue}
           onChange={(e) => onChange({ ...value, filterValue: e.target.value })}
         />

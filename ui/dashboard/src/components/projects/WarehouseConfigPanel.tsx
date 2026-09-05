@@ -5,6 +5,7 @@ import {
   Alert, Button, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { useTranslations } from 'next-intl';
 import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import { api, Project, ProviderMeta, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 import {
@@ -46,6 +47,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 //   - settings/page.tsx          (variant="page")
 //   - plugin-overlaid wizards    (variant="wizard")
 export default function WarehouseConfigPanel({ projectId, variant, onSaved }: WarehouseConfigPanelProps) {
+  const t = useTranslations('warehouseForm');
   const [project, setProject] = useState<Project | null>(null);
   const [providers, setProviders] = useState<ProviderMeta[]>([]);
   const [loading, setLoading] = useState(true);
@@ -114,11 +116,11 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
         const updated = await api.listSecrets(projectId);
         setSecretsList(updated || []);
       }
-      notifications.show({ title: 'Saved', message: 'Warehouse configuration updated', color: 'green' });
+      notifications.show({ title: t('savedTitle'), message: t('savedMessage'), color: 'green' });
       setProject(saved);
       onSaved?.(saved);
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setSaving(false);
     }
@@ -126,12 +128,12 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
 
   if (loading) return <Loader />;
   if (error) return <Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert>;
-  if (!project) return <Text>Project not found</Text>;
+  if (!project) return <Text>{t('projectNotFound')}</Text>;
 
   const header = variant === 'page' ? (
     <Stack gap={2} mb="sm">
-      <Title order={4}>Data Warehouse</Title>
-      <Text size="xs" c="dimmed">Connection details the agent uses to read schemas and run queries.</Text>
+      <Title order={4}>{t('panelTitle')}</Title>
+      <Text size="xs" c="dimmed">{t('panelDescription')}</Text>
     </Stack>
   ) : null;
 
@@ -143,7 +145,7 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
         <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
           <Group gap="xs">
             <IconShieldCheck size={14} color="var(--db-green-text)" />
-            <Text size="xs" fw={500}>{credField.label} saved</Text>
+            <Text size="xs" fw={500}>{t('credentialSaved', { label: credField.label })}</Text>
             <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
               {secretsList.find((s) => s.key === 'warehouse-credentials')?.masked}
             </Text>
@@ -162,7 +164,7 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
 
       <Group justify="flex-end" mt="sm">
         <Button onClick={handleSave} loading={saving} disabled={!isValid}>
-          {variant === 'wizard' ? 'Save and continue' : 'Save warehouse'}
+          {variant === 'wizard' ? t('saveAndContinue') : t('saveWarehouse')}
         </Button>
       </Group>
     </PanelSection>
@@ -198,13 +200,14 @@ function projectToFormState(proj: Project, providers: ProviderMeta[]): Warehouse
 export type TestConnectionTarget = 'warehouse' | 'llm' | 'embedding' | 'blurb-llm';
 
 export function TestConnectionButton({ projectId, target }: { projectId: string; target: TestConnectionTarget }) {
+  const t = useTranslations('warehouseForm');
   const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const labels: Record<TestConnectionTarget, string> = {
-    warehouse: 'Test Warehouse Connection',
-    llm: 'Test LLM Connection',
-    embedding: 'Test Embedding Connection',
-    'blurb-llm': 'Test Blurb LLM Connection',
+    warehouse: t('testWarehouse'),
+    llm: t('testLlm'),
+    embedding: t('testEmbedding'),
+    'blurb-llm': t('testBlurbLlm'),
   };
   const label = labels[target];
 
@@ -220,10 +223,10 @@ export function TestConnectionButton({ projectId, target }: { projectId: string;
       );
       if (result.success) {
         setStatus('success');
-        notifications.show({ title: 'Connection successful', message: `${result.provider} is reachable`, color: 'green' });
+        notifications.show({ title: t('connectionSuccessTitle'), message: t('connectionReachable', { provider: result.provider ?? '' }), color: 'green' });
       } else {
         setStatus('error');
-        setErrorMsg(result.error || 'Unknown error');
+        setErrorMsg(result.error || t('unknownError'));
       }
     } catch (e: unknown) {
       setStatus('error');
@@ -236,7 +239,7 @@ export function TestConnectionButton({ projectId, target }: { projectId: string;
       <Group gap="sm" align="center">
         <Button variant="default" size="xs" onClick={handleTest} disabled={status === 'testing'}
           leftSection={status === 'testing' ? <Loader size={14} /> : <IconPlugConnected size={14} />}>
-          {status === 'testing' ? 'Testing...' : label}
+          {status === 'testing' ? t('testing') : label}
         </Button>
         {status === 'success' && <IconCheck size={16} color="var(--db-green-text)" />}
         {status === 'error' && <IconX size={16} color="var(--db-red-text)" />}

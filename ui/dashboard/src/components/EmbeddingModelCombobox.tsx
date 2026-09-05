@@ -17,6 +17,7 @@
 import {
   Combobox, InputBase, Stack, Text, useCombobox,
 } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { EmbeddingLiveModel, EmbeddingProviderMeta } from '@/lib/api';
 
 interface Props {
@@ -27,6 +28,7 @@ interface Props {
 }
 
 export function EmbeddingModelCombobox({ providerMeta, liveModels, value, onChange }: Props) {
+  const t = useTranslations('llmForms');
   const combobox = useCombobox();
 
   // Merge catalog + live rows. When both sources have the same ID we
@@ -37,11 +39,13 @@ export function EmbeddingModelCombobox({ providerMeta, liveModels, value, onChan
   const selected = rows.find((r) => r.id === value);
   const description = (() => {
     if (selected) {
-      const dim = selected.dimensions > 0 ? `${selected.dimensions}-dim` : 'dimensions unknown';
+      const dim = selected.dimensions > 0
+        ? t('dimCount', { count: selected.dimensions })
+        : t('dimensionsUnknown');
       if (selected.lifecycle) return `${selected.displayName} · ${dim} · ${selected.lifecycle}`;
-      return `${selected.displayName} · ${dim} vectors`;
+      return t('embeddingModelDescription', { name: selected.displayName, dim });
     }
-    return 'Pick a shipped model or type any model ID the provider supports.';
+    return t('pickOrTypeModel');
   })();
 
   const options = rows.map((r) => (
@@ -67,8 +71,8 @@ export function EmbeddingModelCombobox({ providerMeta, liveModels, value, onChan
     >
       <Combobox.Target>
         <InputBase
-          label="Embedding Model"
-          placeholder="text-embedding-3-large (or type a custom model ID)"
+          label={t('embeddingModel')}
+          placeholder={t('embeddingModelPlaceholder', { example: 'text-embedding-3-large' })}
           value={value}
           onChange={(e) => {
             onChange(e.currentTarget.value);
@@ -81,7 +85,7 @@ export function EmbeddingModelCombobox({ providerMeta, liveModels, value, onChan
       </Combobox.Target>
       <Combobox.Dropdown>
         <Combobox.Options>
-          {options.length > 0 ? options : <Combobox.Empty>No models — type a model ID.</Combobox.Empty>}
+          {options.length > 0 ? options : <Combobox.Empty>{t('noModelsTypeId')}</Combobox.Empty>}
         </Combobox.Options>
       </Combobox.Dropdown>
     </Combobox>

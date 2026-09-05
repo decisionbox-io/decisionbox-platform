@@ -6,6 +6,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconShieldCheck } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
 import {
   api, EmbeddingProviderMeta, LiveModel, Project, ProviderMeta, SecretEntryResponse,
@@ -58,6 +59,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 //   - settings/page.tsx          (variant="page")
 //   - plugin-overlaid wizards    (variant="wizard")
 export default function ProvidersPanel({ projectId, variant, onSaved }: ProvidersPanelProps) {
+  const t = useTranslations('llmForms');
   const [project, setProject] = useState<Project | null>(null);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
@@ -247,11 +249,11 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
       if (embedding.apiKey) setEmbedding((prev) => ({ ...prev, apiKey: '' }));
       const updated = await api.listSecrets(projectId);
       setSecretsList(updated || []);
-      notifications.show({ title: 'Saved', message: 'Provider configuration updated', color: 'green' });
+      notifications.show({ title: t('saved'), message: t('providerConfigUpdated'), color: 'green' });
       setProject(saved);
       onSaved?.(saved);
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('error'), message: (e as Error).message, color: 'red' });
     } finally {
       setSaving(false);
     }
@@ -259,12 +261,12 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
 
   if (loading) return <Loader />;
   if (error) return <Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert>;
-  if (!project) return <Text>Project not found</Text>;
+  if (!project) return <Text>{t('projectNotFound')}</Text>;
 
   const header = variant === 'page' ? (
     <Stack gap={2} mb="sm">
-      <Title order={4}>AI &amp; Embedding Providers</Title>
-      <Text size="xs" c="dimmed">The LLM the agent calls during analysis and the embedding model that backs schema indexing.</Text>
+      <Title order={4}>{t('aiEmbeddingProviders')}</Title>
+      <Text size="xs" c="dimmed">{t('aiEmbeddingProvidersHelp')}</Text>
     </Stack>
   ) : null;
 
@@ -272,13 +274,13 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
     <PanelSection>
       {header}
 
-      <Title order={5}>AI Provider</Title>
+      <Title order={5}>{t('aiProvider')}</Title>
 
       {hasSavedLLMKey && llmNeedsCredential && (
         <div style={{ borderRadius: 'var(--db-radius)', background: 'var(--db-bg-muted)', padding: 8 }}>
           <Group gap="xs">
             <IconShieldCheck size={14} color="var(--db-green-text)" />
-            <Text size="xs" fw={500}>Credentials saved</Text>
+            <Text size="xs" fw={500}>{t('credentialsSaved')}</Text>
             <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
               {secretsList.find((s) => s.key === 'llm-credentials')?.masked}
             </Text>
@@ -311,11 +313,14 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         <TestConnectionButton projectId={projectId} target="llm" />
       )}
 
-      <Title order={5} mt="md">Embedding Provider</Title>
+      <Title order={5} mt="md">{t('embeddingProvider')}</Title>
       <Text size="xs" c="dimmed" mb="xs">
-        Required for schema indexing and semantic search.
+        {t('embeddingProviderHelp')}
         {hasSavedEmbeddingKey ? (
-          <> Current credentials: <b>{secretsList.find(s => s.key === 'embedding-credentials')?.masked}</b>. Leave the credentials field blank to keep them.</>
+          <> {t.rich('embeddingCurrentCredentials', {
+            masked: secretsList.find(s => s.key === 'embedding-credentials')?.masked ?? '',
+            b: (chunks) => <b>{chunks}</b>,
+          })}</>
         ) : null}
       </Text>
       <EmbeddingEditor
@@ -333,7 +338,7 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
 
       <Group justify="flex-end" mt="sm">
         <Button onClick={handleSave} loading={saving} disabled={!isValid}>
-          {variant === 'wizard' ? 'Save and continue' : 'Save providers'}
+          {variant === 'wizard' ? t('saveAndContinue') : t('saveProviders')}
         </Button>
       </Group>
     </PanelSection>

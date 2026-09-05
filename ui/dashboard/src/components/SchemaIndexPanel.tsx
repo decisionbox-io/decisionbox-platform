@@ -20,9 +20,11 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Alert, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconAlertCircle, IconCheck, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
 import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
+import { useFormat } from '@/lib/format';
 
 interface Props {
   projectId: string;
@@ -46,14 +48,19 @@ interface Props {
 const POLL_MS = 2000;
 const LOG_LIMIT = 300; // recent lines on first open; then since-cursor
 
-const PHASE_LABELS: Record<string, string> = {
-  listing_tables: 'Listing tables',
-  schema_discovery: 'Discovering table schemas',
-  describing_tables: 'Generating blurbs',
-  embedding: 'Building vector index',
+// Maps a worker phase enum to its i18n key under providerSetup. Kept as a
+// data map (enum key → message key) so the phase values stay stable while
+// the human labels are translated at render time.
+const PHASE_LABEL_KEYS: Record<string, string> = {
+  listing_tables: 'phaseListingTables',
+  schema_discovery: 'phaseSchemaDiscovery',
+  describing_tables: 'phaseDescribingTables',
+  embedding: 'phaseEmbedding',
 };
 
 export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false }: Props) {
+  const t = useTranslations('providerSetup');
+  const fmt = useFormat();
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -181,7 +188,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
   };
 
   const handleReindex = async () => {
-    if (!confirm('Re-index schema? Drops the current index and rebuilds from scratch. Costs time + LLM tokens.')) {
+    if (!confirm(t('reindexConfirm'))) {
       return;
     }
     setBusy(true);
@@ -209,13 +216,13 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     return 0;
   })();
   const phaseLabel = (() => {
-    if (status?.status === 'ready') return 'Ready';
-    if (status?.status === 'failed') return 'Failed';
-    if (status?.status === 'cancelled') return 'Cancelled';
-    if (status?.status === 'needs_reindex') return 'Cache cleared — re-index required';
-    if (status?.status === 'pending_indexing') return 'Queued';
-    if (progress?.phase && PHASE_LABELS[progress.phase]) return PHASE_LABELS[progress.phase];
-    return 'Not indexed';
+    if (status?.status === 'ready') return t('statusReady');
+    if (status?.status === 'failed') return t('statusFailed');
+    if (status?.status === 'cancelled') return t('statusCancelled');
+    if (status?.status === 'needs_reindex') return t('statusNeedsReindex');
+    if (status?.status === 'pending_indexing') return t('statusQueued');
+    if (progress?.phase && PHASE_LABEL_KEYS[progress.phase]) return t(PHASE_LABEL_KEYS[progress.phase]);
+    return t('statusNotIndexed');
   })();
   const bannerColor =
     status?.status === 'ready' ? 'green'
@@ -242,7 +249,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       // mounts, so the panel re-appears the instant the first
       // poll returns a non-ready status.
       ? null
-      : <Text size="sm" c="dimmed">Loading schema index status...</Text>;
+      : <Text size="sm" c="dimmed">{t('loadingStatus')}</Text>;
   }
 
   // hideWhenReady is the opt-in for surfaces (project home, plugin
@@ -257,17 +264,17 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     return null;
   }
 
-  const updatedDate = status.updated_at ? new Date(status.updated_at).toLocaleString() : null;
+  const updatedDate = status.updated_at ? fmt.dateTime(status.updated_at) : null;
 
   const actions = (() => {
     if (status.status === 'failed') {
       return (
         <Group gap="xs">
           <Button size="xs" leftSection={<IconRotateClockwise size={14} />} onClick={handleRetry} loading={busy}>
-            Retry indexing
+            {t('retryIndexing')}
           </Button>
           <Button size="xs" variant="subtle" onClick={handleReindex} loading={busy}>
-            Reset + rebuild
+            {t('resetRebuild')}
           </Button>
         </Group>
       );
@@ -275,14 +282,14 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     if (status.status === '') {
       return (
         <Button size="xs" leftSection={<IconRotateClockwise size={14} />} onClick={handleReindex} loading={busy}>
-          Build schema index
+          {t('buildSchemaIndex')}
         </Button>
       );
     }
     if (status.status === 'ready') {
       return (
         <Button size="xs" variant="subtle" leftSection={<IconRefresh size={14} />} onClick={handleReindex} loading={busy}>
-          Re-index
+          {t('reindex')}
         </Button>
       );
     }
@@ -300,7 +307,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
           onClick={() => setCancelModalOpen(true)}
           disabled={status.status !== 'indexing' || busy}
         >
-          Cancel indexing
+          {t('cancelIndexing')}
         </Button>
       );
     }
@@ -308,7 +315,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       return (
         <Group gap="xs">
           <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={handleReindex} loading={busy}>
-            Re-index
+            {t('reindex')}
           </Button>
         </Group>
       );
@@ -317,7 +324,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       return (
         <Group gap="xs">
           <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={handleReindex} loading={busy}>
-            Re-index now
+            {t('reindexNow')}
           </Button>
         </Group>
       );
@@ -331,9 +338,9 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
         <Stack gap={6}>
           <Group justify="space-between" wrap="nowrap">
             <Text size="sm" fw={500}>
-              {title || 'Schema index'}: {phaseLabel}
+              {t('headingWithPhase', { title: title || t('schemaIndex'), phase: phaseLabel })}
               {status.status === 'ready' && updatedDate && (
-                <Text component="span" size="xs" c="dimmed" ml="sm">last built {updatedDate}</Text>
+                <Text component="span" size="xs" c="dimmed" ml="sm">{t('lastBuilt', { date: updatedDate })}</Text>
               )}
             </Text>
             {actions}
@@ -351,14 +358,18 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
           />
           {(status.status === 'indexing' || status.status === 'pending_indexing') && (
             <Text size="xs" c="dimmed">
-              {total > 0 ? `${done} of ${total} tables (${pct}%)` : 'Starting up…'}
-              {' '}— you can close this tab, indexing continues in the background.
+              {total > 0
+                ? t('progressCounts', { done, total, pct })
+                : t('progressStartingUp')}
             </Text>
           )}
           {(status.status === 'ready' || status.status === 'failed' || status.status === 'cancelled') &&
             ((progress?.input_tokens ?? 0) > 0 || (progress?.output_tokens ?? 0) > 0) && (
               <Text size="xs" c="dimmed">
-                Blurb LLM tokens — In {progress?.input_tokens ?? 0} · Out {progress?.output_tokens ?? 0}
+                {t('blurbTokens', {
+                  in: fmt.number(progress?.input_tokens ?? 0),
+                  out: fmt.number(progress?.output_tokens ?? 0),
+                })}
               </Text>
             )}
           {status.status === 'failed' && status.error && (
@@ -379,9 +390,11 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
         >
           <Group justify="space-between" p="xs" style={{ borderBottom: '1px solid var(--mantine-color-gray-3)' }}>
             <Text size="xs" c="dimmed">
-              Agent log tail — latest {logs.length} lines {status.status === 'indexing' ? '· streaming' : ''}
+              {status.status === 'indexing'
+                ? t('logTailStreaming', { count: logs.length })
+                : t('logTail', { count: logs.length })}
             </Text>
-            <Text size="xs" c="dimmed">Toggle via Project Settings → Advanced</Text>
+            <Text size="xs" c="dimmed">{t('logToggleHint')}</Text>
           </Group>
           <ScrollArea h={280} offsetScrollbars type="always">
             <pre style={{
@@ -393,8 +406,8 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
               wordBreak: 'break-all',
             }}>
               {logs.length === 0
-                ? '(no log lines yet — the agent will start emitting when indexing begins)'
-                : logs.map((l) => `${new Date(l.created_at).toLocaleTimeString()}  ${l.line}`).join('\n')}
+                ? t('logEmpty')
+                : logs.map((l) => `${fmt.dateTime(l.created_at, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}  ${l.line}`).join('\n')}
             </pre>
           </ScrollArea>
         </div>
@@ -403,25 +416,22 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       <Modal
         opened={cancelModalOpen}
         onClose={() => setCancelModalOpen(false)}
-        title="Cancel schema indexing?"
+        title={t('cancelModalTitle')}
         centered
       >
         <Stack gap="md">
           <Text size="sm">
-            This stops the running agent subprocess. The partial progress is
-            discarded and the project state switches to <b>Cancelled</b>. You
-            can restart it any time via <b>Re-index</b>.
+            {t.rich('cancelModalBody', { b: (chunks) => <b>{chunks}</b> })}
           </Text>
           <Text size="xs" c="dimmed">
-            Cached table schemas from this run stay in Mongo — a restart will
-            skip the slow catalog pass unless the warehouse config has changed.
+            {t('cancelModalHint')}
           </Text>
           <Group justify="flex-end" gap="xs">
             <Button variant="subtle" onClick={() => setCancelModalOpen(false)}>
-              Keep running
+              {t('keepRunning')}
             </Button>
             <Button color="red" leftSection={<IconPlayerStop size={14} />} onClick={handleCancel} loading={busy}>
-              Yes, cancel
+              {t('yesCancel')}
             </Button>
           </Group>
         </Stack>
