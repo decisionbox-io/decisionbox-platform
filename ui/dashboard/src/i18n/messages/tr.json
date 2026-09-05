@@ -227,7 +227,21 @@
     "action_add_area": "Ekle",
     "action_edit_area": "Düzenle",
     "action_disable_area": "Devre dışı bırak",
-    "action_enable_area": "Etkinleştir"
+    "action_enable_area": "Etkinleştir",
+    "historyStatus_open": "Açık",
+    "historyStatus_in_progress": "Sürüyor",
+    "historyStatus_done": "Tamamlandı",
+    "historyStatus_dropped": "Bırakıldı",
+    "proposalStatus_proposed": "Önerildi",
+    "proposalStatus_approved": "Onaylandı",
+    "proposalStatus_rejected": "Reddedildi",
+    "proposalStatus_applied": "Uygulandı",
+    "proposalStatus_reverted": "Geri alındı",
+    "findingStatus_confirmed": "Doğrulandı",
+    "findingStatus_monitoring": "İzleniyor",
+    "findingStatus_changed": "Değişti",
+    "findingStatus_resolved": "Çözüldü",
+    "findingStatus_refuted": "Çürütüldü"
   },
   "spotlight": {
     "placeholderSearch": "İçgörülerde ara...",
@@ -641,7 +655,11 @@
     "inputTokens": "Giriş Jetonları",
     "outputTokens": "Çıkış Jetonları",
     "validationLegacyTitle": "Doğrulama ({count, plural, other {# eski denetim}})",
-    "similarInsights": "Benzer İçgörüler"
+    "similarInsights": "Benzer İçgörüler",
+    "severity_critical": "Kritik",
+    "severity_high": "Yüksek",
+    "severity_medium": "Orta",
+    "severity_low": "Düşük"
   },
   "listDetail": {
     "breadcrumbProjects": "Projeler",

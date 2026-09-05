@@ -227,7 +227,21 @@
     "action_add_area": "Add",
     "action_edit_area": "Edit",
     "action_disable_area": "Disable",
-    "action_enable_area": "Enable"
+    "action_enable_area": "Enable",
+    "historyStatus_open": "Open",
+    "historyStatus_in_progress": "In progress",
+    "historyStatus_done": "Done",
+    "historyStatus_dropped": "Dropped",
+    "proposalStatus_proposed": "Proposed",
+    "proposalStatus_approved": "Approved",
+    "proposalStatus_rejected": "Rejected",
+    "proposalStatus_applied": "Applied",
+    "proposalStatus_reverted": "Reverted",
+    "findingStatus_confirmed": "Confirmed",
+    "findingStatus_monitoring": "Monitoring",
+    "findingStatus_changed": "Changed",
+    "findingStatus_resolved": "Resolved",
+    "findingStatus_refuted": "Refuted"
   },
   "spotlight": {
     "placeholderSearch": "Search insights...",
@@ -641,7 +655,11 @@
     "inputTokens": "Input Tokens",
     "outputTokens": "Output Tokens",
     "validationLegacyTitle": "Validation ({count, plural, one {# legacy check} other {# legacy checks}})",
-    "similarInsights": "Similar Insights"
+    "similarInsights": "Similar Insights",
+    "severity_critical": "Critical",
+    "severity_high": "High",
+    "severity_medium": "Medium",
+    "severity_low": "Low"
   },
   "listDetail": {
     "breadcrumbProjects": "Projects",

@@ -214,7 +214,9 @@ export default function InsightDetailPage() {
           <Title order={2}>{insight.name}</Title>
         </Group>
         <Group gap="xs">
-          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
+          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">
+            {severityColor[insight.severity] ? t(`severity_${insight.severity}`) : insight.severity}
+          </Badge>
           <Badge variant="outline">{insight.analysis_area}</Badge>
           {insight.affected_count > 0 && (
             <Badge variant="outline">{t('affectedBadge', { count: f.number(insight.affected_count) })}</Badge>

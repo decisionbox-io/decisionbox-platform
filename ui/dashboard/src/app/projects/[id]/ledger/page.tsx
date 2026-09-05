@@ -39,6 +39,11 @@ const PROPOSAL_STATUS_COLOR: Record<string, string> = {
   reverted: 'gray',
 };
 
+// Known change-history (ledger task) statuses. The ancestor badge colours by a
+// simple dropped/other rule rather than a per-value map, so we keep a plain set
+// as the translation guard — unknown values fall back to the raw enum text.
+const HISTORY_STATUS = new Set(['open', 'in_progress', 'done', 'dropped']);
+
 // normalizeLedger defends against a project that has no ledger yet: the API
 // returns a 200 with null slices (Go nil → JSON null) for coverage/convergence/
 // findings/tasks, and rendering `.length`/`.map` on null throws. Default every
@@ -323,7 +328,7 @@ export default function LedgerPage() {
                             ) : chain.map((a) => (
                               <div key={a.id} style={{ marginBottom: 6 }}>
                                 <Group gap="xs" wrap="nowrap" align="center">
-                                  <Badge size="xs" variant="light" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{a.status}</Badge>
+                                  <Badge size="xs" variant="light" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{HISTORY_STATUS.has(a.status) ? t(`historyStatus_${a.status}`) : a.status}</Badge>
                                   <Text size="xs" fw={500}>{a.title || a.text}</Text>
                                 </Group>
                                 {a.title && a.title !== a.text && <Text size="xs" c="dimmed" ml={4}>{a.text}</Text>}
@@ -396,7 +401,7 @@ export default function LedgerPage() {
               {decided.map((p) => (
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="center">
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                    <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{p.status}</Badge>
+                    <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{PROPOSAL_STATUS_COLOR[p.status] ? t(`proposalStatus_${p.status}`) : p.status}</Badge>
                     <Badge size="sm" variant="outline">{t(`action_${p.action}`)}</Badge>
                     <Text size="sm" lineClamp={1}>{p.area_name || p.area_id}</Text>
                     {p.decided_by && <Text size="xs" c="dimmed">{t('decidedBy', { name: p.decided_by })}</Text>}
@@ -504,7 +509,7 @@ export default function LedgerPage() {
                         <td style={{ padding: '10px 12px' }}>{f.area ? <AreaBadge area={f.area} /> : <Text size="xs" c="dimmed">—</Text>}</td>
                         <td style={{ padding: '10px 12px' }}><SeverityBadge severity={f.severity} type="severity" /></td>
                         <td style={{ padding: '10px 12px' }}>
-                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
+                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{FINDING_STATUS_COLOR[f.status] ? t(`findingStatus_${f.status}`) : f.status}</Badge>
                         </td>
                         <td style={{ padding: '10px 12px' }}><Text size="sm">{t('seenCount', { count: f.seen_count })}</Text></td>
                       </tr>
