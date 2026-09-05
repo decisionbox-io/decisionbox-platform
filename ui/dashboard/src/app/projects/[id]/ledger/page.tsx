@@ -2,6 +2,7 @@
 
 import { ReactNode, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -14,23 +15,11 @@ import {
   api, ApiError, LedgerView, LedgerTask, EvolutionSettings, PackProposal, Project,
   EvolutionMode, FrontierPolicy,
 } from '@/lib/api';
+import { useFormat } from '@/lib/format';
 
 // Cap the "Next up" list so the ledger never renders an unbounded wall of
 // tasks; the rest are summarised as "+N more".
 const MAX_NEXT_UP = 12;
-
-const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
-  { value: 'off', label: 'Off — record only' },
-  { value: 'suggest_only', label: 'Suggest only — show, never apply' },
-  { value: 'admin_approval', label: 'Admin approval — queue for review' },
-  { value: 'auto', label: 'Auto — apply automatically (audited)' },
-];
-
-const FRONTIER_POLICIES: { value: FrontierPolicy; label: string }[] = [
-  { value: 'breadth_first', label: 'Go wide — explore new tables & areas' },
-  { value: 'depth_first', label: 'Go deep — dig into the richest findings' },
-  { value: 'balanced', label: 'Balanced — a mix of new ground and depth' },
-];
 
 // Finding-status → badge colour. Kept local so the ledger view owns its own
 // vocabulary rather than overloading the insight SeverityBadge's status map.
@@ -115,7 +104,23 @@ function Section({
 // The whole feature is enterprise-backed — on a community build the routes 404
 // and the page shows an honest "not available" state.
 export default function LedgerPage() {
+  const t = useTranslations('ledger');
+  const fmt = useFormat();
   const { id } = useParams<{ id: string }>();
+
+  const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
+    { value: 'off', label: t('modeOff') },
+    { value: 'suggest_only', label: t('modeSuggestOnly') },
+    { value: 'admin_approval', label: t('modeAdminApproval') },
+    { value: 'auto', label: t('modeAuto') },
+  ];
+
+  const FRONTIER_POLICIES: { value: FrontierPolicy; label: string }[] = [
+    { value: 'breadth_first', label: t('policyBreadthFirst') },
+    { value: 'depth_first', label: t('policyDepthFirst') },
+    { value: 'balanced', label: t('policyBalanced') },
+  ];
+
   const [project, setProject] = useState<Project | null>(null);
   const [ledger, setLedger] = useState<LedgerView | null>(null);
   const [settings, setSettings] = useState<EvolutionSettings | null>(null);
@@ -170,10 +175,10 @@ export default function LedgerPage() {
         frontier_policy: next.frontier_policy,
       });
       setSettings(saved);
-      notifications.show({ title: 'Saved', message: 'Evolution settings updated', color: 'green' });
+      notifications.show({ title: t('savedTitle'), message: t('savedMessage'), color: 'green' });
     } catch (e: unknown) {
       setSettings(settings);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingMode(false);
     }
@@ -183,10 +188,10 @@ export default function LedgerPage() {
     setDeciding(proposalId);
     try {
       await api.decidePackProposal(id, proposalId, action);
-      notifications.show({ title: 'Done', message: `Proposal ${action}d`, color: 'green' });
+      notifications.show({ title: t('doneTitle'), message: t('decideDoneMessage', { action }), color: 'green' });
       loadProposals();
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setDeciding('');
     }
@@ -201,8 +206,8 @@ export default function LedgerPage() {
       <Shell fullWidth>
         <EmptyState
           icon={<IconBook2 size={40} />}
-          title="Discovery Ledger not available"
-          description="Compounding discovery is an enterprise feature. Enable it on this deployment (SOURCES_ENABLED + the reflection flag) to accumulate a per-project investigation ledger across runs."
+          title={t('unavailableTitle')}
+          description={t('unavailableBody')}
         />
       </Shell>
     );
@@ -237,23 +242,23 @@ export default function LedgerPage() {
       <Stack gap="lg">
         {/* Page header */}
         <div>
-          <SectionHeader title="Discovery Ledger" />
+          <SectionHeader title={t('title')} />
           <Text size="sm" c="dimmed" mt={4}>
-            {project?.name ? `${project.name} — ` : ''}the accumulated investigation state. Each run builds on this instead of starting fresh.
+            {project?.name ? t('headerWithProject', { name: project.name }) : t('headerNoProject')}
           </Text>
         </div>
 
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
-          <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
-          <Tooltip label="The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored." multiline w={280} openDelay={200}>
-            <div><StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet explored" /></div>
+          <StatCard label={t('statTablesExplored')} value={String(explored)} subtitle={total > 0 ? t('statTablesExploredSubtitle', { total }) : undefined} />
+          <Tooltip label={t('frontierTooltip')} multiline w={280} openDelay={200}>
+            <div><StatCard label={t('statFrontier')} value={String(frontier)} subtitle={t('statFrontierSubtitle')} /></div>
           </Tooltip>
-          <StatCard label="Findings" value={String(ledger.findings.length)} subtitle="carried across runs" />
+          <StatCard label={t('statFindings')} value={String(ledger.findings.length)} subtitle={t('statFindingsSubtitle')} />
           <StatCard
-            label="New last run"
+            label={t('statNewLastRun')}
             value={latest ? `${Math.round(latest.marginal_ratio * 100)}%` : '—'}
-            subtitle={latest ? `${latest.new_findings} new of ${latest.total_findings}` : 'no runs yet'}
+            subtitle={latest ? t('statNewLastRunSubtitle', { newFindings: latest.new_findings, total: latest.total_findings }) : t('statNewLastRunNone')}
           />
         </Group>
 
@@ -261,15 +266,15 @@ export default function LedgerPage() {
         {ledger.convergence.length > 0 && (
           <Section
             icon={<IconTrendingUp size={16} />}
-            title="Momentum"
-            description="New findings per run. A falling line means discovery is converging — the project is well understood."
+            title={t('momentumTitle')}
+            description={t('momentumDescription')}
           >
             <Stack gap={8}>
               {ledger.convergence.slice(-12).map((c) => (
                 <Group key={c.run_id} gap="sm" wrap="nowrap">
-                  <Text size="xs" c="dimmed" w={90} style={{ flexShrink: 0 }}>{new Date(c.date).toLocaleDateString()}</Text>
+                  <Text size="xs" c="dimmed" w={90} style={{ flexShrink: 0 }}>{fmt.dateTime(c.date, { dateStyle: 'medium' })}</Text>
                   <Progress value={Math.round(c.marginal_ratio * 100)} size="md" radius="sm" style={{ flex: 1 }} />
-                  <Text size="xs" c="dimmed" w={120} ta="right" style={{ flexShrink: 0 }}>{c.new_findings} new / {c.total_findings}</Text>
+                  <Text size="xs" c="dimmed" w={120} ta="right" style={{ flexShrink: 0 }}>{t('momentumNewOfTotal', { newFindings: c.new_findings, total: c.total_findings })}</Text>
                 </Group>
               ))}
             </Stack>
@@ -280,22 +285,22 @@ export default function LedgerPage() {
         {ledger.tasks.length > 0 && (
           <Section
             icon={<IconRoute size={16} />}
-            title="Next up"
+            title={t('nextUpTitle')}
             count={ledger.tasks.length}
-            description="Open investigation threads the next run should pick up first."
+            description={t('nextUpDescription')}
           >
             <Stack gap="md">
-              {ledger.tasks.slice(0, MAX_NEXT_UP).map((t) => {
-                const chain = t.supersedes ? chainOf(t) : [];
-                const expanded = openThreads.has(t.id);
+              {ledger.tasks.slice(0, MAX_NEXT_UP).map((task) => {
+                const chain = task.supersedes ? chainOf(task) : [];
+                const expanded = openThreads.has(task.id);
                 return (
-                  <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
-                    <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
+                  <Group key={task.id} gap="sm" wrap="nowrap" align="flex-start">
+                    <Badge size="sm" variant="light" color={task.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{task.kind.replace('_', ' ')}</Badge>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <Group gap="xs" wrap="nowrap">
-                        <Text size="sm" fw={600}>{t.title || t.text}</Text>
-                        {t.supersedes && (
-                          <UnstyledButton onClick={() => toggleThread(t.id)} style={{ flexShrink: 0 }} aria-expanded={expanded}>
+                        <Text size="sm" fw={600}>{task.title || task.text}</Text>
+                        {task.supersedes && (
+                          <UnstyledButton onClick={() => toggleThread(task.id)} style={{ flexShrink: 0 }} aria-expanded={expanded}>
                             <Badge
                               size="xs"
                               variant="outline"
@@ -303,18 +308,18 @@ export default function LedgerPage() {
                               style={{ cursor: 'pointer' }}
                               rightSection={<IconChevronRight size={10} style={{ display: 'block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />}
                             >
-                              follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
+                              {t('followUpBadge', { count: chain.length })}
                             </Badge>
                           </UnstyledButton>
                         )}
                       </Group>
-                      {t.title && t.title !== t.text && <Text size="xs" c="dimmed" mt={2}>{t.text}</Text>}
-                      {t.supersedes && (
+                      {task.title && task.title !== task.text && <Text size="xs" c="dimmed" mt={2}>{task.text}</Text>}
+                      {task.supersedes && (
                         <Collapse in={expanded}>
                           <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--db-border-default)' }}>
-                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these resolved threads' : 'this resolved thread'}:</Text>
+                            <Text size="xs" c="dimmed" mb={6}>{t('grewOutOf', { count: chain.length })}</Text>
                             {chain.length === 0 ? (
-                              <Text size="xs" c="dimmed">Parent thread is no longer available.</Text>
+                              <Text size="xs" c="dimmed">{t('parentUnavailable')}</Text>
                             ) : chain.map((a) => (
                               <div key={a.id} style={{ marginBottom: 6 }}>
                                 <Group gap="xs" wrap="nowrap" align="center">
@@ -334,7 +339,7 @@ export default function LedgerPage() {
             </Stack>
             {ledger.tasks.length > MAX_NEXT_UP && (
               <Text size="xs" c="dimmed" mt="sm">
-                +{ledger.tasks.length - MAX_NEXT_UP} more open thread{ledger.tasks.length - MAX_NEXT_UP > 1 ? 's' : ''}
+                {t('moreOpenThreads', { count: ledger.tasks.length - MAX_NEXT_UP })}
               </Text>
             )}
           </Section>
@@ -344,9 +349,9 @@ export default function LedgerPage() {
         {pending.length > 0 && (
           <Section
             icon={<IconGitPullRequest size={16} />}
-            title="Playbook changes to review"
+            title={t('decisionsTitle')}
             count={pending.length}
-            description="Analysis-area changes the run proposed. Approve to apply them to this project's playbook, or reject."
+            description={t('decisionsDescription')}
           >
             <Stack gap="md">
               {pending.map((p) => (
@@ -359,8 +364,8 @@ export default function LedgerPage() {
                     <Text size="sm" c="dimmed">{p.rationale}</Text>
                   </div>
                   <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
-                    <Button size="xs" color="teal" loading={deciding === p.id} onClick={() => decide(p.id, 'approve')}>Approve</Button>
-                    <Button size="xs" variant="default" loading={deciding === p.id} onClick={() => decide(p.id, 'reject')}>Reject</Button>
+                    <Button size="xs" color="teal" loading={deciding === p.id} onClick={() => decide(p.id, 'approve')}>{t('approve')}</Button>
+                    <Button size="xs" variant="default" loading={deciding === p.id} onClick={() => decide(p.id, 'reject')}>{t('reject')}</Button>
                   </Group>
                 </Group>
               ))}
@@ -372,8 +377,8 @@ export default function LedgerPage() {
         {ledger.coverage.summary && (
           <Section
             icon={<IconMap2 size={16} />}
-            title="Coverage"
-            description="What the investigation has reached across the warehouse so far."
+            title={t('coverageTitle')}
+            description={t('coverageDescription')}
           >
             <Text size="sm">{ledger.coverage.summary}</Text>
           </Section>
@@ -383,9 +388,9 @@ export default function LedgerPage() {
         {decided.length > 0 && (
           <Section
             icon={<IconHistory size={16} />}
-            title="Change history"
+            title={t('historyTitle')}
             count={decided.length}
-            description="Playbook changes that have already been applied, rejected, or reverted."
+            description={t('historyDescription')}
           >
             <Stack gap="sm">
               {decided.map((p) => (
@@ -394,10 +399,10 @@ export default function LedgerPage() {
                     <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{p.status}</Badge>
                     <Badge size="sm" variant="outline">{p.action.replace('_', ' ')}</Badge>
                     <Text size="sm" lineClamp={1}>{p.area_name || p.area_id}</Text>
-                    {p.decided_by && <Text size="xs" c="dimmed">by {p.decided_by}</Text>}
+                    {p.decided_by && <Text size="xs" c="dimmed">{t('decidedBy', { name: p.decided_by })}</Text>}
                   </Group>
                   {p.status === 'applied' && (
-                    <Button size="xs" variant="default" loading={deciding === p.id} onClick={() => decide(p.id, 'revert')}>Revert</Button>
+                    <Button size="xs" variant="default" loading={deciding === p.id} onClick={() => decide(p.id, 'revert')}>{t('revert')}</Button>
                   )}
                 </Group>
               ))}
@@ -409,13 +414,13 @@ export default function LedgerPage() {
         {settings && (
           <Section
             icon={<IconAdjustments size={16} />}
-            title="Evolution settings"
-            description="How the ledger is allowed to steer future runs — whether proposed playbook changes apply automatically, and which direction the next run favours."
+            title={t('settingsTitle')}
+            description={t('settingsDescription')}
           >
             <Group align="flex-end" gap="md">
               <Select
-                label="Mode"
-                description="Governs proposed analysis-area changes + self-directed next-tasks"
+                label={t('modeLabel')}
+                description={t('modeDescription')}
                 data={EVOLUTION_MODES}
                 value={settings.evolution_mode}
                 disabled={savingMode}
@@ -423,8 +428,8 @@ export default function LedgerPage() {
                 w={320}
               />
               <Select
-                label="Frontier policy"
-                description="How the next run spends its effort"
+                label={t('frontierPolicyLabel')}
+                description={t('frontierPolicyDescription')}
                 data={FRONTIER_POLICIES}
                 value={settings.frontier_policy}
                 disabled={savingMode}
@@ -436,18 +441,18 @@ export default function LedgerPage() {
               <UnstyledButton onClick={() => setShowFrontierHelp((v) => !v)} aria-expanded={showFrontierHelp}>
                 <Group gap={4} wrap="nowrap">
                   <IconChevronRight size={14} style={{ transform: showFrontierHelp ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
-                  <Text size="xs" c="dimmed">What do frontier, breadth and depth mean?</Text>
+                  <Text size="xs" c="dimmed">{t('frontierHelpToggle')}</Text>
                 </Group>
               </UnstyledButton>
               <Collapse in={showFrontierHelp}>
                 <Card withBorder radius="sm" padding="sm" mt="xs">
                   <Text size="xs" c="dimmed">
-                    <b>Frontier</b> — the parts of your data the investigation has not looked at yet (tables and areas it has not explored). The <b>frontier policy</b> tells the next run where to spend its time:
+                    {t.rich('frontierHelpIntro', { b: (chunks) => <b>{chunks}</b> })}
                   </Text>
                   <Stack gap={4} mt={8}>
-                    <Text size="xs" c="dimmed"><b>Go wide (breadth)</b> — cover more ground: explore new tables and areas it has not touched yet, for a broad picture of what is there.</Text>
-                    <Text size="xs" c="dimmed"><b>Go deep (depth)</b> — keep digging into the areas already showing the strongest signals, instead of spreading out.</Text>
-                    <Text size="xs" c="dimmed"><b>Balanced</b> — a mix of both: some new ground, some deeper digging. A sensible default.</Text>
+                    <Text size="xs" c="dimmed">{t.rich('frontierHelpWide', { b: (chunks) => <b>{chunks}</b> })}</Text>
+                    <Text size="xs" c="dimmed">{t.rich('frontierHelpDeep', { b: (chunks) => <b>{chunks}</b> })}</Text>
+                    <Text size="xs" c="dimmed">{t.rich('frontierHelpBalanced', { b: (chunks) => <b>{chunks}</b> })}</Text>
                   </Stack>
                 </Card>
               </Collapse>
@@ -461,31 +466,31 @@ export default function LedgerPage() {
             <Group justify="space-between" align="center" wrap="nowrap">
               <Group gap="xs" wrap="nowrap">
                 <ThemeIcon variant="light" color="gray" size="md" radius="md"><IconListDetails size={16} /></ThemeIcon>
-                <Text fw={600} size="md">Findings</Text>
+                <Text fw={600} size="md">{t('findingsTitle')}</Text>
                 <Badge size="sm" variant="light" color="gray">{ledger.findings.length}</Badge>
               </Group>
               <Group gap={6} wrap="nowrap">
-                <Text size="xs" c="dimmed">{showFindings ? 'Hide detail' : 'Show detail'}</Text>
+                <Text size="xs" c="dimmed">{showFindings ? t('hideDetail') : t('showDetail')}</Text>
                 <IconChevronRight size={16} style={{ transform: showFindings ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />
               </Group>
             </Group>
           </UnstyledButton>
           <Text size="xs" c="dimmed" mt={6}>
-            The full finding-level table behind the ledger — severity, status, and how often each has recurred.
+            {t('findingsDescription')}
           </Text>
           <Collapse in={showFindings}>
             <div style={{ marginTop: 16 }}>
               {ledger.findings.length === 0 ? (
-                <EmptyState icon={<IconBook2 size={32} />} title="No findings yet" description="Findings accumulate here as discovery runs complete." />
+                <EmptyState icon={<IconBook2 size={32} />} title={t('findingsEmptyTitle')} description={t('findingsEmptyBody')} />
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr>
-                      <Th width="48%">Finding</Th>
-                      <Th width="18%">Area</Th>
-                      <Th width="12%">Severity</Th>
-                      <Th width="12%">Status</Th>
-                      <Th width="10%">Seen</Th>
+                      <Th width="48%">{t('colFinding')}</Th>
+                      <Th width="18%">{t('colArea')}</Th>
+                      <Th width="12%">{t('colSeverity')}</Th>
+                      <Th width="12%">{t('colStatus')}</Th>
+                      <Th width="10%">{t('colSeen')}</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -501,7 +506,7 @@ export default function LedgerPage() {
                         <td style={{ padding: '10px 12px' }}>
                           <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
                         </td>
-                        <td style={{ padding: '10px 12px' }}><Text size="sm">{f.seen_count}×</Text></td>
+                        <td style={{ padding: '10px 12px' }}><Text size="sm">{t('seenCount', { count: f.seen_count })}</Text></td>
                       </tr>
                     ))}
                   </tbody>

@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Modal, SimpleGrid, Stack, Text, Textarea, Title } from '@mantine/core';
 import { IconAlertCircle, IconDownload, IconPackages, IconPlus, IconUpload } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import { api, DomainPack, PortableDomainPack } from '@/lib/api';
 
 export default function DomainPacksPage() {
+  const t = useTranslations('domainPacks');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [packs, setPacks] = useState<DomainPack[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,7 +73,7 @@ export default function DomainPacksPage() {
   };
 
   const handleDelete = async (slug: string) => {
-    if (!confirm(`Delete playbook "${slug}"? This cannot be undone. Existing projects are not affected.`)) return;
+    if (!confirm(t('deleteConfirm', { slug }))) return;
     try {
       await api.deleteDomainPack(slug);
       loadPacks();
@@ -81,10 +83,10 @@ export default function DomainPacksPage() {
   };
 
   return (
-    <Shell breadcrumb={[{ label: 'Playbooks' }]}>
+    <Shell breadcrumb={[{ label: t('breadcrumb') }]}>
       <Stack gap="lg">
         <Group justify="space-between">
-          <Title order={2}>Playbooks</Title>
+          <Title order={2}>{t('title')}</Title>
           <Group gap="sm">
             <input
               type="file"
@@ -98,32 +100,32 @@ export default function DomainPacksPage() {
               leftSection={<IconUpload size={16} />}
               onClick={() => fileInputRef.current?.click()}
             >
-              Import
+              {t('import')}
             </Button>
             <Button
               component={Link}
               href="/domain-packs/new"
               leftSection={<IconPlus size={16} />}
             >
-              New Pack
+              {t('newPack')}
             </Button>
           </Group>
         </Group>
 
         {error && (
-          <Alert icon={<IconAlertCircle size={16} />} title="Error" color="red" variant="light" withCloseButton onClose={() => setError(null)}>
+          <Alert icon={<IconAlertCircle size={16} />} title={t('errorTitle')} color="red" variant="light" withCloseButton onClose={() => setError(null)}>
             {error}
           </Alert>
         )}
 
-        {loading && <Text c="dimmed">Loading playbooks...</Text>}
+        {loading && <Text c="dimmed">{t('loading')}</Text>}
 
         {!loading && !error && packs.length === 0 && (
           <Card withBorder p="xl" ta="center">
             <Stack align="center" gap="md">
               <IconPackages size={48} color="var(--mantine-color-gray-5)" />
-              <Title order={3} c="dimmed">No playbooks</Title>
-              <Text c="dimmed">Playbooks define how AI discovery works for your industry. Create one or import from a file.</Text>
+              <Title order={3} c="dimmed">{t('emptyTitle')}</Title>
+              <Text c="dimmed">{t('emptyDescription')}</Text>
             </Stack>
           </Card>
         )}
@@ -137,26 +139,26 @@ export default function DomainPacksPage() {
                 </Text>
                 <Group gap={4}>
                   {pack.is_published ? (
-                    <Badge color="green" variant="light" size="sm">Published</Badge>
+                    <Badge color="green" variant="light" size="sm">{t('statusPublished')}</Badge>
                   ) : (
-                    <Badge color="gray" variant="light" size="sm">Draft</Badge>
+                    <Badge color="gray" variant="light" size="sm">{t('statusDraft')}</Badge>
                   )}
                 </Group>
               </Group>
 
               <Text size="sm" c="dimmed" lineClamp={2} mb="sm">
-                {pack.description || 'No description'}
+                {pack.description || t('noDescription')}
               </Text>
 
               <Group gap="xs" mb="sm">
                 <Badge variant="outline" size="xs">
-                  {pack.categories?.length || 0} categories
+                  {t('categoriesCount', { count: pack.categories?.length || 0 })}
                 </Badge>
                 <Badge variant="outline" size="xs">
-                  {pack.analysis_areas?.base?.length || 0} base areas
+                  {t('baseAreasCount', { count: pack.analysis_areas?.base?.length || 0 })}
                 </Badge>
                 <Badge variant="outline" size="xs">
-                  v{pack.version || '1.0.0'}
+                  {t('versionLabel', { version: pack.version || '1.0.0' })}
                 </Badge>
               </Group>
 
@@ -167,7 +169,7 @@ export default function DomainPacksPage() {
                   component={Link}
                   href={`/domain-packs/${pack.slug}`}
                 >
-                  Edit
+                  {t('edit')}
                 </Button>
                 <Button
                   variant="subtle"
@@ -175,7 +177,7 @@ export default function DomainPacksPage() {
                   leftSection={<IconDownload size={14} />}
                   onClick={() => handleExport(pack.slug)}
                 >
-                  Export
+                  {t('export')}
                 </Button>
                 <Button
                   variant="subtle"
@@ -184,7 +186,7 @@ export default function DomainPacksPage() {
                   onClick={() => handleDelete(pack.slug)}
                   style={{ marginLeft: 'auto' }}
                 >
-                  Delete
+                  {t('delete')}
                 </Button>
               </Group>
             </Card>
@@ -193,10 +195,10 @@ export default function DomainPacksPage() {
       </Stack>
 
       {/* Import Modal */}
-      <Modal opened={importOpen} onClose={() => { setImportOpen(false); setImportError(null); }} title="Import Playbook" size="lg">
+      <Modal opened={importOpen} onClose={() => { setImportOpen(false); setImportError(null); }} title={t('importModalTitle')} size="lg">
         <Stack gap="md">
           <Text size="sm" c="dimmed">
-            Paste a playbook JSON file or use the file upload button.
+            {t('importModalDescription')}
           </Text>
           <Textarea
             value={importJson}
@@ -211,8 +213,8 @@ export default function DomainPacksPage() {
             <Alert color="red" variant="light">{importError}</Alert>
           )}
           <Group justify="flex-end">
-            <Button variant="light" onClick={() => setImportOpen(false)}>Cancel</Button>
-            <Button onClick={handleImport} loading={importing}>Import</Button>
+            <Button variant="light" onClick={() => setImportOpen(false)}>{t('cancel')}</Button>
+            <Button onClick={handleImport} loading={importing}>{t('import')}</Button>
           </Group>
         </Stack>
       </Modal>
