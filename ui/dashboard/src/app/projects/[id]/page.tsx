@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import {
   Checkbox, Collapse, Loader, Menu, NumberInput,
   ScrollArea, Text,
@@ -14,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
+import { useFormat } from '@/lib/format';
 import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
@@ -32,7 +34,10 @@ const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
 // toasts once when some appear. Question generation runs after the status flip
 // (bounded by DISCOVERY_QUESTIONS_TIMEOUT), so a single immediate check usually
 // races ahead of the insert; poll across the window and stop on the first hit.
-async function pollQuestionsNudge(projectId: string) {
+async function pollQuestionsNudge(
+  projectId: string,
+  t: ReturnType<typeof useTranslations<'projectDetail'>>,
+) {
   const MAX_ATTEMPTS = 20;
   const DELAY_MS = 10000;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
@@ -41,8 +46,8 @@ async function pollQuestionsNudge(projectId: string) {
       const n = qs?.length || 0;
       if (n > 0) {
         notifications.show({
-          title: `${n} question${n > 1 ? 's' : ''} await you`,
-          message: 'Answer them to sharpen the next discovery run.',
+          title: t('questionsAwaitTitle', { count: n }),
+          message: t('questionsAwaitMessage'),
           color: 'blue',
         });
         return;
@@ -57,6 +62,7 @@ async function pollQuestionsNudge(projectId: string) {
 }
 
 export default function ProjectPage() {
+  const t = useTranslations('projectDetail');
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [discoveries, setDiscoveries] = useState<DiscoveryResult[]>([]);
@@ -101,9 +107,9 @@ export default function ProjectPage() {
       }),
       api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => setDiscoveries([])),
     ])
-      .catch((e) => notifications.show({ title: 'Error', message: e.message, color: 'red' }))
+      .catch((e) => notifications.show({ title: t('errorTitle'), message: e.message, color: 'red' }))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, t]);
 
   const pollStatus = useCallback(async () => {
     try {
@@ -121,11 +127,11 @@ export default function ProjectPage() {
           // by DISCOVERY_QUESTIONS_TIMEOUT), so poll for a while rather than
           // firing one immediate query that would usually race ahead of the
           // insert and silently show nothing.
-          if (newRun.status === 'completed') void pollQuestionsNudge(id);
+          if (newRun.status === 'completed') void pollQuestionsNudge(id, t);
         }
       }
     } catch { /* ignore */ }
-  }, [id, run]);
+  }, [id, run, t]);
 
   useEffect(() => {
     if (!run) return;
@@ -153,7 +159,7 @@ export default function ProjectPage() {
       const est = await api.estimateCost(id, opts);
       setEstimate(est);
     } catch (e: unknown) {
-      notifications.show({ title: 'Estimation failed', message: (e as Error).message, color: 'orange' });
+      notifications.show({ title: t('estimationFailedTitle'), message: (e as Error).message, color: 'orange' });
     } finally {
       setEstimating(false);
     }
@@ -178,12 +184,12 @@ export default function ProjectPage() {
       }
       const floor = minStepsTouched ? minSteps : Math.floor(maxSteps * 0.6);
       notifications.show({
-        title: 'Discovery started',
-        message: `${maxSteps} steps (min ${floor})`,
+        title: t('discoveryStartedTitle'),
+        message: t('discoveryStartedMessage', { maxSteps, floor }),
         color: 'blue',
       });
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setTriggering(false);
       setSelectedAreas([]);
@@ -191,7 +197,7 @@ export default function ProjectPage() {
   };
 
   if (loading) return <Shell><Loader /></Shell>;
-  if (!project) return <Shell><Text>Project not found</Text></Shell>;
+  if (!project) return <Shell><Text>{t('projectNotFound')}</Text></Shell>;
 
   // Projects in any non-"ready" plugin-managed state hide the
   // discovery UI and show a placeholder. A plugin dashboard overlay
@@ -200,12 +206,12 @@ export default function ProjectPage() {
   const projectReady = !project.state || project.state === PROJECT_STATE_READY;
   if (!projectReady) {
     const breadcrumbPg = [
-      { label: 'Projects', href: '/' },
+      { label: t('breadcrumbProjects'), href: '/' },
       { label: project.name },
     ];
     return (
       <Shell breadcrumb={breadcrumbPg}>
-        <Text>This project is in state &quot;{project.state}&quot; — managed by an installed plugin. Discovery is unavailable until the plugin transitions the project to &quot;ready&quot;.</Text>
+        <Text>{t('pluginManagedState', { state: project.state ?? '' })}</Text>
       </Shell>
     );
   }
@@ -229,11 +235,11 @@ export default function ProjectPage() {
   const criticalCount = discoveries.reduce((sum, d) =>
     sum + (d.insights?.filter(i => i.severity === 'critical' || i.severity === 'high').length || 0), 0);
   const latestAgo = discoveries.length > 0
-    ? formatTimeAgo(new Date(discoveries[0].discovery_date))
+    ? formatTimeAgo(new Date(discoveries[0].discovery_date), t)
     : null;
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
+    { label: t('breadcrumbProjects'), href: '/' },
     { label: project.name },
   ];
 
@@ -250,14 +256,14 @@ export default function ProjectPage() {
         }}
         onMouseEnter={e => { if (!triggerDisabled) e.currentTarget.style.background = '#333'; }}
         onMouseLeave={e => { e.currentTarget.style.background = 'var(--db-text-primary)'; }}
-        title={!schemaReady ? 'Schema index is not ready — see the banner above.' : undefined}
+        title={!schemaReady ? t('schemaNotReadyTooltip') : undefined}
         >
           <IconPlayerPlay size={14} />
-          {isRunning ? 'Running...' : !schemaReady ? 'Waiting for schema index...' : 'Run discovery'}
+          {isRunning ? t('runButtonRunning') : !schemaReady ? t('runButtonWaiting') : t('runButton')}
         </button>
       </Menu.Target>
       <Menu.Dropdown>
-        <Menu.Label>Exploration steps</Menu.Label>
+        <Menu.Label>{t('explorationStepsLabel')}</Menu.Label>
         <div style={{ padding: '4px 12px 8px' }}>
           <NumberInput size="xs" value={maxSteps}
             onChange={(v) => {
@@ -266,9 +272,9 @@ export default function ProjectPage() {
               // Auto-track 60% of max_steps until the user customises the floor.
               if (!minStepsTouched) setMinSteps(Math.floor(next * 0.6));
             }}
-            min={5} max={500} step={5} description="More steps = more comprehensive" />
+            min={5} max={500} step={5} description={t('explorationStepsDescription')} />
         </div>
-        <Menu.Label>Minimum steps</Menu.Label>
+        <Menu.Label>{t('minimumStepsLabel')}</Menu.Label>
         <div style={{ padding: '4px 12px 8px' }}>
           <NumberInput size="xs" value={minSteps}
             onChange={(v) => {
@@ -277,19 +283,19 @@ export default function ProjectPage() {
               setMinStepsTouched(true);
             }}
             min={0} max={maxSteps} step={5}
-            error={minSteps > maxSteps ? `Cannot exceed ${maxSteps}` : undefined}
+            error={minSteps > maxSteps ? t('minStepsError', { max: maxSteps }) : undefined}
             description={minStepsTouched
-              ? "Rejects premature done — 0 disables"
-              : `Default: 60% of max (${Math.floor(maxSteps * 0.6)})`} />
+              ? t('minStepsDescriptionTouched')
+              : t('minStepsDescriptionDefault', { defaultValue: Math.floor(maxSteps * 0.6) })} />
         </div>
         <Menu.Item closeMenuOnClick={false}>
-          <Checkbox label="Estimate cost before running" size="xs"
+          <Checkbox label={t('estimateCostCheckbox')} size="xs"
             checked={estimateFirst} onChange={(e) => setEstimateFirst(e.currentTarget.checked)} />
         </Menu.Item>
         <Menu.Divider />
-        <Menu.Item onClick={() => handleRun()}>Run All Areas</Menu.Item>
+        <Menu.Item onClick={() => handleRun()}>{t('runAllAreas')}</Menu.Item>
         <Menu.Divider />
-        <Menu.Label>Select areas</Menu.Label>
+        <Menu.Label>{t('selectAreasLabel')}</Menu.Label>
         {analysisAreas.map((area) => (
           <Menu.Item key={area.id} closeMenuOnClick={false}>
             <Checkbox label={area.name} checked={selectedAreas.includes(area.id)}
@@ -303,7 +309,7 @@ export default function ProjectPage() {
           <>
             <Menu.Divider />
             <Menu.Item color="blue" onClick={() => handleRun(selectedAreas)}>
-              Run Selected ({selectedAreas.length})
+              {t('runSelected', { count: selectedAreas.length })}
             </Menu.Item>
           </>
         )}
@@ -332,10 +338,10 @@ export default function ProjectPage() {
           gap: 12,
           marginBottom: 24,
         }}>
-          <StatCard label="Total Runs" value={totalRuns} subtitle={latestAgo ? `Latest: ${latestAgo}` : undefined} />
-          <StatCard label="Total Insights" value={totalInsights} subtitle={criticalCount > 0 ? `${criticalCount} critical or high` : undefined} />
-          <StatCard label="Recommendations" value={totalRecs} valueColor="var(--db-green-text)" />
-          <StatCard label="Queries Executed" value={discoveries.reduce((sum, d) => sum + (d.summary?.queries_executed || 0), 0)} />
+          <StatCard label={t('statTotalRuns')} value={totalRuns} subtitle={latestAgo ? t('statLatest', { ago: latestAgo }) : undefined} />
+          <StatCard label={t('statTotalInsights')} value={totalInsights} subtitle={criticalCount > 0 ? t('statCriticalOrHigh', { count: criticalCount }) : undefined} />
+          <StatCard label={t('statRecommendations')} value={totalRecs} valueColor="var(--db-green-text)" />
+          <StatCard label={t('statQueriesExecuted')} value={discoveries.reduce((sum, d) => sum + (d.summary?.queries_executed || 0), 0)} />
         </div>
       )}
 
@@ -356,7 +362,7 @@ export default function ProjectPage() {
           {estimating ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Loader size="sm" />
-              <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>Estimating cost...</span>
+              <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>{t('estimatingCost')}</span>
             </div>
           ) : estimate && (
             <>
@@ -365,41 +371,47 @@ export default function ProjectPage() {
                   managed pricing is the plan's per-operation credit price. */}
               {HIDE_COST_ESTIMATE ? (
                 <div style={{ fontSize: 13, color: 'var(--db-text-secondary)', marginBottom: 16 }}>
-                  Ready to run discovery for this project.
+                  {t('readyToRun')}
                 </div>
               ) : (
                 <>
-                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Cost Estimate</div>
+                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>{t('costEstimate')}</div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
                     <div>
                       <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                        LLM ({estimate.llm.provider})
+                        {t('estimateLlmLabel', { provider: estimate.llm.provider })}
                       </div>
                       <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
                       <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                        ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
+                        {t('estimateTokens', {
+                          inTokens: (estimate.llm.estimated_input_tokens / 1000).toFixed(0),
+                          outTokens: (estimate.llm.estimated_output_tokens / 1000).toFixed(0),
+                        })}
                       </div>
                     </div>
                     <div>
                       <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                        Warehouse ({estimate.warehouse.provider})
+                        {t('estimateWarehouseLabel', { provider: estimate.warehouse.provider })}
                       </div>
                       <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.warehouse.cost_usd.toFixed(4)}</div>
                       <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                        ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
+                        {t('estimateQueries', {
+                          queries: estimate.warehouse.estimated_queries,
+                          mb: (estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0),
+                        })}
                       </div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total</div>
+                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>{t('estimateTotalLabel')}</div>
                       <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--db-blue-text)' }}>${estimate.total_cost_usd.toFixed(4)}</div>
                     </div>
                   </div>
                 </>
               )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <GhostButton onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>Cancel</GhostButton>
+                <GhostButton onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>{t('cancel')}</GhostButton>
                 <PrimaryButton onClick={() => handleTrigger(pendingAreas)} disabled={triggering}>
-                  {triggering ? 'Starting...' : 'Confirm & Run'}
+                  {triggering ? t('starting') : t('confirmAndRun')}
                 </PrimaryButton>
               </div>
             </>
@@ -420,9 +432,9 @@ export default function ProjectPage() {
           try {
             await api.cancelRun(run.id);
             setRun({ ...run, status: 'cancelled' });
-            notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
+            notifications.show({ title: t('cancelledTitle'), message: t('cancelledMessage'), color: 'orange' });
           } catch (e: unknown) {
-            notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+            notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
           }
         }} />
       )}
@@ -430,7 +442,7 @@ export default function ProjectPage() {
       {/* Discovery Runs Section */}
       {discoveries.length > 0 && (
         <>
-          <SectionHeader title="Discovery runs" count={discoveries.length} />
+          <SectionHeader title={t('discoveryRunsTitle')} count={discoveries.length} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {discoveries.map((d) => (
               <DiscoveryRunCard key={d.id} discovery={d} projectId={id} />
@@ -450,12 +462,12 @@ export default function ProjectPage() {
         }}>
           <IconChartBar size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
           <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-secondary)', marginBottom: 4 }}>
-            No discoveries yet
+            {t('emptyTitle')}
           </div>
           <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginBottom: 16 }}>
-            Run your first discovery to see insights.
+            {t('emptyDescription')}
           </div>
-          <PrimaryButton onClick={() => handleRun()}>Run your first discovery</PrimaryButton>
+          <PrimaryButton onClick={() => handleRun()}>{t('runFirstDiscovery')}</PrimaryButton>
         </div>
       )}
     </Shell>
@@ -467,6 +479,7 @@ export default function ProjectPage() {
 function StatCard({ label, value, subtitle, valueColor }: {
   label: string; value: number | string; subtitle?: string; valueColor?: string;
 }) {
+  const fmt = useFormat();
   return (
     <div style={{
       background: 'var(--db-bg-white)',
@@ -481,7 +494,7 @@ function StatCard({ label, value, subtitle, valueColor }: {
       <div style={{
         fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
         color: valueColor || 'var(--db-text-primary)', lineHeight: 1.3,
-      }}>{typeof value === 'number' ? value.toLocaleString() : value}</div>
+      }}>{typeof value === 'number' ? fmt.number(value) : value}</div>
       {subtitle && (
         <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 2 }}>{subtitle}</div>
       )}
@@ -510,6 +523,8 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
 /* ========== Discovery Run Card ========== */
 
 function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryResult; projectId: string }) {
+  const t = useTranslations('projectDetail');
+  const fmt = useFormat();
   const insights = d.insights || [];
   const criticalCount = insights.filter(i => i.severity === 'critical').length;
   const highCount = insights.filter(i => i.severity === 'high').length;
@@ -538,9 +553,9 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 500 }}>
-              {new Date(d.discovery_date).toLocaleDateString('en-US', {
+              {fmt.dateTime(d.discovery_date, {
                 month: 'long', day: 'numeric', year: 'numeric',
-              })} · {new Date(d.discovery_date).toLocaleTimeString('en-US', {
+              })} · {fmt.dateTime(d.discovery_date, {
                 hour: 'numeric', minute: '2-digit',
               })}
             </div>
@@ -548,7 +563,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
               <StatusBadge status={d.run_type === 'failed' ? 'Failed' : d.run_type === 'partial' ? 'Partial' : 'Complete'} />
               {d.areas_requested?.map(a => <AreaBadge key={a} area={a} />)}
               <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>
-                {d.total_steps} queries · {d.duration || '—'}
+                {t('cardQueriesAndDuration', { queries: d.total_steps, duration: d.duration || '—' })}
               </span>
             </div>
           </div>
@@ -556,10 +571,10 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
         {/* Row 2: Stats */}
         <div style={{ display: 'flex', gap: 24, fontSize: 12, color: 'var(--db-text-secondary)' }}>
-          <StatDot color="var(--db-blue-text)" text={`${d.summary?.total_insights || 0} insights`} />
-          {criticalCount > 0 && <StatDot color="var(--db-red-text)" text={`${criticalCount} critical`} />}
-          {highCount > 0 && <StatDot color="var(--db-severity-high-text)" text={`${highCount} high`} />}
-          <StatDot color="var(--db-purple-text)" text={`${d.summary?.total_recommendations || 0} recommendations`} />
+          <StatDot color="var(--db-blue-text)" text={t('dotInsights', { count: d.summary?.total_insights || 0 })} />
+          {criticalCount > 0 && <StatDot color="var(--db-red-text)" text={t('dotCritical', { count: criticalCount })} />}
+          {highCount > 0 && <StatDot color="var(--db-severity-high-text)" text={t('dotHigh', { count: highCount })} />}
+          <StatDot color="var(--db-purple-text)" text={t('dotRecommendations', { count: d.summary?.total_recommendations || 0 })} />
         </div>
 
         {/* Row 3: Preview */}
@@ -581,6 +596,8 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 /* ========== Live Run Panel ========== */
 
 function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
+  const t = useTranslations('projectDetail');
+  const fmt = useFormat();
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -639,10 +656,10 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
 
   const isDone = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
   const phaseLabel: Record<string, string> = {
-    init: 'Initializing', schema_discovery: 'schema_discovery',
-    exploration: 'exploration', analysis: 'analysis',
-    validation: 'validation', recommendations: 'recommendations',
-    saving: 'saving', complete: 'complete',
+    init: t('phaseInit'), schema_discovery: t('phaseSchemaDiscovery'),
+    exploration: t('phaseExploration'), analysis: t('phaseAnalysis'),
+    validation: t('phaseValidation'), recommendations: t('phaseRecommendations'),
+    saving: t('phaseSaving'), complete: t('phaseComplete'),
   };
 
   const elapsed = run.started_at
@@ -673,8 +690,8 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
             {isDone && run.status === 'cancelled' && <IconAlertTriangle size={16} color="var(--db-amber-text)" />}
             <span style={{ fontSize: 14, fontWeight: 500 }}>
               {isDone
-                ? (run.status === 'completed' ? 'Discovery complete' : run.status === 'failed' ? 'Discovery failed' : 'Discovery cancelled')
-                : 'Discovery running'}
+                ? (run.status === 'completed' ? t('discoveryComplete') : run.status === 'failed' ? t('discoveryFailed') : t('discoveryCancelled'))
+                : t('discoveryRunning')}
             </span>
             <span style={{
               fontSize: 11, fontWeight: 500, padding: '2px 8px',
@@ -692,12 +709,12 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
                 next to the status. Clicking it expands the full text; the icon
                 itself stays put and survives refresh (it is derived from
                 run.error, which the backend keeps on the run). */}
-            <RunErrorIndicator errors={run.error} label="Discovery run error" />
+            <RunErrorIndicator errors={run.error} label={t('discoveryRunError')} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
-            {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
-            {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
+            {!isDone && <GhostButton onClick={onCancel} small>{t('cancel')}</GhostButton>}
+            {isDone && <GhostButton onClick={onCancel} small>{t('dismiss')}</GhostButton>}
           </div>
         </div>
 
@@ -721,20 +738,20 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           display: 'flex', gap: 20, fontSize: 12, color: 'var(--db-text-secondary)',
           padding: '10px 0 14px', flexWrap: 'wrap',
         }}>
-          <span>{run.total_queries} queries</span>
-          <span>{run.insights_found} insights</span>
-          <span>{formatElapsed(elapsed)}</span>
+          <span>{t('statsQueries', { count: run.total_queries })}</span>
+          <span>{t('statsInsights', { count: run.insights_found })}</span>
+          <span>{formatElapsed(elapsed, t)}</span>
           <span style={{ color: 'var(--db-text-tertiary)' }}>
-            Started: {new Date(run.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+            {t('startedAt', { time: fmt.dateTime(run.started_at, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) })}
           </span>
           {run.updated_at && (
             <span style={{ color: 'var(--db-text-tertiary)' }}>
-              Updated: {new Date(run.updated_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+              {t('updatedAt', { time: fmt.dateTime(run.updated_at, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) })}
             </span>
           )}
           {isDone && run.completed_at && (
             <span style={{ color: 'var(--db-text-tertiary)' }}>
-              Completed: {new Date(run.completed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+              {t('completedAt', { time: fmt.dateTime(run.completed_at, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) })}
             </span>
           )}
         </div>
@@ -776,6 +793,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
 export const debugLogsVisibleKey = (projectId: string) => `db:showDebugLogs:${projectId}`;
 
 function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId: string; isDone: boolean }) {
+  const t = useTranslations('projectDetail');
   // Read the preference fresh on mount. If it flips while the panel is
   // open (user toggled it in another tab), the `storage` event below
   // picks it up.
@@ -877,19 +895,19 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
     <div style={{ borderTop: '1px solid var(--db-border-default)', padding: '10px 20px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--db-text-secondary)' }}>
-          Debug logs
+          {t('debugLogs')}
           <span style={{ color: 'var(--db-text-tertiary)', fontWeight: 400, marginLeft: 6 }}>
-            (LLM calls + SQL executions, refreshes every 2s)
+            {t('debugLogsSubtitle')}
           </span>
         </span>
         <Link href={`/projects/${projectId}/settings#advanced`}
           style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textDecoration: 'none' }}>
-          Hide in settings
+          {t('hideInSettings')}
         </Link>
       </div>
       {error && (
         <div style={{ fontSize: 12, color: 'var(--db-red-text)', marginBottom: 6 }}>
-          Failed to load debug logs: {error}
+          {t('debugLoadFailed', { error })}
         </div>
       )}
       <div
@@ -911,7 +929,7 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
       >
         {entries.length === 0 ? (
           <div style={{ padding: '10px 12px', color: 'var(--db-text-tertiary)' }}>
-            {isDone ? 'No debug entries recorded for this run.' : 'Waiting for first event...'}
+            {isDone ? t('noDebugEntries') : t('waitingForFirstEvent')}
           </div>
         ) : (
           entries.map((d) => <DebugLogRow key={d.id} entry={d} />)
@@ -922,9 +940,11 @@ function DebugLogsPanel({ projectId, runId, isDone }: { projectId: string; runId
 }
 
 function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
+  const t = useTranslations('projectDetail');
+  const fmt = useFormat();
   const [expanded, setExpanded] = useState(false);
 
-  const ts = new Date(entry.created_at).toLocaleTimeString('en-US', {
+  const ts = fmt.dateTime(entry.created_at, {
     hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
   const err = entry.query_error || entry.error_message;
@@ -935,7 +955,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
   const summary = (() => {
     if (err) return err;
     if (entry.operation === 'execute_query') {
-      return entry.query_purpose || shortSQL(entry.sql_query) || '(query)';
+      return entry.query_purpose || shortSQL(entry.sql_query) || t('queryFallback');
     }
     if (entry.operation === 'create_message') {
       const tokens = entry.llm_input_tokens || entry.llm_output_tokens
@@ -985,7 +1005,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
           {summary}
         </span>
         {entry.row_count && entry.row_count > 0 ? (
-          <span style={{ color: 'var(--db-text-tertiary)' }}>{entry.row_count} rows</span>
+          <span style={{ color: 'var(--db-text-tertiary)' }}>{t('rowsCount', { count: entry.row_count })}</span>
         ) : <span />}
       </div>
       {expanded && (
@@ -999,7 +1019,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
           {entry.sql_query && (
             <details open style={{ marginBottom: 6 }}>
               <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
-                {entry.sql_query_fixed ? 'SQL — original (rewritten on retry)' : 'SQL'}
+                {entry.sql_query_fixed ? t('sqlOriginalRewritten') : t('sqlLabel')}
               </summary>
               <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
                 {entry.sql_query}
@@ -1009,7 +1029,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
           {entry.sql_query_fixed && (
             <details open style={{ marginBottom: 6 }}>
               <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
-                SQL — executed (after fix{entry.fix_attempts ? `, ${entry.fix_attempts} attempt${entry.fix_attempts === 1 ? '' : 's'}` : ''})
+                {t('sqlExecutedAfterFix', { attempts: entry.fix_attempts || 0 })}
               </summary>
               <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
                 {entry.sql_query_fixed}
@@ -1019,7 +1039,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
           {entry.llm_response && (
             <details open>
               <summary style={{ cursor: 'pointer', color: 'var(--db-text-tertiary)', fontSize: 10, marginBottom: 2 }}>
-                LLM response{entry.llm_model ? ` · ${entry.llm_model}` : ''}
+                {entry.llm_model ? t('llmResponseWithModel', { model: entry.llm_model }) : t('llmResponse')}
               </summary>
               <div style={{ background: 'var(--db-bg-white)', padding: 6, borderRadius: 3, border: '1px solid var(--db-border-default)' }}>
                 {entry.llm_response}
@@ -1028,7 +1048,7 @@ function DebugLogRow({ entry }: { entry: DebugLogEntry }) {
           )}
           {err && err.length > 200 && (
             <details open>
-              <summary style={{ cursor: 'pointer', color: 'var(--db-red-text)', fontSize: 10, marginBottom: 2 }}>Error</summary>
+              <summary style={{ cursor: 'pointer', color: 'var(--db-red-text)', fontSize: 10, marginBottom: 2 }}>{t('errorLabel')}</summary>
               <div style={{ background: 'var(--db-red-bg)', padding: 6, borderRadius: 3, color: 'var(--db-red-text)' }}>
                 {err}
               </div>
@@ -1068,6 +1088,8 @@ function shortModel(m: string): string {
 function StepRow({ step, index, isLast, isActive }: {
   step: RunStep; index: number; isLast: boolean; isActive: boolean;
 }) {
+  const t = useTranslations('projectDetail');
+  const fmt = useFormat();
   const [opened, { toggle }] = useDisclosure(false);
   const isDone = !isActive;
   const hasDetails = isDone && (step.query || (step.llm_thinking && step.llm_thinking.length > 40));
@@ -1137,18 +1159,18 @@ function StepRow({ step, index, isLast, isActive }: {
 
         {/* Right badges */}
         <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', flexShrink: 0 }}>
-          {isActive && <ResultBadge type="running">Running…</ResultBadge>}
-          {isDone && step.row_count > 0 && <ResultBadge type="rows">{step.row_count} rows</ResultBadge>}
-          {isDone && step.query_time_ms > 0 && <ResultBadge type="duration">{(step.query_time_ms / 1000).toFixed(2)}s</ResultBadge>}
+          {isActive && <ResultBadge type="running">{t('badgeRunning')}</ResultBadge>}
+          {isDone && step.row_count > 0 && <ResultBadge type="rows">{t('rowsCount', { count: step.row_count })}</ResultBadge>}
+          {isDone && step.query_time_ms > 0 && <ResultBadge type="duration">{t('badgeSeconds', { seconds: (step.query_time_ms / 1000).toFixed(2) })}</ResultBadge>}
           {isDone && ((step.input_tokens ?? 0) > 0 || (step.output_tokens ?? 0) > 0) && (
             <ResultBadge type="duration">
-              In {step.input_tokens ?? 0} · Out {step.output_tokens ?? 0}
+              {t('badgeInOutTokens', { in: step.input_tokens ?? 0, out: step.output_tokens ?? 0 })}
             </ResultBadge>
           )}
           {isDone && step.type === 'insight' && step.insight_severity && (
             <ResultBadge type="insight">{step.insight_severity}</ResultBadge>
           )}
-          {step.error && <ResultBadge type="error">Error</ResultBadge>}
+          {step.error && <ResultBadge type="error">{t('errorLabel')}</ResultBadge>}
         </div>
       </div>
 
@@ -1165,7 +1187,7 @@ function StepRow({ step, index, isLast, isActive }: {
             ))}
           </span>
           <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-            {step.type === 'recommendation' ? 'Generating recommendations…' : 'Querying data warehouse…'}
+            {step.type === 'recommendation' ? t('generatingRecommendations') : t('queryingWarehouse')}
           </span>
         </div>
       )}
@@ -1177,11 +1199,11 @@ function StepRow({ step, index, isLast, isActive }: {
             {/* Step metadata */}
             <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--db-text-tertiary)', marginBottom: 6 }}>
               {step.timestamp && (
-                <span>At: {new Date(step.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</span>
+                <span>{t('metaAt', { time: fmt.dateTime(step.timestamp, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) })}</span>
               )}
-              {step.query_time_ms > 0 && <span>Query: {step.query_time_ms}ms</span>}
-              {step.row_count > 0 && <span>Rows: {step.row_count}</span>}
-              {step.query_fixed && <span style={{ color: 'var(--db-amber-text)' }}>Auto-fixed</span>}
+              {step.query_time_ms > 0 && <span>{t('metaQuery', { ms: step.query_time_ms })}</span>}
+              {step.row_count > 0 && <span>{t('metaRows', { count: step.row_count })}</span>}
+              {step.query_fixed && <span style={{ color: 'var(--db-amber-text)' }}>{t('metaAutoFixed')}</span>}
             </div>
             {thinking.length > 40 && (
               <div style={{ fontStyle: 'italic', color: 'var(--db-text-tertiary)', marginBottom: 6 }}>{thinking}</div>
@@ -1226,17 +1248,23 @@ function ResultBadge({ type, children }: { type: 'rows' | 'duration' | 'insight'
 }
 
 function StatusBadge({ status }: { status: string }) {
+  const t = useTranslations('projectDetail');
   const map: Record<string, { bg: string; color: string }> = {
     Complete: { bg: 'var(--db-green-bg)', color: 'var(--db-green-text)' },
     Partial: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
     Failed: { bg: 'var(--db-red-bg)', color: 'var(--db-red-text)' },
+  };
+  const labels: Record<string, string> = {
+    Complete: t('statusComplete'),
+    Partial: t('statusPartial'),
+    Failed: t('statusFailed'),
   };
   const s = map[status] || map.Complete;
   return (
     <span style={{
       fontSize: 11, fontWeight: 500, padding: '1px 7px',
       borderRadius: 'var(--db-radius)', background: s.bg, color: s.color,
-    }}>{status}</span>
+    }}>{labels[status] || labels.Complete}</span>
   );
 }
 
@@ -1317,23 +1345,29 @@ function GhostButton({ onClick, children, small }: { onClick: () => void; childr
 
 /* ========== Helpers ========== */
 
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds}s elapsed`;
+function formatElapsed(
+  seconds: number,
+  t: ReturnType<typeof useTranslations<'projectDetail'>>,
+): string {
+  if (seconds < 60) return t('elapsedSeconds', { seconds });
   const min = Math.floor(seconds / 60);
   const sec = seconds % 60;
-  if (min < 60) return `${min}m ${sec}s elapsed`;
+  if (min < 60) return t('elapsedMinutes', { min, sec });
   const hr = Math.floor(min / 60);
   const remainMin = min % 60;
-  return `${hr}h ${remainMin}m elapsed`;
+  return t('elapsedHours', { hr, remainMin });
 }
 
-function formatTimeAgo(date: Date): string {
+function formatTimeAgo(
+  date: Date,
+  t: ReturnType<typeof useTranslations<'projectDetail'>>,
+): string {
   const diff = Date.now() - date.getTime();
   const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return t('agoJustNow');
+  if (minutes < 60) return t('agoMinutes', { minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t('agoHours', { hours });
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return t('agoDays', { days });
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import {
   ActionIcon, Alert, Button, Checkbox, CloseButton, Divider, Group, Loader, Modal, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
@@ -12,6 +13,7 @@ import Shell from '@/components/layout/AppShell';
 import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
 import ProvidersPanel from '@/components/projects/ProvidersPanel';
+import { useFormat } from '@/lib/format';
 import { api, Project, ProviderMeta } from '@/lib/api';
 
 // Output language choices rendered into prompt {{LANGUAGE}} substitutions
@@ -46,17 +48,19 @@ const OUTPUT_LANGUAGE_OPTIONS = [
 // Go-side validation.Status per-claim taxonomy; the default is
 // {confirmed, supported} = the historical recommender filter.
 const RECOMMENDATION_VERDICT_DEFAULT = ['confirmed', 'supported'];
-const RECOMMENDATION_VERDICT_OPTIONS = [
-  { value: 'confirmed', label: 'Confirmed — evidence directly equals the claim' },
-  { value: 'supported', label: 'Supported — evidence consistent with the claim (default positive)' },
-  { value: 'partial', label: 'Partial — some claims covered, or coverage incomplete' },
-  { value: 'unverifiable', label: 'Unverifiable — verifier could not produce evidence (caution)' },
-  { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
-];
+const RECOMMENDATION_VERDICT_VALUES = [
+  'confirmed', 'supported', 'partial', 'unverifiable', 'rejected',
+] as const;
 
 export default function ProjectSettingsPage() {
+  const t = useTranslations('settings');
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+
+  const RECOMMENDATION_VERDICT_OPTIONS = RECOMMENDATION_VERDICT_VALUES.map((value) => ({
+    value,
+    label: t(`verdictOption_${value}`),
+  }));
 
   const [project, setProject] = useState<Project | null>(null);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
@@ -219,12 +223,12 @@ export default function ProjectSettingsPage() {
   }, [id]);
 
   const breadcrumb = project
-    ? [{ label: 'Projects', href: '/' }, { label: project.name, href: `/projects/${id}` }, { label: 'Settings' }]
-    : [{ label: 'Settings' }];
+    ? [{ label: t('breadcrumbProjects'), href: '/' }, { label: project.name, href: `/projects/${id}` }, { label: t('breadcrumbSettings') }]
+    : [{ label: t('breadcrumbSettings') }];
 
   if (loading) return <Shell><Loader /></Shell>;
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
-  if (!project) return <Shell><Text>Project not found</Text></Shell>;
+  if (!project) return <Shell><Text>{t('projectNotFound')}</Text></Shell>;
 
   const saveGeneral = async () => {
     setSavingGeneral(true);
@@ -244,9 +248,9 @@ export default function ProjectSettingsPage() {
       }
       const saved = await api.updateProject(id, payload);
       setProject(saved);
-      notifications.show({ title: 'Saved', message: 'General settings updated', color: 'green' });
+      notifications.show({ title: t('toastSaved'), message: t('toastGeneralUpdated'), color: 'green' });
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingGeneral(false);
     }
@@ -263,13 +267,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setValidationEnabled(saved.validation_enabled !== false);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Validation enabled' : 'Validation disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastValidationEnabled') : t('toastValidationDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setValidationEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingValidation(false);
     }
@@ -285,13 +289,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setSmartOverflowEnabled(saved.smart_overflow_enabled !== false);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Smart overflow enabled' : 'Smart overflow disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastSmartOverflowEnabled') : t('toastSmartOverflowDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setSmartOverflowEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingSmartOverflow(false);
     }
@@ -307,13 +311,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setClarifyingQuestionsEnabled(saved.clarifying_questions_enabled !== false);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Clarifying questions enabled' : 'Clarifying questions disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastClarifyingQuestionsEnabled') : t('toastClarifyingQuestionsDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setClarifyingQuestionsEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingClarifyingQuestions(false);
     }
@@ -329,13 +333,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setReflectionEnabled(saved.reflection_enabled !== false);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Discovery Ledger enabled' : 'Discovery Ledger disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastReflectionEnabled') : t('toastReflectionDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setReflectionEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReflection(false);
     }
@@ -351,13 +355,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setReasoningEnabled(saved.reasoning_enabled === true);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Reasoning enabled' : 'Reasoning disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastReasoningEnabled') : t('toastReasoningDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setReasoningEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReasoning(false);
     }
@@ -373,13 +377,13 @@ export default function ProjectSettingsPage() {
       setProject(saved);
       setAskSuggestionsEnabled(saved.ask_suggestions_enabled !== false);
       notifications.show({
-        title: 'Saved',
-        message: next ? 'Suggested questions enabled' : 'Suggested questions disabled',
+        title: t('toastSaved'),
+        message: next ? t('toastAskSuggestionsEnabled') : t('toastAskSuggestionsDisabled'),
         color: 'green',
       });
     } catch (e: unknown) {
       setAskSuggestionsEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingAskSuggestions(false);
     }
@@ -400,10 +404,10 @@ export default function ProjectSettingsPage() {
           ? saved.recommendation_verdicts
           : RECOMMENDATION_VERDICT_DEFAULT,
       );
-      notifications.show({ title: 'Saved', message: 'Recommendation eligibility updated', color: 'green' });
+      notifications.show({ title: t('toastSaved'), message: t('toastVerdictsUpdated'), color: 'green' });
     } catch (e: unknown) {
       setRecommendationVerdicts(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingVerdicts(false);
     }
@@ -414,9 +418,9 @@ export default function ProjectSettingsPage() {
     try {
       const saved = await api.updateProject(id, { profile });
       setProject(saved);
-      notifications.show({ title: 'Saved', message: 'Profile updated', color: 'green' });
+      notifications.show({ title: t('toastSaved'), message: t('toastProfileUpdated'), color: 'green' });
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingProfile(false);
     }
@@ -445,9 +449,9 @@ export default function ProjectSettingsPage() {
         setBlurb((prev) => ({ ...prev, apiKey: '' }));
       }
       setProject(saved);
-      notifications.show({ title: 'Saved', message: 'Blurb LLM updated', color: 'green' });
+      notifications.show({ title: t('toastSaved'), message: t('toastBlurbUpdated'), color: 'green' });
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('toastError'), message: (e as Error).message, color: 'red' });
     } finally {
       setSavingBlurb(false);
     }
@@ -464,25 +468,25 @@ export default function ProjectSettingsPage() {
         }}
       >
         <Tabs.List>
-          <Tabs.Tab value="general">General</Tabs.Tab>
-          <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
-          {!aiConfigManaged && <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>}
-          {!aiConfigManaged && <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>}
-          {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
-          <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
+          <Tabs.Tab value="general">{t('tabGeneral')}</Tabs.Tab>
+          <Tabs.Tab value="warehouse">{t('tabWarehouse')}</Tabs.Tab>
+          {!aiConfigManaged && <Tabs.Tab value="ai">{t('tabAi')}</Tabs.Tab>}
+          {!aiConfigManaged && <Tabs.Tab value="blurb">{t('tabBlurb')}</Tabs.Tab>}
+          {profileSchema && <Tabs.Tab value="profile">{t('tabProfile')}</Tabs.Tab>}
+          <Tabs.Tab value="advanced">{t('tabAdvanced')}</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="general">
           <SettingsSection>
-            <TextInput label="Project Name" required value={name} onChange={(e) => setName(e.target.value)} />
-            <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <TextInput label={t('projectNameLabel')} required value={name} onChange={(e) => setName(e.target.value)} />
+            <Textarea label={t('descriptionLabel')} value={description} onChange={(e) => setDescription(e.target.value)} />
             <Group>
-              <TextInput label="Domain" value={project.domain} disabled style={{ flex: 1 }} />
-              <TextInput label="Category" value={project.category} disabled style={{ flex: 1 }} />
+              <TextInput label={t('domainLabel')} value={project.domain} disabled style={{ flex: 1 }} />
+              <TextInput label={t('categoryLabel')} value={project.category} disabled style={{ flex: 1 }} />
             </Group>
             <Select
-              label="Output language"
-              description="Language used for insight names, recommendations, summaries, and /ask answers. SQL, identifiers, and JSON keys stay in English regardless of choice."
+              label={t('outputLanguageLabel')}
+              description={t('outputLanguageDescription')}
               value={language}
               onChange={(v) => setLanguage(v || 'English')}
               data={OUTPUT_LANGUAGE_OPTIONS}
@@ -490,7 +494,7 @@ export default function ProjectSettingsPage() {
               searchable
             />
             <Group justify="flex-end">
-              <Button onClick={saveGeneral} loading={savingGeneral}>Save general</Button>
+              <Button onClick={saveGeneral} loading={savingGeneral}>{t('saveGeneralButton')}</Button>
             </Group>
           </SettingsSection>
         </Tabs.Panel>
@@ -508,11 +512,9 @@ export default function ProjectSettingsPage() {
         {!aiConfigManaged && (
         <Tabs.Panel value="blurb">
           <SettingsSection>
-            <Text size="sm" fw={500}>Blurb Model</Text>
+            <Text size="sm" fw={500}>{t('blurbModelHeading')}</Text>
             <Text size="xs" c="dimmed" mb="sm">
-              The LLM used during schema indexing to generate the per-table
-              descriptions that get embedded into Qdrant. Override here to pick a
-              cheaper / faster model. Changes apply to the next re-index.
+              {t('blurbModelDescription')}
             </Text>
             <BlurbLLMEditor
               llmProviders={llmProviders}
@@ -523,7 +525,7 @@ export default function ProjectSettingsPage() {
               savedProvider={project?.blurb_llm?.provider || project?.llm?.provider}
             />
             <Group justify="flex-end">
-              <Button onClick={saveBlurb} loading={savingBlurb}>Save blurb model</Button>
+              <Button onClick={saveBlurb} loading={savingBlurb}>{t('saveBlurbButton')}</Button>
             </Group>
           </SettingsSection>
         </Tabs.Panel>
@@ -533,11 +535,11 @@ export default function ProjectSettingsPage() {
           <Tabs.Panel value="profile">
             <SettingsSection>
               <Text size="xs" c="dimmed" mb="md">
-                Help the AI understand your domain. This context improves insight quality.
+                {t('profileDescription')}
               </Text>
               <ProfileEditor schema={profileSchema} profile={profile} onChange={setProfile} />
               <Group justify="flex-end">
-                <Button onClick={saveProfile} loading={savingProfile}>Save profile</Button>
+                <Button onClick={saveProfile} loading={savingProfile}>{t('saveProfileButton')}</Button>
               </Group>
             </SettingsSection>
           </Tabs.Panel>
@@ -546,52 +548,52 @@ export default function ProjectSettingsPage() {
         <Tabs.Panel value="advanced">
           <SettingsSection>
             <Stack gap="sm">
-              <Text size="sm" fw={500}>Validation</Text>
+              <Text size="sm" fw={500}>{t('validationHeading')}</Text>
               <Switch
-                label="Run validation on insights and recommendations"
-                description="When on, every discovery runs the verifier + refuter pair against each insight and recommendation, surfacing per-claim evidence in the dashboard. When off, future discoveries skip validation and stamp each item as 'Disabled' — individual items can still be validated manually from their detail pages."
+                label={t('validationSwitchLabel')}
+                description={t('validationSwitchDescription')}
                 checked={validationEnabled}
                 disabled={savingValidation}
                 onChange={(e) => saveValidationEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Smart overflow handling for large evidence"
-                description="When the evidence selected for an analysis area exceeds the model's context budget, keep more of it by de-duplicating near-identical queries, tightening per-step detail, and leaving a short note of what was examined but not shown — instead of simply dropping the lowest-scored steps. Only affects runs that would otherwise overflow, so it has no effect on large-context models. Recommended on."
+                label={t('smartOverflowSwitchLabel')}
+                description={t('smartOverflowSwitchDescription')}
                 checked={smartOverflowEnabled}
                 disabled={savingSmartOverflow}
                 onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Clarifying questions"
-                description="When on, after a discovery run the agent asks you a short list of questions about anything it was uncertain about (opaque codes, ambiguous columns, findings it couldn't verify). Your answers are saved as notes and fed into the next run, so the analysis keeps improving. Grounded questions only — a clean, confident run asks nothing. On by default."
+                label={t('clarifyingQuestionsSwitchLabel')}
+                description={t('clarifyingQuestionsSwitchDescription')}
                 checked={clarifyingQuestionsEnabled}
                 disabled={savingClarifyingQuestions}
                 onChange={(e) => saveClarifyingQuestionsEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Discovery Ledger (compounding discovery)"
-                description="When on, after each run the agent consolidates it into a persistent per-project ledger — coverage of what's been explored, findings kept with their metric and SQL and a status, and a queue of what to investigate next — and the next run builds on that instead of starting fresh. Off by default at the deployment level; where enabled, this opts an individual project in or out. On by default."
+                label={t('reflectionSwitchLabel')}
+                description={t('reflectionSwitchDescription')}
                 checked={reflectionEnabled}
                 disabled={savingReflection}
                 onChange={(e) => saveReflectionEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Enable reasoning"
-                description="Turn on for reasoning models (e.g. Kimi, qwen3, DeepSeek-R1, Ollama thinking models). Off by default. When on, the model gets extra window-budgeted output headroom during exploration so a long hidden chain-of-thought doesn't truncate the step, and discovery requests reasoning on every call — providers that support native thinking act on it (capability-checked); others simply get the headroom. Leave off for non-reasoning models."
+                label={t('reasoningSwitchLabel')}
+                description={t('reasoningSwitchDescription')}
                 checked={reasoningEnabled}
                 disabled={savingReasoning}
                 onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Suggested questions"
-                description="When on, opening an insight or recommendation shows a few AI-generated starter questions you can ask about it. This makes an automatic LLM call the first time each item is opened (results are cached), so turn it off to avoid the extra requests. On by default."
+                label={t('askSuggestionsSwitchLabel')}
+                description={t('askSuggestionsSwitchDescription')}
                 checked={askSuggestionsEnabled}
                 disabled={savingAskSuggestions}
                 onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
               <MultiSelect
-                label="Recommendation eligibility"
-                description="Which validation verdicts qualify an insight for recommendation generation. Default is Confirmed + Supported (only positively-validated insights). Add Partial / Unverifiable when the warehouse can't self-verify (e.g. no temp-table permission) but you trust the analysis. Rejected means the evidence contradicts the insight — include with caution. Insights whose validation didn't run stay eligible regardless. Clearing the selection reverts to the default."
+                label={t('recommendationEligibilityLabel')}
+                description={t('recommendationEligibilityDescription')}
                 data={RECOMMENDATION_VERDICT_OPTIONS}
                 value={recommendationVerdicts}
                 disabled={savingVerdicts}
@@ -599,10 +601,10 @@ export default function ProjectSettingsPage() {
                 clearable
               />
               <Divider my="xs" />
-              <Text size="sm" fw={500}>Debugging</Text>
+              <Text size="sm" fw={500}>{t('debuggingHeading')}</Text>
               <Switch
-                label="Show debug logs during discovery and indexing"
-                description="Adds a verbose per-query + per-LLM-call tail to the live discovery panel, and a live agent-stderr tail to the schema-index panel on this project's page."
+                label={t('debugLogsSwitchLabel')}
+                description={t('debugLogsSwitchDescription')}
                 checked={debugLogsEnabled}
                 onChange={(e) => {
                   const next = e.currentTarget.checked;
@@ -613,18 +615,18 @@ export default function ProjectSettingsPage() {
                 }}
               />
               <Text size="xs" c="dimmed">
-                Local-browser preference — not shared with other users and not saved on the project.
+                {t('debugLogsFootnote')}
               </Text>
               <Divider my="xs" />
-              <Text size="sm" fw={500}>Schema cache</Text>
+              <Text size="sm" fw={500}>{t('schemaCacheHeading')}</Text>
               <Text size="xs" c="dimmed">
-                The agent caches the discovered warehouse schema so re-runs skip the full catalog pass. Clearing the cache also drops the Qdrant index and resets the project to <strong>needs indexing</strong> — discovery will be blocked until a fresh reindex completes.
+                {t.rich('schemaCacheDescription', { strong: (chunks) => <strong>{chunks}</strong> })}
               </Text>
               {id && <ClearSchemaCacheButton projectId={id} />}
               <Divider my="md" />
-              <Text size="sm" fw={500} c="red">Danger zone</Text>
+              <Text size="sm" fw={500} c="red">{t('dangerZoneHeading')}</Text>
               <Text size="xs" c="dimmed">
-                Deleting a project removes everything tied to it. <strong>This cannot be undone.</strong>
+                {t.rich('dangerZoneDescription', { strong: (chunks) => <strong>{chunks}</strong> })}
               </Text>
               {id && project && (
                 <DeleteProjectButton projectId={id} projectName={project.name || id} />
@@ -640,28 +642,26 @@ export default function ProjectSettingsPage() {
   void router;
 }
 
-function formatRelativeTime(rfc3339: string): string {
-  const t = new Date(rfc3339).getTime();
-  if (Number.isNaN(t)) return rfc3339;
-  const seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (seconds < 60) return 'just now';
+// Renders the relative "…ago" cache timestamp through the settings namespace's
+// ICU plural messages so pluralisation follows the active UI locale.
+function formatRelativeTime(rfc3339: string, t: ReturnType<typeof useTranslations>): string {
+  const ms = new Date(rfc3339).getTime();
+  if (Number.isNaN(ms)) return rfc3339;
+  const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (seconds < 60) return t('relativeJustNow');
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  if (minutes < 60) return t('relativeMinutes', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  if (hours < 24) return t('relativeHours', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  if (days < 30) return t('relativeDays', { count: days });
   const months = Math.floor(days / 30);
-  return `${months} ${months === 1 ? 'month' : 'months'} ago`;
-}
-
-function formatAbsoluteTime(rfc3339: string): string {
-  const d = new Date(rfc3339);
-  if (Number.isNaN(d.getTime())) return rfc3339;
-  return d.toLocaleString();
+  return t('relativeMonths', { count: months });
 }
 
 function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
+  const t = useTranslations('settings');
+  const fmt = useFormat();
   const [opened, setOpened] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [info, setInfo] = useState<{ cached: boolean; last?: string } | null>(null);
@@ -682,14 +682,14 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
     try {
       await api.invalidateSchemaCache(projectId);
       notifications.show({
-        title: 'Schema cache cleared',
-        message: 'Project marked as needs_reindex. Click Re-index now on the project page when you\'re ready.',
+        title: t('schemaCacheClearedTitle'),
+        message: t('schemaCacheClearedMessage'),
         color: 'green',
       });
       setOpened(false);
       void refreshInfo();
     } catch (e: unknown) {
-      notifications.show({ title: 'Could not clear schema cache', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('schemaCacheClearErrorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setSubmitting(false);
     }
@@ -699,35 +699,38 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
     <>
       <Group align="center">
         <Button variant="default" color="orange" onClick={() => setOpened(true)}>
-          Clear schema cache
+          {t('clearSchemaCacheButton')}
         </Button>
         <Text size="xs" c="dimmed">
           {info === null
-            ? 'Loading cache info…'
+            ? t('cacheInfoLoading')
             : info.cached && info.last
-              ? `Last cached: ${formatRelativeTime(info.last)} (${formatAbsoluteTime(info.last)})`
-              : 'No cache yet — next indexing run will discover schemas from the warehouse.'}
+              ? t('cacheInfoLastCached', {
+                  relative: formatRelativeTime(info.last, t),
+                  absolute: fmt.dateTime(info.last, { dateStyle: 'medium', timeStyle: 'short' }),
+                })
+              : t('cacheInfoNone')}
         </Text>
       </Group>
       <Modal
         opened={opened}
         onClose={() => { if (!submitting) setOpened(false); }}
-        title="Clear schema cache?"
+        title={t('clearSchemaCacheModalTitle')}
         centered
       >
         <Stack gap="sm">
-          <Text size="sm">This resets the project&apos;s schema-discovery state:</Text>
+          <Text size="sm">{t('clearSchemaCacheModalIntro')}</Text>
           <ul style={{ margin: 0, paddingLeft: 20, fontSize: 14 }}>
-            <li>Cached warehouse schema is deleted.</li>
-            <li>The vector index in Qdrant is dropped.</li>
-            <li>Project status is set to <strong>needs_reindex</strong>.</li>
+            <li>{t('clearSchemaCacheBullet1')}</li>
+            <li>{t('clearSchemaCacheBullet2')}</li>
+            <li>{t.rich('clearSchemaCacheBullet3', { strong: (chunks) => <strong>{chunks}</strong> })}</li>
           </ul>
           <Group justify="flex-end" gap="sm">
             <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
-              Cancel
+              {t('cancelButton')}
             </Button>
             <Button color="orange" onClick={handleConfirm} loading={submitting}>
-              Yes, clear cache
+              {t('confirmClearCacheButton')}
             </Button>
           </Group>
         </Stack>
@@ -737,6 +740,7 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
 }
 
 function DeleteProjectButton({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const t = useTranslations('settings');
   const router = useRouter();
   const [opened, setOpened] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -749,21 +753,21 @@ function DeleteProjectButton({ projectId, projectName }: { projectId: string; pr
     try {
       const res = await api.deleteProject(projectId);
       notifications.show({
-        title: 'Project deleted',
-        message: `"${projectName}" and all related data have been removed.`,
+        title: t('deleteSuccessTitle'),
+        message: t('deleteSuccessMessage', { name: projectName }),
         color: 'green',
       });
       if (res.secrets_skipped) {
         notifications.show({
-          title: 'Action required',
-          message: 'Warehouse and AI credentials are stored in an external secret manager. Remove them from your cloud console.',
+          title: t('deleteSecretsTitle'),
+          message: t('deleteSecretsMessage'),
           color: 'yellow',
           autoClose: 12000,
         });
       }
       router.push('/projects');
     } catch (e: unknown) {
-      notifications.show({ title: 'Could not delete project', message: (e as Error).message, color: 'red', autoClose: 8000 });
+      notifications.show({ title: t('deleteErrorTitle'), message: (e as Error).message, color: 'red', autoClose: 8000 });
       setSubmitting(false);
     }
   };
@@ -772,21 +776,21 @@ function DeleteProjectButton({ projectId, projectName }: { projectId: string; pr
     <>
       <Group>
         <Button color="red" onClick={() => { setConfirmText(''); setOpened(true); }}>
-          Delete project
+          {t('deleteProjectButton')}
         </Button>
       </Group>
       <Modal
         opened={opened}
         onClose={() => { if (!submitting) setOpened(false); }}
-        title={<Text fw={600} c="red">Delete project?</Text>}
+        title={<Text fw={600} c="red">{t('deleteModalTitle')}</Text>}
         centered
       >
         <Stack gap="sm">
           <Text size="sm">
-            This permanently removes <strong>{projectName}</strong> and everything tied to it.
+            {t.rich('deleteModalBody', { name: projectName, strong: (chunks) => <strong>{chunks}</strong> })}
           </Text>
           <TextInput
-            label={<>Type <strong>{projectName}</strong> to confirm</>}
+            label={t.rich('deleteConfirmLabel', { name: projectName, strong: (chunks) => <strong>{chunks}</strong> })}
             value={confirmText}
             onChange={(e) => setConfirmText(e.currentTarget.value)}
             placeholder={projectName}
@@ -795,10 +799,10 @@ function DeleteProjectButton({ projectId, projectName }: { projectId: string; pr
           />
           <Group justify="flex-end" gap="sm">
             <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
-              Cancel
+              {t('cancelButton')}
             </Button>
             <Button color="red" onClick={handleConfirm} loading={submitting} disabled={!matches}>
-              Delete project
+              {t('deleteProjectButton')}
             </Button>
           </Group>
         </Stack>
@@ -826,6 +830,7 @@ function ProfileEditor({ schema, profile, onChange }: {
   profile: Record<string, Record<string, unknown>>;
   onChange: (profile: Record<string, Record<string, unknown>>) => void;
 }) {
+  const t = useTranslations('settings');
   const properties = (schema as { properties?: Record<string, unknown> }).properties || {};
 
   const updateField = (section: string, field: string, value: unknown) => {
@@ -863,7 +868,7 @@ function ProfileEditor({ schema, profile, onChange }: {
           return (
             <div key={sectionKey}>
               <Text size="sm" fw={600} mb="xs">{sec.title || sectionKey}</Text>
-              <TextInput size="xs" description="Comma-separated values"
+              <TextInput size="xs" description={t('commaSeparatedValues')}
                 value={items.join(', ')}
                 onChange={(e) => updateSection(sectionKey, e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
             </div>
@@ -892,6 +897,7 @@ function SchemaField({ fieldKey, fieldSchema, value, onChange }: {
   fieldKey: string; fieldSchema: unknown; value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const t = useTranslations('settings');
   const fs = fieldSchema as {
     type?: string; title?: string; description?: string;
     enum?: string[]; items?: { type?: string; enum?: string[]; properties?: Record<string, unknown> };
@@ -914,7 +920,7 @@ function SchemaField({ fieldKey, fieldSchema, value, onChange }: {
   if (fs.type === 'array' && fs.items?.type === 'string') {
     const items = (Array.isArray(value) ? value : []) as string[];
     return (
-      <TextInput label={fs.title || fieldKey} description={fs.description || 'Comma-separated'}
+      <TextInput label={fs.title || fieldKey} description={fs.description || t('commaSeparated')}
         value={items.join(', ')} size="xs"
         onChange={(e) => onChange(e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
     );
@@ -954,6 +960,7 @@ function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
   items: Record<string, unknown>[];
   onChange: (items: Record<string, unknown>[]) => void;
 }) {
+  const t = useTranslations('settings');
   const addItem = () => onChange([...items, {}]);
   const removeItem = (idx: number) => onChange(items.filter((_, i) => i !== idx));
   const updateItem = (idx: number, field: string, value: unknown) => {
@@ -967,7 +974,7 @@ function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
   return (
     <div>
       <Group justify="space-between" mb="xs">
-        <Text size="sm" fw={600}>{title} ({items.length})</Text>
+        <Text size="sm" fw={600}>{t('titleWithCount', { title, count: items.length })}</Text>
         <ActionIcon variant="light" size="sm" onClick={addItem}>
           <IconPlus size={14} />
         </ActionIcon>
@@ -1008,7 +1015,7 @@ function ArrayOfObjectsEditor({ title, itemSchema, items, onChange }: {
             borderRadius: 'var(--db-radius)',
             padding: '20px', textAlign: 'center',
           }}>
-            <Text size="xs" c="dimmed">No items yet. Click + to add.</Text>
+            <Text size="xs" c="dimmed">{t('noItemsYet')}</Text>
           </div>
         )}
       </Stack>
@@ -1022,6 +1029,7 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
   items: Record<string, unknown>[];
   onChange: (items: unknown) => void;
 }) {
+  const t = useTranslations('settings');
   const fields = itemSchema.properties || {};
   const fieldEntries = Object.entries(fields);
   const addItem = () => onChange([...items, {}]);
@@ -1080,7 +1088,7 @@ function InlineArrayEditor({ title, itemSchema, items, onChange }: {
       </Stack>
 
       {items.length === 0 && (
-        <Text size="xs" c="dimmed" ta="center" py="xs">No items. Click + to add.</Text>
+        <Text size="xs" c="dimmed" ta="center" py="xs">{t('noItems')}</Text>
       )}
     </div>
   );

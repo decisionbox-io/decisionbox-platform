@@ -2,6 +2,7 @@
 
 import { CSSProperties, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import dynamic from 'next/dynamic';
 import {
   ActionIcon, Alert, Badge, Button, Card, Divider, Group, Loader, Modal, NavLink, ScrollArea, Stack, Switch,
@@ -15,10 +16,6 @@ import { api, ProjectPrompts, AnalysisAreaConfig } from '@/lib/api';
 // Dynamic import to avoid SSR issues with the markdown editor
 const MDEditor = dynamic(() => import('@uiw/react-md-editor'), { ssr: false });
 
-// UI-only display name for this page (nav + titles). The route path (/prompts)
-// and all code identifiers stay "prompts"; only what the user reads changes.
-const PAGE_TITLE = 'Playbook';
-
 // The detail card is a flex column that fills the master–detail row's height so
 // the editor stretches down instead of leaving dead space; editorFillStyle lets
 // the MDEditor (height="100%") fill the remaining space under the header/inputs.
@@ -28,6 +25,7 @@ const editorFillStyle: CSSProperties = { flex: 1, minHeight: 0 };
 export default function PromptsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const t = useTranslations('promptsPage');
   const [prompts, setPrompts] = useState<ProjectPrompts | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -54,9 +52,9 @@ export default function PromptsPage() {
     setSaving(true);
     try {
       await api.updatePrompts(id, prompts);
-      notifications.show({ title: 'Saved', message: 'Prompts updated', color: 'green' });
+      notifications.show({ title: t('savedTitle'), message: t('savedMessage'), color: 'green' });
     } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('errorTitle'), message: (e as Error).message, color: 'red' });
     } finally {
       setSaving(false);
     }
@@ -115,7 +113,7 @@ export default function PromptsPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
-  if (!prompts) return <Shell><Text>Prompts not found</Text></Shell>;
+  if (!prompts) return <Shell><Text>{t('notFound')}</Text></Shell>;
 
   const areas = Object.entries(prompts.analysis_areas)
     .sort(([, a], [, b]) => a.priority - b.priority);
@@ -126,14 +124,14 @@ export default function PromptsPage() {
         <Group justify="space-between" mb="md" style={{ flexShrink: 0 }}>
           <Group>
             <Button variant="subtle" leftSection={<IconArrowLeft size={16} />}
-              onClick={() => router.push(`/projects/${id}`)}>Back</Button>
-            <Title order={2}>{PAGE_TITLE}</Title>
+              onClick={() => router.push(`/projects/${id}`)}>{t('back')}</Button>
+            <Title order={2}>{t('title')}</Title>
           </Group>
           <Group>
             <Button variant="light" leftSection={<IconPlus size={16} />}
-              onClick={() => setAddModalOpen(true)}>Add Analysis Area</Button>
+              onClick={() => setAddModalOpen(true)}>{t('addAnalysisArea')}</Button>
             <Button onClick={handleSave} loading={saving} leftSection={<IconCheck size={16} />}>
-              Save All
+              {t('saveAll')}
             </Button>
           </Group>
         </Group>
@@ -146,12 +144,12 @@ export default function PromptsPage() {
               scroll (ScrollArea shows a scrollbar so it's clearly scrollable). */}
           <Card withBorder p={0} style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
             <Stack gap={2} p="xs" style={{ flexShrink: 0 }}>
-              <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb={2} px={6}>Discovery</Text>
-              <NavLink label="Base Context" active={activeTab === 'base_context'}
+              <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb={2} px={6}>{t('discovery')}</Text>
+              <NavLink label={t('baseContextNav')} active={activeTab === 'base_context'}
                 onClick={() => setActiveTab('base_context')} />
-              <NavLink label="Exploration" active={activeTab === 'exploration'}
+              <NavLink label={t('explorationNav')} active={activeTab === 'exploration'}
                 onClick={() => setActiveTab('exploration')} />
-              <NavLink label="Recommendations" active={activeTab === 'recommendations'}
+              <NavLink label={t('recommendationsNav')} active={activeTab === 'recommendations'}
                 onClick={() => setActiveTab('recommendations')} />
             </Stack>
 
@@ -159,10 +157,10 @@ export default function PromptsPage() {
 
             <Group justify="space-between" align="center" px="sm" py={8} style={{ flexShrink: 0 }}>
               <Group gap={6}>
-                <Text size="xs" fw={700} c="dimmed" tt="uppercase">Analysis areas</Text>
+                <Text size="xs" fw={700} c="dimmed" tt="uppercase">{t('analysisAreas')}</Text>
                 <Badge size="xs" variant="light" color="gray">{areas.length}</Badge>
               </Group>
-              <Tooltip label="Add analysis area">
+              <Tooltip label={t('addAnalysisAreaTooltip')}>
                 <ActionIcon size="sm" variant="subtle" onClick={() => setAddModalOpen(true)}>
                   <IconPlus size={14} />
                 </ActionIcon>
@@ -178,13 +176,13 @@ export default function PromptsPage() {
                     onClick={() => setActiveTab(areaId)}
                     rightSection={
                       <Group gap={4} wrap="nowrap">
-                        {!area.enabled && <Badge size="xs" color="gray">off</Badge>}
-                        {area.is_custom && <Badge size="xs" color="violet">custom</Badge>}
+                        {!area.enabled && <Badge size="xs" color="gray">{t('badgeOff')}</Badge>}
+                        {area.is_custom && <Badge size="xs" color="violet">{t('badgeCustom')}</Badge>}
                       </Group>
                     } />
                 ))}
                 {areas.length === 0 && (
-                  <Text size="xs" c="dimmed" px="xs" py={4}>No analysis areas yet.</Text>
+                  <Text size="xs" c="dimmed" px="xs" py={4}>{t('noAreasYet')}</Text>
                 )}
               </Stack>
             </ScrollArea>
@@ -194,11 +192,9 @@ export default function PromptsPage() {
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {activeTab === 'base_context' && (
               <Card withBorder p="lg" style={detailCardStyle}>
-                <Title order={4} mb="sm">Base Context (Shared)</Title>
+                <Title order={4} mb="sm">{t('baseContextTitle')}</Title>
                 <Text size="xs" c="dimmed" mb="md">
-                  This context is prepended to ALL prompts — exploration, analysis, and recommendations.
-                  Use it for shared instructions like project profile and previous discovery context.
-                  Placeholders: {'{{PROFILE}}'}, {'{{PREVIOUS_CONTEXT}}'}
+                  {t('baseContextHelp', { profile: '{{PROFILE}}', previousContext: '{{PREVIOUS_CONTEXT}}' })}
                 </Text>
                 <div style={editorFillStyle}>
                   <MDEditor
@@ -213,11 +209,9 @@ export default function PromptsPage() {
 
             {activeTab === 'exploration' && (
               <Card withBorder p="lg" style={detailCardStyle}>
-                <Title order={4} mb="sm">Exploration System Prompt</Title>
+                <Title order={4} mb="sm">{t('explorationTitle')}</Title>
                 <Text size="xs" c="dimmed" mb="md">
-                  This prompt guides the AI agent during autonomous data exploration.
-                  It tells the agent what to look for, how to write queries, and what rules to follow.
-                  Base context is automatically prepended.
+                  {t('explorationHelp')}
                 </Text>
                 <div style={editorFillStyle}>
                   <MDEditor
@@ -232,9 +226,9 @@ export default function PromptsPage() {
 
             {activeTab === 'recommendations' && (
               <Card withBorder p="lg" style={detailCardStyle}>
-                <Title order={4} mb="sm">Recommendations Prompt</Title>
+                <Title order={4} mb="sm">{t('recommendationsTitle')}</Title>
                 <Text size="xs" c="dimmed" mb="md">
-                  This prompt generates actionable recommendations from discovered insights.
+                  {t('recommendationsHelp')}
                 </Text>
                 <div style={editorFillStyle}>
                   <MDEditor
@@ -255,10 +249,10 @@ export default function PromptsPage() {
                     <Text size="xs" c="dimmed">{area.description}</Text>
                   </div>
                   <Group>
-                    <Switch label="Enabled" checked={area.enabled}
+                    <Switch label={t('enabled')} checked={area.enabled}
                       onChange={(e) => updateArea(areaId, { enabled: e.currentTarget.checked })} />
                     {area.is_custom && (
-                      <Tooltip label="Remove custom area">
+                      <Tooltip label={t('removeCustomArea')}>
                         <ActionIcon color="red" variant="light"
                           onClick={() => { removeArea(areaId); setActiveTab('base_context'); }}>
                           <IconTrash size={16} />
@@ -269,20 +263,20 @@ export default function PromptsPage() {
                 </Group>
 
                 <Stack gap="sm" mb="md">
-                  <TextInput label="Area Name" value={area.name}
+                  <TextInput label={t('areaNameLabel')} value={area.name}
                     onChange={(e) => updateArea(areaId, { name: e.target.value })} />
-                  <TextInput label="Description" value={area.description}
+                  <TextInput label={t('descriptionLabel')} value={area.description}
                     onChange={(e) => updateArea(areaId, { description: e.target.value })} />
-                  <TextInput label="Keywords" description="Comma-separated keywords to filter exploration queries"
+                  <TextInput label={t('keywordsLabel')} description={t('keywordsDescription')}
                     value={area.keywords.join(', ')}
                     onChange={(e) => updateArea(areaId, {
                       keywords: e.target.value.split(',').map((k) => k.trim()).filter(Boolean),
                     })} />
                 </Stack>
 
-                <Text size="sm" fw={600} mb="xs">Analysis Prompt</Text>
+                <Text size="sm" fw={600} mb="xs">{t('analysisPromptLabel')}</Text>
                 <Text size="xs" c="dimmed" mb="sm">
-                  Placeholders: {'{{DATASET}}'}, {'{{QUERY_RESULTS}}'}, {'{{TOTAL_QUERIES}}'}. Base context (profile + previous context) is prepended automatically.
+                  {t('analysisPromptHelp', { dataset: '{{DATASET}}', queryResults: '{{QUERY_RESULTS}}', totalQueries: '{{TOTAL_QUERIES}}' })}
                 </Text>
                 <div style={editorFillStyle}>
                   <MDEditor
@@ -299,20 +293,20 @@ export default function PromptsPage() {
       </div>
 
       {/* Add Custom Area Modal */}
-      <Modal opened={addModalOpen} onClose={() => setAddModalOpen(false)} title="Add Custom Analysis Area">
+      <Modal opened={addModalOpen} onClose={() => setAddModalOpen(false)} title={t('modalTitle')}>
         <Stack>
-          <TextInput label="Area ID" description="Unique identifier (lowercase, no spaces)"
-            placeholder="cart_abandonment" value={newAreaId}
+          <TextInput label={t('areaIdLabel')} description={t('areaIdDescription')}
+            placeholder={t('areaIdPlaceholder')} value={newAreaId}
             onChange={(e) => setNewAreaId(e.target.value)} required />
-          <TextInput label="Display Name" placeholder="Cart Abandonment"
+          <TextInput label={t('displayNameLabel')} placeholder={t('displayNamePlaceholder')}
             value={newAreaName} onChange={(e) => setNewAreaName(e.target.value)} required />
-          <TextInput label="Description" placeholder="Identify why shoppers abandon their carts"
+          <TextInput label={t('descriptionLabel')} placeholder={t('modalDescriptionPlaceholder')}
             value={newAreaDesc} onChange={(e) => setNewAreaDesc(e.target.value)} />
-          <TextInput label="Keywords" description="Comma-separated keywords for filtering queries"
-            placeholder="cart, checkout, abandon, drop-off"
+          <TextInput label={t('keywordsLabel')} description={t('modalKeywordsDescription')}
+            placeholder={t('modalKeywordsPlaceholder')}
             value={newAreaKeywords} onChange={(e) => setNewAreaKeywords(e.target.value)} />
           <Button onClick={addCustomArea} disabled={!newAreaId || !newAreaName}>
-            Add Area
+            {t('addArea')}
           </Button>
         </Stack>
       </Modal>
