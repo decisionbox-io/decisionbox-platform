@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Alert, Stack, Text, Title } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
@@ -18,6 +19,7 @@ const dashboardSelf: SystemComponent = {
 };
 
 export default function SystemPage() {
+  const t = useTranslations('systemSearch');
   const [components, setComponents] = useState<SystemComponent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,22 +32,22 @@ export default function SystemPage() {
   }, []);
 
   return (
-    <Shell breadcrumb={[{ label: 'System' }]}>
+    <Shell breadcrumb={[{ label: t('title') }]}>
       <Stack gap="lg">
         <div>
-          <Title order={2}>System</Title>
+          <Title order={2}>{t('title')}</Title>
           <Text c="dimmed" size="sm" mt={4}>
-            Components running in this deployment and the versions they report.
+            {t('subtitle')}
           </Text>
         </div>
 
         {error && (
-          <Alert icon={<IconAlertCircle size={16} />} title="Connection Error" color="red" variant="light">
+          <Alert icon={<IconAlertCircle size={16} />} title={t('connectionError')} color="red" variant="light">
             {error}
           </Alert>
         )}
 
-        {loading && <Text c="dimmed">Loading…</Text>}
+        {loading && <Text c="dimmed">{t('loading')}</Text>}
 
         {!loading && !error && (
           <SystemInventory components={withDashboardSelf(components, dashboardSelf)} />

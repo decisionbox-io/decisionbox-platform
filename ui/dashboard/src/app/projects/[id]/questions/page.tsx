@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { Loader } from '@mantine/core';
 import { IconHelpCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
@@ -11,18 +12,14 @@ import { api, ApiError, DiscoveryQuestion, Project } from '@/lib/api';
 
 type StatusFilter = 'all' | 'pending' | 'answered' | 'dismissed';
 
-const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'pending', label: 'Pending' },
-  { key: 'answered', label: 'Answered' },
-  { key: 'dismissed', label: 'Dismissed' },
-];
+const FILTER_KEYS: StatusFilter[] = ['all', 'pending', 'answered', 'dismissed'];
 
 // QuestionsReviewPage is the standing home for every clarifying question the
 // agent has raised — pending ones the analyst can answer, plus the answered /
 // dismissed history. It complements the run-detail drawer, which shows only the
 // still-open questions for a given run.
 export default function QuestionsReviewPage() {
+  const t = useTranslations('systemSearch');
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [questions, setQuestions] = useState<DiscoveryQuestion[]>([]);
@@ -67,28 +64,27 @@ export default function QuestionsReviewPage() {
     });
 
   const breadcrumb = [
-    { label: 'Projects', href: '/' },
-    { label: project?.name || 'Project', href: `/projects/${id}` },
-    { label: 'Questions' },
+    { label: t('projects'), href: '/' },
+    { label: project?.name || t('project'), href: `/projects/${id}` },
+    { label: t('questions') },
   ];
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="Clarifying questions" count={loading ? undefined : counts.all} />
+      <SectionHeader title={t('clarifyingQuestions')} count={loading ? undefined : counts.all} />
       <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginBottom: 16, maxWidth: 640 }}>
-        Questions the analysis raised when it was uncertain. Answering one saves a note to the
-        knowledge base — where you can later edit it — and the next run reuses it instead of guessing.
+        {t('questionsHelp')}
       </div>
 
       {/* Status filter tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {FILTERS.map((f) => {
-          const active = filter === f.key;
+        {FILTER_KEYS.map((key) => {
+          const active = filter === key;
           return (
             <button
-              key={f.key}
+              key={key}
               type="button"
-              onClick={() => setFilter(f.key)}
+              onClick={() => setFilter(key)}
               style={{
                 fontSize: 13, padding: '5px 12px', borderRadius: 'var(--db-radius)', cursor: 'pointer',
                 border: '1px solid var(--db-border-default)',
@@ -97,8 +93,8 @@ export default function QuestionsReviewPage() {
                 fontWeight: active ? 500 : 400,
               }}
             >
-              {f.label}
-              <span style={{ marginLeft: 6, opacity: 0.7 }}>{counts[f.key]}</span>
+              {t(`filterStatus_${key}`)}
+              <span style={{ marginLeft: 6, opacity: 0.7 }}>{counts[key]}</span>
             </button>
           );
         })}
@@ -109,14 +105,14 @@ export default function QuestionsReviewPage() {
       ) : visible.length === 0 ? (
         <EmptyState
           icon={<IconHelpCircle size={40} />}
-          title={unsupported ? 'Questions are not available on this deployment'
-            : filter === 'all' ? 'No questions yet'
-              : `No ${filter} questions`}
+          title={unsupported ? t('emptyUnsupportedTitle')
+            : filter === 'all' ? t('emptyAllTitle')
+              : t('emptyFilteredTitle', { status: t(`filterStatus_${filter}`) })}
           description={unsupported
-            ? 'The clarifying-questions feature requires the enterprise knowledge-sources plugin.'
+            ? t('emptyUnsupportedBody')
             : filter === 'all'
-              ? 'When a discovery run is unsure about something an analyst could clarify, its questions show up here.'
-              : 'Try a different filter.'}
+              ? t('emptyAllBody')
+              : t('emptyFilteredBody')}
         />
       ) : (
         <div style={{ maxWidth: 720 }}>

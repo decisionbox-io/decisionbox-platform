@@ -25,6 +25,7 @@
  */
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import styles from './CitationLink.module.css';
 
@@ -67,7 +68,8 @@ export function CitationLink({
   severity,
   description,
 }: CitationLinkProps): React.JSX.Element {
-  const display = name ? truncate(name, NAME_MAX) : `Source ${number}`;
+  const t = useTranslations('commonUi');
+  const display = name ? truncate(name, NAME_MAX) : t('sourceN', { number });
   const badge = href ? (
     <Link href={href} className={`${styles.citeBadge} ${styles.citeBadgeLink}`}>
       {number}

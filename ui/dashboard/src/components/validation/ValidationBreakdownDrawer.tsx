@@ -2,16 +2,26 @@
 
 import { Box, Drawer, Group, Stack, Text } from '@mantine/core';
 import { IconShieldCheck } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
 import { AgentVerdictCard } from './AgentVerdictCard';
-import { statusMeta } from './statusMeta';
 import type { InsightValidation } from '@/lib/api';
 
-// Reason copy used when the backend disabled the refuter for this run.
-// Rendered as a small italic note so the decision maker knows the
-// combined verdict reflects only the verifier (not silently missing
-// data).
-const REFUTER_DISABLED_NOTE = 'Refuter was disabled for this run — verdict reflects the verifier only.';
+// Verdict statuses that carry a localized one-line tagline. Anything
+// outside the set falls back to the "unknown" tagline — matching the
+// English fallback in statusMeta.
+const TAGLINE_VERDICTS = new Set([
+  'confirmed',
+  'supported',
+  'partial',
+  'rejected',
+  'unverifiable',
+  'validation_disabled',
+  'skipped_budget_cap',
+  'adjusted',
+  'unverified',
+  'error',
+]);
 
 // Controlled drawer that renders the verifier + refuter cards for a
 // single validation payload. Stateless on its own — the caller owns
@@ -29,7 +39,11 @@ export function ValidationBreakdownDrawer({
   validation: InsightValidation;
   headline?: string;
 }) {
-  const meta = statusMeta(validation.combined);
+  const t = useTranslations('validation');
+  const status = validation.combined;
+  const tagline = status && TAGLINE_VERDICTS.has(status)
+    ? t(`tagline_${status}`)
+    : t('tagline_unknown');
   const hasBreakdown = validation.verifier != null || validation.refuter != null;
   return (
     <Drawer
@@ -40,7 +54,7 @@ export function ValidationBreakdownDrawer({
       title={
         <Group gap="xs">
           <IconShieldCheck size={18} />
-          <Text fw={600}>Validation breakdown</Text>
+          <Text fw={600}>{t('breakdownTitle')}</Text>
           <VerdictBadge status={validation.combined} size="sm" />
         </Group>
       }
@@ -51,9 +65,9 @@ export function ValidationBreakdownDrawer({
         )}
         <Box>
           <Text size="sm" c="dimmed">
-            {meta.tagline}
+            {tagline}
             {validation.refuter_disabled && (
-              <> {REFUTER_DISABLED_NOTE}</>
+              <> {t('refuterDisabledNote')}</>
             )}
           </Text>
         </Box>
@@ -61,12 +75,10 @@ export function ValidationBreakdownDrawer({
         {validation.refuter && <AgentVerdictCard verdict={validation.refuter} />}
         {!hasBreakdown && (
           <Text size="sm" c="dimmed">
-            No per-agent breakdown available for this verdict.
+            {t('noPerAgentBreakdown')}
           </Text>
         )}
       </Stack>
     </Drawer>
   );
 }
-
-export { REFUTER_DISABLED_NOTE };

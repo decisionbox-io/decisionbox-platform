@@ -9,10 +9,14 @@
 // NewValidationPanel.tsx.
 
 import { Card, Group, Text } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
+import { useFormat } from '@/lib/format';
 import type { InsightValidation } from '@/lib/api';
 
 export function LegacyValidationCard({ validation }: { validation: InsightValidation }) {
+  const t = useTranslations('validation');
+  const fmt = useFormat();
   return (
     <Card withBorder p="md">
       <Group justify="space-between" mb={6}>
@@ -23,19 +27,19 @@ export function LegacyValidationCard({ validation }: { validation: InsightValida
           c="dimmed"
           style={{ letterSpacing: '0.5px' }}
         >
-          Validation
+          {t('title')}
         </Text>
         <VerdictBadge status={validation.status} size="sm" />
       </Group>
       {(validation.original_count != null || validation.verified_count != null) && (
         <Group gap={4} mb={6}>
           {validation.original_count != null && (
-            <Text size="xs" c="dimmed">{validation.original_count.toLocaleString()}</Text>
+            <Text size="xs" c="dimmed">{fmt.number(validation.original_count)}</Text>
           )}
           {validation.verified_count != null && (
             <>
               <Text size="xs" c="dimmed">→</Text>
-              <Text size="xs" fw={600}>{validation.verified_count.toLocaleString()} verified</Text>
+              <Text size="xs" fw={600}>{t('nVerified', { count: fmt.number(validation.verified_count) })}</Text>
             </>
           )}
         </Group>

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 
 /* ========== Stat Card ========== */
 
@@ -113,9 +114,10 @@ export function AreaBadge({ area }: { area: string }) {
 // for the primary/`default` datasource or an empty id, so single-warehouse
 // projects are visually unchanged.
 export function DatasourceBadge({ warehouseId }: { warehouseId?: string }) {
+  const t = useTranslations('commonUi');
   if (!warehouseId || warehouseId === 'default') return null;
   return (
-    <span title="Datasource this ran against" style={{
+    <span title={t('datasourceRanAgainst')} style={{
       fontSize: 11, fontWeight: 500, padding: '1px 6px', borderRadius: 'var(--db-radius)',
       background: 'var(--db-blue-bg)', color: 'var(--db-blue-text)', whiteSpace: 'nowrap',
     }}>{warehouseId}</span>
@@ -179,12 +181,13 @@ export function EmptyState({ icon, title, description }: { icon: React.ReactNode
 export function SearchInput({ value, onChange, placeholder }: {
   value: string; onChange: (v: string) => void; placeholder?: string;
 }) {
+  const t = useTranslations('commonUi');
   return (
     <input
       type="text"
       value={value}
       onChange={e => onChange(e.target.value)}
-      placeholder={placeholder || 'Search...'}
+      placeholder={placeholder || t('searchPlaceholder')}
       style={{
         fontSize: 13, padding: '6px 12px',
         border: '1px solid var(--db-border-strong)',

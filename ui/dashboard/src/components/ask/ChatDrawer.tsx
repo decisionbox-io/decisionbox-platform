@@ -2,6 +2,7 @@
 
 import { Drawer, Group, Text } from '@mantine/core';
 import { IconMessageCircle } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 import ChatPanel from '@/components/ask/ChatPanel';
 import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 
@@ -13,6 +14,7 @@ import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 // seedNonce: a new "Ask about this" remounts a fresh seeded chat, while the
 // generic launcher resumes the current conversation.
 export default function ChatDrawer() {
+  const t = useTranslations('askUi');
   const ctx = useChatDrawer();
   if (!ctx || !ctx.projectId) return null;
 
@@ -32,7 +34,7 @@ export default function ChatDrawer() {
       title={
         <Group gap="xs">
           <IconMessageCircle size={18} />
-          <Text fw={600}>Ask</Text>
+          <Text fw={600}>{t('ask')}</Text>
         </Group>
       }
       styles={{

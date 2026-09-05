@@ -1,6 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { IconMessageCircle } from '@tabler/icons-react';
 import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 
@@ -10,6 +11,7 @@ import { useChatDrawer } from '@/components/ask/ChatDrawerProvider';
 // itself off project routes, on the full Ask page (redundant there), and while
 // the drawer is open.
 export default function ChatLauncher() {
+  const t = useTranslations('askUi');
   const ctx = useChatDrawer();
   const pathname = usePathname() || '';
 
@@ -23,8 +25,8 @@ export default function ChatLauncher() {
   return (
     <button
       type="button"
-      aria-label="Ask about this project"
-      title="Ask"
+      aria-label={t('launcherAriaLabel')}
+      title={t('ask')}
       onClick={() => ctx.openGeneric(projectId)}
       style={{
         position: 'fixed', right: 20, bottom: 20, zIndex: 40,
@@ -36,7 +38,7 @@ export default function ChatLauncher() {
       }}
     >
       <IconMessageCircle size={18} />
-      <span>Ask</span>
+      <span>{t('ask')}</span>
     </button>
   );
 }

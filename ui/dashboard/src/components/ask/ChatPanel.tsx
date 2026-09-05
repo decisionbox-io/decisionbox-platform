@@ -5,9 +5,11 @@ import { Loader, TextInput, ActionIcon } from '@mantine/core';
 import { IconMessageCircle, IconSend, IconHistory, IconClock, IconPlus, IconTrash, IconBulb, IconStarFilled } from '@tabler/icons-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useTranslations } from 'next-intl';
 import CitationsFooter, { sourceHref } from '@/components/citations/CitationsFooter';
 import { CitationLink } from '@/components/citations/CitationLink';
 import { api, AskSession, SearchResultItem, SeedContext, askErrorMessage } from '@/lib/api';
+import { useFormat } from '@/lib/format';
 
 // ChatPanel is the single source of truth for the Ask conversation UI. It is
 // rendered full-bleed by the Ask page (showHistory) and inside the global chat
@@ -34,6 +36,8 @@ interface DisplayMessage {
 }
 
 export default function ChatPanel({ projectId, seedContext, initialQuestion, showHistory = true }: ChatPanelProps) {
+  const t = useTranslations('askUi');
+  const fmt = useFormat();
   const id = projectId;
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
@@ -176,7 +180,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               border: '1px solid var(--db-border-default)', borderRadius: 6,
               padding: '4px 10px', cursor: 'pointer', fontFamily: 'inherit',
             }}>
-              <IconPlus size={12} /> New chat
+              <IconPlus size={12} /> {t('newChat')}
             </button>
           </div>
         )}
@@ -194,16 +198,16 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               </div>
               <div style={{ textAlign: 'center', maxWidth: 420 }}>
                 <p style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-primary)', margin: '0 0 4px' }}>
-                  {seedActive ? 'Ask about this ' + seedContext!.type : 'Ask anything about your insights'}
+                  {seedActive ? t('askAboutThis', { type: seedContext!.type }) : t('askAnything')}
                 </p>
                 <p style={{ fontSize: 13, color: 'var(--db-text-tertiary)', margin: 0 }}>
-                  Get answers backed by evidence from your discovery runs. Follow-up questions use conversation context.
+                  {t('askAnythingSubtitle')}
                 </p>
               </div>
               {seedActive && priorSeedSessions.length > 0 && (
                 <div style={{ width: '100%', maxWidth: 420, marginTop: 4 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--db-text-tertiary)', margin: '0 0 6px', textAlign: 'left' }}>
-                    Previous conversations about this {seedContext!.type}
+                    {t('previousConversations', { type: seedContext!.type })}
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {priorSeedSessions.map(s => (
@@ -217,7 +221,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
                       >
                         <IconClock size={13} color="var(--db-text-tertiary)" style={{ flexShrink: 0 }} />
                         <span style={{ flex: 1, fontSize: 13, color: 'var(--db-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
-                        <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', flexShrink: 0 }}>{s.message_count || 0} msg{(s.message_count || 0) !== 1 ? 's' : ''}</span>
+                        <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)', flexShrink: 0 }}>{t('messageCount', { count: s.message_count || 0 })}</span>
                       </button>
                     ))}
                   </div>
@@ -247,10 +251,10 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
                   {entry.model && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{entry.model}</span>}
                   {((entry.input_tokens ?? 0) > 0 || (entry.output_tokens ?? 0) > 0) && (
                     <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>
-                      In {entry.input_tokens ?? 0} · Out {entry.output_tokens ?? 0}
+                      {t('tokenUsage', { in: fmt.number(entry.input_tokens ?? 0), out: fmt.number(entry.output_tokens ?? 0) })}
                     </span>
                   )}
-                  {entry.timestamp && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                  {entry.timestamp && <span style={{ fontSize: 11, color: 'var(--db-text-tertiary)' }}>{fmt.dateTime(entry.timestamp, { hour: '2-digit', minute: '2-digit' })}</span>}
                 </div>
               </div>
             </div>
@@ -262,7 +266,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               borderRadius: 'var(--db-radius-lg)', padding: 24, display: 'flex', alignItems: 'center', gap: 10,
             }}>
               <Loader size="xs" />
-              <span style={{ fontSize: 14, color: 'var(--db-text-secondary)' }}>Thinking...</span>
+              <span style={{ fontSize: 14, color: 'var(--db-text-secondary)' }}>{t('thinking')}</span>
             </div>
           )}
 
@@ -278,7 +282,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
             {seedContext!.type === 'insight'
               ? <IconBulb size={13} color="var(--db-amber-text)" />
               : <IconStarFilled size={13} color="var(--db-purple-text)" />}
-            <span>Asking about: <strong style={{ color: 'var(--db-text-primary)' }}>{seedContext!.title}</strong></span>
+            <span>{t('askingAbout')} <strong style={{ color: 'var(--db-text-primary)' }}>{seedContext!.title}</strong></span>
           </div>
         )}
 
@@ -288,7 +292,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
           paddingTop: 12, paddingBottom: 12, display: 'flex', gap: 8, alignItems: 'center',
         }}>
           <TextInput
-            placeholder="Ask a question about your insights..."
+            placeholder={t('inputPlaceholder')}
             value={question}
             onChange={e => setQuestion(e.currentTarget.value)}
             style={{ flex: 1 }}
@@ -305,7 +309,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               color={historyOpen ? 'blue' : 'gray'}
               onClick={() => setHistoryOpen(!historyOpen)}
               style={{ height: 42, width: 42 }}
-              title={historyOpen ? 'Hide history' : 'Show history'}
+              title={historyOpen ? t('hideHistory') : t('showHistory')}
             >
               <IconHistory size={18} />
             </ActionIcon>
@@ -327,13 +331,13 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
             padding: '14px 16px', borderBottom: '1px solid var(--db-border-default)',
             flexShrink: 0,
           }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--db-text-primary)' }}>Conversations</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--db-text-primary)' }}>{t('conversations')}</span>
             <button onClick={startNewChat} style={{
               fontSize: 11, color: 'var(--db-text-link)', background: 'none',
               border: 'none', cursor: 'pointer', fontFamily: 'inherit',
               display: 'flex', alignItems: 'center', gap: 3,
             }}>
-              <IconPlus size={12} /> New
+              <IconPlus size={12} /> {t('new')}
             </button>
           </div>
 
@@ -342,7 +346,7 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
               <div style={{ padding: 24, textAlign: 'center' }}>
                 <IconClock size={24} color="var(--db-text-tertiary)" style={{ marginBottom: 8 }} />
                 <p style={{ fontSize: 13, color: 'var(--db-text-tertiary)', margin: 0 }}>
-                  Your conversations will appear here.
+                  {t('conversationsEmpty')}
                 </p>
               </div>
             )}
@@ -371,9 +375,9 @@ export default function ChatPanel({ projectId, seedContext, initialQuestion, sho
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--db-text-tertiary)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
                     <IconClock size={10} />
-                    {formatRelativeTime(s.updated_at || s.created_at)}
+                    {formatRelativeTime(s.updated_at || s.created_at, t, fmt)}
                     <span>·</span>
-                    {s.message_count || 0} msg{(s.message_count || 0) !== 1 ? 's' : ''}
+                    {t('messageCount', { count: s.message_count || 0 })}
                   </div>
                 </div>
                 <ActionIcon
@@ -476,14 +480,18 @@ function processChildren(children: React.ReactNode, sources: SearchResultItem[],
   return process(children);
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(
+  iso: string,
+  t: ReturnType<typeof useTranslations<'askUi'>>,
+  fmt: ReturnType<typeof useFormat>,
+): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t('relativeJustNow');
+  if (mins < 60) return t('relativeMinutes', { count: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t('relativeHours', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
+  if (days < 7) return t('relativeDays', { count: days });
+  return fmt.dateTime(iso);
 }

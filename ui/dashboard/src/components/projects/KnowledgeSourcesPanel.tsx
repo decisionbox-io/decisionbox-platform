@@ -10,6 +10,7 @@
 
 import { Alert, Card, Stack, Text, Title } from '@mantine/core';
 import { IconAlertCircle, IconUpload } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 
 interface Props {
   projectId: string;
@@ -19,19 +20,19 @@ interface Props {
 }
 
 export default function KnowledgeSourcesPanel(_props: Props) {
+  const t = useTranslations('projectsMisc');
   return (
     <Card withBorder p="lg">
       <Stack>
         <div>
           <IconUpload size={18} style={{ verticalAlign: 'middle' }} />{' '}
-          <Title order={5} component="span">Knowledge sources</Title>
+          <Title order={5} component="span">{t('knowledgeSources')}</Title>
         </div>
         <Text size="sm" c="dimmed">
-          Upload website URLs, DOCX/XLSX/CSV/MD/TXT files, or paste free-text notes describing your business.
+          {t('knowledgeSourcesUploadHelp')}
         </Text>
-        <Alert color="blue" icon={<IconAlertCircle size={16} />} title="Knowledge sources not configured">
-          No knowledge-sources provider is registered on this deployment. Pack generation will run, but
-          without the source-text context the result will rely on the warehouse schema alone.
+        <Alert color="blue" icon={<IconAlertCircle size={16} />} title={t('knowledgeSourcesNotConfiguredTitle')}>
+          {t('knowledgeSourcesNotConfiguredBody')}
         </Alert>
       </Stack>
     </Card>

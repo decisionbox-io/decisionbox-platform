@@ -3,6 +3,7 @@
 import { Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { IconShieldCheck } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import type { ValidationJob, ValidationJobStep } from '@/lib/api';
 
 // In-flight validation card. Shows the current step ("Queued" /
@@ -15,20 +16,13 @@ import type { ValidationJob, ValidationJobStep } from '@/lib/api';
 // in the user-visible string; the badge that says which agent is
 // running is enough.
 
-const STEP_COPY: Record<ValidationJobStep | 'queued', string> = {
-  queued: 'Queued — waiting for a worker',
-  verifier: 'Verifier running — checking claims against cited evidence',
-  refuter: 'Refuter running — searching for contradicting evidence',
-  combining: 'Combining verdicts — finalising',
-};
-
-function elapsedLabel(startISO: string | undefined): string {
-  if (!startISO) return '';
+// Elapsed seconds since the given ISO timestamp, or null when the
+// timestamp is missing/unparseable (the caller renders nothing then).
+function elapsedSeconds(startISO: string | undefined): number | null {
+  if (!startISO) return null;
   const start = new Date(startISO).getTime();
-  if (Number.isNaN(start)) return '';
-  const sec = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  if (sec < 60) return `${sec}s elapsed`;
-  return `${Math.floor(sec / 60)}m ${sec % 60}s elapsed`;
+  if (Number.isNaN(start)) return null;
+  return Math.max(0, Math.floor((Date.now() - start) / 1000));
 }
 
 export function ValidationJobProgressCard({
@@ -40,20 +34,28 @@ export function ValidationJobProgressCard({
   onCancel?: (jobId: string) => void;
   onRetry?: () => void;
 }) {
+  const t = useTranslations('validation');
   // Re-render every second so elapsed-time stays live without
   // depending on the polling cadence of the router.
   const [, force] = useState(0);
   useEffect(() => {
     if (job.status !== 'pending' && job.status !== 'running') return;
-    const t = setInterval(() => force((n) => n + 1), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(timer);
   }, [job.status]);
 
   const isTerminal = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
   const stepKey: ValidationJobStep | 'queued' = job.status === 'pending'
     ? 'queued'
     : (job.step ?? 'verifier');
-  const stepText = STEP_COPY[stepKey];
+  const stepText = t(`step_${stepKey}`);
+
+  const sec = elapsedSeconds(job.started_at ?? job.enqueued_at);
+  const elapsedLabel = sec == null
+    ? ''
+    : sec < 60
+      ? t('elapsedSeconds', { seconds: sec })
+      : t('elapsedMinutes', { minutes: Math.floor(sec / 60), seconds: sec % 60 });
 
   // Failed / cancelled — render the error with a Retry button (the
   // router refetches the discovery on terminal status; if the verdict
@@ -72,12 +74,12 @@ export function ValidationJobProgressCard({
               c="dimmed"
               style={{ letterSpacing: '0.5px' }}
             >
-              Validation
+              {t('title')}
             </Text>
           </Group>
         </Group>
         <Text size="xs" c="red" mb={4}>
-          {job.status === 'cancelled' ? 'Validation cancelled.' : 'Validation failed.'}
+          {job.status === 'cancelled' ? t('cancelled') : t('failed')}
         </Text>
         {job.error && (
           <Text size="xs" c="dimmed" mb={8} lineClamp={3}>
@@ -86,7 +88,7 @@ export function ValidationJobProgressCard({
         )}
         {onRetry && (
           <Button size="xs" variant="filled" onClick={onRetry}>
-            Try again
+            {t('tryAgain')}
           </Button>
         )}
       </Card>
@@ -106,14 +108,14 @@ export function ValidationJobProgressCard({
             c="dimmed"
             style={{ letterSpacing: '0.5px' }}
           >
-            Validation
+            {t('title')}
           </Text>
         </Group>
         <Loader size="xs" />
       </Group>
       <Stack gap={4}>
         <Text size="xs">{stepText}</Text>
-        <Text size="xs" c="dimmed">{elapsedLabel(job.started_at ?? job.enqueued_at)}</Text>
+        <Text size="xs" c="dimmed">{elapsedLabel}</Text>
         {!isTerminal && onCancel && (
           <Button
             size="xs"
@@ -123,7 +125,7 @@ export function ValidationJobProgressCard({
             px={0}
             style={{ alignSelf: 'flex-start' }}
           >
-            Cancel
+            {t('cancel')}
           </Button>
         )}
       </Stack>

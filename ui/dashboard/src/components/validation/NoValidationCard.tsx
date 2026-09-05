@@ -2,6 +2,7 @@
 
 import { Button, Card, Group, Text } from '@mantine/core';
 import { IconShieldCheck } from '@tabler/icons-react';
+import { useTranslations } from 'next-intl';
 
 // Empty-state card shown when a document has no validation verdict
 // yet. Two surfaces:
@@ -26,6 +27,7 @@ export function NoValidationCard({
   running?: boolean;
   settingsHref?: string;
 }) {
+  const t = useTranslations('validation');
   if (!validationEnabled) {
     return (
       <Card withBorder p="md">
@@ -39,12 +41,12 @@ export function NoValidationCard({
               c="dimmed"
               style={{ letterSpacing: '0.5px' }}
             >
-              Validation
+              {t('title')}
             </Text>
           </Group>
         </Group>
         <Text size="xs" c="dimmed" mb={settingsHref ? 8 : 0}>
-          Validation is disabled for this project.
+          {t('disabledForProject')}
         </Text>
         {settingsHref && (
           <Button
@@ -54,7 +56,7 @@ export function NoValidationCard({
             size="xs"
             px={0}
           >
-            Settings → Advanced
+            {t('settingsAdvanced')}
           </Button>
         )}
       </Card>
@@ -72,14 +74,12 @@ export function NoValidationCard({
             c="dimmed"
             style={{ letterSpacing: '0.5px' }}
           >
-            Validation
+            {t('title')}
           </Text>
         </Group>
       </Group>
       <Text size="xs" c="dimmed" mb={8}>
-        No validation has been run for this item yet. Click below to
-        verify the headline and per-claim figures against the
-        warehouse.
+        {t('noValidationRunYet')}
       </Text>
       <Button
         size="xs"
@@ -88,7 +88,7 @@ export function NoValidationCard({
         loading={running}
         disabled={running}
       >
-        Run validation
+        {t('runValidation')}
       </Button>
     </Card>
   );

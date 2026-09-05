@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { ActionIcon, Group, Text, TextInput, Tooltip } from '@mantine/core';
 import { IconThumbUp, IconThumbUpFilled, IconThumbDown, IconThumbDownFilled } from '@tabler/icons-react';
 import { api, Feedback } from '@/lib/api';
@@ -15,6 +16,7 @@ interface FeedbackButtonsProps {
 }
 
 export default function FeedbackButtons({ projectId, discoveryId, targetType, targetId, feedback, onUpdate }: FeedbackButtonsProps) {
+  const t = useTranslations('commonUi');
   const [current, setCurrent] = useState<Feedback | null>(feedback || null);
   const [showComment, setShowComment] = useState(false);
   const [comment, setComment] = useState('');
@@ -60,13 +62,13 @@ export default function FeedbackButtons({ projectId, discoveryId, targetType, ta
 
   return (
     <Group gap={4} wrap="nowrap" onClick={(e) => e.preventDefault()}>
-      <Tooltip label="Useful" withArrow position="top">
+      <Tooltip label={t('useful')} withArrow position="top">
         <ActionIcon variant="subtle" size="sm" color={current?.rating === 'like' ? 'green' : 'gray'}
           onClick={() => handleVote('like')} loading={loading && !showComment}>
           {current?.rating === 'like' ? <IconThumbUpFilled size={14} /> : <IconThumbUp size={14} />}
         </ActionIcon>
       </Tooltip>
-      <Tooltip label="Not useful" withArrow position="top">
+      <Tooltip label={t('notUseful')} withArrow position="top">
         <ActionIcon variant="subtle" size="sm" color={current?.rating === 'dislike' ? 'red' : 'gray'}
           onClick={() => handleVote('dislike')} loading={loading && showComment}>
           {current?.rating === 'dislike' ? <IconThumbDownFilled size={14} /> : <IconThumbDown size={14} />}
@@ -74,14 +76,14 @@ export default function FeedbackButtons({ projectId, discoveryId, targetType, ta
       </Tooltip>
       {showComment && !current?.rating && (
         <Group gap={4} wrap="nowrap">
-          <TextInput size="xs" placeholder="What was wrong? (optional)" value={comment}
+          <TextInput size="xs" placeholder={t('whatWasWrong')} value={comment}
             onChange={(e) => setComment(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleVote('dislike'); }}
             style={{ width: 200 }} />
           <Text size="xs" c="blue" style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}
-            onClick={() => handleVote('dislike')}>Submit</Text>
+            onClick={() => handleVote('dislike')}>{t('submit')}</Text>
           <Text size="xs" c="dimmed" style={{ cursor: 'pointer' }}
-            onClick={() => setShowComment(false)}>Cancel</Text>
+            onClick={() => setShowComment(false)}>{t('cancel')}</Text>
         </Group>
       )}
     </Group>

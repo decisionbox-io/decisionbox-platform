@@ -1,6 +1,7 @@
 'use client';
 
 import { CSSProperties, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import {
   Button, Checkbox, Group, Radio, SegmentedControl, Textarea,
@@ -8,6 +9,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import QuestionTargetLink from '@/components/common/QuestionTargetLink';
 import { api, DiscoveryQuestion, QuestionAnswerPayload } from '@/lib/api';
+import { useFormat } from '@/lib/format';
 
 const OTHER_ID = '__other';
 
@@ -26,14 +28,15 @@ function cardStyle(accent: string): CSSProperties {
   };
 }
 
-// answerTypeLabel is a short human tag shown on each card so the analyst knows
-// how they'll answer before reading the controls.
-function answerTypeLabel(t: DiscoveryQuestion['answer_type']): string {
-  switch (t) {
-    case 'boolean': return 'Yes / No';
-    case 'single_choice': return 'Pick one';
-    case 'multi_choice': return 'Pick any';
-    default: return 'Open answer';
+// answerTypeLabelKey maps an answer type to its commonUi translation key. The
+// tag is a short human hint shown on each card so the analyst knows how they'll
+// answer before reading the controls.
+function answerTypeLabelKey(at: DiscoveryQuestion['answer_type']): string {
+  switch (at) {
+    case 'boolean': return 'answerTypeYesNo';
+    case 'single_choice': return 'answerTypePickOne';
+    case 'multi_choice': return 'answerTypePickAny';
+    default: return 'answerTypeOpen';
   }
 }
 
@@ -46,6 +49,7 @@ interface QuestionCardProps {
 }
 
 export default function QuestionCard({ projectId, question, onResolved }: QuestionCardProps) {
+  const t = useTranslations('commonUi');
   const [bool, setBool] = useState<string | null>(null);
   const [single, setSingle] = useState<string | null>(null);
   const [multi, setMulti] = useState<string[]>([]);
@@ -63,20 +67,20 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
   const buildPayload = (): QuestionAnswerPayload | string => {
     switch (question.answer_type) {
       case 'boolean':
-        if (bool === null) return 'Choose Yes or No.';
+        if (bool === null) return t('chooseYesOrNo');
         return { answer_bool: bool === 'yes', answer_note: note.trim() || undefined };
       case 'single_choice':
-        if (!single) return 'Pick an option.';
-        if (single === OTHER_ID && !note.trim()) return 'Add a note for "Other".';
+        if (!single) return t('pickAnOption');
+        if (single === OTHER_ID && !note.trim()) return t('addNoteForOther');
         // Only attach the note when "Other" is selected, so a note typed and then
         // abandoned (by switching to a normal option) is never saved.
         return { answer_option_ids: [single], answer_note: single === OTHER_ID ? note.trim() : undefined };
       case 'multi_choice':
-        if (multi.length === 0) return 'Pick at least one option.';
-        if (multi.includes(OTHER_ID) && !note.trim()) return 'Add a note for "Other".';
+        if (multi.length === 0) return t('pickAtLeastOne');
+        if (multi.includes(OTHER_ID) && !note.trim()) return t('addNoteForOther');
         return { answer_option_ids: multi, answer_note: multi.includes(OTHER_ID) ? note.trim() : undefined };
       default:
-        if (!text.trim()) return 'Type an answer.';
+        if (!text.trim()) return t('typeAnAnswer');
         return { answer: text.trim() };
     }
   };
@@ -90,10 +94,10 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
     setBusy(true);
     try {
       await api.answerQuestion(projectId, question.id, payload);
-      notifications.show({ message: 'Answer saved — it will inform the next run.', color: 'green' });
+      notifications.show({ message: t('answerSaved'), color: 'green' });
       onResolved(question.id);
     } catch (e) {
-      notifications.show({ title: 'Could not save answer', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('couldNotSaveAnswer'), message: (e as Error).message, color: 'red' });
       setBusy(false);
     }
   };
@@ -104,7 +108,7 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
       await api.dismissQuestion(projectId, question.id);
       onResolved(question.id);
     } catch (e) {
-      notifications.show({ title: 'Could not dismiss', message: (e as Error).message, color: 'red' });
+      notifications.show({ title: t('couldNotDismiss'), message: (e as Error).message, color: 'red' });
       setBusy(false);
     }
   };
@@ -123,7 +127,7 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
         <span style={{
           fontSize: 11, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 'var(--db-radius)',
           background: 'var(--db-blue-bg)', color: 'var(--db-blue-text)', height: 'fit-content', fontWeight: 500,
-        }}>{answerTypeLabel(question.answer_type)}</span>
+        }}>{t(answerTypeLabelKey(question.answer_type))}</span>
       </div>
       {question.rationale && (
         <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
@@ -137,7 +141,7 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
           <SegmentedControl
             value={bool ?? ''}
             onChange={setBool}
-            data={[{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }]}
+            data={[{ label: t('yes'), value: 'yes' }, { label: t('no'), value: 'no' }]}
             size="xs"
           />
         )}
@@ -161,7 +165,7 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
         {(question.answer_type === 'free_text' || otherSelected) && (
           <Textarea
             mt={question.answer_type === 'free_text' ? 0 : 8}
-            placeholder={question.answer_type === 'free_text' ? 'Your answer…' : 'Add a note…'}
+            placeholder={question.answer_type === 'free_text' ? t('yourAnswer') : t('addANote')}
             value={question.answer_type === 'free_text' ? text : note}
             onChange={(e) => (question.answer_type === 'free_text' ? setText : setNote)(e.currentTarget.value)}
             autosize minRows={2} size="xs"
@@ -170,14 +174,14 @@ export default function QuestionCard({ projectId, question, onResolved }: Questi
 
         {/* An optional nuance note on a boolean answer ("Yes, but only after 2025-01"). */}
         {question.answer_type === 'boolean' && (
-          <Textarea mt={8} placeholder="Optional note…" value={note}
+          <Textarea mt={8} placeholder={t('optionalNote')} value={note}
             onChange={(e) => setNote(e.currentTarget.value)} autosize minRows={1} size="xs" />
         )}
       </div>
 
       <Group gap={8} mt={12}>
-        <Button size="xs" onClick={submit} loading={busy}>Submit</Button>
-        <Button size="xs" variant="subtle" color="gray" onClick={dismiss} disabled={busy}>Dismiss</Button>
+        <Button size="xs" onClick={submit} loading={busy}>{t('submit')}</Button>
+        <Button size="xs" variant="subtle" color="gray" onClick={dismiss} disabled={busy}>{t('dismiss')}</Button>
       </Group>
     </div>
   );
@@ -191,6 +195,8 @@ function ResolvedQuestionCard({ projectId, question }: {
   projectId: string;
   question: DiscoveryQuestion;
 }) {
+  const t = useTranslations('commonUi');
+  const fmt = useFormat();
   const answered = question.status === 'answered';
   const when = question.answered_at || question.updated_at;
   const note = question.answer_note && question.answer_note !== question.answer
@@ -207,7 +213,7 @@ function ResolvedQuestionCard({ projectId, question }: {
           height: 'fit-content', fontWeight: 500,
           background: answered ? 'var(--db-green-bg)' : 'var(--db-bg-muted)',
           color: answered ? 'var(--db-green-text)' : 'var(--db-text-secondary)',
-        }}>{answered ? 'Answered' : 'Dismissed'}</span>
+        }}>{answered ? t('answered') : t('dismissed')}</span>
       </div>
       {question.rationale && (
         <div style={{ fontSize: 12.5, color: 'var(--db-text-tertiary)', marginTop: 6, lineHeight: 1.5 }}>
@@ -221,23 +227,24 @@ function ResolvedQuestionCard({ projectId, question }: {
             fontSize: 13, color: 'var(--db-text-primary)', background: 'var(--db-bg-muted)',
             borderRadius: 'var(--db-radius)', padding: '8px 10px',
           }}>
-            <span style={{ color: 'var(--db-text-tertiary)', marginRight: 6 }}>Answer:</span>
+            <span style={{ color: 'var(--db-text-tertiary)', marginRight: 6 }}>{t('answerLabel')}</span>
             {question.answer || '—'}
             {note && (
               <div style={{ marginTop: 4, color: 'var(--db-text-secondary)' }}>{note}</div>
             )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', marginTop: 6 }}>
-            {when && <>Answered {new Date(when).toLocaleDateString()}
-              {question.answered_by ? ` by ${question.answered_by}` : ''} · </>}
+            {when && <>{question.answered_by
+              ? t('answeredOnBy', { date: fmt.dateTime(when), by: question.answered_by })
+              : t('answeredOn', { date: fmt.dateTime(when) })} · </>}
             <Link href={`/projects/${projectId}/sources`} style={{ color: 'var(--db-blue-text, #2563eb)' }}>
-              Edit in Knowledge Sources →
+              {t('editInKnowledgeSources')}
             </Link>
           </div>
         </div>
       ) : (
         <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginTop: 8, fontStyle: 'italic' }}>
-          Dismissed — not sent to the next run.
+          {t('dismissedNotSent')}
         </div>
       )}
     </div>

@@ -91,7 +91,8 @@ describe('SchemaIndexPanel', () => {
     });
     mount();
     await waitFor(() => expect(screen.getByText(/Discovering table schemas/)).toBeInTheDocument());
-    expect(screen.getByText(/120 of 1416 tables/)).toBeInTheDocument();
+    // Counts are locale-formatted now (grouping): "1,416" in en.
+    expect(screen.getByText(/120 of 1[,.\s]?416 tables/)).toBeInTheDocument();
   });
 
   it('indexing state without a progress doc still shows the bar + "Starting up…" copy', async () => {

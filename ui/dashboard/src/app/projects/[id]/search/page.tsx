@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 import { Loader, TextInput, Button, SegmentedControl, Select } from '@mantine/core';
 import { IconSearch, IconBulb, IconStarFilled } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
@@ -10,6 +11,7 @@ import { ResultCard } from '@/components/search/ResultCard';
 import { api, SearchResultItem, SearchHistoryEntry } from '@/lib/api';
 
 export default function SearchPage() {
+  const t = useTranslations('systemSearch');
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const initialQuery = searchParams.get('q') || '';
@@ -75,23 +77,23 @@ export default function SearchPage() {
   const recommendations = results.filter(r => r.type === 'recommendation');
 
   return (
-    <Shell breadcrumb={project ? [{ label: project.name, href: `/projects/${id}` }, { label: 'Search' }] : undefined}>
+    <Shell breadcrumb={project ? [{ label: project.name, href: `/projects/${id}` }, { label: t('search') }] : undefined}>
       <div style={{ maxWidth: 'var(--db-content-max-width)', margin: '0 auto' }}>
         <h1 style={{ fontSize: 22, fontWeight: 600, color: 'var(--db-text-primary)', margin: '0 0 20px' }}>
-          Search Insights
+          {t('searchInsightsTitle')}
         </h1>
 
         {/* Search form */}
         <form onSubmit={handleSubmit} style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
           <TextInput
-            placeholder="Search insights and recommendations..."
+            placeholder={t('searchPlaceholder')}
             value={query}
             onChange={e => setQuery(e.currentTarget.value)}
             leftSection={<IconSearch size={16} />}
             style={{ flex: 1 }}
             size="md"
           />
-          <Button type="submit" loading={loading} size="md">Search</Button>
+          <Button type="submit" loading={loading} size="md">{t('search')}</Button>
         </form>
 
         {/* Filters */}
@@ -100,22 +102,22 @@ export default function SearchPage() {
             value={typeFilter}
             onChange={v => setTypeFilter(v)}
             data={[
-              { label: 'All', value: 'all' },
-              { label: 'Insights', value: 'insight' },
-              { label: 'Recommendations', value: 'recommendation' },
+              { label: t('filterAll'), value: 'all' },
+              { label: t('filterInsights'), value: 'insight' },
+              { label: t('filterRecommendations'), value: 'recommendation' },
             ]}
             size="xs"
           />
           <Select
-            placeholder="Severity"
+            placeholder={t('severity')}
             value={severityFilter}
             onChange={v => setSeverityFilter(v)}
             data={[
-              { label: 'All severities', value: '' },
-              { label: 'Critical', value: 'critical' },
-              { label: 'High', value: 'high' },
-              { label: 'Medium', value: 'medium' },
-              { label: 'Low', value: 'low' },
+              { label: t('allSeverities'), value: '' },
+              { label: t('severityCritical'), value: 'critical' },
+              { label: t('severityHigh'), value: 'high' },
+              { label: t('severityMedium'), value: 'medium' },
+              { label: t('severityLow'), value: 'low' },
             ]}
             clearable
             size="xs"
@@ -123,7 +125,7 @@ export default function SearchPage() {
           />
           {embeddingModel && (
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)', marginLeft: 'auto' }}>
-              Model: {embeddingModel}
+              {t('modelLabel', { model: embeddingModel })}
             </span>
           )}
         </div>
@@ -132,7 +134,7 @@ export default function SearchPage() {
         {!searched && history.length > 0 && (
           <div style={{ marginBottom: 24 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--db-text-secondary)', marginBottom: 8 }}>
-              Recent searches
+              {t('recentSearches')}
             </h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {history.filter(h => h.type === 'search').slice(0, 8).map(h => (
@@ -163,15 +165,15 @@ export default function SearchPage() {
         {searched && !loading && results.length === 0 && (
           <EmptyState
             icon={<IconSearch size={32} />}
-            title="No results found"
-            description={`No insights or recommendations matched "${query}". Try different keywords.`}
+            title={t('noResultsTitle')}
+            description={t('noResultsBody', { query })}
           />
         )}
 
         {!loading && results.length > 0 && (
           <>
             <p style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginBottom: 16 }}>
-              {results.length} result{results.length !== 1 ? 's' : ''} for &ldquo;{query}&rdquo;
+              {t('resultCountForQuery', { count: results.length, query })}
             </p>
 
             {/* Insights section */}
@@ -181,7 +183,7 @@ export default function SearchPage() {
                   fontSize: 14, fontWeight: 600, color: 'var(--db-text-secondary)',
                   marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
                 }}>
-                  <IconBulb size={16} /> Insights ({insights.length})
+                  <IconBulb size={16} /> {t('insightsSection', { count: insights.length })}
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {insights.map(r => (
@@ -198,7 +200,7 @@ export default function SearchPage() {
                   fontSize: 14, fontWeight: 600, color: 'var(--db-text-secondary)',
                   marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
                 }}>
-                  <IconStarFilled size={16} /> Recommendations ({recommendations.length})
+                  <IconStarFilled size={16} /> {t('recommendationsSection', { count: recommendations.length })}
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {recommendations.map(r => (

@@ -1,6 +1,7 @@
 'use client';
 
 import { Card, Group, Stack, Text } from '@mantine/core';
+import { useTranslations } from 'next-intl';
 import { VerdictBadge } from './VerdictBadge';
 import { EvidenceCell } from './EvidenceCell';
 import type { ClaimVerdict } from '@/lib/api';
@@ -17,9 +18,10 @@ function sortHeadlineFirst(claims: ClaimVerdict[]): ClaimVerdict[] {
 }
 
 export function ClaimList({ claims }: { claims: ClaimVerdict[] }) {
+  const t = useTranslations('validation');
   if (claims.length === 0) {
     return (
-      <Text size="xs" c="dimmed">No per-claim verdicts recorded.</Text>
+      <Text size="xs" c="dimmed">{t('noClaimVerdicts')}</Text>
     );
   }
   const sorted = sortHeadlineFirst(claims);
@@ -37,7 +39,7 @@ export function ClaimList({ claims }: { claims: ClaimVerdict[] }) {
                   c="dimmed"
                   style={{ letterSpacing: '0.5px' }}
                 >
-                  Headline
+                  {t('headline')}
                 </Text>
               )}
               <VerdictBadge status={c.status} size="xs" />

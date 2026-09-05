@@ -2,6 +2,7 @@
 
 import { Badge, Group, Text } from '@mantine/core';
 import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 // ProjectRunStatus renders the latest discovery-run state for a project
 // card on the homepage list:
@@ -69,6 +70,7 @@ function elapsedSince(startISO: string | null): string {
 }
 
 export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunStatusProps) {
+  const t = useTranslations('projectsMisc');
   const isInFlight = IN_FLIGHT.has(status);
 
   // Re-render once a second while a run is in flight so the elapsed
@@ -90,7 +92,7 @@ export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunS
     const elapsed = elapsedSince(startedAt);
     return (
       <Group gap="xs" mt="sm" wrap="nowrap">
-        <Badge color="blue" variant="light" size="sm">Running</Badge>
+        <Badge color="blue" variant="light" size="sm">{t('statusRunning')}</Badge>
         {elapsed && <Text size="xs" c="dimmed">{elapsed}</Text>}
       </Group>
     );
@@ -100,7 +102,7 @@ export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunS
     const ts = completedAt ? formatRunTimestamp(completedAt) : '';
     return (
       <Group gap="xs" mt="sm" wrap="nowrap">
-        <Badge color="green" variant="light" size="sm">Completed</Badge>
+        <Badge color="green" variant="light" size="sm">{t('statusCompleted')}</Badge>
         {ts && <Text size="xs" c="dimmed">{ts}</Text>}
       </Group>
     );
@@ -109,7 +111,7 @@ export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunS
   if (status === 'failed') {
     return (
       <Group gap="xs" mt="sm">
-        <Badge color="red" variant="light" size="sm">Failed</Badge>
+        <Badge color="red" variant="light" size="sm">{t('statusFailed')}</Badge>
       </Group>
     );
   }
@@ -117,7 +119,7 @@ export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunS
   if (status === 'cancelled') {
     return (
       <Group gap="xs" mt="sm">
-        <Badge color="gray" variant="light" size="sm">Cancelled</Badge>
+        <Badge color="gray" variant="light" size="sm">{t('statusCancelled')}</Badge>
       </Group>
     );
   }
