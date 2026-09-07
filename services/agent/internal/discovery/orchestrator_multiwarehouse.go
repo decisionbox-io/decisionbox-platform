@@ -216,8 +216,8 @@ func (o *Orchestrator) buildGroupedCatalog(dc *datasourceContext, keywords []str
 }
 
 // buildDatasourcesPromptSection renders the routing contract the model
-// follows on a multi-warehouse run: one datasource per statement, hop
-// across datasources between steps, never join across them, plus each
+// follows on a multi-warehouse run: one datasource per query, hop across
+// datasources between steps, never join across them, plus each
 // datasource's routing card + its own domain-pack focus areas so the agent
 // applies the right playbook when it explores that datasource.
 //
