@@ -650,6 +650,18 @@ export interface ProviderMeta {
   description: string;
   /** Short SQL dialect label (warehouse providers only), e.g. "BigQuery Standard SQL", "T-SQL". */
   dialect?: string;
+  /**
+   * How a warehouse provider organises what can be queried: "entities" for
+   * tables of rows, "cube" for metrics broken down by dimensions. Absent
+   * means "entities" — what every provider was before the capability
+   * descriptor existed, so a provider that does not declare one keeps
+   * working unchanged.
+   *
+   * Read it rather than inferring the same fact from the config fields: a
+   * source with no tables has no dataset to name, but "declares no dataset
+   * field" is a proxy that is true today and need not stay true.
+   */
+  shape?: string;
   config_fields: ConfigField[];
   auth_methods?: AuthMethod[];
   models?: ModelInfo[];
