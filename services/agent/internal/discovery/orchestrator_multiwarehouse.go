@@ -1,10 +1,10 @@
 package discovery
 
 // Multi-warehouse (multi-hop) discovery support. A project can attach
-// several SQL datasources; the exploration agent sees every datasource's
-// catalog, targets one datasource per statement via `datasource_id`, and
-// hops between them across steps (bounded value-passing — never a
-// cross-engine join). This file builds the per-datasource execution
+// several datasources — not necessarily all queried in the same language;
+// the exploration agent sees every datasource's catalog, targets one
+// datasource per query via `datasource_id`, and hops between them across
+// steps (bounded value-passing — never a cross-engine join). This file builds the per-datasource execution
 // context the orchestrator hands the exploration engine; the single-
 // warehouse path in orchestrator.go is unchanged and taken whenever a run
 // has one datasource. Design: docs/design/multi-warehouse.md §5.5, §5.9.
@@ -220,19 +220,24 @@ func (o *Orchestrator) buildGroupedCatalog(dc *datasourceContext, keywords []str
 // across datasources between steps, never join across them, plus each
 // datasource's routing card + its own domain-pack focus areas so the agent
 // applies the right playbook when it explores that datasource.
+//
+// The contract comes in two forms. A run whose datasources are all SQL gets
+// the text it has always had, unchanged. A run carrying a datasource that is
+// not queried in SQL gets one that names each datasource's language instead
+// of assuming a single one — see runHasNonSQLDatasource for why the split is
+// on the language rather than on the shape.
 func buildDatasourcesPromptSection(dc *datasourceContext) string {
+	mixed := runHasNonSQLDatasource(dc)
 	var b strings.Builder
 	b.WriteString("\n\n## Datasources (multi-warehouse)\n\n")
-	b.WriteString("This project has multiple SQL datasources. Each SQL statement runs against exactly ONE datasource: set `datasource_id` on every `query_data` and `lookup_schema` action to the datasource that owns the tables you use (omitting it targets the primary). `search_tables` spans ALL datasources and tags each result with its `datasource`.\n")
-	b.WriteString("\nA single `query_data` statement may reference ONLY tables that live in its `datasource_id`. There is NO cross-engine federation and NO cross-datasource join. To correlate data across datasources, HOP across steps with bounded value-passing:\n")
-	b.WriteString("  1. Query datasource A for a BOUNDED set of key values (top-N ids / keys / an aggregate).\n")
-	b.WriteString("  2. In the next step, query datasource B with those values inlined as literal filters (e.g. `WHERE id IN (1,2,3)`).\n")
-	b.WriteString("  WRONG (fails — invoice_line is not in the Oracle datasource):\n")
-	b.WriteString("    {\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT g.name, SUM(il.unit_price) FROM CHINOOK.TRACK t JOIN public.invoice_line il ON ... JOIN CHINOOK.GENRE g ...\"}\n")
-	b.WriteString("  RIGHT (two steps): step 1 `{\"datasource_id\":\"default\",\"query\":\"SELECT track_id, SUM(unit_price*quantity) AS rev FROM public.invoice_line GROUP BY track_id ORDER BY rev DESC LIMIT 20\"}`; step 2 `{\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT t.track_id, g.name FROM CHINOOK.TRACK t JOIN CHINOOK.GENRE g ON t.genre_id=g.genre_id WHERE t.track_id IN (<the 20 ids from step 1>)\"}`.\n")
+	if mixed {
+		writeMixedLanguageRouting(&b)
+	} else {
+		writeSQLRouting(&b)
+	}
 	b.WriteString("\nAvailable datasources:\n")
 	for _, d := range dc.descriptors {
-		fmt.Fprintf(&b, "\n- **`%s`**%s — %s, %d tables\n", d.id, labelSuffix(d.label), d.provider, d.tableCount)
+		writeDatasourceHeadline(&b, d, mixed)
 		if d.description != "" {
 			fmt.Fprintf(&b, "  - %s\n", d.description)
 		}
@@ -252,6 +257,120 @@ func buildDatasourcesPromptSection(dc *datasourceContext) string {
 		}
 	}
 	return b.String()
+}
+
+// runHasNonSQLDatasource reports whether any datasource on this run is queried
+// in something other than SQL — i.e. whether a blanket "these are all SQL
+// datasources" is still a true thing to tell the model.
+//
+// The split is on the LANGUAGE, not on the shape, because that is the
+// statement being made: "these are all SQL datasources" is false the moment
+// one of them accepts something else, whether or not it has tables. Shape and
+// language are separate declarations and a source may differ in either — a
+// record-shaped source with its own query API has tables and no SQL, and
+// reading its shape would call it SQL.
+//
+// The answer comes from the registry rather than from a live provider,
+// because a provider reaches this run through middleware and a wrapper that
+// does not re-expose the query seam erases the declaration. A registration
+// cannot be wrapped.
+func runHasNonSQLDatasource(dc *datasourceContext) bool {
+	for _, d := range dc.descriptors {
+		if gowarehouse.NonSQLLanguageOf(d.provider) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// datasourceQueryLanguage renders the language line's value for one
+// datasource: the name of the language its queries are written in, and, when
+// that is not SQL, the fact that SQL will be rejected.
+//
+// NonSQLLanguageOf answers first because ProviderMeta.Language() falls back to
+// "SQL" for a source that declares a shape and no language — which is exactly
+// the source this section exists to stop mislabelling. An unregistered slug
+// resolves to SQL: what every provider was before the descriptor existed.
+func datasourceQueryLanguage(slug string) string {
+	if lang := gowarehouse.NonSQLLanguageOf(slug); lang != "" {
+		return lang + " — not SQL, which this datasource rejects"
+	}
+	if meta, ok := gowarehouse.GetProviderMeta(slug); ok {
+		return meta.Language()
+	}
+	return "SQL"
+}
+
+// writeSQLRouting states the routing contract for a run whose datasources are
+// all SQL — every multi-warehouse project that exists today. The text is
+// unchanged and must stay that way: it is true for these runs, and a golden
+// test holds it to the byte.
+func writeSQLRouting(b *strings.Builder) {
+	b.WriteString("This project has multiple SQL datasources. Each SQL statement runs against exactly ONE datasource: set `datasource_id` on every `query_data` and `lookup_schema` action to the datasource that owns the tables you use (omitting it targets the primary). `search_tables` spans ALL datasources and tags each result with its `datasource`.\n")
+	b.WriteString("\nA single `query_data` statement may reference ONLY tables that live in its `datasource_id`. There is NO cross-engine federation and NO cross-datasource join. To correlate data across datasources, HOP across steps with bounded value-passing:\n")
+	b.WriteString("  1. Query datasource A for a BOUNDED set of key values (top-N ids / keys / an aggregate).\n")
+	b.WriteString("  2. In the next step, query datasource B with those values inlined as literal filters (e.g. `WHERE id IN (1,2,3)`).\n")
+	writeHopExample(b)
+}
+
+// writeMixedLanguageRouting states the same contract for a run carrying a
+// datasource that is not queried in SQL.
+//
+// Three things change, and only these three. The opening no longer calls
+// every datasource SQL. `lookup_schema` is scoped to the datasources that
+// have tables, because a metric name is close enough to a table name that
+// looking one up is the natural next move and it fails every time. And the
+// hop's second step is stated as a filter written in the target's own
+// language rather than as a `WHERE ... IN` clause.
+//
+// The worked example stays SQL-to-SQL, and says so. Every non-SQL source
+// today is one that cannot anchor, so it is never a project's only datasource
+// and such a run always has a SQL side for the example to be live for. It is
+// labelled rather than assumed because that is what keeps it honest if that
+// stops being true: an example marked SQL-to-SQL, next to a rule stated in
+// terms of each datasource's own language, teaches the rule either way.
+// Writing a second example in some specific non-SQL request format would
+// teach a syntax this package has no provider for and no way to keep true.
+func writeMixedLanguageRouting(b *strings.Builder) {
+	b.WriteString("This project has multiple datasources and they are NOT all queried in the same language — each one's language is named below, and a query written in the wrong one is rejected. Each query runs against exactly ONE datasource: set `datasource_id` on every `query_data` and `lookup_schema` action to the datasource you mean (omitting it targets the primary). `lookup_schema` applies only to a datasource that has tables. `search_tables` spans ALL datasources and tags each result with its `datasource`.\n")
+	b.WriteString("\nA single `query_data` request may reference ONLY what lives in its `datasource_id`. There is NO cross-engine federation and NO cross-datasource join. To correlate data across datasources, HOP across steps with bounded value-passing:\n")
+	b.WriteString("  1. Query datasource A for a BOUNDED set of key values (top-N ids / keys / an aggregate).\n")
+	b.WriteString("  2. In the next step, query datasource B for those values, inlined as literal filters written in B's OWN query language — `WHERE id IN (1,2,3)` where that language is SQL, the equivalent restriction in its own request format where it is not.\n")
+	b.WriteString("  (The worked example below hops between two SQL datasources. The rule is the same whatever the two languages are; only the filter's syntax changes.)\n")
+	writeHopExample(b)
+}
+
+// writeHopExample shows the hop as one wrong statement and the right two
+// steps. Shared by both contracts so they cannot drift apart on the part
+// neither of them disputes.
+func writeHopExample(b *strings.Builder) {
+	b.WriteString("  WRONG (fails — invoice_line is not in the Oracle datasource):\n")
+	b.WriteString("    {\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT g.name, SUM(il.unit_price) FROM CHINOOK.TRACK t JOIN public.invoice_line il ON ... JOIN CHINOOK.GENRE g ...\"}\n")
+	b.WriteString("  RIGHT (two steps): step 1 `{\"datasource_id\":\"default\",\"query\":\"SELECT track_id, SUM(unit_price*quantity) AS rev FROM public.invoice_line GROUP BY track_id ORDER BY rev DESC LIMIT 20\"}`; step 2 `{\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT t.track_id, g.name FROM CHINOOK.TRACK t JOIN CHINOOK.GENRE g ON t.genre_id=g.genre_id WHERE t.track_id IN (<the 20 ids from step 1>)\"}`.\n")
+}
+
+// writeDatasourceHeadline renders one datasource's opening line.
+//
+// On an all-SQL run this is the line it has always been: id, label, provider,
+// table count. On a mixed run every datasource also names the language its
+// queries are written in — including the SQL ones, since "the other one is
+// different" is not something a model can act on — and a datasource that has
+// no tables says so rather than reporting "0 tables", a count that reads as
+// an empty or broken warehouse when the truth is that it has none to count.
+//
+// The no-tables line is read off the run as well as the registry: a cube that
+// somehow arrived carrying tables gets the ordinary line, because whatever
+// its shape says, the model can see them.
+func writeDatasourceHeadline(b *strings.Builder, d datasourceDescriptor, named bool) {
+	if named && d.tableCount == 0 && providerIsCube(d.provider) {
+		fmt.Fprintf(b, "\n- **`%s`**%s — %s, NO TABLES: a metric/dimension cube. `lookup_schema` does not apply to it; `search_tables` lists its metrics and dimensions.\n",
+			d.id, labelSuffix(d.label), d.provider)
+	} else {
+		fmt.Fprintf(b, "\n- **`%s`**%s — %s, %d tables\n", d.id, labelSuffix(d.label), d.provider, d.tableCount)
+	}
+	if named {
+		fmt.Fprintf(b, "  - Query language: %s\n", datasourceQueryLanguage(d.provider))
+	}
 }
 
 // datasourceFocusAreas lists the enabled analysis-area names from a
