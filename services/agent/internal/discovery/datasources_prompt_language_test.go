@@ -126,6 +126,38 @@ func TestBuildDatasourcesPromptSection_OneNonSQLDatasourceRewritesTheContract(t 
 	if !strings.Contains(mixed, "NOT all queried in the same language") {
 		t.Errorf("mixed opening missing:\n%s", mixed)
 	}
+	// The contract itself has to scope lookup_schema, not only the cube's own
+	// line further down. The opening is where the model learns which actions
+	// take a datasource_id, and it named lookup_schema as one of them.
+	if !strings.Contains(mixed, "`lookup_schema` applies only to a datasource that has tables") {
+		t.Errorf("the mixed contract does not scope lookup_schema to the datasources that have tables:\n%s", mixed)
+	}
+}
+
+// TestBuildDatasourcesPromptSection_ATableSourceWithNoTablesIsNotCalledACube
+// covers the other reason a descriptor can report zero tables.
+//
+// A datasource is admitted to a run when it has tables OR a catalog, so a
+// table-shaped source whose cached schemas came back empty reaches the prompt
+// with a count of zero. Reading the count alone would describe a warehouse as
+// a metric/dimension cube and tell the model not to look up its schema — a
+// false statement about the source, in the half of the section it routes by.
+func TestBuildDatasourcesPromptSection_ATableSourceWithNoTablesIsNotCalledACube(t *testing.T) {
+	dc := &datasourceContext{descriptors: []datasourceDescriptor{
+		{id: "default", label: "Empty PG", provider: testSQLSlug, tableCount: 0},
+		cubeDescriptor(),
+	}}
+	got := buildDatasourcesPromptSection(dc)
+
+	if strings.Count(got, "NO TABLES") != 1 {
+		t.Errorf("expected only the cube to be described as having no tables:\n%s", got)
+	}
+	if !strings.Contains(got, "**`default`** (Empty PG) — "+testSQLSlug+", 0 tables\n") {
+		t.Errorf("a table-shaped datasource lost its ordinary line:\n%s", got)
+	}
+	if !strings.Contains(got, "Query language: PostgreSQL\n") {
+		t.Errorf("the table-shaped datasource is no longer named as SQL:\n%s", got)
+	}
 }
 
 // TestBuildDatasourcesPromptSection_MixedNamesEveryLanguage checks the promise
