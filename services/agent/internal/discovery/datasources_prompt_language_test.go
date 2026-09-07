@@ -160,6 +160,31 @@ func TestBuildDatasourcesPromptSection_ATableSourceWithNoTablesIsNotCalledACube(
 	}
 }
 
+// TestBuildDatasourcesPromptSection_ClaimsPrecedenceOverTheExamplesAboveIt
+// covers the contradiction this section inherits rather than creates.
+//
+// What precedes it is the project's own exploration prompt — its primary
+// datasource's domain pack — which teaches one action contract with worked
+// examples in one language. On a mixed run the model reads that, then reads a
+// list of datasources that do not all speak it. Naming which one wins is the
+// only part of that this section can honestly settle from where it sits, so
+// it has to actually say so.
+func TestBuildDatasourcesPromptSection_ClaimsPrecedenceOverTheExamplesAboveIt(t *testing.T) {
+	mixed := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()))
+	if !strings.Contains(mixed, "THIS section wins") {
+		t.Errorf("the mixed contract does not claim precedence over the examples above it:\n%s", mixed)
+	}
+	if !strings.Contains(mixed, "the `query` field carries whatever that datasource accepts") {
+		t.Errorf("the mixed contract does not say what changes and what does not:\n%s", mixed)
+	}
+	// Stated as precedence, not as "SQL loses". The project's pack is written
+	// for whichever language its primary speaks, and this sentence has to stay
+	// true if that ever stops being SQL.
+	if strings.Contains(mixed, "earlier in this prompt are SQL") {
+		t.Errorf("precedence is stated in terms of SQL rather than of language:\n%s", mixed)
+	}
+}
+
 // TestBuildDatasourcesPromptSection_MixedNamesEveryLanguage checks the promise
 // the mixed opening makes. "One of these is different" is not actionable — the
 // model has to be able to tell which language goes with which datasource_id,

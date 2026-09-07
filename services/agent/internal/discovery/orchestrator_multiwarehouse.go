@@ -316,12 +316,28 @@ func writeSQLRouting(b *strings.Builder) {
 // writeMixedLanguageRouting states the same contract for a run carrying a
 // datasource that is not queried in SQL.
 //
-// Three things change, and only these three. The opening no longer calls
-// every datasource SQL. `lookup_schema` is scoped to the datasources that
-// have tables, because a metric name is close enough to a table name that
-// looking one up is the natural next move and it fails every time. And the
-// hop's second step is stated as a filter written in the target's own
-// language rather than as a `WHERE ... IN` clause.
+// Four things change, and only these four. The opening no longer calls every
+// datasource SQL. `lookup_schema` is scoped to the datasources that have
+// tables, because a metric name is close enough to a table name that looking
+// one up is the natural next move and it fails every time. The hop's second
+// step is stated as a filter written in the target's own language rather than
+// as a `WHERE ... IN` clause. And the section claims precedence over the
+// query examples above it.
+//
+// That last one is the smallest fix to a contradiction this section does not
+// own. What precedes it is the PROJECT's exploration prompt — its primary
+// datasource's domain pack, since a source that cannot anchor is never the
+// primary — and that pack teaches one action contract, with worked examples,
+// for whatever language it was written for. A non-primary datasource's own
+// pack contributes only its analysis-area names to a run; its prompts are
+// never rendered. So on a mixed run the model reads a full action contract in
+// one language and then a list of datasources that do not all speak it.
+//
+// Stating which one wins is what this section can honestly do from where it
+// sits, and it is stated in terms of precedence rather than of SQL so it stays
+// true whichever language the project's pack was written in. Rewriting or
+// suppressing that pack's action contract per datasource is a larger change
+// to how a run assembles its prompt, and it is tracked separately.
 //
 // The worked example stays SQL-to-SQL, and says so. Every non-SQL source
 // today is one that cannot anchor, so it is never a project's only datasource
@@ -333,6 +349,7 @@ func writeSQLRouting(b *strings.Builder) {
 // teach a syntax this package has no provider for and no way to keep true.
 func writeMixedLanguageRouting(b *strings.Builder) {
 	b.WriteString("This project has multiple datasources and they are NOT all queried in the same language — each one's language is named below, and a query written in the wrong one is rejected. Each query runs against exactly ONE datasource: set `datasource_id` on every `query_data` and `lookup_schema` action to the datasource you mean (omitting it targets the primary). `lookup_schema` applies only to a datasource that has tables. `search_tables` spans ALL datasources and tags each result with its `datasource`.\n")
+	b.WriteString("Where the query examples earlier in this prompt disagree with a datasource's language named here, THIS section wins: the action and its `datasource_id` are unchanged, but the `query` field carries whatever that datasource accepts.\n")
 	b.WriteString("\nA single `query_data` request may reference ONLY what lives in its `datasource_id`. There is NO cross-engine federation and NO cross-datasource join. To correlate data across datasources, HOP across steps with bounded value-passing:\n")
 	b.WriteString("  1. Query datasource A for a BOUNDED set of key values (top-N ids / keys / an aggregate).\n")
 	b.WriteString("  2. In the next step, query datasource B for those values, inlined as literal filters written in B's OWN query language — `WHERE id IN (1,2,3)` where that language is SQL, the equivalent restriction in its own request format where it is not.\n")
