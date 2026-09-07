@@ -123,13 +123,71 @@ func TestPackShapeMismatch_UnknownProviderKeepsTheCheck(t *testing.T) {
 	}
 }
 
-// TestPackShapeMismatch_NoDatasourceIsNotAMismatch: nothing has been chosen
-// for the pack to disagree with, and the anchoring guards own that case. A
-// mismatch reported here would refuse it with the wrong reason.
-func TestPackShapeMismatch_NoDatasourceIsNotAMismatch(t *testing.T) {
-	pack := &models.DomainPack{Slug: "analytics", Shape: gowarehouse.ShapeCube}
-	if msg := packShapeMismatch(pack, models.WarehouseConfig{}); msg != "" {
-		t.Errorf("a project with no data source should not be a mismatch: %s", msg)
+// TestPackShapeMismatch_NoDatasourceStillChecksTheShape replaces an earlier
+// test that asserted the opposite, and the reason it was wrong is worth
+// keeping.
+//
+// "Nothing has been chosen to disagree with" sounds right and is not: the pack
+// has to agree with whatever datasource the project ends up with, that
+// datasource must be able to carry the analysis, and no cube can. Waving the
+// pack through here creates a project holding a cube pack that the
+// settings-edit guard then refuses to give any anchoring datasource to —
+// unusable and unrepairable through the API, built out of two guards
+// disagreeing about the empty case rather than out of either being wrong
+// alone.
+func TestPackShapeMismatch_NoDatasourceStillChecksTheShape(t *testing.T) {
+	cube := &models.DomainPack{Slug: "analytics", Shape: gowarehouse.ShapeCube}
+	msg := packShapeMismatch(cube, models.WarehouseConfig{})
+	if msg == "" {
+		t.Fatal("a cube pack was accepted for a project with no data source, which can never become a valid pairing")
+	}
+	// And the refusal must not claim a data source it cannot see.
+	if strings.Contains(msg, "this project's data source is") {
+		t.Errorf("the refusal describes a data source the project does not have: %s", msg)
+	}
+
+	// The ordinary case must still pass, or no project could be created before
+	// its warehouse is connected — which is how the product is set up.
+	table := &models.DomainPack{Slug: "gaming"}
+	if msg := packShapeMismatch(table, models.WarehouseConfig{}); msg != "" {
+		t.Errorf("a table-shaped pack was refused for a project with no data source yet: %s", msg)
+	}
+}
+
+// TestCreate_RefusesACubePackBeforeAnyDatasourceExists drives it through the
+// route, because the helper being right is not the same as the route calling
+// it on a body with no warehouse in it.
+func TestCreate_RefusesACubePackBeforeAnyDatasourceExists(t *testing.T) {
+	pack := testDomainPack("gaming", "match3")
+	pack.Shape = gowarehouse.ShapeCube
+	packRepo := newMockDomainPackRepo()
+	packRepo.add(pack)
+	h := NewProjectsHandler(newMockProjectRepo(), packRepo)
+
+	body := `{"name": "p", "domain": "gaming", "category": "match3",
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_AllowsATablePackBeforeAnyDatasourceExists is the other half, and
+// the one that would break the product if the guard above overreached.
+func TestCreate_AllowsATablePackBeforeAnyDatasourceExists(t *testing.T) {
+	packRepo := newMockDomainPackRepo()
+	packRepo.add(testDomainPack("gaming", "match3"))
+	h := NewProjectsHandler(newMockProjectRepo(), packRepo)
+
+	body := `{"name": "p", "domain": "gaming", "category": "match3",
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -223,5 +281,62 @@ func TestSettingsEdit_AMissingPackDoesNotBlockTheEdit(t *testing.T) {
 	h.Update(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_CustomPromptsDoNotSkipTheShapeCheck.
+//
+// The check used to live inside the `p.Prompts == nil` seeding branch, so a
+// request that supplied its own prompts never looked the pack up and the whole
+// refusal was skippable by sending a `prompts` field. Custom prompts do not
+// make a project's domain compatible with its data source; they only stop the
+// pack being copied into it.
+func TestCreate_CustomPromptsDoNotSkipTheShapeCheck(t *testing.T) {
+	pack := testDomainPack("gaming", "match3")
+	pack.Shape = gowarehouse.ShapeCube
+	packRepo := newMockDomainPackRepo()
+	packRepo.add(pack)
+	h := NewProjectsHandler(newMockProjectRepo(), packRepo)
+
+	body := `{"name": "p", "domain": "gaming", "category": "match3",
+		"prompts": {"base_context": "mine", "exploration": "mine", "recommendations": "mine"},
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_CustomPromptsWithAnUnknownDomainStillPass pins the behaviour that
+// must NOT change alongside it. This route has never looked a domain up for a
+// client that brought its own prompts, so rejecting an unknown one now would
+// be a second change riding along with the fix above — and would break any
+// caller using a domain string the pack corpus does not have.
+func TestCreate_CustomPromptsWithAnUnknownDomainStillPass(t *testing.T) {
+	h := NewProjectsHandler(newMockProjectRepo(), newMockDomainPackRepo())
+	body := `{"name": "p", "domain": "no-such-pack", "category": "any",
+		"prompts": {"base_context": "mine", "exploration": "mine", "recommendations": "mine"},
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreate_SeedingStillRefusesAnUnknownDomain is the other side of that
+// switch: a request with no prompts still depends on the pack existing.
+func TestCreate_SeedingStillRefusesAnUnknownDomain(t *testing.T) {
+	h := NewProjectsHandler(newMockProjectRepo(), newMockDomainPackRepo())
+	body := `{"name": "p", "domain": "no-such-pack", "category": "any",
+		"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 	}
 }

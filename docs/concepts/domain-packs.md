@@ -10,9 +10,19 @@ Domain packs are DecisionBox's extensibility model. They define **what** the AI 
 | **Social Network** | Content Sharing | Growth, Engagement, Retention | User growth, engagement, content creation, and monetization analytics for social platforms |
 | **Ecommerce** | Multi-Category | Conversion, Revenue, Retention | Purchase funnel, revenue & pricing, customer retention, product performance, and session behavior analytics for online stores |
 | **System Test** | Quick, Standard, Thorough | Connectivity, Schema Discovery | Diagnostic pack for warehouse validation and data profiling (not an industry pack) |
+| **Digital Analytics Property** | Content & Media, E-commerce Storefront, Lead Generation | Acquisition Mix, Engagement Quality, Conversion Drop-off, Audience Composition, Content Performance, Platform Experience | Reference pack for a **cube-shaped** source — metrics and dimensions rather than tables. Not offered in the domain picker; see below |
 
 > **Note:** The System Test domain pack is intended for testing and onboarding only.
 > It is seeded with `is_published: false` so it does not appear in the new-project domain picker, but it is visible in the Domain Packs admin list and can be launched manually for diagnostic runs.
+
+> **Note:** The Digital Analytics Property pack is a **reference pack**, not a domain to
+> start a project from. Pack generation learns a pack's shape by imitating a published
+> pack of the same shape, and this is the only cube-shaped one — so it must be
+> published to be found. It is filtered out of the new-project domain picker instead:
+> a project's pack belongs to its primary data source, which has to be one that can
+> carry an analysis on its own, and no cube-shaped source can. Its vocabulary is
+> ordinary English rather than any vendor's API spelling, deliberately — see
+> [Source shape](#source-shape).
 
 ## What's in a Domain Pack
 
@@ -52,6 +62,12 @@ dataset and schema names the prompt qualifies its tables with — is asked only
 of a pack written for an `entities` source. A cube has no tables to name, so
 requiring it there would be a rule no pack could satisfy. A cube pack that
 includes the placeholder anyway is still valid; nothing substitutes it.
+
+A cube pack is also **never offered as a project's domain**. `GET /api/v1/domains`
+lists only `entities` packs, because a project's pack describes its primary data
+source and no cube can be one. That covers both a cube reference pack and the
+per-data-source packs generation produces for enrichment sources: both are
+published, and neither is a domain to start a project from.
 
 Shape also has to agree with the data source. Creating a project pairs a pack
 with a data source for the first time, and a pairing of different shapes is
