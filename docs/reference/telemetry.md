@@ -42,7 +42,7 @@ No PII, query content, table names, credentials, or warehouse data is ever colle
 |--------|---------|---------|
 | Install ID | Random UUID | Count unique deployments |
 | Version | `<release>` | Version distribution |
-| Go version | `go1.25.0` | Runtime compatibility |
+| Go version | `go1.26.8` | Runtime compatibility |
 | OS / architecture | `linux/amd64` | Platform support |
 | Deployment method | `kubernetes` | Deployment prioritization |
 | Warehouse provider | `bigquery` | Provider prioritization |

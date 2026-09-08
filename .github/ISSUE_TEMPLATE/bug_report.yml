@@ -83,7 +83,7 @@ body:
       description: Any relevant environment details.
       placeholder: |
         - OS: Ubuntu 22.04
-        - Go version: 1.25
+        - Go version: 1.26
         - Node version: 22
         - LLM Provider: claude
         - Warehouse Provider: bigquery

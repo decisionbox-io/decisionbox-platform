@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/llm/ollama
 
-go 1.25.0
+go 1.26.8
 
 require (
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
@@ -17,8 +17,8 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 	github.com/rogpeppe/go-internal v1.8.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -12,7 +12,7 @@ We never collect PII, query content, table names, credentials, insight content, 
 |--------|---------------|-----|
 | Anonymous install ID | `a1b2c3d4-...` (random UUID, stored in MongoDB) | Count unique deployments |
 | Product version | `0.4.0` | Know which versions are in use |
-| Go version | `go1.25.0` | Runtime compatibility planning |
+| Go version | `go1.26.8` | Runtime compatibility planning |
 | OS / architecture | `linux/amd64` | Platform support decisions |
 | Deployment method | `kubernetes`, `docker-compose`, `binary` | Prioritize deployment paths |
 | Warehouse provider type | `bigquery`, `snowflake` | Provider prioritization |
