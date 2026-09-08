@@ -291,6 +291,47 @@ func warehouseIDOrDefault(wh models.WarehouseConfig) string {
 	return wh.ID
 }
 
+// applyOAuthAppRegistration adds the deployment's own OAuth client to a
+// datasource's provider config when the datasource authenticates with a
+// three-legged (user-delegated) method.
+//
+// The stored credential for such a datasource is a refresh token, which is
+// worthless on its own: minting an access token from it requires the client
+// that issued it. That client is registered once per deployment per provider
+// — instance-scoped, not on the project document — so it is read here rather
+// than travelling with the datasource.
+//
+// A registration field that is simply unset is left out, so the provider
+// reports its own "not configured" rather than a secret-store detail. A
+// secret store that cannot be READ is a different thing and is returned as an
+// error: it has not told us the field is empty, and reporting it as empty
+// would send an operator to re-enter an app registration that is already
+// there.
+func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Provider, providerSlug string, cfg gowarehouse.ProviderConfig) error {
+	meta, ok := gowarehouse.GetProviderMeta(providerSlug)
+	if !ok {
+		return nil // unregistered; NewProvider reports it with the name in hand
+	}
+	method, ok := meta.AuthMethodByID(cfg["auth_method"])
+	if !ok || method.Flow != gowarehouse.FlowAuthorizationCode {
+		return nil
+	}
+
+	for _, field := range gowarehouse.OAuthAppFields {
+		v, err := secretProvider.Get(ctx, "", gowarehouse.OAuthAppKey(providerSlug, field))
+		switch {
+		case errors.Is(err, gosecrets.ErrNotFound):
+			continue
+		case err != nil:
+			return fmt.Errorf("read the %s OAuth app registration (%s): %w", providerSlug, field, err)
+		}
+		if v != "" {
+			cfg[gowarehouse.OAuthAppConfigKey(field)] = v
+		}
+	}
+	return nil
+}
+
 func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
 	wh, ok := project.WarehouseByID(warehouseID)
 	if !ok || wh.Provider == "" {
@@ -324,6 +365,10 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 		applog.Info("Warehouse credentials loaded from secret provider")
 	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
+	}
+
+	if err := applyOAuthAppRegistration(ctx, secretProvider, wh.Provider, whCfg); err != nil {
+		return nil, err
 	}
 
 	provider, err := gowarehouse.NewProvider(wh.Provider, whCfg)
