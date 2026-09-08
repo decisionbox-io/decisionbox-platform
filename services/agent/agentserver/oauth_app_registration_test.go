@@ -163,3 +163,56 @@ func TestApplyOAuthAppRegistration_AnUnknownProviderIsLeftToNewProvider(t *testi
 		t.Fatalf("apply: %v", err)
 	}
 }
+
+// The oauth_app_* namespace belongs to the deployment. A project document that
+// carries a value in it — written before the datasource routes reserved the
+// namespace, or by anything else that writes project documents — must not
+// reach a provider, or a missing app registration would hide behind a stale
+// per-project one and the separation would be worth nothing.
+func TestApplyOAuthAppRegistration_ProjectSuppliedClientFieldsNeverSurvive(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	clientID := gowarehouse.OAuthAppConfigKey(gowarehouse.OAuthFieldClientID)
+	clientSecret := gowarehouse.OAuthAppConfigKey(gowarehouse.OAuthFieldClientSecret)
+
+	// Nothing registered: the project's own values must not stand in for it.
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "oauth_user",
+		clientID:      "from-the-project-document",
+		clientSecret:  "and-a-secret-with-it",
+	}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, slug, nil), slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for _, k := range []string{clientID, clientSecret} {
+		if v, present := cfg[k]; present {
+			t.Errorf("cfg[%q] = %q survived from the project document", k, v)
+		}
+	}
+
+	// Registered: the deployment's value is what the provider sees.
+	cfg = gowarehouse.ProviderConfig{"auth_method": "oauth_user", clientID: "from-the-project-document"}
+	registered := appSecrets(t, slug, map[string]string{gowarehouse.OAuthFieldClientID: "the-deployments"})
+	if err := applyOAuthAppRegistration(context.Background(), registered, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg[clientID] != "the-deployments" {
+		t.Errorf("cfg[%q] = %q, want the deployment's registration", clientID, cfg[clientID])
+	}
+}
+
+// The namespace is cleared whatever the datasource authenticates with. A
+// key-authenticated source has no use for these fields, and leaving a
+// project-supplied value sitting in a namespace the platform owns is a state
+// worth not having.
+func TestApplyOAuthAppRegistration_TheNamespaceIsClearedForEveryMethod(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"})
+	clientSecret := gowarehouse.OAuthAppConfigKey(gowarehouse.OAuthFieldClientSecret)
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key", clientSecret: "from-the-project-document"}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, slug, nil), slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, present := cfg[clientSecret]; present {
+		t.Error("a project-supplied client secret survived on a key-authenticated datasource")
+	}
+}

@@ -308,6 +308,19 @@ func warehouseIDOrDefault(wh models.WarehouseConfig) string {
 // would send an operator to re-enter an app registration that is already
 // there.
 func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Provider, providerSlug string, cfg gowarehouse.ProviderConfig) error {
+	// The namespace belongs to the deployment, so nothing a project document
+	// carries in it survives to a provider — whether it was written before the
+	// datasource routes reserved the namespace, or by something else that
+	// writes project documents. Cleared first and unconditionally: a value left
+	// standing because its secret happened to be unset would hide a missing app
+	// registration behind a stale per-project one, which is the failure this
+	// separation exists to make impossible.
+	for k := range cfg {
+		if strings.HasPrefix(k, gowarehouse.OAuthAppConfigKey("")) {
+			delete(cfg, k)
+		}
+	}
+
 	meta, ok := gowarehouse.GetProviderMeta(providerSlug)
 	if !ok {
 		return nil // unregistered; NewProvider reports it with the name in hand
