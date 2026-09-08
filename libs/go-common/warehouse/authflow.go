@@ -43,12 +43,18 @@ type AuthorizationCode struct {
 }
 
 // AuthMethodByID returns the provider's declared auth method with the given
-// id. An empty id resolves to the provider's first declared method, which is
-// how a datasource saved before it had a choice of methods still resolves to
-// the one it was configured under.
+// id.
+//
+// An empty id resolves to the provider's method only when it declares exactly
+// one: a datasource saved while a provider offered a single method never
+// stored a choice, and there is only one thing it can have been. With two or
+// more, an empty id is genuinely ambiguous and resolves to nothing — guessing
+// the first would answer for a datasource whose provider knows better, and a
+// provider that later gains a second method would silently reclassify every
+// datasource already connected under the original one.
 func (m ProviderMeta) AuthMethodByID(id string) (AuthMethod, bool) {
 	if id == "" {
-		if len(m.AuthMethods) == 0 {
+		if len(m.AuthMethods) != 1 {
 			return AuthMethod{}, false
 		}
 		return m.AuthMethods[0], true

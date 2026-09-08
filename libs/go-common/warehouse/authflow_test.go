@@ -75,18 +75,26 @@ func TestAuthMethodByID(t *testing.T) {
 	if got, ok := meta.AuthMethodByID("sa_key"); !ok || got.ID != "sa_key" {
 		t.Errorf("by id = %+v,%v", got, ok)
 	}
-	// A datasource configured before the provider offered a choice stores no
-	// method. Resolving that to nothing would leave it unable to authenticate
-	// at all, so it resolves to the provider's first — the one it was
-	// configured under.
-	if got, ok := meta.AuthMethodByID(""); !ok || got.ID != "oauth_user" {
-		t.Errorf("an unset method = %+v,%v, want the first declared", got, ok)
-	}
 	if _, ok := meta.AuthMethodByID("nonexistent"); ok {
 		t.Error("an unknown method id resolved to something")
 	}
 	if _, ok := metaWithMethods().AuthMethodByID(""); ok {
 		t.Error("a provider declaring no auth methods resolved one")
+	}
+}
+
+// A datasource saved while its provider offered a single method never stored a
+// choice, and there is only one thing it can have been.
+func TestAuthMethodByID_AnUnsetIDResolvesOnlyWhenThereIsNoChoice(t *testing.T) {
+	if got, ok := metaWithMethods("sa_key").AuthMethodByID(""); !ok || got.ID != "sa_key" {
+		t.Errorf("an unset method on a single-method provider = %+v,%v, want the one method", got, ok)
+	}
+	// With two, an unset id is ambiguous. Answering "the first" would
+	// reclassify every datasource connected under the original method the day
+	// a provider gains a second — silently, and in whichever direction the new
+	// method happened to be declared.
+	if got, ok := metaWithMethods("oauth_user", "sa_key").AuthMethodByID(""); ok {
+		t.Errorf("an unset method resolved to %+v on a provider offering two", got)
 	}
 }
 
