@@ -1,0 +1,44 @@
+# Grype ignore list — decisionbox-platform image vulnerability scan.
+#
+# Loaded automatically by Grype (repo root) during the docker-publish workflow
+# scan. Every entry is a vulnerability with NO upstream fix whose vulnerable
+# code path is not exercised by the published images. Each is advisory-specific
+# and justified; nothing here is a blanket suppression. Re-checked with
+# `grype <image>` on the agent and API images built from this branch.
+#
+# Fixable vulnerabilities are NOT listed here — they are resolved by the
+# dependency, toolchain and base-image bumps in this branch.
+
+ignore:
+  # --- github.com/docker/docker (Moby) — daemon-side CVEs, no fix on this module
+  # path (the fix lives in the renamed github.com/moby/moby/v2 module, which the
+  # Docker client has not moved to). The API image links only the Docker *client*
+  # (client.NewClientWithOpts / Ping / Close + container lifecycle) for the
+  # optional RUNNER_MODE=docker path; the vulnerable authorization-plugin and
+  # oversized-request-body handling runs in the Docker daemon, which DecisionBox
+  # never ships or executes. Aliases listed so the rule matches regardless of
+  # which ID the Grype DB reports as primary.
+  - vulnerability: GO-2026-4887 # Moby AuthZ plugin bypass on oversized bodies (daemon)
+    package:
+      name: github.com/docker/docker
+  - vulnerability: CVE-2026-34040
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-x744-4wpc-v9h2
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GO-2026-4883 # Moby plugin-privilege off-by-one (daemon)
+    package:
+      name: github.com/docker/docker
+  - vulnerability: CVE-2026-33997
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-pxq6-2prw-chj9
+    package:
+      name: github.com/docker/docker
+
+  # --- BusyBox wget — CVE-2025-60876: raw CR/LF and C0 control bytes accepted in
+  # the HTTP request-target. No fix in the current Alpine (busybox 1.37.0-r31).
+  # The images run a single static Go binary as ENTRYPOINT and never invoke the
+  # busybox wget applet, so the affected code path is unreachable at runtime.
+  - vulnerability: CVE-2025-60876
