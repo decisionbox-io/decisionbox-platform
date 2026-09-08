@@ -28,7 +28,7 @@ func TestAuthMethod_AStaticMethodSerialisesUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, absent := range []string{"flow", "authorization"} {
+	for _, absent := range []string{"flow", "authorization", "revoke_url"} {
 		if strings.Contains(string(b), `"`+absent+`"`) {
 			t.Errorf("a static method emitted %q: %s", absent, b)
 		}
@@ -39,9 +39,10 @@ func TestAuthMethod_AThreeLeggedMethodCarriesItsEndpoints(t *testing.T) {
 	b, err := json.Marshal(AuthMethod{
 		ID: "oauth_user", Name: "Sign in", Flow: FlowAuthorizationCode,
 		Authorization: &AuthorizationCode{
-			AuthURL:  "https://accounts.example/o/oauth2/auth",
-			TokenURL: "https://oauth2.example/token",
-			Scopes:   []string{"scope.readonly"},
+			AuthURL:   "https://accounts.example/o/oauth2/auth",
+			TokenURL:  "https://oauth2.example/token",
+			RevokeURL: "https://oauth2.example/revoke",
+			Scopes:    []string{"scope.readonly"},
 		},
 	})
 	if err != nil {
@@ -56,6 +57,11 @@ func TestAuthMethod_AThreeLeggedMethodCarriesItsEndpoints(t *testing.T) {
 	}
 	if back.Authorization.AuthURL == "" || back.Authorization.TokenURL == "" || len(back.Authorization.Scopes) != 1 {
 		t.Errorf("round trip lost the endpoints: %+v", back.Authorization)
+	}
+	// Losing this one is silent: everything still works, and a grant outlives
+	// the connection that held it.
+	if back.Authorization.RevokeURL != "https://oauth2.example/revoke" {
+		t.Errorf("round trip lost the revocation endpoint: %+v", back.Authorization)
 	}
 }
 

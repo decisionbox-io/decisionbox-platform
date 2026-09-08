@@ -729,6 +729,8 @@ export interface AuthMethod {
 export interface AuthorizationCode {
   auth_url: string;
   token_url: string;
+  /** Where a grant is ended (RFC 7009). Absent when the provider publishes none. */
+  revoke_url?: string;
   /** Scopes the consent must grant; a partial grant is refused at exchange. */
   scopes: string[];
 }

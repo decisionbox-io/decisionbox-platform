@@ -35,6 +35,19 @@ type AuthorizationCode struct {
 	AuthURL  string `json:"auth_url"`
 	TokenURL string `json:"token_url"`
 
+	// RevokeURL ends a grant at the provider (RFC 7009).
+	//
+	// It is needed because forgetting a refresh token is not the same as
+	// ending the authorization it belongs to. A datasource that is
+	// re-authorized, removed, or switched to another method discards the only
+	// copy of its token — and without this the grant stays live in the
+	// provider's account, listed to a user who has every reason to think
+	// disconnecting ended it.
+	//
+	// Optional: a provider that publishes no revocation endpoint simply cannot
+	// be told, and the alternative is to hold a credential nobody wants.
+	RevokeURL string `json:"revoke_url,omitempty"`
+
 	// Scopes are requested at consent and required of the result. Providers
 	// with granular consent let a user approve some and withhold others, and
 	// the resulting token is valid but cannot do the job — so this list is
