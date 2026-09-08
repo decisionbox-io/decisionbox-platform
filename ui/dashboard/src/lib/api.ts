@@ -711,6 +711,26 @@ export interface AuthMethod {
   name: string;
   description: string;
   fields: ConfigField[];
+  /**
+   * How the credential is obtained. Absent means the fields above are a form
+   * and what the operator types into it is the credential — the only shape
+   * that existed before this field, and still the default.
+   *
+   * "authorization_code" is three-legged OAuth: there is no form, because the
+   * credential is the durable grant a consent screen produces. A form
+   * rendered from `fields` would show nothing and offer no way to connect, so
+   * a caller must branch on this rather than on `fields` being empty.
+   */
+  flow?: string;
+  /** Consent and token endpoints, present when flow is "authorization_code". */
+  authorization?: AuthorizationCode;
+}
+
+export interface AuthorizationCode {
+  auth_url: string;
+  token_url: string;
+  /** Scopes the consent must grant; a partial grant is refused at exchange. */
+  scopes: string[];
 }
 
 export interface ConfigField {
