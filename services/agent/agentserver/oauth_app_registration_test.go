@@ -3,16 +3,29 @@ package agentserver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
+// authFlowSlugSeq makes every registered stub distinct for the life of the
+// process.
+var authFlowSlugSeq atomic.Int64
+
 // registerAuthFlowProvider publishes a provider whose only purpose is to
-// declare an auth method of the given flow. The factory is never called —
-// applyOAuthAppRegistration reads metadata and nothing else.
-func registerAuthFlowProvider(t *testing.T, slug string, methods ...gowarehouse.AuthMethod) {
+// declare an auth method of the given flow, and returns its slug. The factory
+// is never called — applyOAuthAppRegistration reads metadata and nothing else.
+//
+// The slug is unique per registration because the registry is process-global
+// and panics on a duplicate: anything reused — including the test's own name,
+// which repeats under `go test -count=2` — turns a rerun into a panic with
+// nothing wrong in the code under test.
+func registerAuthFlowProvider(t *testing.T, methods ...gowarehouse.AuthMethod) string {
 	t.Helper()
+	slug := fmt.Sprintf("test-authflow-%d-%s", authFlowSlugSeq.Add(1), strings.ToLower(t.Name()))
 	gowarehouse.RegisterWithMeta(slug,
 		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
 			t.Fatal("the provider factory should not run here")
@@ -20,6 +33,7 @@ func registerAuthFlowProvider(t *testing.T, slug string, methods ...gowarehouse.
 		},
 		gowarehouse.ProviderMeta{Name: slug, AuthMethods: methods},
 	)
+	return slug
 }
 
 func threeLegged(id string) gowarehouse.AuthMethod {
@@ -46,8 +60,7 @@ func appSecrets(t *testing.T, slug string, fields map[string]string) *fakeSecret
 // registered per deployment rather than per datasource — so it has to be
 // added here or the provider has half a credential.
 func TestApplyOAuthAppRegistration_AddsTheDeploymentsClient(t *testing.T) {
-	const slug = "test-oauth-provider"
-	registerAuthFlowProvider(t, slug, threeLegged("oauth_user"))
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
 	sp := appSecrets(t, slug, map[string]string{
 		gowarehouse.OAuthFieldClientID:     "cid",
 		gowarehouse.OAuthFieldClientSecret: "sec",
@@ -74,8 +87,7 @@ func TestApplyOAuthAppRegistration_AddsTheDeploymentsClient(t *testing.T) {
 // password. Reading an OAuth registration for those would be a secret lookup
 // per provider construction that can only ever come back empty.
 func TestApplyOAuthAppRegistration_LeavesAStaticMethodAlone(t *testing.T) {
-	const slug = "test-static-provider"
-	registerAuthFlowProvider(t, slug, gowarehouse.AuthMethod{ID: "sa_key"})
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"})
 	sp := appSecrets(t, slug, map[string]string{gowarehouse.OAuthFieldClientID: "cid"})
 
 	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key"}
@@ -93,8 +105,7 @@ func TestApplyOAuthAppRegistration_LeavesAStaticMethodAlone(t *testing.T) {
 // and, worse, skip it for an OAuth one on a provider whose first method is a
 // key.
 func TestApplyOAuthAppRegistration_ReadsTheSelectedMethodNotTheProvider(t *testing.T) {
-	const slug = "test-either-provider"
-	registerAuthFlowProvider(t, slug, gowarehouse.AuthMethod{ID: "sa_key"}, threeLegged("oauth_user"))
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"}, threeLegged("oauth_user"))
 	fields := map[string]string{gowarehouse.OAuthFieldClientID: "cid"}
 	clientIDKey := gowarehouse.OAuthAppConfigKey(gowarehouse.OAuthFieldClientID)
 
@@ -119,8 +130,7 @@ func TestApplyOAuthAppRegistration_ReadsTheSelectedMethodNotTheProvider(t *testi
 // says so in its own words, naming what it needs; a secret-store detail
 // surfaced here would not.
 func TestApplyOAuthAppRegistration_AnUnregisteredAppIsNotAnError(t *testing.T) {
-	const slug = "test-unregistered-provider"
-	registerAuthFlowProvider(t, slug, threeLegged("oauth_user"))
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
 
 	cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
 	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, slug, nil), slug, cfg); err != nil {
@@ -135,8 +145,7 @@ func TestApplyOAuthAppRegistration_AnUnregisteredAppIsNotAnError(t *testing.T) {
 // the two alike would report a configured deployment as unconfigured and send
 // an operator to re-enter credentials that are already stored.
 func TestApplyOAuthAppRegistration_AnUnreadableStoreIsAnError(t *testing.T) {
-	const slug = "test-broken-store-provider"
-	registerAuthFlowProvider(t, slug, threeLegged("oauth_user"))
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
 	sp := &fakeSecretProvider{getErr: errors.New("secret store unavailable")}
 
 	err := applyOAuthAppRegistration(context.Background(), sp, slug, gowarehouse.ProviderConfig{"auth_method": "oauth_user"})
