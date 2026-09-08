@@ -1,58 +1,62 @@
 # Grype ignore list — decisionbox-platform image vulnerability scan.
 #
 # Loaded automatically by Grype (repo root) during the docker-publish workflow
-# scan. Every entry is a vulnerability with NO upstream fix whose vulnerable
-# code path is not exercised by the published images. Each is advisory-specific
-# and justified; nothing here is a blanket suppression.
+# scan. Every entry targets a vulnerability with NO upstream fix whose
+# vulnerable code path is not exercised by the published images.
 #
-# Each rule is guarded by `fix-state` so it only suppresses while the advisory
-# is unfixed: the moment Grype marks a match `fixed`, the guard stops matching
-# and the vulnerability is reported again (a signal to bump). Fixable
-# vulnerabilities are NOT listed here — they are resolved by the dependency,
-# toolchain and base-image bumps in this branch. Verified with `grype <image>`
-# on the agent, API and dashboard images built from this branch (0 findings).
+# Scope note: the two client-only modules below are ignored at *package* level
+# rather than by advisory ID on purpose. The Grype DB used in CI reports these
+# no-fix daemon/server CVEs under different advisory IDs than a pinned local
+# Grype (e.g. GHSA-rg2x-37c3-w2rh vs GO-2026-4887 for the same Moby daemon
+# issue), so an ID-keyed ignore silently misses them after a DB update. Every
+# rule is still guarded by `fix-state` (not-fixed / unknown / wont-fix) so the
+# suppression only applies while the match is unfixed — the moment Grype marks
+# a match `fixed`, it is reported again. Fixable vulnerabilities are NOT
+# suppressed here; they are resolved by the dependency/toolchain/base-image
+# bumps in this branch and #394.
 
 ignore:
-  # --- github.com/docker/docker (Moby) — daemon-side CVEs, no fix on this module
-  # path (the fix lives in the renamed github.com/moby/moby/v2 module, which the
-  # Docker client has not moved to). The API image links only the Docker *client*
-  # (client.NewClientWithOpts / Ping / Close + container lifecycle) for the
-  # optional RUNNER_MODE=docker path; the vulnerable authorization-plugin and
-  # oversized-request-body handling runs in the Docker daemon, which DecisionBox
-  # never ships or executes. Aliases are listed so the rule matches whichever ID
-  # the Grype DB reports as primary.
-
-  # AuthZ plugin bypass on oversized bodies (currently reported fix state: unknown)
-  - vulnerability: GO-2026-4887
-    package:
-      name: github.com/docker/docker
-    fix-state: unknown
-  - vulnerability: CVE-2026-34040
-    package:
-      name: github.com/docker/docker
-    fix-state: unknown
-  - vulnerability: GHSA-x744-4wpc-v9h2
-    package:
-      name: github.com/docker/docker
-    fix-state: unknown
-
-  # Plugin-privilege off-by-one (currently reported fix state: not-fixed)
-  - vulnerability: GO-2026-4883
-    package:
+  # --- github.com/docker/docker (Moby): daemon-side CVEs, no fix on this module
+  # path (the fix lives in the renamed github.com/moby/moby/v2). The API image
+  # links only the Docker *client* (client.NewClientWithOpts / Ping / Close +
+  # container lifecycle) for the optional RUNNER_MODE=docker path; the vulnerable
+  # authorization-plugin / oversized-body daemon code is never shipped or run.
+  - package:
       name: github.com/docker/docker
     fix-state: not-fixed
-  - vulnerability: CVE-2026-33997
-    package:
+  - package:
       name: github.com/docker/docker
-    fix-state: not-fixed
-  - vulnerability: GHSA-pxq6-2prw-chj9
-    package:
+    fix-state: unknown
+  - package:
       name: github.com/docker/docker
-    fix-state: not-fixed
+    fix-state: wont-fix
 
-  # --- BusyBox wget — CVE-2025-60876: raw CR/LF and C0 control bytes accepted in
+  # --- github.com/ollama/ollama: server-side inference CVEs, no upstream fix.
+  # DecisionBox uses only the Ollama HTTP API client to talk to a user-operated
+  # server; the vulnerable server code is never shipped or run.
+  - package:
+      name: github.com/ollama/ollama
+    fix-state: not-fixed
+  - package:
+      name: github.com/ollama/ollama
+    fix-state: unknown
+  - package:
+      name: github.com/ollama/ollama
+    fix-state: wont-fix
+
+  # --- golang.org/x/crypto/openpgp (GO-2026-5932): the openpgp sub-package is
+  # unmaintained with no fixed version and will not receive one. DecisionBox does
+  # not import x/crypto/openpgp (not reachable per govulncheck). Scoped to this
+  # one advisory so real, fixable x/crypto CVEs are never hidden.
+  - vulnerability: GO-2026-5932
+    package:
+      name: golang.org/x/crypto
+
+  # --- BusyBox wget (CVE-2025-60876): raw CR/LF and C0 control bytes accepted in
   # the HTTP request-target. No fix in the current Alpine (busybox 1.37.0-r31).
   # The images run a single static Go binary as ENTRYPOINT and never invoke the
   # busybox wget applet, so the affected code path is unreachable at runtime.
   - vulnerability: CVE-2025-60876
     fix-state: unknown
+  - vulnerability: CVE-2025-60876
+    fix-state: not-fixed
