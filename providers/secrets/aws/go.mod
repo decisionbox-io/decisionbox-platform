@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/secrets/aws
 
-go 1.25.0
+go 1.26.8
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.3

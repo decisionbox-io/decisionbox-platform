@@ -72,7 +72,7 @@ Details below.
 
 ### Prerequisites
 
-- **Go 1.25+** -- [golang.org/dl](https://golang.org/dl/)
+- **Go 1.26+** -- [golang.org/dl](https://golang.org/dl/)
 - **Node.js 20+** -- [nodejs.org](https://nodejs.org/)
 - **Docker** -- For MongoDB and integration tests
 - **Make** -- Build tool (pre-installed on macOS/Linux)
