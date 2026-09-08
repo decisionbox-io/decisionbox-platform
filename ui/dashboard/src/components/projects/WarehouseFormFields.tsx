@@ -1,6 +1,6 @@
 'use client';
 
-import { Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
+import { Alert, Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
 import { ConfigField, ProviderMeta } from '@/lib/api';
 
 export interface WarehouseFormState {
@@ -76,6 +76,12 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
   const authFields = selectedAuth?.fields || [];
   const authCredField = authFields.find((f) => f.type === 'credential');
   const authConfigFields = authFields.filter((f) => f.type !== 'credential');
+  // A three-legged method has no fields, because its credential is the grant a
+  // consent screen produces rather than anything a person can type. Rendering
+  // the form for it would show an empty box and a Save button, and saving
+  // would attach a data source that cannot authenticate — with no error, since
+  // nothing was left blank. Say so instead.
+  const isAuthorizationCode = selectedAuth?.flow === 'authorization_code';
 
   const setProvider = (id: string) => {
     const prov = providers.find((p) => p.id === id);
@@ -127,7 +133,16 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
 
       {selectedAuth?.description && <Text size="xs" c="dimmed">{selectedAuth.description}</Text>}
 
-      {authConfigFields.map((field) => (
+      {isAuthorizationCode && (
+        <Alert color="blue" variant="light">
+          <Text size="sm">
+            This method has no credential to enter: you authorize {selected?.name || 'the provider'} by
+            signing in with it, which is done from the data source itself once it has been saved.
+          </Text>
+        </Alert>
+      )}
+
+      {!isAuthorizationCode && authConfigFields.map((field) => (
         <DynamicField
           key={field.key}
           field={field}
@@ -136,7 +151,7 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
         />
       ))}
 
-      {authCredField && (
+      {!isAuthorizationCode && authCredField && (
         <Textarea
           label={hasSavedCredential ? `Update ${authCredField.label}` : authCredField.label}
           required={authCredField.required && !hasSavedCredential}
