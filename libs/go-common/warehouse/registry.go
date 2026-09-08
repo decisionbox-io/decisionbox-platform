@@ -55,6 +55,20 @@ type AuthMethod struct {
 	Name        string        `json:"name"`        // display name: "Application Default Credentials"
 	Description string        `json:"description"` // help text
 	Fields      []ConfigField `json:"fields"`      // fields specific to this auth method
+
+	// Flow names how the credential is obtained. Empty (FlowStaticConfig) is
+	// the only shape that existed before, and stays the default: the fields
+	// above are a form, and what the operator types is the credential.
+	//
+	// A method that declares FlowAuthorizationCode has no form to render —
+	// its credential is the durable refresh token a consent produces — so a
+	// UI must branch on this rather than on Fields being empty.
+	Flow string `json:"flow,omitempty"`
+
+	// Authorization carries the consent and token endpoints and the scopes
+	// the grant must cover. Set when Flow is FlowAuthorizationCode; nil
+	// otherwise.
+	Authorization *AuthorizationCode `json:"authorization,omitempty"`
 }
 
 // ConfigField describes a single configuration field for a provider.
