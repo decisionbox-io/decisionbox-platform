@@ -394,8 +394,9 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 	// The ref is not passed on to the provider: it says where the credential was
 	// found, which is no more a provider's business than the key it replaces.
 	credentialKey := gowarehouse.CredentialsKey(wh.ID)
-	if ref := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey]); ref != "" {
-		shared, ok := gowarehouse.SharedCredentialKey(ref)
+	sharedRef := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey])
+	if sharedRef != "" {
+		shared, ok := gowarehouse.SharedCredentialKey(sharedRef)
 		if !ok {
 			return nil, fmt.Errorf("data source %q names a shared credential that cannot exist", wh.ID)
 		}
@@ -404,10 +405,24 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 	delete(whCfg, gowarehouse.CredentialRefKey)
 
 	whCreds, err := secretProvider.Get(ctx, projectID, credentialKey)
-	if err == nil && whCreds != "" {
+	switch {
+	case err == nil && whCreds != "":
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
-	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
+
+	case sharedRef != "":
+		// A datasource that NAMES a credential and does not get one is a
+		// different thing from one that has none. Falling through would build the
+		// provider with an empty credential, and some of them read that as "use
+		// the ambient identity" — a BigQuery source would run as the agent's own
+		// service account, against a project the customer chose. Refuse instead,
+		// whether the slot is empty, absent, or unreadable.
+		if err == nil {
+			return nil, fmt.Errorf("data source %q reads a shared credential that is stored but empty", wh.ID)
+		}
+		return nil, fmt.Errorf("data source %q reads a shared credential that is not available: %w", wh.ID, err)
+
+	case err != nil && !errors.Is(err, gosecrets.ErrNotFound):
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
 	}
 

@@ -1,6 +1,9 @@
 package warehouse
 
-import "encoding/hex"
+import (
+	"encoding/hex"
+	"regexp"
+)
 
 // LegacyCredentialsKey is the secret key under which every project's
 // warehouse credentials were stored before multi-warehouse. It remains
@@ -55,10 +58,20 @@ const CredentialRefKey = "credential_ref" //nolint:gosec // G101: the name of a 
 // Nothing else in a project's secrets lives under it.
 const sharedCredentialPrefix = "warehouse-shared-credential"
 
-// maxSharedCredentialID bounds the id so the composed key stays inside the
-// 127-character limit Azure Key Vault imposes on a secret name: the prefix and
-// separator are 28 characters and hex doubles the id.
+// maxSharedCredentialID bounds the id.
+//
+// The limit that bites is not this key's own length: Azure Key Vault composes
+// the provider-side secret name as "<namespace>-<projectID>-<key>" and caps THAT
+// at 127 characters, so a project id (24 hex characters for a Mongo ObjectID)
+// and a namespace are spent before this key starts. 48 leaves the composed name
+// at 113 for a typical deployment, with room for a longer namespace.
 const maxSharedCredentialID = 48
+
+// sharedCredentialIDChars is the alphabet an id may use: Azure Key Vault's own,
+// which is the strictest of the backends. An id outside it is refused rather
+// than folded — folding is lossy, and two connections whose ids differed only in
+// their separators would share a slot.
+var sharedCredentialIDChars = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
 // SharedCredentialKey returns the secret key holding a credential that several
 // datasources read, named by an opaque id. Reports false for an id no key can be
@@ -72,12 +85,13 @@ const maxSharedCredentialID = 48
 // to a host they chose. Composed into a namespace nothing else writes, the worst
 // a forged id can name is a shared credential that does not exist.
 //
-// Hex-encoded for the same reason CredentialsKey encodes a warehouse id: the
-// cloud backends compose this key straight into the provider-side secret name
-// and restrict its charset, and hex plus a hyphen is accepted by all of them.
+// The id is not encoded, unlike the warehouse id in CredentialsKey. Encoding
+// exists to make arbitrary input storable, and doubles the length doing it;
+// here an id that is not already storable is refused instead, which keeps the
+// composed Azure name inside its limit.
 func SharedCredentialKey(id string) (string, bool) {
-	if id == "" || len(id) > maxSharedCredentialID {
+	if id == "" || len(id) > maxSharedCredentialID || !sharedCredentialIDChars.MatchString(id) {
 		return "", false
 	}
-	return sharedCredentialPrefix + "-" + hex.EncodeToString([]byte(id)), true
+	return sharedCredentialPrefix + "-" + id, true
 }

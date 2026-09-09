@@ -2,6 +2,7 @@ package agentserver
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -151,23 +152,96 @@ func TestInitWarehouseProvider_TheRefIsNotPassedToTheProvider(t *testing.T) {
 
 // The ref is an id composed INTO a key, not a key. That is what stops a
 // datasource config — writable by anyone who can edit the project — from naming
-// another secret the project holds, and the read must land in the shared
-// namespace whatever the id looks like.
+// another secret the project holds.
 func TestInitWarehouseProvider_ARefCannotNameAnotherProjectSecret(t *testing.T) {
 	secrets := &fakeSecretProvider{store: map[string]string{
 		"p1/llm-credentials":                       "the-llm-secret",
 		"p1/" + gowarehouse.CredentialsKey("wh_1"): "the-derived-credential",
 	}}
+	project := &models.Project{
+		ID: "p1",
+		Warehouses: []models.WarehouseConfig{{
+			ID: "wh_1", Provider: "test-capture-source",
+			Config: map[string]string{gowarehouse.CredentialRefKey: "llm-credentials"},
+		}},
+	}
 
-	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "llm-credentials"}, secrets)
-	if got := cfg["credentials_json"]; got == "the-llm-secret" {
-		t.Fatal("a data source read another feature's credential by naming its key")
+	capturedMu.Lock()
+	captured = nil
+	capturedMu.Unlock()
+
+	// The id names a slot inside the shared namespace, which is empty — so this
+	// is refused rather than reaching the provider at all.
+	_, err := initWarehouseProvider(context.Background(), project, "wh_1", secrets, "p1")
+	if err == nil {
+		t.Fatal("a data source naming another feature's credential key was accepted")
 	}
-	// And it does not silently fall back to the derived one either: the ref was
-	// honoured, it just named a slot that does not exist.
-	if got := cfg["credentials_json"]; got == "the-derived-credential" {
-		t.Fatal("a ref that named nothing fell back to the derived key")
+	capturedMu.Lock()
+	got := captured
+	capturedMu.Unlock()
+	if got != nil {
+		t.Fatalf("the provider was built anyway, with %v", got)
 	}
+}
+
+// A datasource that NAMES a credential and does not get one is not a datasource
+// without one. Some providers read an empty credential as "use the ambient
+// identity" — BigQuery falls back to application-default credentials — so a
+// typo'd or deleted ref would run as the agent's own service account against a
+// project the customer chose.
+func TestInitWarehouseProvider_AnUnresolvableRefRefusesRatherThanFallBack(t *testing.T) {
+	for name, store := range map[string]map[string]string{
+		"absent": {},
+		"empty":  {"p1/" + mustSharedKey("conn-1"): ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			project := &models.Project{
+				ID: "p1",
+				Warehouses: []models.WarehouseConfig{{
+					ID: "wh_1", Provider: "test-capture-source",
+					Config: map[string]string{gowarehouse.CredentialRefKey: "conn-1"},
+				}},
+			}
+			capturedMu.Lock()
+			captured = nil
+			capturedMu.Unlock()
+
+			if _, err := initWarehouseProvider(context.Background(), project, "wh_1", &fakeSecretProvider{store: store}, "p1"); err == nil {
+				t.Fatal("an unresolvable shared credential was accepted")
+			}
+			capturedMu.Lock()
+			got := captured
+			capturedMu.Unlock()
+			if got != nil {
+				t.Fatalf("the provider was built with no credential: %v", got)
+			}
+		})
+	}
+}
+
+// A secret store that cannot be read is not a store that said "no such
+// credential" either, and both end the same way for a datasource that named one.
+func TestInitWarehouseProvider_AnUnreadableStoreRefusesANamedCredential(t *testing.T) {
+	project := &models.Project{
+		ID: "p1",
+		Warehouses: []models.WarehouseConfig{{
+			ID: "wh_1", Provider: "test-capture-source",
+			Config: map[string]string{gowarehouse.CredentialRefKey: "conn-1"},
+		}},
+	}
+	secrets := &fakeSecretProvider{getErr: errors.New("secret store unavailable")}
+	if _, err := initWarehouseProvider(context.Background(), project, "wh_1", secrets, "p1"); err == nil {
+		t.Fatal("an unreadable store was accepted for a datasource that names a credential")
+	}
+}
+
+// mustSharedKey is sharedKey outside a test's scope, for table keys.
+func mustSharedKey(id string) string {
+	key, ok := gowarehouse.SharedCredentialKey(id)
+	if !ok {
+		panic("SharedCredentialKey refused " + id)
+	}
+	return key
 }
 
 // An id no key can be formed from is refused rather than falling back to the

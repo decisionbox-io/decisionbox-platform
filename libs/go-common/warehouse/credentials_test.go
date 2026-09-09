@@ -91,7 +91,7 @@ func TestSharedCredentialKey_DoesNotCollideWithADerivedKey(t *testing.T) {
 	for _, id := range []string{"", DefaultWarehouseID, "wh_1", "wh_2", "wh_b"} {
 		derived[CredentialsKey(id)] = true
 	}
-	for _, id := range []string{"conn-1", "wh_1", DefaultWarehouseID, "a"} {
+	for _, id := range []string{"conn-1", "wh1", DefaultWarehouseID, "a"} {
 		key, ok := SharedCredentialKey(id)
 		if !ok {
 			t.Fatalf("SharedCredentialKey(%q) was refused", id)
@@ -106,7 +106,7 @@ func TestSharedCredentialKey_DoesNotCollideWithADerivedKey(t *testing.T) {
 // another's.
 func TestSharedCredentialKey_IsDistinctPerID(t *testing.T) {
 	seen := map[string]string{}
-	for _, id := range []string{"conn-1", "conn-2", "conn_1", "CONN-1"} {
+	for _, id := range []string{"conn-1", "conn-2", "conn1", "CONN-1"} {
 		key, ok := SharedCredentialKey(id)
 		if !ok {
 			t.Fatalf("SharedCredentialKey(%q) was refused", id)
@@ -120,7 +120,7 @@ func TestSharedCredentialKey_IsDistinctPerID(t *testing.T) {
 
 // The composed key has to be storable by every backend, whatever the id was.
 func TestSharedCredentialKey_StaysInTheStrictestAlphabet(t *testing.T) {
-	for _, id := range []string{"conn-1", "Odd.ID:v2", "with/slash", "../other", "a b"} {
+	for _, id := range []string{"conn-1", "Odd.ID:v2", "with/slash", "../other", "a b", "CONN-1"} {
 		key, ok := SharedCredentialKey(id)
 		if !ok {
 			continue
@@ -131,13 +131,33 @@ func TestSharedCredentialKey_StaysInTheStrictestAlphabet(t *testing.T) {
 	}
 }
 
-// An id no key can be formed from is refused rather than silently producing one:
-// an empty id would otherwise name the namespace's own root, and an over-long
-// one a key Azure rejects at write time, where nobody can see it.
+// An id no key can be formed from is refused rather than silently producing one.
+// An empty id would name the namespace's own root; an over-long one, or one
+// outside the alphabet, a name Azure Key Vault rejects at write time, where
+// nobody can see it.
 func TestSharedCredentialKey_RefusesWhatItCannotName(t *testing.T) {
-	for _, id := range []string{"", strings.Repeat("a", maxSharedCredentialID+1)} {
+	for _, id := range []string{
+		"", "   ", strings.Repeat("a", maxSharedCredentialID+1),
+		"under_score", "with:colon", "with/slash", "with.dot", "../other",
+	} {
 		if _, ok := SharedCredentialKey(id); ok {
 			t.Errorf("SharedCredentialKey(%q) was accepted", id)
 		}
+	}
+}
+
+// The limit Azure enforces is on the name it composes, not on this key alone.
+// A connection id is a UUID, and the composed name for a typical deployment has
+// to stay inside 127 characters or the credential cannot be stored at all.
+func TestSharedCredentialKey_FitsAzuresComposedSecretName(t *testing.T) {
+	const uuid = "2f1c0b1e-9a2d-4c3b-8f7e-6d5a4b3c2d1e"
+	key, ok := SharedCredentialKey(uuid)
+	if !ok {
+		t.Fatal("a UUID id was refused")
+	}
+	// namespace + "-" + a 24-character Mongo ObjectID + "-" + key.
+	composed := len("decisionbox") + 1 + 24 + 1 + len(key)
+	if composed > 127 {
+		t.Fatalf("composed Azure secret name is %d characters, over the 127 limit", composed)
 	}
 }
