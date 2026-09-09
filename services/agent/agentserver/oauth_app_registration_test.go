@@ -293,3 +293,39 @@ func TestApplyOAuthAppRegistration_AThreeLeggedMethodWithNoAuthorizationIsAnErro
 		t.Fatal("a three-legged method with no authorization block was accepted")
 	}
 }
+
+// A datasource saved while its provider offered exactly one method stored no
+// choice, and the method resolves to the one it can only have been. The provider
+// factory switches on the config's own auth_method, though, so leaving it empty
+// would have this function and the provider disagree about how the datasource
+// authenticates.
+func TestApplyOAuthAppRegistration_RecordsAnInferredMethod(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	sp := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "cid"})
+
+	cfg := gowarehouse.ProviderConfig{} // saved before the provider offered a choice
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg["auth_method"] != "oauth_user" {
+		t.Errorf("auth_method = %q, want the method this resolved to", cfg["auth_method"])
+	}
+	if cfg[oauthreg.ConfigKey(oauthreg.FieldClientID)] != "cid" {
+		t.Error("the registration was not applied to the inferred method")
+	}
+}
+
+// A datasource whose method is a static one keeps it: nothing is inferred, and
+// nothing is rewritten.
+func TestApplyOAuthAppRegistration_LeavesARecordedMethodAlone(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"}, threeLegged("oauth_user"))
+	sp := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "cid"})
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key"}
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg["auth_method"] != "sa_key" {
+		t.Errorf("auth_method = %q, want it untouched", cfg["auth_method"])
+	}
+}

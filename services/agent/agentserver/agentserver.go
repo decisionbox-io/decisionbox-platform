@@ -344,6 +344,14 @@ func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Pro
 		return fmt.Errorf("datasource provider %q declares a three-legged auth method (%q) with no OAuth provider", providerSlug, method.ID)
 	}
 
+	// Record the method this resolved to. A datasource saved while its provider
+	// offered exactly one method stored no choice, and AuthMethodByID reads that
+	// as the one it can only have been — but a factory switches on the config's
+	// own auth_method, so leaving it empty would have this function and the
+	// provider disagree about how the datasource authenticates. It is written
+	// only on the branch that has established the answer.
+	cfg["auth_method"] = method.ID
+
 	oauthProvider := method.Authorization.Provider
 	for _, field := range oauthreg.Fields {
 		v, err := secretProvider.Get(ctx, "", oauthreg.Key(oauthProvider, field))
