@@ -26,10 +26,14 @@ var reflectionPromptTemplate string
 // Env knobs for the reflection / consolidation phase (Rule 2 — all parametric).
 const (
 	// discoveryReflectionEnabledEnv is the deployment-availability gate (Layer
-	// A). Default off: the ledger loop only earns its keep where the enterprise
-	// RAG + evolution workflow can consume it, so the enterprise agent Helm
-	// overlay turns it on. Independent of the per-project Settings toggle
-	// (Layer B, default on).
+	// A). Default ON: the phase is already fully protected by the gates that
+	// actually matter — the ledger/finding repos are only wired by the
+	// enterprise agent plugins (nil elsewhere, so the phase returns early) and
+	// the sources license entitlement is checked below. Layer A therefore added
+	// no real protection while silently costing every deployment that forgot to
+	// set it an empty Discovery Ledger, with no error to point at. Set it to
+	// "false" to opt out explicitly. Independent of the per-project Settings
+	// toggle (Layer B, default on).
 	discoveryReflectionEnabledEnv    = "DISCOVERY_REFLECTION_ENABLED"
 	discoveryReflectionTimeoutEnv    = "DISCOVERY_REFLECTION_TIMEOUT"
 	discoveryReflectionMaxOutputEnv  = "DISCOVERY_REFLECTION_MAX_OUTPUT"
@@ -104,7 +108,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	if !o.reflectionEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}
-	if !goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, false) {
+	if !goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, true) {
 		return // Layer A: feature not available on this deployment.
 	}
 	if o.aiClient == nil || o.ledgerRepo == nil || o.findingRepo == nil || result == nil {

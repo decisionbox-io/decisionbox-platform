@@ -293,6 +293,29 @@ func TestRunPhaseReflection_EnvOff_NoWork(t *testing.T) {
 	}
 }
 
+// TestRunPhaseReflection_EnvUnset_DefaultsOn pins Layer A's default. An unset
+// DISCOVERY_REFLECTION_ENABLED must behave as enabled: the phase is already
+// protected by the enterprise-only ledger/finding repos and the sources
+// entitlement, so defaulting Layer A off only produced silently-empty ledgers
+// on deployments that never set it.
+func TestRunPhaseReflection_EnvUnset_DefaultsOn(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "") // empty => default branch
+
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	fr := &fakeFindingRepo{}
+	o := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: &fakeLedgerRepo{}, findingRepo: fr,
+	}
+	o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
+
+	if len(fr.upserted) == 0 {
+		t.Fatal("unset deployment flag must default ON and consolidate findings, upserted=0")
+	}
+}
+
 func TestRunPhaseReflection_LicenseGate_NoWork(t *testing.T) {
 	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
 	policy.RegisterChecker(denyChecker{policy.NewNoopChecker()})
