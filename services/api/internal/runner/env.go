@@ -105,6 +105,30 @@ var agentForwardedEnvKeys = []string{
 	"DISCOVERY_LEDGER_MAX_FINDINGS",
 	"DISCOVERY_LEDGER_DEDUP_MINSCORE",
 	"DISCOVERY_LEDGER_TREND_DELTA",
+	// Cloud policy-checker identity. On cloud tenants the agent runs the
+	// cloud-enterprise agent image, whose policy.Checker is
+	// decisionbox-cloud-tenant/policy-plugin (registered only when
+	// POLICY_PROVIDER=cloud) and forwards entitlement checks to the control
+	// plane. Its config loader requires all three of CONTROL_PLANE_URL /
+	// DEPLOYMENT_ID / CONTROL_PLANE_INTERNAL_TOKEN. Without forwarding, the
+	// agent falls back to the allow-all Noop checker and plan caps go
+	// unenforced agent-side. The api pod already holds all four (POLICY_PROVIDER
+	// + CONTROL_PLANE_URL as literals, the latter two via envFrom the
+	// per-release cloud-auth / cloud-policy secrets), so this forwards them the
+	// same way the inference-credential secrets above are. Absent on self-hosted
+	// (POLICY_PROVIDER unset) ⇒ nothing forwarded, behavior unchanged.
+	// See decisionbox-cloud-enterprise-tenant#39.
+	"POLICY_PROVIDER",
+	"CONTROL_PLANE_URL",
+	"DEPLOYMENT_ID",
+	"CONTROL_PLANE_INTERNAL_TOKEN",
+	// GOVERNANCE_ENABLED gates the enterprise governance plugin's init() in the
+	// agent process (governance/register.go): without it the warehouse provider
+	// is never wrapped, so agent queries stay ungoverned regardless of the
+	// policy checker's FeatureGovernance entitlement. Forwarding the flag set on
+	// the api deployment is required for governance to apply to agent queries;
+	// the checker forwarding above is necessary but not sufficient on its own.
+	"GOVERNANCE_ENABLED",
 }
 
 // dockerAgentExtraEnvKeys are forwarded only by the Docker runner. The
