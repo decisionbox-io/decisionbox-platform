@@ -20,6 +20,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/oauthreg"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
@@ -297,9 +298,14 @@ func warehouseIDOrDefault(wh models.WarehouseConfig) string {
 //
 // The stored credential for such a datasource is a refresh token, which is
 // worthless on its own: minting an access token from it requires the client
-// that issued it. That client is registered once per deployment per provider
-// — instance-scoped, not on the project document — so it is read here rather
-// than travelling with the datasource.
+// that issued it. That client is registered once per deployment per OAuth
+// provider — instance-scoped, not on the project document — so it is read here
+// rather than travelling with the datasource.
+//
+// Keyed by the OAuth provider the method declares, not by the datasource slug:
+// one registration serves every consumer of that provider, so a customer who
+// has registered a Google client once does not register another for the next
+// feature that needs one.
 //
 // A registration field that is simply unset is left out, so the provider
 // reports its own "not configured" rather than a secret-store detail. A
@@ -316,7 +322,7 @@ func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Pro
 	// registration behind a stale per-project one, which is the failure this
 	// separation exists to make impossible.
 	for k := range cfg {
-		if strings.HasPrefix(k, gowarehouse.OAuthAppConfigKey("")) {
+		if strings.HasPrefix(k, oauthreg.ConfigKey("")) {
 			delete(cfg, k)
 		}
 	}
@@ -330,16 +336,25 @@ func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Pro
 		return nil
 	}
 
-	for _, field := range gowarehouse.OAuthAppFields {
-		v, err := secretProvider.Get(ctx, "", gowarehouse.OAuthAppKey(providerSlug, field))
+	// A three-legged method that names no OAuth provider can never authenticate:
+	// there is no registration to look up and therefore no client to mint a token
+	// with. That is a registry declaration error, and saying so beats letting the
+	// provider report a generic "not configured" for something no operator can fix.
+	if method.Authorization == nil || method.Authorization.Provider == "" {
+		return fmt.Errorf("datasource provider %q declares a three-legged auth method (%q) with no OAuth provider", providerSlug, method.ID)
+	}
+
+	oauthProvider := method.Authorization.Provider
+	for _, field := range oauthreg.Fields {
+		v, err := secretProvider.Get(ctx, "", oauthreg.Key(oauthProvider, field))
 		switch {
 		case errors.Is(err, gosecrets.ErrNotFound):
 			continue
 		case err != nil:
-			return fmt.Errorf("read the %s OAuth app registration (%s): %w", providerSlug, field, err)
+			return fmt.Errorf("read the %s OAuth app registration (%s): %w", oauthProvider, field, err)
 		}
 		if v != "" {
-			cfg[gowarehouse.OAuthAppConfigKey(field)] = v
+			cfg[oauthreg.ConfigKey(field)] = v
 		}
 	}
 	return nil

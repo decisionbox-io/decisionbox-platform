@@ -1,7 +1,5 @@
 package warehouse
 
-import "encoding/hex"
-
 // Auth-method flows. Flow names how a method obtains its credential, which is
 // what decides whether the UI can render a form for it at all.
 const (
@@ -32,6 +30,13 @@ const (
 // caller can build a consent URL without constructing a provider — which it
 // could not do anyway, since the credential is what the flow is for.
 type AuthorizationCode struct {
+	// Provider identifies whose OAuth app registration this method
+	// authenticates with — "google", say. It is declared rather than derived
+	// from the datasource slug because one registration serves several
+	// consumers: a deployment that has registered a Google client for one
+	// feature must not be asked to register a second for another.
+	Provider string `json:"provider"`
+
 	AuthURL  string `json:"auth_url"`
 	TokenURL string `json:"token_url"`
 
@@ -78,47 +83,4 @@ func (m ProviderMeta) AuthMethodByID(id string) (AuthMethod, bool) {
 		}
 	}
 	return AuthMethod{}, false
-}
-
-// OAuth app-registration fields. The deployment registers its own OAuth client
-// with the provider — its own client_id, client_secret and redirect_uri — so
-// no DecisionBox-owned application ever holds a customer's data grant, and an
-// app of the provider's "internal" type needs no vendor verification.
-const (
-	OAuthFieldClientID     = "client_id"
-	OAuthFieldClientSecret = "client_secret"
-	OAuthFieldRedirectURI  = "redirect_uri"
-)
-
-// OAuthAppFields is the full registration, in the order a form should render
-// it.
-var OAuthAppFields = []string{OAuthFieldClientID, OAuthFieldClientSecret, OAuthFieldRedirectURI}
-
-// oauthAppKeyPrefix namespaces the app registration away from per-project
-// warehouse credentials. The registration is instance-scoped — one OAuth
-// client per deployment per provider, shared by every project that connects
-// that kind of source.
-const oauthAppKeyPrefix = "warehouse-oauth-app"
-
-// OAuthAppKey returns the secret-provider key holding one field of a
-// provider's instance-scoped OAuth app registration.
-//
-// The provider slug is hex-encoded for the same reason CredentialsKey encodes
-// a warehouse id: cloud secret backends compose this key straight into the
-// provider-side secret name and restrict that name's charset — GCP allows
-// [A-Za-z0-9_-], Azure Key Vault only [A-Za-z0-9-]. Hex plus a hyphen
-// delimiter is accepted everywhere, is deterministic, and cannot collide
-// across distinct slugs the way a lossy character substitution can.
-func OAuthAppKey(provider, field string) string {
-	return oauthAppKeyPrefix + "-" + hex.EncodeToString([]byte(provider)) + "-" + hex.EncodeToString([]byte(field))
-}
-
-// OAuthAppConfigKey returns the ProviderConfig key an app-registration field
-// is passed to a provider factory under.
-//
-// It is namespaced away from the provider's own config fields deliberately:
-// "client_id" is a plausible name for something a provider asks the operator
-// for, and a collision would silently overwrite one with the other.
-func OAuthAppConfigKey(field string) string {
-	return "oauth_app_" + field
 }
