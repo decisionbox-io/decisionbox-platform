@@ -31,6 +31,16 @@ const (
 // Fields is the full registration, in the order a form should render it.
 var Fields = []string{FieldClientID, FieldClientSecret, FieldRedirectURI}
 
+// ProviderGoogle is the OAuth provider behind every Google API a consumer here
+// authenticates against.
+//
+// It is a constant rather than a literal in each registry entry because the
+// whole point of the shared registration is that these consumers name the SAME
+// provider: a typo in one of them would silently split one registration into
+// two, and the symptom would be a customer who registered their client watching
+// half their features report themselves unconfigured.
+const ProviderGoogle = "google"
+
 // keyPrefix namespaces the app registration away from per-project credentials.
 // The registration is instance-scoped — one OAuth client per deployment per
 // provider, shared by every consumer and every project.
