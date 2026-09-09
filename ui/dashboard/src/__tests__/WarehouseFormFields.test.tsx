@@ -89,7 +89,7 @@ const consentMeta: ProviderMeta = {
       description: 'Authorize as a user',
       fields: [],
       flow: 'authorization_code',
-      authorization: { auth_url: 'https://accounts.example/auth', token_url: 'https://oauth.example/token', scopes: ['read'] },
+      authorization: { provider: 'example', auth_url: 'https://accounts.example/auth', token_url: 'https://oauth.example/token', scopes: ['read'] },
     },
     {
       id: 'sa_key',

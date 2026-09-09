@@ -727,6 +727,13 @@ export interface AuthMethod {
 }
 
 export interface AuthorizationCode {
+  /**
+   * Whose OAuth app registration this method authenticates with — "google",
+   * say. Declared rather than derived from the provider slug because one
+   * registration serves several consumers: a customer who has registered a
+   * Google client for one feature is not asked to register another.
+   */
+  provider: string;
   auth_url: string;
   token_url: string;
   /** Where a grant is ended (RFC 7009). Absent when the provider publishes none. */
