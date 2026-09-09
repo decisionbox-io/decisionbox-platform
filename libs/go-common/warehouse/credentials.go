@@ -1,8 +1,8 @@
 package warehouse
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
-	"regexp"
 )
 
 // LegacyCredentialsKey is the secret key under which every project's
@@ -58,40 +58,40 @@ const CredentialRefKey = "credential_ref" //nolint:gosec // G101: the name of a 
 // Nothing else in a project's secrets lives under it.
 const sharedCredentialPrefix = "warehouse-shared-credential"
 
-// maxSharedCredentialID bounds the id.
+// SharedCredentialKey returns the secret key holding a credential obtained FOR
+// one consumer, named by an opaque id. Reports false when either half is empty.
 //
-// The limit that bites is not this key's own length: Azure Key Vault composes
-// the provider-side secret name as "<namespace>-<projectID>-<key>" and caps THAT
-// at 127 characters, so a project id (24 hex characters for a Mongo ObjectID)
-// and a namespace are spent before this key starts. 48 leaves the composed name
-// at 113 for a typical deployment, with room for a longer namespace.
-const maxSharedCredentialID = 48
-
-// sharedCredentialIDChars is the alphabet an id may use: Azure Key Vault's own,
-// which is the strictest of the backends. An id outside it is refused rather
-// than folded — folding is lossy, and two connections whose ids differed only in
-// their separators would share a slot.
-var sharedCredentialIDChars = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
-
-// SharedCredentialKey returns the secret key holding a credential that several
-// datasources read, named by an opaque id. Reports false for an id no key can be
-// formed from.
+// # Why the consumer is part of the key
 //
-// The id is composed INTO a key rather than being one, and that is the whole of
-// the access control. A datasource's config is writable by anyone who can edit
-// the project, so a ref that was a raw key would let a member point a warehouse
-// provider at any other secret the project holds — its LLM or embedding
-// credential among them — and have the agent hand it over as credentials_json
-// to a host they chose. Composed into a namespace nothing else writes, the worst
-// a forged id can name is a shared credential that does not exist.
+// A datasource's config is writable by anyone who can edit the project, and a
+// reference in it is just a string. Without the consumer, a member could point
+// ANY datasource at a credential obtained for another — and some providers make
+// that an exfiltration rather than a failure. The Postgres provider reads
+// credentials_json as the password and host from config, so a datasource naming
+// an analytics connection's slot and an attacker's host would send that
+// connection's Google refresh token straight to it.
 //
-// The id is not encoded, unlike the warehouse id in CredentialsKey. Encoding
-// exists to make arbitrary input storable, and doubles the length doing it;
-// here an id that is not already storable is refused instead, which keeps the
-// composed Azure name inside its limit.
-func SharedCredentialKey(id string) (string, bool) {
-	if id == "" || len(id) > maxSharedCredentialID || !sharedCredentialIDChars.MatchString(id) {
+// Composing the consumer in means a datasource can only ever address a
+// credential obtained for its own provider. Several datasources of that provider
+// still share one, which is the point; nothing else can reach it. Found in
+// review — the earlier version namespaced the key away from other FEATURES'
+// secrets and stopped there, which left this open.
+//
+// # Why it is hashed
+//
+// The parts are joined with a separator that cannot appear in a secret name, so
+// a readable key would have to encode them, and the composed Azure Key Vault
+// name — "<namespace>-<projectID>-<key>", capped at 127 characters — has no room
+// for that. A hash is fixed-width and unambiguous: the domain separator means no
+// pair of (consumer, id) values can be rearranged into another pair's key, which
+// a hyphen-joined key could be when one provider slug is a prefix of another.
+//
+// The cost is that a secret's name no longer says which connection it belongs
+// to. That is worth one exfiltration path.
+func SharedCredentialKey(consumer, id string) (string, bool) {
+	if consumer == "" || id == "" {
 		return "", false
 	}
-	return sharedCredentialPrefix + "-" + id, true
+	sum := sha256.Sum256([]byte(consumer + "\x00" + id))
+	return sharedCredentialPrefix + "-" + hex.EncodeToString(sum[:16]), true
 }

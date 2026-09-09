@@ -237,7 +237,7 @@ func TestInitWarehouseProvider_AnUnreadableStoreRefusesANamedCredential(t *testi
 
 // mustSharedKey is sharedKey outside a test's scope, for table keys.
 func mustSharedKey(id string) string {
-	key, ok := gowarehouse.SharedCredentialKey(id)
+	key, ok := gowarehouse.SharedCredentialKey("test-capture-source", id)
 	if !ok {
 		panic("SharedCredentialKey refused " + id)
 	}
@@ -263,13 +263,48 @@ func TestInitWarehouseProvider_AnUnusableRefIsRefused(t *testing.T) {
 	}
 }
 
-// sharedKey composes the slot an id names, so a test seeds exactly where the
-// agent will look.
+// sharedKey composes the slot an id names for the capture stub, so a test seeds
+// exactly where the agent will look.
 func sharedKey(t *testing.T, id string) string {
 	t.Helper()
-	key, ok := gowarehouse.SharedCredentialKey(id)
+	key, ok := gowarehouse.SharedCredentialKey("test-capture-source", id)
 	if !ok {
 		t.Fatalf("SharedCredentialKey(%q) was refused", id)
 	}
 	return key
+}
+
+// A credential obtained for one provider must not be readable by another. Some
+// providers make that an exfiltration rather than a failure: Postgres reads
+// credentials_json as its password and host from config, so a datasource naming
+// an analytics connection's slot and an attacker's host would send that
+// connection's refresh token to it.
+func TestInitWarehouseProvider_ARefCannotReachAnotherProvidersCredential(t *testing.T) {
+	otherProvidersSlot, ok := gowarehouse.SharedCredentialKey("some-other-source", "conn-1")
+	if !ok {
+		t.Fatal("SharedCredentialKey refused a plain consumer and id")
+	}
+	secrets := &fakeSecretProvider{store: map[string]string{
+		"p1/" + otherProvidersSlot: "the-other-connections-grant",
+	}}
+	project := &models.Project{
+		ID: "p1",
+		Warehouses: []models.WarehouseConfig{{
+			ID: "wh_1", Provider: "test-capture-source",
+			Config: map[string]string{gowarehouse.CredentialRefKey: "conn-1"},
+		}},
+	}
+	capturedMu.Lock()
+	captured = nil
+	capturedMu.Unlock()
+
+	if _, err := initWarehouseProvider(context.Background(), project, "wh_1", secrets, "p1"); err == nil {
+		t.Fatal("a data source reached a credential obtained for another provider")
+	}
+	capturedMu.Lock()
+	got := captured
+	capturedMu.Unlock()
+	if got != nil {
+		t.Fatalf("the provider was built with %v", got)
+	}
 }

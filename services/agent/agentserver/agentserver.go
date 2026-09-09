@@ -396,7 +396,11 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 	credentialKey := gowarehouse.CredentialsKey(wh.ID)
 	sharedRef := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey])
 	if sharedRef != "" {
-		shared, ok := gowarehouse.SharedCredentialKey(sharedRef)
+		// Composed with THIS datasource's provider, so a reference can only ever
+		// address a credential obtained for it. A datasource naming another
+		// provider's slot gets a key that does not exist, which is refused below
+		// rather than handed a credential it was not issued.
+		shared, ok := gowarehouse.SharedCredentialKey(wh.Provider, sharedRef)
 		if !ok {
 			return nil, fmt.Errorf("data source %q names a shared credential that cannot exist", wh.ID)
 		}

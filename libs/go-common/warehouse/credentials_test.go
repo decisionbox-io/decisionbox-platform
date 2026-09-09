@@ -60,9 +60,46 @@ func TestWarehouseIDContext(t *testing.T) {
 	}
 }
 
-// The id is composed INTO a key rather than being one. That is what stops a
-// datasource config — writable by anyone who can edit the project — from naming
-// another secret the project holds.
+// A credential obtained for one consumer must not be addressable by another.
+// Some providers make that an exfiltration rather than a failure: Postgres reads
+// credentials_json as its password and host from config, so a datasource naming
+// an analytics connection's slot and an attacker's host would send that
+// connection's refresh token to it.
+func TestSharedCredentialKey_BindsTheCredentialToItsConsumer(t *testing.T) {
+	const id = "2f1c0b1e-9a2d-4c3b-8f7e-6d5a4b3c2d1e"
+	forGA4, ok := SharedCredentialKey("ga4", id)
+	if !ok {
+		t.Fatal("SharedCredentialKey refused a plain consumer and id")
+	}
+	forPostgres, ok := SharedCredentialKey("postgres", id)
+	if !ok {
+		t.Fatal("SharedCredentialKey refused a plain consumer and id")
+	}
+	if forGA4 == forPostgres {
+		t.Fatal("two providers share a slot for the same id")
+	}
+
+	// And several datasources of the SAME provider do share one — that is the
+	// whole point of a shared credential.
+	again, _ := SharedCredentialKey("ga4", id)
+	if again != forGA4 {
+		t.Fatal("the same consumer and id produced two different slots")
+	}
+}
+
+// The parts are joined with a separator that cannot appear in a key, so no pair
+// of values can be rearranged into another pair's slot — which a hyphen-joined
+// key could be when one provider slug is a prefix of another.
+func TestSharedCredentialKey_PartsCannotBeRearranged(t *testing.T) {
+	a, _ := SharedCredentialKey("ga4", "beta-conn-1")
+	b, _ := SharedCredentialKey("ga4-beta", "conn-1")
+	if a == b {
+		t.Fatal("a crafted id reached another provider's slot")
+	}
+}
+
+// The key must not be the id, or a datasource config — writable by anyone who
+// can edit the project — could name another secret the project holds.
 func TestSharedCredentialKey_CannotNameAnotherProjectSecret(t *testing.T) {
 	for _, id := range []string{
 		LegacyCredentialsKey,
@@ -71,9 +108,9 @@ func TestSharedCredentialKey_CannotNameAnotherProjectSecret(t *testing.T) {
 		"embedding-credentials",
 		"slack-bot-token",
 	} {
-		key, ok := SharedCredentialKey(id)
+		key, ok := SharedCredentialKey("ga4", id)
 		if !ok {
-			continue
+			t.Fatalf("SharedCredentialKey refused %q", id)
 		}
 		if key == id {
 			t.Errorf("SharedCredentialKey(%q) returned the id itself", id)
@@ -91,8 +128,8 @@ func TestSharedCredentialKey_DoesNotCollideWithADerivedKey(t *testing.T) {
 	for _, id := range []string{"", DefaultWarehouseID, "wh_1", "wh_2", "wh_b"} {
 		derived[CredentialsKey(id)] = true
 	}
-	for _, id := range []string{"conn-1", "wh1", DefaultWarehouseID, "a"} {
-		key, ok := SharedCredentialKey(id)
+	for _, id := range []string{"conn-1", "wh_1", DefaultWarehouseID, "a"} {
+		key, ok := SharedCredentialKey("ga4", id)
 		if !ok {
 			t.Fatalf("SharedCredentialKey(%q) was refused", id)
 		}
@@ -103,11 +140,12 @@ func TestSharedCredentialKey_DoesNotCollideWithADerivedKey(t *testing.T) {
 }
 
 // Distinct ids must not share a slot, or one connection's grant would answer for
-// another's.
+// another's — including ids that differ only in case, which Azure Key Vault
+// would otherwise fold together.
 func TestSharedCredentialKey_IsDistinctPerID(t *testing.T) {
 	seen := map[string]string{}
-	for _, id := range []string{"conn-1", "conn-2", "conn1", "CONN-1"} {
-		key, ok := SharedCredentialKey(id)
+	for _, id := range []string{"conn-1", "conn-2", "conn_1", "CONN-1"} {
+		key, ok := SharedCredentialKey("ga4", id)
 		if !ok {
 			t.Fatalf("SharedCredentialKey(%q) was refused", id)
 		}
@@ -118,46 +156,32 @@ func TestSharedCredentialKey_IsDistinctPerID(t *testing.T) {
 	}
 }
 
-// The composed key has to be storable by every backend, whatever the id was.
-func TestSharedCredentialKey_StaysInTheStrictestAlphabet(t *testing.T) {
-	for _, id := range []string{"conn-1", "Odd.ID:v2", "with/slash", "../other", "a b", "CONN-1"} {
-		key, ok := SharedCredentialKey(id)
+// The key has to be storable by every backend whatever the inputs were, and it
+// is fixed-width — so the name Azure Key Vault composes around it fits, for any
+// id and any provider slug.
+func TestSharedCredentialKey_IsAlwaysStorable(t *testing.T) {
+	for _, id := range []string{"conn-1", "Odd.ID:v2", "with/slash", "../other", "a b", strings.Repeat("x", 500)} {
+		key, ok := SharedCredentialKey("a-very-long-datasource-provider-slug", id)
 		if !ok {
-			continue
+			t.Fatalf("SharedCredentialKey(%q) was refused", id)
 		}
 		if !cloudSafeKey.MatchString(key) {
 			t.Errorf("SharedCredentialKey(%q) = %q, which a cloud backend would reject", id, key)
 		}
-	}
-}
-
-// An id no key can be formed from is refused rather than silently producing one.
-// An empty id would name the namespace's own root; an over-long one, or one
-// outside the alphabet, a name Azure Key Vault rejects at write time, where
-// nobody can see it.
-func TestSharedCredentialKey_RefusesWhatItCannotName(t *testing.T) {
-	for _, id := range []string{
-		"", "   ", strings.Repeat("a", maxSharedCredentialID+1),
-		"under_score", "with:colon", "with/slash", "with.dot", "../other",
-	} {
-		if _, ok := SharedCredentialKey(id); ok {
-			t.Errorf("SharedCredentialKey(%q) was accepted", id)
+		// namespace + "-" + a 24-character Mongo ObjectID + "-" + key.
+		if composed := len("decisionbox") + 1 + 24 + 1 + len(key); composed > 127 {
+			t.Errorf("composed Azure secret name is %d characters, over the 127 limit", composed)
 		}
 	}
 }
 
-// The limit Azure enforces is on the name it composes, not on this key alone.
-// A connection id is a UUID, and the composed name for a typical deployment has
-// to stay inside 127 characters or the credential cannot be stored at all.
-func TestSharedCredentialKey_FitsAzuresComposedSecretName(t *testing.T) {
-	const uuid = "2f1c0b1e-9a2d-4c3b-8f7e-6d5a4b3c2d1e"
-	key, ok := SharedCredentialKey(uuid)
-	if !ok {
-		t.Fatal("a UUID id was refused")
+// Half a name is not a name: an empty consumer or id would put every caller that
+// omitted one in the same slot.
+func TestSharedCredentialKey_RefusesHalfAName(t *testing.T) {
+	if _, ok := SharedCredentialKey("", "conn-1"); ok {
+		t.Error("an empty consumer was accepted")
 	}
-	// namespace + "-" + a 24-character Mongo ObjectID + "-" + key.
-	composed := len("decisionbox") + 1 + 24 + 1 + len(key)
-	if composed > 127 {
-		t.Fatalf("composed Azure secret name is %d characters, over the 127 limit", composed)
+	if _, ok := SharedCredentialKey("ga4", ""); ok {
+		t.Error("an empty id was accepted")
 	}
 }
