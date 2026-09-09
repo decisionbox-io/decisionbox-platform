@@ -115,8 +115,8 @@ type Project struct {
 	// Discovery Ledger phase (the agent consolidates each run into a persistent,
 	// compounding ledger so the next run builds on it). Nil means "use the
 	// deployment default" (true) — default-on, users opt out in Settings. The
-	// deployment-availability flag DISCOVERY_REFLECTION_ENABLED (default off) is
-	// the other gate. Keep in sync with the agent's models.Project copy.
+	// deployment-availability flag DISCOVERY_REFLECTION_ENABLED (also default-on)
+	// is the other gate. Keep in sync with the agent's models.Project copy.
 	ReflectionEnabled *bool `bson:"reflection_enabled,omitempty" json:"reflection_enabled,omitempty"`
 
 	// SmartOverflowEnabled is the per-project toggle for the analysis picker's

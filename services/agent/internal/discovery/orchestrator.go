@@ -550,7 +550,7 @@ type DiscoveryOptions struct {
 	// ReflectionEnabled is the resolved per-project toggle for the end-of-run
 	// reflection / Discovery Ledger phase (project.EffectiveReflectionEnabled(),
 	// default-on). The deployment-availability flag (DISCOVERY_REFLECTION_ENABLED,
-	// default off) is the other gate — both must be on.
+	// also default-on) is the other gate — both must be on.
 	ReflectionEnabled bool
 }
 
