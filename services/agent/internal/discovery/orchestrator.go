@@ -140,8 +140,19 @@ type Orchestrator struct {
 	// *database.DiscoveryLogRepository, wired in production by
 	// agentserver.go.
 	discoveryLogRepo discoveryLogPersister
-	feedbackRepo     *database.FeedbackRepository
-	debugLogRepo     *database.DebugLogRepository
+	// questionRepo persists the clarifying questions generated at the end of a
+	// run. Held as an interface so unit tests can inject a fake without MongoDB;
+	// nil disables the questions phase (single-binary / test builds).
+	questionRepo questionPersister
+	// Discovery Ledger stores (compounding discovery, enterprise#261). Held as
+	// interfaces so unit tests can inject fakes without MongoDB; a nil ledgerRepo
+	// / findingRepo disables the reflection phase.
+	ledgerRepo   ledgerStore
+	findingRepo  findingStore
+	taskRepo     taskStore
+	proposalRepo proposalStore
+	feedbackRepo *database.FeedbackRepository
+	debugLogRepo *database.DebugLogRepository
 
 	explorationEngine *ai.ExplorationEngine
 
@@ -200,6 +211,16 @@ type Orchestrator struct {
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
 	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
 	reasoningEnabled bool
+
+	// clarifyingQuestionsEnabled is the resolved per-project toggle for the
+	// clarifying-questions phase (from DiscoveryOptions.ClarifyingQuestionsEnabled,
+	// default-on). Layer B of the gate; the deployment flag is Layer A.
+	clarifyingQuestionsEnabled bool
+
+	// reflectionEnabled is the resolved per-project toggle for the end-of-run
+	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
+	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
+	reflectionEnabled bool
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -261,8 +282,18 @@ type OrchestratorOptions struct {
 	// in Mongo. Production builds always wire this; the nil branch exists
 	// for unit tests that don't bring up MongoDB.
 	DiscoveryLogRepo *database.DiscoveryLogRepository
-	FeedbackRepo     *database.FeedbackRepository
-	DebugLogRepo     *database.DebugLogRepository
+	// DiscoveryQuestionRepo persists clarifying questions generated at the end
+	// of a run. Optional — nil disables the questions phase (unit / single-binary
+	// builds without MongoDB).
+	DiscoveryQuestionRepo *database.DiscoveryQuestionRepository
+	// Discovery Ledger repos (compounding discovery). Optional — nil disables
+	// the reflection phase (unit / single-binary builds without MongoDB).
+	LedgerRepo         *database.LedgerRepository
+	LedgerFindingRepo  *database.LedgerFindingRepository
+	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerProposalRepo *database.LedgerProposalRepository
+	FeedbackRepo       *database.FeedbackRepository
+	DebugLogRepo       *database.DebugLogRepository
 
 	RunRepo *database.RunRepository
 	// RunStepRepo persists the per-step rows that used to live as an
@@ -279,14 +310,14 @@ type OrchestratorOptions struct {
 	// fields (insight names/descriptions, recommendation titles, etc).
 	// Substituted into prompts as {{LANGUAGE}}. Empty resolves to
 	// "English" so legacy projects keep their pre-feature behavior.
-	Language          string
-	Profile           map[string]interface{}
-	ProjectPrompts    *models.ProjectPrompts
-	Datasets          []string
-	FilterField       string
-	FilterValue       string
-	LLMProvider       string
-	LLMModel          string
+	Language       string
+	Profile        map[string]interface{}
+	ProjectPrompts *models.ProjectPrompts
+	Datasets       []string
+	FilterField    string
+	FilterValue    string
+	LLMProvider    string
+	LLMModel       string
 	// LLMConfig is the project's LLM provider config (project.LLM.Config),
 	// carrying the max_input_tokens / max_output_tokens operator overrides used
 	// when budgeting output against the model window. Optional.
@@ -396,12 +427,45 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryLogRepo = opts.DiscoveryLogRepo
 	}
 
+	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
+	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
+	// concrete pointer boxed into a non-nil interface.
+	var questionRepo questionPersister
+	if opts.DiscoveryQuestionRepo != nil {
+		questionRepo = opts.DiscoveryQuestionRepo
+	}
+
+	// Same typed-nil → untyped-nil normalization for the ledger repos, so the
+	// nil guards in RunPhaseReflection are not fooled by a nil concrete pointer
+	// boxed into a non-nil interface.
+	var ledgerRepo ledgerStore
+	if opts.LedgerRepo != nil {
+		ledgerRepo = opts.LedgerRepo
+	}
+	var findingRepo findingStore
+	if opts.LedgerFindingRepo != nil {
+		findingRepo = opts.LedgerFindingRepo
+	}
+	var taskRepo taskStore
+	if opts.LedgerTaskRepo != nil {
+		taskRepo = opts.LedgerTaskRepo
+	}
+	var proposalRepo proposalStore
+	if opts.LedgerProposalRepo != nil {
+		proposalRepo = opts.LedgerProposalRepo
+	}
+
 	return &Orchestrator{
 		aiClient:           opts.AIClient,
 		warehouse:          opts.Warehouse,
 		contextRepo:        opts.ContextRepo,
 		discoveryRepo:      opts.DiscoveryRepo,
 		discoveryLogRepo:   discoveryLogRepo,
+		questionRepo:       questionRepo,
+		ledgerRepo:         ledgerRepo,
+		findingRepo:        findingRepo,
+		taskRepo:           taskRepo,
+		proposalRepo:       proposalRepo,
 		feedbackRepo:       opts.FeedbackRepo,
 		debugLogRepo:       opts.DebugLogRepo,
 		debugLogger:        debugLogger,
@@ -475,6 +539,19 @@ type DiscoveryOptions struct {
 	// ({confirmed, supported} — today's IsTerminalPositive filter), so an
 	// unset/legacy project produces the identical recommender input.
 	RecommendationVerdicts []valmodels.Status
+
+	// ClarifyingQuestionsEnabled is the resolved per-project toggle for the
+	// clarifying-questions phase (project.EffectiveClarifyingQuestionsEnabled(),
+	// default-on). When false the orchestrator skips question generation. The
+	// deployment-availability flag (DISCOVERY_QUESTIONS_ENABLED, default off) is
+	// the other gate — both must be on.
+	ClarifyingQuestionsEnabled bool
+
+	// ReflectionEnabled is the resolved per-project toggle for the end-of-run
+	// reflection / Discovery Ledger phase (project.EffectiveReflectionEnabled(),
+	// default-on). The deployment-availability flag (DISCOVERY_REFLECTION_ENABLED,
+	// default off) is the other gate — both must be on.
+	ReflectionEnabled bool
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -509,6 +586,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.aiClient != nil {
 		o.aiClient.SetReasoning(o.reasoningEnabled || gollm.ReasoningEnabled(o.llmConfig))
 	}
+
+	// Clarifying-questions opt-out: the per-project Settings toggle (default on).
+	// The post-run questions hop also checks the deployment-availability flag.
+	o.clarifyingQuestionsEnabled = opts.ClarifyingQuestionsEnabled
+
+	// Reflection / Discovery Ledger opt-out: the per-project Settings toggle
+	// (default on). The post-run reflection hop also checks the deployment flag.
+	o.reflectionEnabled = opts.ReflectionEnabled
 
 	// Recommendation eligibility: the per-project set of validation verdicts an
 	// insight must carry to flow to the recommender (Settings → Advanced). Empty
@@ -608,11 +693,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"feedback_items": len(feedbackSummaries),
 	}).Info("Previous context loaded")
 
-	// Previous discovery insights, recommendations, and user feedback are
-	// merged into a reusable context block that gets injected into later
-	// exploration and analysis prompts. This helps the LLM avoid repeating
-	// already-known findings and keeps future discoveries context-aware.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries)
+	// Discovery Ledger read context (compounding discovery): the accumulated,
+	// RANKED findings-with-substance, the coverage map, and the open next-task
+	// queue. Empty for legacy projects / community builds, in which case
+	// buildPreviousContext falls back to the older capped insight dump.
+	lrc := o.loadLedgerReadContext(ctx)
+
+	// Previous discovery insights, recommendations, user feedback, and the
+	// Discovery Ledger are merged into a reusable context block injected into the
+	// exploration and analysis prompts, so the run continues the investigation
+	// (drill / tile the frontier / re-check) instead of re-treading it.
+	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc)
 
 	// Phase 2: Load schemas from the per-project schema cache.
 	// (Discovery is gated on schema_index_status == "ready"; the indexer
@@ -1325,6 +1416,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
 		return result, err
 	}
+
+	// The clarifying-questions hop (RunPhaseQuestions) is deliberately NOT invoked
+	// here: agentserver calls it AFTER RunDiscovery returns and the completion
+	// event + telemetry have fired, so a slow (or timed-out) generation call never
+	// delays the user-facing "discovery completed" notification. It reads findings
+	// from the persisted result, so it needs nothing from this function's locals.
 
 	applog.WithFields(applog.Fields{
 		"project_id":      o.projectID,
@@ -2089,20 +2186,39 @@ func (o *Orchestrator) buildPreviousContext(
 	prevInsights []models.InsightSummary,
 	prevRecs []models.RecommendationSummary,
 	feedback []models.FeedbackSummary,
+	lrc *ledgerReadContext,
 ) string {
-	if pctx == nil || pctx.TotalDiscoveries == 0 {
+	hasLedger := lrc != nil && lrc.hasLedger
+	discoveries := 0
+	if pctx != nil {
+		discoveries = pctx.TotalDiscoveries
+	}
+	if discoveries == 0 && !hasLedger {
 		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString("## Previous Discovery Context\n\n")
-	fmt.Fprintf(&sb, "This is discovery run #%d. ", pctx.TotalDiscoveries+1)
-	fmt.Fprintf(&sb, "Last discovery: %s.\n\n", pctx.LastDiscoveryDate.Format("2006-01-02"))
+	sb.WriteString("## Investigation so far\n\n")
+	sb.WriteString("You are CONTINUING a standing investigation of this warehouse, not starting from scratch. Build on what earlier runs established: drill into open threads, tile territory that has not been explored yet, and check whether known findings have changed. Do not simply re-report what is already known.\n\n")
+	if pctx != nil && discoveries > 0 {
+		fmt.Fprintf(&sb, "This is discovery run #%d. Last discovery: %s.\n\n", discoveries+1, pctx.LastDiscoveryDate.Format("2006-01-02"))
+	}
 
-	// Previous insights
-	if len(prevInsights) > 0 {
+	// Coverage map (from the ledger): explored territory vs. the frontier.
+	if hasLedger {
+		if s := renderCoverage(lrc.coverage); s != "" {
+			sb.WriteString(s)
+		}
+	}
+
+	// Findings so far — ranked, WITH substance (from the ledger). Replaces the
+	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
+	// fall back to that older block.
+	if hasLedger && len(lrc.findings) > 0 {
+		sb.WriteString(renderLedgerFindings(lrc.findings))
+	} else if len(prevInsights) > 0 {
 		sb.WriteString("### Previously Found Insights\n")
-		sb.WriteString("These insights were already discovered. Do NOT repeat them unless the data has significantly changed. Focus on new patterns.\n\n")
+		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
 		for _, ins := range prevInsights {
 			fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
 				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
@@ -2153,6 +2269,22 @@ func (o *Orchestrator) buildPreviousContext(
 		sb.WriteString("\n")
 	}
 
+	// Open investigation threads (the ledger's next-task queue) — concrete things
+	// earlier runs flagged to pursue. Steers this run toward the frontier /
+	// unfinished work instead of re-treading covered ground.
+	if hasLedger && len(lrc.tasks) > 0 {
+		sb.WriteString(renderLedgerTasks(lrc.tasks))
+	}
+
+	// Recurring / trending patterns — read back from HistoricalPatterns (written
+	// every run by UpdatePatterns) so the next run narrates how a known finding is
+	// evolving instead of re-reporting it cold. Recurring = seen in more than one
+	// run; the ledger's finding statuses supersede this going forward, but the
+	// pattern history remains a cheap, always-available trend signal.
+	if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
+		sb.WriteString(trend)
+	}
+
 	// Agent observations are auto-learnings the orchestrator records during
 	// discovery (separate from user-authored knowledge sources, which render
 	// under "## Project Knowledge").
@@ -2168,6 +2300,53 @@ func (o *Orchestrator) buildPreviousContext(
 		}
 	}
 
+	return sb.String()
+}
+
+// maxHistoricalPatternsInPrompt caps how many recurring/worsening patterns the
+// trend block renders. A long-lived project accumulates up to 200 patterns
+// (UpdatePatterns trims to that); rendering all would bloat the prompt, so we
+// show the most-recently-seen recurring ones.
+const maxHistoricalPatternsInPrompt = 10
+
+// renderHistoricalPatterns builds the "Recurring / trending findings" block from
+// the project's pattern history. Only patterns seen in more than one run (or
+// explicitly flagged worsening/improving) are worth narrating as a trend — a
+// pattern seen once is just a prior insight, already covered above. Returns an
+// empty string when there is nothing to narrate.
+func renderHistoricalPatterns(patterns []models.HistoricalPattern) string {
+	trending := make([]models.HistoricalPattern, 0, len(patterns))
+	for _, p := range patterns {
+		if p.SeenCount > 1 || p.Status == "worsening" || p.Status == "improving" {
+			trending = append(trending, p)
+		}
+	}
+	if len(trending) == 0 {
+		return ""
+	}
+	// Most-recently-seen first, so the cap keeps the freshest trends.
+	sort.SliceStable(trending, func(i, j int) bool {
+		return trending[i].LastSeen.After(trending[j].LastSeen)
+	})
+	if len(trending) > maxHistoricalPatternsInPrompt {
+		trending = trending[:maxHistoricalPatternsInPrompt]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("### Recurring / trending findings\n")
+	sb.WriteString("These patterns have recurred across runs. Check whether each has changed since last time and narrate the trend (worsened / improved / stable) rather than re-reporting it as new.\n\n")
+	for _, p := range trending {
+		label := p.Name
+		if p.AnalysisArea != "" {
+			label = fmt.Sprintf("%s [%s]", p.Name, p.AnalysisArea)
+		}
+		status := p.Status
+		if status == "" {
+			status = "recurring"
+		}
+		fmt.Fprintf(&sb, "- **%s** — seen in %d runs, status: %s\n", label, p.SeenCount, status)
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }
 

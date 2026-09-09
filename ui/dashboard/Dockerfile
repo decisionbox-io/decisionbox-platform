@@ -15,7 +15,12 @@ ENV DASHBOARD_BUILD_DATE=$BUILD_DATE
 RUN npm run build
 
 FROM node:22-alpine
-RUN apk upgrade --no-cache
+# Pick up the latest Alpine security patches, and drop the bundled global npm/npx
+# CLI: the runtime runs the self-contained Next standalone server via
+# `node server.js` and never uses npm, so removing it eliminates the npm CLI's
+# transitive vulnerability surface (tar, sigstore, pacote, …) from the image.
+RUN apk upgrade --no-cache && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static

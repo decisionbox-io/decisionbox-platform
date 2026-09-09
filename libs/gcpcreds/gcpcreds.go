@@ -56,7 +56,12 @@ func TokenSource(ctx context.Context, c Config) (oauth2.TokenSource, error) {
 	switch method {
 	case MethodSAKey:
 		if c.CredentialsJSON != "" {
-			creds, err := google.CredentialsFromJSON(ctx, []byte(c.CredentialsJSON), scopes...)
+			// Constrain parsing to the service-account type: the sa_key
+			// method is documented as a service-account key, and pinning the
+			// credential type is the non-deprecated replacement for
+			// CredentialsFromJSON (which accepts any externally-sourced
+			// credential configuration and is flagged as a security risk).
+			creds, err := google.CredentialsFromJSONWithType(ctx, []byte(c.CredentialsJSON), google.ServiceAccount, scopes...)
 			if err != nil {
 				return nil, fmt.Errorf("gcpcreds: invalid service-account JSON: %w", err)
 			}
@@ -88,7 +93,7 @@ func ClientOptions(ctx context.Context, c Config) ([]option.ClientOption, error)
 			// GOOGLE_APPLICATION_CREDENTIALS.
 			return nil, nil
 		}
-		if _, err := google.CredentialsFromJSON(ctx, []byte(c.CredentialsJSON), DefaultScope); err != nil {
+		if _, err := google.CredentialsFromJSONWithType(ctx, []byte(c.CredentialsJSON), google.ServiceAccount, DefaultScope); err != nil {
 			return nil, fmt.Errorf("gcpcreds: invalid service-account JSON: %w", err)
 		}
 		// option.WithCredentialsJSON is the canonical way to inject a

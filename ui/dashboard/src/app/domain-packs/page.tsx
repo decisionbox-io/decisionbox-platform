@@ -71,7 +71,7 @@ export default function DomainPacksPage() {
   };
 
   const handleDelete = async (slug: string) => {
-    if (!confirm(`Delete domain pack "${slug}"? This cannot be undone. Existing projects are not affected.`)) return;
+    if (!confirm(`Delete playbook "${slug}"? This cannot be undone. Existing projects are not affected.`)) return;
     try {
       await api.deleteDomainPack(slug);
       loadPacks();
@@ -81,10 +81,10 @@ export default function DomainPacksPage() {
   };
 
   return (
-    <Shell breadcrumb={[{ label: 'Domain Packs' }]}>
+    <Shell breadcrumb={[{ label: 'Playbooks' }]}>
       <Stack gap="lg">
         <Group justify="space-between">
-          <Title order={2}>Domain Packs</Title>
+          <Title order={2}>Playbooks</Title>
           <Group gap="sm">
             <input
               type="file"
@@ -116,14 +116,14 @@ export default function DomainPacksPage() {
           </Alert>
         )}
 
-        {loading && <Text c="dimmed">Loading domain packs...</Text>}
+        {loading && <Text c="dimmed">Loading playbooks...</Text>}
 
         {!loading && !error && packs.length === 0 && (
           <Card withBorder p="xl" ta="center">
             <Stack align="center" gap="md">
               <IconPackages size={48} color="var(--mantine-color-gray-5)" />
-              <Title order={3} c="dimmed">No domain packs</Title>
-              <Text c="dimmed">Domain packs define how AI discovery works for your industry. Create one or import from a file.</Text>
+              <Title order={3} c="dimmed">No playbooks</Title>
+              <Text c="dimmed">Playbooks define how AI discovery works for your industry. Create one or import from a file.</Text>
             </Stack>
           </Card>
         )}
@@ -193,10 +193,10 @@ export default function DomainPacksPage() {
       </Stack>
 
       {/* Import Modal */}
-      <Modal opened={importOpen} onClose={() => { setImportOpen(false); setImportError(null); }} title="Import Domain Pack" size="lg">
+      <Modal opened={importOpen} onClose={() => { setImportOpen(false); setImportError(null); }} title="Import Playbook" size="lg">
         <Stack gap="md">
           <Text size="sm" c="dimmed">
-            Paste a domain pack JSON file or use the file upload button.
+            Paste a playbook JSON file or use the file upload button.
           </Text>
           <Textarea
             value={importJson}

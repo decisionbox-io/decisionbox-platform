@@ -285,6 +285,19 @@ export interface Project {
   // chain-of-thought doesn't truncate the action, plus a reasoning hint on the
   // request (providers that wire native thinking act on it; others ignore it).
   reasoning_enabled?: boolean;
+  // Undefined → default (true). Controls the discovery clarifying-questions
+  // loop: after a run, the agent asks the analyst about anything it was
+  // uncertain about, and the answers feed the next run. False opts the project
+  // out (no questions generated).
+  clarifying_questions_enabled?: boolean;
+  // Undefined → default (true). Controls the end-of-run reflection / Discovery
+  // Ledger phase: after a run, the agent consolidates it into a persistent
+  // per-project ledger so the next run builds on it. False opts the project out.
+  reflection_enabled?: boolean;
+  // Undefined → default (true). Controls the LLM-generated suggested starter
+  // questions shown on insight / recommendation pages ("Ask about this"). Makes
+  // an automatic LLM call on page entry, so users can opt out in Settings.
+  ask_suggestions_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,
@@ -817,6 +830,126 @@ export interface Feedback {
   created_at: string;
 }
 
+// Discovery clarifying questions — the agent's post-run questions to the analyst.
+export type QuestionAnswerType = 'boolean' | 'single_choice' | 'multi_choice' | 'free_text';
+export type QuestionTargetType = 'insight' | 'recommendation' | 'table' | 'area';
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+}
+
+// --- Compounding discovery: Discovery Ledger + evolution (enterprise-backed) ---
+
+export type EvolutionMode = 'off' | 'suggest_only' | 'admin_approval' | 'auto';
+export type FrontierPolicy = 'breadth_first' | 'depth_first' | 'balanced';
+
+export interface EvolutionSettings {
+  project_id: string;
+  evolution_mode: EvolutionMode;
+  frontier_policy: FrontierPolicy;
+  max_findings?: number;
+}
+
+export interface LedgerFinding {
+  id: string;
+  area: string;
+  name: string;
+  description?: string;
+  key_metric?: string;
+  evidence?: string;
+  severity: string;
+  status: string; // confirmed | monitoring | changed | resolved | refuted
+  affected_count?: number;
+  seen_count: number;
+  liked?: boolean;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface LedgerTask {
+  id: string;
+  title?: string; // short, plain-language label (older tasks fall back to text)
+  text: string;
+  kind: string; // next_task | hypothesis
+  status: string;
+  supersedes?: string; // id of the task this one continued (a resolved thread)
+}
+
+export interface LedgerCoverage {
+  explored_tables: string[];
+  area_depth?: Record<string, number>;
+  total_tables: number;
+  summary: string;
+}
+
+export interface ConvergencePoint {
+  run_id: string;
+  new_findings: number;
+  total_findings: number;
+  marginal_ratio: number;
+  date: string;
+}
+
+export interface LedgerView {
+  coverage: LedgerCoverage;
+  convergence: ConvergencePoint[];
+  findings: LedgerFinding[];
+  tasks: LedgerTask[];
+  // Closed tasks referenced via a `supersedes` link from an open task, so a
+  // follow-up's parent chain can be shown inline. Only the referenced ones.
+  ancestors?: LedgerTask[];
+}
+
+export interface PackProposal {
+  id: string;
+  project_id: string;
+  action: string; // add_area | edit_area | disable_area | enable_area
+  area_id: string;
+  area_name?: string;
+  prompt?: string;
+  keywords?: string[];
+  rationale: string;
+  status: string; // proposed | approved | rejected | applied | reverted
+  decided_by?: string;
+  decided_at?: string;
+  applied_at?: string;
+  created_at: string;
+}
+
+export interface DiscoveryQuestion {
+  id: string;
+  project_id: string;
+  run_id: string;
+  discovery_id: string;
+  question: string;
+  rationale: string;
+  linked_target: { type: QuestionTargetType; id: string };
+  answer_type: QuestionAnswerType;
+  options?: QuestionOption[];
+  status: 'pending' | 'answered' | 'dismissed';
+  answer?: string;
+  answer_option_ids?: string[];
+  answer_note?: string;
+  // Populated once the question is resolved. answer_source_id links the answer
+  // to the knowledge-base note it created, so the review surfaces can point the
+  // analyst at the note they can edit.
+  answered_by?: string;
+  answered_at?: string;
+  answer_source_id?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+// Payload for answering: send only the fields the answer_type needs; the server
+// derives the canonical answer text and materializes the KB note.
+export interface QuestionAnswerPayload {
+  answer_bool?: boolean;
+  answer_option_ids?: string[];
+  answer?: string;
+  answer_note?: string;
+}
+
 export interface CostEstimate {
   llm: { provider: string; model: string; estimated_input_tokens: number; estimated_output_tokens: number; cost_usd: number };
   warehouse: { provider: string; estimated_queries: number; estimated_bytes_scanned: number; cost_usd: number };
@@ -907,10 +1040,27 @@ export interface SearchResponse {
   projects_excluded?: number;
 }
 
+// SeedContext anchors an Ask conversation to one insight / recommendation the
+// user launched "Ask about this" from. The client passes {type,id} (+ a title
+// for the chip); the server hydrates the authoritative grounding text by id —
+// the client never supplies prompt text.
+export interface SeedContext {
+  type: 'insight' | 'recommendation';
+  id: string;
+  title: string;
+}
+
 export interface AskRequest {
   question: string;
   limit?: number;
   session_id?: string;
+  // Sent on the first turn of a seeded conversation ({type,id} only — the server
+  // hydrates the grounding text and persists it on the session).
+  seed_context?: { type: string; id: string };
+}
+
+export interface AskSuggestionsResponse {
+  questions: string[];
 }
 
 export interface AskResponse {
@@ -931,6 +1081,10 @@ export interface AskSession {
   message_count: number;
   created_at: string;
   updated_at: string;
+  // Present when the conversation was launched from an insight / recommendation
+  // ("Ask about this"). The list endpoint returns the ref (type/id/label) so the
+  // drawer can show prior conversations for the entity on screen.
+  seed_context?: { type: string; id: string; label?: string };
 }
 
 export interface AskSessionMessage {
@@ -1306,6 +1460,47 @@ export const api = {
   deleteFeedback: (feedbackId: string) =>
     request<{ status: string }>(`/api/v1/feedback/${feedbackId}`, { method: 'DELETE' }),
 
+  // Discovery clarifying questions (enterprise-backed; empty on community builds
+  // where the routes 404 — callers .catch(() => []) so the panel just hides).
+  listProjectQuestions: (projectId: string, opts?: { status?: string; discovery_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.status) qs.set('status', opts.status);
+    if (opts?.discovery_id) qs.set('discovery_id', opts.discovery_id);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<DiscoveryQuestion[]>(`/api/v1/projects/${projectId}/discovery-questions${suffix}`);
+  },
+  answerQuestion: (projectId: string, questionId: string, data: QuestionAnswerPayload) =>
+    request<DiscoveryQuestion>(`/api/v1/projects/${projectId}/discovery-questions/${questionId}/answer`, {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+  dismissQuestion: (projectId: string, questionId: string) =>
+    request<DiscoveryQuestion>(`/api/v1/projects/${projectId}/discovery-questions/${questionId}/dismiss`, {
+      method: 'POST',
+    }),
+
+  // Compounding discovery — evolution settings + Discovery Ledger (enterprise-
+  // backed; the routes 404 on community builds, so callers .catch() and hide).
+  getEvolutionSettings: (projectId: string) =>
+    request<EvolutionSettings>(`/api/v1/projects/${projectId}/discovery-evolution`),
+  updateEvolutionSettings: (
+    projectId: string,
+    data: { evolution_mode: EvolutionMode; frontier_policy: FrontierPolicy; max_findings?: number },
+  ) =>
+    request<EvolutionSettings>(`/api/v1/projects/${projectId}/discovery-evolution`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+  getLedger: (projectId: string) =>
+    request<LedgerView>(`/api/v1/projects/${projectId}/discovery-ledger`),
+  listPackProposals: (projectId: string, status?: string) => {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+    return request<PackProposal[]>(`/api/v1/projects/${projectId}/discovery-ledger/proposals${suffix}`);
+  },
+  decidePackProposal: (projectId: string, proposalId: string, action: 'approve' | 'reject' | 'revert') =>
+    request<PackProposal>(
+      `/api/v1/projects/${projectId}/discovery-ledger/proposals/${proposalId}/${action}`,
+      { method: 'POST' },
+    ),
+
   // Cost estimation
   estimateCost: (projectId: string, opts?: { areas?: string[]; max_steps?: number }) =>
     request<CostEstimate>(`/api/v1/projects/${projectId}/discover/estimate`, {
@@ -1359,6 +1554,11 @@ export const api = {
     request<SearchResponse>('/api/v1/search', { method: 'POST', body: JSON.stringify(req) }),
   askInsights: (projectId: string, req: AskRequest) =>
     request<AskResponse>(`/api/v1/projects/${projectId}/ask`, { method: 'POST', body: JSON.stringify(req) }),
+  // LLM-generated starter questions for an insight / recommendation. Enterprise
+  // route; returns { questions: [] } (or 404 → caught by the caller) when the
+  // feature is unavailable, so the UI simply renders no chips.
+  getAskSuggestions: (projectId: string, body: { type: string; id: string }) =>
+    request<AskSuggestionsResponse>(`/api/v1/projects/${projectId}/ask/suggestions`, { method: 'POST', body: JSON.stringify(body) }),
 
   // Standalone insights & recommendations (denormalized collections)
   listStandaloneInsights: (projectId: string, limit = 50, offset = 0) =>
@@ -1374,9 +1574,14 @@ export const api = {
   listSearchHistory: (projectId: string, limit = 20) =>
     request<SearchHistoryEntry[]>(`/api/v1/projects/${projectId}/search/history?limit=${limit}`),
 
-  // Ask sessions (conversations)
-  listAskSessions: (projectId: string, limit = 20) =>
-    request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?limit=${limit}`),
+  // Ask sessions (conversations). seed scopes the list to prior conversations
+  // launched from one insight / recommendation ("previous conversations about
+  // this item").
+  listAskSessions: (projectId: string, limit = 20, seed?: { type: string; id: string }) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (seed) { q.set('seed_type', seed.type); q.set('seed_id', seed.id); }
+    return request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?${q.toString()}`);
+  },
   getAskSession: (projectId: string, sessionId: string) =>
     request<AskSession>(`/api/v1/projects/${projectId}/ask/sessions/${sessionId}`),
   deleteAskSession: (projectId: string, sessionId: string) =>

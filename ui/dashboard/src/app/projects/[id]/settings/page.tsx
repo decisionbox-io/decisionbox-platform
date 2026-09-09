@@ -101,10 +101,26 @@ export default function ProjectSettingsPage() {
   const [smartOverflowEnabled, setSmartOverflowEnabled] = useState(true);
   const [savingSmartOverflow, setSavingSmartOverflow] = useState(false);
 
+  // Advanced — Clarifying questions toggle (lives on the project document).
+  // Defaults to true (clarifying_questions_enabled === undefined) — opt-out.
+  const [clarifyingQuestionsEnabled, setClarifyingQuestionsEnabled] = useState(true);
+  const [savingClarifyingQuestions, setSavingClarifyingQuestions] = useState(false);
+
+  // Advanced — Reflection / Discovery Ledger toggle (lives on the project
+  // document). Defaults to true (reflection_enabled === undefined) — opt-out.
+  const [reflectionEnabled, setReflectionEnabled] = useState(true);
+  const [savingReflection, setSavingReflection] = useState(false);
+
   // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
   // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [savingReasoning, setSavingReasoning] = useState(false);
+
+  // Advanced — Suggested questions toggle (lives on the project document).
+  // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
+  // makes automatic LLM calls on insight / recommendation pages.
+  const [askSuggestionsEnabled, setAskSuggestionsEnabled] = useState(true);
+  const [savingAskSuggestions, setSavingAskSuggestions] = useState(false);
 
   // Advanced — Recommendation eligibility verdicts (lives on the project
   // document). Which validation verdicts qualify an insight for recommendation
@@ -159,7 +175,10 @@ export default function ProjectSettingsPage() {
         setLanguage(proj.language || 'English');
         setValidationEnabled(proj.validation_enabled !== false);
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
+        setClarifyingQuestionsEnabled(proj.clarifying_questions_enabled !== false);
+        setReflectionEnabled(proj.reflection_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
+        setAskSuggestionsEnabled(proj.ask_suggestions_enabled !== false);
         setRecommendationVerdicts(
           proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
             ? proj.recommendation_verdicts
@@ -278,6 +297,50 @@ export default function ProjectSettingsPage() {
     }
   };
 
+  // Save the clarifying-questions toggle. Optimistic update + rollback on failure.
+  const saveClarifyingQuestionsEnabled = async (next: boolean) => {
+    const prev = clarifyingQuestionsEnabled;
+    setClarifyingQuestionsEnabled(next);
+    setSavingClarifyingQuestions(true);
+    try {
+      const saved = await api.updateProject(id, { clarifying_questions_enabled: next });
+      setProject(saved);
+      setClarifyingQuestionsEnabled(saved.clarifying_questions_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Clarifying questions enabled' : 'Clarifying questions disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setClarifyingQuestionsEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingClarifyingQuestions(false);
+    }
+  };
+
+  // Save the reflection / Discovery Ledger toggle. Optimistic + rollback.
+  const saveReflectionEnabled = async (next: boolean) => {
+    const prev = reflectionEnabled;
+    setReflectionEnabled(next);
+    setSavingReflection(true);
+    try {
+      const saved = await api.updateProject(id, { reflection_enabled: next });
+      setProject(saved);
+      setReflectionEnabled(saved.reflection_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Discovery Ledger enabled' : 'Discovery Ledger disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setReflectionEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingReflection(false);
+    }
+  };
+
   // Save the reasoning toggle. Optimistic update + rollback on failure.
   const saveReasoningEnabled = async (next: boolean) => {
     const prev = reasoningEnabled;
@@ -297,6 +360,28 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReasoning(false);
+    }
+  };
+
+  // Save the suggested-questions toggle. Optimistic update + rollback on failure.
+  const saveAskSuggestionsEnabled = async (next: boolean) => {
+    const prev = askSuggestionsEnabled;
+    setAskSuggestionsEnabled(next);
+    setSavingAskSuggestions(true);
+    try {
+      const saved = await api.updateProject(id, { ask_suggestions_enabled: next });
+      setProject(saved);
+      setAskSuggestionsEnabled(saved.ask_suggestions_enabled !== false);
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Suggested questions enabled' : 'Suggested questions disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setAskSuggestionsEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingAskSuggestions(false);
     }
   };
 
@@ -477,11 +562,32 @@ export default function ProjectSettingsPage() {
                 onChange={(e) => saveSmartOverflowEnabled(e.currentTarget.checked)}
               />
               <Switch
+                label="Clarifying questions"
+                description="When on, after a discovery run the agent asks you a short list of questions about anything it was uncertain about (opaque codes, ambiguous columns, findings it couldn't verify). Your answers are saved as notes and fed into the next run, so the analysis keeps improving. Grounded questions only — a clean, confident run asks nothing. On by default."
+                checked={clarifyingQuestionsEnabled}
+                disabled={savingClarifyingQuestions}
+                onChange={(e) => saveClarifyingQuestionsEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Discovery Ledger (compounding discovery)"
+                description="When on, after each run the agent consolidates it into a persistent per-project ledger — coverage of what's been explored, findings kept with their metric and SQL and a status, and a queue of what to investigate next — and the next run builds on that instead of starting fresh. Off by default at the deployment level; where enabled, this opts an individual project in or out. On by default."
+                checked={reflectionEnabled}
+                disabled={savingReflection}
+                onChange={(e) => saveReflectionEnabled(e.currentTarget.checked)}
+              />
+              <Switch
                 label="Enable reasoning"
                 description="Turn on for reasoning models (e.g. Kimi, qwen3, DeepSeek-R1, Ollama thinking models). Off by default. When on, the model gets extra window-budgeted output headroom during exploration so a long hidden chain-of-thought doesn't truncate the step, and discovery requests reasoning on every call — providers that support native thinking act on it (capability-checked); others simply get the headroom. Leave off for non-reasoning models."
                 checked={reasoningEnabled}
                 disabled={savingReasoning}
                 onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
+              />
+              <Switch
+                label="Suggested questions"
+                description="When on, opening an insight or recommendation shows a few AI-generated starter questions you can ask about it. This makes an automatic LLM call the first time each item is opened (results are cached), so turn it off to avoid the extra requests. On by default."
+                checked={askSuggestionsEnabled}
+                disabled={savingAskSuggestions}
+                onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
               <MultiSelect
                 label="Recommendation eligibility"

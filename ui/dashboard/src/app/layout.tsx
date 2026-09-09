@@ -6,6 +6,9 @@ import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/dates/styles.css';
 import '@/styles/tokens.css';
+import { ChatDrawerProvider } from '@/components/ask/ChatDrawerProvider';
+import ChatDrawer from '@/components/ask/ChatDrawer';
+import ChatLauncher from '@/components/ask/ChatLauncher';
 
 const dmSans = DM_Sans({
   subsets: ['latin'],
@@ -42,7 +45,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <MantineProvider theme={theme}>
           <Notifications position="top-right" />
-          {children}
+          <ChatDrawerProvider>
+            {children}
+            <ChatDrawer />
+            <ChatLauncher />
+          </ChatDrawerProvider>
         </MantineProvider>
       </body>
     </html>

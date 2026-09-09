@@ -134,7 +134,12 @@ func (r *AskSessionRepository) GetByID(ctx context.Context, sessionID string) (*
 	return &session, nil
 }
 
-func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID string, limit int) ([]*commonmodels.AskSession, error) {
+// ListByProject lists a project's Ask sessions, newest-first. When seedType and
+// seedID are both non-empty, the list is scoped to sessions seeded from that
+// exact insight / recommendation ("previous conversations about this item").
+// The seed reference (type/id/label) is projected so the caller can label the
+// list; the bulky hydrated seed text is deliberately excluded.
+func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -142,16 +147,25 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID stri
 		SetSort(bson.D{{Key: "updated_at", Value: -1}}).
 		SetLimit(int64(limit)).
 		SetProjection(bson.M{
-			"_id":           1,
-			"project_id":    1,
-			"user_id":       1,
-			"title":         1,
-			"message_count": 1,
-			"created_at":    1,
-			"updated_at":    1,
+			"_id":                1,
+			"project_id":         1,
+			"user_id":            1,
+			"title":              1,
+			"message_count":      1,
+			"created_at":         1,
+			"updated_at":         1,
+			"seed_context.type":  1,
+			"seed_context.id":    1,
+			"seed_context.label": 1,
 		})
 
-	cursor, err := r.db.Collection("ask_sessions").Find(ctx, bson.M{"project_id": projectID}, opts)
+	filter := bson.M{"project_id": projectID}
+	if seedType != "" && seedID != "" {
+		filter["seed_context.type"] = seedType
+		filter["seed_context.id"] = seedID
+	}
+
+	cursor, err := r.db.Collection("ask_sessions").Find(ctx, filter, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list ask sessions for project %s: %w", projectID, err)
 	}

@@ -77,6 +77,28 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_BUNDLE_CELL_CHAR_CAP",
 	"VALIDATION_REC_STEPS_TOKEN_BUDGET",
 	"VALIDATION_ESTIMATE_TOKEN_RATIO",
+	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
+	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
+	// here, the enabled flag set on the API deployment never reaches a
+	// container-spawned agent and the feature stays silently off.
+	"DISCOVERY_QUESTIONS_ENABLED",
+	"DISCOVERY_QUESTIONS_MAX",
+	"DISCOVERY_QUESTIONS_MAX_OUTPUT",
+	"DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT",
+	"DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES",
+	"DISCOVERY_QUESTIONS_TIMEOUT",
+	// DISCOVERY_REFLECTION_* + DISCOVERY_LEDGER_* knobs for the post-run
+	// reflection / Discovery Ledger hop (compounding discovery, enterprise#261).
+	// Consumed by the agent (discovery.RunPhaseReflection). Without forwarding
+	// here, the enabled flag set on the API deployment never reaches a
+	// container-spawned agent and the ledger stays silently off.
+	"DISCOVERY_REFLECTION_ENABLED",
+	"DISCOVERY_REFLECTION_TIMEOUT",
+	"DISCOVERY_REFLECTION_MAX_OUTPUT",
+	"DISCOVERY_REFLECTION_PARSE_MAX_RETRIES",
+	"DISCOVERY_LEDGER_MAX_FINDINGS",
+	"DISCOVERY_LEDGER_DEDUP_MINSCORE",
+	"DISCOVERY_LEDGER_TREND_DELTA",
 }
 
 // dockerAgentExtraEnvKeys are forwarded only by the Docker runner. The

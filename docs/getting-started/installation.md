@@ -37,7 +37,7 @@ See [Configuration Reference](../reference/configuration.md) for all available e
 Run services directly on your machine. Best for development and contributing.
 
 **Prerequisites:**
-- Go 1.25+
+- Go 1.26+
 - Node.js 20+
 - MongoDB 7+ (or Docker for MongoDB only)
 - Make

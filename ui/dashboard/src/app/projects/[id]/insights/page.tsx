@@ -7,6 +7,7 @@ import { IconBulb } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import AskAboutThisButton from '@/components/ask/AskAboutThisButton';
 import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
@@ -341,9 +342,13 @@ export default function InsightsListPage() {
                     </Link>
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <FeedbackButtons projectId={id} discoveryId={insight.discoveryId}
-                      targetType="insight" targetId={String(insight.id || idx)}
-                      feedback={feedbackMap[`insight:${insight.id || idx}:${insight.discoveryId}`]} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <FeedbackButtons projectId={id} discoveryId={insight.discoveryId}
+                        targetType="insight" targetId={String(insight.id || idx)}
+                        feedback={feedbackMap[`insight:${insight.id || idx}:${insight.discoveryId}`]} />
+                      <AskAboutThisButton projectId={id}
+                        seed={{ type: 'insight', id: String(insight.id || idx), title: insight.name }} />
+                    </div>
                   </td>
                 </tr>
                 );

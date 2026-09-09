@@ -1,5 +1,7 @@
 # Customizing Prompts
 
+> In the dashboard this is the project's **Playbook** page. A project's prompts come from its domain pack, which the dashboard calls a Playbook.
+
 Every prompt in DecisionBox can be customized per-project. This lets you fine-tune how the AI reasons about your specific data without modifying the domain pack.
 
 ## How It Works

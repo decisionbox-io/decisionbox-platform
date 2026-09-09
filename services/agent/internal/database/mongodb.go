@@ -33,6 +33,11 @@ const (
 	CollectionDiscoveryValidationResults = gomongo.CollectionDiscoveryValidationResults
 	CollectionDiscoveryRecommendationLog = gomongo.CollectionDiscoveryRecommendationLog
 	CollectionDiscoveryRunSteps          = gomongo.CollectionDiscoveryRunSteps
+	CollectionDiscoveryQuestions         = gomongo.CollectionDiscoveryQuestions
+	CollectionDiscoveryLedger            = gomongo.CollectionDiscoveryLedger
+	CollectionDiscoveryLedgerFindings    = gomongo.CollectionDiscoveryLedgerFindings
+	CollectionDiscoveryLedgerTasks       = gomongo.CollectionDiscoveryLedgerTasks
+	CollectionDiscoveryPackProposals     = gomongo.CollectionDiscoveryPackProposals
 )
 
 // DB wraps go-common's MongoDB client.

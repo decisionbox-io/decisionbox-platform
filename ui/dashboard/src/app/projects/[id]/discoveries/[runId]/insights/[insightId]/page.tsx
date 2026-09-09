@@ -11,6 +11,7 @@ import {
 import Shell from '@/components/layout/AppShell';
 import Markdown from '@/components/common/Markdown';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import SuggestedQuestions from '@/components/ask/SuggestedQuestions';
 import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
@@ -19,7 +20,8 @@ import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
-import { api, DiscoveryResult, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
+import QuestionsDrawer from '@/components/common/QuestionsDrawer';
+import { api, DiscoveryResult, DiscoveryQuestion, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
@@ -47,6 +49,8 @@ export default function InsightDetailPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(true);
   const [similarInsights, setSimilarInsights] = useState<SearchResultItem[]>([]);
+  // Pending clarifying questions the agent raised about this specific insight.
+  const [questions, setQuestions] = useState<DiscoveryQuestion[]>([]);
   // Per-step / per-area / per-result logs are no longer embedded on the
   // discovery doc — fetch them from the dedicated split-log endpoints.
   const [explorationLog, setExplorationLog] = useState<ExplorationStep[]>([]);
@@ -113,6 +117,18 @@ export default function InsightDetailPage() {
       .catch(() => {});
   }, [id, insight, insightId]);
 
+  // Pending clarifying questions the agent raised about THIS insight. The list
+  // endpoint is project-wide, so filter to the questions whose linked target is
+  // this insight. Enterprise-backed; empty (404) on community builds.
+  useEffect(() => {
+    if (!insightId) return;
+    api.listProjectQuestions(id, { status: 'pending' })
+      .then((qs) => setQuestions((qs || []).filter(
+        (qn) => qn.linked_target?.type === 'insight' && qn.linked_target?.id === insightId,
+      )))
+      .catch(() => setQuestions([]));
+  }, [id, insightId]);
+
   if (loading) return <Shell><Loader /></Shell>;
   if (!insight) return <Shell><Text>Insight not found</Text></Shell>;
 
@@ -170,6 +186,17 @@ export default function InsightDetailPage() {
 
   return (
     <Shell>
+      {/* Clarifying questions about this insight — collapsible right-edge drawer,
+          renders nothing when there are none. */}
+      <QuestionsDrawer
+        projectId={id}
+        questions={questions}
+        onResolved={(qid) => setQuestions((prev) => prev.filter((qn) => qn.id !== qid))}
+        title="Questions about this insight"
+        storageKey="dbx-questions-drawer-insight"
+        viewAllHref={`/projects/${id}/questions`}
+      />
+
       <Button variant="subtle" onClick={goBack}
         leftSection={<IconArrowLeft size={16} />} size="sm" w="fit-content" mb="md">
         Back
@@ -219,6 +246,9 @@ export default function InsightDetailPage() {
             : insight.description
               ? <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{insight.description}</Text>
               : <Text size="sm" c="dimmed">No description</Text>}
+          {/* LLM-generated starter questions + "Ask about this" (enterprise;
+              renders nothing on community builds or when the toggle is off). */}
+          <SuggestedQuestions projectId={id} seed={{ type: 'insight', id: insight.id, title: insight.name }} />
         </Card>
 
         {/* Assessment — risk, confidence, target segment. Promoted above

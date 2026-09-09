@@ -27,6 +27,22 @@ func TestProject_EffectiveValidationEnabled_PassThrough(t *testing.T) {
 	}
 }
 
+// Clarifying-questions is default-on: nil resolves to true, and the stored
+// value (including an explicit opt-out false) passes through. Mirrors the
+// agent-side helper.
+func TestProject_EffectiveClarifyingQuestionsEnabled(t *testing.T) {
+	if !(&Project{}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with nil pointer = false, want true")
+	}
+	yes, no := true, false
+	if !(&Project{ClarifyingQuestionsEnabled: &yes}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with *true = false")
+	}
+	if (&Project{ClarifyingQuestionsEnabled: &no}).EffectiveClarifyingQuestionsEnabled() {
+		t.Errorf("EffectiveClarifyingQuestionsEnabled() with *false = true")
+	}
+}
+
 // Reasoning is opt-in: nil resolves to false (= today), and the stored value
 // passes through. Mirrors the agent-side helper.
 func TestProject_EffectiveReasoningEnabled(t *testing.T) {
