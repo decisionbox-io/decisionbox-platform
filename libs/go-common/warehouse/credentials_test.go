@@ -3,6 +3,7 @@ package warehouse
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +53,42 @@ func TestWarehouseIDContext(t *testing.T) {
 	ctx = WithProjectID(ctx, "p1")
 	if WarehouseIDFromContext(ctx) != "wh_a" || ProjectIDFromContext(ctx) != "p1" {
 		t.Errorf("project and warehouse ids must not clobber each other")
+	}
+}
+
+// The alphabet is the strictest backend's (Azure Key Vault). A ref outside it
+// cannot name a key this system wrote, and reading it would fail at the cloud
+// provider rather than here.
+func TestValidCredentialRef(t *testing.T) {
+	valid := []string{
+		LegacyCredentialsKey,
+		CredentialsKey("wh_1"),
+		"connector-refresh-token-6f3a1b2c",
+		"a",
+	}
+	for _, ref := range valid {
+		if !ValidCredentialRef(ref) {
+			t.Errorf("ValidCredentialRef(%q) = false, want true", ref)
+		}
+	}
+
+	invalid := []string{
+		"", "   ", "../other", "Has-Capitals", "under_score", "with:colon",
+		"with/slash", "with.dot", strings.Repeat("a", 128),
+	}
+	for _, ref := range invalid {
+		if ValidCredentialRef(ref) {
+			t.Errorf("ValidCredentialRef(%q) = true, want false", ref)
+		}
+	}
+}
+
+// Every key this system produces has to pass its own check, or a datasource
+// pointed at a real slot would be refused.
+func TestValidCredentialRef_AcceptsEveryKeyCredentialsKeyProduces(t *testing.T) {
+	for _, id := range []string{"", DefaultWarehouseID, "wh_1", "wh_b", "Odd.ID:v2"} {
+		if key := CredentialsKey(id); !ValidCredentialRef(key) {
+			t.Errorf("CredentialsKey(%q) = %q, which ValidCredentialRef rejects", id, key)
+		}
 	}
 }

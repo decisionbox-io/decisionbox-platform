@@ -37,3 +37,35 @@ func CredentialsKey(warehouseID string) string {
 	}
 	return LegacyCredentialsKey + "-" + hex.EncodeToString([]byte(warehouseID))
 }
+
+// CredentialRefKey is the datasource-config key naming the secret slot a
+// credential lives in, when it is not the one derived from the datasource id.
+//
+// It exists because a credential can be shared. A grant obtained once and used
+// by several datasources cannot live under a key derived from any one of them,
+// and derivation is exactly what CredentialsKey does. When this is set the agent
+// reads it instead; when it is not — which is every datasource that does not
+// share one — nothing about the read changes.
+const CredentialRefKey = "credential_ref" //nolint:gosec // G101: the name of a config field, not a credential
+
+// ValidCredentialRef reports whether a ref could be a key this system wrote.
+//
+// It is a shape check rather than an authorization one, and deliberately so:
+// the read it feeds is already scoped to the datasource's own project, so a ref
+// can only ever name a secret that project already owns. What this stops is a
+// value that is not a key at all — the cloud secret backends compose their
+// secret's name straight from it, and one outside their alphabet fails in a way
+// nobody can diagnose. Azure Key Vault is the strictest at [A-Za-z0-9-] and
+// every key this system produces is lowercase, so that is the alphabet here.
+func ValidCredentialRef(ref string) bool {
+	if ref == "" || len(ref) > 127 {
+		return false
+	}
+	for _, r := range ref {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}

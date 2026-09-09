@@ -387,7 +387,22 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 		whCfg[k] = v
 	}
 
-	whCreds, err := secretProvider.Get(ctx, projectID, gowarehouse.CredentialsKey(wh.ID))
+	// Which slot the credential lives in. Derived from the datasource id unless
+	// the datasource names one — which is how a credential obtained once can be
+	// used by several datasources, since a derived key belongs to exactly one.
+	//
+	// The ref is not passed on to the provider: it says where the credential was
+	// found, which is no more a provider's business than the key it replaces.
+	credentialKey := gowarehouse.CredentialsKey(wh.ID)
+	if ref := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey]); ref != "" {
+		if !gowarehouse.ValidCredentialRef(ref) {
+			return nil, fmt.Errorf("data source %q names a credential reference that is not a usable secret key", wh.ID)
+		}
+		credentialKey = ref
+	}
+	delete(whCfg, gowarehouse.CredentialRefKey)
+
+	whCreds, err := secretProvider.Get(ctx, projectID, credentialKey)
 	if err == nil && whCreds != "" {
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
