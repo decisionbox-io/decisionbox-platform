@@ -344,6 +344,42 @@ func TestRunPhaseQuestions_ToggleOff_NoWork(t *testing.T) {
 	}
 }
 
+// TestRunPhaseQuestions_EnvUnset_DefaultsOn pins Layer A's default. An unset
+// DISCOVERY_QUESTIONS_ENABLED must behave as enabled: the phase is already
+// protected by the per-project toggle, a nil questionRepo, and the sources
+// entitlement, so defaulting Layer A off only produced silently-empty Questions
+// pages on deployments that never set it.
+func TestRunPhaseQuestions_EnvUnset_DefaultsOn(t *testing.T) {
+	t.Setenv("DISCOVERY_QUESTIONS_ENABLED", "") // empty => default branch
+	resp := `{"questions":[{"question":"Does code 4 mean closed?","rationale":"opaque enum","linked_target":{"type":"insight","id":"a"},"answer_type":"boolean"}]}`
+	client, _ := stubClient(t, resp, nil)
+	repo := &fakeQuestionRepo{}
+	o := newTestOrchestrator(client, repo)
+
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "disc-1",
+		Insights: []models.Insight{insightWith("a", "opaque", valmodels.StatusUnverifiable, 0.9)}})
+
+	if len(repo.inserted) == 0 {
+		t.Fatal("unset deployment flag must default ON and insert questions, inserted=0")
+	}
+}
+
+// TestRunPhaseQuestions_EnvOff_NoWork covers the explicit opt-out, which is the
+// only way to disable the phase deployment-wide now that Layer A defaults on.
+func TestRunPhaseQuestions_EnvOff_NoWork(t *testing.T) {
+	t.Setenv("DISCOVERY_QUESTIONS_ENABLED", "false")
+	client, prov := stubClient(t, `{"questions":[]}`, nil)
+	repo := &fakeQuestionRepo{}
+	o := newTestOrchestrator(client, repo)
+
+	o.RunPhaseQuestions(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{insightWith("a", "x", valmodels.StatusUnverifiable, 0.9)}})
+
+	if prov.calls != 0 || len(repo.inserted) != 0 {
+		t.Fatalf("deployment flag off must do no work: calls=%d inserted=%d", prov.calls, len(repo.inserted))
+	}
+}
+
 // denyChecker entitles nothing — mirrors an enterprise deployment whose license
 // lacks sources_enabled.
 type denyChecker struct{ policy.Checker }

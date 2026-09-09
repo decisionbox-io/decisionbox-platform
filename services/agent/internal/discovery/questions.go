@@ -23,10 +23,14 @@ var questionsPromptTemplate string
 // Env knobs for the clarifying-questions phase (Rule 2 — all parametric).
 const (
 	// discoveryQuestionsEnabledEnv is the deployment-availability gate. Default
-	// off: the loop is only useful where the answers can be captured (enterprise
-	// + sources), so the enterprise agent Helm overlay turns it on. This is
-	// independent of the per-project Settings toggle (default on), which is the
-	// user-facing control — both must be on for questions to generate.
+	// ON: the phase is already protected by the gates that actually matter and
+	// are checked immediately after it — the per-project Settings toggle (Layer
+	// B, default on), a nil questionRepo on builds without it, and the sources
+	// entitlement below. Defaulting Layer A off added no real protection while
+	// silently costing every deployment that forgot to set it a permanently
+	// empty Questions page, with no error to point at. Set it to "false" to opt
+	// out explicitly. The per-project toggle remains the user-facing control —
+	// both must be on for questions to generate.
 	discoveryQuestionsEnabledEnv    = "DISCOVERY_QUESTIONS_ENABLED"
 	discoveryQuestionsMaxEnv        = "DISCOVERY_QUESTIONS_MAX"
 	discoveryQuestionsMaxOutputEnv  = "DISCOVERY_QUESTIONS_MAX_OUTPUT"
@@ -84,7 +88,7 @@ func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.Dis
 	if !o.clarifyingQuestionsEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}
-	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, false) {
+	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, true) {
 		return // Layer A: feature not available on this deployment.
 	}
 	if o.aiClient == nil || o.questionRepo == nil || result == nil {
