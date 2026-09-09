@@ -29,3 +29,20 @@ func TestForwardedEnv_InferenceCredentials(t *testing.T) {
 		t.Error("BLURB_LLM_API_KEY should not be forwarded when unset")
 	}
 }
+
+// TestForwardedEnv_SourcesEnabled pins that SOURCES_ENABLED reaches agent
+// containers. Without it the enterprise sources plugin still loads but returns
+// the community NoOp retriever, so discovery runs with no knowledge-source
+// context while the API reports Knowledge Sources as enabled.
+func TestForwardedEnv_SourcesEnabled(t *testing.T) {
+	t.Setenv("SOURCES_ENABLED", "true")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+
+	if found["SOURCES_ENABLED"] != "true" {
+		t.Errorf("SOURCES_ENABLED not forwarded: %q", found["SOURCES_ENABLED"])
+	}
+}

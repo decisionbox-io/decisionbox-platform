@@ -56,6 +56,12 @@ var agentForwardedEnvKeys = []string{
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.
 	"DISCOVERY_MAX_DURATION",
+	// SOURCES_ENABLED gates the enterprise sources agent plugin. Without
+	// forwarding, the plugin still loads but hands back the community NoOp
+	// retriever, so discovery runs with no knowledge-source context at all
+	// while the API reports Knowledge Sources as enabled — a silent
+	// downgrade rather than a visible failure.
+	"SOURCES_ENABLED",
 	// VALIDATION_* knobs for the LLM-native verifier+refuter pipeline.
 	// All consumed by the agent via verifier.LoadConfigFromEnv during
 	// both full-discovery validation and manual --mode=validate-doc runs.
