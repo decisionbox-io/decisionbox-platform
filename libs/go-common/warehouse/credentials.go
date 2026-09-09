@@ -38,34 +38,46 @@ func CredentialsKey(warehouseID string) string {
 	return LegacyCredentialsKey + "-" + hex.EncodeToString([]byte(warehouseID))
 }
 
-// CredentialRefKey is the datasource-config key naming the secret slot a
-// credential lives in, when it is not the one derived from the datasource id.
+// CredentialRefKey is the datasource-config key naming the shared credential a
+// datasource reads.
 //
 // It exists because a credential can be shared. A grant obtained once and used
 // by several datasources cannot live under a key derived from any one of them,
 // and derivation is exactly what CredentialsKey does. When this is set the agent
-// reads it instead; when it is not — which is every datasource that does not
-// share one — nothing about the read changes.
+// reads the shared slot it names; when it is not — which is every datasource
+// that does not share one — nothing about the read changes.
+//
+// Its value is an opaque id, NOT a secret key. See SharedCredentialKey for why
+// that distinction is the whole of the access control here.
 const CredentialRefKey = "credential_ref" //nolint:gosec // G101: the name of a config field, not a credential
 
-// ValidCredentialRef reports whether a ref could be a key this system wrote.
+// sharedCredentialPrefix namespaces credentials that several datasources read.
+// Nothing else in a project's secrets lives under it.
+const sharedCredentialPrefix = "warehouse-shared-credential"
+
+// maxSharedCredentialID bounds the id so the composed key stays inside the
+// 127-character limit Azure Key Vault imposes on a secret name: the prefix and
+// separator are 28 characters and hex doubles the id.
+const maxSharedCredentialID = 48
+
+// SharedCredentialKey returns the secret key holding a credential that several
+// datasources read, named by an opaque id. Reports false for an id no key can be
+// formed from.
 //
-// It is a shape check rather than an authorization one, and deliberately so:
-// the read it feeds is already scoped to the datasource's own project, so a ref
-// can only ever name a secret that project already owns. What this stops is a
-// value that is not a key at all — the cloud secret backends compose their
-// secret's name straight from it, and one outside their alphabet fails in a way
-// nobody can diagnose. Azure Key Vault is the strictest at [A-Za-z0-9-] and
-// every key this system produces is lowercase, so that is the alphabet here.
-func ValidCredentialRef(ref string) bool {
-	if ref == "" || len(ref) > 127 {
-		return false
+// The id is composed INTO a key rather than being one, and that is the whole of
+// the access control. A datasource's config is writable by anyone who can edit
+// the project, so a ref that was a raw key would let a member point a warehouse
+// provider at any other secret the project holds — its LLM or embedding
+// credential among them — and have the agent hand it over as credentials_json
+// to a host they chose. Composed into a namespace nothing else writes, the worst
+// a forged id can name is a shared credential that does not exist.
+//
+// Hex-encoded for the same reason CredentialsKey encodes a warehouse id: the
+// cloud backends compose this key straight into the provider-side secret name
+// and restrict its charset, and hex plus a hyphen is accepted by all of them.
+func SharedCredentialKey(id string) (string, bool) {
+	if id == "" || len(id) > maxSharedCredentialID {
+		return "", false
 	}
-	for _, r := range ref {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return sharedCredentialPrefix + "-" + hex.EncodeToString([]byte(id)), true
 }

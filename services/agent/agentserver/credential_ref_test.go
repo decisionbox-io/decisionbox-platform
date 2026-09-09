@@ -2,6 +2,7 @@ package agentserver
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -86,11 +87,11 @@ func TestInitWarehouseProvider_NoStoredCredentialIsNotAnError(t *testing.T) {
 // no single datasource, read by whichever datasource names it.
 func TestInitWarehouseProvider_ReadsTheNamedCredentialWhenSet(t *testing.T) {
 	secrets := &fakeSecretProvider{store: map[string]string{
-		"p1/connector-refresh-token-abc":           "the-shared-grant",
+		"p1/" + sharedKey(t, "abc"):                "the-shared-grant",
 		"p1/" + gowarehouse.CredentialsKey("wh_1"): "the-derived-credential",
 	}}
 
-	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "connector-refresh-token-abc"}, secrets)
+	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "abc"}, secrets)
 	if cfg["credentials_json"] != "the-shared-grant" {
 		t.Fatalf("credentials_json = %q, want the credential the ref names", cfg["credentials_json"])
 	}
@@ -100,13 +101,13 @@ func TestInitWarehouseProvider_ReadsTheNamedCredentialWhenSet(t *testing.T) {
 // whole reason the ref exists, and what a derived key cannot do.
 func TestInitWarehouseProvider_TwoDatasourcesCanShareOneCredential(t *testing.T) {
 	secrets := &fakeSecretProvider{store: map[string]string{
-		"p1/connector-refresh-token-abc": "the-shared-grant",
+		"p1/" + sharedKey(t, "abc"): "the-shared-grant",
 	}}
 	project := &models.Project{
 		ID: "p1",
 		Warehouses: []models.WarehouseConfig{
-			{ID: "wh_1", Provider: "test-capture-source", Config: map[string]string{gowarehouse.CredentialRefKey: "connector-refresh-token-abc"}},
-			{ID: "wh_2", Provider: "test-capture-source", Config: map[string]string{gowarehouse.CredentialRefKey: "connector-refresh-token-abc"}},
+			{ID: "wh_1", Provider: "test-capture-source", Config: map[string]string{gowarehouse.CredentialRefKey: "abc"}},
+			{ID: "wh_2", Provider: "test-capture-source", Config: map[string]string{gowarehouse.CredentialRefKey: "abc"}},
 		},
 	}
 	for _, id := range []string{"wh_1", "wh_2"} {
@@ -141,28 +142,60 @@ func TestInitWarehouseProvider_AnEmptyRefFallsBackToTheDerivedKey(t *testing.T) 
 // business than the derived key it replaces. Leaving it in the config would also
 // let a provider treat it as one of its own fields.
 func TestInitWarehouseProvider_TheRefIsNotPassedToTheProvider(t *testing.T) {
-	secrets := &fakeSecretProvider{store: map[string]string{"p1/connector-refresh-token-abc": "grant"}}
-	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "connector-refresh-token-abc"}, secrets)
+	secrets := &fakeSecretProvider{store: map[string]string{"p1/" + sharedKey(t, "abc"): "grant"}}
+	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "abc"}, secrets)
 	if v, present := cfg[gowarehouse.CredentialRefKey]; present {
 		t.Fatalf("the provider was handed %s = %q", gowarehouse.CredentialRefKey, v)
 	}
 }
 
-// A ref outside the secret backends' alphabet cannot name a key this system
-// wrote, and reading it would fail at the cloud provider in a way nobody can
-// diagnose. Refusing beats falling back to the derived key, which would look
-// like a working connection authenticating as something else.
+// The ref is an id composed INTO a key, not a key. That is what stops a
+// datasource config — writable by anyone who can edit the project — from naming
+// another secret the project holds, and the read must land in the shared
+// namespace whatever the id looks like.
+func TestInitWarehouseProvider_ARefCannotNameAnotherProjectSecret(t *testing.T) {
+	secrets := &fakeSecretProvider{store: map[string]string{
+		"p1/llm-credentials":                       "the-llm-secret",
+		"p1/" + gowarehouse.CredentialsKey("wh_1"): "the-derived-credential",
+	}}
+
+	cfg := buildWith(t, map[string]string{gowarehouse.CredentialRefKey: "llm-credentials"}, secrets)
+	if got := cfg["credentials_json"]; got == "the-llm-secret" {
+		t.Fatal("a data source read another feature's credential by naming its key")
+	}
+	// And it does not silently fall back to the derived one either: the ref was
+	// honoured, it just named a slot that does not exist.
+	if got := cfg["credentials_json"]; got == "the-derived-credential" {
+		t.Fatal("a ref that named nothing fell back to the derived key")
+	}
+}
+
+// An id no key can be formed from is refused rather than falling back to the
+// derived key, which would look like a working connection authenticating as
+// something else.
 func TestInitWarehouseProvider_AnUnusableRefIsRefused(t *testing.T) {
 	secrets := &fakeSecretProvider{store: map[string]string{
 		"p1/" + gowarehouse.CredentialsKey("wh_1"): "the-derived-credential",
 	}}
-	for _, ref := range []string{"../other", "Has-Capitals", "under_score", "with:colon", "with/slash"} {
-		project := &models.Project{
-			ID:         "p1",
-			Warehouses: []models.WarehouseConfig{{ID: "wh_1", Provider: "test-capture-source", Config: map[string]string{gowarehouse.CredentialRefKey: ref}}},
-		}
-		if _, err := initWarehouseProvider(context.Background(), project, "wh_1", secrets, "p1"); err == nil {
-			t.Errorf("ref %q was accepted", ref)
-		}
+	project := &models.Project{
+		ID: "p1",
+		Warehouses: []models.WarehouseConfig{{
+			ID: "wh_1", Provider: "test-capture-source",
+			Config: map[string]string{gowarehouse.CredentialRefKey: strings.Repeat("a", 200)},
+		}},
 	}
+	if _, err := initWarehouseProvider(context.Background(), project, "wh_1", secrets, "p1"); err == nil {
+		t.Error("an id no key can be formed from was accepted")
+	}
+}
+
+// sharedKey composes the slot an id names, so a test seeds exactly where the
+// agent will look.
+func sharedKey(t *testing.T, id string) string {
+	t.Helper()
+	key, ok := gowarehouse.SharedCredentialKey(id)
+	if !ok {
+		t.Fatalf("SharedCredentialKey(%q) was refused", id)
+	}
+	return key
 }

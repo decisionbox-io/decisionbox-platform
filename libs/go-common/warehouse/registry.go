@@ -74,18 +74,18 @@ type AuthMethod struct {
 // ConfigField describes a single configuration field for a provider.
 // The UI renders a form dynamically from these fields.
 type ConfigField struct {
-	Key         string `json:"key"`          // config key: "project_id", "dataset"
-	Label       string `json:"label"`        // display label: "GCP Project ID"
-	Description string `json:"description"`  // help text
+	Key         string `json:"key"`         // config key: "project_id", "dataset"
+	Label       string `json:"label"`       // display label: "GCP Project ID"
+	Description string `json:"description"` // help text
 	Required    bool   `json:"required"`
-	Type        string `json:"type"`         // "string", "number", "boolean", "credential" (stored as secret, not in project config)
-	Default     string `json:"default"`      // default value
-	Placeholder string `json:"placeholder"`  // placeholder text
+	Type        string `json:"type"`        // "string", "number", "boolean", "credential" (stored as secret, not in project config)
+	Default     string `json:"default"`     // default value
+	Placeholder string `json:"placeholder"` // placeholder text
 }
 
 var (
-	providersMu sync.RWMutex
-	providers   = make(map[string]ProviderFactory)
+	providersMu  sync.RWMutex
+	providers    = make(map[string]ProviderFactory)
 	providerMeta = make(map[string]ProviderMeta)
 )
 

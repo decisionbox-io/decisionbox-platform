@@ -395,10 +395,11 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 	// found, which is no more a provider's business than the key it replaces.
 	credentialKey := gowarehouse.CredentialsKey(wh.ID)
 	if ref := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey]); ref != "" {
-		if !gowarehouse.ValidCredentialRef(ref) {
-			return nil, fmt.Errorf("data source %q names a credential reference that is not a usable secret key", wh.ID)
+		shared, ok := gowarehouse.SharedCredentialKey(ref)
+		if !ok {
+			return nil, fmt.Errorf("data source %q names a shared credential that cannot exist", wh.ID)
 		}
-		credentialKey = ref
+		credentialKey = shared
 	}
 	delete(whCfg, gowarehouse.CredentialRefKey)
 
