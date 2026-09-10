@@ -50,6 +50,17 @@ type SchemaIndexLogLister interface {
 	List(ctx context.Context, projectID string, since time.Time, limit int) ([]database.SchemaIndexLog, error)
 }
 
+// WarehouseTableLister lists a warehouse's qualified table names live (by
+// running the agent's --list-tables mode). It backs the discovery-scope table
+// picker before the first index exists — at that point project_schema_cache is
+// empty, so ListCachedTables falls back to this to enumerate the warehouse's
+// tables cheaply (names only, no schema/blurb/embed). Concrete impl is
+// AgentTableLister over runner.Runner; nullable — when unset (e.g. a build
+// without an agent runner) ListCachedTables serves only the indexed cache.
+type WarehouseTableLister interface {
+	ListWarehouseTables(ctx context.Context, projectID, warehouseID string) ([]string, error)
+}
+
 // SchemaIndexHandler serves the lifecycle endpoints the dashboard uses
 // to observe and drive schema indexing. Plan §8.4.
 type SchemaIndexHandler struct {
@@ -59,7 +70,14 @@ type SchemaIndexHandler struct {
 	logs       SchemaIndexLogLister   // nullable — log-tail endpoint returns empty when absent
 	canceller  IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
 	cacheRepo  SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
+	lister     WarehouseTableLister   // nullable — pre-index live table listing for the scope picker
 }
+
+// SetTableLister installs the live warehouse-table lister used by
+// ListCachedTables to populate the discovery-scope picker before the first
+// index exists. Optional and wired once at startup; when unset, ListCachedTables
+// serves only the indexed schema cache (its prior behaviour).
+func (h *SchemaIndexHandler) SetTableLister(l WarehouseTableLister) { h.lister = l }
 
 // NewSchemaIndexHandler constructs the handler. Pass a nil dropper when
 // Qdrant is not wired (community smoke-test builds, e.g.); reindex then
@@ -446,10 +464,26 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// Scope to the primary — the datasource the discovery run queries — so the
 	// discovery-scope picker can't offer secondary-warehouse tables the run can't
 	// reach (all warehouses share the project_schema_cache).
-	tables, err := h.cacheRepo.ListTables(r.Context(), id, p.PrimaryWarehouse().ID)
+	primaryID := p.PrimaryWarehouse().ID
+	tables, err := h.cacheRepo.ListTables(r.Context(), id, primaryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
 		return
+	}
+	// Before the first index the schema cache is empty, so fall back to a live
+	// enumeration of the warehouse's table names (cheap — names only, via the
+	// agent's --list-tables mode) so the discovery-scope picker is populated and
+	// the operator can restrict the table set BEFORE paying to index it. Only
+	// when a lister is wired and the cache truly has nothing; a live-listing
+	// failure degrades to the empty list (the picker's empty state) rather than
+	// erroring the page.
+	if len(tables) == 0 && h.lister != nil {
+		if live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID); lerr != nil {
+			apilog.WithField("project_id", id).
+				Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
+		} else {
+			tables = live
+		}
 	}
 	if tables == nil {
 		tables = []string{}

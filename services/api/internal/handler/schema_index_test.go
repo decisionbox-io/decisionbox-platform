@@ -840,6 +840,83 @@ func TestSchemaIndex_ListCachedTables_EmptyCache(t *testing.T) {
 	}
 }
 
+// fakeTableLister is a WarehouseTableLister test double: it records whether it
+// was called and returns a canned list or error.
+type fakeTableLister struct {
+	tables []string
+	err    error
+	called bool
+}
+
+func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, _ string) ([]string, error) {
+	f.called = true
+	return f.tables, f.err
+}
+
+func TestSchemaIndex_ListCachedTables_LiveFallback_WhenCacheEmpty(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache → triggers the live fallback
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{tables: []string{"dbo.orders", "dbo.customers"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !lister.called {
+		t.Error("expected live lister to be called when the cache is empty")
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 2 || got[0] != "dbo.orders" || got[1] != "dbo.customers" {
+		t.Errorf("tables = %v, want the live-enumerated set", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWhenCacheNonEmpty(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"a.x"}} // cache has rows → indexed set wins
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if lister.called {
+		t.Error("live lister must not be called when the schema cache already has tables")
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 1 || got[0] != "a.x" {
+		t.Errorf("tables = %v, want the indexed cache set [a.x]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_LiveFallback_ErrorDegradesToEmpty(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h.SetTableLister(&fakeTableLister{err: errors.New("warehouse unreachable")})
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	// A live-listing failure must not error the page — the picker's empty
+	// state is a fine render.
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (live-list failure degrades to empty)", w.Code)
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 0 {
+		t.Errorf("tables = %v, want empty on live-list error", got)
+	}
+}
+
 func TestSchemaIndex_ListCachedTables_NoRepo_OK_Empty(t *testing.T) {
 	// Smoke build without the cache repo wired returns the empty shape
 	// instead of 503 — same contract as GetCacheInfo.

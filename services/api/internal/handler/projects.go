@@ -390,19 +390,14 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	telemetry.TrackProjectCreated(primaryProvider, p.LLM.Provider, p.Domain)
 
-	// Enqueue the new project for schema indexing. A project without a
-	// warehouse (blank-state) cannot be indexed; it will transition to
-	// pending_indexing on its first PUT that adds one. We set this
-	// explicitly rather than defaulting in the repo so reads without a
-	// warehouse still see SchemaIndexStatus == "" (→ "not yet
-	// configured" in the dashboard).
-	if len(p.EffectiveWarehouses()) > 0 {
-		if err := h.repo.SetSchemaIndexStatus(r.Context(), p.ID, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
-			apilog.WithError(err).Warn("schema-index: failed to enqueue new project; user must click Re-index manually")
-		} else {
-			p.SchemaIndexStatus = models.SchemaIndexStatusPendingIndexing
-		}
-	}
+	// Do NOT auto-start schema indexing on create. The operator first reviews
+	// the warehouse's tables and (optionally) restricts the table set, then
+	// starts indexing explicitly (the dashboard's "Build schema index" action
+	// → POST /reindex). Kicking off a full index here would index, blurb, and
+	// embed the entire catalog before the operator ever gets to narrow it —
+	// wasteful on large (1000+ table) warehouses. A freshly-created project
+	// therefore reports SchemaIndexStatus == "" ("not yet indexed") until the
+	// operator starts it.
 
 	writeJSON(w, http.StatusCreated, p)
 }
