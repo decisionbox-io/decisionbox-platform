@@ -67,7 +67,7 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 // the loop withholds the `answer` tool until at least one query/lookup/search
 // has run, so grounding is enforced structurally rather than by prose. The
 // prose here is guidance, not a hard gate.
-func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Config, chartsEnabled bool, seed *SeedContext) string {
+func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Config, chartsEnabled, mutationsAvailable bool, seed *SeedContext) string {
 	var b strings.Builder
 
 	b.WriteString("You are a data analyst agent. Answer the user's natural-language question about their data by reasoning step by step and using the provided tools to run read-only SQL against their data warehouse. Ground every claim in query results — never invent numbers, table names, or column names.\n\n")
@@ -93,10 +93,10 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	if chartsEnabled {
 		b.WriteString("- render_chart: chart a prior query result (offered once a query has run). The chart data must be an exact projection of that query's preview.\n")
 	}
-	for _, mt := range rt.MutationTools {
-		fmt.Fprintf(&b, "- %s: %s\n", mt.Name, mt.Description)
-	}
-	if len(rt.MutationTools) > 0 {
+	if mutationsAvailable {
+		for _, mt := range rt.MutationTools {
+			fmt.Fprintf(&b, "- %s: %s\n", mt.Name, mt.Description)
+		}
 		b.WriteString("You are NOT read-only: the write tool(s) above let you persist a change when the user asks (e.g. \"save this as a note\"). A write creates a pending item the user reviews and applies — do it when asked, then confirm it was saved.\n")
 	}
 	b.WriteString("- answer / clarify / decline: finish the turn.\n")

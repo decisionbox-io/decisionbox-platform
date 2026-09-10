@@ -75,6 +75,87 @@ func TestLoopTools_MutationNotOfferedWithoutRegistration(t *testing.T) {
 	}
 }
 
+func TestLoopTools_MutationNotOfferedToViewer(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{ProposalID: "p"}, nil
+		},
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall(string(actQuery), map[string]any{"query": "SELECT 1 FROM ds.t"}),
+		toolCall(string(actAnswer), map[string]any{"text": "ok"}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save it", CallerRole: "viewer"})
+
+	for _, req := range p.reqs {
+		if hasTool(req.Tools, "save_note") {
+			t.Fatal("save_note must not be offered to a viewer")
+		}
+	}
+}
+
+func TestLoopTools_MutationBatchedWithQueryIsDeferred(t *testing.T) {
+	// A save_note returned in the SAME batch as a query_data must be refused (so
+	// it can't persist figures the model hasn't observed yet); the query runs and
+	// the model re-issues the save on its own step.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "q1", Name: string(actQuery), Input: map[string]any{"query": "SELECT count(*) c FROM ds.t"}},
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 0 {
+		t.Fatalf("save_note batched with a query must be deferred, not executed (ran %d times)", saved)
+	}
+	// The query still ran (evidence gathered), and the batched save_note produced
+	// a refusal tool result rather than a proposal event.
+	var hasQueryEvent, hasSaveEvent bool
+	for _, ev := range store.events {
+		switch ev.Name {
+		case "query_data":
+			hasQueryEvent = true
+		case "save_note":
+			hasSaveEvent = true
+		}
+	}
+	if !hasQueryEvent {
+		t.Fatal("the batched query should still execute")
+	}
+	if hasSaveEvent {
+		t.Fatal("the deferred save_note must not emit a tool event")
+	}
+}
+
 func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
@@ -115,7 +196,7 @@ func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 	routing := turnRouting{datasources: []DatasourceInfo{{ID: "default", Dialect: "bigquery"}}}
 
 	rt := &ProjectRuntime{MutationTools: []MutationTool{{Name: "save_note", Description: "Save an operator note."}}}
-	out := buildSystemPromptForTools(rt, routing, Config{}, false, nil)
+	out := buildSystemPromptForTools(rt, routing, Config{}, false, true, nil)
 	if !strings.Contains(out, "save_note") || !strings.Contains(out, "Save an operator note.") {
 		t.Fatalf("mutation tool not described in prompt:\n%s", out)
 	}
@@ -123,9 +204,9 @@ func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 		t.Fatalf("capability line missing when a mutation tool is present:\n%s", out)
 	}
 
-	// No mutation tools → no capability line (still read-only).
-	out2 := buildSystemPromptForTools(&ProjectRuntime{}, routing, Config{}, false, nil)
-	if strings.Contains(out2, "NOT read-only") {
-		t.Fatalf("no mutation tool should leave the read-only framing intact:\n%s", out2)
+	// mutationsAvailable=false (e.g. a viewer) → no capability line, tool undescribed.
+	out2 := buildSystemPromptForTools(rt, routing, Config{}, false, false, nil)
+	if strings.Contains(out2, "NOT read-only") || strings.Contains(out2, "save_note") {
+		t.Fatalf("a viewer (mutations unavailable) should not see the write tool:\n%s", out2)
 	}
 }

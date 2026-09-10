@@ -51,6 +51,13 @@ type TurnRequest struct {
 	// gated on the API). Empty under NoAuth. Hand-synced by JSON tag with the
 	// enterprise startTurnRequest.CallerSub.
 	CallerSub string `json:"caller_sub,omitempty"`
+	// CallerRole is the caller's Ask role ("viewer"｜"member"｜"admin"; empty under
+	// NoAuth, treated as permitted). It gates WRITE (mutation) tools: a viewer may
+	// run read-only Ask but is never offered a mutation tool, mirroring the
+	// member+ visibility the classic proposal tools enforce. Read-only behaviour
+	// does not depend on it. Hand-synced with the enterprise
+	// startTurnRequest.CallerRole.
+	CallerRole string `json:"caller_role,omitempty"`
 }
 
 // SeedContext is the insight / recommendation a seeded Ask conversation is

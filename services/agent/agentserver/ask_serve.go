@@ -423,6 +423,13 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	if err != nil {
 		return nil, err
 	}
+	// DocumentsOnly is left false so operator notes surface alongside documents,
+	// but that mode may inject notes OUTSIDE Limit — so cap the combined result to
+	// the requested k here (notes are returned first, so pinned guidance is kept)
+	// to honour the tool's advertised limit and bound the turn context.
+	if len(chunks) > k {
+		chunks = chunks[:k]
+	}
 	out := make([]askserve.KnowledgeChunk, 0, len(chunks))
 	for _, c := range chunks {
 		out = append(out, askserve.KnowledgeChunk{

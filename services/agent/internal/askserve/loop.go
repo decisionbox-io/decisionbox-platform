@@ -117,6 +117,18 @@ func (st *turnState) canAnswer() bool {
 	return st.groundedEvents > 0 || st.mutationsDone > 0
 }
 
+// roleViewer is the read-only Ask role. A viewer may run read-only Ask but is
+// never offered a write (mutation) tool — mirroring the member+ visibility the
+// classic proposal tools enforce.
+const roleViewer = "viewer"
+
+// mayMutate reports whether this turn's caller may use a write tool. Empty role
+// (NoAuth / single-user) and member/admin may; a viewer may not. Read-only tools
+// are unaffected.
+func (st *turnState) mayMutate() bool {
+	return st.req.CallerRole != roleViewer
+}
+
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
 // tries to answer with no tool activity. After this many refusals the turn is
 // DECLINED rather than emitting an ungrounded (fabricated) answer — accepting
@@ -473,10 +485,16 @@ func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *ru
 // []gollm.Message because ai.Conversation cannot carry tool_use / tool_result
 // blocks.
 func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnState) {
-	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled, st.req.SeedContext)
 	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
 	hasKnowledge := rt.KnowledgeProvider != nil
+	// Write tools are offered only to a caller who may mutate (member+ / NoAuth),
+	// never to a viewer — matching the classic proposal tools' member+ visibility.
+	var mutations []gollm.ToolDefinition
+	if st.mayMutate() {
+		mutations = mutationDefs(rt.MutationTools)
+	}
+	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled, len(mutations) > 0, st.req.SeedContext)
 
 	var messages []gollm.Message
 	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
@@ -491,7 +509,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		}
 
 		grounded := st.canAnswer()
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0, mutationDefs(rt.MutationTools)), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0, mutations), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -564,7 +582,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		// refused so the model reviews the data before finishing; a render_chart
 		// mixed with the query it would chart (or with a terminal) is refused so
 		// charts only ever reference a prior-round, already-observed result.
-		batchHasQuery, batchHasTerminal := false, false
+		batchHasQuery, batchHasTerminal, batchHasNonMutation := false, false, false
 		for _, tc := range resp.ToolCalls {
 			k := actionKind(tc.Name)
 			if k == actQuery {
@@ -572,6 +590,9 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			}
 			if k.terminal() {
 				batchHasTerminal = true
+			}
+			if _, isMut := rt.mutationTool(tc.Name); !isMut {
+				batchHasNonMutation = true
 			}
 		}
 		results := make([]gollm.ToolResult, 0, len(resp.ToolCalls))
@@ -589,6 +610,21 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			// so they are dispatched here before toolCallToAction (which would reject
 			// the unknown name).
 			if mt, ok := rt.mutationTool(tc.Name); ok {
+				// Defense in depth: the tool isn't offered to a viewer, but a
+				// backend that ignores the offered-tool set could still return it.
+				if !st.mayMutate() {
+					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "This action requires the member role or higher; it is not available to your role.", IsError: true})
+					continue
+				}
+				// A write must run in its own step, never batched with a query /
+				// search / lookup / answer: otherwise it would persist figures or
+				// table choices the model has not yet observed the results for.
+				// Refuse it here so the model re-issues it after seeing the results
+				// (same deferral the terminal + render_chart calls get).
+				if batchHasNonMutation {
+					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Do not call " + tc.Name + " in the same step as a query, search, lookup, or answer. First observe the results you want to record, then call it on its own.", IsError: true})
+					continue
+				}
 				obs := r.execMutation(ctx, st, mt, tc)
 				if ctx.Err() != nil {
 					r.finishTimeout(ctx, st)
