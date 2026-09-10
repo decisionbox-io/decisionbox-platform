@@ -74,6 +74,10 @@ type turnState struct {
 	// search_insights across the turn, mapped to the message's Sources at
 	// finalize so the dashboard renders them as citations.
 	insightHits []ai.InsightHit
+	// knowledgeHits accumulates the knowledge-base chunks surfaced by
+	// search_knowledge across the turn, mapped to the message's Sources at
+	// finalize as source_chunk citations (mirrors the classic /ask path).
+	knowledgeHits []KnowledgeChunk
 
 	// primeContext is the reference block gathered by seed priming at the start
 	// of a seeded, first (empty-history) turn: the entity-anchored insight +
@@ -127,6 +131,25 @@ const roleViewer = "viewer"
 // are unaffected.
 func (st *turnState) mayMutate() bool {
 	return st.req.CallerRole != roleViewer
+}
+
+// routingQuestion is the question the multi-datasource router reasons over. On a
+// seeded turn it appends the seed entity's label/text so an ambiguous starter
+// (e.g. "how many users?" launched from a churn insight) routes to that entity's
+// datasource instead of being clarified or mis-pinned before the seed anchor
+// applies. Identical to the raw question on an unseeded turn.
+func (st *turnState) routingQuestion() string {
+	q := st.req.Question
+	if s := st.req.SeedContext; s != nil {
+		anchor := strings.TrimSpace(strings.TrimSpace(s.Label) + " " + strings.TrimSpace(s.Text))
+		if anchor != "" {
+			if r := []rune(anchor); len(r) > seedPrimeQueryCap {
+				anchor = strings.TrimSpace(string(r[:seedPrimeQueryCap]))
+			}
+			q = strings.TrimSpace(q) + "\n\n[Focused on: " + anchor + "]"
+		}
+	}
+	return q
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -582,7 +605,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		// refused so the model reviews the data before finishing; a render_chart
 		// mixed with the query it would chart (or with a terminal) is refused so
 		// charts only ever reference a prior-round, already-observed result.
-		batchHasQuery, batchHasTerminal, batchHasNonMutation := false, false, false
+		batchHasQuery, batchHasTerminal := false, false
 		for _, tc := range resp.ToolCalls {
 			k := actionKind(tc.Name)
 			if k == actQuery {
@@ -590,9 +613,6 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			}
 			if k.terminal() {
 				batchHasTerminal = true
-			}
-			if _, isMut := rt.mutationTool(tc.Name); !isMut {
-				batchHasNonMutation = true
 			}
 		}
 		results := make([]gollm.ToolResult, 0, len(resp.ToolCalls))
@@ -616,13 +636,13 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "This action requires the member role or higher; it is not available to your role.", IsError: true})
 					continue
 				}
-				// A write must run in its own step, never batched with a query /
-				// search / lookup / answer: otherwise it would persist figures or
-				// table choices the model has not yet observed the results for.
-				// Refuse it here so the model re-issues it after seeing the results
-				// (same deferral the terminal + render_chart calls get).
-				if batchHasNonMutation {
-					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Do not call " + tc.Name + " in the same step as a query, search, lookup, or answer. First observe the results you want to record, then call it on its own.", IsError: true})
+				// A write must run ALONE — never batched with any other call
+				// (a query/search/lookup whose result it hasn't observed, an
+				// answer, or another write that could duplicate/depend on it).
+				// Refuse it here so the model re-issues it on its own step after
+				// seeing the results (same deferral terminal + render_chart get).
+				if len(resp.ToolCalls) > 1 {
+					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call " + tc.Name + " on its own step — not alongside any other tool call (query, search, lookup, another write, or answer). First observe the results you want to record, then call it alone.", IsError: true})
 					continue
 				}
 				obs := r.execMutation(ctx, st, mt, tc)
@@ -1163,6 +1183,22 @@ func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 			AnalysisArea: h.AnalysisArea,
 			Description:  h.Description,
 			DiscoveryID:  h.DiscoveryID,
+		})
+	}
+	// Knowledge-base chunks cited as source_chunk, matching the classic /ask
+	// path's shape (Type "source_chunk", id "<SourceID>#<Position>"), so a
+	// knowledge-grounded answer carries provenance the dashboard renders.
+	for _, c := range st.knowledgeHits {
+		id := c.citationID()
+		if c.SourceID == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, commonmodels.AskSessionSource{
+			ID:    id,
+			Type:  "source_chunk",
+			Name:  c.SourceName,
+			Score: c.Score,
 		})
 	}
 	if len(out) == 0 {

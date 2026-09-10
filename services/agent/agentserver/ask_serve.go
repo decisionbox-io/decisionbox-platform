@@ -433,6 +433,8 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	out := make([]askserve.KnowledgeChunk, 0, len(chunks))
 	for _, c := range chunks {
 		out = append(out, askserve.KnowledgeChunk{
+			SourceID:   c.SourceID,
+			Position:   c.Position,
 			SourceName: c.SourceName,
 			SourceType: c.SourceType,
 			Text:       c.Text,

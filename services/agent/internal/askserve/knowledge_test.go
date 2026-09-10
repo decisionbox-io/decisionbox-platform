@@ -67,7 +67,7 @@ func TestLoopTools_SearchKnowledgeGrounds(t *testing.T) {
 	// A knowledge search is real evidence: it grounds the turn (answer offered on
 	// the next call) and needs no SQL.
 	wh := testutil.NewMockWarehouseProvider("ds")
-	know := &fakeKnowledge{chunks: []KnowledgeChunk{{SourceName: "policy.pdf", SourceType: "pdf", Text: "Refunds within 30 days.", Score: 0.9}}}
+	know := &fakeKnowledge{chunks: []KnowledgeChunk{{SourceID: "src-1", Position: 2, SourceName: "policy.pdf", SourceType: "pdf", Text: "Refunds within 30 days.", Score: 0.9}}}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		toolCall(string(actSearchKnowledge), map[string]any{"query": "refund policy"}),
 		toolCall(string(actAnswer), map[string]any{"text": "Refunds are allowed within 30 days."}),
@@ -88,6 +88,11 @@ func TestLoopTools_SearchKnowledgeGrounds(t *testing.T) {
 	}
 	if len(store.events) != 1 || store.events[0].Name != "search_knowledge" || store.events[0].Error != "" {
 		t.Fatalf("events = %+v, want one clean search_knowledge event", store.events)
+	}
+	// The knowledge chunk is cited as a source_chunk (id "<SourceID>#<Position>").
+	if len(store.final.Sources) != 1 || store.final.Sources[0].Type != "source_chunk" ||
+		store.final.Sources[0].ID != "src-1#2" || store.final.Sources[0].Name != "policy.pdf" {
+		t.Fatalf("knowledge answer should carry a source_chunk citation, got %+v", store.final.Sources)
 	}
 }
 

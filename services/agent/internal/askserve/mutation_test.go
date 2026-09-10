@@ -156,6 +156,51 @@ func TestLoopTools_MutationBatchedWithQueryIsDeferred(t *testing.T) {
 	}
 }
 
+func TestLoopTools_ParallelMutationsDeferred(t *testing.T) {
+	// Two save_note calls in one batch must both be refused (only a lone write
+	// runs) so the model can't create duplicate/dependent proposals in one step.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "A", "body": "a"}},
+				{ID: "n2", Name: "save_note", Input: map[string]any{"title": "B", "body": "b"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actDecline), map[string]any{"reason": "done"}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save two notes", CallerRole: "member"})
+	if saved != 0 {
+		t.Fatalf("parallel save_note calls must both be deferred, ran %d", saved)
+	}
+}
+
+func TestRoutingQuestion(t *testing.T) {
+	// Unseeded → the raw question.
+	st := &turnState{req: TurnRequest{Question: "how many users?"}}
+	if got := st.routingQuestion(); got != "how many users?" {
+		t.Fatalf("unseeded routing question changed: %q", got)
+	}
+	// Seeded → the seed label/text is appended so the router can anchor.
+	st2 := &turnState{req: TurnRequest{Question: "how many?", SeedContext: &SeedContext{Type: "insight", Label: "Churn spike in EU", Text: "EU users churning"}}}
+	got := st2.routingQuestion()
+	if !strings.Contains(got, "how many?") || !strings.Contains(got, "Churn spike in EU") {
+		t.Fatalf("seeded routing question should carry the seed anchor: %q", got)
+	}
+}
+
 func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {

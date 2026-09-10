@@ -25,8 +25,13 @@ type KnowledgeProvider interface {
 
 // KnowledgeChunk is one retrieved passage of a knowledge source (document or
 // note). It is the agent-facing projection — enough for the model to read the
-// content and name where it came from.
+// content, name where it came from, and cite it.
 type KnowledgeChunk struct {
+	// SourceID is the stable id of the parent source document; with Position it
+	// forms the citation id (mirrors the classic /ask path's chunk citation).
+	SourceID string
+	// Position is the chunk index within the source (0-based).
+	Position int
 	// SourceName is the originating document / note title, for the model to cite.
 	SourceName string
 	// SourceType is the source kind ("pdf", "docx", "note", …). Optional.
@@ -35,6 +40,13 @@ type KnowledgeChunk struct {
 	Text string
 	// Score is the similarity score in [0, 1].
 	Score float64
+}
+
+// citationID mirrors the classic /ask path's chunkCitationID: "<SourceID>#<Position>",
+// so top-K retrieval returning several chunks of one document yields distinct
+// citation ids.
+func (c KnowledgeChunk) citationID() string {
+	return fmt.Sprintf("%s#%d", c.SourceID, c.Position)
 }
 
 // knowledgeTextPreviewCap bounds how much chunk text is persisted on the tool
@@ -80,6 +92,9 @@ func (r *runner) execSearchKnowledge(ctx context.Context, rt *ProjectRuntime, st
 	}
 	ev.Output = knowledgeSummary(hits)
 	r.emit(ctx, st, ev)
+	// Accumulate for the final message's Sources (deduped at finalize) so a
+	// knowledge-grounded answer carries source_chunk citations, like /ask.
+	st.knowledgeHits = append(st.knowledgeHits, hits...)
 	return formatKnowledge(act.SearchKnowledge, hits)
 }
 

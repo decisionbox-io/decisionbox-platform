@@ -47,7 +47,7 @@ type routeDecision struct {
 func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (terminated bool) {
 	evidence := ""
 	if rt.Schema != nil {
-		if hits, err := rt.Schema.SearchAll(ctx, st.req.Question, routeRetrievalTopK); err == nil {
+		if hits, err := rt.Schema.SearchAll(ctx, st.routingQuestion(), routeRetrievalTopK); err == nil {
 			evidence = formatRouteEvidence(hits)
 		}
 	}
@@ -113,7 +113,7 @@ func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string
 		"Use the exact datasource ids. confidence is your certainty in the datasource choice."
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "QUESTION:\n%s\n\nDATASOURCES:\n", st.req.Question)
+	fmt.Fprintf(&b, "QUESTION:\n%s\n\nDATASOURCES:\n", st.routingQuestion())
 	for _, d := range st.routing.datasources {
 		fmt.Fprintf(&b, "- id: %s", d.ID)
 		if d.Label != "" {
