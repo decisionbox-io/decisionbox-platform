@@ -305,6 +305,9 @@ func TestExecMutation_SuccessUnlocksAnswerButDoesNotGround(t *testing.T) {
 	if st.mutationsDone != 1 {
 		t.Fatalf("mutationsDone = %d, want 1", st.mutationsDone)
 	}
+	if st.writesSaved != 1 {
+		t.Fatalf("a real proposal should count as a saved write, writesSaved=%d", st.writesSaved)
+	}
 	if st.groundedEvents != 0 {
 		t.Fatal("a mutation is not evidence — it must not increment groundedEvents")
 	}
@@ -313,18 +316,107 @@ func TestExecMutation_SuccessUnlocksAnswerButDoesNotGround(t *testing.T) {
 	}
 }
 
-func TestExecMutation_NoProposalNotConfirmedAsSaved(t *testing.T) {
+func TestLoopTools_NoOpMutationFinishesWithoutFalseSaveClaim(t *testing.T) {
+	// A save_note that completes as a no-op (nil error, no proposal id) and no query
+	// runs: the turn finishes (so the outcome is reported) but the deterministic ack
+	// must NOT claim anything was saved.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{Output: map[string]any{"status": "exists"}}, nil // no proposal id
+		},
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
+		toolCall(string(actAnswer), map[string]any{"text": "It already existed."}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this", CallerRole: "member"})
+
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("a completed no-op mutation should finish the turn, got %+v", store.final)
+	}
+	if store.final.Answer != noWriteAckText {
+		t.Fatalf("ungrounded no-op finish must use the no-save ack, got %q", store.final.Answer)
+	}
+	if strings.Contains(store.final.Answer, "saved") {
+		t.Fatalf("a no-op finish must not claim a save, got %q", store.final.Answer)
+	}
+}
+
+func TestLoopTools_PendingWriteDisclosedAtBudget(t *testing.T) {
+	// A write batched with a query in the ONLY allowed round is deferred; the query
+	// grounds the turn, the budget is exhausted, and final synthesis answers. The
+	// requested save was never created, so the answer must disclose that rather than
+	// silently drop it.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{ // round 1 (the only round): query + save batched → query runs, save deferred
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "q1", Name: string(actQuery), Input: map[string]any{"query": "SELECT COUNT(*) c FROM ds.t"}},
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // final synthesis
+	}}
+	cfg := Config{MaxRounds: 1, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 0 {
+		t.Fatalf("the deferred save had no later step to run, should not have executed (ran %d)", saved)
+	}
+	if store.final == nil || store.final.Answer == "" {
+		t.Fatalf("turn should finish with an answer, got %+v", store.final)
+	}
+	if !strings.Contains(store.final.Answer, "count is 100") {
+		t.Fatalf("the grounded answer should be preserved, got %q", store.final.Answer)
+	}
+	if !strings.Contains(store.final.Answer, pendingWriteNotice) {
+		t.Fatalf("the dropped write must be disclosed, got %q", store.final.Answer)
+	}
+}
+
+func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	// A mutation that returns nil error but no proposal id (no-op / already-exists)
-	// must NOT be counted as a saved write or confirmed as a pending change.
+	// still RAN: it lets the turn finish to report the outcome (mutationsDone) and
+	// clears the outstanding-write guard, but it does NOT count as a saved write
+	// (writesSaved stays 0) so an ungrounded finish never falsely claims a save.
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
 		return MutationOutput{Output: map[string]any{"status": "exists"}}, nil // empty ProposalID
 	}}
-	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}, writeRequested: true}
 	obs := r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}})
 
-	if st.mutationsDone != 0 || st.canAnswer() {
-		t.Fatalf("a no-proposal mutation must not count as a saved write (done=%d canAnswer=%v)", st.mutationsDone, st.canAnswer())
+	if st.mutationsDone != 1 || !st.canAnswer() {
+		t.Fatalf("a completed no-op mutation should let the turn finish (done=%d canAnswer=%v)", st.mutationsDone, st.canAnswer())
+	}
+	if st.writesSaved != 0 {
+		t.Fatalf("a no-proposal mutation must NOT count as a saved write, writesSaved=%d", st.writesSaved)
+	}
+	if st.writeRequested {
+		t.Fatal("a completed write must clear the outstanding-write guard, even a no-op")
+	}
+	if st.groundedEvents != 0 {
+		t.Fatal("a mutation is not evidence — it must not ground the turn")
 	}
 	if !strings.Contains(obs, "no pending change") {
 		t.Fatalf("observation should report no pending change, got %q", obs)
@@ -353,5 +445,20 @@ func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 	out2 := buildSystemPromptForTools(rt, routing, Config{}, false, false, nil)
 	if strings.Contains(out2, "NOT read-only") || strings.Contains(out2, "save_note") {
 		t.Fatalf("a viewer (mutations unavailable) should not see the write tool:\n%s", out2)
+	}
+
+	// A reserved (built-in-shadowing) mutation name is dropped from the offered set
+	// by mutationDefs, so it must NOT be described in the prompt either — only the
+	// real write tool is listed.
+	mixed := &ProjectRuntime{MutationTools: []MutationTool{
+		{Name: "save_note", Description: "Save an operator note."},
+		{Name: "query_data", Description: "SHADOW built-in."},
+	}}
+	out3 := buildSystemPromptForTools(mixed, routing, Config{}, false, true, nil)
+	if !strings.Contains(out3, "save_note") {
+		t.Fatalf("the real write tool should still be described:\n%s", out3)
+	}
+	if strings.Contains(out3, "SHADOW built-in.") {
+		t.Fatalf("a reserved-named mutation tool must not be described in the prompt:\n%s", out3)
 	}
 }

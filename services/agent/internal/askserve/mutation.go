@@ -93,6 +93,14 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// it is always emitted as non-grounding.
 	r.emitTool(ctx, st, ev, false)
 
+	// The write tool ran to completion (nil error): the user's requested write has
+	// been serviced, so clear the outstanding-write guard and let the model finish
+	// the turn to report the outcome (mutationsDone gates canAnswer). This holds
+	// whether or not a proposal came back — a no-op / already-exists is still a
+	// completed outcome the user should hear about.
+	st.mutationsDone++
+	st.writeRequested = false
+
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
 	// model, per the askmutation Result contract.
@@ -104,14 +112,12 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	}
 	if out.ProposalID == "" {
 		// Nil error but no proposal id (a no-op / already-exists / validation-only
-		// outcome — ProposalID is optional). Do NOT count it as a saved write or
-		// claim a pending change; report the outcome from the tool output instead.
+		// outcome — ProposalID is optional). Report the outcome, but do NOT claim a
+		// pending change was created (writesSaved stays flat → an ungrounded finish
+		// acknowledges the no-op without a false "saved").
 		return fmt.Sprintf("%s completed but created no pending change; report the outcome to the user based on the result.", mt.Name) + suffix
 	}
-	// A real proposal was created: it lets the model finish the turn to confirm
-	// the save (mutationsDone separately allows a mutation-only turn to answer),
-	// and clears any outstanding-write guard so the turn may now finish.
-	st.mutationsDone++
-	st.writeRequested = false
+	// A real proposal was created: acknowledge the save.
+	st.writesSaved++
 	return fmt.Sprintf("%s succeeded — it created a pending change (id %s) the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name, out.ProposalID) + suffix
 }

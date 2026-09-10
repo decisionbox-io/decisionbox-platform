@@ -105,11 +105,16 @@ type turnState struct {
 	// unoffered tool call, so execRenderChart must recheck this.
 	chartsEnabled bool
 
-	// mutationsDone counts successful write-tool calls (e.g. save_note) this turn.
-	// A mutation is not evidence (it never grounds a data answer), but a
-	// successful one lets the model finish the turn to confirm the save — see
-	// canAnswer.
+	// mutationsDone counts write-tool calls that ran to completion (any outcome,
+	// including a no-op / already-exists) this turn. A mutation is not evidence (it
+	// never grounds a data answer), but a completed one lets the model finish the
+	// turn to report the outcome — see canAnswer.
 	mutationsDone int
+	// writesSaved counts write-tool calls that actually created a pending proposal
+	// (a non-empty ProposalID). It selects the deterministic confirmation wording
+	// on an ungrounded finish: a real save is acknowledged as saved, a completed
+	// no-op is not (so the turn never falsely claims something was persisted).
+	writesSaved int
 	// writeRequested is set when a write tool was deferred (batched with other
 	// calls) and has not since completed. It guards against a request like
 	// "calculate X and save it" silently losing the save when the batched read
@@ -731,6 +736,12 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			r.finishUngrounded(ctx, st)
 			return
 		}
+		// A write deferred in the final allowed round has no later step to run alone,
+		// and this synthesis only offers answer/decline — so a grounded answer would
+		// silently drop the requested save. Disclose it rather than lose it.
+		if act.Kind == actAnswer && st.writeRequested && st.groundedEvents > 0 {
+			act.Text = strings.TrimRight(act.Text, "\n") + "\n\n" + pendingWriteNotice
+		}
 		r.finishTerminal(ctx, st, act)
 		return
 	}
@@ -1131,15 +1142,20 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 		status = commonmodels.AskTurnStatusDeclined
 		disposition = commonmodels.AskTurnDispositionDecline
 	case actAnswer:
-		// A write (save_note) lets the turn finish so it can confirm the save,
+		// A write (save_note) lets the turn finish so it can report the outcome,
 		// but a write is NOT evidence: if the turn gathered no query/search
 		// result, the ONLY thing it can honestly report is the write itself.
 		// Emit a deterministic confirmation rather than the model's free text,
 		// so an ungrounded turn can never surface a fabricated figure. (An
 		// ungrounded answer with no write never reaches here — it is nudged, then
-		// declined via finishUngrounded.)
+		// declined via finishUngrounded.) A real proposal is acknowledged as saved;
+		// a completed no-op (no proposal) is acknowledged without claiming a save.
 		if st.groundedEvents == 0 {
-			answer = writeAckText
+			if st.writesSaved > 0 {
+				answer = writeAckText
+			} else {
+				answer = noWriteAckText
+			}
 		}
 	}
 	r.finalize(ctx, st, TurnFinal{
@@ -1153,6 +1169,18 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 // the strength of a write (a mutation tool) alone, with no query/search evidence
 // — so no model-authored (and therefore ungrounded) figures can be surfaced.
 const writeAckText = "Done — the requested change was saved as a pending item for you to review and apply. I didn't run any query this turn, so there are no new figures to report."
+
+// noWriteAckText is the deterministic acknowledgement when an ungrounded turn
+// finishes on a mutation that completed WITHOUT creating a pending change (a
+// no-op / already-exists): it neither claims a false save nor surfaces a
+// model-authored (ungrounded) figure.
+const noWriteAckText = "I didn't create a new pending change this turn — it either already exists or required no action. I also didn't run any query, so there are no new figures to report."
+
+// pendingWriteNotice is appended to a grounded final answer when the step budget
+// is exhausted while a requested write is still pending (it was batched in the
+// last allowed round, leaving no later step to re-issue it alone) — so the user
+// learns the save didn't complete instead of it being silently dropped.
+const pendingWriteNotice = "Note: I ran out of steps before saving the change you asked for, so nothing was persisted — ask again to save it."
 
 // finishUngrounded declines a turn whose model insisted on answering without
 // running any query — emitting that answer would surface fabricated data, so

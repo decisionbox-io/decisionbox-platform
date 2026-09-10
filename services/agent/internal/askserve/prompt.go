@@ -95,6 +95,13 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	}
 	if mutationsAvailable {
 		for _, mt := range rt.MutationTools {
+			// mutationDefs drops reserved (built-in-shadowing) names from the offered
+			// tool set; skip them here too so the prompt only describes tools that are
+			// actually callable — otherwise a reserved name reads as a write tool while
+			// dispatch runs the built-in read-only one.
+			if reservedToolName(mt.Name) {
+				continue
+			}
 			fmt.Fprintf(&b, "- %s: %s\n", mt.Name, mt.Description)
 		}
 		b.WriteString("You are NOT read-only: the write tool(s) above let you persist a change when the user asks (e.g. \"save this as a note\"). A write creates a pending item the user reviews and applies — do it when asked, then confirm it was saved.\n")
