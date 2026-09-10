@@ -2,6 +2,7 @@ package askserve
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -76,5 +77,14 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// it is emitted as non-grounding. mutationsDone (tracked above) separately
 	// lets the model finish the turn to confirm the save.
 	r.emitTool(ctx, st, ev, false)
-	return fmt.Sprintf("%s succeeded. It created a pending change the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name)
+	obs := fmt.Sprintf("%s succeeded. It created a pending change the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name)
+	// Feed the tool's own output back so a mutation that reports details (an
+	// "already exists", a validation note, the created id) is visible to the
+	// model for its confirmation, per the askmutation Result contract.
+	if out.Output != nil {
+		if raw, err := json.Marshal(out.Output); err == nil {
+			obs += " Result: " + string(raw)
+		}
+	}
+	return obs
 }

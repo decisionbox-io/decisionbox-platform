@@ -46,35 +46,25 @@ func TestWriteWarehouseSection_NoCardNoCardLines(t *testing.T) {
 
 func TestWriteProjectContextSection(t *testing.T) {
 	var b strings.Builder
-	writeProjectContextSection(&b, &ProjectRuntime{
-		BusinessSummary: "Acme sells widgets to EU retailers.",
-		BaseContext:     "Treat null revenue as zero.",
-	})
+	writeProjectContextSection(&b, &ProjectRuntime{BusinessSummary: "Acme sells widgets to EU retailers."})
 	out := b.String()
-	for _, want := range []string{"PROJECT CONTEXT", "Acme sells widgets", "Treat null revenue as zero."} {
+	for _, want := range []string{"PROJECT CONTEXT", "Acme sells widgets"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("project context missing %q:\n%s", want, out)
 		}
 	}
 
-	// Only one of the two present is fine.
+	// No summary → no-op (no empty PROJECT CONTEXT header).
 	var b2 strings.Builder
-	writeProjectContextSection(&b2, &ProjectRuntime{BusinessSummary: "Just a summary."})
-	if !strings.Contains(b2.String(), "Just a summary.") || !strings.Contains(b2.String(), "PROJECT CONTEXT") {
-		t.Fatalf("summary-only should still render a block:\n%s", b2.String())
-	}
-
-	// Neither present → no-op (no empty PROJECT CONTEXT header).
-	var b3 strings.Builder
-	writeProjectContextSection(&b3, &ProjectRuntime{})
-	if b3.Len() != 0 {
-		t.Fatalf("empty context should render nothing, got %q", b3.String())
+	writeProjectContextSection(&b2, &ProjectRuntime{})
+	if b2.Len() != 0 {
+		t.Fatalf("empty context should render nothing, got %q", b2.String())
 	}
 
 	// nil runtime → no panic, no output.
-	var b4 strings.Builder
-	writeProjectContextSection(&b4, nil)
-	if b4.Len() != 0 {
-		t.Fatalf("nil runtime should render nothing, got %q", b4.String())
+	var b3 strings.Builder
+	writeProjectContextSection(&b3, nil)
+	if b3.Len() != 0 {
+		t.Fatalf("nil runtime should render nothing, got %q", b3.String())
 	}
 }

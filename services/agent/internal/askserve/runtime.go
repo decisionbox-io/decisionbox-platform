@@ -61,13 +61,12 @@ type ProjectRuntime struct {
 	// BusinessSummary is the project's LLM-authored "what this business does"
 	// summary (distilled from the knowledge sources). Rendered compactly into the
 	// system prompt as the primary "what is this project" anchor. Empty when the
-	// project has no summary yet.
+	// project has no summary yet. (The domain-pack base-context template is NOT
+	// injected here: it carries {{PROFILE}}/{{DIALECT}}/… tokens that only the
+	// discovery orchestrator renders — a live warehouse provider is required — so
+	// injecting it raw would leak unresolved placeholders. BusinessSummary is the
+	// already-rendered project-context summary, plus the card carries structure.)
 	BusinessSummary string
-	// BaseContext is the project's (or primary datasource's) base-context — the
-	// shared analyst orientation prepended to discovery prompts. Rendered
-	// compactly into the system prompt so ask-serve has the same grounding. Empty
-	// when the project has none.
-	BaseContext string
 
 	// build lazily constructs a datasource's execution context (open + validate
 	// read-only + wire the executor).
@@ -107,7 +106,6 @@ type ProjectRuntimeOptions struct {
 	Datasources       []DatasourceInfo
 	PrimaryID         string
 	BusinessSummary   string
-	BaseContext       string
 	Build             WarehouseBuilder
 	// MaxWarmDatasources bounds warm connections per project (0 → default).
 	MaxWarmDatasources int
@@ -130,7 +128,6 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 		Datasources:       opts.Datasources,
 		PrimaryID:         opts.PrimaryID,
 		BusinessSummary:   opts.BusinessSummary,
-		BaseContext:       opts.BaseContext,
 		build:             opts.Build,
 		maxWarm:          maxWarm,
 		warm:             make(map[string]*connEntry),

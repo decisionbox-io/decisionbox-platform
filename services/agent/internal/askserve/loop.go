@@ -275,6 +275,11 @@ func (r *runner) primeSeed(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		query = strings.TrimSpace(string(rq[:seedPrimeQueryCap]))
 	}
 
+	// Priming runs before the main round loop sets st.round; stamp round 1 so the
+	// persisted priming events carry a 1-based round (ToolEvent.Round is 1-based).
+	// The loop re-sets st.round to 1 on its first iteration.
+	st.round = 1
+
 	var b strings.Builder
 	// Append an observation only when the search actually gathered evidence (the
 	// grounded count rose), so a failed / provider-unavailable search doesn't
@@ -1005,19 +1010,36 @@ func (r *runner) emitTool(ctx context.Context, st *turnState, ev commonmodels.To
 func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAction) {
 	status := commonmodels.AskTurnStatusDone
 	disposition := commonmodels.AskTurnDispositionAnswer
+	answer := act.Text
 	switch act.Kind {
 	case actClarify:
 		disposition = commonmodels.AskTurnDispositionClarify
 	case actDecline:
 		status = commonmodels.AskTurnStatusDeclined
 		disposition = commonmodels.AskTurnDispositionDecline
+	case actAnswer:
+		// A write (save_note) lets the turn finish so it can confirm the save,
+		// but a write is NOT evidence: if the turn gathered no query/search
+		// result, the ONLY thing it can honestly report is the write itself.
+		// Emit a deterministic confirmation rather than the model's free text,
+		// so an ungrounded turn can never surface a fabricated figure. (An
+		// ungrounded answer with no write never reaches here — it is nudged, then
+		// declined via finishUngrounded.)
+		if st.groundedEvents == 0 {
+			answer = writeAckText
+		}
 	}
 	r.finalize(ctx, st, TurnFinal{
 		Status:      status,
 		Disposition: disposition,
-		Answer:      act.Text,
+		Answer:      answer,
 	})
 }
+
+// writeAckText is the deterministic confirmation emitted when a turn finishes on
+// the strength of a write (a mutation tool) alone, with no query/search evidence
+// — so no model-authored (and therefore ungrounded) figures can be surfaced.
+const writeAckText = "Done — the requested change was saved as a pending item for you to review and apply. I didn't run any query this turn, so there are no new figures to report."
 
 // finishUngrounded declines a turn whose model insisted on answering without
 // running any query — emitting that answer would surface fabricated data, so

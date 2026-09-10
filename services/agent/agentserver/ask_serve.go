@@ -325,7 +325,6 @@ func runAskServe(cfg *config.Config) error {
 			Datasources:       datasources,
 			PrimaryID:         primaryID,
 			BusinessSummary:   project.BusinessSummary,
-			BaseContext:       effectiveBaseContext(project),
 			Build:             warehouseBuild,
 		}), nil
 	}
@@ -436,16 +435,3 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	return out, nil
 }
 
-// effectiveBaseContext resolves the project's base-context for the ask prompt:
-// the primary datasource's per-warehouse base-context when set, else the
-// project-level one. Mirrors how discovery resolves prompts (per-warehouse
-// overrides project-level). Empty when the project has none.
-func effectiveBaseContext(project *models.Project) string {
-	if pw := project.PrimaryWarehouse(); pw.Prompts != nil && strings.TrimSpace(pw.Prompts.BaseContext) != "" {
-		return pw.Prompts.BaseContext
-	}
-	if project.Prompts != nil {
-		return project.Prompts.BaseContext
-	}
-	return ""
-}

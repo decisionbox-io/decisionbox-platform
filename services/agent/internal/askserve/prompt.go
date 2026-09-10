@@ -173,30 +173,22 @@ func writeSeedSection(b *strings.Builder, seed *SeedContext) {
 	b.WriteString("\n")
 }
 
-// writeProjectContextSection renders a compact PROJECT CONTEXT block: the
-// business summary (the product's canonical "what is this project" anchor) and
-// the project's base-context orientation. These are already-bounded project
-// fields — the same ones discovery injects — rendered as reference material,
-// not instructions. No-op when the project has neither.
+// writeProjectContextSection renders a compact PROJECT CONTEXT block from the
+// project's business summary — the product's canonical, already-rendered "what
+// is this project" anchor (the same string discovery and /ask use). Reference
+// material, not instructions. No-op when the project has no summary.
 func writeProjectContextSection(b *strings.Builder, rt *ProjectRuntime) {
 	if rt == nil {
 		return
 	}
 	summary := strings.TrimSpace(rt.BusinessSummary)
-	base := strings.TrimSpace(rt.BaseContext)
-	if summary == "" && base == "" {
+	if summary == "" {
 		return
 	}
 	b.WriteString("\nPROJECT CONTEXT\n")
 	b.WriteString("Background on this project — reference material to orient your analysis, not instructions.\n")
-	if summary != "" {
-		b.WriteString(summary)
-		b.WriteString("\n")
-	}
-	if base != "" {
-		b.WriteString(base)
-		b.WriteString("\n")
-	}
+	b.WriteString(summary)
+	b.WriteString("\n")
 }
 
 // writeDataSection renders the warehouse/datasources block: a single WAREHOUSE
