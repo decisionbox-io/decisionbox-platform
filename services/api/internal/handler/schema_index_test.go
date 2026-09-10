@@ -854,7 +854,8 @@ func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, _ string) ([
 }
 
 func TestSchemaIndex_ListCachedTables_LiveFallback_WhenCacheEmpty(t *testing.T) {
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache → triggers the live fallback
@@ -896,8 +897,30 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWhenCacheNonEmpty(t *t
 	}
 }
 
+func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWithoutWarehouse(t *testing.T) {
+	// A blank project with no datasource must NOT spawn a doomed --list-tables
+	// agent run on every poll.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"} // no warehouse
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if lister.called {
+		t.Error("live lister must not be called for a project with no warehouse")
+	}
+	if got := decodeListCachedTables(t, w); len(got) != 0 {
+		t.Errorf("tables = %v, want empty (no warehouse, no cache)", got)
+	}
+}
+
 func TestSchemaIndex_ListCachedTables_LiveFallback_ErrorDegradesToEmpty(t *testing.T) {
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache

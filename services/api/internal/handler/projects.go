@@ -359,6 +359,15 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Enforce the "not yet indexed" contract server-side: a create request must
+	// not set the schema-index lifecycle itself (e.g. a client cloning a GET
+	// response carrying status "ready" or "pending_indexing" would otherwise mark
+	// a brand-new project ready without a cache, or auto-enqueue it). Indexing is
+	// always started explicitly by the operator, never at create.
+	p.SchemaIndexStatus = ""
+	p.SchemaIndexError = ""
+	p.SchemaIndexUpdatedAt = nil
+
 	if err := h.repo.Create(r.Context(), &p); err != nil {
 		apilog.WithError(err).Error("Failed to create project")
 		if res != nil {

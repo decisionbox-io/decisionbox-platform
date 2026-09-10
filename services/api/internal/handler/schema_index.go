@@ -474,10 +474,11 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// enumeration of the warehouse's table names (cheap — names only, via the
 	// agent's --list-tables mode) so the discovery-scope picker is populated and
 	// the operator can restrict the table set BEFORE paying to index it. Only
-	// when a lister is wired and the cache truly has nothing; a live-listing
-	// failure degrades to the empty list (the picker's empty state) rather than
-	// erroring the page.
-	if len(tables) == 0 && h.lister != nil {
+	// when a lister is wired, the cache truly has nothing, AND the project has a
+	// warehouse configured — a blank project with no datasource would otherwise
+	// spawn a doomed agent run on every poll. A live-listing failure degrades to
+	// the empty list (the picker's empty state) rather than erroring the page.
+	if len(tables) == 0 && h.lister != nil && len(p.EffectiveWarehouses()) > 0 {
 		if live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID); lerr != nil {
 			apilog.WithField("project_id", id).
 				Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
