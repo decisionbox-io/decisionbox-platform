@@ -457,6 +457,53 @@ func TestLoopTools_SaveThenDeclineReportsSaveNotFailure(t *testing.T) {
 	}
 }
 
+func TestLoopTools_SaveThenClarifyAcknowledgesSave(t *testing.T) {
+	// A save-only turn that created a proposal and then asks a follow-up (clarify)
+	// must still acknowledge the save, while preserving the model's question.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
+		toolCall(string(actClarify), map[string]any{"question": "Anything else to save?"}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this as a note", CallerRole: "member"})
+
+	if store.final == nil || store.final.Disposition != commonmodels.AskTurnDispositionClarify {
+		t.Fatalf("a save-then-follow-up should remain a clarify, got %+v", store.final)
+	}
+	if !strings.Contains(store.final.Answer, "saved as a pending item") {
+		t.Fatalf("clarify should acknowledge the save, got %q", store.final.Answer)
+	}
+	if !strings.Contains(store.final.Answer, "Anything else to save?") {
+		t.Fatalf("clarify should preserve the model's question, got %q", store.final.Answer)
+	}
+}
+
+func TestExecMutation_ArgMutationDoesNotStrandPendingWrite(t *testing.T) {
+	// A plugin that normalizes/defaults its args (mutating the map in place) must
+	// not leave a completed write marked pending — the key is captured before Run.
+	r := &runner{cfg: Config{}, store: &fakeStore{}}
+	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+		in.Args["category"] = "default" // executor mutates the args map after the fact
+		return MutationOutput{ProposalID: "p1"}, nil
+	}}
+	tc := gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}}
+	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	st.deferWrite(tc) // deferred earlier (key from the pristine args)
+	r.execMutation(context.Background(), st, mt, tc)
+	if st.hasPendingWrite() {
+		t.Fatal("a completed write whose args the plugin mutated must still clear its pending entry")
+	}
+}
+
 func TestLoopTools_ReDeferredWriteNotDoubleCounted(t *testing.T) {
 	// The model batches the SAME save with a query twice (ignoring "call it alone"),
 	// then finally issues it alone. Re-deferring the same write must not inflate the

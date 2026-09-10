@@ -1150,6 +1150,13 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 	switch act.Kind {
 	case actClarify:
 		disposition = commonmodels.AskTurnDispositionClarify
+		// A save-only turn that created a proposal and then asks a follow-up should
+		// still acknowledge the save (the answer/decline paths do) — prepend the
+		// deterministic confirmation to the model's question so the pending change
+		// isn't left unmentioned.
+		if st.writesSaved > 0 && st.groundedEvents == 0 {
+			answer = strings.TrimSpace(writeAckText + " " + answer)
+		}
 	case actDecline:
 		// A save-only turn that created a pending proposal must not report a decline
 		// — that misreports a successful write as a failure. Confirm the save instead

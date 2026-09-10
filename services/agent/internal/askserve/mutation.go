@@ -61,11 +61,12 @@ func (st *turnState) deferWrite(tc gollm.ToolCall) {
 	st.pendingWrites[writeKey(tc)] = struct{}{}
 }
 
-// completeWrite retires the pending entry for a write that ran to completion. A
-// completion whose key isn't pending (a write issued alone the first time) is a
-// no-op, so it never spuriously clears an unrelated deferred write.
-func (st *turnState) completeWrite(tc gollm.ToolCall) {
-	delete(st.pendingWrites, writeKey(tc))
+// completeWrite retires the pending entry for a write that ran to completion,
+// identified by a key captured from its ORIGINAL args (before the plugin could
+// mutate them). A key that isn't pending (a write issued alone the first time) is
+// a no-op, so it never spuriously clears an unrelated deferred write.
+func (st *turnState) completeWrite(key string) {
+	delete(st.pendingWrites, key)
 }
 
 // hasPendingWrite reports whether any requested write was deferred and not since
@@ -102,6 +103,10 @@ func mutationDefs(tools []MutationTool) []gollm.ToolDefinition {
 // event carrying any proposal id it produced. A failure is surfaced to the model
 // as a tool error so it can retry or explain, never crashing the turn.
 func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationTool, tc gollm.ToolCall) string {
+	// Capture the pending-write key from the ORIGINAL args before Run — the plugin
+	// executor receives the args map by reference and may normalize/default it,
+	// which would change the key and leave a completed write falsely marked pending.
+	key := writeKey(tc)
 	ev := commonmodels.ToolEvent{Round: st.round, Name: mt.Name, Args: tc.Input}
 	start := time.Now()
 	out, err := mt.Run(ctx, MutationInput{
@@ -131,7 +136,7 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// a proposal came back — a no-op / already-exists is still a completed outcome
 	// the user should hear about.
 	st.mutationsDone++
-	st.completeWrite(tc)
+	st.completeWrite(key)
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
