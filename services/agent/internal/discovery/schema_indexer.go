@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -187,20 +188,25 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		for k := range schemas {
 			keys = append(keys, k)
 		}
+		sort.Strings(keys) // deterministic input, mirroring Orchestrator.discoverSchemas
 		kept, ferr := agentplugin.ApplyCachedSchemaFilters(ctx, opts.ProjectID, keys)
 		if ferr != nil {
 			si.recordErr(ctx, opts.ProjectID, "cached-schema filter: "+ferr.Error())
 			return nil, fmt.Errorf("schema_indexer: cached-schema filter: %w", ferr)
 		}
-		if len(kept) != len(schemas) {
-			filtered := make(map[string]models.TableSchema, len(kept))
-			for _, k := range kept {
-				if s, ok := schemas[k]; ok {
-					filtered[k] = s
-				}
+		// Rebuild the map from the kept keys intersected with the input: a filter
+		// may only REMOVE keys, never add, so any key the filter returns that
+		// wasn't in the input is ignored, and any input key it dropped is left
+		// out. Rebuilding unconditionally (rather than trusting the length) means
+		// a same-length-but-different or invented-key result can't slip a
+		// dropped table back into the index. len(kept) is the upper bound.
+		filtered := make(map[string]models.TableSchema, len(kept))
+		for _, k := range kept {
+			if s, ok := schemas[k]; ok {
+				filtered[k] = s
 			}
-			schemas = filtered
 		}
+		schemas = filtered
 	}
 	applog.WithFields(applog.Fields{
 		"tables":     len(schemas),
