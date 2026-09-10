@@ -1096,7 +1096,11 @@ func (r *runner) execSearchInsights(ctx context.Context, rt *ProjectRuntime, st 
 		return fmt.Sprintf("Insight search failed: %s", err.Error())
 	}
 	ev.Output = insightsSummary(hits)
-	r.emit(ctx, st, ev)
+	// An insight search that returns no usable hits observed nothing — it must NOT
+	// ground the turn (else stale/deleted top vectors, now dropped by the enrich
+	// filter, could unlock an uncited answer). Only a search that surfaced enrichable
+	// insights is evidence. (Mirrors execSearchKnowledge.)
+	r.emitTool(ctx, st, ev, len(hits) > 0)
 	// Accumulate for the final message's Sources (deduped at finalize) so the
 	// dashboard renders these as citations.
 	st.insightHits = append(st.insightHits, hits...)

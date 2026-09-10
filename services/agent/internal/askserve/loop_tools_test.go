@@ -3,6 +3,7 @@ package askserve
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -154,6 +155,33 @@ func TestLoopTools_SearchInsightsGroundsAndCites(t *testing.T) {
 	}
 	if store.final.Sources[0].Type != "insight" || store.final.Sources[0].Severity != "high" || store.final.Sources[0].DiscoveryID != "disc-7" {
 		t.Fatalf("source[0] fields not mapped: %+v", store.final.Sources[0])
+	}
+}
+
+func TestExecSearchInsights_EmptyDoesNotGround(t *testing.T) {
+	// A search that returns no usable hits (e.g. the provider dropped stale/deleted
+	// vectors it couldn't enrich) observed nothing — it must NOT ground the turn, or
+	// an empty result could unlock an uncited answer. Mirrors search_knowledge.
+	r := &runner{cfg: Config{}, store: &fakeStore{}}
+	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	rt := &ProjectRuntime{InsightsProvider: &fakeInsights{hits: nil}}
+	obs := r.execSearchInsights(context.Background(), rt, st, &turnAction{Kind: actSearchInsights, SearchInsights: "risks"})
+	if st.groundedEvents != 0 {
+		t.Fatalf("an empty insight search must not ground, grounded=%d", st.groundedEvents)
+	}
+	if st.canAnswer() {
+		t.Fatal("an empty insight search must not unlock answering")
+	}
+	if !strings.Contains(obs, "no matching") {
+		t.Fatalf("empty search should report no matches, got %q", obs)
+	}
+
+	// A search WITH a usable hit still grounds.
+	st2 := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	rt2 := &ProjectRuntime{InsightsProvider: &fakeInsights{hits: []ai.InsightHit{{ID: "i1", Type: "insight", Name: "x", Score: 0.5}}}}
+	r.execSearchInsights(context.Background(), rt2, st2, &turnAction{Kind: actSearchInsights, SearchInsights: "risks"})
+	if st2.groundedEvents != 1 {
+		t.Fatalf("a non-empty insight search should ground, grounded=%d", st2.groundedEvents)
 	}
 }
 
