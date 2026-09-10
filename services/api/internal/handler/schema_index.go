@@ -143,6 +143,13 @@ func liveTableCacheKey(projectID string, wh models.WarehouseConfig) string {
 	b.WriteString(wh.ID)
 	b.WriteString("|prov=")
 	b.WriteString(wh.Provider)
+	// Top-level connection fields the provider factory reads directly (e.g.
+	// BigQuery's data project + location), so editing them invalidates the key
+	// even when provider/datasets/config are unchanged.
+	b.WriteString("|proj=")
+	b.WriteString(wh.ProjectID)
+	b.WriteString("|loc=")
+	b.WriteString(wh.Location)
 	ds := append([]string(nil), wh.Datasets...)
 	sort.Strings(ds)
 	b.WriteString("|ds=")
