@@ -115,11 +115,13 @@ type turnState struct {
 	// on an ungrounded finish: a real save is acknowledged as saved, a completed
 	// no-op is not (so the turn never falsely claims something was persisted).
 	writesSaved int
-	// writeRequested is set when a write tool was deferred (batched with other
-	// calls) and has not since completed. It guards against a request like
+	// writesPending counts write tool calls that were deferred (batched with other
+	// calls) and have not since completed. It guards against a request like
 	// "calculate X and save it" silently losing the save when the batched read
-	// grounds the turn and the model answers without re-issuing the write.
-	writeRequested bool
+	// grounds the turn and the model answers without re-issuing the write. A count
+	// (not a bool) so a response that defers SEVERAL writes, completed one at a
+	// time, still tracks the stragglers — one completion doesn't clear them all.
+	writesPending int
 	// writeNudges bounds how many times the loop re-prompts a model that tries to
 	// answer with an outstanding requested-but-uncompleted write.
 	writeNudges int
@@ -133,7 +135,7 @@ const maxWriteNudges = 1
 // to save something but the write was deferred and never completed — so an
 // answer doesn't silently drop the requested write. Empty when no nudge is due.
 func (st *turnState) pendingWriteNudge() string {
-	if st.writeRequested && st.writeNudges < maxWriteNudges {
+	if st.writesPending > 0 && st.writeNudges < maxWriteNudges {
 		st.writeNudges++
 		return "You were asked to save/persist something but the write has not been created yet. Call the write tool on its own step to create the pending change, then answer."
 	}
@@ -702,8 +704,10 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				// seeing the results (same deferral terminal + render_chart get).
 				if len(resp.ToolCalls) > 1 {
 					// Remember the write was requested but not run, so the turn
-					// can't finish (silently dropping it) before it is created.
-					st.writeRequested = true
+					// can't finish (silently dropping it) before it is created. Count
+					// each deferred write: a batch of several writes leaves several
+					// pending, each cleared only as its own re-issue completes.
+					st.writesPending++
 					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call " + tc.Name + " on its own step — not alongside any other tool call (query, search, lookup, another write, or answer). First observe the results you want to record, then call it alone.", IsError: true})
 					continue
 				}
@@ -1158,13 +1162,17 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 				answer = noWriteAckText
 			}
 		}
-		// A write the user asked for was deferred but never created — the model
-		// answered instead (e.g. it ignored the one nudge, or the budget ran out
-		// with the write batched in the last round). Disclose it here, on every
-		// terminal-answer path, so the save is never silently dropped.
-		if st.writeRequested {
-			answer = strings.TrimRight(answer, "\n") + "\n\n" + pendingWriteNotice
+	}
+	// A write the user asked for was deferred but never created — the model
+	// finished instead (it ignored the one nudge, or the budget ran out with the
+	// write batched in the last round). Disclose it on ANY terminal (answer /
+	// clarify / decline) so the save is never silently dropped.
+	if st.writesPending > 0 {
+		answer = strings.TrimRight(answer, "\n")
+		if answer != "" {
+			answer += "\n\n"
 		}
+		answer += pendingWriteNotice
 	}
 	r.finalize(ctx, st, TurnFinal{
 		Status:      status,
@@ -1184,12 +1192,12 @@ const writeAckText = "Done — the requested change was saved as a pending item 
 // model-authored (ungrounded) figure.
 const noWriteAckText = "I didn't create a new pending change this turn — it either already exists or required no action. I also didn't run any query, so there are no new figures to report."
 
-// pendingWriteNotice is appended to a terminal answer that finishes while a
-// requested write is still pending — the model answered without re-issuing the
-// deferred write (it ignored the nudge, or the step budget ran out with the write
-// batched in the last round) — so the user learns the save didn't complete
-// instead of it being silently dropped.
-const pendingWriteNotice = "Note: I ran out of steps before saving the change you asked for, so nothing was persisted — ask again to save it."
+// pendingWriteNotice is appended to any terminal (answer / clarify / decline)
+// that finishes while a requested write is still pending — the model finished
+// without re-issuing the deferred write (it ignored the nudge, or the step budget
+// ran out with the write batched in the last round) — so the user learns the save
+// didn't complete instead of it being silently dropped.
+const pendingWriteNotice = "Note: I wasn't able to save the change you asked for this turn, so nothing was persisted — ask again to save it."
 
 // finishUngrounded declines a turn whose model insisted on answering without
 // running any query — emitting that answer would surface fabricated data, so

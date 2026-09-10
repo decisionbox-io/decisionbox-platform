@@ -94,12 +94,15 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	r.emitTool(ctx, st, ev, false)
 
 	// The write tool ran to completion (nil error): the user's requested write has
-	// been serviced, so clear the outstanding-write guard and let the model finish
-	// the turn to report the outcome (mutationsDone gates canAnswer). This holds
-	// whether or not a proposal came back — a no-op / already-exists is still a
-	// completed outcome the user should hear about.
+	// been serviced, so retire ONE outstanding-write guard (not all — several writes
+	// may have been deferred, each cleared as its own re-issue completes) and let the
+	// model finish the turn to report the outcome (mutationsDone gates canAnswer).
+	// This holds whether or not a proposal came back — a no-op / already-exists is
+	// still a completed outcome the user should hear about.
 	st.mutationsDone++
-	st.writeRequested = false
+	if st.writesPending > 0 {
+		st.writesPending--
+	}
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
