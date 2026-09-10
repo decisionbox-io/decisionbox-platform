@@ -77,7 +77,7 @@ Generation is off by default and, where it is enabled, respects a per-project **
 |----------|---------|-------------|
 | `DISCOVERY_QUESTIONS_ENABLED` | `false` | Master switch for question generation. Off by default. The agent runs as a separate container, so this is forwarded from the API process to spawned agent containers automatically. |
 | `DISCOVERY_QUESTIONS_MAX` | `5` | Hard cap on the number of questions generated per run (after dedup against already-asked / already-answered questions). |
-| `DISCOVERY_QUESTIONS_MAX_OUTPUT` | `2000` | Output-token budget for the single generation call, budgeted against the model's context window like the analysis/recommendation phases. |
+| `DISCOVERY_QUESTIONS_MAX_OUTPUT` | model's output cap | Optional ceiling on the single generation call. Unset, the phase uses the model's own output cap and budgets it against the context window, like the analysis/recommendation phases. Set it only to deliberately cap the spend — a value below what the response needs truncates it mid-JSON and the phase yields nothing. |
 | `DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT` | `50` | An insight/recommendation with confidence below this percentage is treated as "uncertain" and eligible to raise a question. |
 | `DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES` | `1` | How many times to re-prompt if the model's response can't be parsed as the questions envelope. |
 | `DISCOVERY_QUESTIONS_TIMEOUT` | `3m` | Dedicated wall-clock budget for the questions hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
@@ -93,7 +93,7 @@ Semantic dedup / trend detection and per-analysis-area retrieval of prior findin
 |----------|---------|-------------|
 | `DISCOVERY_REFLECTION_ENABLED` | `false` | Master switch for the reflection / Discovery Ledger hop. Off by default. Forwarded from the API process to spawned agent containers automatically. |
 | `DISCOVERY_REFLECTION_TIMEOUT` | `3m` | Dedicated wall-clock budget for the reflection hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
-| `DISCOVERY_REFLECTION_MAX_OUTPUT` | `3000` | Output-token budget for the single reflection call, budgeted against the model's context window. |
+| `DISCOVERY_REFLECTION_MAX_OUTPUT` | model's output cap | Optional ceiling on the single reflection call. Unset, the phase uses the model's own output cap and budgets it against the context window. Set it only to deliberately cap the spend — the reflection response re-judges every prior ledger finding, so it grows with the ledger, and a value below what it needs truncates it mid-JSON and yields no coverage, learnings or next-tasks. |
 | `DISCOVERY_REFLECTION_PARSE_MAX_RETRIES` | `1` | How many times to re-prompt if the model's reflection response can't be parsed. |
 | `DISCOVERY_LEDGER_MAX_FINDINGS` | `500` | Retention cap on ledger findings per project; least-valuable (resolved/refuted, oldest) are pruned first. |
 | `DISCOVERY_LEDGER_DEDUP_MINSCORE` | `0.85` | Cosine-similarity floor above which a new finding is treated as a semantic duplicate of a prior one (needs the embedding provider). |

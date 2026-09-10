@@ -185,14 +185,11 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
 
 	window, modelOutputCap := o.resolveModelBudget()
-	outputCap := clampInt(goconfig.GetEnvAsInt(discoveryQuestionsMaxOutputEnv, defaultDiscoveryQuestionsMaxOutput), 256, 32000)
-	// Never request more output than the model/operator allows — mirror the
-	// analysis/recommendation paths, which budget against resolveModelBudget's
-	// output cap. Without this, a high DISCOVERY_QUESTIONS_MAX_OUTPUT (or a model
-	// whose real cap is lower) could send a max_tokens the provider 4xx-rejects.
-	if modelOutputCap > 0 && outputCap > modelOutputCap {
-		outputCap = modelOutputCap
-	}
+	// Default to the model's own cap, mirroring the analysis/recommendation
+	// paths; DISCOVERY_QUESTIONS_MAX_OUTPUT stays available as an operator
+	// override and is never allowed above what the model itself accepts (a
+	// too-high max_tokens is 4xx-rejected by some providers). See issue #403.
+	outputCap := phaseOutputCap(discoveryQuestionsMaxOutputEnv, modelOutputCap, 256, defaultDiscoveryQuestionsMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := questionsResponseFormat()
@@ -220,6 +217,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 		parsed, rawCount, perr := parseQuestions(chatResult.Content)
 		if perr != nil {
 			lastErr = perr
+			logOutputCapTruncation("Clarifying questions", discoveryQuestionsMaxOutputEnv, attempt, maxTokens, chatResult.TokensOut)
 			continue
 		}
 		final := postProcessQuestions(parsed, validTargets, existingKeys, maxN)

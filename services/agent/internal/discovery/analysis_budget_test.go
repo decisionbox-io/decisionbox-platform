@@ -127,3 +127,75 @@ func TestAnalysisMinOutputTokens_EnvOverride(t *testing.T) {
 		t.Fatalf("invalid env should fall back to %d, got %d", defaultAnalysisMinOutputTokens, got)
 	}
 }
+
+// --- phaseOutputCap (issue #403) ---
+
+// TestPhaseOutputCap_UnsetUsesModelCap is the fix: with no env override the
+// phase inherits the model's own cap, exactly like the analysis and
+// recommendation paths, instead of a small fixed default that silently
+// truncated the response.
+func TestPhaseOutputCap_UnsetUsesModelCap(t *testing.T) {
+	t.Setenv("DBX_TEST_PHASE_CAP", "")
+	if got := phaseOutputCap("DBX_TEST_PHASE_CAP", 64000, 512, 3000); got != 64000 {
+		t.Errorf("unset env must yield the model cap, got %d want 64000", got)
+	}
+}
+
+// TestPhaseOutputCap_EnvOverrides keeps the operator knob working.
+func TestPhaseOutputCap_EnvOverrides(t *testing.T) {
+	t.Setenv("DBX_TEST_PHASE_CAP", "9000")
+	if got := phaseOutputCap("DBX_TEST_PHASE_CAP", 64000, 512, 3000); got != 9000 {
+		t.Errorf("env override not honored, got %d want 9000", got)
+	}
+}
+
+// TestPhaseOutputCap_EnvNeverExceedsModel — a too-high override must not produce
+// a max_tokens the provider rejects.
+func TestPhaseOutputCap_EnvNeverExceedsModel(t *testing.T) {
+	t.Setenv("DBX_TEST_PHASE_CAP", "30000")
+	if got := phaseOutputCap("DBX_TEST_PHASE_CAP", 4096, 512, 3000); got != 4096 {
+		t.Errorf("override must be bounded by the model cap, got %d want 4096", got)
+	}
+}
+
+// TestPhaseOutputCap_UnknownModelUsesFallback guards the zero-cap trap:
+// boundOutputCap would keep a 0 cap at 0 and collapse max_tokens (and the
+// floor) to nothing, so an unknown model must fall back to the constant.
+func TestPhaseOutputCap_UnknownModelUsesFallback(t *testing.T) {
+	t.Setenv("DBX_TEST_PHASE_CAP", "")
+	if got := phaseOutputCap("DBX_TEST_PHASE_CAP", 0, 512, 3000); got != 3000 {
+		t.Errorf("unknown model cap must fall back, got %d want 3000", got)
+	}
+}
+
+// TestPhaseOutputCap_InvalidEnvFallsBackToModel — a garbage value must not be
+// treated as 0 and collapse the budget.
+func TestPhaseOutputCap_InvalidEnvFallsBackToModel(t *testing.T) {
+	for _, v := range []string{"abc", "0", "-5"} {
+		t.Setenv("DBX_TEST_PHASE_CAP", v)
+		if got := phaseOutputCap("DBX_TEST_PHASE_CAP", 64000, 512, 3000); got != 64000 {
+			t.Errorf("invalid env %q must fall through to the model cap, got %d", v, got)
+		}
+	}
+}
+
+// TestPhaseOutputCap_RegressionForIssue403 reproduces the production numbers:
+// a 15K-token prompt on a 200K window previously got max_tokens=3000 and
+// truncated. With the model cap it gets the analysis floor or better.
+func TestPhaseOutputCap_RegressionForIssue403(t *testing.T) {
+	t.Setenv("DBX_TEST_PHASE_CAP", "")
+	const window, prompt, modelCap = 200000, 15337, 64000
+
+	old := budgetedMaxOutputTokens(window, prompt, 3000, defaultAnalysisMinOutputTokens)
+	now := budgetedMaxOutputTokens(window, prompt, phaseOutputCap("DBX_TEST_PHASE_CAP", modelCap, 512, 3000), defaultAnalysisMinOutputTokens)
+
+	if old != 3000 {
+		t.Fatalf("precondition: old behaviour should cap at 3000, got %d", old)
+	}
+	if now <= old {
+		t.Errorf("model-cap budget %d must exceed the old fixed cap %d", now, old)
+	}
+	if now < defaultAnalysisMinOutputTokens {
+		t.Errorf("budget %d fell below the analysis floor %d", now, defaultAnalysisMinOutputTokens)
+	}
+}
