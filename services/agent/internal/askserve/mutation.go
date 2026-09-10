@@ -42,10 +42,27 @@ type MutationOutput struct {
 	Output     any
 }
 
-// mutationDefs projects the runtime's mutation tools to the LLM tool wire shape.
+// reservedToolName reports whether name collides with a built-in read-only or
+// terminal tool. A registered mutation tool that shadows one is dropped — never
+// offered (mutationDefs) and never dispatched (ProjectRuntime.mutationTool) — so
+// a misnamed enterprise tool can't intercept a core query/search/answer call or
+// send a duplicate tool definition to the provider.
+func reservedToolName(name string) bool {
+	switch actionKind(name) {
+	case actQuery, actLookup, actSearch, actSearchInsights, actSearchKnowledge, actRenderChart, actAnswer, actClarify, actDecline:
+		return true
+	}
+	return false
+}
+
+// mutationDefs projects the runtime's mutation tools to the LLM tool wire shape,
+// skipping any that shadow a built-in tool name.
 func mutationDefs(tools []MutationTool) []gollm.ToolDefinition {
 	out := make([]gollm.ToolDefinition, 0, len(tools))
 	for _, t := range tools {
+		if reservedToolName(t.Name) {
+			continue
+		}
 		out = append(out, gollm.ToolDefinition{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
 	return out

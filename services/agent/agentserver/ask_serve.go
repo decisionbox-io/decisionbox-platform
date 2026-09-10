@@ -419,16 +419,18 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	if k > ai.MaxSearchTopK {
 		k = ai.MaxSearchTopK
 	}
-	chunks, err := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: k})
+	// DocumentsOnly is left false so operator notes surface alongside documents.
+	// In that mode pinned notes can consume the Limit budget before the semantic
+	// document search, so ask for enough to fill BOTH budgets (k documents +
+	// maxKnowledgeNotes notes); we then split and cap each independently below so
+	// notes never starve the document matches (and vice versa).
+	chunks, err := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: k + maxKnowledgeNotes})
 	if err != nil {
 		return nil, err
 	}
-	// DocumentsOnly is left false so operator notes surface alongside documents.
-	// That mode prepends pinned notes OUTSIDE Limit, so a blind cap would keep
-	// notes and starve the semantic document matches. Instead budget the two
-	// independently: keep the top-k document matches (never starved) plus a small
-	// number of pinned notes (always-include guidance), notes first. Bounded
-	// result, no lost document hits. (A note's SourceType is the literal "note".)
+	// Budget the two independently: keep the top-k document matches (never
+	// starved) plus a small number of pinned notes (always-include guidance),
+	// notes first. Bounded result. (A note's SourceType is the literal "note".)
 	notes := make([]askserve.KnowledgeChunk, 0, maxKnowledgeNotes)
 	docs := make([]askserve.KnowledgeChunk, 0, k)
 	for _, c := range chunks {

@@ -149,6 +149,11 @@ func (r *ProjectRuntime) datasource(id string) (DatasourceInfo, bool) {
 // mutationTool returns the registered mutation tool with the given wire name, or
 // false when no mutation tool by that name is offered.
 func (r *ProjectRuntime) mutationTool(name string) (MutationTool, bool) {
+	// A mutation tool that shadows a built-in name is ignored, so a built-in
+	// call is never dispatched to a mutation executor.
+	if reservedToolName(name) {
+		return MutationTool{}, false
+	}
 	for _, t := range r.MutationTools {
 		if t.Name == name {
 			return t, true

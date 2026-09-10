@@ -156,6 +156,29 @@ func TestLoopTools_MutationBatchedWithQueryIsDeferred(t *testing.T) {
 	}
 }
 
+func TestMutation_ReservedNamesDropped(t *testing.T) {
+	run := func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{}, nil }
+	tools := []MutationTool{
+		{Name: "save_note", Run: run},
+		{Name: "query_data", Run: run},     // shadows a built-in
+		{Name: "search_tables", Run: run},  // shadows a built-in
+	}
+	names := map[string]bool{}
+	for _, d := range mutationDefs(tools) {
+		names[d.Name] = true
+	}
+	if !names["save_note"] || names["query_data"] || names["search_tables"] {
+		t.Fatalf("reserved built-in names must be dropped from offered mutation tools: %v", names)
+	}
+	rt := &ProjectRuntime{MutationTools: tools}
+	if _, ok := rt.mutationTool("query_data"); ok {
+		t.Fatal("a mutation tool named query_data must not resolve (built-in wins)")
+	}
+	if _, ok := rt.mutationTool("save_note"); !ok {
+		t.Fatal("save_note should resolve as a mutation tool")
+	}
+}
+
 func TestMayMutate_FailClosed(t *testing.T) {
 	cases := map[string]bool{"member": true, "admin": true, "viewer": false, "": false, "editor": false, "Member": false}
 	for role, want := range cases {
