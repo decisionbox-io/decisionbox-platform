@@ -196,16 +196,32 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			si.recordErr(ctx, opts.ProjectID, "cached-schema filter: "+ferr.Error())
 			return nil, fmt.Errorf("schema_indexer: cached-schema filter: %w", ferr)
 		}
-		// Rebuild the map from the kept keys intersected with the input: a filter
-		// may only REMOVE keys, never add, so any key the filter returns that
-		// wasn't in the input is ignored, and any input key it dropped is left
-		// out. Rebuilding unconditionally (rather than trusting the length) means
-		// a same-length-but-different or invented-key result can't slip a
-		// dropped table back into the index. len(kept) is the upper bound.
-		filtered := make(map[string]models.TableSchema, len(kept))
+		// A filter may only SHRINK the catalog. Reject any returned key that
+		// wasn't in the input (a stale/typo'd scope entry, or a misbehaving
+		// plugin) — failing closed rather than silently building a partial index
+		// over the remaining tables. Same contract Orchestrator.discoverSchemas
+		// enforces on the run-time path.
+		inputSet := make(map[string]struct{}, len(keys))
+		for _, k := range keys {
+			inputSet[k] = struct{}{}
+		}
 		for _, k := range kept {
-			if s, ok := schemas[k]; ok {
-				filtered[k] = s
+			if _, ok := inputSet[k]; !ok {
+				si.recordErr(ctx, opts.ProjectID, "cached-schema filter invented key: "+k)
+				return nil, fmt.Errorf("schema_indexer: cached-schema filter returned %q which was not in the cached input; filters may only shrink the catalog", k)
+			}
+		}
+		// Rebuild the map from the kept keys. Rebuilding from the validated kept
+		// set (not trusting length) means a same-length-but-different result
+		// can't slip a dropped table back into the index.
+		keptSet := make(map[string]struct{}, len(kept))
+		for _, k := range kept {
+			keptSet[k] = struct{}{}
+		}
+		filtered := make(map[string]models.TableSchema, len(kept))
+		for k, v := range schemas {
+			if _, ok := keptSet[k]; ok {
+				filtered[k] = v
 			}
 		}
 		schemas = filtered

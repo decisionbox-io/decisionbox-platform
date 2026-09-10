@@ -29,7 +29,13 @@ import (
 // parsed by the API's RunSync caller. Non-zero exit + an error object on
 // failure.
 func runListTables(cfg *config.Config, projectID, warehouseID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Configurable deadline: listing names on a large warehouse can be slow —
+	// BigQuery in particular makes a metadata call per table — so a fixed short
+	// cap would return an empty picker on exactly the 1000+ table warehouses this
+	// targets. Default 120s; operators raise LIST_TABLES_TIMEOUT_SECONDS for
+	// very large catalogs. The API's RunSync deadline is derived from the same
+	// env so the two match.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(envIntDefault("LIST_TABLES_TIMEOUT_SECONDS", 120))*time.Second)
 	defer cancel()
 	ctx = gowarehouse.WithProjectID(ctx, projectID)
 
