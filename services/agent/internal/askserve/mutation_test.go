@@ -277,6 +277,51 @@ func TestLoopTools_DeferredWriteNudgedBeforeAnswer(t *testing.T) {
 	}
 }
 
+func TestLoopTools_DeferredWriteDisclosedWhenNudgeIgnored(t *testing.T) {
+	// "count rows and save it": the batch defers the save; the model then answers,
+	// gets nudged once, and answers AGAIN (ignoring the nudge) with steps to spare.
+	// The save was never created, so the finishing answer must disclose it rather
+	// than end with a clean answer while nothing was persisted.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{ // round 1: query + save batched → query grounds, save deferred
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "q1", Name: string(actQuery), Input: map[string]any{"query": "SELECT COUNT(*) c FROM ds.t"}},
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 2: answer → nudged
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 3: answer again → finishes
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 0 {
+		t.Fatalf("the model never re-issued the write, so nothing should have been saved (ran %d)", saved)
+	}
+	if store.final == nil || store.final.Answer == "" {
+		t.Fatalf("turn should finish with an answer, got %+v", store.final)
+	}
+	if !strings.Contains(store.final.Answer, "count is 100") {
+		t.Fatalf("the grounded answer should be preserved, got %q", store.final.Answer)
+	}
+	if !strings.Contains(store.final.Answer, pendingWriteNotice) {
+		t.Fatalf("a dropped write must be disclosed even off the budget path, got %q", store.final.Answer)
+	}
+}
+
 func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {

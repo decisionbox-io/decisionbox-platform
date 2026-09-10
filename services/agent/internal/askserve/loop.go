@@ -736,12 +736,9 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			r.finishUngrounded(ctx, st)
 			return
 		}
-		// A write deferred in the final allowed round has no later step to run alone,
-		// and this synthesis only offers answer/decline — so a grounded answer would
-		// silently drop the requested save. Disclose it rather than lose it.
-		if act.Kind == actAnswer && st.writeRequested && st.groundedEvents > 0 {
-			act.Text = strings.TrimRight(act.Text, "\n") + "\n\n" + pendingWriteNotice
-		}
+		// finishTerminal discloses any still-pending write (a save deferred in the
+		// last round has no later step to run alone), so a grounded final answer
+		// never silently drops the requested save.
 		r.finishTerminal(ctx, st, act)
 		return
 	}
@@ -1157,6 +1154,13 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 				answer = noWriteAckText
 			}
 		}
+		// A write the user asked for was deferred but never created — the model
+		// answered instead (e.g. it ignored the one nudge, or the budget ran out
+		// with the write batched in the last round). Disclose it here, on every
+		// terminal-answer path, so the save is never silently dropped.
+		if st.writeRequested {
+			answer = strings.TrimRight(answer, "\n") + "\n\n" + pendingWriteNotice
+		}
 	}
 	r.finalize(ctx, st, TurnFinal{
 		Status:      status,
@@ -1176,10 +1180,11 @@ const writeAckText = "Done — the requested change was saved as a pending item 
 // model-authored (ungrounded) figure.
 const noWriteAckText = "I didn't create a new pending change this turn — it either already exists or required no action. I also didn't run any query, so there are no new figures to report."
 
-// pendingWriteNotice is appended to a grounded final answer when the step budget
-// is exhausted while a requested write is still pending (it was batched in the
-// last allowed round, leaving no later step to re-issue it alone) — so the user
-// learns the save didn't complete instead of it being silently dropped.
+// pendingWriteNotice is appended to a terminal answer that finishes while a
+// requested write is still pending — the model answered without re-issuing the
+// deferred write (it ignored the nudge, or the step budget ran out with the write
+// batched in the last round) — so the user learns the save didn't complete
+// instead of it being silently dropped.
 const pendingWriteNotice = "Note: I ran out of steps before saving the change you asked for, so nothing was persisted — ask again to save it."
 
 // finishUngrounded declines a turn whose model insisted on answering without
