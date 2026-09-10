@@ -79,8 +79,10 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	window, modelOutputCap := o.resolveModelBudget()
 	// Default to the model's own cap, mirroring the analysis and recommendation
 	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
-	// override. A fixed default here silently truncated the response on any
-	// project with a substantial ledger (issue #403).
+	// override. The response is bounded by the prompt caps
+	// (maxPriorFindingsInPrompt, maxLedgerTasksInPrompt, the 300-table catalog
+	// cap), so it does not grow without limit — a fixed default was simply
+	// below what an ordinary ledger needs, and truncated it mid-JSON (#403).
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
