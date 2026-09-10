@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   WarehouseFormFields,
   WarehouseFormState,
@@ -106,16 +107,24 @@ function ControlledHarness({
   providers,
   initial,
   hasSavedCredential,
+  authorizationSlot,
 }: {
   providers: ProviderMeta[];
   initial: WarehouseFormState;
   hasSavedCredential?: boolean;
+  authorizationSlot?: ReactNode;
 }) {
   const [v, setV] = useState<WarehouseFormState>(initial);
   return (
     <MantineProvider>
       <div data-testid="state-dump">{JSON.stringify(v)}</div>
-      <WarehouseFormFields providers={providers} value={v} onChange={setV} hasSavedCredential={hasSavedCredential} />
+      <WarehouseFormFields
+        providers={providers}
+        value={v}
+        onChange={setV}
+        hasSavedCredential={hasSavedCredential}
+        authorizationSlot={authorizationSlot}
+      />
     </MantineProvider>
   );
 }
@@ -402,6 +411,36 @@ describe('three-legged auth methods', () => {
     );
     expect(screen.queryByLabelText(/Credentials JSON/)).not.toBeInTheDocument();
     expect(screen.getByText(/no credential to enter/i)).toBeInTheDocument();
+  });
+
+  // The notice is what a caller with nothing better to offer says. One that can
+  // collect the authorization on this form — an enterprise build with
+  // connections — passes its own affordance instead, and must not have both.
+  test('a caller\'s authorization slot replaces the explanation', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'oauth_user' }}
+        authorizationSlot={<div>pick a connection</div>}
+      />,
+    );
+    expect(screen.getByText('pick a connection')).toBeInTheDocument();
+    expect(screen.queryByText(/no credential to enter/i)).not.toBeInTheDocument();
+  });
+
+  // The slot belongs to the three-legged branch, not to the form. A provider's
+  // static method still renders its own credential field, and the slot has no
+  // business appearing above it.
+  test('the slot is ignored by a method that has a credential to type', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'sa_key' }}
+        authorizationSlot={<div>pick a connection</div>}
+      />,
+    );
+    expect(screen.queryByText('pick a connection')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Credentials JSON/)).toBeInTheDocument();
   });
 
   // The guard reads the selected method, not the provider. A provider offering
