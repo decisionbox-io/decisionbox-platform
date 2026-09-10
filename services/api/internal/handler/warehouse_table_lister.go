@@ -11,12 +11,24 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
 
-// listTablesTimeoutSecs is the list-tables budget in seconds, from the SAME
-// LIST_TABLES_TIMEOUT_SECONDS env the agent reads (default 120s). It is passed
-// to RunSync as TimeoutSeconds so the Kubernetes runner sizes the Job's
-// ActiveDeadlineSeconds accordingly (not the historical 60s cap), and the
-// context deadline is this value plus a small buffer so the agent's own
-// deadline fires first with a clean JSON error.
+const (
+	// listTablesJobHeadroomSecs is how much longer the Kubernetes Job runs than
+	// the agent's own listing deadline (LIST_TABLES_TIMEOUT_SECONDS). Pod
+	// scheduling/startup eats into the Job's ActiveDeadlineSeconds (which counts
+	// from Job creation) but not the agent's internal deadline (from process
+	// start), so without headroom a large listing could be force-killed before
+	// the agent emits its JSON result. Generous enough to cover scheduling +
+	// image pull on a cold node.
+	listTablesJobHeadroomSecs = 60
+	// listTablesCtxHeadroomSecs keeps the API wait just beyond the Job deadline
+	// so the request context is the outermost bound, not the first to fire.
+	listTablesCtxHeadroomSecs = 15
+)
+
+// listTablesTimeoutSecs is the agent's list-tables budget in seconds, from the
+// SAME LIST_TABLES_TIMEOUT_SECONDS env the agent reads (default 120s) and which
+// is forwarded to the spawned agent so both agree. The Kubernetes Job deadline
+// and the API context deadline are derived from it with headroom (see above).
 func listTablesTimeoutSecs() int {
 	secs := 120
 	if v := os.Getenv("LIST_TABLES_TIMEOUT_SECONDS"); v != "" {
@@ -62,14 +74,18 @@ func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, w
 	if warehouseID != "" {
 		args = append(args, "--warehouse-id", warehouseID)
 	}
-	// Bound the wait to the list-tables budget (+buffer) so a slow large-warehouse
-	// listing isn't cut off early by an unbounded request context, and pass the
-	// budget as TimeoutSeconds so the Kubernetes runner sizes the Job deadline to
-	// match instead of its default 60s cap.
-	opts := runner.RunSyncOptions{ProjectID: projectID, Args: args, TimeoutSeconds: a.timeoutSecs}
-	if a.timeoutSecs > 0 {
+	// The agent's own deadline (LIST_TABLES_TIMEOUT_SECONDS, forwarded to it) is
+	// a.timeoutSecs; give the Kubernetes Job deadline headroom beyond that so pod
+	// startup can't force-kill it before the agent emits its result, and keep the
+	// request context just beyond the Job deadline so it's the outermost bound.
+	jobDeadlineSecs := a.timeoutSecs
+	if jobDeadlineSecs > 0 {
+		jobDeadlineSecs += listTablesJobHeadroomSecs
+	}
+	opts := runner.RunSyncOptions{ProjectID: projectID, Args: args, TimeoutSeconds: jobDeadlineSecs}
+	if jobDeadlineSecs > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(a.timeoutSecs+15)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(jobDeadlineSecs+listTablesCtxHeadroomSecs)*time.Second)
 		defer cancel()
 	}
 	res, err := a.runner.RunSync(ctx, opts)

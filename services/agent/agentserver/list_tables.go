@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -95,6 +96,19 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 			lastErr = err
 			continue
 		}
+		// Apply any registered ListTables filters (the same hook the index pass
+		// uses at schema_discovery.go), so a governance/policy allow-deny list is
+		// honoured by the picker too — the operator can't scope to a table the
+		// deployment forbids. The user-editable discovery-scope filter is a
+		// no-op here (its repo isn't wired in --list-tables mode, so it passes
+		// through) — deliberately, so the picker still shows the full set to
+		// choose a scope from. A filter error skips the dataset like a list error.
+		filtered, ferr := agentplugin.ApplyListTablesFilters(whCtx, projectID, dataset, names)
+		if ferr != nil {
+			lastErr = ferr
+			continue
+		}
+		names = filtered
 		listed++
 		for _, name := range names {
 			qualified := dataset + "." + name
