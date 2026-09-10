@@ -71,6 +71,50 @@ func TestAuthMethod_AThreeLeggedMethodCarriesItsEndpoints(t *testing.T) {
 	}
 }
 
+// The identity fields are what let a connection be labelled with the account
+// behind it, and the dashboard joins the scopes into the consent request. A
+// method that declares neither must emit neither: the dashboard would append
+// "undefined" to the scope string it asks Google for, and the consent would
+// fail on a scope nobody declared.
+func TestAuthorizationCode_IdentityIsOptionalAndRoundTrips(t *testing.T) {
+	bare, err := json.Marshal(AuthorizationCode{
+		Provider: "example", AuthURL: "https://a", TokenURL: "https://t",
+		Scopes: []string{"scope.readonly"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, absent := range []string{"identity_scopes", "user_info_url"} {
+		if strings.Contains(string(bare), `"`+absent+`"`) {
+			t.Errorf("a method with no identity capability emitted %q: %s", absent, bare)
+		}
+	}
+
+	b, err := json.Marshal(AuthorizationCode{
+		Provider: "example", AuthURL: "https://a", TokenURL: "https://t",
+		Scopes:         []string{"scope.readonly"},
+		IdentityScopes: []string{"openid", "https://example/userinfo.email"},
+		UserInfoURL:    "https://example/userinfo",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back AuthorizationCode
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(back.IdentityScopes) != 2 || back.UserInfoURL != "https://example/userinfo" {
+		t.Errorf("round trip lost the identity capability: %+v", back)
+	}
+	// Requested, never required — the exchange checks Scopes and no other
+	// list, so a withheld identity scope costs a label and not the grant.
+	for _, s := range back.Scopes {
+		if s == "openid" {
+			t.Error("an identity scope leaked into Scopes, which the exchange requires")
+		}
+	}
+}
+
 // --- resolving the selected method ---
 
 func metaWithMethods(ids ...string) ProviderMeta {

@@ -58,6 +58,27 @@ type AuthorizationCode struct {
 	// the resulting token is valid but cannot do the job — so this list is
 	// what the exchange checks the grant against, not merely what it asks for.
 	Scopes []string `json:"scopes"`
+
+	// IdentityScopes are requested at consent so the resulting connection can
+	// be labelled with the account behind it, and are NOT required of the
+	// result.
+	//
+	// They are separate from Scopes because they buy a label, not a
+	// capability: withholding one leaves a grant that does everything the
+	// datasource needs, and refusing it over a missing display name would be
+	// absurd. Keeping them out of Scopes is what makes that true — the
+	// exchange checks that list and no other.
+	IdentityScopes []string `json:"identity_scopes,omitempty"`
+
+	// UserInfoURL reports who authorized the grant, so two connections to the
+	// same source can be told apart.
+	//
+	// It is declared here for the same reason RevokeURL is: it is a fact the
+	// provider publishes alongside its endpoints, not deployment
+	// configuration. Optional — a provider with no such endpoint, or a
+	// consent that withheld IdentityScopes, yields an unlabelled connection
+	// rather than a failed one.
+	UserInfoURL string `json:"user_info_url,omitempty"`
 }
 
 // AuthMethodByID returns the provider's declared auth method with the given

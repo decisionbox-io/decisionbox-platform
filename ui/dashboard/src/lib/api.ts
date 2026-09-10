@@ -740,6 +740,12 @@ export interface AuthorizationCode {
   revoke_url?: string;
   /** Scopes the consent must grant; a partial grant is refused at exchange. */
   scopes: string[];
+  /**
+   * Scopes asked for so the connection can be labelled with the account behind
+   * it. Requested alongside `scopes` but never required: withholding one costs
+   * a display name, not a capability.
+   */
+  identity_scopes?: string[];
 }
 
 export interface ConfigField {
