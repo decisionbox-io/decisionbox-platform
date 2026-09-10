@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 
+	gomutation "github.com/decisionbox-io/decisionbox/libs/go-common/askmutation"
+	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/askserve"
@@ -17,6 +19,7 @@ import (
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // runAskServe starts the ad-hoc data Q&A serve mode: an always-up HTTP service
@@ -72,6 +75,24 @@ func runAskServe(cfg *config.Config) error {
 	} else {
 		defer vsCleanup()
 	}
+
+	// Activate the knowledge-sources provider if an enterprise plugin registered a
+	// factory. No-op when only the community build is loaded (the search_knowledge
+	// tool is then not offered). Historically Configure was called only on the
+	// discovery path, so ask-serve saw only the no-op — this wires it here too.
+	if err := gosources.Configure(ctx, gosources.Dependencies{
+		Mongo:          mongoClient.Database(),
+		Vectorstore:    vectorStore,
+		SecretProvider: secretProvider,
+	}); err != nil {
+		applog.WithError(err).Warn("ask-serve: knowledge sources provider configuration failed — search_knowledge disabled")
+	}
+	knowledgeConfigured := gosources.IsConfigured()
+
+	// Mutation tools (write actions such as save_note) registered by an enterprise
+	// plugin. Empty on a community build, so the loop offers no write tool. Built
+	// once with the shared Mongo handle bound; the registry set is process-global.
+	mutationTools := buildMutationTools(mongoClient.Database())
 
 	serveCfg := askserve.LoadConfig()
 
@@ -285,14 +306,27 @@ func runAskServe(cfg *config.Config) error {
 			insightsProvider = is
 		}
 
+		// Knowledge provider (uploaded documents + operator notes) — only when an
+		// enterprise sources provider is actually configured, so a community build
+		// (no-op provider) does not offer a search_knowledge tool that always
+		// returns nothing.
+		var knowledgeProvider askserve.KnowledgeProvider
+		if knowledgeConfigured {
+			knowledgeProvider = &sourcesKnowledgeAdapter{projectID: projectID}
+		}
+
 		return askserve.NewProjectRuntime(askserve.ProjectRuntimeOptions{
-			AIClient:         aiClient,
-			Model:            project.LLM.Model,
-			InsightsProvider: insightsProvider,
-			Schema:           schemaRouter,
-			Datasources:      datasources,
-			PrimaryID:        primaryID,
-			Build:            warehouseBuild,
+			AIClient:          aiClient,
+			Model:             project.LLM.Model,
+			InsightsProvider:  insightsProvider,
+			KnowledgeProvider: knowledgeProvider,
+			MutationTools:     mutationTools,
+			Schema:            schemaRouter,
+			Datasources:       datasources,
+			PrimaryID:         primaryID,
+			BusinessSummary:   project.BusinessSummary,
+			BaseContext:       effectiveBaseContext(project),
+			Build:             warehouseBuild,
 		}), nil
 	}
 
@@ -331,4 +365,87 @@ func orderPrimaryFirst(warehouses []models.WarehouseConfig, primaryID string) []
 		}
 	}
 	return out
+}
+
+// buildMutationTools adapts the registered go-common askmutation tools to the
+// askserve.MutationTool shape, binding the shared Mongo handle into each Run
+// closure so the loop stays storage-agnostic. Returns nil when no plugin
+// registered any (community build) — the loop then offers no write tool.
+func buildMutationTools(db *mongo.Database) []askserve.MutationTool {
+	registered := gomutation.Tools()
+	if len(registered) == 0 {
+		return nil
+	}
+	out := make([]askserve.MutationTool, 0, len(registered))
+	for _, t := range registered {
+		t := t // capture per-iteration
+		out = append(out, askserve.MutationTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+			Run: func(ctx context.Context, in askserve.MutationInput) (askserve.MutationOutput, error) {
+				res, err := t.Run(ctx, gomutation.Request{
+					ProjectID: in.ProjectID,
+					SessionID: in.SessionID,
+					TurnID:    in.TurnID,
+					CallerSub: in.CallerSub,
+					Args:      in.Args,
+					Mongo:     db,
+				})
+				if err != nil {
+					return askserve.MutationOutput{}, err
+				}
+				return askserve.MutationOutput{ProposalID: res.ProposalID, Output: res.Output}, nil
+			},
+		})
+	}
+	return out
+}
+
+// sourcesKnowledgeAdapter adapts the go-common knowledge-sources provider to the
+// askserve.KnowledgeProvider the ask loop consumes, scoped to one project. The
+// underlying provider is registered by the enterprise sources plugin and
+// activated by gosources.Configure; a community-only build never activates it,
+// so this adapter is not constructed and the search_knowledge tool is absent.
+// DocumentsOnly is left false so a search returns operator notes as well as
+// document chunks — one tool covers both.
+type sourcesKnowledgeAdapter struct {
+	projectID string
+}
+
+func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query string, k int) ([]askserve.KnowledgeChunk, error) {
+	if k <= 0 {
+		k = ai.DefaultSearchTopK
+	}
+	if k > ai.MaxSearchTopK {
+		k = ai.MaxSearchTopK
+	}
+	chunks, err := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: k})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]askserve.KnowledgeChunk, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, askserve.KnowledgeChunk{
+			SourceName: c.SourceName,
+			SourceType: c.SourceType,
+			Text:       c.Text,
+			Score:      c.Score,
+		})
+	}
+	return out, nil
+}
+
+// effectiveBaseContext resolves the project's base-context for the ask prompt:
+// the primary datasource's per-warehouse base-context when set, else the
+// project-level one. Mirrors how discovery resolves prompts (per-warehouse
+// overrides project-level). Empty when the project has none.
+func effectiveBaseContext(project *models.Project) string {
+	if pw := project.PrimaryWarehouse(); pw.Prompts != nil && strings.TrimSpace(pw.Prompts.BaseContext) != "" {
+		return pw.Prompts.BaseContext
+	}
+	if project.Prompts != nil {
+		return project.Prompts.BaseContext
+	}
+	return ""
 }

@@ -10,14 +10,15 @@ import (
 type actionKind string
 
 const (
-	actQuery          actionKind = "query_data"
-	actLookup         actionKind = "lookup_schema"
-	actSearch         actionKind = "search_tables"
-	actSearchInsights actionKind = "search_insights"
-	actRenderChart    actionKind = "render_chart"
-	actAnswer         actionKind = "answer"
-	actClarify        actionKind = "clarify"
-	actDecline        actionKind = "decline"
+	actQuery           actionKind = "query_data"
+	actLookup          actionKind = "lookup_schema"
+	actSearch          actionKind = "search_tables"
+	actSearchInsights  actionKind = "search_insights"
+	actSearchKnowledge actionKind = "search_knowledge"
+	actRenderChart     actionKind = "render_chart"
+	actAnswer          actionKind = "answer"
+	actClarify         actionKind = "clarify"
+	actDecline         actionKind = "decline"
 )
 
 // terminal reports whether an action ends the turn. render_chart is NOT
@@ -47,6 +48,9 @@ type turnAction struct {
 	SearchInsights string // search_insights (query)
 	InsightsLimit  int    // search_insights (optional)
 
+	SearchKnowledge string // search_knowledge (query)
+	KnowledgeLimit  int    // search_knowledge (optional)
+
 	Chart json.RawMessage // render_chart (the raw ChartSpec input, validated later)
 
 	Text string // answer / clarify / decline body
@@ -69,6 +73,9 @@ type rawAction struct {
 
 	SearchInsights string `json:"search_insights"`
 	InsightsLimit  int    `json:"insights_limit"`
+
+	SearchKnowledge string `json:"search_knowledge"`
+	KnowledgeLimit  int    `json:"knowledge_limit"`
 
 	RenderChart json.RawMessage `json:"render_chart"`
 
@@ -138,8 +145,12 @@ func parseTurnAction(response string) (*turnAction, error) {
 		act.Kind = actSearchInsights
 		act.SearchInsights = strings.TrimSpace(raw.SearchInsights)
 		act.InsightsLimit = raw.InsightsLimit
+	case strings.TrimSpace(raw.SearchKnowledge) != "":
+		act.Kind = actSearchKnowledge
+		act.SearchKnowledge = strings.TrimSpace(raw.SearchKnowledge)
+		act.KnowledgeLimit = raw.KnowledgeLimit
 	default:
-		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, search_tables, search_insights, or render_chart")
+		return nil, fmt.Errorf("action JSON has no answer, clarify, decline, query, lookup_schema, search_tables, search_insights, search_knowledge, or render_chart")
 	}
 	return act, nil
 }
@@ -161,7 +172,8 @@ func rawHasNonChartAction(raw *rawAction) bool {
 		strings.TrimSpace(raw.Query) != "" ||
 		len(raw.LookupSchema) > 0 ||
 		strings.TrimSpace(raw.SearchTables) != "" ||
-		strings.TrimSpace(raw.SearchInsights) != ""
+		strings.TrimSpace(raw.SearchInsights) != "" ||
+		strings.TrimSpace(raw.SearchKnowledge) != ""
 }
 
 // normaliseToolEnvelope detects an Anthropic/OpenAI tool-use envelope
@@ -235,6 +247,20 @@ func normaliseToolEnvelope(jsonStr string, raw *rawAction) {
 			raw.SearchInsights = in.Query
 			if raw.InsightsLimit == 0 {
 				raw.InsightsLimit = in.Limit
+			}
+		}
+	case actSearchKnowledge:
+		if raw.SearchKnowledge != "" {
+			return
+		}
+		var in struct {
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if json.Unmarshal(env.Input, &in) == nil {
+			raw.SearchKnowledge = in.Query
+			if raw.KnowledgeLimit == 0 {
+				raw.KnowledgeLimit = in.Limit
 			}
 		}
 	case actRenderChart:
@@ -367,7 +393,7 @@ func jsonHasActionKey(s string) bool {
 	if json.Unmarshal([]byte(s), &probe) != nil {
 		return false
 	}
-	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "search_insights", "render_chart", "name"} {
+	for _, k := range []string{"answer", "clarify", "decline", "query", "lookup_schema", "search_tables", "search_insights", "search_knowledge", "render_chart", "name"} {
 		if _, ok := probe[k]; ok {
 			return true
 		}

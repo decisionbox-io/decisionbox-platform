@@ -35,6 +35,18 @@ type ProjectRuntime struct {
 	// May be nil when the project has no embedder / vector store.
 	InsightsProvider ai.InsightsProvider
 
+	// KnowledgeProvider serves search_knowledge (semantic search over the
+	// project's knowledge base — uploaded documents + operator notes). Nil when
+	// no knowledge provider is registered (community build) or wired, in which
+	// case the tool is not offered.
+	KnowledgeProvider KnowledgeProvider
+
+	// MutationTools are the write actions the loop may offer (e.g. save_note),
+	// supplied by the agentserver from the go-common askmutation registry. Empty
+	// on a community build (no plugin registers any), so no write tool is offered
+	// and the loop stays read-only. Offered only on the native tool-calling path.
+	MutationTools []MutationTool
+
 	// Schema serves lookup_schema (per datasource) and search_tables (across
 	// all datasources). Built eagerly from every datasource's cached schema —
 	// it needs no warehouse connection. May be nil when nothing is indexed.
@@ -45,6 +57,17 @@ type ProjectRuntime struct {
 	Datasources []DatasourceInfo
 	// PrimaryID is the datasource a query targets when it names none.
 	PrimaryID string
+
+	// BusinessSummary is the project's LLM-authored "what this business does"
+	// summary (distilled from the knowledge sources). Rendered compactly into the
+	// system prompt as the primary "what is this project" anchor. Empty when the
+	// project has no summary yet.
+	BusinessSummary string
+	// BaseContext is the project's (or primary datasource's) base-context — the
+	// shared analyst orientation prepended to discovery prompts. Rendered
+	// compactly into the system prompt so ask-serve has the same grounding. Empty
+	// when the project has none.
+	BaseContext string
 
 	// build lazily constructs a datasource's execution context (open + validate
 	// read-only + wire the executor).
@@ -75,13 +98,17 @@ type connEntry struct {
 // ProjectRuntimeOptions assembles a ProjectRuntime. The agentserver package
 // owns provider/secret wiring and builds this; askserve consumes it.
 type ProjectRuntimeOptions struct {
-	AIClient         *ai.Client
-	Model            string
-	InsightsProvider ai.InsightsProvider
-	Schema           *SchemaRouter
-	Datasources      []DatasourceInfo
-	PrimaryID        string
-	Build            WarehouseBuilder
+	AIClient          *ai.Client
+	Model             string
+	InsightsProvider  ai.InsightsProvider
+	KnowledgeProvider KnowledgeProvider
+	MutationTools     []MutationTool
+	Schema            *SchemaRouter
+	Datasources       []DatasourceInfo
+	PrimaryID         string
+	BusinessSummary   string
+	BaseContext       string
+	Build             WarehouseBuilder
 	// MaxWarmDatasources bounds warm connections per project (0 → default).
 	MaxWarmDatasources int
 	SharedClosers      []func() error
@@ -94,13 +121,17 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 		maxWarm = defaultMaxWarmDatasources
 	}
 	return &ProjectRuntime{
-		AIClient:         opts.AIClient,
-		Model:            opts.Model,
-		InsightsProvider: opts.InsightsProvider,
-		Schema:           opts.Schema,
-		Datasources:      opts.Datasources,
-		PrimaryID:        opts.PrimaryID,
-		build:            opts.Build,
+		AIClient:          opts.AIClient,
+		Model:             opts.Model,
+		InsightsProvider:  opts.InsightsProvider,
+		KnowledgeProvider: opts.KnowledgeProvider,
+		MutationTools:     opts.MutationTools,
+		Schema:            opts.Schema,
+		Datasources:       opts.Datasources,
+		PrimaryID:         opts.PrimaryID,
+		BusinessSummary:   opts.BusinessSummary,
+		BaseContext:       opts.BaseContext,
+		build:             opts.Build,
 		maxWarm:          maxWarm,
 		warm:             make(map[string]*connEntry),
 		sharedClosers:    opts.SharedClosers,
@@ -116,6 +147,17 @@ func (r *ProjectRuntime) datasource(id string) (DatasourceInfo, bool) {
 		}
 	}
 	return DatasourceInfo{}, false
+}
+
+// mutationTool returns the registered mutation tool with the given wire name, or
+// false when no mutation tool by that name is offered.
+func (r *ProjectRuntime) mutationTool(name string) (MutationTool, bool) {
+	for _, t := range r.MutationTools {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return MutationTool{}, false
 }
 
 // acquireConn returns the datasource's execution context, building it lazily on

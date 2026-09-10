@@ -75,6 +75,13 @@ type turnState struct {
 	// finalize so the dashboard renders them as citations.
 	insightHits []ai.InsightHit
 
+	// primeContext is the reference block gathered by seed priming at the start
+	// of a seeded, first (empty-history) turn: the entity-anchored insight +
+	// table search results. Appended to the question the model sees so the turn
+	// starts anchored on the seed's related findings and tables rather than
+	// answering globally. Empty on an unseeded or follow-up turn.
+	primeContext string
+
 	// queryStepSeq is a monotonic counter assigning each successful query a
 	// unique step id ("q1", "q2", …) the model references as a chart's
 	// source_step_id. Round is not unique (native mode batches queries), so a
@@ -93,6 +100,21 @@ type turnState struct {
 	// parser accepts render_chart regardless, and a provider can return an
 	// unoffered tool call, so execRenderChart must recheck this.
 	chartsEnabled bool
+
+	// mutationsDone counts successful write-tool calls (e.g. save_note) this turn.
+	// A mutation is not evidence (it never grounds a data answer), but a
+	// successful one lets the model finish the turn to confirm the save — see
+	// canAnswer.
+	mutationsDone int
+}
+
+// canAnswer reports whether the model may finish the turn with an answer: either
+// it gathered evidence (groundedEvents) or it performed a write the user asked
+// for (mutationsDone) and needs to confirm it. Keeping mutationsDone separate
+// from groundedEvents means a write can acknowledge itself without unlocking a
+// fabricated DATA answer.
+func (st *turnState) canAnswer() bool {
+	return st.groundedEvents > 0 || st.mutationsDone > 0
 }
 
 // maxGroundingNudges bounds how many times the loop re-prompts a model that
@@ -216,11 +238,76 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		}
 	}
 
+	// Seed priming: on a seeded first turn, gather the focused entity's related
+	// insights + tables up front so the loop starts anchored on that entity
+	// (structural pull, not just prose). Runs once, before the answering loop.
+	r.primeSeed(ctx, rt, st)
+
 	if toolsSupported(rt) {
 		r.runWithTools(ctx, rt, st)
 		return
 	}
 	r.runText(ctx, rt, st)
+}
+
+// seedPrimeQueryCap bounds the length of the seed-derived priming query so a
+// long hydrated seed text can't blow up the embedding / search call.
+const seedPrimeQueryCap = 400
+
+// primeSeed runs one entity-anchored insight search and one table search at the
+// start of a seeded FIRST turn, so the answering loop begins grounded on the
+// focused entity's related findings and tables instead of answering globally.
+// The searches are recorded as (grounding) tool events and their insight hits
+// become citations; the formatted results are stashed on st.primeContext to be
+// appended to the question the model sees. No-op on an unseeded or follow-up
+// turn, or when neither provider is wired. Follow-up turns keep the FOCUS block
+// and can search themselves, so priming every turn would only add token cost.
+func (r *runner) primeSeed(ctx context.Context, rt *ProjectRuntime, st *turnState) {
+	seed := st.req.SeedContext
+	if seed == nil || len(st.req.History) > 0 {
+		return
+	}
+	query := strings.TrimSpace(strings.TrimSpace(seed.Label) + " " + strings.TrimSpace(seed.Text))
+	if query == "" {
+		return
+	}
+	if rq := []rune(query); len(rq) > seedPrimeQueryCap {
+		query = strings.TrimSpace(string(rq[:seedPrimeQueryCap]))
+	}
+
+	var b strings.Builder
+	// Append an observation only when the search actually gathered evidence (the
+	// grounded count rose), so a failed / provider-unavailable search doesn't
+	// inject its error string as if it were reference context.
+	appendIfGrounded := func(before int, obs string) {
+		if ctx.Err() == nil && st.groundedEvents > before {
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(obs)
+		}
+	}
+	if rt.InsightsProvider != nil {
+		before := st.groundedEvents
+		obs := r.execSearchInsights(ctx, rt, st, &turnAction{Kind: actSearchInsights, SearchInsights: query})
+		appendIfGrounded(before, obs)
+	}
+	if ctx.Err() == nil && rt.Schema != nil {
+		before := st.groundedEvents
+		obs := r.execSearch(ctx, rt, st, &turnAction{Kind: actSearch, SearchTables: query})
+		appendIfGrounded(before, obs)
+	}
+	st.primeContext = strings.TrimSpace(b.String())
+}
+
+// questionWithPrime appends the seed-priming context (if any) to the user's
+// question so the model sees the auto-gathered, entity-anchored reference
+// material alongside the question it must answer.
+func questionWithPrime(question, prime string) string {
+	if strings.TrimSpace(prime) == "" {
+		return question
+	}
+	return question + "\n\n[Context auto-gathered for the focused item — reference material to anchor and scope your analysis; the question to answer is above]\n" + prime
 }
 
 // toolsSupported reports whether the runtime's LLM provider honours native tool
@@ -251,7 +338,7 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		_ = conv.AddMessage(m.Role, m.Content)
 	}
-	conv.AddUserMessage(st.req.Question)
+	conv.AddUserMessage(questionWithPrime(st.req.Question, st.primeContext))
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -384,12 +471,13 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 	system := buildSystemPromptForTools(rt, st.routing, r.cfg, st.chartsEnabled, st.req.SeedContext)
 	hasSchema := rt.Schema != nil
 	hasInsights := rt.InsightsProvider != nil
+	hasKnowledge := rt.KnowledgeProvider != nil
 
 	var messages []gollm.Message
 	for _, m := range trimHistory(st.req.History, r.cfg.HistoryCharBudget) {
 		messages = append(messages, gollm.Message{Role: m.Role, Content: m.Content})
 	}
-	messages = append(messages, gollm.Message{Role: "user", Content: st.req.Question})
+	messages = append(messages, gollm.Message{Role: "user", Content: questionWithPrime(st.req.Question, st.primeContext)})
 
 	for st.round = 1; st.round <= r.cfg.MaxRounds; st.round++ {
 		if err := ctx.Err(); err != nil {
@@ -397,8 +485,8 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 			return
 		}
 
-		grounded := st.groundedEvents > 0
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0), toolChoiceForPhase(grounded))
+		grounded := st.canAnswer()
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0, mutationDefs(rt.MutationTools)), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -456,7 +544,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: aerr.Error(), IsError: true}}})
 				continue
 			}
-			if act.Kind == actAnswer && st.groundedEvents == 0 {
+			if act.Kind == actAnswer && !st.canAnswer() {
 				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
 				continue
 			}
@@ -491,6 +579,19 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call render_chart in its own step, after the query result is in — not together with a query or with answer/clarify/decline.", IsError: true})
 				continue
 			}
+			// Mutation tools (e.g. save_note) are registered dynamically by the
+			// enterprise plugin and are not part of the read-only action vocabulary,
+			// so they are dispatched here before toolCallToAction (which would reject
+			// the unknown name).
+			if mt, ok := rt.mutationTool(tc.Name); ok {
+				obs := r.execMutation(ctx, st, mt, tc)
+				if ctx.Err() != nil {
+					r.finishTimeout(ctx, st)
+					return
+				}
+				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: obs})
+				continue
+			}
 			act, aerr := toolCallToAction(tc)
 			if aerr != nil {
 				results = append(results, gollm.ToolResult{CallID: tc.ID, Content: aerr.Error(), IsError: true})
@@ -508,7 +609,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 
 	// Round budget exhausted. One final, forced synthesis from gathered evidence.
 	if act := r.synthesizeFinalTools(ctx, messages, system, st); act != nil {
-		if act.Kind == actAnswer && st.groundedEvents == 0 {
+		if act.Kind == actAnswer && !st.canAnswer() {
 			r.finishUngrounded(ctx, st)
 			return
 		}
@@ -579,6 +680,8 @@ func (r *runner) execute(ctx context.Context, rt *ProjectRuntime, st *turnState,
 		return r.execSearch(ctx, rt, st, act)
 	case actSearchInsights:
 		return r.execSearchInsights(ctx, rt, st, act)
+	case actSearchKnowledge:
+		return r.execSearchKnowledge(ctx, rt, st, act)
 	case actRenderChart:
 		return r.execRenderChart(ctx, st, act)
 	default:
@@ -874,13 +977,20 @@ func (r *runner) execSearchInsights(ctx context.Context, rt *ProjectRuntime, st 
 	return formatInsights(act.SearchInsights, hits)
 }
 
-// emit appends a tool event to the in-memory transcript and persists it.
+// emit appends a tool event to the in-memory transcript and persists it. A
+// successful EVIDENCE event grounds the turn; a render_chart consumes a result
+// rather than producing one, so it never grounds (charting must not be a way to
+// reach the answer tool).
 func (r *runner) emit(ctx context.Context, st *turnState, ev commonmodels.ToolEvent) {
+	r.emitTool(ctx, st, ev, ev.Error == "" && ev.Name != string(actRenderChart))
+}
+
+// emitTool appends a tool event and persists it, incrementing the grounded count
+// only when grounds is true. Mutation tools pass grounds=false: a write is not
+// evidence and must not unlock a grounded DATA answer.
+func (r *runner) emitTool(ctx context.Context, st *turnState, ev commonmodels.ToolEvent, grounds bool) {
 	st.events = append(st.events, ev)
-	if ev.Error == "" && ev.Name != string(actRenderChart) {
-		// A successful EVIDENCE event — the model actually observed data. A
-		// render_chart consumes a result rather than producing one, so it never
-		// grounds: charting must not be a way to reach the answer tool.
+	if grounds {
 		st.groundedEvents++
 	}
 	// Persist under a short, detached deadline so a turn ctx already past its
@@ -965,13 +1075,22 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 
 // insightSources maps the insights/recommendations surfaced this turn to the
 // dashboard's citation shape, deduped by id and preserving first-seen (highest
-// score) order. Returns nil when no insight was searched.
+// score) order. A seeded turn always cites its anchoring entity first — even if
+// the model never re-surfaced it — so the conversation's focus is always a
+// citation. Returns nil when there is nothing to cite.
 func (st *turnState) insightSources() []commonmodels.AskSessionSource {
-	if len(st.insightHits) == 0 {
-		return nil
+	seen := make(map[string]bool, len(st.insightHits)+1)
+	out := make([]commonmodels.AskSessionSource, 0, len(st.insightHits)+1)
+	// Anchor citation: the seed entity itself (insight / recommendation).
+	if s := st.req.SeedContext; s != nil && s.ID != "" && (s.Type == "insight" || s.Type == "recommendation") {
+		seen[s.ID] = true
+		out = append(out, commonmodels.AskSessionSource{
+			ID:          s.ID,
+			Type:        s.Type,
+			Name:        s.Label,
+			Description: s.Text,
+		})
 	}
-	seen := make(map[string]bool, len(st.insightHits))
-	out := make([]commonmodels.AskSessionSource, 0, len(st.insightHits))
 	for _, h := range st.insightHits {
 		if h.ID == "" || seen[h.ID] {
 			continue
@@ -987,6 +1106,9 @@ func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 			Description:  h.Description,
 			DiscoveryID:  h.DiscoveryID,
 		})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

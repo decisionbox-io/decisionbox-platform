@@ -61,9 +61,15 @@ func TestWriteSeedSection(t *testing.T) {
 		if !strings.Contains(out, "…") {
 			t.Fatalf("expected truncation ellipsis, got len=%d", len(out))
 		}
-		// The rendered details must not carry the full oversized text.
-		if strings.Count(out, "x") > seedPromptTextCap {
-			t.Fatalf("expected text capped at %d chars, got %d", seedPromptTextCap, strings.Count(out, "x"))
+		// The rendered details must not carry the full oversized text: the run of
+		// filler is capped at seedPromptTextCap. (Assert the run length directly
+		// rather than counting 'x' across the whole prompt — the FOCUS prose can
+		// legitimately contain the letter x, e.g. "explicitly".)
+		if !strings.Contains(out, strings.Repeat("x", seedPromptTextCap)) {
+			t.Fatalf("expected a capped run of %d chars", seedPromptTextCap)
+		}
+		if strings.Contains(out, strings.Repeat("x", seedPromptTextCap+1)) {
+			t.Fatalf("capped run exceeds %d chars", seedPromptTextCap)
 		}
 	})
 }

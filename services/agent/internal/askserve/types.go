@@ -44,6 +44,13 @@ type TurnRequest struct {
 	// re-fetches. Hand-synced by JSON tag with the enterprise
 	// startTurnRequest.SeedContext (the two live in different modules).
 	SeedContext *SeedContext `json:"seed_context,omitempty"`
+	// CallerSub is the auth subject of the user who started the turn, recorded on
+	// any proposal a mutation tool (e.g. save_note) creates so the resulting
+	// change is attributable. Audit metadata only — never an authorization input
+	// (mutation tools are gated by plugin presence, and applying a proposal is
+	// gated on the API). Empty under NoAuth. Hand-synced by JSON tag with the
+	// enterprise startTurnRequest.CallerSub.
+	CallerSub string `json:"caller_sub,omitempty"`
 }
 
 // SeedContext is the insight / recommendation a seeded Ask conversation is
