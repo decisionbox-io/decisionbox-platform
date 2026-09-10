@@ -115,13 +115,13 @@ type turnState struct {
 	// on an ungrounded finish: a real save is acknowledged as saved, a completed
 	// no-op is not (so the turn never falsely claims something was persisted).
 	writesSaved int
-	// pendingWrites is the SET of distinct write tool calls (keyed by name+args)
-	// that were deferred (batched with other calls) and have not since completed.
-	// It guards against a request like "calculate X and save it" silently losing the
-	// save when the batched read grounds the turn and the model answers without
-	// re-issuing the write. A set (not a counter) so re-batching the SAME write
-	// several times doesn't inflate the pending state, while a genuinely-distinct
-	// unfinished write is still tracked. See deferWrite / completeWrite / hasPendingWrite.
+	// pendingWrites is the SET of write TOOL NAMES that were deferred (batched with
+	// other calls) and have not since completed. It guards against a request like
+	// "calculate X and save it" silently losing the save when the batched read
+	// grounds the turn and the model answers without re-issuing the write. Keyed by
+	// tool name (not args) so a re-issue carrying observed figures still clears it,
+	// and re-batching the same write is idempotent. See deferWrite / completeWrite /
+	// hasPendingWrite.
 	pendingWrites map[string]struct{}
 	// writeNudges bounds how many times the loop re-prompts a model that tries to
 	// answer with an outstanding requested-but-uncompleted write.

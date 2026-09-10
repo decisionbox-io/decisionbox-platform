@@ -42,36 +42,44 @@ type MutationOutput struct {
 	Output     any
 }
 
-// writeKey identifies a write tool call by its name + canonical arguments so a
-// re-issued write matches the entry recorded when it was deferred. Go marshals
-// map keys in sorted order, so the encoding is deterministic for the same args.
-func writeKey(tc gollm.ToolCall) string {
-	raw, _ := json.Marshal(tc.Input)
-	return tc.Name + "\x00" + string(raw)
-}
-
-// deferWrite records a write that was refused because it was batched with other
-// calls. It is a SET keyed by writeKey (not a counter) so a model that re-batches
-// the SAME write several times before finally issuing it alone doesn't inflate
-// the pending state, while a genuinely-distinct unfinished write is still tracked.
+// deferWrite records that a write TOOL was refused because it was batched with
+// other calls. Keyed by tool NAME (a set, not a counter, and not keyed on args):
+// re-batching the same write is idempotent, and the model's re-issue of a deferred
+// write legitimately carries different args (observed figures, normalized fields),
+// so a completion of the SAME tool clears it. This trades exact per-call precision
+// (a rare "two distinct saves, one dropped" corner) for correctness on the common
+// re-issue-with-different-args path — no false "not saved" warning after a save.
 func (st *turnState) deferWrite(tc gollm.ToolCall) {
 	if st.pendingWrites == nil {
 		st.pendingWrites = make(map[string]struct{})
 	}
-	st.pendingWrites[writeKey(tc)] = struct{}{}
+	st.pendingWrites[tc.Name] = struct{}{}
 }
 
-// completeWrite retires the pending entry for a write that ran to completion,
-// identified by a key captured from its ORIGINAL args (before the plugin could
-// mutate them). A key that isn't pending (a write issued alone the first time) is
+// completeWrite retires the pending entry for a write tool that ran to completion,
+// by tool name. A name that isn't pending (a write issued alone the first time) is
 // a no-op, so it never spuriously clears an unrelated deferred write.
-func (st *turnState) completeWrite(key string) {
-	delete(st.pendingWrites, key)
+func (st *turnState) completeWrite(name string) {
+	delete(st.pendingWrites, name)
 }
 
 // hasPendingWrite reports whether any requested write was deferred and not since
 // completed — gates the outstanding-write nudge and the terminal disclosure.
 func (st *turnState) hasPendingWrite() bool { return len(st.pendingWrites) > 0 }
+
+// cloneArgs returns a shallow copy of a tool-call args map, so the persisted tool
+// event keeps the model's pristine input even if a plugin executor normalizes or
+// defaults the map it receives in place.
+func cloneArgs(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
 
 // reservedToolName reports whether name collides with a built-in read-only or
 // terminal tool. A registered mutation tool that shadows one is dropped — never
@@ -103,10 +111,9 @@ func mutationDefs(tools []MutationTool) []gollm.ToolDefinition {
 // event carrying any proposal id it produced. A failure is surfaced to the model
 // as a tool error so it can retry or explain, never crashing the turn.
 func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationTool, tc gollm.ToolCall) string {
-	// Capture the pending-write key from the ORIGINAL args before Run — the plugin
-	// executor receives the args map by reference and may normalize/default it,
-	// which would change the key and leave a completed write falsely marked pending.
-	key := writeKey(tc)
+	// Hand the executor its OWN copy of the args: a plugin that normalizes/defaults
+	// them in place must not mutate the model's input, so the persisted event keeps
+	// the pristine args the model emitted (replay/audit) and tc.Input is untouched.
 	ev := commonmodels.ToolEvent{Round: st.round, Name: mt.Name, Args: tc.Input}
 	start := time.Now()
 	out, err := mt.Run(ctx, MutationInput{
@@ -114,7 +121,7 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 		SessionID: st.req.SessionID,
 		TurnID:    st.req.TurnID,
 		CallerSub: st.req.CallerSub,
-		Args:      tc.Input,
+		Args:      cloneArgs(tc.Input),
 	})
 	ev.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
@@ -136,7 +143,7 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// a proposal came back — a no-op / already-exists is still a completed outcome
 	// the user should hear about.
 	st.mutationsDone++
-	st.completeWrite(key)
+	st.completeWrite(mt.Name)
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the

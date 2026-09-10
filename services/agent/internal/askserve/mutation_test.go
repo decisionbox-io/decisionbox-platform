@@ -362,70 +362,46 @@ func TestLoopTools_DeferredWriteDisclosedOnDecline(t *testing.T) {
 	}
 }
 
-func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
-	// Two writes deferred in one batch: completing ONE must not clear the guard for
-	// the other. The straggler (never re-issued) is disclosed; and when BOTH are
-	// completed, no straggler notice appears.
-	newProvider := func() *scriptedToolProvider {
-		return &scriptedToolProvider{responses: []gollm.ChatResponse{
-			{ // round 1: two saves batched → both deferred (writesPending=2)
-				StopReason: "tool_use",
-				ToolCalls: []gollm.ToolCall{
-					{ID: "a", Name: "save_note", Input: map[string]any{"title": "A", "body": "a"}},
-					{ID: "b", Name: "save_note", Input: map[string]any{"title": "B", "body": "b"}},
-				},
-				Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
-			},
-			toolCall("save_note", map[string]any{"title": "A", "body": "a"}),  // round 2: first save alone → writesPending=1
-			toolCall(string(actAnswer), map[string]any{"text": "Saved A."}),    // round 3: answer → nudged (one still pending)
-			toolCall(string(actAnswer), map[string]any{"text": "Saved A."}),    // round 4: answer → discloses the straggler
-		}}
+func TestLoopTools_DeferredWriteClearedByReissueWithDifferentArgs(t *testing.T) {
+	// The model is told to observe the query result THEN save alone, so its re-issued
+	// save legitimately carries the observed figure (different args than the deferred
+	// call). Pending writes are keyed by tool NAME, so the completion still clears the
+	// pending entry — no false "not saved" notice after a proposal was created.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
 	}
-	run := func(p *scriptedToolProvider) *fakeStore {
-		saved := 0
-		mt := MutationTool{
-			Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-			Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p"}, nil },
-		}
-		cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
-		store := &fakeStore{}
-		r := &runner{cfg: cfg, store: store}
-		rt := toolRuntime(p, testutil.NewMockWarehouseProvider("ds"), nil, "")
-		rt.MutationTools = []MutationTool{mt}
-		r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save two notes", CallerRole: "member"})
-		return store
-	}
-
-	// One completed, one straggler → disclosed with the PARTIAL wording (a proposal
-	// was created, so it must not claim "nothing was persisted").
-	store := run(newProvider())
-	if store.final == nil || !strings.Contains(store.final.Answer, partialWriteNotice) {
-		t.Fatalf("a straggler after a partial save must use the partial notice, got %+v", store.final)
-	}
-	if strings.Contains(store.final.Answer, pendingWriteNotice) {
-		t.Fatalf("a partial save must not claim nothing was persisted, got %q", store.final.Answer)
-	}
-
-	// Both completed → no straggler notice.
-	both := &scriptedToolProvider{responses: []gollm.ChatResponse{
-		{
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{ // round 1: query + save batched → query grounds, save deferred
 			StopReason: "tool_use",
 			ToolCalls: []gollm.ToolCall{
-				{ID: "a", Name: "save_note", Input: map[string]any{"title": "A", "body": "a"}},
-				{ID: "b", Name: "save_note", Input: map[string]any{"title": "B", "body": "b"}},
+				{ID: "q1", Name: string(actQuery), Input: map[string]any{"query": "SELECT COUNT(*) c FROM ds.t"}},
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "Count", "body": "the count"}},
 			},
 			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
 		},
-		toolCall("save_note", map[string]any{"title": "A", "body": "a"}), // writesPending=1
-		toolCall("save_note", map[string]any{"title": "B", "body": "b"}), // writesPending=0
-		toolCall(string(actAnswer), map[string]any{"text": "Saved both."}),
+		// round 2: save alone, now with the OBSERVED figure folded into the body — a
+		// DIFFERENT args map than the deferred call.
+		toolCall("save_note", map[string]any{"title": "Count", "body": "the count is 100"}),
+		toolCall(string(actAnswer), map[string]any{"text": "Saved; the count is 100."}),
 	}}
-	store2 := run(both)
-	if store2.final == nil {
-		t.Fatal("turn did not finalize")
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 1 {
+		t.Fatalf("the re-issued save should run exactly once, got %d", saved)
 	}
-	if strings.Contains(store2.final.Answer, pendingWriteNotice) || strings.Contains(store2.final.Answer, partialWriteNotice) {
-		t.Fatalf("no straggler should be disclosed when both writes completed, got %q", store2.final.Answer)
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("turn should finish done, got %+v", store.final)
+	}
+	if strings.Contains(store.final.Answer, pendingWriteNotice) || strings.Contains(store.final.Answer, partialWriteNotice) {
+		t.Fatalf("a re-issue with different args must still clear the pending write (no false notice), got %q", store.final.Answer)
 	}
 }
 
@@ -487,20 +463,31 @@ func TestLoopTools_SaveThenClarifyAcknowledgesSave(t *testing.T) {
 	}
 }
 
-func TestExecMutation_ArgMutationDoesNotStrandPendingWrite(t *testing.T) {
-	// A plugin that normalizes/defaults its args (mutating the map in place) must
-	// not leave a completed write marked pending — the key is captured before Run.
+func TestExecMutation_ArgMutationIsolatedFromInputAndEvent(t *testing.T) {
+	// A plugin that normalizes/defaults its args (mutating the map in place) gets its
+	// OWN copy: the model's input and the persisted tool event keep the pristine
+	// args (replay/audit), and the completed write still clears its pending entry.
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
-		in.Args["category"] = "default" // executor mutates the args map after the fact
+		in.Args["category"] = "default" // executor mutates the args map it received
 		return MutationOutput{ProposalID: "p1"}, nil
 	}}
 	tc := gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}}
 	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
-	st.deferWrite(tc) // deferred earlier (key from the pristine args)
+	st.deferWrite(tc)
 	r.execMutation(context.Background(), st, mt, tc)
+
 	if st.hasPendingWrite() {
-		t.Fatal("a completed write whose args the plugin mutated must still clear its pending entry")
+		t.Fatal("a completed write must clear its pending entry")
+	}
+	if _, mutated := tc.Input["category"]; mutated {
+		t.Fatal("the plugin must not mutate the model's original tool input")
+	}
+	if len(st.events) != 1 {
+		t.Fatalf("expected one persisted event, got %d", len(st.events))
+	}
+	if _, mutated := st.events[0].Args["category"]; mutated {
+		t.Fatalf("the persisted tool event must keep the pristine args, got %+v", st.events[0].Args)
 	}
 }
 
