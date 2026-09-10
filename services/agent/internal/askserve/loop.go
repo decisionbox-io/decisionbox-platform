@@ -1147,42 +1147,37 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 	status := commonmodels.AskTurnStatusDone
 	disposition := commonmodels.AskTurnDispositionAnswer
 	answer := act.Text
+	// A COMPLETED mutation with no query/search evidence means the only thing the
+	// turn can honestly report is the write outcome (a created proposal, or a
+	// no-op / already-exists). This holds for EVERY terminal the model may pick
+	// after a write unlocks canAnswer — answer, decline, or clarify — so all three
+	// report it via the same deterministic ack rather than the model's free text
+	// (which, ungrounded, could fabricate a figure) or a misleading decline.
+	mutatedUngrounded := st.mutationsDone > 0 && st.groundedEvents == 0
 	switch act.Kind {
 	case actClarify:
 		disposition = commonmodels.AskTurnDispositionClarify
-		// A save-only turn that created a proposal and then asks a follow-up should
-		// still acknowledge the save (the answer/decline paths do) — prepend the
-		// deterministic confirmation to the model's question so the pending change
-		// isn't left unmentioned.
-		if st.writesSaved > 0 && st.groundedEvents == 0 {
-			answer = strings.TrimSpace(writeAckText + " " + answer)
+		// A follow-up after a completed write still acknowledges the outcome, keeping
+		// the model's question.
+		if mutatedUngrounded {
+			answer = strings.TrimSpace(mutationAck(st) + " " + answer)
 		}
 	case actDecline:
-		// A save-only turn that created a pending proposal must not report a decline
-		// — that misreports a successful write as a failure. Confirm the save instead
-		// (status/disposition keep their Done/Answer defaults). A grounded decline, or
-		// a decline with no proposal created, is untouched.
-		if st.writesSaved > 0 && st.groundedEvents == 0 {
-			answer = writeAckText
+		// A decline after a completed write misreports it as a failure — report the
+		// write outcome instead (status/disposition keep their Done/Answer defaults).
+		// A grounded decline, or a decline with no write at all, is untouched.
+		if mutatedUngrounded {
+			answer = mutationAck(st)
 		} else {
 			status = commonmodels.AskTurnStatusDeclined
 			disposition = commonmodels.AskTurnDispositionDecline
 		}
 	case actAnswer:
-		// A write (save_note) lets the turn finish so it can report the outcome,
-		// but a write is NOT evidence: if the turn gathered no query/search
-		// result, the ONLY thing it can honestly report is the write itself.
-		// Emit a deterministic confirmation rather than the model's free text,
-		// so an ungrounded turn can never surface a fabricated figure. (An
-		// ungrounded answer with no write never reaches here — it is nudged, then
-		// declined via finishUngrounded.) A real proposal is acknowledged as saved;
-		// a completed no-op (no proposal) is acknowledged without claiming a save.
+		// An ungrounded answer here always follows a completed write (canAnswer
+		// requires grounding OR a mutation), so report the write outcome
+		// deterministically — never the model's (potentially fabricated) free text.
 		if st.groundedEvents == 0 {
-			if st.writesSaved > 0 {
-				answer = writeAckText
-			} else {
-				answer = noWriteAckText
-			}
+			answer = mutationAck(st)
 		}
 	}
 	// A write the user asked for was deferred but never created — the model
@@ -1219,6 +1214,16 @@ const writeAckText = "Done — the requested change was saved as a pending item 
 // no-op / already-exists): it neither claims a false save nor surfaces a
 // model-authored (ungrounded) figure.
 const noWriteAckText = "I didn't create a new pending change this turn — it either already exists or required no action. I also didn't run any query, so there are no new figures to report."
+
+// mutationAck picks the deterministic write acknowledgement for an ungrounded
+// terminal that follows a completed mutation: a real proposal is acknowledged as
+// saved, a completed no-op is acknowledged without claiming a save.
+func mutationAck(st *turnState) string {
+	if st.writesSaved > 0 {
+		return writeAckText
+	}
+	return noWriteAckText
+}
 
 // pendingWriteNotice is appended to any terminal (answer / clarify / decline)
 // that finishes while a requested write is still pending — the model finished

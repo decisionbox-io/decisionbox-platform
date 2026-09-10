@@ -463,6 +463,35 @@ func TestLoopTools_SaveThenClarifyAcknowledgesSave(t *testing.T) {
 	}
 }
 
+func TestLoopTools_NoOpMutationThenDeclineReportsOutcome(t *testing.T) {
+	// A save that completes as a no-op (no proposal id) and then declines must report
+	// the no-op OUTCOME, not a misleading "declined" — the write tool DID complete.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{Output: map[string]any{"status": "exists"}}, nil // no ProposalID
+		},
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
+		toolCall(string(actDecline), map[string]any{"reason": "nothing to add"}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this as a note", CallerRole: "member"})
+
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("a completed no-op mutation must not report a decline, got %+v", store.final)
+	}
+	if store.final.Answer != noWriteAckText {
+		t.Fatalf("should report the no-op outcome, got %q", store.final.Answer)
+	}
+}
+
 func TestExecMutation_ArgMutationIsolatedFromInputAndEvent(t *testing.T) {
 	// A plugin that normalizes/defaults its args (mutating the map in place) gets its
 	// OWN copy: the model's input and the persisted tool event keep the pristine
