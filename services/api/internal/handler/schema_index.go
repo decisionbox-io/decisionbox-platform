@@ -3,7 +3,9 @@ package handler
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,15 +16,29 @@ import (
 )
 
 // liveTableCacheTTL bounds how often ListCachedTables spawns a live
-// --list-tables agent run for the same project. Within the TTL a prior result
-// — including an empty one from a failed listing — is reused, so a persistently
-// unreachable warehouse (bad credentials, VPN down) can't turn every picker
-// poll into a fresh doomed agent job.
-const liveTableCacheTTL = 60 * time.Second
+// --list-tables agent run for a given (project, datasource-config). Within the
+// TTL a prior successful result is reused so repeated picker polls don't each
+// spawn an agent job. liveTableFailTTL is shorter so a warehouse that was
+// unreachable (bad credentials, VPN down) is retried soon after the operator
+// fixes it, while still bounding the spawn rate on a persistent failure.
+const (
+	liveTableCacheTTL = 60 * time.Second
+	liveTableFailTTL  = 15 * time.Second
+)
 
 type liveTableEntry struct {
 	tables []string
+	failed bool
 	at     time.Time
+}
+
+// ttl returns the entry's effective lifetime — shorter for a failed listing so
+// a fixed credential/connection recovers quickly.
+func (e liveTableEntry) ttl() time.Duration {
+	if e.failed {
+		return liveTableFailTTL
+	}
+	return liveTableCacheTTL
 }
 
 // CollectionDropper is the minimum Qdrant surface the schema-index
@@ -91,28 +107,59 @@ type SchemaIndexHandler struct {
 	liveSF    singleflight.Group        // coalesces concurrent live listings per project
 }
 
-// getLiveTables returns a cached live listing for the project when it is still
-// within liveTableCacheTTL (an empty slice is a valid cached result — a failed
-// or empty listing — so a persistent failure backs off instead of re-spawning).
-func (h *SchemaIndexHandler) getLiveTables(projectID string) ([]string, bool) {
+// getLiveTables returns a cached live listing for the cache key when it is still
+// within its TTL (a failed listing is cached too, on a shorter TTL, so a
+// persistent failure backs off instead of re-spawning). The key encodes the
+// datasource config so a warehouse/dataset change yields a fresh listing.
+func (h *SchemaIndexHandler) getLiveTables(key string) ([]string, bool) {
 	h.liveMu.Lock()
 	defer h.liveMu.Unlock()
-	e, ok := h.liveCache[projectID]
-	if !ok || time.Since(e.at) > liveTableCacheTTL {
+	e, ok := h.liveCache[key]
+	if !ok || time.Since(e.at) > e.ttl() {
 		return nil, false
 	}
 	return e.tables, true
 }
 
-// putLiveTables records a live-listing result (success or failure→nil) with the
-// current time so subsequent polls within the TTL reuse it.
-func (h *SchemaIndexHandler) putLiveTables(projectID string, tables []string) {
+// putLiveTables records a live-listing result (success, or failure→failed=true)
+// with the current time so subsequent polls within the TTL reuse it.
+func (h *SchemaIndexHandler) putLiveTables(key string, tables []string, failed bool) {
 	h.liveMu.Lock()
 	defer h.liveMu.Unlock()
 	if h.liveCache == nil {
 		h.liveCache = make(map[string]liveTableEntry)
 	}
-	h.liveCache[projectID] = liveTableEntry{tables: tables, at: time.Now()}
+	h.liveCache[key] = liveTableEntry{tables: tables, failed: failed, at: time.Now()}
+}
+
+// liveTableCacheKey identifies a (project, primary-datasource config) so the
+// cached listing is invalidated the moment the datasource or its datasets
+// change (via PUT /projects/{id}). Credentials live outside the project doc, so
+// a credential fix is covered by the shorter failed-entry TTL instead.
+func liveTableCacheKey(projectID string, wh models.WarehouseConfig) string {
+	var b strings.Builder
+	b.WriteString(projectID)
+	b.WriteString("|id=")
+	b.WriteString(wh.ID)
+	b.WriteString("|prov=")
+	b.WriteString(wh.Provider)
+	ds := append([]string(nil), wh.Datasets...)
+	sort.Strings(ds)
+	b.WriteString("|ds=")
+	b.WriteString(strings.Join(ds, ","))
+	cfgKeys := make([]string, 0, len(wh.Config))
+	for k := range wh.Config {
+		cfgKeys = append(cfgKeys, k)
+	}
+	sort.Strings(cfgKeys)
+	b.WriteString("|cfg=")
+	for _, k := range cfgKeys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(wh.Config[k])
+		b.WriteByte(';')
+	}
+	return b.String()
 }
 
 // SetTableLister installs the live warehouse-table lister used by
@@ -521,29 +568,33 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// spawn a doomed agent run on every poll. A live-listing failure degrades to
 	// the empty list (the picker's empty state) rather than erroring the page.
 	if len(tables) == 0 && h.lister != nil && len(p.EffectiveWarehouses()) > 0 {
-		if cached, ok := h.getLiveTables(id); ok {
+		// Cache key encodes the datasource config so a warehouse/dataset change
+		// invalidates the cached listing immediately (not just after the TTL).
+		key := liveTableCacheKey(id, p.PrimaryWarehouse())
+		if cached, ok := h.getLiveTables(key); ok {
 			// Fresh cached result (possibly empty) — reuse it; don't re-spawn.
 			tables = cached
 		} else {
-			// Coalesce concurrent picker polls for the same project through
+			// Coalesce concurrent picker polls for the same key through
 			// singleflight so parallel requests share ONE agent run instead of
 			// each spawning its own; the TTL cache then bounds sequential polls.
-			v, _, _ := h.liveSF.Do(id, func() (interface{}, error) {
+			v, _, _ := h.liveSF.Do(key, func() (interface{}, error) {
 				// Re-check the cache inside the flight: a just-finished leader may
 				// have populated it while this call was queued behind the lock.
-				if cached, ok := h.getLiveTables(id); ok {
+				if cached, ok := h.getLiveTables(key); ok {
 					return cached, nil
 				}
 				live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID)
 				if lerr != nil {
 					apilog.WithField("project_id", id).
 						Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
-					// Negative-cache the failure so a persistent problem (bad creds,
-					// VPN down) backs off instead of spawning a doomed run per poll.
-					h.putLiveTables(id, nil)
+					// Negative-cache the failure (short TTL) so a persistent problem
+					// (bad creds, VPN down) backs off instead of spawning a doomed
+					// run per poll, but a fixed connection is retried soon.
+					h.putLiveTables(key, nil, true)
 					return []string(nil), nil
 				}
-				h.putLiveTables(id, live)
+				h.putLiveTables(key, live, false)
 				return live, nil
 			})
 			if v != nil {
