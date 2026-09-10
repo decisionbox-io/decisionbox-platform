@@ -168,4 +168,30 @@ describe('ProjectPage status polling (#405)', () => {
       jest.useRealTimers();
     }
   });
+
+  it('keeps polling a still-running run but skips the state update when nothing changed', async () => {
+    jest.useFakeTimers();
+    try {
+      // Every poll returns the identical run doc (same id/status/updated_at).
+      // This is the branch the conditional setRun exists for: the interval is
+      // correctly gated on `running`, so it keeps polling, but each response
+      // is a no-op — replacing `run` here is what used to spin the loop.
+      const frozen = makeRun({ status: 'running', progress: 25, updated_at: 'frozen' });
+      getProjectStatus.mockResolvedValue(status(frozen));
+
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(getProjectStatus).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(screen.getByText('25%')).toBeInTheDocument());
+
+      // Two more interval ticks: still polled (gated on the live run), progress
+      // unchanged, and — crucially — no state churn from the identical docs.
+      await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+      await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+      expect(getProjectStatus).toHaveBeenCalledTimes(3);
+      expect(screen.getByText('25%')).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
