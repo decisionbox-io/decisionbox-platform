@@ -56,6 +56,11 @@ var agentForwardedEnvKeys = []string{
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.
 	"DISCOVERY_MAX_DURATION",
+	// LIST_TABLES_TIMEOUT_SECONDS bounds the agent's --list-tables run (the
+	// pre-index table preview). The API sizes the wait/Job deadline from it too;
+	// forward it so a container-spawned agent uses the same budget instead of
+	// its default, otherwise a raised setting is silently ignored agent-side.
+	"LIST_TABLES_TIMEOUT_SECONDS",
 	// SOURCES_ENABLED gates the enterprise sources agent plugin. Without
 	// forwarding, the plugin still loads but hands back the community NoOp
 	// retriever, so discovery runs with no knowledge-source context at all
