@@ -173,17 +173,19 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "discover schemas: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: discover schemas: %w", err)
 	}
-	// Apply any registered cached-schema filters (e.g. a table-scope plugin) to
-	// the resolved set. This matters on a cache HIT: resolveSchemas returns the
-	// stored map without running SchemaDiscovery (and thus without its ListTables
-	// filter), so without this a re-index would blurb + embed every
-	// previously-cached table even after the scope narrowed. The filter can only
-	// remove keys, never add, so it narrows a stale cache to the current scope;
-	// widening still needs the cache invalidated (the caller's re-scope path does
-	// that). No-op in the community build and on a cache miss (SchemaDiscovery
-	// already filtered). A filter error fails the run closed rather than indexing
-	// an unscoped catalog.
-	if len(schemas) > 0 {
+	// On a cache HIT, resolveSchemas returned the stored map WITHOUT running
+	// SchemaDiscovery — so its index-time ListTables filter never ran, and a
+	// re-index would blurb + embed every previously-cached table even after the
+	// scope narrowed. Apply the registered cached-schema filters here to narrow
+	// the stale cache to the current scope. We do this ONLY on a cache hit: on a
+	// fresh discovery the ListTables filters already governed the set (that is
+	// the documented index-time hook), so re-applying the run-time cached-schema
+	// hook would be redundant and would wrongly let a CachedSchema-only plugin
+	// constrain the physical index build. The filter can only remove keys, never
+	// add (widening needs the cache invalidated — the caller's re-scope path does
+	// that); a filter error fails the run closed rather than indexing an unscoped
+	// catalog. No-op in the community build.
+	if fromCache && len(schemas) > 0 {
 		keys := make([]string, 0, len(schemas))
 		for k := range schemas {
 			keys = append(keys, k)

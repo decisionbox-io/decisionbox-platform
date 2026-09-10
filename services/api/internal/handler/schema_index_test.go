@@ -846,10 +846,12 @@ type fakeTableLister struct {
 	tables []string
 	err    error
 	called bool
+	calls  int
 }
 
 func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, _ string) ([]string, error) {
 	f.called = true
+	f.calls++
 	return f.tables, f.err
 }
 
@@ -894,6 +896,30 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWhenCacheNonEmpty(t *t
 	got := decodeListCachedTables(t, w)
 	if len(got) != 1 || got[0] != "a.x" {
 		t.Errorf("tables = %v, want the indexed cache set [a.x]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_LiveFallback_CachedAcrossPolls(t *testing.T) {
+	// A second poll within the TTL must reuse the first result and NOT spawn
+	// another agent run (bounds doomed spawns on a flaky/unreachable warehouse).
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{tables: []string{"dbo.orders"}}
+	h.SetTableLister(lister)
+
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+		if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "dbo.orders" {
+			t.Fatalf("poll %d: tables = %v, want [dbo.orders]", i, got)
+		}
+	}
+	if lister.calls != 1 {
+		t.Errorf("lister spawned %d times across 3 polls, want 1 (TTL-cached)", lister.calls)
 	}
 }
 

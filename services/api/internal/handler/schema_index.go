@@ -4,12 +4,25 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
+
+// liveTableCacheTTL bounds how often ListCachedTables spawns a live
+// --list-tables agent run for the same project. Within the TTL a prior result
+// — including an empty one from a failed listing — is reused, so a persistently
+// unreachable warehouse (bad credentials, VPN down) can't turn every picker
+// poll into a fresh doomed agent job.
+const liveTableCacheTTL = 60 * time.Second
+
+type liveTableEntry struct {
+	tables []string
+	at     time.Time
+}
 
 // CollectionDropper is the minimum Qdrant surface the schema-index
 // handler needs for /reindex: drop the per-project collection so the
@@ -71,6 +84,33 @@ type SchemaIndexHandler struct {
 	canceller  IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
 	cacheRepo  SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
 	lister     WarehouseTableLister   // nullable — pre-index live table listing for the scope picker
+
+	liveMu    sync.Mutex                // guards liveCache
+	liveCache map[string]liveTableEntry // per-project TTL cache of live table listings (bounds agent spawns)
+}
+
+// getLiveTables returns a cached live listing for the project when it is still
+// within liveTableCacheTTL (an empty slice is a valid cached result — a failed
+// or empty listing — so a persistent failure backs off instead of re-spawning).
+func (h *SchemaIndexHandler) getLiveTables(projectID string) ([]string, bool) {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	e, ok := h.liveCache[projectID]
+	if !ok || time.Since(e.at) > liveTableCacheTTL {
+		return nil, false
+	}
+	return e.tables, true
+}
+
+// putLiveTables records a live-listing result (success or failure→nil) with the
+// current time so subsequent polls within the TTL reuse it.
+func (h *SchemaIndexHandler) putLiveTables(projectID string, tables []string) {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	if h.liveCache == nil {
+		h.liveCache = make(map[string]liveTableEntry)
+	}
+	h.liveCache[projectID] = liveTableEntry{tables: tables, at: time.Now()}
 }
 
 // SetTableLister installs the live warehouse-table lister used by
@@ -479,11 +519,18 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// spawn a doomed agent run on every poll. A live-listing failure degrades to
 	// the empty list (the picker's empty state) rather than erroring the page.
 	if len(tables) == 0 && h.lister != nil && len(p.EffectiveWarehouses()) > 0 {
-		if live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID); lerr != nil {
+		if cached, ok := h.getLiveTables(id); ok {
+			// Fresh cached result (possibly empty) — reuse it; don't re-spawn.
+			tables = cached
+		} else if live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID); lerr != nil {
 			apilog.WithField("project_id", id).
 				Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
+			// Negative-cache the failure so a persistent problem (bad creds, VPN
+			// down) backs off instead of spawning a doomed agent run per poll.
+			h.putLiveTables(id, nil)
 		} else {
 			tables = live
+			h.putLiveTables(id, live)
 		}
 	}
 	if tables == nil {
