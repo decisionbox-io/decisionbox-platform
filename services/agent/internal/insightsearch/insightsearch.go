@@ -105,8 +105,14 @@ func (s *Searcher) SearchInsights(ctx context.Context, query string, k int) ([]a
 		return nil, errors.New("embed query: no vector returned")
 	}
 
+	// Scope the search to the two payload types this tool can render. Insights,
+	// recommendations, knowledge-source chunks AND ledger findings share one
+	// project collection, so an unfiltered search also returns ledger_finding /
+	// source_chunk points that this searcher cannot enrich — they would surface
+	// as empty-titled citations. (Mirrors the enterprise insightSearcher.)
 	res, err := s.vs.Search(ctx, vecs[0], vectorstore.SearchOpts{
 		ProjectIDs:     []string{s.projectID},
+		Types:          []string{"insight", "recommendation"},
 		EmbeddingModel: s.embedder.ModelName(),
 		Limit:          k,
 	})
@@ -117,16 +123,24 @@ func (s *Searcher) SearchInsights(ctx context.Context, query string, k int) ([]a
 	out := make([]ai.InsightHit, 0, len(res))
 	for _, r := range res {
 		docType, _ := r.Payload["type"].(string)
-		hit := ai.InsightHit{ID: r.ID, Type: docType, Score: r.Score}
-		if enriched, ok := s.enrich(ctx, r.ID, docType); ok {
-			hit.Name = enriched.Name
-			hit.Description = enriched.Description
-			hit.Severity = enriched.Severity
-			hit.AnalysisArea = enriched.AnalysisArea
-			hit.AffectedCount = enriched.AffectedCount
-			hit.DiscoveryID = enriched.DiscoveryID
+		enriched, ok := s.enrich(ctx, r.ID, docType)
+		if !ok {
+			// A hit this searcher cannot enrich (unknown type, or the underlying
+			// doc was deleted while its vector lingered) carries no display
+			// content — drop it rather than emit an empty citation.
+			continue
 		}
-		out = append(out, hit)
+		out = append(out, ai.InsightHit{
+			ID:            r.ID,
+			Type:          docType,
+			Score:         r.Score,
+			Name:          enriched.Name,
+			Description:   enriched.Description,
+			Severity:      enriched.Severity,
+			AnalysisArea:  enriched.AnalysisArea,
+			AffectedCount: enriched.AffectedCount,
+			DiscoveryID:   enriched.DiscoveryID,
+		})
 	}
 	return out, nil
 }
