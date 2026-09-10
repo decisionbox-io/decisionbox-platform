@@ -1164,15 +1164,33 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 	seen := make(map[string]bool, len(st.insightHits)+1)
 	out := make([]commonmodels.AskSessionSource, 0, len(st.insightHits)+1)
-	// Anchor citation: the seed entity itself (insight / recommendation).
+	// Index the surfaced hits so the seed citation can inherit the richer
+	// metadata (DiscoveryID / Severity / AnalysisArea / Score) when priming's
+	// search re-surfaced the seed's own entity — otherwise deduping the seed
+	// would drop that hit and the UI loses the detail link + badges.
+	hitByID := make(map[string]ai.InsightHit, len(st.insightHits))
+	for _, h := range st.insightHits {
+		if h.ID != "" {
+			if _, ok := hitByID[h.ID]; !ok {
+				hitByID[h.ID] = h
+			}
+		}
+	}
+	// Anchor citation first: the seed entity itself (insight / recommendation),
+	// enriched from its own hit when priming re-surfaced it.
 	if s := st.req.SeedContext; s != nil && s.ID != "" && (s.Type == "insight" || s.Type == "recommendation") {
 		seen[s.ID] = true
-		out = append(out, commonmodels.AskSessionSource{
-			ID:          s.ID,
-			Type:        s.Type,
-			Name:        s.Label,
-			Description: s.Text,
-		})
+		src := commonmodels.AskSessionSource{ID: s.ID, Type: s.Type, Name: s.Label, Description: s.Text}
+		if h, ok := hitByID[s.ID]; ok {
+			if h.Name != "" {
+				src.Name = h.Name
+			}
+			if h.Description != "" {
+				src.Description = h.Description
+			}
+			src.Score, src.Severity, src.AnalysisArea, src.DiscoveryID = h.Score, h.Severity, h.AnalysisArea, h.DiscoveryID
+		}
+		out = append(out, src)
 	}
 	for _, h := range st.insightHits {
 		if h.ID == "" || seen[h.ID] {
@@ -1191,7 +1209,8 @@ func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 		})
 	}
 	// Knowledge-base chunks cited as source_chunk, matching the classic /ask
-	// path's shape (Type "source_chunk", id "<SourceID>#<Position>"), so a
+	// path's shape (Type "source_chunk", id "<SourceID>#<Position>", a capped
+	// passage preview in Description for the citation tooltip), so a
 	// knowledge-grounded answer carries provenance the dashboard renders.
 	for _, c := range st.knowledgeHits {
 		id := c.citationID()
@@ -1200,10 +1219,11 @@ func (st *turnState) insightSources() []commonmodels.AskSessionSource {
 		}
 		seen[id] = true
 		out = append(out, commonmodels.AskSessionSource{
-			ID:    id,
-			Type:  "source_chunk",
-			Name:  c.SourceName,
-			Score: c.Score,
+			ID:          id,
+			Type:        "source_chunk",
+			Name:        c.SourceName,
+			Score:       c.Score,
+			Description: previewText(c.Text, knowledgeTextPreviewCap),
 		})
 	}
 	if len(out) == 0 {
