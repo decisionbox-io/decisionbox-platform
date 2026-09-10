@@ -304,7 +304,19 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*RunSyncResult, error) {
 	jobName := fmt.Sprintf("test-%s-%d", opts.ProjectID[:min(len(opts.ProjectID), 12)], time.Now().UnixMilli()%100000)
 	args := append([]string{"--project-id", opts.ProjectID}, opts.Args...)
+	// Default 60s (historical test-connection budget); a caller can extend it —
+	// e.g. --list-tables on a large warehouse — via TimeoutSeconds so the Job's
+	// ActiveDeadlineSeconds doesn't kill a legitimately slow run.
 	deadline := int64(60)
+	if opts.TimeoutSeconds > 0 {
+		deadline = int64(opts.TimeoutSeconds)
+	}
+	// TTL mirrors the deadline. Bound the int64→int32 narrowing (a Job TTL never
+	// needs more than a day) so gosec's overflow check is satisfied.
+	ttl := int32(60)
+	if deadline > 0 && deadline <= 86400 {
+		ttl = int32(deadline)
+	}
 
 	job := r.buildJob(jobSpec{
 		name: jobName,
@@ -314,7 +326,7 @@ func (r *KubernetesRunner) RunSync(ctx context.Context, opts RunSyncOptions) (*R
 		podLabels: map[string]string{
 			"app": "decisionbox-agent", "type": "test-connection",
 		},
-		args: args, ttl: 60, deadline: &deadline,
+		args: args, ttl: ttl, deadline: &deadline,
 		cpuReq: "100m", cpuLim: "500m", memReq: "128Mi", memLim: "256Mi",
 	})
 
