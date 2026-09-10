@@ -10,6 +10,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
+	"golang.org/x/sync/singleflight"
 )
 
 // liveTableCacheTTL bounds how often ListCachedTables spawns a live
@@ -87,6 +88,7 @@ type SchemaIndexHandler struct {
 
 	liveMu    sync.Mutex                // guards liveCache
 	liveCache map[string]liveTableEntry // per-project TTL cache of live table listings (bounds agent spawns)
+	liveSF    singleflight.Group        // coalesces concurrent live listings per project
 }
 
 // getLiveTables returns a cached live listing for the project when it is still
@@ -522,15 +524,31 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 		if cached, ok := h.getLiveTables(id); ok {
 			// Fresh cached result (possibly empty) — reuse it; don't re-spawn.
 			tables = cached
-		} else if live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID); lerr != nil {
-			apilog.WithField("project_id", id).
-				Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
-			// Negative-cache the failure so a persistent problem (bad creds, VPN
-			// down) backs off instead of spawning a doomed agent run per poll.
-			h.putLiveTables(id, nil)
 		} else {
-			tables = live
-			h.putLiveTables(id, live)
+			// Coalesce concurrent picker polls for the same project through
+			// singleflight so parallel requests share ONE agent run instead of
+			// each spawning its own; the TTL cache then bounds sequential polls.
+			v, _, _ := h.liveSF.Do(id, func() (interface{}, error) {
+				// Re-check the cache inside the flight: a just-finished leader may
+				// have populated it while this call was queued behind the lock.
+				if cached, ok := h.getLiveTables(id); ok {
+					return cached, nil
+				}
+				live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID)
+				if lerr != nil {
+					apilog.WithField("project_id", id).
+						Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
+					// Negative-cache the failure so a persistent problem (bad creds,
+					// VPN down) backs off instead of spawning a doomed run per poll.
+					h.putLiveTables(id, nil)
+					return []string(nil), nil
+				}
+				h.putLiveTables(id, live)
+				return live, nil
+			})
+			if v != nil {
+				tables, _ = v.([]string)
+			}
 		}
 	}
 	if tables == nil {
