@@ -423,24 +423,38 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	if err != nil {
 		return nil, err
 	}
-	// DocumentsOnly is left false so operator notes surface alongside documents,
-	// but that mode may inject notes OUTSIDE Limit — so cap the combined result to
-	// the requested k here (notes are returned first, so pinned guidance is kept)
-	// to honour the tool's advertised limit and bound the turn context.
-	if len(chunks) > k {
-		chunks = chunks[:k]
-	}
-	out := make([]askserve.KnowledgeChunk, 0, len(chunks))
+	// DocumentsOnly is left false so operator notes surface alongside documents.
+	// That mode prepends pinned notes OUTSIDE Limit, so a blind cap would keep
+	// notes and starve the semantic document matches. Instead budget the two
+	// independently: keep the top-k document matches (never starved) plus a small
+	// number of pinned notes (always-include guidance), notes first. Bounded
+	// result, no lost document hits. (A note's SourceType is the literal "note".)
+	notes := make([]askserve.KnowledgeChunk, 0, maxKnowledgeNotes)
+	docs := make([]askserve.KnowledgeChunk, 0, k)
 	for _, c := range chunks {
-		out = append(out, askserve.KnowledgeChunk{
+		kc := askserve.KnowledgeChunk{
 			SourceID:   c.SourceID,
 			Position:   c.Position,
 			SourceName: c.SourceName,
 			SourceType: c.SourceType,
 			Text:       c.Text,
 			Score:      c.Score,
-		})
+		}
+		if strings.EqualFold(c.SourceType, "note") {
+			if len(notes) < maxKnowledgeNotes {
+				notes = append(notes, kc)
+			}
+			continue
+		}
+		if len(docs) < k {
+			docs = append(docs, kc)
+		}
 	}
-	return out, nil
+	return append(notes, docs...), nil
 }
+
+// maxKnowledgeNotes bounds how many pinned operator notes search_knowledge
+// returns alongside the top-k document matches, so always-include note guidance
+// never crowds out (or is crowded out by) the semantic document results.
+const maxKnowledgeNotes = 5
 

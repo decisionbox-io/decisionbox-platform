@@ -36,7 +36,7 @@ func TestLoopTools_MutationToolOfferedAndRecordsProposal(t *testing.T) {
 	rt := toolRuntime(p, wh, nil, "")
 	rt.MutationTools = []MutationTool{mt}
 
-	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this as a note", CallerSub: "user-9"})
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this as a note", CallerSub: "user-9", CallerRole: "member"})
 
 	if !hasTool(p.reqs[0].Tools, "save_note") {
 		t.Fatal("save_note should be offered when a mutation tool is registered")
@@ -153,6 +153,16 @@ func TestLoopTools_MutationBatchedWithQueryIsDeferred(t *testing.T) {
 	}
 	if hasSaveEvent {
 		t.Fatal("the deferred save_note must not emit a tool event")
+	}
+}
+
+func TestMayMutate_FailClosed(t *testing.T) {
+	cases := map[string]bool{"member": true, "admin": true, "viewer": false, "": false, "editor": false, "Member": false}
+	for role, want := range cases {
+		st := &turnState{req: TurnRequest{CallerRole: role}}
+		if got := st.mayMutate(); got != want {
+			t.Fatalf("role %q: mayMutate=%v, want %v", role, got, want)
+		}
 	}
 }
 

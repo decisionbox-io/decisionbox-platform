@@ -121,16 +121,21 @@ func (st *turnState) canAnswer() bool {
 	return st.groundedEvents > 0 || st.mutationsDone > 0
 }
 
-// roleViewer is the read-only Ask role. A viewer may run read-only Ask but is
-// never offered a write (mutation) tool — mirroring the member+ visibility the
-// classic proposal tools enforce.
-const roleViewer = "viewer"
+// Ask roles. Write (mutation) tools are gated to member/admin, mirroring the
+// classic proposal tools' member+ visibility.
+const (
+	roleMember = "member"
+	roleAdmin  = "admin"
+)
 
-// mayMutate reports whether this turn's caller may use a write tool. Empty role
-// (NoAuth / single-user) and member/admin may; a viewer may not. Read-only tools
-// are unaffected.
+// mayMutate reports whether this turn's caller may use a write tool. It is
+// fail-CLOSED: only an explicit member or admin role qualifies. A missing,
+// empty, or unknown role never gets write access, so a caller/API mismatch
+// can't turn a viewer into a mutator. The enterprise delegate always sends a
+// resolved role (and "admin" under NoAuth), so this never wrongly blocks a
+// legitimate write. Read-only tools are unaffected.
 func (st *turnState) mayMutate() bool {
-	return st.req.CallerRole != roleViewer
+	return st.req.CallerRole == roleMember || st.req.CallerRole == roleAdmin
 }
 
 // routingQuestion is the question the multi-datasource router reasons over. On a
