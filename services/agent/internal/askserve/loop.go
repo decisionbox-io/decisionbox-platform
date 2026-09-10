@@ -320,27 +320,39 @@ func (r *runner) primeSeed(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// The loop re-sets st.round to 1 on its first iteration.
 	st.round = 1
 
+	g0 := st.groundedEvents
+	insBefore := len(st.insightHits)
 	var b strings.Builder
-	// Append an observation only when the search actually gathered evidence (the
-	// grounded count rose), so a failed / provider-unavailable search doesn't
-	// inject its error string as if it were reference context.
-	appendIfGrounded := func(before int, obs string) {
-		if ctx.Err() == nil && st.groundedEvents > before {
-			if b.Len() > 0 {
-				b.WriteString("\n\n")
-			}
-			b.WriteString(obs)
+	appendObs := func(obs string) {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(obs)
+	}
+	// Insight search: include (and let it ground) only when it actually surfaced
+	// hits — a failed / empty search must not inject its "no matching" string as
+	// reference context.
+	if rt.InsightsProvider != nil {
+		obs := r.execSearchInsights(ctx, rt, st, &turnAction{Kind: actSearchInsights, SearchInsights: query})
+		if ctx.Err() == nil && len(st.insightHits) > insBefore {
+			appendObs(obs)
 		}
 	}
-	if rt.InsightsProvider != nil {
-		before := st.groundedEvents
-		obs := r.execSearchInsights(ctx, rt, st, &turnAction{Kind: actSearchInsights, SearchInsights: query})
-		appendIfGrounded(before, obs)
-	}
+	// Table search: orientation only (tables the entity lives in). Include the
+	// non-empty result as context but it does NOT ground the turn — the model
+	// still has to query for figures.
 	if ctx.Err() == nil && rt.Schema != nil {
-		before := st.groundedEvents
 		obs := r.execSearch(ctx, rt, st, &turnAction{Kind: actSearch, SearchTables: query})
-		appendIfGrounded(before, obs)
+		if ctx.Err() == nil && !strings.Contains(obs, "no matching tables") {
+			appendObs(obs)
+		}
+	}
+	// Priming grounds the turn ONLY when it surfaced real insight hits. An empty
+	// automatic search (or table orientation alone) must not unlock the answer
+	// tool before the model has gathered its own evidence — so undo any grounding
+	// the priming events recorded when no real insight hit was found.
+	if len(st.insightHits) == insBefore {
+		st.groundedEvents = g0
 	}
 	st.primeContext = strings.TrimSpace(b.String())
 }

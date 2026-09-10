@@ -270,6 +270,30 @@ func TestExecMutation_SuccessUnlocksAnswerButDoesNotGround(t *testing.T) {
 	}
 }
 
+func TestExecMutation_NoProposalNotConfirmedAsSaved(t *testing.T) {
+	// A mutation that returns nil error but no proposal id (no-op / already-exists)
+	// must NOT be counted as a saved write or confirmed as a pending change.
+	r := &runner{cfg: Config{}, store: &fakeStore{}}
+	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+		return MutationOutput{Output: map[string]any{"status": "exists"}}, nil // empty ProposalID
+	}}
+	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	obs := r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}})
+
+	if st.mutationsDone != 0 || st.canAnswer() {
+		t.Fatalf("a no-proposal mutation must not count as a saved write (done=%d canAnswer=%v)", st.mutationsDone, st.canAnswer())
+	}
+	if !strings.Contains(obs, "no pending change") {
+		t.Fatalf("observation should report no pending change, got %q", obs)
+	}
+	if !strings.Contains(obs, "exists") {
+		t.Fatalf("the tool output should be surfaced to the model, got %q", obs)
+	}
+	if len(st.events) != 1 || st.events[0].ProposalID != "" {
+		t.Fatalf("event should be recorded with an empty proposal id, got %+v", st.events)
+	}
+}
+
 func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 	routing := turnRouting{datasources: []DatasourceInfo{{ID: "default", Dialect: "bigquery"}}}
 

@@ -89,19 +89,27 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	}
 	ev.ProposalID = out.ProposalID
 	ev.Output = out.Output
-	st.mutationsDone++
 	// A mutation is not evidence — it must not unlock a grounded DATA answer — so
-	// it is emitted as non-grounding. mutationsDone (tracked above) separately
-	// lets the model finish the turn to confirm the save.
+	// it is always emitted as non-grounding.
 	r.emitTool(ctx, st, ev, false)
-	obs := fmt.Sprintf("%s succeeded. It created a pending change the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name)
+
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
-	// model for its confirmation, per the askmutation Result contract.
+	// model, per the askmutation Result contract.
+	suffix := ""
 	if out.Output != nil {
 		if raw, err := json.Marshal(out.Output); err == nil {
-			obs += " Result: " + string(raw)
+			suffix = " Result: " + string(raw)
 		}
 	}
-	return obs
+	if out.ProposalID == "" {
+		// Nil error but no proposal id (a no-op / already-exists / validation-only
+		// outcome — ProposalID is optional). Do NOT count it as a saved write or
+		// claim a pending change; report the outcome from the tool output instead.
+		return fmt.Sprintf("%s completed but created no pending change; report the outcome to the user based on the result.", mt.Name) + suffix
+	}
+	// A real proposal was created: it lets the model finish the turn to confirm
+	// the save (mutationsDone separately allows a mutation-only turn to answer).
+	st.mutationsDone++
+	return fmt.Sprintf("%s succeeded — it created a pending change (id %s) the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name, out.ProposalID) + suffix
 }

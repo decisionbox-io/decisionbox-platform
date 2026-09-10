@@ -40,6 +40,30 @@ func TestPrimeSeed_GathersGroundsAndFolds(t *testing.T) {
 	}
 }
 
+func TestPrimeSeed_EmptyResultDoesNotGround(t *testing.T) {
+	// A seeded turn whose priming search returns zero hits must NOT ground the
+	// turn — otherwise the model could answer with no evidence at all.
+	ins := &fakeInsights{hits: nil}
+	r := &runner{cfg: Config{MaxRounds: 8}, store: &fakeStore{}}
+	rt := &ProjectRuntime{InsightsProvider: ins}
+	st := &turnState{req: TurnRequest{TurnID: "t1", ProjectID: "p1", SeedContext: &SeedContext{Type: "insight", ID: "i1", Label: "x", Text: "y"}}}
+
+	r.primeSeed(context.Background(), rt, st)
+
+	if ins.calls != 1 {
+		t.Fatalf("the insight search should still run, calls=%d", ins.calls)
+	}
+	if st.groundedEvents != 0 {
+		t.Fatal("empty priming must not ground the turn")
+	}
+	if st.canAnswer() {
+		t.Fatal("empty priming must not unlock answering")
+	}
+	if st.primeContext != "" {
+		t.Fatalf("empty priming should append no context, got %q", st.primeContext)
+	}
+}
+
 func TestPrimeSeed_SkipsFollowupAndUnseeded(t *testing.T) {
 	r := &runner{cfg: Config{MaxRounds: 8}, store: &fakeStore{}}
 
