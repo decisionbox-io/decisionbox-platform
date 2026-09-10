@@ -396,10 +396,14 @@ func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
 		return store
 	}
 
-	// One completed, one straggler → disclosed.
+	// One completed, one straggler → disclosed with the PARTIAL wording (a proposal
+	// was created, so it must not claim "nothing was persisted").
 	store := run(newProvider())
-	if store.final == nil || !strings.Contains(store.final.Answer, pendingWriteNotice) {
-		t.Fatalf("a straggler deferred write must be disclosed, got %+v", store.final)
+	if store.final == nil || !strings.Contains(store.final.Answer, partialWriteNotice) {
+		t.Fatalf("a straggler after a partial save must use the partial notice, got %+v", store.final)
+	}
+	if strings.Contains(store.final.Answer, pendingWriteNotice) {
+		t.Fatalf("a partial save must not claim nothing was persisted, got %q", store.final.Answer)
 	}
 
 	// Both completed → no straggler notice.
@@ -420,7 +424,7 @@ func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
 	if store2.final == nil {
 		t.Fatal("turn did not finalize")
 	}
-	if strings.Contains(store2.final.Answer, pendingWriteNotice) {
+	if strings.Contains(store2.final.Answer, pendingWriteNotice) || strings.Contains(store2.final.Answer, partialWriteNotice) {
 		t.Fatalf("no straggler should be disclosed when both writes completed, got %q", store2.final.Answer)
 	}
 }

@@ -1171,13 +1171,19 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 	// A write the user asked for was deferred but never created — the model
 	// finished instead (it ignored the one nudge, or the budget ran out with the
 	// write batched in the last round). Disclose it on ANY terminal (answer /
-	// clarify / decline) so the save is never silently dropped.
+	// clarify / decline) so the save is never silently dropped. When another write
+	// DID create a proposal this turn, use the partial wording so the notice can't
+	// contradict the "saved" acknowledgement by claiming nothing was persisted.
 	if st.writesPending > 0 {
+		notice := pendingWriteNotice
+		if st.writesSaved > 0 {
+			notice = partialWriteNotice
+		}
 		answer = strings.TrimRight(answer, "\n")
 		if answer != "" {
 			answer += "\n\n"
 		}
-		answer += pendingWriteNotice
+		answer += notice
 	}
 	r.finalize(ctx, st, TurnFinal{
 		Status:      status,
@@ -1203,6 +1209,12 @@ const noWriteAckText = "I didn't create a new pending change this turn — it ei
 // ran out with the write batched in the last round) — so the user learns the save
 // didn't complete instead of it being silently dropped.
 const pendingWriteNotice = "Note: I wasn't able to save the change you asked for this turn, so nothing was persisted — ask again to save it."
+
+// partialWriteNotice is used instead of pendingWriteNotice when at least one
+// write DID create a proposal this turn but another requested write is still
+// pending — so the notice doesn't falsely claim "nothing was persisted" and
+// contradict the save acknowledgement.
+const partialWriteNotice = "Note: I saved some of what you asked, but at least one other change wasn't saved this turn — ask again to save the rest."
 
 // finishUngrounded declines a turn whose model insisted on answering without
 // running any query — emitting that answer would surface fabricated data, so
