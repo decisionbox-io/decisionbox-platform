@@ -129,6 +129,13 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	if rt.KnowledgeProvider != nil {
 		b.WriteString("For questions answerable from the project's documents or notes (definitions, business rules, policies), a search_knowledge result is sufficient grounding on its own.\n")
 	}
+	if mutationsAvailable {
+		// The grounding requirement is about DATA claims. A write (e.g. save_note) is
+		// not a data claim, and canAnswer already lets a completed write finish the
+		// turn — say so, so a save-only request ("save this as a note") isn't pushed
+		// into irrelevant SQL or a decline after the write succeeds.
+		b.WriteString("Exception: after a write tool (e.g. save_note) succeeds, finish with a brief confirmation of that save — you do NOT need a data-evidence call to confirm a write. The grounding rule above applies only to answers that state warehouse figures or facts.\n")
+	}
 
 	b.WriteString("\nFinish by calling answer (concise, analyst-style prose referencing the figures you found), clarify, or decline.")
 

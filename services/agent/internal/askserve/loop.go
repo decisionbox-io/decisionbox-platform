@@ -1151,8 +1151,16 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 	case actClarify:
 		disposition = commonmodels.AskTurnDispositionClarify
 	case actDecline:
-		status = commonmodels.AskTurnStatusDeclined
-		disposition = commonmodels.AskTurnDispositionDecline
+		// A save-only turn that created a pending proposal must not report a decline
+		// — that misreports a successful write as a failure. Confirm the save instead
+		// (status/disposition keep their Done/Answer defaults). A grounded decline, or
+		// a decline with no proposal created, is untouched.
+		if st.writesSaved > 0 && st.groundedEvents == 0 {
+			answer = writeAckText
+		} else {
+			status = commonmodels.AskTurnStatusDeclined
+			disposition = commonmodels.AskTurnDispositionDecline
+		}
 	case actAnswer:
 		// A write (save_note) lets the turn finish so it can report the outcome,
 		// but a write is NOT evidence: if the turn gathered no query/search

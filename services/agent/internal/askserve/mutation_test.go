@@ -429,6 +429,34 @@ func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
 	}
 }
 
+func TestLoopTools_SaveThenDeclineReportsSaveNotFailure(t *testing.T) {
+	// A save-only turn that created a proposal and then (oddly) declines must NOT be
+	// reported as a decline — that misreports a successful pending change as a
+	// failure. It finishes done, confirming the save.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
+		toolCall(string(actDecline), map[string]any{"reason": "no figures to report"}),
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "save this as a note", CallerRole: "member"})
+
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("a save-only turn that created a proposal must not decline, got %+v", store.final)
+	}
+	if store.final.Answer != writeAckText {
+		t.Fatalf("the turn should confirm the save, got %q", store.final.Answer)
+	}
+}
+
 func TestLoopTools_ReDeferredWriteNotDoubleCounted(t *testing.T) {
 	// The model batches the SAME save with a query twice (ignoring "call it alone"),
 	// then finally issues it alone. Re-deferring the same write must not inflate the
@@ -662,6 +690,11 @@ func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 	}
 	if !strings.Contains(out, "NOT read-only") {
 		t.Fatalf("capability line missing when a mutation tool is present:\n%s", out)
+	}
+	// The grounding rule must carve out an exception for confirming a write, so a
+	// save-only request isn't pushed into irrelevant SQL or a decline.
+	if !strings.Contains(out, "you do NOT need a data-evidence call to confirm a write") {
+		t.Fatalf("grounding exception for write confirmations missing:\n%s", out)
 	}
 
 	// mutationsAvailable=false (e.g. a viewer) → no capability line, tool undescribed.
