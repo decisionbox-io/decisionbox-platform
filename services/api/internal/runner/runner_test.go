@@ -732,6 +732,34 @@ func TestKubernetesRunner_Run_PropagatesDiscoveryMaxDuration(t *testing.T) {
 	}
 }
 
+// TestKubernetesRunner_Run_PropagatesDiscoveryQuestionsEnabled verifies the
+// clarifying-questions availability flag reaches agent Job containers. The
+// agent runs as a separate container, so a flag set only on the API deployment
+// would otherwise never turn the feature on inside the spawned agent.
+func TestKubernetesRunner_Run_PropagatesDiscoveryQuestionsEnabled(t *testing.T) {
+	os.Setenv("DISCOVERY_QUESTIONS_ENABLED", "true")
+	defer os.Unsetenv("DISCOVERY_QUESTIONS_ENABLED")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+
+	if err := r.Run(ctx, RunOptions{ProjectID: "proj-dq", RunID: "run-dq-1234"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs.Items))
+	}
+	envMap := make(map[string]string)
+	for _, e := range jobs.Items[0].Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	if envMap["DISCOVERY_QUESTIONS_ENABLED"] != "true" {
+		t.Errorf("DISCOVERY_QUESTIONS_ENABLED = %q, want true", envMap["DISCOVERY_QUESTIONS_ENABLED"])
+	}
+}
+
 // TestKubernetesRunner_Run_OmitsDiscoveryMaxDurationWhenUnset verifies we
 // do NOT inject an empty DISCOVERY_MAX_DURATION when unset on the API
 // process — the agent's default kicks in cleanly when the env var is

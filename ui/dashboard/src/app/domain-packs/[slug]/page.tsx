@@ -69,11 +69,11 @@ export default function DomainPackEditorPage() {
     try {
       if (isNew) {
         const created = await api.createDomainPack(pack);
-        notifications.show({ title: 'Created', message: `Domain pack "${created.slug}" created`, color: 'green' });
+        notifications.show({ title: 'Created', message: `Playbook "${created.slug}" created`, color: 'green' });
         router.push(`/domain-packs/${created.slug}`);
       } else {
         await api.updateDomainPack(slug, pack);
-        notifications.show({ title: 'Saved', message: 'Domain pack updated', color: 'green' });
+        notifications.show({ title: 'Saved', message: 'Playbook updated', color: 'green' });
       }
     } catch (e) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
@@ -170,16 +170,16 @@ export default function DomainPackEditorPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
-  if (!pack) return <Shell><Text>Domain pack not found</Text></Shell>;
+  if (!pack) return <Shell><Text>Playbook not found</Text></Shell>;
 
   return (
-    <Shell breadcrumb={[{ label: 'Domain Packs', href: '/domain-packs' }, { label: isNew ? 'New' : pack.name }]}>
+    <Shell breadcrumb={[{ label: 'Playbooks', href: '/domain-packs' }, { label: isNew ? 'New' : pack.name }]}>
       <Stack gap="lg">
         <Group justify="space-between">
           <Group>
             <Button variant="subtle" leftSection={<IconArrowLeft size={16} />}
               onClick={() => router.push('/domain-packs')}>Back</Button>
-            <Title order={2}>{isNew ? 'New Domain Pack' : pack.name}</Title>
+            <Title order={2}>{isNew ? 'New Playbook' : pack.name}</Title>
           </Group>
           <Button onClick={handleSave} loading={saving} leftSection={<IconCheck size={16} />}>
             {isNew ? 'Create' : 'Save'}

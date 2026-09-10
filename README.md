@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg" alt="License: AGPL v3" /></a>
-  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
   <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml"><img src="https://github.com/decisionbox-io/decisionbox-platform/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build" /></a>
   <a href="https://codecov.io/gh/decisionbox-io/decisionbox-platform"><img src="https://codecov.io/gh/decisionbox-io/decisionbox-platform/graph/badge.svg" alt="Coverage" /></a>
@@ -271,8 +271,8 @@ DecisionBox collects anonymous usage telemetry to help improve the product. No P
 
 | Component | Technology |
 |-----------|-----------|
-| Agent | Go 1.25 |
-| API | Go 1.25, net/http (stdlib) |
+| Agent | Go 1.26 |
+| API | Go 1.26, net/http (stdlib) |
 | Dashboard | Next.js 16, React 19, TypeScript, Mantine 8 |
 | Database | MongoDB |
 | Vector store | Qdrant (HNSW) |

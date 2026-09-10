@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
@@ -70,7 +70,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.Commit=${COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" \
     -o /decisionbox-agent .
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata && \
     apk upgrade --no-cache && \
     addgroup -g 1000 -S app && adduser -u 1000 -S app -G app

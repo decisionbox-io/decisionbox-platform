@@ -55,8 +55,8 @@ func promptsFor(routing turnRouting) map[string]string {
 	cfg := Config{PreviewRows: 20, MaxQueriesPerTurn: 8, MaxRounds: 12}
 	rt := &ProjectRuntime{}
 	return map[string]string{
-		"text prompt":   buildSystemPrompt(rt, routing, cfg, false),
-		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false),
+		"text prompt":   buildSystemPrompt(rt, routing, cfg, false, nil),
+		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false, nil),
 		"query_data":    toolQueryData(routing.multi, routing.shapes().anyCube).Description,
 		"search_tables": toolSearchTables(routing.shapes().anyCube).Description,
 	}
@@ -208,7 +208,7 @@ func TestTextPrompt_AdvertisesNoLookupWhereNothingHasTables(t *testing.T) {
 	cfg := Config{PreviewRows: 20, MaxQueriesPerTurn: 8, MaxRounds: 12}
 	rt := &ProjectRuntime{}
 	render := func(ds []DatasourceInfo) string {
-		return buildSystemPrompt(rt, turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}, cfg, false)
+		return buildSystemPrompt(rt, turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}, cfg, false, nil)
 	}
 
 	sql, cube := sqlDatasource("wh_1"), cubeDatasource("ga_1")
@@ -248,7 +248,7 @@ func TestToolsPrompt_OffersOnlyToolsTheTurnWasGiven(t *testing.T) {
 				offered = true
 			}
 		}
-		return buildSystemPromptForTools(rt, routing, cfg, false), offered
+		return buildSystemPromptForTools(rt, routing, cfg, false, nil), offered
 	}
 	multi := func(ds ...DatasourceInfo) turnRouting {
 		return turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}

@@ -488,7 +488,7 @@ func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
 	rt := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}, {ID: "wh_b"}}, PrimaryID: "wh_a"}
 	multi, _ := rt.resolveTurnRouting("")
 
-	text := buildSystemPrompt(rt, multi, Config{}, false)
+	text := buildSystemPrompt(rt, multi, Config{}, false, nil)
 	for _, want := range []string{`"joins_on":{"source_step":"q1","field":"user_id"}`, "source_step", "field"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the text prompt must show %q, since nothing else tells it the key names:\n%s", want, text)
@@ -502,7 +502,7 @@ func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
 
 	// The native path carries the contract in the tool schema instead, so its
 	// prompt is not widened with a form the model cannot get wrong there.
-	tools := buildSystemPromptForTools(rt, multi, Config{}, false)
+	tools := buildSystemPromptForTools(rt, multi, Config{}, false, nil)
 	if strings.Contains(tools, `"joins_on":{"source_step"`) {
 		t.Fatalf("the tools prompt should not repeat the JSON form:\n%s", tools)
 	}
@@ -510,7 +510,7 @@ func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
 	// A turn that cannot hop gains nothing at all.
 	single := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}}, PrimaryID: "wh_a"}
 	pinned, _ := single.resolveTurnRouting("")
-	if strings.Contains(buildSystemPrompt(single, pinned, Config{}, false), "joins_on") {
+	if strings.Contains(buildSystemPrompt(single, pinned, Config{}, false, nil), "joins_on") {
 		t.Fatal("a single-datasource prompt must be unchanged")
 	}
 }
@@ -530,7 +530,7 @@ func TestPrompt_TextPathShowsTheFormOnAMixedShapeTurn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := &ProjectRuntime{Datasources: tc.datasources, PrimaryID: tc.datasources[0].ID}
 			routing, _ := rt.resolveTurnRouting("")
-			got := buildSystemPrompt(rt, routing, Config{}, false)
+			got := buildSystemPrompt(rt, routing, Config{}, false, nil)
 			if !strings.Contains(got, `"joins_on":{"source_step":"q1","field":"user_id"}`) {
 				t.Fatalf("the form must appear on this branch too:\n%s", got)
 			}
@@ -541,13 +541,13 @@ func TestPrompt_TextPathShowsTheFormOnAMixedShapeTurn(t *testing.T) {
 func TestPrompt_TellsAMultiDatasourceTurnToDeclareItsHop(t *testing.T) {
 	rt := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}, {ID: "wh_b"}}, PrimaryID: "wh_a"}
 	multi, _ := rt.resolveTurnRouting("")
-	if !strings.Contains(buildSystemPrompt(rt, multi, Config{}, false), "joins_on") {
+	if !strings.Contains(buildSystemPrompt(rt, multi, Config{}, false, nil), "joins_on") {
 		t.Fatal("a turn that can hop must be told how to declare the hop")
 	}
 	// A turn with one datasource cannot hop, so its prompt must not gain a word.
 	single := &ProjectRuntime{Datasources: []DatasourceInfo{{ID: "wh_a"}}, PrimaryID: "wh_a"}
 	pinned, _ := single.resolveTurnRouting("")
-	if strings.Contains(buildSystemPrompt(single, pinned, Config{}, false), "joins_on") {
+	if strings.Contains(buildSystemPrompt(single, pinned, Config{}, false, nil), "joins_on") {
 		t.Fatal("a single-datasource prompt must be unchanged")
 	}
 }

@@ -910,6 +910,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// (see database/discovery_log_repo.go). The previous embedded arrays
 	// hit the 16MB BSON limit on long runs.
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
+	discoveryQuestionRepo := database.NewDiscoveryQuestionRepository(db)
+
+	// Discovery Ledger repositories (compounding discovery, enterprise#261).
+	ledgerRepo := database.NewLedgerRepository(db)
+	ledgerFindingRepo := database.NewLedgerFindingRepository(db)
+	ledgerTaskRepo := database.NewLedgerTaskRepository(db)
+	ledgerProposalRepo := database.NewLedgerProposalRepository(db)
 
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure context indexes")
@@ -919,6 +926,16 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	if err := discoveryLogRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery log split-collection indexes")
+	}
+	if err := discoveryQuestionRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
+	}
+	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
+		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
+	} {
+		if err := li.EnsureIndexes(ctx); err != nil {
+			applog.WithError(err).Warn("Failed to ensure discovery ledger indexes")
+		}
 	}
 	if enableDebugLogs {
 		if err := debugLogRepo.EnsureIndexes(ctx); err != nil {
@@ -1023,43 +1040,48 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:           aiClient,
-		Warehouse:          warehouseProvider,
-		ContextRepo:        contextRepo,
-		DiscoveryRepo:      discoveryRepo,
-		DiscoveryLogRepo:   discoveryLogRepo,
-		FeedbackRepo:       database.NewFeedbackRepository(db),
-		DebugLogRepo:       debugLogRepo,
-		RunRepo:            runRepo,
-		RunStepRepo:        runStepRepo,
-		RunID:              runID,
-		ProjectID:          projectID,
-		Domain:             warehouseDomainOr(primaryWH, project.Domain),
-		Category:           project.Category,
-		Language:           project.Language,
-		Profile:            project.Profile,
-		ProjectPrompts:     project.Prompts,
-		Datasets:           datasets,
-		FilterField:        primaryWH.FilterField,
-		FilterValue:        primaryWH.FilterValue,
-		LLMProvider:        project.LLM.Provider,
-		LLMModel:           project.LLM.Model,
-		LLMConfig:          project.LLM.Config,
-		LLMInputWindow:     resolvedWindow,
-		LLMOutputCap:       resolvedOutputCap,
-		ModelWindowRepo:    projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
-		WarehouseProvider:  primaryWH.Provider,
-		EnableDebugLogs:    enableDebugLogs,
-		VectorStore:        qdrantProvider,
-		EmbeddingProvider:  embeddingProvider,
-		EmbedIndexStore:    discovery.NewMongoEmbedIndexStore(db),
-		SchemaRetriever:    schemaRetriever,
-		SchemaCache:        schemaCache,
-		WarehouseHash:      warehouseHash,
-		WarehouseID:        warehouseIDOrDefault(primaryWH),
-		WarehouseProviders: warehouseProviders,
-		Warehouses:         effectiveWarehouses,
-		RunStepIndex:       runStepIndex,
+		AIClient:              aiClient,
+		Warehouse:             warehouseProvider,
+		ContextRepo:           contextRepo,
+		DiscoveryRepo:         discoveryRepo,
+		DiscoveryLogRepo:      discoveryLogRepo,
+		DiscoveryQuestionRepo: discoveryQuestionRepo,
+		LedgerRepo:            ledgerRepo,
+		LedgerFindingRepo:     ledgerFindingRepo,
+		LedgerTaskRepo:        ledgerTaskRepo,
+		LedgerProposalRepo:    ledgerProposalRepo,
+		FeedbackRepo:          database.NewFeedbackRepository(db),
+		DebugLogRepo:          debugLogRepo,
+		RunRepo:               runRepo,
+		RunStepRepo:           runStepRepo,
+		RunID:                 runID,
+		ProjectID:             projectID,
+		Domain:                warehouseDomainOr(primaryWH, project.Domain),
+		Category:              project.Category,
+		Language:              project.Language,
+		Profile:               project.Profile,
+		ProjectPrompts:        project.Prompts,
+		Datasets:              datasets,
+		FilterField:           primaryWH.FilterField,
+		FilterValue:           primaryWH.FilterValue,
+		LLMProvider:           project.LLM.Provider,
+		LLMModel:              project.LLM.Model,
+		LLMConfig:             project.LLM.Config,
+		LLMInputWindow:        resolvedWindow,
+		LLMOutputCap:          resolvedOutputCap,
+		ModelWindowRepo:       projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
+		WarehouseProvider:     primaryWH.Provider,
+		EnableDebugLogs:       enableDebugLogs,
+		VectorStore:           qdrantProvider,
+		EmbeddingProvider:     embeddingProvider,
+		EmbedIndexStore:       discovery.NewMongoEmbedIndexStore(db),
+		SchemaRetriever:       schemaRetriever,
+		SchemaCache:           schemaCache,
+		WarehouseHash:         warehouseHash,
+		WarehouseID:           warehouseIDOrDefault(primaryWH),
+		WarehouseProviders:    warehouseProviders,
+		Warehouses:            effectiveWarehouses,
+		RunStepIndex:          runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -1095,15 +1117,17 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	defer cancel()
 
 	result, err := orchestrator.RunDiscovery(discoveryCtx, discovery.DiscoveryOptions{
-		MaxSteps:               maxSteps,
-		MinSteps:               minSteps,
-		IncludeExplorationLog:  includeLog,
-		TestMode:               testMode,
-		SelectedAreas:          selectedAreas,
-		ValidationEnabled:      project.EffectiveValidationEnabled(),
-		SmartOverflowEnabled:   project.EffectiveSmartOverflowEnabled(),
-		ReasoningEnabled:       project.EffectiveReasoningEnabled(),
-		RecommendationVerdicts: project.EffectiveRecommendationVerdicts(),
+		MaxSteps:                   maxSteps,
+		MinSteps:                   minSteps,
+		IncludeExplorationLog:      includeLog,
+		TestMode:                   testMode,
+		SelectedAreas:              selectedAreas,
+		ValidationEnabled:          project.EffectiveValidationEnabled(),
+		SmartOverflowEnabled:       project.EffectiveSmartOverflowEnabled(),
+		ReasoningEnabled:           project.EffectiveReasoningEnabled(),
+		RecommendationVerdicts:     project.EffectiveRecommendationVerdicts(),
+		ClarifyingQuestionsEnabled: project.EffectiveClarifyingQuestionsEnabled(),
+		ReflectionEnabled:          project.EffectiveReflectionEnabled(),
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{
@@ -1154,6 +1178,20 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		len(result.Recommendations),
 		result.TotalSteps,
 	)
+
+	// Clarifying-questions hop — runs here, AFTER the completion event +
+	// telemetry, so a slow (or timed-out) best-effort generation call never
+	// delays the user-facing "discovery completed" notification. It reads
+	// findings from the persisted result and self-gates on the deployment flag +
+	// per-project toggle; a no-op when either is off or nothing was uncertain.
+	orchestrator.RunPhaseQuestions(ctx, result)
+
+	// Reflection / Discovery Ledger hop — also AFTER the completion event, for
+	// the same reason: it consolidates the run into the persistent ledger so the
+	// next run builds on it, and must never delay or fail the completed run. It
+	// reads findings from the persisted result and self-gates on the deployment
+	// flag + per-project toggle + sources entitlement; a no-op when off.
+	orchestrator.RunPhaseReflection(ctx, result)
 
 	applog.WithFields(applog.Fields{
 		"project_id":      projectID,

@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai
 
-go 1.25.0
+go 1.26.8
 
 require github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
 

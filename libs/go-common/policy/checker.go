@@ -132,6 +132,10 @@ const (
 	FeatureMultiWarehouse = "multi_warehouse_enabled"
 	FeatureConnectors     = "connectors_enabled"
 	FeatureFileIngestion  = "file_ingestion_enabled"
+	// FeatureEmail gates the email-notification integration. Like the
+	// others it is only a name here — the community policy hook enforces
+	// nothing; the entitlement is honoured by the enterprise product.
+	FeatureEmail = "email_enabled"
 )
 
 // AllFeatures is the canonical, ordered list of wire flag names.
@@ -155,6 +159,7 @@ var AllFeatures = []string{
 	FeatureMultiWarehouse,
 	FeatureConnectors,
 	FeatureFileIngestion,
+	FeatureEmail,
 }
 
 // Reservation kinds used in the /internal/deployments/{id}/usage/reserve/{kind}

@@ -26,7 +26,7 @@
     "@tabler/icons-react": "^3.40.0",
     "@uiw/react-md-editor": "^4.0.11",
     "dayjs": "^1.11.19",
-    "next": "16.2.0",
+    "next": "16.3.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
@@ -35,9 +35,7 @@
     "undici": "^7.25.0"
   },
   "overrides": {
-    "minimatch": {
-      "brace-expansion": "1.1.13"
-    },
+    "brace-expansion": "1.1.18",
     "handlebars": "4.7.9",
     "picomatch": "4.0.4"
   },
@@ -51,7 +49,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "16.3.4",
     "jest": "^30.3.0",
     "jest-environment-jsdom": "^30.3.0",
     "tailwindcss": "^4",

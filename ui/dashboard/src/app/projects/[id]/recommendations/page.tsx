@@ -8,6 +8,7 @@ import { useDisclosure } from '@mantine/hooks';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
+import AskAboutThisButton from '@/components/ask/AskAboutThisButton';
 import {
   SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
 } from '@/components/common/UIComponents';
@@ -217,6 +218,8 @@ export default function RecommendationsListPage() {
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={String(idx)}
                     feedback={feedbackMap[`recommendation:${idx}:${rec.discoveryId}`]} />
+                  <AskAboutThisButton projectId={id}
+                    seed={{ type: 'recommendation', id: targetId, title: rec.title }} />
                 </div>
 
                 {/* Pills row */}

@@ -5,7 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
 import {
-  IconBook2, IconBookmark, IconMessageCircle, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTool,
+  IconBook2, IconBookmark, IconHelpCircle, IconMessageCircle, IconNotebook, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTimeline,
 } from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 import SpotlightSearch from '@/components/common/SpotlightSearch';
@@ -148,6 +148,18 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
               active={isActive(`/projects/${projectId}/recommendations`)}
             />
             <NavItem
+              href={`/projects/${projectId}/questions`}
+              icon={<IconHelpCircle size={16} />}
+              label="Questions"
+              active={isActive(`/projects/${projectId}/questions`)}
+            />
+            <NavItem
+              href={`/projects/${projectId}/ledger`}
+              icon={<IconTimeline size={16} />}
+              label="Ledger"
+              active={isActive(`/projects/${projectId}/ledger`)}
+            />
+            <NavItem
               href={`/projects/${projectId}/lists`}
               icon={<IconBookmark size={16} />}
               label="Lists"
@@ -199,8 +211,8 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
             />
             <NavItem
               href={`/projects/${projectId}/prompts`}
-              icon={<IconTool size={16} />}
-              label="Prompts"
+              icon={<IconNotebook size={16} />}
+              label="Playbook"
               active={isActive(`/projects/${projectId}/prompts`)}
             />
           </nav>
@@ -218,7 +230,7 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
             <NavItem
               href="/domain-packs"
               icon={<IconPackages size={16} />}
-              label="Domain Packs"
+              label="Playbooks"
               active={pathname?.startsWith('/domain-packs') ?? false}
             />
             <NavItem

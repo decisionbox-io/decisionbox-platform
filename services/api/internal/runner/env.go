@@ -56,6 +56,12 @@ var agentForwardedEnvKeys = []string{
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.
 	"DISCOVERY_MAX_DURATION",
+	// SOURCES_ENABLED gates the enterprise sources agent plugin. Without
+	// forwarding, the plugin still loads but hands back the community NoOp
+	// retriever, so discovery runs with no knowledge-source context at all
+	// while the API reports Knowledge Sources as enabled — a silent
+	// downgrade rather than a visible failure.
+	"SOURCES_ENABLED",
 	// VALIDATION_* knobs for the LLM-native verifier+refuter pipeline.
 	// All consumed by the agent via verifier.LoadConfigFromEnv during
 	// both full-discovery validation and manual --mode=validate-doc runs.
@@ -77,6 +83,52 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_BUNDLE_CELL_CHAR_CAP",
 	"VALIDATION_REC_STEPS_TOKEN_BUDGET",
 	"VALIDATION_ESTIMATE_TOKEN_RATIO",
+	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
+	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
+	// here, the enabled flag set on the API deployment never reaches a
+	// container-spawned agent and the feature stays silently off.
+	"DISCOVERY_QUESTIONS_ENABLED",
+	"DISCOVERY_QUESTIONS_MAX",
+	"DISCOVERY_QUESTIONS_MAX_OUTPUT",
+	"DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT",
+	"DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES",
+	"DISCOVERY_QUESTIONS_TIMEOUT",
+	// DISCOVERY_REFLECTION_* + DISCOVERY_LEDGER_* knobs for the post-run
+	// reflection / Discovery Ledger hop (compounding discovery, enterprise#261).
+	// Consumed by the agent (discovery.RunPhaseReflection). Without forwarding
+	// here, the enabled flag set on the API deployment never reaches a
+	// container-spawned agent and the ledger stays silently off.
+	"DISCOVERY_REFLECTION_ENABLED",
+	"DISCOVERY_REFLECTION_TIMEOUT",
+	"DISCOVERY_REFLECTION_MAX_OUTPUT",
+	"DISCOVERY_REFLECTION_PARSE_MAX_RETRIES",
+	"DISCOVERY_LEDGER_MAX_FINDINGS",
+	"DISCOVERY_LEDGER_DEDUP_MINSCORE",
+	"DISCOVERY_LEDGER_TREND_DELTA",
+	// Cloud policy-checker identity. On cloud tenants the agent runs the
+	// cloud-enterprise agent image, whose policy.Checker is
+	// decisionbox-cloud-tenant/policy-plugin (registered only when
+	// POLICY_PROVIDER=cloud) and forwards entitlement checks to the control
+	// plane. Its config loader requires all three of CONTROL_PLANE_URL /
+	// DEPLOYMENT_ID / CONTROL_PLANE_INTERNAL_TOKEN. Without forwarding, the
+	// agent falls back to the allow-all Noop checker and plan caps go
+	// unenforced agent-side. The api pod already holds all four (POLICY_PROVIDER
+	// + CONTROL_PLANE_URL as literals, the latter two via envFrom the
+	// per-release cloud-auth / cloud-policy secrets), so this forwards them the
+	// same way the inference-credential secrets above are. Absent on self-hosted
+	// (POLICY_PROVIDER unset) ⇒ nothing forwarded, behavior unchanged.
+	// See decisionbox-cloud-enterprise-tenant#39.
+	"POLICY_PROVIDER",
+	"CONTROL_PLANE_URL",
+	"DEPLOYMENT_ID",
+	"CONTROL_PLANE_INTERNAL_TOKEN",
+	// GOVERNANCE_ENABLED gates the enterprise governance plugin's init() in the
+	// agent process (governance/register.go): without it the warehouse provider
+	// is never wrapped, so agent queries stay ungoverned regardless of the
+	// policy checker's FeatureGovernance entitlement. Forwarding the flag set on
+	// the api deployment is required for governance to apply to agent queries;
+	// the checker forwarding above is necessary but not sufficient on its own.
+	"GOVERNANCE_ENABLED",
 }
 
 // dockerAgentExtraEnvKeys are forwarded only by the Docker runner. The
