@@ -641,11 +641,12 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
 				continue
 			}
-			if act.Kind == actAnswer {
-				if nudge := st.pendingWriteNudge(); nudge != "" {
-					messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: nudge, IsError: true}}})
-					continue
-				}
+			// A requested-but-uncompleted write must not be silently dropped by ANY
+			// terminal (answer / clarify / decline). Nudge once; if the model still
+			// finishes, it proceeds (the one-shot cap avoids a loop).
+			if nudge := st.pendingWriteNudge(); nudge != "" {
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: nudge, IsError: true}}})
+				continue
 			}
 			r.finishTerminal(ctx, st, act)
 			return

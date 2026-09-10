@@ -116,6 +116,18 @@ func TestExecSearchKnowledge_ErrorPaths(t *testing.T) {
 	if !strings.Contains(obs2, "failed") || st2.groundedEvents != 0 {
 		t.Fatalf("provider error should not ground; obs=%q grounded=%d", obs2, st2.groundedEvents)
 	}
+
+	// Empty result (provider healthy, no matching passages) → observed nothing, so
+	// it must NOT ground: an empty knowledge base cannot unlock an uncited answer.
+	st3 := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	rt3 := &ProjectRuntime{KnowledgeProvider: &fakeKnowledge{chunks: nil}}
+	obs3 := r.execSearchKnowledge(context.Background(), rt3, st3, &turnAction{Kind: actSearchKnowledge, SearchKnowledge: "x"})
+	if !strings.Contains(obs3, "no matching") {
+		t.Fatalf("empty knowledge search should report no matches, got %q", obs3)
+	}
+	if st3.groundedEvents != 0 {
+		t.Fatalf("empty knowledge search must not ground, grounded=%d", st3.groundedEvents)
+	}
 }
 
 func TestParseTurnAction_SearchKnowledge(t *testing.T) {

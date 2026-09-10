@@ -91,7 +91,10 @@ func (r *runner) execSearchKnowledge(ctx context.Context, rt *ProjectRuntime, st
 		return fmt.Sprintf("Knowledge search failed: %s", err.Error())
 	}
 	ev.Output = knowledgeSummary(hits)
-	r.emit(ctx, st, ev)
+	// An empty result observed nothing, so it must NOT ground the turn — otherwise
+	// a project with no matching documents/notes could unlock an uncited,
+	// ungrounded answer. Only a search that returned passages is evidence.
+	r.emitTool(ctx, st, ev, len(hits) > 0)
 	// Accumulate for the final message's Sources (deduped at finalize) so a
 	// knowledge-grounded answer carries source_chunk citations, like /ask.
 	st.knowledgeHits = append(st.knowledgeHits, hits...)
