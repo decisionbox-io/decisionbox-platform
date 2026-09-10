@@ -71,7 +71,12 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		// loop offer them instead of dead-ending with a datasource clarification. (A
 		// genuinely ambiguous DATA question — the router picked some datasources but
 		// low-confidence — still clarifies here; the model can also clarify itself.)
-		if len(valid) == 0 && (rt.KnowledgeProvider != nil || (len(rt.MutationTools) > 0 && st.mayMutate())) {
+		// search_knowledge works on both the native-tool and JSON-text loops, but
+		// mutation tools are dispatched ONLY on the native-tool path — so only treat
+		// them as "available" when that path will run (toolsSupported), the caller may
+		// mutate, and at least one non-reserved write tool survives the filter.
+		mutationsCallable := toolsSupported(rt) && st.mayMutate() && len(mutationDefs(rt.MutationTools)) > 0
+		if len(valid) == 0 && (rt.KnowledgeProvider != nil || mutationsCallable) {
 			return false
 		}
 		q := strings.TrimSpace(dec.Question)

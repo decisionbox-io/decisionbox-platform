@@ -236,8 +236,13 @@ func writeDataSection(b *strings.Builder, routing turnRouting) {
 // single-datasource / pinned turn.
 func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
 	b.WriteString("WAREHOUSE\n")
+	// Description and card free-text are stored warehouse metadata derived from the
+	// customer's schema — %q-quote them (like the seed/summary/knowledge blocks) so a
+	// crafted name/description can't break the block or inject instructions. Dialect
+	// and dataset names stay verbatim: they're structural identifiers the model uses
+	// in SQL.
 	if d.Description != "" {
-		fmt.Fprintf(b, "- Holds: %s\n", d.Description)
+		fmt.Fprintf(b, "- Holds: %q\n", d.Description)
 	}
 	if d.Dialect != "" {
 		fmt.Fprintf(b, "- SQL dialect: %s\n", d.Dialect)
@@ -251,17 +256,29 @@ func writeWarehouseSection(b *strings.Builder, d DatasourceInfo) {
 	// the same orientation.
 	if c := d.Card; c != nil {
 		if len(c.SubjectAreas) > 0 {
-			fmt.Fprintf(b, "- Subject areas: %s\n", strings.Join(c.SubjectAreas, ", "))
+			fmt.Fprintf(b, "- Subject areas: %s\n", quotedJoin(c.SubjectAreas))
 		}
 		if len(c.KeyEntities) > 0 {
-			fmt.Fprintf(b, "- Key entities: %s\n", strings.Join(c.KeyEntities, ", "))
+			fmt.Fprintf(b, "- Key entities: %s\n", quotedJoin(c.KeyEntities))
 		}
 		if len(c.KeyMetrics) > 0 {
-			fmt.Fprintf(b, "- Key metrics: %s\n", strings.Join(c.KeyMetrics, ", "))
+			fmt.Fprintf(b, "- Key metrics: %s\n", quotedJoin(c.KeyMetrics))
 		}
 	}
 	b.WriteString("- The warehouse is READ-ONLY. Emit only SELECT/CTE queries. Never attempt INSERT, UPDATE, DELETE, MERGE, or DDL.\n")
 	writeTenantScope(b, "- ", d)
+}
+
+// quotedJoin renders untrusted free-text values as a comma-separated list of
+// %q-quoted tokens, so stored warehouse metadata (descriptions, card fields —
+// derived from customer schema) can't break the prompt block or inject
+// instructions. Mirrors the seed / project-summary / knowledge fencing.
+func quotedJoin(vals []string) string {
+	q := make([]string, len(vals))
+	for i, v := range vals {
+		q[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(q, ", ")
 }
 
 // writeDatasourcesSection renders the DATASOURCES catalog for a multi-datasource
@@ -280,17 +297,18 @@ func writeDatasourcesSection(b *strings.Builder, routing turnRouting) {
 			fmt.Fprintf(b, "  name: %s\n", d.Label)
 		}
 		if d.Description != "" {
-			fmt.Fprintf(b, "  holds: %s\n", d.Description)
+			// Untrusted stored metadata — %q-quote (see writeWarehouseSection).
+			fmt.Fprintf(b, "  holds: %q\n", d.Description)
 		}
 		if d.Card != nil {
 			if len(d.Card.SubjectAreas) > 0 {
-				fmt.Fprintf(b, "  subject areas: %s\n", strings.Join(d.Card.SubjectAreas, ", "))
+				fmt.Fprintf(b, "  subject areas: %s\n", quotedJoin(d.Card.SubjectAreas))
 			}
 			if len(d.Card.KeyEntities) > 0 {
-				fmt.Fprintf(b, "  key entities: %s\n", strings.Join(d.Card.KeyEntities, ", "))
+				fmt.Fprintf(b, "  key entities: %s\n", quotedJoin(d.Card.KeyEntities))
 			}
 			if len(d.Card.KeyMetrics) > 0 {
-				fmt.Fprintf(b, "  key metrics: %s\n", strings.Join(d.Card.KeyMetrics, ", "))
+				fmt.Fprintf(b, "  key metrics: %s\n", quotedJoin(d.Card.KeyMetrics))
 			}
 		}
 		if d.Dialect != "" {

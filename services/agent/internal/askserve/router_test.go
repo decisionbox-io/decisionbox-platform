@@ -161,6 +161,28 @@ func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
 	}
 }
 
+func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
+	// On a non-tool-calling LLM (runText), mutation tools can't be dispatched, so a
+	// save tool must NOT count as "available" for the router bypass — an unmapped
+	// request still clarifies rather than entering a loop that can't save.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`,
+	}}, whA, whB, nil, nil)
+	rt.MutationTools = []MutationTool{{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p"}, nil },
+	}} // no KnowledgeProvider
+
+	store := &fakeStore{}
+	(&runner{cfg: routerCfg(), store: store}).run(context.Background(), rt,
+		TurnRequest{TurnID: "rt", SessionID: "s", ProjectID: "p", Question: "save this as a note", CallerRole: "member"})
+	if store.final == nil || !store.final.RoutingClarify {
+		t.Fatalf("mutations on a non-tool LLM must not bypass the router clarification, got %+v", store.final)
+	}
+}
+
 func TestRouter_CrossSourceKeepsMultiHop(t *testing.T) {
 	whA := testutil.NewMockWarehouseProvider("sales")
 	whB := testutil.NewMockWarehouseProvider("crm")
