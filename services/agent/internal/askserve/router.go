@@ -64,6 +64,16 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 
 	// Ambiguous / low-confidence / nothing chosen → clarify instead of guessing.
 	if dec.Clarify || len(valid) == 0 || dec.Confidence < routeClarifyThreshold {
+		// A question the router can map to NO datasource may be a project-level one —
+		// a knowledge-base lookup ("what's our refund policy?") or a save ("save this
+		// as a note") — that needs no warehouse. The router only sees datasources, so
+		// when project-level tools are available, fall through and let the answering
+		// loop offer them instead of dead-ending with a datasource clarification. (A
+		// genuinely ambiguous DATA question — the router picked some datasources but
+		// low-confidence — still clarifies here; the model can also clarify itself.)
+		if len(valid) == 0 && (rt.KnowledgeProvider != nil || (len(rt.MutationTools) > 0 && st.mayMutate())) {
+			return false
+		}
 		q := strings.TrimSpace(dec.Question)
 		if q == "" {
 			q = routeDefaultClarify(st.routing.datasources)

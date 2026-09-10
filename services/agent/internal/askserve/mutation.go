@@ -67,18 +67,41 @@ func (st *turnState) completeWrite(name string) {
 // completed — gates the outstanding-write nudge and the terminal disclosure.
 func (st *turnState) hasPendingWrite() bool { return len(st.pendingWrites) > 0 }
 
-// cloneArgs returns a shallow copy of a tool-call args map, so the persisted tool
+// cloneArgs returns a DEEP copy of a tool-call args map, so the persisted tool
 // event keeps the model's pristine input even if a plugin executor normalizes or
-// defaults the map it receives in place.
+// defaults the map it receives in place — including nested objects/arrays.
 func cloneArgs(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
 	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		out[k] = deepCopyJSON(v)
 	}
 	return out
+}
+
+// deepCopyJSON deep-copies a JSON-decoded value (map/slice/scalar). Scalars
+// (string, float64, bool, nil) are immutable and returned as-is; nested maps and
+// slices are copied recursively so a plugin can't mutate the original through a
+// shared reference.
+func deepCopyJSON(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(t))
+		for k, vv := range t {
+			m[k] = deepCopyJSON(vv)
+		}
+		return m
+	case []any:
+		s := make([]any, len(t))
+		for i, vv := range t {
+			s[i] = deepCopyJSON(vv)
+		}
+		return s
+	default:
+		return v
+	}
 }
 
 // reservedToolName reports whether name collides with a built-in read-only or

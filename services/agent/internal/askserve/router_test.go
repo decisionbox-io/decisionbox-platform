@@ -124,6 +124,43 @@ func TestRouter_LowConfidenceClarifies(t *testing.T) {
 	}
 }
 
+func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
+	// On a multi-datasource project, a knowledge-answerable question maps to NO
+	// datasource. Rather than dead-ending on a datasource clarification, the router
+	// falls through so the answering loop can offer search_knowledge.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`, // router can't map it
+		`{"search_knowledge":"refund policy"}`,       // loop: KB search grounds
+		`{"answer":"Refunds are allowed within 30 days."}`,
+	}}, whA, whB, nil, nil)
+	rt.KnowledgeProvider = &fakeKnowledge{chunks: []KnowledgeChunk{
+		{SourceID: "s1", Position: 0, SourceName: "policy.pdf", SourceType: "pdf", Text: "Refunds within 30 days.", Score: 0.9},
+	}}
+
+	store := runRouted(t, rt, "what is our refund policy?")
+	if store.final.RoutingClarify {
+		t.Fatal("a KB-answerable question must not dead-end on a datasource clarification")
+	}
+	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer == "" {
+		t.Fatalf("KB turn should answer, got status=%q answer=%q", store.final.Status, store.final.Answer)
+	}
+	if len(whA.Calls) != 0 || len(whB.Calls) != 0 {
+		t.Fatal("a KB answer should query no warehouse")
+	}
+
+	// Contrast: with NO project-level tools, the same unmappable decision still
+	// clarifies (the bypass is scoped to len(valid)==0 AND project-level tools).
+	rt2 := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`,
+	}}, testutil.NewMockWarehouseProvider("sales"), testutil.NewMockWarehouseProvider("crm"), nil, nil)
+	store2 := runRouted(t, rt2, "how many users?")
+	if !store2.final.RoutingClarify {
+		t.Fatal("without project-level tools, an unmappable question should still clarify")
+	}
+}
+
 func TestRouter_CrossSourceKeepsMultiHop(t *testing.T) {
 	whA := testutil.NewMockWarehouseProvider("sales")
 	whB := testutil.NewMockWarehouseProvider("crm")
