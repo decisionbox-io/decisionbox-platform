@@ -115,13 +115,14 @@ type turnState struct {
 	// on an ungrounded finish: a real save is acknowledged as saved, a completed
 	// no-op is not (so the turn never falsely claims something was persisted).
 	writesSaved int
-	// writesPending counts write tool calls that were deferred (batched with other
-	// calls) and have not since completed. It guards against a request like
-	// "calculate X and save it" silently losing the save when the batched read
-	// grounds the turn and the model answers without re-issuing the write. A count
-	// (not a bool) so a response that defers SEVERAL writes, completed one at a
-	// time, still tracks the stragglers — one completion doesn't clear them all.
-	writesPending int
+	// pendingWrites is the SET of distinct write tool calls (keyed by name+args)
+	// that were deferred (batched with other calls) and have not since completed.
+	// It guards against a request like "calculate X and save it" silently losing the
+	// save when the batched read grounds the turn and the model answers without
+	// re-issuing the write. A set (not a counter) so re-batching the SAME write
+	// several times doesn't inflate the pending state, while a genuinely-distinct
+	// unfinished write is still tracked. See deferWrite / completeWrite / hasPendingWrite.
+	pendingWrites map[string]struct{}
 	// writeNudges bounds how many times the loop re-prompts a model that tries to
 	// answer with an outstanding requested-but-uncompleted write.
 	writeNudges int
@@ -135,7 +136,7 @@ const maxWriteNudges = 1
 // to save something but the write was deferred and never completed — so an
 // answer doesn't silently drop the requested write. Empty when no nudge is due.
 func (st *turnState) pendingWriteNudge() string {
-	if st.writesPending > 0 && st.writeNudges < maxWriteNudges {
+	if st.hasPendingWrite() && st.writeNudges < maxWriteNudges {
 		st.writeNudges++
 		return "You were asked to save/persist something but the write has not been created yet. Call the write tool on its own step to create the pending change, then answer."
 	}
@@ -708,11 +709,12 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				// Refuse it here so the model re-issues it on its own step after
 				// seeing the results (same deferral terminal + render_chart get).
 				if len(resp.ToolCalls) > 1 {
-					// Remember the write was requested but not run, so the turn
-					// can't finish (silently dropping it) before it is created. Count
-					// each deferred write: a batch of several writes leaves several
-					// pending, each cleared only as its own re-issue completes.
-					st.writesPending++
+					// Remember the write was requested but not run, so the turn can't
+					// finish (silently dropping it) before it is created. Keyed by
+					// name+args, so re-batching the same write is idempotent while
+					// distinct deferred writes are each tracked until their own
+					// re-issue completes.
+					st.deferWrite(tc)
 					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call " + tc.Name + " on its own step — not alongside any other tool call (query, search, lookup, another write, or answer). First observe the results you want to record, then call it alone.", IsError: true})
 					continue
 				}
@@ -1174,7 +1176,7 @@ func (r *runner) finishTerminal(ctx context.Context, st *turnState, act *turnAct
 	// clarify / decline) so the save is never silently dropped. When another write
 	// DID create a proposal this turn, use the partial wording so the notice can't
 	// contradict the "saved" acknowledgement by claiming nothing was persisted.
-	if st.writesPending > 0 {
+	if st.hasPendingWrite() {
 		notice := pendingWriteNotice
 		if st.writesSaved > 0 {
 			notice = partialWriteNotice
@@ -1225,7 +1227,7 @@ func (r *runner) finishUngrounded(ctx context.Context, st *turnState) {
 	// request whose write was batched and never re-issued alone before the budget
 	// ran out). Declining without saying so would hide the dropped save — disclose
 	// it here too, matching finishTerminal.
-	if st.writesPending > 0 {
+	if st.hasPendingWrite() {
 		answer += "\n\n" + pendingWriteNotice
 	}
 	r.finalize(ctx, st, TurnFinal{

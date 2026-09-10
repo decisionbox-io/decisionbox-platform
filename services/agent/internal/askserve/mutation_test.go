@@ -429,12 +429,56 @@ func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
 	}
 }
 
+func TestLoopTools_ReDeferredWriteNotDoubleCounted(t *testing.T) {
+	// The model batches the SAME save with a query twice (ignoring "call it alone"),
+	// then finally issues it alone. Re-deferring the same write must not inflate the
+	// pending set — after the lone completion there is no straggler, so the finishing
+	// answer carries NO "not saved" notice.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	batch := gollm.ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls: []gollm.ToolCall{
+			{ID: "q", Name: string(actQuery), Input: map[string]any{"query": "SELECT COUNT(*) c FROM ds.t"}},
+			{ID: "n", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}},
+		},
+		Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		batch, // round 1: save deferred
+		batch, // round 2: SAME save re-batched → re-deferred (idempotent, set stays size 1)
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),          // round 3: save alone → completes, clears the entry
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 4: answer → no straggler
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 1 {
+		t.Fatalf("the save should run exactly once, got %d", saved)
+	}
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("turn should finish done, got %+v", store.final)
+	}
+	if strings.Contains(store.final.Answer, pendingWriteNotice) || strings.Contains(store.final.Answer, partialWriteNotice) {
+		t.Fatalf("a completed (re-deferred) write must not leave a stale straggler notice, got %q", store.final.Answer)
+	}
+}
+
 func TestFinishUngrounded_DisclosesPendingWrite(t *testing.T) {
 	// An ungrounded decline (e.g. a save-only request whose batched write never
 	// completed before the budget ran out) must still disclose the dropped save —
 	// finishUngrounded is a terminal path too.
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
-	st := &turnState{req: TurnRequest{TurnID: "t", SessionID: "s", ProjectID: "p"}, writesPending: 1}
+	st := &turnState{req: TurnRequest{TurnID: "t", SessionID: "s", ProjectID: "p"}}
+	st.deferWrite(gollm.ToolCall{Name: "save_note", Input: map[string]any{"title": "T"}})
 	r.finishUngrounded(context.Background(), st)
 
 	store := r.store.(*fakeStore)
@@ -580,8 +624,10 @@ func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
 		return MutationOutput{Output: map[string]any{"status": "exists"}}, nil // empty ProposalID
 	}}
-	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}, writesPending: 1}
-	obs := r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}})
+	tc := gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}}
+	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
+	st.deferWrite(tc) // this write was deferred earlier
+	obs := r.execMutation(context.Background(), st, mt, tc)
 
 	if st.mutationsDone != 1 || !st.canAnswer() {
 		t.Fatalf("a completed no-op mutation should let the turn finish (done=%d canAnswer=%v)", st.mutationsDone, st.canAnswer())
@@ -589,8 +635,8 @@ func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	if st.writesSaved != 0 {
 		t.Fatalf("a no-proposal mutation must NOT count as a saved write, writesSaved=%d", st.writesSaved)
 	}
-	if st.writesPending != 0 {
-		t.Fatal("a completed write must retire one outstanding-write guard, even a no-op")
+	if st.hasPendingWrite() {
+		t.Fatal("a completed write must retire its outstanding-write entry, even a no-op")
 	}
 	if st.groundedEvents != 0 {
 		t.Fatal("a mutation is not evidence — it must not ground the turn")

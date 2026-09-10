@@ -23,6 +23,9 @@ import (
 const (
 	defaultLimit = 5
 	maxLimit     = 20
+	// overfetchFactor widens the vector fetch beyond the requested k so dropping
+	// stale/unenrichable top hits doesn't starve the enrichable ones below them.
+	overfetchFactor = 2
 )
 
 // enrichFunc resolves a hit's display fields (name/description/severity/area)
@@ -110,18 +113,30 @@ func (s *Searcher) SearchInsights(ctx context.Context, query string, k int) ([]a
 	// project collection, so an unfiltered search also returns ledger_finding /
 	// source_chunk points that this searcher cannot enrich — they would surface
 	// as empty-titled citations. (Mirrors the enterprise insightSearcher.)
+	//
+	// Overfetch before enrichment: a stale/deleted top hit that we drop below
+	// consumes a slot, so requesting exactly k could starve valid insights ranked
+	// just under the stale ones (returning < k, or even 0, and then not grounding).
+	// Fetch a wider slice, enrich/filter, then trim back to k. Bounded by maxLimit.
+	fetch := k * overfetchFactor
+	if fetch > maxLimit {
+		fetch = maxLimit
+	}
 	res, err := s.vs.Search(ctx, vecs[0], vectorstore.SearchOpts{
 		ProjectIDs:     []string{s.projectID},
 		Types:          []string{"insight", "recommendation"},
 		EmbeddingModel: s.embedder.ModelName(),
-		Limit:          k,
+		Limit:          fetch,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
 
-	out := make([]ai.InsightHit, 0, len(res))
+	out := make([]ai.InsightHit, 0, k)
 	for _, r := range res {
+		if len(out) >= k {
+			break // enough enrichable hits gathered; trim the overfetch
+		}
 		docType, _ := r.Payload["type"].(string)
 		enriched, ok := s.enrich(ctx, r.ID, docType)
 		if !ok {

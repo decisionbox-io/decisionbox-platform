@@ -42,6 +42,36 @@ type MutationOutput struct {
 	Output     any
 }
 
+// writeKey identifies a write tool call by its name + canonical arguments so a
+// re-issued write matches the entry recorded when it was deferred. Go marshals
+// map keys in sorted order, so the encoding is deterministic for the same args.
+func writeKey(tc gollm.ToolCall) string {
+	raw, _ := json.Marshal(tc.Input)
+	return tc.Name + "\x00" + string(raw)
+}
+
+// deferWrite records a write that was refused because it was batched with other
+// calls. It is a SET keyed by writeKey (not a counter) so a model that re-batches
+// the SAME write several times before finally issuing it alone doesn't inflate
+// the pending state, while a genuinely-distinct unfinished write is still tracked.
+func (st *turnState) deferWrite(tc gollm.ToolCall) {
+	if st.pendingWrites == nil {
+		st.pendingWrites = make(map[string]struct{})
+	}
+	st.pendingWrites[writeKey(tc)] = struct{}{}
+}
+
+// completeWrite retires the pending entry for a write that ran to completion. A
+// completion whose key isn't pending (a write issued alone the first time) is a
+// no-op, so it never spuriously clears an unrelated deferred write.
+func (st *turnState) completeWrite(tc gollm.ToolCall) {
+	delete(st.pendingWrites, writeKey(tc))
+}
+
+// hasPendingWrite reports whether any requested write was deferred and not since
+// completed — gates the outstanding-write nudge and the terminal disclosure.
+func (st *turnState) hasPendingWrite() bool { return len(st.pendingWrites) > 0 }
+
 // reservedToolName reports whether name collides with a built-in read-only or
 // terminal tool. A registered mutation tool that shadows one is dropped — never
 // offered (mutationDefs) and never dispatched (ProjectRuntime.mutationTool) — so
@@ -94,15 +124,14 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	r.emitTool(ctx, st, ev, false)
 
 	// The write tool ran to completion (nil error): the user's requested write has
-	// been serviced, so retire ONE outstanding-write guard (not all — several writes
-	// may have been deferred, each cleared as its own re-issue completes) and let the
-	// model finish the turn to report the outcome (mutationsDone gates canAnswer).
-	// This holds whether or not a proposal came back — a no-op / already-exists is
-	// still a completed outcome the user should hear about.
+	// been serviced, so retire its matching outstanding-write entry (by key — so
+	// re-issuing a specific deferred write clears exactly that one, and completing
+	// an un-deferred write clears nothing) and let the model finish the turn to
+	// report the outcome (mutationsDone gates canAnswer). This holds whether or not
+	// a proposal came back — a no-op / already-exists is still a completed outcome
+	// the user should hear about.
 	st.mutationsDone++
-	if st.writesPending > 0 {
-		st.writesPending--
-	}
+	st.completeWrite(tc)
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
