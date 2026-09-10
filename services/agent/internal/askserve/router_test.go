@@ -131,7 +131,7 @@ func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
 	whA := testutil.NewMockWarehouseProvider("sales")
 	whB := testutil.NewMockWarehouseProvider("crm")
 	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
-		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`, // router can't map it
+		`{"datasources":[],"project_level":true,"reason":"knowledge question","confidence":0.9}`, // router flags a non-data question
 		`{"search_knowledge":"refund policy"}`,       // loop: KB search grounds
 		`{"answer":"Refunds are allowed within 30 days."}`,
 	}}, whA, whB, nil, nil)
@@ -161,6 +161,26 @@ func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
 	}
 }
 
+func TestRouter_AmbiguousDataQuestionStillClarifiesWithKB(t *testing.T) {
+	// Even with a knowledge base configured, an ambiguous DATA question (the router
+	// did NOT flag project_level) must still get the router's clarification — not
+	// fall through to guess a datasource.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"Sales or CRM users?","confidence":0.2}`, // ambiguous DATA, project_level false
+	}}, whA, whB, nil, nil)
+	rt.KnowledgeProvider = &fakeKnowledge{chunks: []KnowledgeChunk{{SourceName: "x", Text: "y"}}}
+
+	store := runRouted(t, rt, "show me the users")
+	if !store.final.RoutingClarify {
+		t.Fatal("an ambiguous data question must still clarify even when a KB is present")
+	}
+	if store.final.Answer != "Sales or CRM users?" {
+		t.Fatalf("should ask the router's clarifying question, got %q", store.final.Answer)
+	}
+}
+
 func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
 	// On a non-tool-calling LLM (runText), mutation tools can't be dispatched, so a
 	// save tool must NOT count as "available" for the router bypass — an unmapped
@@ -168,7 +188,9 @@ func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
 	whA := testutil.NewMockWarehouseProvider("sales")
 	whB := testutil.NewMockWarehouseProvider("crm")
 	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
-		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`,
+		// project_level=true, but on a non-tool LLM the save tool isn't callable, so
+		// the bypass must NOT trigger — the turn clarifies.
+		`{"datasources":[],"project_level":true,"reason":"save request","confidence":0.9}`,
 	}}, whA, whB, nil, nil)
 	rt.MutationTools = []MutationTool{{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},

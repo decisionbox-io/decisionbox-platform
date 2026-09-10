@@ -29,6 +29,12 @@ type routeDecision struct {
 	Confidence  float64  `json:"confidence"`
 	Clarify     bool     `json:"clarify"`
 	Question    string   `json:"question"`
+	// ProjectLevel is set by the router when the question isn't about the
+	// datasources' data at all — it targets the project's knowledge base
+	// (documents/notes/policies) or asks to save/persist something. It only gates
+	// the project-level-tool bypass; a genuine but ambiguous DATA question leaves it
+	// false and still clarifies.
+	ProjectLevel bool `json:"project_level"`
 }
 
 // route runs the datasource router for a multi-datasource turn. It grounds the
@@ -52,7 +58,13 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		}
 	}
 
-	dec, err := r.decideRoute(ctx, st, evidence)
+	// Project-level tools (knowledge base; write tools on the native-tool path for a
+	// member+ caller) can answer WITHOUT a datasource. Tell the router they exist so
+	// it can flag a non-data (knowledge / save) question rather than clarify.
+	mutationsCallable := toolsSupported(rt) && st.mayMutate() && len(mutationDefs(rt.MutationTools)) > 0
+	hasProjectLevel := rt.KnowledgeProvider != nil || mutationsCallable
+
+	dec, err := r.decideRoute(ctx, st, evidence, hasProjectLevel)
 	if err != nil {
 		applog.WithError(err).WithField("turn_id", st.req.TurnID).Warn("ask-serve: router failed; letting the model choose datasources")
 		return false
@@ -71,12 +83,11 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		// loop offer them instead of dead-ending with a datasource clarification. (A
 		// genuinely ambiguous DATA question — the router picked some datasources but
 		// low-confidence — still clarifies here; the model can also clarify itself.)
-		// search_knowledge works on both the native-tool and JSON-text loops, but
-		// mutation tools are dispatched ONLY on the native-tool path — so only treat
-		// them as "available" when that path will run (toolsSupported), the caller may
-		// mutate, and at least one non-reserved write tool survives the filter.
-		mutationsCallable := toolsSupported(rt) && st.mayMutate() && len(mutationDefs(rt.MutationTools)) > 0
-		if len(valid) == 0 && (rt.KnowledgeProvider != nil || mutationsCallable) {
+		// Bypass the dead-end ONLY when the router itself flagged the question as
+		// project-level (knowledge / save) AND such a tool is actually callable. A
+		// genuinely ambiguous DATA question (project_level=false) still clarifies, so
+		// the model isn't left to guess the wrong datasource.
+		if len(valid) == 0 && dec.ProjectLevel && hasProjectLevel {
 			return false
 		}
 		q := strings.TrimSpace(dec.Question)
@@ -118,13 +129,20 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 
 // decideRoute asks the model which datasource(s) the question needs, grounded in
 // the datasource cards + the cross-datasource retrieval evidence.
-func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string) (routeDecision, error) {
+func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string, hasProjectLevel bool) (routeDecision, error) {
 	system := "You are a data-source router for a multi-warehouse analytics agent. " +
 		"Given a QUESTION and the available DATASOURCES, decide which datasource(s) are needed to answer it. " +
 		"Prefer the FEWEST datasources that can answer it; a question may need more than one (e.g. a value from one datasource filters a query on another). " +
-		"If you genuinely cannot tell which datasource the question refers to, set clarify=true and give ONE short clarifying question. " +
-		"Respond with EXACTLY ONE JSON object and nothing else: " +
-		`{"datasources":["<id>",...],"reason":"<one sentence>","confidence":<0.0-1.0>,"clarify":<true|false>,"question":"<clarifying question, or empty>"}. ` +
+		"If you genuinely cannot tell which datasource the question refers to, set clarify=true and give ONE short clarifying question. "
+	if hasProjectLevel {
+		// The project also has non-warehouse tools (a knowledge base of
+		// documents/notes, and/or a way to save notes). Let the router hand those
+		// questions off instead of clarifying about datasources.
+		system += "This project ALSO has non-data tools: a knowledge base (documents/notes/policies) and/or a way to save notes. " +
+			"If the question is NOT about the datasources' data — it asks about documents/notes/policies, or asks to save/persist something — set project_level=true, leave datasources empty, and do NOT clarify. "
+	}
+	system += "Respond with EXACTLY ONE JSON object and nothing else: " +
+		`{"datasources":["<id>",...],"reason":"<one sentence>","confidence":<0.0-1.0>,"clarify":<true|false>,"question":"<clarifying question, or empty>","project_level":<true|false>}. ` +
 		"Use the exact datasource ids. confidence is your certainty in the datasource choice."
 
 	var b strings.Builder
@@ -169,7 +187,7 @@ func parseRouteDecision(text string) (routeDecision, error) {
 	candidates := balancedJSONObjects(text)
 	for i := len(candidates) - 1; i >= 0; i-- {
 		var d routeDecision
-		if err := json.Unmarshal([]byte(candidates[i]), &d); err == nil && (len(d.Datasources) > 0 || d.Clarify) {
+		if err := json.Unmarshal([]byte(candidates[i]), &d); err == nil && (len(d.Datasources) > 0 || d.Clarify || d.ProjectLevel) {
 			return d, nil
 		}
 	}
