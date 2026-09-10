@@ -11,18 +11,20 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 )
 
-// listTablesTimeout is how long the API waits for the agent's --list-tables run.
-// It is derived from the SAME LIST_TABLES_TIMEOUT_SECONDS env the agent reads
-// (default 120s) plus a small buffer, so the agent's own deadline fires first
-// with a clean JSON error rather than the API cutting the run off early.
-func listTablesTimeout() time.Duration {
+// listTablesTimeoutSecs is the list-tables budget in seconds, from the SAME
+// LIST_TABLES_TIMEOUT_SECONDS env the agent reads (default 120s). It is passed
+// to RunSync as TimeoutSeconds so the Kubernetes runner sizes the Job's
+// ActiveDeadlineSeconds accordingly (not the historical 60s cap), and the
+// context deadline is this value plus a small buffer so the agent's own
+// deadline fires first with a clean JSON error.
+func listTablesTimeoutSecs() int {
 	secs := 120
 	if v := os.Getenv("LIST_TABLES_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			secs = n
 		}
 	}
-	return time.Duration(secs+15) * time.Second
+	return secs
 }
 
 // AgentTableLister satisfies WarehouseTableLister by running the agent's
@@ -30,8 +32,8 @@ func listTablesTimeout() time.Duration {
 // uses) and parsing the qualified table names from its stdout JSON. It powers
 // the discovery-scope picker before the first index exists.
 type AgentTableLister struct {
-	runner  runner.Runner
-	timeout time.Duration
+	runner      runner.Runner
+	timeoutSecs int
 }
 
 // NewAgentTableLister wraps an agent runner. Returns nil when the runner is nil
@@ -41,7 +43,7 @@ func NewAgentTableLister(r runner.Runner) *AgentTableLister {
 	if r == nil {
 		return nil
 	}
-	return &AgentTableLister{runner: r, timeout: listTablesTimeout()}
+	return &AgentTableLister{runner: r, timeoutSecs: listTablesTimeoutSecs()}
 }
 
 // listTablesResult is the agent's --list-tables stdout contract.
@@ -60,15 +62,17 @@ func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, w
 	if warehouseID != "" {
 		args = append(args, "--warehouse-id", warehouseID)
 	}
-	// Bound the wait to match the agent's own list-tables deadline (+buffer) so a
-	// slow large-warehouse listing isn't cut off early by an unbounded request
-	// context or a proxy default.
-	if a.timeout > 0 {
+	// Bound the wait to the list-tables budget (+buffer) so a slow large-warehouse
+	// listing isn't cut off early by an unbounded request context, and pass the
+	// budget as TimeoutSeconds so the Kubernetes runner sizes the Job deadline to
+	// match instead of its default 60s cap.
+	opts := runner.RunSyncOptions{ProjectID: projectID, Args: args, TimeoutSeconds: a.timeoutSecs}
+	if a.timeoutSecs > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(a.timeoutSecs+15)*time.Second)
 		defer cancel()
 	}
-	res, err := a.runner.RunSync(ctx, runner.RunSyncOptions{ProjectID: projectID, Args: args})
+	res, err := a.runner.RunSync(ctx, opts)
 	// Even on a non-nil error the agent may have printed a JSON error object to
 	// stdout; prefer that message. On success, parse the tables.
 	var out listTablesResult
