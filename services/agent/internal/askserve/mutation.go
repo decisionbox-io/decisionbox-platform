@@ -109,7 +109,9 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 		return fmt.Sprintf("%s completed but created no pending change; report the outcome to the user based on the result.", mt.Name) + suffix
 	}
 	// A real proposal was created: it lets the model finish the turn to confirm
-	// the save (mutationsDone separately allows a mutation-only turn to answer).
+	// the save (mutationsDone separately allows a mutation-only turn to answer),
+	// and clears any outstanding-write guard so the turn may now finish.
 	st.mutationsDone++
+	st.writeRequested = false
 	return fmt.Sprintf("%s succeeded — it created a pending change (id %s) the user can review and apply; tell the user it was saved and awaits their approval.", mt.Name, out.ProposalID) + suffix
 }

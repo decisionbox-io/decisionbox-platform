@@ -234,6 +234,49 @@ func TestRoutingQuestion(t *testing.T) {
 	}
 }
 
+func TestLoopTools_DeferredWriteNudgedBeforeAnswer(t *testing.T) {
+	// "calculate X and save it": the provider batches query_data + save_note. The
+	// save is deferred (runs later); when the model then tries to answer, it is
+	// nudged to complete the outstanding write first, so the save isn't lost.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	saved := 0
+	mt := MutationTool{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+	}
+	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
+		{ // round 1: query + save in one batch → save deferred, query runs (grounds)
+			StopReason: "tool_use",
+			ToolCalls: []gollm.ToolCall{
+				{ID: "q1", Name: string(actQuery), Input: map[string]any{"query": "SELECT COUNT(*) c FROM ds.t"}},
+				{ID: "n1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}},
+			},
+			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 2: answer → nudged (write still pending)
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),          // round 3: save on its own → proposal created
+		toolCall(string(actAnswer), map[string]any{"text": "Saved; the count is 100."}), // round 4: answer → finishes
+	}}
+	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
+	store := &fakeStore{}
+	r := &runner{cfg: cfg, store: store}
+	rt := toolRuntime(p, wh, nil, "")
+	rt.MutationTools = []MutationTool{mt}
+
+	r.run(context.Background(), rt, TurnRequest{TurnID: "t1", SessionID: "s1", ProjectID: "p1", Question: "count rows and save it", CallerRole: "member"})
+
+	if saved != 1 {
+		t.Fatalf("the deferred save should run exactly once (after the nudge), got %d", saved)
+	}
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDone {
+		t.Fatalf("turn should finish done after the save, got %+v", store.final)
+	}
+	// The model was nudged: round-2 answer was refused, so it took >3 calls.
+	if len(p.reqs) < 4 {
+		t.Fatalf("expected the answer to be nudged for the pending write (>=4 calls), got %d", len(p.reqs))
+	}
+}
+
 func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {

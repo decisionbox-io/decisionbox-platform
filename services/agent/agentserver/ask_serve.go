@@ -406,8 +406,9 @@ func buildMutationTools(db *mongo.Database) []askserve.MutationTool {
 // underlying provider is registered by the enterprise sources plugin and
 // activated by gosources.Configure; a community-only build never activates it,
 // so this adapter is not constructed and the search_knowledge tool is absent.
-// DocumentsOnly is left false so a search returns operator notes as well as
-// document chunks — one tool covers both.
+// It budgets documents and operator notes INDEPENDENTLY via two retrievals so
+// one never starves the other (a note-heavy project can't crowd out the semantic
+// document matches, and vice versa) — one tool still covers both.
 type sourcesKnowledgeAdapter struct {
 	projectID string
 }
@@ -419,22 +420,8 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 	if k > ai.MaxSearchTopK {
 		k = ai.MaxSearchTopK
 	}
-	// DocumentsOnly is left false so operator notes surface alongside documents.
-	// In that mode pinned notes can consume the Limit budget before the semantic
-	// document search, so ask for enough to fill BOTH budgets (k documents +
-	// maxKnowledgeNotes notes); we then split and cap each independently below so
-	// notes never starve the document matches (and vice versa).
-	chunks, err := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: k + maxKnowledgeNotes})
-	if err != nil {
-		return nil, err
-	}
-	// Budget the two independently: keep the top-k document matches (never
-	// starved) plus a small number of pinned notes (always-include guidance),
-	// notes first. Bounded result. (A note's SourceType is the literal "note".)
-	notes := make([]askserve.KnowledgeChunk, 0, maxKnowledgeNotes)
-	docs := make([]askserve.KnowledgeChunk, 0, k)
-	for _, c := range chunks {
-		kc := askserve.KnowledgeChunk{
+	toChunk := func(c gosources.Chunk) askserve.KnowledgeChunk {
+		return askserve.KnowledgeChunk{
 			SourceID:   c.SourceID,
 			Position:   c.Position,
 			SourceName: c.SourceName,
@@ -442,17 +429,37 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 			Text:       c.Text,
 			Score:      c.Score,
 		}
-		if strings.EqualFold(c.SourceType, "note") {
-			if len(notes) < maxKnowledgeNotes {
-				notes = append(notes, kc)
+	}
+
+	// Documents: DocumentsOnly makes Limit an exact upper bound on purely semantic
+	// document matches — so the top-k documents are ALWAYS returned regardless of
+	// how many notes the project has.
+	docChunks, err := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: k, DocumentsOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]askserve.KnowledgeChunk, 0, len(docChunks)+maxKnowledgeNotes)
+
+	// Notes: a second note-inclusive pass, from which we keep only the note chunks
+	// (SourceType "note"), a small always-include budget. Best-effort — a failure
+	// here still returns the documents.
+	noteChunks, nErr := gosources.GetProvider().RetrieveContext(ctx, a.projectID, query, gosources.RetrieveOpts{Limit: maxKnowledgeNotes})
+	if nErr == nil {
+		n := 0
+		for _, c := range noteChunks {
+			if n >= maxKnowledgeNotes {
+				break
 			}
-			continue
-		}
-		if len(docs) < k {
-			docs = append(docs, kc)
+			if strings.EqualFold(c.SourceType, "note") {
+				out = append(out, toChunk(c))
+				n++
+			}
 		}
 	}
-	return append(notes, docs...), nil
+	for _, c := range docChunks {
+		out = append(out, toChunk(c))
+	}
+	return out, nil
 }
 
 // maxKnowledgeNotes bounds how many pinned operator notes search_knowledge
