@@ -2,10 +2,14 @@ package discovery
 
 import (
 	"context"
+	"os"
+	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
 // Output-token budgeting for the analysis + recommendation phases.
@@ -67,6 +71,60 @@ const minPickerBudgetTokens = 4096
 // max_tokens is still recomputed against the measured input after the prompt is
 // assembled, so the actual generation is never smaller than the window allows.
 const analysisOutputReserveTokens = 16384
+
+// logOutputCapTruncation reports the one case that is otherwise invisible: a
+// structured-output response that failed to parse AND consumed its entire
+// max_tokens budget. That combination is almost always truncation mid-JSON
+// rather than a model that emitted malformed output, and the two need different
+// fixes — raise the cap vs. repair the prompt. Without this the phase just
+// degrades to a no-op with a generic "unusable response" error, which is how
+// issue #403 stayed hidden: the ledger still recorded its non-LLM outputs, so it
+// looked like the phase had run.
+func logOutputCapTruncation(phase, envKey string, attempt, maxTokens, tokensOut int) {
+	if maxTokens <= 0 || tokensOut < maxTokens {
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"phase":      phase,
+		"attempt":    attempt,
+		"max_tokens": maxTokens,
+		"tokens_out": tokensOut,
+		"env":        envKey,
+	}).Warn("Response did not parse and used the entire output budget — it was almost certainly truncated. Raise " + envKey + ", or use a model with a larger output cap.")
+}
+
+// phaseOutputCap resolves the output ceiling for a bounded, structured-output
+// discovery phase (reflection, clarifying questions).
+//
+// Unset env → the model's own cap, which is exactly what the analysis and
+// recommendation paths pass (see orchestrator.go). Those two scale with
+// whatever model the deployment runs. The newer phases instead layered a small
+// fixed default on top, and since the budget takes the minimum, that default
+// became the binding constraint: on a project large enough to need more, the
+// response was truncated mid-JSON, failed to parse, and the phase degraded to
+// a no-op — silently, because its other outputs still persisted (issue #403).
+//
+// Set env → an explicit operator override: clamped to [clampMin, 32000] and
+// never above what the model itself allows.
+//
+// fallback applies only when the model cap is unknown (<= 0). The budgeter must
+// never be handed a zero cap: boundOutputCap would keep it at zero and collapse
+// max_tokens — and the floor with it — to nothing.
+func phaseOutputCap(envKey string, modelOutputCap, clampMin, fallback int) int {
+	if raw := strings.TrimSpace(os.Getenv(envKey)); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			capped := clampInt(v, clampMin, 32000)
+			if modelOutputCap > 0 && capped > modelOutputCap {
+				capped = modelOutputCap
+			}
+			return capped
+		}
+	}
+	if modelOutputCap > 0 {
+		return modelOutputCap
+	}
+	return fallback
+}
 
 // boundOutputCap clamps an output cap to the model window — output can never
 // exceed the context window, so a catalog/default cap larger than a

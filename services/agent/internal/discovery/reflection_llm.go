@@ -77,10 +77,11 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol)
 
 	window, modelOutputCap := o.resolveModelBudget()
-	outputCap := clampInt(goconfig.GetEnvAsInt(discoveryReflectionMaxOutputEnv, defaultDiscoveryReflectionMaxOutput), 512, 32000)
-	if modelOutputCap > 0 && outputCap > modelOutputCap {
-		outputCap = modelOutputCap
-	}
+	// Default to the model's own cap, mirroring the analysis and recommendation
+	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
+	// override. A fixed default here silently truncated the response on any
+	// project with a substantial ledger (issue #403).
+	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := reflectionResponseFormat()
@@ -107,6 +108,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		parsed, perr := parseReflection(chatResult.Content)
 		if perr != nil {
 			lastErr = perr
+			logOutputCapTruncation("Reflection", discoveryReflectionMaxOutputEnv, attempt, maxTokens, chatResult.TokensOut)
 			continue
 		}
 		return parsed, nil
