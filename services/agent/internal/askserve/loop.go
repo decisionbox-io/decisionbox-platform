@@ -375,8 +375,13 @@ func (r *runner) primeSeed(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// non-empty result as context but it does NOT ground the turn — the model
 	// still has to query for figures.
 	if ctx.Err() == nil && rt.Schema != nil {
+		gBeforeTable := st.groundedEvents
 		obs := r.execSearch(ctx, rt, st, &turnAction{Kind: actSearch, SearchTables: query})
-		if ctx.Err() == nil && !strings.Contains(obs, "no matching tables") {
+		// Append the orientation only for a search that SUCCEEDED (execSearch grounds
+		// via emit on success) AND surfaced tables. A failure ("Table search failed:
+		// …", e.g. no semantic retriever) does not ground, and an empty result says
+		// "no matching tables"; neither should be injected as auto-gathered context.
+		if ctx.Err() == nil && st.groundedEvents > gBeforeTable && !strings.Contains(obs, "no matching tables") {
 			appendObs(obs)
 		}
 	}
@@ -1203,11 +1208,19 @@ const pendingWriteNotice = "Note: I wasn't able to save the change you asked for
 // running any query — emitting that answer would surface fabricated data, so
 // we decline instead.
 func (r *runner) finishUngrounded(ctx context.Context, st *turnState) {
+	answer := "I couldn't answer this from the data — I wasn't able to gather any query results to ground a response. Please rephrase the question, or check that the project's warehouse and schema are available."
+	// A write the user asked for was deferred but never created (e.g. a save-only
+	// request whose write was batched and never re-issued alone before the budget
+	// ran out). Declining without saying so would hide the dropped save — disclose
+	// it here too, matching finishTerminal.
+	if st.writesPending > 0 {
+		answer += "\n\n" + pendingWriteNotice
+	}
 	r.finalize(ctx, st, TurnFinal{
 		Status:      commonmodels.AskTurnStatusDeclined,
 		Disposition: commonmodels.AskTurnDispositionDecline,
 		Error:       "model would not gather evidence; declined rather than answer ungrounded",
-		Answer:      "I couldn't answer this from the data — I wasn't able to gather any query results to ground a response. Please rephrase the question, or check that the project's warehouse and schema are available.",
+		Answer:      answer,
 	})
 }
 

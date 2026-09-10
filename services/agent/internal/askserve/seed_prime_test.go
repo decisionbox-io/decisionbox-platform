@@ -2,6 +2,7 @@ package askserve
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,49 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
+
+func seedSchemaRouter(sp ai.SchemaProvider) *SchemaRouter {
+	return NewSchemaRouter(SchemaRouterOptions{
+		Lookups: map[string]ai.SchemaProvider{"wh_a": sp},
+		Labels:  map[string]string{"wh_a": "Warehouse A"},
+		Primary: "wh_a",
+	})
+}
+
+func TestPrimeSeed_FailedTableSearchNotAppended(t *testing.T) {
+	// A seed-prime table search that FAILS (e.g. no semantic retriever) must not
+	// inject its "Table search failed: …" error string as auto-gathered context.
+	r := &runner{cfg: Config{MaxRounds: 8}, store: &fakeStore{}}
+	rt := &ProjectRuntime{Schema: seedSchemaRouter(&fakeSchema{searchErr: errors.New("schema search not available")})}
+	st := &turnState{req: TurnRequest{TurnID: "t1", ProjectID: "p1", SeedContext: &SeedContext{Type: "insight", ID: "i1", Label: "Churn spike", Text: "EU churn"}}}
+
+	r.primeSeed(context.Background(), rt, st)
+
+	if st.primeContext != "" {
+		t.Fatalf("a failed table search must not append context, got %q", st.primeContext)
+	}
+	if st.groundedEvents != 0 {
+		t.Fatal("a failed table search must not ground the turn")
+	}
+}
+
+func TestPrimeSeed_TableHitsAppendedButDoNotGround(t *testing.T) {
+	// A successful table search with hits IS folded into the primed context as
+	// orientation, but table orientation alone must NOT ground the turn (only a
+	// real insight hit does).
+	r := &runner{cfg: Config{MaxRounds: 8}, store: &fakeStore{}}
+	rt := &ProjectRuntime{Schema: seedSchemaRouter(&fakeSchema{hits: []ai.SearchHit{{Table: "crm.orders", Blurb: "order facts"}}})}
+	st := &turnState{req: TurnRequest{TurnID: "t1", ProjectID: "p1", SeedContext: &SeedContext{Type: "insight", ID: "i1", Label: "Churn spike", Text: "EU churn"}}}
+
+	r.primeSeed(context.Background(), rt, st)
+
+	if !strings.Contains(st.primeContext, "crm.orders") {
+		t.Fatalf("a successful table search should be folded into primeContext, got %q", st.primeContext)
+	}
+	if st.groundedEvents != 0 {
+		t.Fatal("table orientation must not ground the turn (no insight hit)")
+	}
+}
 
 // primeSeed runs an entity-anchored insight search on a seeded first turn: it
 // grounds the turn, folds the hits into the citation set, and stashes the

@@ -425,6 +425,31 @@ func TestLoopTools_MultipleDeferredWritesTracked(t *testing.T) {
 	}
 }
 
+func TestFinishUngrounded_DisclosesPendingWrite(t *testing.T) {
+	// An ungrounded decline (e.g. a save-only request whose batched write never
+	// completed before the budget ran out) must still disclose the dropped save —
+	// finishUngrounded is a terminal path too.
+	r := &runner{cfg: Config{}, store: &fakeStore{}}
+	st := &turnState{req: TurnRequest{TurnID: "t", SessionID: "s", ProjectID: "p"}, writesPending: 1}
+	r.finishUngrounded(context.Background(), st)
+
+	store := r.store.(*fakeStore)
+	if store.final == nil || store.final.Status != commonmodels.AskTurnStatusDeclined {
+		t.Fatalf("expected a declined finalize, got %+v", store.final)
+	}
+	if !strings.Contains(store.final.Answer, pendingWriteNotice) {
+		t.Fatalf("a pending write must be disclosed on an ungrounded decline, got %q", store.final.Answer)
+	}
+
+	// No pending write → the plain ungrounded message, no notice.
+	r2 := &runner{cfg: Config{}, store: &fakeStore{}}
+	st2 := &turnState{req: TurnRequest{TurnID: "t", SessionID: "s", ProjectID: "p"}}
+	r2.finishUngrounded(context.Background(), st2)
+	if strings.Contains(r2.store.(*fakeStore).final.Answer, pendingWriteNotice) {
+		t.Fatalf("no pending write → no notice, got %q", r2.store.(*fakeStore).final.Answer)
+	}
+}
+
 func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 	r := &runner{cfg: Config{}, store: &fakeStore{}}
 	mt := MutationTool{Name: "save_note", Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
