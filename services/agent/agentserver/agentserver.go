@@ -20,6 +20,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/oauthreg"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
@@ -291,6 +292,82 @@ func warehouseIDOrDefault(wh models.WarehouseConfig) string {
 	return wh.ID
 }
 
+// applyOAuthAppRegistration adds the deployment's own OAuth client to a
+// datasource's provider config when the datasource authenticates with a
+// three-legged (user-delegated) method.
+//
+// The stored credential for such a datasource is a refresh token, which is
+// worthless on its own: minting an access token from it requires the client
+// that issued it. That client is registered once per deployment per OAuth
+// provider — instance-scoped, not on the project document — so it is read here
+// rather than travelling with the datasource.
+//
+// Keyed by the OAuth provider the method declares, not by the datasource slug:
+// one registration serves every consumer of that provider, so a customer who
+// has registered a Google client once does not register another for the next
+// feature that needs one.
+//
+// A registration field that is simply unset is left out, so the provider
+// reports its own "not configured" rather than a secret-store detail. A
+// secret store that cannot be READ is a different thing and is returned as an
+// error: it has not told us the field is empty, and reporting it as empty
+// would send an operator to re-enter an app registration that is already
+// there.
+func applyOAuthAppRegistration(ctx context.Context, secretProvider gosecrets.Provider, providerSlug string, cfg gowarehouse.ProviderConfig) error {
+	// The namespace belongs to the deployment, so nothing a project document
+	// carries in it survives to a provider — whether it was written before the
+	// datasource routes reserved the namespace, or by something else that
+	// writes project documents. Cleared first and unconditionally: a value left
+	// standing because its secret happened to be unset would hide a missing app
+	// registration behind a stale per-project one, which is the failure this
+	// separation exists to make impossible.
+	for k := range cfg {
+		if strings.HasPrefix(k, oauthreg.ConfigKey("")) {
+			delete(cfg, k)
+		}
+	}
+
+	meta, ok := gowarehouse.GetProviderMeta(providerSlug)
+	if !ok {
+		return nil // unregistered; NewProvider reports it with the name in hand
+	}
+	method, ok := meta.AuthMethodByID(cfg["auth_method"])
+	if !ok || method.Flow != gowarehouse.FlowAuthorizationCode {
+		return nil
+	}
+
+	// A three-legged method that names no OAuth provider can never authenticate:
+	// there is no registration to look up and therefore no client to mint a token
+	// with. That is a registry declaration error, and saying so beats letting the
+	// provider report a generic "not configured" for something no operator can fix.
+	if method.Authorization == nil || method.Authorization.Provider == "" {
+		return fmt.Errorf("datasource provider %q declares a three-legged auth method (%q) with no OAuth provider", providerSlug, method.ID)
+	}
+
+	// Record the method this resolved to. A datasource saved while its provider
+	// offered exactly one method stored no choice, and AuthMethodByID reads that
+	// as the one it can only have been — but a factory switches on the config's
+	// own auth_method, so leaving it empty would have this function and the
+	// provider disagree about how the datasource authenticates. It is written
+	// only on the branch that has established the answer.
+	cfg["auth_method"] = method.ID
+
+	oauthProvider := method.Authorization.Provider
+	for _, field := range oauthreg.Fields {
+		v, err := secretProvider.Get(ctx, "", oauthreg.Key(oauthProvider, field))
+		switch {
+		case errors.Is(err, gosecrets.ErrNotFound):
+			continue
+		case err != nil:
+			return fmt.Errorf("read the %s OAuth app registration (%s): %w", oauthProvider, field, err)
+		}
+		if v != "" {
+			cfg[oauthreg.ConfigKey(field)] = v
+		}
+	}
+	return nil
+}
+
 func initWarehouseProvider(ctx context.Context, project *models.Project, warehouseID string, secretProvider gosecrets.Provider, projectID string) (gowarehouse.Provider, error) {
 	wh, ok := project.WarehouseByID(warehouseID)
 	if !ok || wh.Provider == "" {
@@ -318,12 +395,51 @@ func initWarehouseProvider(ctx context.Context, project *models.Project, warehou
 		whCfg[k] = v
 	}
 
-	whCreds, err := secretProvider.Get(ctx, projectID, gowarehouse.CredentialsKey(wh.ID))
-	if err == nil && whCreds != "" {
+	// Which slot the credential lives in. Derived from the datasource id unless
+	// the datasource names one — which is how a credential obtained once can be
+	// used by several datasources, since a derived key belongs to exactly one.
+	//
+	// The ref is not passed on to the provider: it says where the credential was
+	// found, which is no more a provider's business than the key it replaces.
+	credentialKey := gowarehouse.CredentialsKey(wh.ID)
+	sharedRef := strings.TrimSpace(whCfg[gowarehouse.CredentialRefKey])
+	if sharedRef != "" {
+		// Composed with THIS datasource's provider, so a reference can only ever
+		// address a credential obtained for it. A datasource naming another
+		// provider's slot gets a key that does not exist, which is refused below
+		// rather than handed a credential it was not issued.
+		shared, ok := gowarehouse.SharedCredentialKey(wh.Provider, sharedRef)
+		if !ok {
+			return nil, fmt.Errorf("data source %q names a shared credential that cannot exist", wh.ID)
+		}
+		credentialKey = shared
+	}
+	delete(whCfg, gowarehouse.CredentialRefKey)
+
+	whCreds, err := secretProvider.Get(ctx, projectID, credentialKey)
+	switch {
+	case err == nil && whCreds != "":
 		whCfg["credentials_json"] = whCreds
 		applog.Info("Warehouse credentials loaded from secret provider")
-	} else if err != nil && !errors.Is(err, gosecrets.ErrNotFound) {
+
+	case sharedRef != "":
+		// A datasource that NAMES a credential and does not get one is a
+		// different thing from one that has none. Falling through would build the
+		// provider with an empty credential, and some of them read that as "use
+		// the ambient identity" — a BigQuery source would run as the agent's own
+		// service account, against a project the customer chose. Refuse instead,
+		// whether the slot is empty, absent, or unreadable.
+		if err == nil {
+			return nil, fmt.Errorf("data source %q reads a shared credential that is stored but empty", wh.ID)
+		}
+		return nil, fmt.Errorf("data source %q reads a shared credential that is not available: %w", wh.ID, err)
+
+	case err != nil && !errors.Is(err, gosecrets.ErrNotFound):
 		applog.WithError(err).Warn("Failed to read warehouse credentials from secret provider")
+	}
+
+	if err := applyOAuthAppRegistration(ctx, secretProvider, wh.Provider, whCfg); err != nil {
+		return nil, err
 	}
 
 	provider, err := gowarehouse.NewProvider(wh.Provider, whCfg)
