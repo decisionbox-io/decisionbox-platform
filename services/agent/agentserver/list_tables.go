@@ -76,15 +76,20 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 	// schema_key the index and scope filters use.
 	qualifier, hasQualifier := provider.(gowarehouse.RefQualifier)
 
+	datasets := wh.GetDatasets()
 	seen := make(map[string]struct{})
 	tables := make([]string, 0)
-	for _, dataset := range wh.GetDatasets() {
+	listed := 0
+	var lastErr error
+	for _, dataset := range datasets {
 		names, err := provider.ListTablesInDataset(whCtx, dataset)
 		if err != nil {
 			// One bad dataset shouldn't blank the whole picker — skip it and
 			// keep listing the others (mirrors discovery's per-dataset skip).
+			lastErr = err
 			continue
 		}
+		listed++
 		for _, name := range names {
 			qualified := dataset + "." + name
 			if hasQualifier {
@@ -96,6 +101,15 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 			seen[qualified] = struct{}{}
 			tables = append(tables, qualified)
 		}
+	}
+	// If the warehouse has datasets but NONE could be listed (bad credentials,
+	// unreachable warehouse, or the deadline hit while listing the only one),
+	// surface the failure instead of a misleading success with zero tables — the
+	// API relays it so the picker shows an error rather than a silent empty list.
+	// A warehouse that genuinely has no datasets configured returns an empty list
+	// (no error).
+	if listed == 0 && len(datasets) > 0 {
+		return fmt.Errorf("list tables: all %d dataset(s) failed to list; last error: %w", len(datasets), lastErr)
 	}
 	sort.Strings(tables)
 

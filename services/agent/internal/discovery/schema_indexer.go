@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -170,6 +171,36 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "discover schemas: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: discover schemas: %w", err)
+	}
+	// Apply any registered cached-schema filters (e.g. a table-scope plugin) to
+	// the resolved set. This matters on a cache HIT: resolveSchemas returns the
+	// stored map without running SchemaDiscovery (and thus without its ListTables
+	// filter), so without this a re-index would blurb + embed every
+	// previously-cached table even after the scope narrowed. The filter can only
+	// remove keys, never add, so it narrows a stale cache to the current scope;
+	// widening still needs the cache invalidated (the caller's re-scope path does
+	// that). No-op in the community build and on a cache miss (SchemaDiscovery
+	// already filtered). A filter error fails the run closed rather than indexing
+	// an unscoped catalog.
+	if len(schemas) > 0 {
+		keys := make([]string, 0, len(schemas))
+		for k := range schemas {
+			keys = append(keys, k)
+		}
+		kept, ferr := agentplugin.ApplyCachedSchemaFilters(ctx, opts.ProjectID, keys)
+		if ferr != nil {
+			si.recordErr(ctx, opts.ProjectID, "cached-schema filter: "+ferr.Error())
+			return nil, fmt.Errorf("schema_indexer: cached-schema filter: %w", ferr)
+		}
+		if len(kept) != len(schemas) {
+			filtered := make(map[string]models.TableSchema, len(kept))
+			for _, k := range kept {
+				if s, ok := schemas[k]; ok {
+					filtered[k] = s
+				}
+			}
+			schemas = filtered
+		}
 	}
 	applog.WithFields(applog.Fields{
 		"tables":     len(schemas),
