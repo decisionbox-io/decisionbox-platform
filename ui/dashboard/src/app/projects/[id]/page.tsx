@@ -113,7 +113,21 @@ export default function ProjectPage() {
         if (dismissedRunId.current === newRun.id) return;
         const wasRunning = run && (run.status === 'running' || run.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
-        setRun(newRun);
+        // Only replace `run` when something we render actually changed. The
+        // status endpoint answers as fast as we ask and `newRun` is freshly
+        // parsed JSON — never reference-equal to `run` — so an unconditional
+        // setRun would flip `run`'s identity on every response. Because
+        // pollStatus lists `run` as a dependency and an effect below calls
+        // pollStatus, that turned every response into re-render → new
+        // pollStatus → fetch → setRun → …, an unbounded request loop (#405).
+        // `updated_at` is bumped server-side on every write to the run doc,
+        // so comparing it (with id/status) keeps the live progress header
+        // ticking during a run while skipping the no-op responses.
+        const runChanged = !run
+          || run.id !== newRun.id
+          || run.status !== newRun.status
+          || run.updated_at !== newRun.updated_at;
+        if (runChanged) setRun(newRun);
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.
@@ -127,6 +141,7 @@ export default function ProjectPage() {
     } catch { /* ignore */ }
   }, [id, run]);
 
+  // The 2s poll is correctly gated on an in-flight run and stays as-is.
   useEffect(() => {
     if (!run) return;
     if (run.status !== 'running' && run.status !== 'pending') return;
@@ -134,7 +149,13 @@ export default function ProjectPage() {
     return () => clearInterval(interval);
   }, [run, pollStatus]);
 
-  useEffect(() => { pollStatus(); }, [pollStatus]);
+  // Fetch the current run once per project on load. Keying this on `id` (not
+  // pollStatus's identity) is what makes it fire once per project: pollStatus
+  // is recreated whenever `run` changes, so the old `[pollStatus]` re-ran this
+  // on every response and drove the loop above (#405). pollStatus is
+  // deliberately omitted from the deps here.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { pollStatus(); }, [id]);
 
   const handleRun = (areas?: string[]) => {
     if (estimateFirst) handleEstimate(areas);
