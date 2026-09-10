@@ -147,6 +147,13 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
 	schemaCacheRepo := database.NewSchemaCacheRepository(db)
 	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
+	// Live table listing so the discovery-scope picker is populated before the
+	// first index exists (the schema cache is empty until then). Guarded so a
+	// nil runner leaves the lister unset (avoids a typed-nil interface); the
+	// picker then just shows indexed tables (its prior behaviour).
+	if tableLister := handler.NewAgentTableLister(agentRunner); tableLister != nil {
+		schemaIndex.SetTableLister(tableLister)
+	}
 	validationJobsRepo := database.NewValidationJobRepository(db)
 	validationJobs := handler.NewValidationJobsHandler(validationJobsRepo, discoveryRepo, projectRepo)
 	if validationCanceller != nil {

@@ -260,15 +260,12 @@ func Run() {
 			os.Exit(1)
 		}
 		indexWorker = worker
-		// One-shot migration for projects that existed before schema
-		// indexing shipped. Flips warehouse-configured, unindexed
-		// projects to pending_indexing so the worker picks them up.
-		// Idempotent — subsequent restarts find zero matches.
-		if n, mErr := schemaindex.MigratePreExistingProjects(ctx, database.NewProjectRepository(db)); mErr != nil {
-			apilog.WithError(mErr).Warn("schemaindex: migration sweep failed; existing projects can be unblocked via POST /reindex")
-		} else if n > 0 {
-			apilog.WithField("migrated_projects", n).Info("schemaindex: migration sweep completed")
-		}
+		// Projects are NOT auto-enqueued for schema indexing. A project stays
+		// unindexed (empty status) until the operator explicitly starts it
+		// (dashboard "Build schema index" → POST /reindex), so they can review
+		// and restrict the table set first (see projects.Create). This
+		// deliberately replaces the old startup backfill that flipped
+		// warehouse-configured projects to pending_indexing.
 
 		// Crash-recovery: projects stuck in "indexing" for more than
 		// 2 hours are assumed to have lost their agent subprocess (API

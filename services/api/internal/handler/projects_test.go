@@ -244,9 +244,11 @@ func TestProjectsHandler_Create_RejectsBothWarehouseFields(t *testing.T) {
 }
 
 // A single datasource supplied via the new `warehouses` slice (empty legacy
-// `warehouse` field) must still enqueue schema indexing — previously the
-// enqueue keyed off the legacy field and such a project would never index.
-func TestProjectsHandler_Create_SingleWarehousesEntryEnqueuesIndexing(t *testing.T) {
+// `warehouse` field) must normalize down to the canonical legacy `warehouse`
+// shape. Create no longer auto-starts indexing (the operator reviews/scopes the
+// table set first, then starts it explicitly), so it must NOT transition to
+// pending_indexing.
+func TestProjectsHandler_Create_SingleWarehousesEntryNormalizes(t *testing.T) {
 	repo := newMockProjectRepo()
 	h := NewProjectsHandler(repo, nil)
 
@@ -268,8 +270,8 @@ func TestProjectsHandler_Create_SingleWarehousesEntryEnqueuesIndexing(t *testing
 	for _, p := range repo.projects {
 		saved = p
 	}
-	if saved.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
-		t.Errorf("schema_index_status = %q, want %q (a warehouses-only create must enqueue indexing)",
+	if saved.SchemaIndexStatus == models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("schema_index_status = %q, want NOT %q (create must not auto-start indexing)",
 			saved.SchemaIndexStatus, models.SchemaIndexStatusPendingIndexing)
 	}
 	// The single `warehouses` entry is normalized down to the canonical legacy

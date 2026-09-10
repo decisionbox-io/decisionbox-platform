@@ -46,6 +46,7 @@ That registration is the canonical example — built-in behavior is identical to
 
 Plugins can shrink the per-dataset table list the agent discovers, after the warehouse driver returns it and before per-table schema discovery starts.
 Use it to implement allow / deny lists, regex denylists, or any policy that maps "tables the warehouse exposes" to "tables this project should consider".
+This filter runs on **both** the schema-index pass and discovery, so an out-of-scope table is dropped before its schema is pulled, described, and embedded — the schema index is built over the filtered set, not the full catalog, and every consumer of that index sees only the filtered tables.
 
 ```go
 import (
