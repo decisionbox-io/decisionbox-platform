@@ -841,17 +841,26 @@ func TestSchemaIndex_ListCachedTables_EmptyCache(t *testing.T) {
 }
 
 // fakeTableLister is a WarehouseTableLister test double: it records whether it
-// was called and returns a canned list or error.
+// was called, which warehouse ids it was asked for, and returns a canned list
+// (or a per-warehouse list via byWarehouse) or an error.
 type fakeTableLister struct {
-	tables []string
-	err    error
-	called bool
-	calls  int
+	tables       []string
+	byWarehouse  map[string][]string // optional per-warehouse result; falls back to tables
+	err          error
+	called       bool
+	calls        int
+	gotWarehouse []string // warehouse ids seen, in call order
 }
 
-func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, _ string) ([]string, error) {
+func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, warehouseID string) ([]string, error) {
 	f.called = true
 	f.calls++
+	f.gotWarehouse = append(f.gotWarehouse, warehouseID)
+	if f.byWarehouse != nil {
+		if v, ok := f.byWarehouse[warehouseID]; ok {
+			return v, f.err
+		}
+	}
 	return f.tables, f.err
 }
 
@@ -963,6 +972,114 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_ErrorDegradesToEmpty(t *testi
 	got := decodeListCachedTables(t, w)
 	if len(got) != 0 {
 		t.Errorf("tables = %v, want empty on live-list error", got)
+	}
+}
+
+// twoWarehouseProject builds a managed multi-warehouse project: primary
+// wh_mssql (dbo) + secondary wh_pg (public). Used by the per-datasource
+// discovery-scope picker tests.
+func twoWarehouseProject() *models.Project {
+	return &models.Project{
+		Name: "t", Domain: "gaming", Category: "match3",
+		Warehouses: []models.WarehouseConfig{
+			{ID: "wh_mssql", Provider: "sqlserver", Datasets: []string{"dbo"}},
+			{ID: "wh_pg", Provider: "postgres", Datasets: []string{"public"}},
+		},
+		PrimaryWarehouseID: "wh_mssql",
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_WarehouseID_ScopesCacheToDatasource(t *testing.T) {
+	// An explicit ?warehouse_id= must scope the cached-table lookup to THAT
+	// datasource, so the picker shows the secondary's tables — not the primary's.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.customer"}} // cache hit → no live fallback
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?warehouse_id=wh_pg", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if ci.listTablesWarehouseID != "wh_pg" {
+		t.Errorf("ListTables scoped to %q, want wh_pg", ci.listTablesWarehouseID)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_WarehouseID_EmptyResolvesToPrimary(t *testing.T) {
+	// No ?warehouse_id= must resolve to the primary — the shipped single-warehouse
+	// behaviour, preserved for a multi-warehouse project's default view.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"dbo.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if ci.listTablesWarehouseID != "wh_mssql" {
+		t.Errorf("ListTables scoped to %q, want the primary wh_mssql", ci.listTablesWarehouseID)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_WarehouseID_Unknown_404(t *testing.T) {
+	// A warehouse id that isn't on the project must 404 — and must NOT spawn a
+	// live --list-tables agent run against an arbitrary/foreign datasource.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache — would trigger the live fallback if we got that far
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?warehouse_id=wh_nope", p.ID, ""))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown warehouse id", w.Code)
+	}
+	if lister.called {
+		t.Error("live lister must not be called for an unknown warehouse id")
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_WarehouseID_LiveFallback_PerDatasource(t *testing.T) {
+	// The live-listing TTL cache key must be per-datasource: polling two
+	// warehouses must return each one's own tables (not the first's cached
+	// result), proving the cache key isn't primary-only.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{} // empty cache → live fallback for both
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	lister := &fakeTableLister{byWarehouse: map[string][]string{
+		"wh_mssql": {"dbo.orders"},
+		"wh_pg":    {"public.customer"},
+	}}
+	h.SetTableLister(lister)
+
+	// Primary (empty id → wh_mssql).
+	w1 := httptest.NewRecorder()
+	h.ListCachedTables(w1, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if got := decodeListCachedTables(t, w1); len(got) != 1 || got[0] != "dbo.orders" {
+		t.Fatalf("primary tables = %v, want [dbo.orders]", got)
+	}
+	// Secondary — must NOT return the primary's cached result.
+	w2 := httptest.NewRecorder()
+	h.ListCachedTables(w2, newReq("GET", "/schema-cache/tables?warehouse_id=wh_pg", p.ID, ""))
+	if got := decodeListCachedTables(t, w2); len(got) != 1 || got[0] != "public.customer" {
+		t.Fatalf("secondary tables = %v, want [public.customer] (per-datasource cache key)", got)
+	}
+	if lister.calls != 2 {
+		t.Errorf("lister spawned %d times, want 2 (one per distinct datasource key)", lister.calls)
+	}
+	if len(lister.gotWarehouse) != 2 || lister.gotWarehouse[0] != "wh_mssql" || lister.gotWarehouse[1] != "wh_pg" {
+		t.Errorf("lister saw warehouse ids %v, want [wh_mssql wh_pg]", lister.gotWarehouse)
 	}
 }
 

@@ -557,11 +557,30 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	// Scope to the primary — the datasource the discovery run queries — so the
-	// discovery-scope picker can't offer secondary-warehouse tables the run can't
-	// reach (all warehouses share the project_schema_cache).
-	primaryID := p.PrimaryWarehouse().ID
-	tables, err := h.cacheRepo.ListTables(r.Context(), id, primaryID)
+	// Resolve which datasource's tables to list. Empty ?warehouse_id= means the
+	// project's primary — the legacy single-warehouse behaviour and the scope
+	// page's default. An explicit id must name a real warehouse of THIS project,
+	// so a bad/foreign id can't spawn a live agent listing against an arbitrary
+	// datasource. All warehouses share the project_schema_cache keyed by warehouse
+	// id, so the picker can offer any datasource's tables, each scoped to its own
+	// datasource (the enforcement filter is per-warehouse too).
+	whID := r.URL.Query().Get("warehouse_id")
+	var wh models.WarehouseConfig
+	if whID == "" {
+		// PrimaryWarehouse().ID matches the id the shipped single-warehouse path
+		// used (and normalises a legacy default to "default"), so the empty case is
+		// unchanged. A project with no warehouse yields a zero config + empty id;
+		// the live-fallback guard below skips the doomed listing.
+		wh = p.PrimaryWarehouse()
+		whID = wh.ID
+	} else {
+		var ok bool
+		if wh, ok = p.WarehouseByID(whID); !ok {
+			writeError(w, http.StatusNotFound, "warehouse not found on project")
+			return
+		}
+	}
+	tables, err := h.cacheRepo.ListTables(r.Context(), id, whID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
 		return
@@ -577,7 +596,7 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	if len(tables) == 0 && h.lister != nil && len(p.EffectiveWarehouses()) > 0 {
 		// Cache key encodes the datasource config so a warehouse/dataset change
 		// invalidates the cached listing immediately (not just after the TTL).
-		key := liveTableCacheKey(id, p.PrimaryWarehouse())
+		key := liveTableCacheKey(id, wh)
 		if cached, ok := h.getLiveTables(key); ok {
 			// Fresh cached result (possibly empty) — reuse it; don't re-spawn.
 			tables = cached
@@ -591,7 +610,7 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 				if cached, ok := h.getLiveTables(key); ok {
 					return cached, nil
 				}
-				live, lerr := h.lister.ListWarehouseTables(r.Context(), id, primaryID)
+				live, lerr := h.lister.ListWarehouseTables(r.Context(), id, whID)
 				if lerr != nil {
 					apilog.WithField("project_id", id).
 						Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
