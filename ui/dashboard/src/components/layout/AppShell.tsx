@@ -56,7 +56,9 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
       }}>
         {/* Logo */}
         <div style={{
-          padding: '16px 20px',
+          height: 'var(--db-topbar-height)',
+          boxSizing: 'border-box',
+          padding: '0 20px',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
