@@ -60,6 +60,8 @@ function normalizeLedger(lv: LedgerView): LedgerView {
       explored_tables: lv?.coverage?.explored_tables ?? [],
       area_depth: lv?.coverage?.area_depth ?? {},
       total_tables: lv?.coverage?.total_tables ?? 0,
+      explored_catalog_items: lv?.coverage?.explored_catalog_items ?? [],
+      total_catalog_items: lv?.coverage?.total_catalog_items ?? 0,
       summary: lv?.coverage?.summary ?? '',
     },
     convergence: lv?.convergence ?? [],
@@ -211,6 +213,11 @@ export default function LedgerPage() {
   const explored = ledger.coverage.explored_tables?.length ?? 0;
   const total = ledger.coverage.total_tables ?? 0;
   const frontier = Math.max(0, total - explored);
+  // Cube-shaped datasources have no tables, so every count above is about the
+  // table side only. Saying so is what stops "Frontier 0" from reading as
+  // "nothing left to look at" on a project that also has a cube.
+  const cubeItems = ledger.coverage.total_catalog_items ?? 0;
+  const cubeExplored = ledger.coverage.explored_catalog_items?.length ?? 0;
   const latest = ledger.convergence.length > 0 ? ledger.convergence[ledger.convergence.length - 1] : null;
   const pending = proposals.filter((p) => p.status === 'proposed');
   const decided = proposals.filter((p) => p.status !== 'proposed');
@@ -246,7 +253,12 @@ export default function LedgerPage() {
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
-          <Tooltip label="The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored." multiline w={280} openDelay={200}>
+          <Tooltip
+            label={cubeItems > 0
+              ? "The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored. It counts tables only: this project also has a cube-shaped datasource, which has none and is never finished."
+              : "The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored."}
+            multiline w={280} openDelay={200}
+          >
             <div><StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet explored" /></div>
           </Tooltip>
           <StatCard label="Findings" value={String(ledger.findings.length)} subtitle="carried across runs" />
@@ -369,13 +381,25 @@ export default function LedgerPage() {
         )}
 
         {/* 5. Coverage — how much of the warehouse has been reached */}
-        {ledger.coverage.summary && (
+        {(ledger.coverage.summary || cubeItems > 0) && (
           <Section
             icon={<IconMap2 size={16} />}
             title="Coverage"
             description="What the investigation has reached across the warehouse so far."
           >
-            <Text size="sm">{ledger.coverage.summary}</Text>
+            <Stack gap="xs">
+              {ledger.coverage.summary && <Text size="sm">{ledger.coverage.summary}</Text>}
+              {cubeItems > 0 && (
+                <Text size="sm" c="dimmed">
+                  This project also has a cube-shaped datasource, which has no tables — the counts above are the
+                  warehouse side only. {cubeExplored > 0
+                    ? `${cubeExplored} of its ${cubeItems} metrics and dimensions have been queried so far.`
+                    : `None of its ${cubeItems} metrics and dimensions are recorded as queried yet.`} A cube is
+                  never fully explored: its slices are combinatorial, so it is judged by whether a new one still
+                  turns up something, not by how much of it is left.
+                </Text>
+              )}
+            </Stack>
           </Section>
         )}
 

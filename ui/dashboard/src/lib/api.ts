@@ -927,6 +927,12 @@ export interface LedgerCoverage {
   explored_tables: string[];
   area_depth?: Record<string, number>;
   total_tables: number;
+  // Cube-shaped datasources have no tables, so they contribute nothing to the
+  // counts above. Their coverage is a record of which metrics and dimensions
+  // have been queried — deliberately not a fraction, since a cube's slices are
+  // combinatorial and never "done".
+  explored_catalog_items?: string[];
+  total_catalog_items?: number;
   summary: string;
 }
 
