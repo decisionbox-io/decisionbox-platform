@@ -67,6 +67,16 @@ func GetProvider() Provider {
 	return noopProvider{}
 }
 
+// IsConfigured reports whether a real provider has been activated — a factory
+// was registered (enterprise plugin loaded) and Configure ran successfully.
+// Consumers use this to decide whether to offer a knowledge-backed feature at
+// all, rather than offering it and always getting the no-op's empty results.
+func IsConfigured() bool {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return provider != nil
+}
+
 // resetForTest clears registry state. Test-only; do not call from production code.
 func resetForTest() {
 	registryMu.Lock()

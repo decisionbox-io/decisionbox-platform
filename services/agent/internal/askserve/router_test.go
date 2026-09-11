@@ -124,6 +124,87 @@ func TestRouter_LowConfidenceClarifies(t *testing.T) {
 	}
 }
 
+func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
+	// On a multi-datasource project, a knowledge-answerable question maps to NO
+	// datasource. Rather than dead-ending on a datasource clarification, the router
+	// falls through so the answering loop can offer search_knowledge.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"project_level":true,"reason":"knowledge question","confidence":0.9}`, // router flags a non-data question
+		`{"search_knowledge":"refund policy"}`,       // loop: KB search grounds
+		`{"answer":"Refunds are allowed within 30 days."}`,
+	}}, whA, whB, nil, nil)
+	rt.KnowledgeProvider = &fakeKnowledge{chunks: []KnowledgeChunk{
+		{SourceID: "s1", Position: 0, SourceName: "policy.pdf", SourceType: "pdf", Text: "Refunds within 30 days.", Score: 0.9},
+	}}
+
+	store := runRouted(t, rt, "what is our refund policy?")
+	if store.final.RoutingClarify {
+		t.Fatal("a KB-answerable question must not dead-end on a datasource clarification")
+	}
+	if store.final.Status != commonmodels.AskTurnStatusDone || store.final.Answer == "" {
+		t.Fatalf("KB turn should answer, got status=%q answer=%q", store.final.Status, store.final.Answer)
+	}
+	if len(whA.Calls) != 0 || len(whB.Calls) != 0 {
+		t.Fatal("a KB answer should query no warehouse")
+	}
+
+	// Contrast: with NO project-level tools, the same unmappable decision still
+	// clarifies (the bypass is scoped to len(valid)==0 AND project-level tools).
+	rt2 := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"which datasource?","confidence":0.1}`,
+	}}, testutil.NewMockWarehouseProvider("sales"), testutil.NewMockWarehouseProvider("crm"), nil, nil)
+	store2 := runRouted(t, rt2, "how many users?")
+	if !store2.final.RoutingClarify {
+		t.Fatal("without project-level tools, an unmappable question should still clarify")
+	}
+}
+
+func TestRouter_AmbiguousDataQuestionStillClarifiesWithKB(t *testing.T) {
+	// Even with a knowledge base configured, an ambiguous DATA question (the router
+	// did NOT flag project_level) must still get the router's clarification — not
+	// fall through to guess a datasource.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"clarify":true,"question":"Sales or CRM users?","confidence":0.2}`, // ambiguous DATA, project_level false
+	}}, whA, whB, nil, nil)
+	rt.KnowledgeProvider = &fakeKnowledge{chunks: []KnowledgeChunk{{SourceName: "x", Text: "y"}}}
+
+	store := runRouted(t, rt, "show me the users")
+	if !store.final.RoutingClarify {
+		t.Fatal("an ambiguous data question must still clarify even when a KB is present")
+	}
+	if store.final.Answer != "Sales or CRM users?" {
+		t.Fatalf("should ask the router's clarifying question, got %q", store.final.Answer)
+	}
+}
+
+func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
+	// On a non-tool-calling LLM (runText), mutation tools can't be dispatched, so a
+	// save tool must NOT count as "available" for the router bypass — an unmapped
+	// request still clarifies rather than entering a loop that can't save.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		// project_level=true, but on a non-tool LLM the save tool isn't callable, so
+		// the bypass must NOT trigger — the turn clarifies.
+		`{"datasources":[],"project_level":true,"reason":"save request","confidence":0.9}`,
+	}}, whA, whB, nil, nil)
+	rt.MutationTools = []MutationTool{{
+		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p"}, nil },
+	}} // no KnowledgeProvider
+
+	store := &fakeStore{}
+	(&runner{cfg: routerCfg(), store: store}).run(context.Background(), rt,
+		TurnRequest{TurnID: "rt", SessionID: "s", ProjectID: "p", Question: "save this as a note", CallerRole: "member"})
+	if store.final == nil || !store.final.RoutingClarify {
+		t.Fatalf("mutations on a non-tool LLM must not bypass the router clarification, got %+v", store.final)
+	}
+}
+
 func TestRouter_CrossSourceKeepsMultiHop(t *testing.T) {
 	whA := testutil.NewMockWarehouseProvider("sales")
 	whB := testutil.NewMockWarehouseProvider("crm")

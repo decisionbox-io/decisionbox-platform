@@ -37,6 +37,13 @@ type Project struct {
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
+	// BusinessSummary is the LLM-authored "what this business does" summary
+	// distilled from the project's knowledge sources (written by the API/sources
+	// pipeline). The agent reads it as a compact "what is this project" anchor for
+	// ask-serve. Empty until the first source is indexed. Keep in sync with the
+	// API's models.Project copy.
+	BusinessSummary string `bson:"business_summary,omitempty" json:"business_summary,omitempty"`
+
 	// Prompts — editable by the user. Seeded from domain pack defaults on creation.
 	// Agent reads prompts from here (not from the domain pack binary).
 	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`

@@ -3,6 +3,7 @@ package insightsearch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
@@ -71,7 +72,7 @@ func TestSearchInsights_MapsAndEnriches(t *testing.T) {
 	vs := &fakeVS{results: []vectorstore.SearchResult{
 		{ID: "i1", Score: 0.91, Payload: map[string]interface{}{"type": "insight"}},
 		{ID: "r1", Score: 0.80, Payload: map[string]interface{}{"type": "recommendation"}},
-		{ID: "x9", Score: 0.50, Payload: map[string]interface{}{"type": "insight"}}, // not found in enrich
+		{ID: "x9", Score: 0.50, Payload: map[string]interface{}{"type": "ledger_finding"}}, // unenrichable — must be dropped
 	}}
 	emb := &fakeEmbedder{model: "text-embedding-3-large", vec: []float64{0.1, 0.2}}
 	enrich := func(_ context.Context, id, docType string) (ai.InsightHit, bool) {
@@ -89,8 +90,9 @@ func TestSearchInsights_MapsAndEnriches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if len(hits) != 3 {
-		t.Fatalf("hits = %d, want 3", len(hits))
+	// The unenrichable hit is dropped, not emitted as an empty-titled citation.
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want 2 (unenrichable dropped)", len(hits))
 	}
 	// Score + type carried from the vector result; name/severity from enrich.
 	if hits[0].ID != "i1" || hits[0].Type != "insight" || hits[0].Name != "Churn spike" || hits[0].Severity != "high" || hits[0].AffectedCount != 42 || hits[0].Score != 0.91 || hits[0].DiscoveryID != "disc-7" {
@@ -99,13 +101,17 @@ func TestSearchInsights_MapsAndEnriches(t *testing.T) {
 	if hits[1].Type != "recommendation" || hits[1].Name != "Offer winback" {
 		t.Fatalf("hit[1] recommendation mismatch: %+v", hits[1])
 	}
-	// Unenriched hit still returned with id/type/score, empty display fields.
-	if hits[2].ID != "x9" || hits[2].Name != "" || hits[2].Score != 0.50 {
-		t.Fatalf("hit[2] should degrade gracefully: %+v", hits[2])
+	for _, h := range hits {
+		if h.ID == "x9" || h.Name == "" {
+			t.Fatalf("unenrichable/empty-name hit must be dropped, got %+v", h)
+		}
 	}
-	// Project scope + embedding model are passed to the vector store.
+	// Project scope, type filter, and embedding model are passed to the store.
 	if len(vs.gotOpts.ProjectIDs) != 1 || vs.gotOpts.ProjectIDs[0] != "p1" {
 		t.Fatalf("ProjectIDs = %v, want [p1]", vs.gotOpts.ProjectIDs)
+	}
+	if len(vs.gotOpts.Types) != 2 || vs.gotOpts.Types[0] != "insight" || vs.gotOpts.Types[1] != "recommendation" {
+		t.Fatalf("Types = %v, want [insight recommendation]", vs.gotOpts.Types)
 	}
 	if vs.gotOpts.EmbeddingModel != "text-embedding-3-large" {
 		t.Fatalf("EmbeddingModel = %q", vs.gotOpts.EmbeddingModel)
@@ -118,13 +124,41 @@ func TestSearchInsights_LimitClamped(t *testing.T) {
 	noEnrich := func(context.Context, string, string) (ai.InsightHit, bool) { return ai.InsightHit{}, false }
 	s := newTestSearcher(vs, emb, noEnrich)
 
-	for _, tc := range []struct{ in, want int }{{0, defaultLimit}, {-5, defaultLimit}, {3, 3}, {999, maxLimit}} {
+	// The requested k is clamped (0/-5 → default, 999 → max), then the STORE is
+	// asked for an overfetched slice (clampedK * overfetchFactor, capped at
+	// maxLimit) so dropped stale hits don't starve the result.
+	for _, tc := range []struct{ in, clampedK int }{{0, defaultLimit}, {-5, defaultLimit}, {3, 3}, {999, maxLimit}} {
 		if _, err := s.SearchInsights(context.Background(), "q", tc.in); err != nil {
 			t.Fatalf("k=%d err=%v", tc.in, err)
 		}
-		if vs.gotOpts.Limit != tc.want {
-			t.Errorf("k=%d → Limit %d, want %d", tc.in, vs.gotOpts.Limit, tc.want)
+		wantFetch := tc.clampedK * overfetchFactor
+		if wantFetch > maxLimit {
+			wantFetch = maxLimit
 		}
+		if vs.gotOpts.Limit != wantFetch {
+			t.Errorf("k=%d → store Limit %d, want %d (overfetch)", tc.in, vs.gotOpts.Limit, wantFetch)
+		}
+	}
+}
+
+func TestSearchInsights_TrimsOverfetchToK(t *testing.T) {
+	// The store returns more than k (overfetch); after enrichment the result is
+	// trimmed back to k so callers still get at most what they asked for.
+	results := make([]vectorstore.SearchResult, 0, 6)
+	for i := 0; i < 6; i++ {
+		results = append(results, vectorstore.SearchResult{ID: fmt.Sprintf("i%d", i), Score: 0.9, Payload: map[string]interface{}{"type": "insight"}})
+	}
+	vs := &fakeVS{results: results}
+	emb := &fakeEmbedder{model: "m", vec: []float64{1}}
+	allEnrich := func(_ context.Context, id, _ string) (ai.InsightHit, bool) { return ai.InsightHit{Name: id}, true }
+	s := newTestSearcher(vs, emb, allEnrich)
+
+	hits, err := s.SearchInsights(context.Background(), "q", 3)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("overfetched result must be trimmed to k=3, got %d", len(hits))
 	}
 }
 
