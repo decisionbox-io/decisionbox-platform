@@ -354,4 +354,23 @@ describe('SchemaIndexPanel', () => {
     // banner appears without a manual reload.
     await waitFor(() => expect(screen.getByText(/Discovering table schemas/)).toBeInTheDocument());
   });
+
+  it('refreshes the roll-up when a re-index settles back to ready (same status, new updated_at)', async () => {
+    // A fast re-index the 2s poll never catches mid-run lands on ready→ready.
+    // The roll-up must still refetch (keyed on updated_at), not show stale counts.
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (mockedApi.getSchemaIndexStatus as jest.Mock)
+      .mockResolvedValueOnce({ status: 'ready', updated_at: '2026-09-01T14:20:00Z' })
+      .mockResolvedValue({ status: 'ready', updated_at: '2026-09-01T15:00:00Z' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock)
+      .mockResolvedValueOnce({ runs: [{ datasource_id: 'wh_a', datasource_name: 'Redshift', run_id: 'r1', kind: 'tables', objects_indexed: 42, blurbs_generated: 42, status: 'ready', finished_at: '2026-09-01T14:20:00Z' }] })
+      .mockResolvedValue({ runs: [{ datasource_id: 'wh_a', datasource_name: 'Redshift', run_id: 'r2', kind: 'tables', objects_indexed: 50, blurbs_generated: 50, status: 'ready', finished_at: '2026-09-01T15:00:00Z' }] });
+    (mockedApi.reindexSchema as jest.Mock).mockResolvedValue({ status: 'pending_indexing' });
+
+    mount();
+    await waitFor(() => expect(screen.getByText(/42 tables/)).toBeInTheDocument());
+    (await screen.findByRole('button', { name: /Re-index/i })).click();
+    await waitFor(() => expect(mockedApi.reindexSchema).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(screen.getByText(/50 tables/)).toBeInTheDocument());
+  });
 });

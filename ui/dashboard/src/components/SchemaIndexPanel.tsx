@@ -99,12 +99,16 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     };
   }, [projectId, onStatusChange, pollNonce]);
 
-  // Per-datasource roll-up — the durable record. Fetch the run history once
-  // the run settles (ready / failed / cancelled / needs_reindex); it only
-  // changes when a run finishes, so keying on the settled status is enough and
-  // avoids fetching mid-indexing. Best-effort: the banner already conveys the
-  // live state if this fails.
+  // Per-datasource roll-up — the durable record. Fetch the run history once the
+  // run settles (ready / failed / cancelled / needs_reindex). Keyed on the
+  // settled status AND the per-run signals updated_at (stamped on every ready
+  // completion) + error (stamped on failures): a fast Retry/Re-index that the
+  // 2s poll never catches mid-run can settle back to the SAME status string, so
+  // status alone wouldn't refetch and the roll-up would show stale counts.
+  // Skips while indexing so it never fetches mid-run. Best-effort.
   const settledStatus = status?.status;
+  const settledUpdatedAt = status?.updated_at;
+  const settledError = status?.error;
   useEffect(() => {
     if (!settledStatus || settledStatus === 'pending_indexing' || settledStatus === 'indexing') return;
     let alive = true;
@@ -116,7 +120,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       .then((res) => { if (alive) setRuns(res.runs || []); })
       .catch(() => { /* roll-up is best-effort */ });
     return () => { alive = false; };
-  }, [projectId, settledStatus]);
+  }, [projectId, settledStatus, settledUpdatedAt, settledError]);
 
   // The API already returns one newest run per datasource; dedup defensively in
   // case an older client/server returns a full list.
