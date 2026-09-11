@@ -69,6 +69,16 @@ describe('SchemaIndexHistory', () => {
     expect(screen.getByRole('button', { name: /View history/i })).toBeInTheDocument();
   });
 
+  it('reports Ready (not "not indexed") for a pre-feature index with no run rows', async () => {
+    // Projects indexed before project_schema_index_runs existed are ready with
+    // an empty run list — the index is usable, so don't claim it's absent.
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'ready' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [] });
+    mount(undefined, 'bigquery');
+    await waitFor(() => expect(screen.getByText(/no run history recorded yet/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Not indexed yet/i)).not.toBeInTheDocument();
+  });
+
   it('reflects a live failed status in the current-status line', async () => {
     (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'failed', error: 'qdrant unreachable' });
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });

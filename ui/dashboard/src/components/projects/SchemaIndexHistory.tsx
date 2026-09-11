@@ -109,7 +109,18 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
         </Group>
       );
     }
-    if (live === 'ready' && latest) {
+    if (live === 'ready') {
+      // A project indexed before this feature existed (or whose best-effort run
+      // write failed) is ready with no run record — the index is still usable,
+      // so report Ready; just note the per-run history isn't available.
+      if (!latest) {
+        return (
+          <Group gap="xs" wrap="nowrap">
+            <StatusBadge status="ready" />
+            <Text size="xs" c="dimmed">index ready — no run history recorded yet (re-index to start tracking)</Text>
+          </Group>
+        );
+      }
       const when = latest.finished_at ? new Date(latest.finished_at).toLocaleString() : null;
       return (
         <Group gap="xs" wrap="nowrap">
@@ -118,7 +129,7 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
         </Group>
       );
     }
-    // No live status (never indexed) and/or no runs.
+    // No live status (never indexed).
     return <Text size="xs" c="dimmed">Not indexed yet for {datasourceName || 'this data source'}.</Text>;
   })();
 
