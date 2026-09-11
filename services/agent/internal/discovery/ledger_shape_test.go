@@ -241,10 +241,18 @@ func TestMergeExplored_NoCatalogAcceptsNothing(t *testing.T) {
 // wins, it must be the same one on every run rather than whichever the map
 // happened to yield.
 func TestNameIndex_ResolvesDeterministically(t *testing.T) {
-	first := nameIndex([]string{"ds.Orders", "ds.orders", "ds.ORDERS"})["ds.orders"]
-	for i := 0; i < 20; i++ {
-		if got := nameIndex([]string{"ds.ORDERS", "ds.orders", "ds.Orders"})["ds.orders"]; got != first {
-			t.Fatalf("nameIndex resolved %q then %q for the same catalog", first, got)
+	// The table side is indexed from a map, whose iteration order is
+	// randomised per run — so without the sort the winner changes between two
+	// runs of the same catalog. First by byte order wins, which for these
+	// three is the all-caps spelling.
+	const want = "ds.ORDERS"
+	for _, order := range [][]string{
+		{"ds.Orders", "ds.orders", "ds.ORDERS"},
+		{"ds.ORDERS", "ds.orders", "ds.Orders"},
+		{"ds.orders", "ds.ORDERS", "ds.Orders"},
+	} {
+		if got := nameIndex(order)["ds.orders"]; got != want {
+			t.Errorf("nameIndex(%v) resolved %q, want %q whatever the input order", order, got, want)
 		}
 	}
 	if nameIndex(nil) != nil {
