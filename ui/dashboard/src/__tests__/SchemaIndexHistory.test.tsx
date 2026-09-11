@@ -86,6 +86,22 @@ describe('SchemaIndexHistory', () => {
     await waitFor(() => expect(screen.getByText(/qdrant unreachable/)).toBeInTheDocument());
   });
 
+  it('shows "indexing in progress" while a run is active', async () => {
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'indexing' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+    mount();
+    await waitFor(() => expect(screen.getByText(/Indexing in progress/i)).toBeInTheDocument());
+    // Stale prior count isn't presented as current while indexing.
+    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
+  });
+
+  it('notes a cancelled run in the current-status line', async () => {
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'cancelled' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+    mount();
+    await waitFor(() => expect(screen.getByText(/cancelled/i)).toBeInTheDocument());
+  });
+
   it('expands to a history table with a row per run, surfacing the error', async () => {
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun, olderRun] });
     mount();
