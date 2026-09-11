@@ -20,7 +20,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, Button, Collapse, Group, Stack, Table, Text } from '@mantine/core';
 import { IconChevronDown, IconChevronRight } from '@tabler/icons-react';
-import { api, SchemaIndexRun } from '@/lib/api';
+import { api, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
   projectId: string;
@@ -58,6 +58,7 @@ function StatusBadge({ status }: { status: string }) {
 export default function SchemaIndexHistory({ projectId, datasourceId, datasourceName }: Props) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState<SchemaIndexRun[] | null>(null);
+  const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   // loading starts true and is cleared in finally — mirrors WarehouseConfigPanel
   // and avoids a synchronous setState in the effect body.
   const [loading, setLoading] = useState(true);
@@ -65,37 +66,60 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
 
   useEffect(() => {
     let alive = true;
-    api
-      .listSchemaIndexRuns(projectId, datasourceId)
-      .then((res) => { if (alive) setRuns(res.runs || []); })
+    // Fetch the live status AND the durable history. The current-status line is
+    // driven by the LIVE status (not the newest run record), because run rows
+    // are append-only and retained across a cache clear / cancel — reading
+    // runs[0] there would show a stale green "Ready" after the index was
+    // dropped. The history table below is legitimately the run records.
+    Promise.all([
+      api.getSchemaIndexStatus(projectId).catch(() => null),
+      api.listSchemaIndexRuns(projectId, datasourceId),
+    ])
+      .then(([s, res]) => { if (alive) { setStatus(s); setRuns(res.runs || []); } })
       .catch((e: unknown) => { if (alive) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [projectId, datasourceId]);
 
-  // Latest run drives the always-visible current-status line.
+  // Latest run supplies the object count for the status line + feeds the table.
   const latest = runs && runs.length > 0 ? runs[0] : null;
 
   const statusLine = (() => {
     if (loading) return <Text size="xs" c="dimmed">Loading indexing status…</Text>;
     if (error) return <Text size="xs" c="red">Couldn&apos;t load indexing status: {error}</Text>;
-    if (!latest) {
-      return <Text size="xs" c="dimmed">No index runs recorded yet for {datasourceName || 'this data source'}.</Text>;
+    const live = status?.status ?? '';
+    // needs_reindex / cancelled: the index was cleared or aborted, so the prior
+    // run's green "Ready" no longer describes the live index — say so.
+    if (live === 'needs_reindex') {
+      return <Text size="xs" c="orange">Re-index required — the schema cache was cleared.</Text>;
     }
-    const when = latest.finished_at ? new Date(latest.finished_at).toLocaleString() : null;
-    return (
-      <Group gap="xs" wrap="nowrap">
-        <StatusBadge status={latest.status} />
-        {latest.status === 'ready' && (
-          <Text size="xs" c="dimmed">{latest.objects_indexed} objects indexed{when ? ` · ${when}` : ''}</Text>
-        )}
-        {latest.status === 'failed' && (
+    if (live === 'cancelled') {
+      return <Text size="xs" c="orange">Last indexing run was cancelled — re-index to rebuild.</Text>;
+    }
+    if (live === 'indexing' || live === 'pending_indexing') {
+      return <Text size="xs" c="blue">Indexing in progress…</Text>;
+    }
+    if (live === 'failed') {
+      return (
+        <Group gap="xs" wrap="nowrap">
+          <StatusBadge status="failed" />
           <Text size="xs" c="red" lineClamp={1} style={{ maxWidth: 360 }}>
-            {latest.error || 'failed'}{when ? ` · ${when}` : ''}
+            {status?.error || latest?.error || 'failed'}
           </Text>
-        )}
-      </Group>
-    );
+        </Group>
+      );
+    }
+    if (live === 'ready' && latest) {
+      const when = latest.finished_at ? new Date(latest.finished_at).toLocaleString() : null;
+      return (
+        <Group gap="xs" wrap="nowrap">
+          <StatusBadge status="ready" />
+          <Text size="xs" c="dimmed">{latest.objects_indexed} objects indexed{when ? ` · ${when}` : ''}</Text>
+        </Group>
+      );
+    }
+    // No live status (never indexed) and/or no runs.
+    return <Text size="xs" c="dimmed">Not indexed yet for {datasourceName || 'this data source'}.</Text>;
   })();
 
   const hasRuns = !!runs && runs.length > 0;

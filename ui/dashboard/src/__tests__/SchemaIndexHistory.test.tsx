@@ -8,7 +8,7 @@ import SchemaIndexHistory from '@/components/projects/SchemaIndexHistory';
 import { api, SchemaIndexRun } from '@/lib/api';
 
 jest.mock('@/lib/api', () => ({
-  api: { listSchemaIndexRuns: jest.fn() },
+  api: { listSchemaIndexRuns: jest.fn(), getSchemaIndexStatus: jest.fn() },
 }));
 
 const mockedApi = api as jest.Mocked<typeof api>;
@@ -34,10 +34,12 @@ const olderRun: SchemaIndexRun = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Default: project is ready. Individual tests override for other states.
+  (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'ready' });
 });
 
 describe('SchemaIndexHistory', () => {
-  it('shows the latest run as the current-status line', async () => {
+  it('shows the latest run as the current-status line when ready', async () => {
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun, olderRun] });
     mount();
     await waitFor(() => expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument());
@@ -45,12 +47,33 @@ describe('SchemaIndexHistory', () => {
     expect(screen.getByRole('button', { name: /View history \(2\)/i })).toBeInTheDocument();
   });
 
-  it('renders the empty state when there are no runs', async () => {
+  it('renders the empty state when never indexed', async () => {
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: '' });
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [] });
     mount(undefined, 'bigquery');
-    await waitFor(() => expect(screen.getByText(/No index runs recorded yet for bigquery/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Not indexed yet for bigquery/)).toBeInTheDocument());
     // No toggle when there's nothing to expand.
     expect(screen.queryByRole('button', { name: /View history/i })).not.toBeInTheDocument();
+  });
+
+  it('shows "re-index required" (not stale Ready) after the cache is cleared', async () => {
+    // needs_reindex: the index was dropped but run rows are retained. The
+    // current-status line must reflect the live state, not the last run.
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'needs_reindex' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+    mount();
+    await waitFor(() => expect(screen.getByText(/Re-index required/i)).toBeInTheDocument());
+    // The stale success count must NOT be presented as current status.
+    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
+    // …but the durable record is still available in the history table.
+    expect(screen.getByRole('button', { name: /View history/i })).toBeInTheDocument();
+  });
+
+  it('reflects a live failed status in the current-status line', async () => {
+    (mockedApi.getSchemaIndexStatus as jest.Mock).mockResolvedValue({ status: 'failed', error: 'qdrant unreachable' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+    mount();
+    await waitFor(() => expect(screen.getByText(/qdrant unreachable/)).toBeInTheDocument());
   });
 
   it('expands to a history table with a row per run, surfacing the error', async () => {

@@ -1640,7 +1640,10 @@ func TestSchemaIndex_ListRuns_ListerError(t *testing.T) {
 }
 
 func TestSchemaIndex_ListRuns_LatestMode(t *testing.T) {
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", Warehouses: []models.WarehouseConfig{
+		{ID: "wh_a", Provider: "redshift"},
+		{ID: "wh_b", Provider: "snowflake"},
+	}}
 	lister := &mockRunLister{latest: []models.SchemaIndexRun{
 		{DatasourceID: "wh_a", RunID: "a2", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 42},
 		{DatasourceID: "wh_b", RunID: "b1", Status: models.SchemaIndexStatusFailed, Error: "boom"},
@@ -1661,5 +1664,41 @@ func TestSchemaIndex_ListRuns_LatestMode(t *testing.T) {
 	}
 	if runs[0].DatasourceID != "wh_a" || runs[1].DatasourceID != "wh_b" {
 		t.Errorf("datasources = %q, %q", runs[0].DatasourceID, runs[1].DatasourceID)
+	}
+}
+
+func TestSchemaIndex_ListRuns_LatestMode_DropsRemovedDatasources(t *testing.T) {
+	// Append-only history keeps a row for wh_gone after it was removed from the
+	// project; latest-mode (the roll-up) must not present it as a current
+	// datasource, but the full-history endpoint still would.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", Warehouses: []models.WarehouseConfig{
+		{ID: "wh_a", Provider: "redshift"},
+	}}
+	lister := &mockRunLister{latest: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a1", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 42},
+		{DatasourceID: "wh_gone", RunID: "g1", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 7},
+	}}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?latest=1", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	runs := decodeRuns(t, w)
+	if len(runs) != 1 || runs[0].DatasourceID != "wh_a" {
+		t.Fatalf("latest roll-up should drop removed datasources, got %+v", runs)
+	}
+
+	// Full history (no latest) is unfiltered — wh_gone still appears.
+	lister2 := &mockRunLister{runs: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a1", Status: models.SchemaIndexStatusReady},
+		{DatasourceID: "wh_gone", RunID: "g1", Status: models.SchemaIndexStatusReady},
+	}}
+	h2 := makeRunsHandler(t, p, lister2)
+	w2 := httptest.NewRecorder()
+	h2.ListRuns(w2, newReq("GET", "/schema-index/runs", p.ID, ""))
+	if got := decodeRuns(t, w2); len(got) != 2 {
+		t.Fatalf("full history should be unfiltered, got %d runs", len(got))
 	}
 }

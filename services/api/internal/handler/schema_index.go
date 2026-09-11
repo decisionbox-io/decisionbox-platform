@@ -330,6 +330,14 @@ func (h *SchemaIndexHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	var runs []models.SchemaIndexRun
 	if r.URL.Query().Get("latest") == "1" || r.URL.Query().Get("latest") == "true" {
 		runs, err = h.runs.LatestByDatasource(r.Context(), id)
+		// The run collection is append-only, so a datasource removed or replaced
+		// by warehouse management keeps its last row forever. The roll-up shows
+		// *current* datasources, so drop rows for datasources no longer on the
+		// project. The full-history endpoint (non-latest) stays unfiltered — its
+		// job is the complete audit trail, including removed datasources.
+		if err == nil {
+			runs = filterToActiveDatasources(p, runs)
+		}
 	} else {
 		datasourceID := r.URL.Query().Get("datasource_id")
 		limit := 0 // 0 → repo default; an out-of-range value is clamped there
@@ -368,6 +376,28 @@ func (h *SchemaIndexHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
 		out[i] = v
 	}
 	writeJSON(w, http.StatusOK, response{Runs: out})
+}
+
+// filterToActiveDatasources keeps only the runs whose datasource is still
+// configured on the project, normalising the legacy empty id to the reserved
+// default (matching how the agent stamps run records). Used for the roll-up so
+// a removed/replaced datasource's stale last run stops appearing as current.
+func filterToActiveDatasources(p *models.Project, runs []models.SchemaIndexRun) []models.SchemaIndexRun {
+	active := make(map[string]bool)
+	for _, wh := range p.EffectiveWarehouses() {
+		id := wh.ID
+		if id == "" {
+			id = models.DefaultWarehouseID
+		}
+		active[id] = true
+	}
+	out := make([]models.SchemaIndexRun, 0, len(runs))
+	for _, run := range runs {
+		if active[run.DatasourceID] {
+			out = append(out, run)
+		}
+	}
+	return out
 }
 
 // Retry transitions a failed project back to pending_indexing so the
