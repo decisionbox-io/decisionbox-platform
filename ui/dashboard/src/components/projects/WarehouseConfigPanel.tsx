@@ -6,7 +6,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
-import { api, Project, ProviderMeta, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { api, DEFAULT_WAREHOUSE_ID, Project, ProviderMeta, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 import {
   WarehouseFormFields,
   WarehouseFormState,
@@ -168,12 +168,19 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
       </Group>
 
       {/* Co-locate the index-run result with the re-index trigger: current
-          status + durable history for this data source. Settings page only —
-          the creation wizard has no index to report on yet. */}
+          status + durable history for this data source. Scoped to the
+          datasource this panel edits (the primary — empty id resolves to the
+          reserved default, matching how the agent stamps its runs) so the
+          history + "current status" line can't show another datasource's run.
+          Settings page only — the creation wizard has no index to report yet. */}
       {variant === 'page' && (
         <>
           <Divider my="xs" />
-          <SchemaIndexHistory projectId={projectId} datasourceName={project.warehouse.provider || 'this data source'} />
+          <SchemaIndexHistory
+            projectId={projectId}
+            datasourceId={project.warehouse.id || DEFAULT_WAREHOUSE_ID}
+            datasourceName={project.warehouse.provider || 'this data source'}
+          />
         </>
       )}
     </PanelSection>

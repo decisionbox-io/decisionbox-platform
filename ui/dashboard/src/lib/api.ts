@@ -394,7 +394,15 @@ export interface EmbeddingConfig {
   config?: Record<string, string>;
 }
 
+// DEFAULT_WAREHOUSE_ID mirrors the Go models.DefaultWarehouseID — the reserved
+// id of the primary datasource for a legacy/single-warehouse project (its runs
+// are stamped under this id). Keep in sync with the backend constant.
+export const DEFAULT_WAREHOUSE_ID = 'default';
+
 export interface WarehouseConfig {
+  // id is the stable datasource identifier; empty on a legacy single-warehouse
+  // project (resolved to DEFAULT_WAREHOUSE_ID by the backend accessors).
+  id?: string;
   provider: string;
   project_id: string;
   datasets: string[];
