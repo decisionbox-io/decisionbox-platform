@@ -101,3 +101,81 @@ func TestForwardedEnv_CloudPolicyAbsentOnSelfHosted(t *testing.T) {
 		}
 	}
 }
+
+// TestOperatorForwardedEnv_ForwardsAGateThisRepoDoesNotKnow is the whole
+// point: a plugin shipping outside this repo has gates whose names are not
+// in agentForwardedEnvKeys, and a gate that never reaches the agent fails
+// silently rather than loudly.
+func TestOperatorForwardedEnv_ForwardsAGateThisRepoDoesNotKnow(t *testing.T) {
+	t.Setenv("AGENT_FORWARD_ENV", "SOME_PLUGIN_ENABLED, ANOTHER_GATE")
+	t.Setenv("SOME_PLUGIN_ENABLED", "true")
+	t.Setenv("ANOTHER_GATE", "1")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, operatorForwardedEnvKeys()) {
+		found[kv.Key] = kv.Value
+	}
+	if found["SOME_PLUGIN_ENABLED"] != "true" {
+		t.Errorf("named gate not forwarded: got %q", found["SOME_PLUGIN_ENABLED"])
+	}
+	// Surrounding whitespace is what a YAML list written by hand actually
+	// looks like; refusing it would be a trap rather than a validation.
+	if found["ANOTHER_GATE"] != "1" {
+		t.Errorf("name with surrounding space not forwarded: got %q", found["ANOTHER_GATE"])
+	}
+}
+
+// TestOperatorForwardedEnv_NamingAnUnsetVariableForwardsNothing pins that
+// the list names variables rather than declaring them. An operator listing
+// a gate they have not actually set must not hand the agent an empty value,
+// which several gates would read as a deliberate "off".
+func TestOperatorForwardedEnv_NamingAnUnsetVariableForwardsNothing(t *testing.T) {
+	t.Setenv("AGENT_FORWARD_ENV", "NEVER_SET_GATE")
+
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, operatorForwardedEnvKeys()) {
+		if kv.Key == "NEVER_SET_GATE" {
+			t.Fatalf("unset variable forwarded as %q", kv.Value)
+		}
+	}
+}
+
+// TestOperatorForwardedEnv_CannotDuplicateOrOverrideACanonicalKey pins that
+// the operator list cannot put the same key in a container spec twice.
+// Kubernetes rejects a duplicate env name outright, so a deployment that
+// listed a canonical key would fail to spawn an agent at all — and the
+// operator's reason for listing it (wanting it forwarded) is already true.
+func TestOperatorForwardedEnv_CannotDuplicateOrOverrideACanonicalKey(t *testing.T) {
+	t.Setenv("AGENT_FORWARD_ENV", "SOURCES_ENABLED,DUPE_GATE,DUPE_GATE")
+	t.Setenv("SOURCES_ENABLED", "true")
+	t.Setenv("DUPE_GATE", "true")
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, operatorForwardedEnvKeys()) {
+		counts[kv.Key]++
+	}
+	if counts["SOURCES_ENABLED"] != 1 {
+		t.Errorf("canonical key appears %d times, want exactly 1", counts["SOURCES_ENABLED"])
+	}
+	if counts["DUPE_GATE"] != 1 {
+		t.Errorf("repeated name appears %d times, want exactly 1", counts["DUPE_GATE"])
+	}
+}
+
+// TestOperatorForwardedEnv_AbsentOrEmptyChangesNothing pins that a
+// deployment that never sets this is byte-identical to before — which is
+// every existing deployment.
+func TestOperatorForwardedEnv_AbsentOrEmptyChangesNothing(t *testing.T) {
+	t.Setenv("SOURCES_ENABLED", "true")
+	base := collectForwardedEnv(agentForwardedEnvKeys)
+
+	for _, v := range []string{"", "  ", ",", " , "} {
+		t.Setenv("AGENT_FORWARD_ENV", v)
+		if keys := operatorForwardedEnvKeys(); len(keys) != 0 {
+			t.Errorf("AGENT_FORWARD_ENV=%q yielded %v, want none", v, keys)
+		}
+		got := collectForwardedEnv(agentForwardedEnvKeys, operatorForwardedEnvKeys())
+		if len(got) != len(base) {
+			t.Errorf("AGENT_FORWARD_ENV=%q changed the forwarded set: %d vs %d", v, len(got), len(base))
+		}
+	}
+}
